@@ -124,16 +124,10 @@ func (reader attachmentMigrationReader) Read(buffer []byte) (int, error) {
 	return reader.reader.Read(buffer)
 }
 
-func (m *attachmentMigration) verifyTask(ctx context.Context, name string, expected []attachmentMigrationEntry, hashes bool) error {
-	actual, err := m.inventory(ctx, name, hashes)
+func (m *attachmentMigration) verifyTask(ctx context.Context, name string, expected []attachmentMigrationEntry) error {
+	actual, err := m.inventory(ctx, name, true)
 	if err != nil {
 		return err
-	}
-	if !hashes {
-		expected = slices.Clone(expected)
-		for index := range expected {
-			expected[index].SHA256 = ""
-		}
 	}
 	if !reflect.DeepEqual(actual, expected) {
 		return m.failure("content_changed", "The attachment directory inventory differs from the migration plan.", nil)

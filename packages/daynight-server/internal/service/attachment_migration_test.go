@@ -208,3 +208,166 @@ func TestAttachmentMigrationCommandAndRootFailures(t *testing.T) {
 		t.Fatalf("canceled connection lost its cause: %v", err)
 	}
 }
+
+func TestAttachmentMigrationRejectsContradictoryPersistedInventories(t *testing.T) {
+	firstTask := func(record map[string]any) map[string]any { return record["tasks"].([]any)[0].(map[string]any) }
+	firstFile := func(record map[string]any) map[string]any {
+		return firstTask(record)["entries"].([]any)[1].(map[string]any)
+	}
+	for _, test := range []struct {
+		name     string
+		category string
+		change   func(map[string]any)
+	}{
+		{"invalid task identity", "invalid_manifest", func(record map[string]any) { firstTask(record)["taskId"] = "invalid" }},
+		{"duplicate task roots", "invalid_manifest", func(record map[string]any) { record["tasks"] = append(record["tasks"].([]any), firstTask(record)) }},
+		{"path outside task root", "invalid_manifest", func(record map[string]any) { firstFile(record)["path"] = "../outside" }},
+		{"duplicate file entries", "invalid_manifest", func(record map[string]any) {
+			task := firstTask(record)
+			task["entries"] = append(task["entries"].([]any), firstFile(record))
+		}},
+		{"unsupported entry kind", "invalid_manifest", func(record map[string]any) { firstFile(record)["kind"] = "symlink" }},
+		{"negative entry size", "invalid_manifest", func(record map[string]any) { firstFile(record)["size"] = -1 }},
+		{"invalid content checksum", "invalid_manifest", func(record map[string]any) { firstFile(record)["sha256"] = "invalid" }},
+		{"missing existing task root", "invalid_manifest", func(record map[string]any) {
+			task := firstTask(record)
+			task["entries"] = task["entries"].([]any)[1:]
+		}},
+		{"entries under absent root", "invalid_manifest", func(record map[string]any) { firstTask(record)["exists"] = false }},
+		{"missing owner inventory", "invalid_manifest", func(record map[string]any) { record["owners"] = []any{} }},
+		{"contradictory owner inventory", "invalid_manifest", func(record map[string]any) {
+			record["owners"].([]any)[0].(map[string]any)["projectId"] = "00000000-0000-0000-0000-000000000000"
+		}},
+		{"contradictory attachment owner", "ownership", func(record map[string]any) {
+			record["attachments"].([]any)[0].(map[string]any)["projectId"] = "00000000-0000-0000-0000-000000000000"
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			databaseURL, root, task, plan := migrationRecordFixture(t)
+			mutateMigrationRecord(t, filepath.Join(root, attachmentMigrationPrefix+plan.OperationID, "manifest.json"), test.change)
+			_, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "apply", plan.OperationID, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			var failure *AttachmentMigrationError
+			if !errors.As(err, &failure) || failure.Category != test.category {
+				t.Fatalf("contradictory inventory did not fail safely: %v", err)
+			}
+			if actual, err := os.ReadFile(filepath.Join(root, attachmentBucket, task.ID, "file.bin")); err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
+				t.Fatalf("invalid inventory changed its source: %v %v", actual, err)
+			}
+			if _, err := os.Stat(filepath.Join(root, attachmentMigrationPrefix+plan.OperationID, "source")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("invalid inventory moved its source bucket: %v", err)
+			}
+		})
+	}
+}
+
+func TestAttachmentMigrationRejectsUnsupportedDatabaseShapeWithoutMovingFiles(t *testing.T) {
+	for _, sql := range []string{
+		`DROP TABLE task_attachments`,
+		`ALTER TABLE projects RENAME COLUMN id TO missing_id`,
+		`ALTER TABLE tasks RENAME COLUMN project_id TO missing_project_id`,
+		`ALTER TABLE task_attachments RENAME COLUMN path TO missing_path`,
+	} {
+		t.Run(sql, func(t *testing.T) {
+			_, database, databaseURL, _ := projectService(t)
+			if _, err := database.Pool.Exec(context.Background(), sql); err != nil {
+				t.Fatal(err)
+			}
+			root := t.TempDir()
+			name := filepath.Join(root, attachmentBucket, "00000000-0000-0000-0000-000000000001", "preserved")
+			if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(name, []byte("preserved"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := MigrateAttachmentLayout(context.Background(), databaseURL, root, "plan", "", slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			var failure *AttachmentMigrationError
+			if !errors.As(err, &failure) || failure.Category != "database" || errors.Unwrap(err) == nil {
+				t.Fatalf("unsupported source schema did not retain its database error: %v", err)
+			}
+			if actual, err := os.ReadFile(name); err != nil || string(actual) != "preserved" {
+				t.Fatalf("failed database inventory changed legacy files: %q %v", actual, err)
+			}
+			entries, err := os.ReadDir(root)
+			if err != nil || len(entries) != 1 || entries[0].Name() != attachmentBucket {
+				t.Fatalf("failed metadata inventory created an operation: %v %v", entries, err)
+			}
+		})
+	}
+}
+
+func TestAttachmentMigrationFilesystemFailuresPreserveExistingContent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "source"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "source", "preserved"), []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "occupied"), []byte("target"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opened, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	t.Cleanup(func() {
+		if !closed {
+			if err := opened.Close(); err != nil {
+				t.Error(err)
+			}
+		}
+	})
+	m := &attachmentMigration{root: opened, phase: "placing"}
+	assertFailure := func(err error, category string, cause error) {
+		t.Helper()
+		var failure *AttachmentMigrationError
+		if !errors.As(err, &failure) || failure.Category != category || cause != nil && !errors.Is(err, cause) || strings.Contains(err.Error(), root) {
+			t.Fatalf("filesystem failure lost its category/cause or exposed a host path: %v", err)
+		}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = m.readDirectory(ctx, ".")
+	assertFailure(err, "canceled", context.Canceled)
+	_, err = m.readDirectory(context.Background(), "missing")
+	assertFailure(err, "filesystem", fs.ErrNotExist)
+	_, err = m.readDirectory(context.Background(), "occupied")
+	assertFailure(err, "filesystem", nil)
+	assertFailure(m.syncDirectory("missing"), "filesystem", fs.ErrNotExist)
+	assertFailure(m.makeParents("occupied/child"), "unsafe_entry", nil)
+	assertFailure(m.rename(context.Background(), "source", "occupied"), "target_conflict", nil)
+	assertFailure(m.rename(context.Background(), "missing", "new-target"), "filesystem", fs.ErrNotExist)
+	_, err = m.writeJSON("occupied", attachmentMigrationState{Phase: "planned"}, false)
+	assertFailure(err, "operation_conflict", nil)
+	_, err = m.writeJSON("missing/record.json", attachmentMigrationState{Phase: "planned"}, false)
+	assertFailure(err, "filesystem", fs.ErrNotExist)
+	if err := opened.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closed = true
+	assertFailure(m.rename(context.Background(), "source", "new-target"), "filesystem", nil)
+	_, err = m.writeJSON("record.json", attachmentMigrationState{Phase: "planned"}, false)
+	assertFailure(err, "filesystem", nil)
+	for name, expected := range map[string]string{"source/preserved": "source", "occupied": "target"} {
+		if actual, err := os.ReadFile(filepath.Join(root, name)); err != nil || string(actual) != expected {
+			t.Fatalf("failed filesystem operation modified %s: %q %v", name, actual, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "new-target")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("failed rename created a target: %v", err)
+	}
+}
+
+func TestAttachmentMigrationCanceledHashReaderDoesNotConsumeContent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	content := strings.NewReader("preserved content")
+	reader := attachmentMigrationReader{ctx: ctx, reader: content}
+	buffer := []byte("unchanged")
+	n, err := reader.Read(buffer)
+	if n != 0 || !errors.Is(err, context.Canceled) || string(buffer) != "unchanged" || content.Len() != len("preserved content") {
+		t.Fatalf("canceled verification consumed content: n=%d err=%v buffer=%q remaining=%d", n, err, buffer, content.Len())
+	}
+}

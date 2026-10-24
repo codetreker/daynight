@@ -203,7 +203,7 @@ func (m *attachmentMigration) verifyPlacement(ctx context.Context, manifest atta
 			if m.phase == "verified" || m.phase == "published" {
 				return m.failure("operation_conflict", "A recorded verified target still has unmoved source tasks.", nil)
 			}
-			if err := m.verifyTask(ctx, sourceName, task.Entries, true); err != nil {
+			if err := m.verifyTask(ctx, sourceName, task.Entries); err != nil {
 				return err
 			}
 			remaining[task.TaskID] = true

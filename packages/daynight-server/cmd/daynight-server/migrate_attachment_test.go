@@ -8,10 +8,13 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
@@ -60,4 +63,61 @@ func TestMigrationFailureDiagnosticsPreserveSafeCauseCategories(t *testing.T) {
 		}
 	}
 	logAttachmentMigrationFailure(context.Background(), slog.New(slog.NewJSONHandler(io.Discard, nil)), errors.New("unclassified sensitive error"))
+}
+
+type attachmentMigrationOutputFailure struct{ cause error }
+
+func (writer attachmentMigrationOutputFailure) Write([]byte) (int, error) { return 0, writer.cause }
+
+func TestMigrationCommandOutputFailurePreservesResumableOperation(t *testing.T) {
+	values := processAPIEnvironment(t)
+	database, err := store.Open(context.Background(), values["DAYNIGHT_DATABASE_URL"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
+	getenv := func(key string) string {
+		if key != "DAYNIGHT_DATABASE_URL" && key != "DAYNIGHT_STORAGE_ROOT" {
+			t.Fatalf("maintenance loaded HTTP or authentication setting %s", key)
+		}
+		return values[key]
+	}
+	var stderr bytes.Buffer
+	if code := run(context.Background(), []string{"migrate-attachment-layout", "plan"}, getenv, attachmentMigrationOutputFailure{cause: errors.New("sensitive-output-path")}, &stderr); code != 1 {
+		t.Fatalf("failed result publication returned success: %d", code)
+	}
+	operationID := ""
+	for _, line := range strings.Split(strings.TrimSpace(stderr.String()), "\n") {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event["category"] == "output" && event["phase"] == "output" {
+			operationID, _ = event["operationId"].(string)
+		}
+	}
+	if operationID == "" || strings.Contains(stderr.String(), "sensitive-output-path") || strings.Contains(stderr.String(), `"phase":"listening"`) {
+		t.Fatalf("result failure did not expose a safe operation identity: %s", &stderr)
+	}
+	stateFile := filepath.Join(values["DAYNIGHT_STORAGE_ROOT"], ".attachment-layout-"+operationID, "state.json")
+	data, err := os.ReadFile(stateFile)
+	var state struct {
+		OperationID string `json:"operationId"`
+		Phase       string `json:"phase"`
+	}
+	if err != nil || json.Unmarshal(data, &state) != nil || state.OperationID != operationID || state.Phase != "planned" {
+		t.Fatalf("failed stdout publication discarded its persisted operation: %s %v", data, err)
+	}
+	var stdout bytes.Buffer
+	stderr.Reset()
+	if code := run(context.Background(), []string{"migrate-attachment-layout", "resume", "--operation-id", operationID}, getenv, &stdout, &stderr); code != 0 {
+		t.Fatalf("recorded operation could not be recovered after output failure: %d %s", code, &stderr)
+	}
+	var completed service.AttachmentMigrationSummary
+	if err := json.Unmarshal(stdout.Bytes(), &completed); err != nil || completed.OperationID != operationID || completed.Phase != "complete" || completed.ReceiptPath == nil {
+		t.Fatalf("successful recovery did not publish one completion result: %s %v", &stdout, err)
+	}
+	if _, err := os.Stat(filepath.Join(values["DAYNIGHT_STORAGE_ROOT"], *completed.ReceiptPath)); err != nil {
+		t.Fatalf("successful result did not identify a persisted receipt: %v", err)
+	}
 }

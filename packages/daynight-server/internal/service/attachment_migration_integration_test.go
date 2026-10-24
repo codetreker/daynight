@@ -82,6 +82,7 @@ func (fixture *attachmentMigrationIntegrationFixture) seed(t *testing.T) {
 	third := fixture.addTask(t, fixture.projects[1], "cd000000-0000-4000-8000-000000000003")
 	collision := fixture.addTask(t, fixture.projects[1], fixture.projects[0])
 	empty := fixture.addTask(t, fixture.projects[1], "ef000000-0000-4000-8000-000000000004")
+	fixture.addTask(t, fixture.projects[1], "aa000000-0000-4000-8000-000000000005")
 	fixture.writeLegacy(t, first, "文档 space/binary%_?#.bin", []byte{0, 255, 128, 13, 10}, true)
 	fixture.writeLegacy(t, second, "empty.txt", []byte{}, true)
 	fixture.writeLegacy(t, third, "site/index.html", []byte("<p>nested content</p>\n"), true)
@@ -542,5 +543,312 @@ func TestAttachmentMigrationDoesNotOverwriteAConflictingTarget(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(fixture.root, "task-attachments")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("conflicting target published a final bucket: %v", err)
+	}
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) stopAfter(t *testing.T, step string) (AttachmentMigrationSummary, attachmentMigrationIntegrationEvent) {
+	t.Helper()
+	plan := fixture.requireRun(t, "plan", "")
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	var observed attachmentMigrationIntegrationEvent
+	logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+		if event.Step == step && observed.Step == "" {
+			observed = event
+			cancel()
+		}
+	})
+	_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
+	if observed.Step != step || !errors.Is(err, context.Canceled) {
+		t.Fatalf("stop after %s: event=%#v err=%v", step, observed, err)
+	}
+	return plan, observed
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) setPhase(t *testing.T, operationID, phase string) {
+	t.Helper()
+	name := filepath.Join(fixture.root, ".attachment-layout-"+operationID, "state.json")
+	data, err := os.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state map[string]any
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	state["phase"] = phase
+	data, err = json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) requireRejectedState(t *testing.T, action, operationID, category string) {
+	t.Helper()
+	beforeTree, beforeDatabase := attachmentMigrationIntegrationTree(t, fixture.root), fixture.databaseSnapshot(t)
+	_, err := fixture.run(t, action, operationID)
+	attachmentMigrationIntegrationError(t, err, category)
+	if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, fixture.root), beforeTree) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+		t.Fatal("rejected migration state changed its persisted files or database")
+	}
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) sourceOwner(t *testing.T, operationID string) attachmentMigrationIntegrationOwner {
+	t.Helper()
+	for _, owner := range fixture.owners {
+		if info, err := os.Stat(filepath.Join(fixture.root, ".attachment-layout-"+operationID, "source", owner.taskID)); err == nil && info.IsDir() {
+			return owner
+		}
+	}
+	t.Fatal("fixture has no remaining source task")
+	return attachmentMigrationIntegrationOwner{}
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) taskFile(t *testing.T, directory, taskID string) string {
+	t.Helper()
+	for name := range fixture.files {
+		if strings.HasPrefix(name, taskID+"/") {
+			return filepath.Join(directory, filepath.FromSlash(strings.TrimPrefix(name, taskID+"/")))
+		}
+	}
+	t.Fatal("fixture task has no ordinary file")
+	return ""
+}
+
+func TestAttachmentMigrationRejectsChangedEmptyBucketAndUnexpectedEmptyState(t *testing.T) {
+	for _, mutation := range []string{"unchanged", "extra_file", "unexpected_phase", "unexpected_source"} {
+		t.Run(mutation, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			bucket := filepath.Join(fixture.root, "task-attachments")
+			if err := os.Mkdir(bucket, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			plan := fixture.requireRun(t, "plan", "")
+			switch mutation {
+			case "unchanged":
+				fixture.requireRun(t, "apply", plan.OperationID)
+				if actual := attachmentMigrationIntegrationTree(t, bucket); !reflect.DeepEqual(actual, map[string]attachmentMigrationIntegrationEntry{".": {mode: fs.ModeDir}}) {
+					t.Fatalf("empty bucket changed: %#v", actual)
+				}
+				return
+			case "extra_file":
+				if err := os.WriteFile(filepath.Join(bucket, "unexpected.bin"), []byte("retain"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				fixture.requireRejectedState(t, "apply", plan.OperationID, "content_changed")
+			case "unexpected_phase":
+				fixture.setPhase(t, plan.OperationID, "evacuated")
+				fixture.requireRejectedState(t, "resume", plan.OperationID, "operation_conflict")
+			case "unexpected_source":
+				if err := os.Mkdir(filepath.Join(fixture.root, ".attachment-layout-"+plan.OperationID, "source"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				fixture.requireRejectedState(t, "resume", plan.OperationID, "operation_conflict")
+			}
+		})
+	}
+}
+
+func TestAttachmentMigrationRejectsContradictoryTopLevelLocations(t *testing.T) {
+	for _, mutation := range []string{"bucket_file", "source_file", "target_file", "both_bucket_source", "all_locations_missing", "legacy_bytes_changed"} {
+		t.Run(mutation, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			plan := fixture.requireRun(t, "plan", "")
+			operation := filepath.Join(fixture.root, ".attachment-layout-"+plan.OperationID)
+			category := "operation_conflict"
+			switch mutation {
+			case "bucket_file":
+				if err := os.Rename(filepath.Join(fixture.root, "task-attachments"), filepath.Join(fixture.root, "retained-bucket")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(fixture.root, "task-attachments"), []byte("retain"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "unsafe_entry"
+			case "source_file", "target_file":
+				name := strings.TrimSuffix(mutation, "_file")
+				if err := os.WriteFile(filepath.Join(operation, name), []byte("retain"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "unsafe_entry"
+			case "both_bucket_source":
+				if err := os.Mkdir(filepath.Join(operation, "source"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "all_locations_missing":
+				if err := os.Rename(filepath.Join(fixture.root, "task-attachments"), filepath.Join(fixture.root, "retained-bucket")); err != nil {
+					t.Fatal(err)
+				}
+			case "legacy_bytes_changed":
+				name := fixture.taskFile(t, filepath.Join(fixture.root, "task-attachments", fixture.owners[0].taskID), fixture.owners[0].taskID)
+				if err := os.WriteFile(name, []byte("changed after planning"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "content_changed"
+			}
+			fixture.requireRejectedState(t, "resume", plan.OperationID, category)
+		})
+	}
+}
+
+func TestAttachmentMigrationResumesSourceOnlyStateAndRejectsMissingVerifiedTarget(t *testing.T) {
+	for _, state := range []string{"source_only", "changed_source_only", "missing_verified_target"} {
+		t.Run(state, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+			step := "bucket_evacuated"
+			if state == "missing_verified_target" {
+				step = "target_verified"
+			}
+			plan, _ := fixture.stopAfter(t, step)
+			operation := filepath.Join(fixture.root, ".attachment-layout-"+plan.OperationID)
+			target := filepath.Join(operation, "target")
+			if state == "missing_verified_target" {
+				if err := os.Rename(target, filepath.Join(fixture.root, "retained-target")); err != nil {
+					t.Fatal(err)
+				}
+				fixture.requireRejectedState(t, "resume", plan.OperationID, "operation_conflict")
+				return
+			}
+			for _, entry := range attachmentMigrationIntegrationTree(t, target) {
+				if entry.mode != fs.ModeDir {
+					t.Fatal("source-only fixture would discard moved file content")
+				}
+			}
+			if err := os.RemoveAll(target); err != nil {
+				t.Fatal(err)
+			}
+			if state == "changed_source_only" {
+				name := fixture.taskFile(t, filepath.Join(operation, "source", fixture.owners[0].taskID), fixture.owners[0].taskID)
+				if err := os.WriteFile(name, []byte("changed staged content"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				fixture.requireRejectedState(t, "resume", plan.OperationID, "content_changed")
+				return
+			}
+			fixture.requireRun(t, "resume", plan.OperationID)
+			fixture.assertPublished(t, legacy)
+		})
+	}
+}
+
+func TestAttachmentMigrationRejectsPartialPlacementDamage(t *testing.T) {
+	mutations := []string{"apply_again", "planned_with_target", "verified_with_source", "both_task_locations", "missing_task_locations", "source_is_file", "target_is_file", "source_bytes_changed", "source_symlink", "extra_source_task", "extra_target_entry", "target_bytes_changed", "target_entry_missing"}
+	for _, mutation := range mutations {
+		t.Run(mutation, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			plan, moved := fixture.stopAfter(t, "task_moved")
+			operation := filepath.Join(fixture.root, ".attachment-layout-"+plan.OperationID)
+			remaining := fixture.sourceOwner(t, plan.OperationID)
+			var movedOwner attachmentMigrationIntegrationOwner
+			for _, owner := range fixture.owners {
+				if owner.taskID == moved.TaskID {
+					movedOwner = owner
+				}
+			}
+			if movedOwner.taskID == "" {
+				t.Fatal("moved task event has no fixture owner")
+			}
+			source := filepath.Join(operation, "source", remaining.taskID)
+			target := filepath.Join(operation, "target", movedOwner.projectID, movedOwner.taskID[:2], movedOwner.taskID)
+			action, category := "resume", "operation_conflict"
+			switch mutation {
+			case "apply_again":
+				action, category = "apply", "resume_required"
+			case "planned_with_target":
+				fixture.setPhase(t, plan.OperationID, "planned")
+			case "verified_with_source":
+				fixture.setPhase(t, plan.OperationID, "verified")
+			case "both_task_locations":
+				if err := os.Mkdir(filepath.Join(operation, "source", movedOwner.taskID), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "missing_task_locations":
+				if err := os.Rename(source, filepath.Join(fixture.root, "retained-task")); err != nil {
+					t.Fatal(err)
+				}
+			case "source_is_file":
+				if err := os.Rename(source, filepath.Join(fixture.root, "retained-task")); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(source, []byte("retain"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "unsafe_entry"
+			case "target_is_file":
+				name := filepath.Join(operation, "target", remaining.projectID, remaining.taskID[:2], remaining.taskID)
+				if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(name, []byte("retain"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "unsafe_entry"
+			case "source_bytes_changed":
+				if err := os.WriteFile(fixture.taskFile(t, source, remaining.taskID), []byte("changed staged bytes"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "content_changed"
+			case "source_symlink":
+				name := fixture.taskFile(t, source, remaining.taskID)
+				if err := os.Rename(name, name+".retained"); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Base(name)+".retained", name); err != nil {
+					t.Fatal(err)
+				}
+				category = "unsafe_entry"
+			case "extra_source_task":
+				if err := os.Mkdir(filepath.Join(operation, "source", "ff000000-0000-4000-8000-000000000099"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "extra_target_entry":
+				if err := os.WriteFile(filepath.Join(target, "unexpected.bin"), []byte("retain"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "content_changed"
+			case "target_bytes_changed":
+				if err := os.WriteFile(fixture.taskFile(t, target, movedOwner.taskID), []byte("changed placed bytes"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "content_changed"
+			case "target_entry_missing":
+				if err := os.Rename(fixture.taskFile(t, target, movedOwner.taskID), filepath.Join(fixture.root, "retained-file")); err != nil {
+					t.Fatal(err)
+				}
+				category = "content_changed"
+			}
+			fixture.requireRejectedState(t, action, plan.OperationID, category)
+		})
+	}
+}
+
+func TestAttachmentMigrationRejectsPublishedSourceLeftoversAndChangedBytes(t *testing.T) {
+	for _, mutation := range []string{"source_leftover", "published_bytes"} {
+		t.Run(mutation, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			plan, _ := fixture.stopAfter(t, "bucket_published")
+			category := "operation_conflict"
+			if mutation == "source_leftover" {
+				if err := os.WriteFile(filepath.Join(fixture.root, ".attachment-layout-"+plan.OperationID, "source", "unexpected.bin"), []byte("retain"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				owner := fixture.owners[0]
+				name := fixture.taskFile(t, filepath.Join(fixture.root, "task-attachments", owner.projectID, owner.taskID[:2], owner.taskID), owner.taskID)
+				if err := os.WriteFile(name, []byte("changed published bytes"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				category = "content_changed"
+			}
+			fixture.requireRejectedState(t, "resume", plan.OperationID, category)
+		})
 	}
 }
