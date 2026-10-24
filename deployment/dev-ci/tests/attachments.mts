@@ -271,8 +271,8 @@ const projectCheck = async (name: string, root: string) => {
     await request(`/api/v1/projects/${peer.projectId}`, undefined, 404);
     await request(`/api/v1/projects/${peer.projectId}/tasks/${peer.taskId}/preview/docs/nested/design.md`, undefined, 404);
     assert.ok(volumes.every(volume => !peer.volumes.includes(volume)));
-    await composeCommand(['exec', '-T', 'server', 'test', '-f', `${storageRoot}/task-attachments/${createdTask.id}/docs/nested/design.md`]);
-    await composeCommand(['exec', '-T', 'server', 'sh', '-c', 'test ! -e "$1"', 'sh', `${storageRoot}/task-attachments/${peer.taskId}`]);
+    await composeCommand(['exec', '-T', 'server', 'test', '-f', `${storageRoot}/task-attachments/${createdProject.id}/${createdTask.id.slice(0, 2)}/${createdTask.id}/docs/nested/design.md`]);
+    await composeCommand(['exec', '-T', 'server', 'sh', '-c', 'test ! -e "$1"', 'sh', `${storageRoot}/task-attachments/${peer.projectId}`]);
     await json(path.join(root, `${name}-isolated.json`), { project, peer: peer.project, isolated: true });
     if (name === 'secondary') {
       await waitFor(() => readJson(path.join(root, 'verify-survivor.json')), 'primary project cleanup', 900_000);

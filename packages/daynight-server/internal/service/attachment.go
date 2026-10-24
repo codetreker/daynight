@@ -29,21 +29,6 @@ func NewAttachments(database *store.Store, files filestorage.Storage) *Attachmen
 	return &Attachments{store: database, files: files}
 }
 
-func attachmentAddress(projectID, taskID, path string) (string, string, error) {
-	projectID, err := CanonicalID(projectID)
-	if err != nil {
-		return "", "", err
-	}
-	taskID, err = CanonicalID(taskID)
-	if err != nil {
-		return "", "", err
-	}
-	if err := filestorage.ValidateAddress(attachmentBucket, path); err != nil {
-		return "", "", &Fault{Code: "invalid_input", Message: "Attachment path is invalid.", Cause: err}
-	}
-	return projectID, taskID, nil
-}
-
 func (s *Attachments) read(ctx context.Context, principal core.Principal, projectID, taskID string, operation func(*store.Snapshot) error) error {
 	var missing *Fault
 	err := s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
@@ -83,7 +68,7 @@ func (s *Attachments) Put(ctx context.Context, principal core.Principal, project
 	if err := requirePrincipal(principal); err != nil {
 		return core.Attachment{}, false, err
 	}
-	projectID, taskID, err := attachmentAddress(projectID, taskID, path)
+	address, err := newAttachmentAddress(projectID, taskID, path)
 	if err != nil {
 		return core.Attachment{}, false, err
 	}
@@ -91,8 +76,8 @@ func (s *Attachments) Put(ctx context.Context, principal core.Principal, project
 	if err != nil || !strings.Contains(mediaType, "/") {
 		return core.Attachment{}, false, invalidInput("Attachment content type is invalid.")
 	}
-	err = s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot) error {
-		conflict, err := snapshot.AttachmentPathConflict(ctx, projectID, taskID, path)
+	err = s.read(ctx, principal, address.projectID, address.taskID, func(snapshot *store.Snapshot) error {
+		conflict, err := snapshot.AttachmentPathConflict(ctx, address.projectID, address.taskID, address.relativePath)
 		if err != nil {
 			return err
 		}
@@ -104,15 +89,15 @@ func (s *Attachments) Put(ctx context.Context, principal core.Principal, project
 	if err != nil {
 		return core.Attachment{}, false, err
 	}
-	info, err := s.files.Put(ctx, attachmentBucket, taskID+"/"+path, content)
+	info, err := s.files.Put(ctx, attachmentBucket, address.storagePath, content)
 	if err != nil {
 		if errors.Is(err, filestorage.ErrPathConflict) {
 			return core.Attachment{}, false, &Fault{Code: "path_conflict", Message: "Attachment path conflicts with an existing filesystem name.", Cause: err}
 		}
 		return core.Attachment{}, false, fmt.Errorf("write attachment content: %w", err)
 	}
-	attachment, created, err := s.store.PutAttachment(ctx, core.Attachment{ProjectID: projectID, TaskID: taskID,
-		Path: path, ContentType: contentType, SizeBytes: info.Size})
+	attachment, created, err := s.store.PutAttachment(ctx, core.Attachment{ProjectID: address.projectID, TaskID: address.taskID,
+		Path: address.relativePath, ContentType: contentType, SizeBytes: info.Size})
 	if err != nil {
 		return core.Attachment{}, false, fmt.Errorf("write attachment metadata: %w", err)
 	}
@@ -123,20 +108,20 @@ func (s *Attachments) Open(ctx context.Context, principal core.Principal, projec
 	if err := requirePrincipal(principal); err != nil {
 		return core.Attachment{}, filestorage.Object{}, err
 	}
-	projectID, taskID, err := attachmentAddress(projectID, taskID, path)
+	address, err := newAttachmentAddress(projectID, taskID, path)
 	if err != nil {
 		return core.Attachment{}, filestorage.Object{}, err
 	}
 	var attachment core.Attachment
-	err = s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot) error {
+	err = s.read(ctx, principal, address.projectID, address.taskID, func(snapshot *store.Snapshot) error {
 		var err error
-		attachment, err = snapshot.Attachment(ctx, projectID, taskID, path)
+		attachment, err = snapshot.Attachment(ctx, address.projectID, address.taskID, address.relativePath)
 		return err
 	})
 	if err != nil {
 		return core.Attachment{}, filestorage.Object{}, err
 	}
-	object, err := s.files.Open(ctx, attachmentBucket, taskID+"/"+path)
+	object, err := s.files.Open(ctx, attachmentBucket, address.storagePath)
 	if err != nil {
 		return core.Attachment{}, filestorage.Object{}, fmt.Errorf("open attachment content: %w", err)
 	}
@@ -147,21 +132,21 @@ func (s *Attachments) Delete(ctx context.Context, principal core.Principal, proj
 	if err := requirePrincipal(principal); err != nil {
 		return err
 	}
-	projectID, taskID, err := attachmentAddress(projectID, taskID, path)
+	address, err := newAttachmentAddress(projectID, taskID, path)
 	if err != nil {
 		return err
 	}
-	err = s.read(ctx, principal, projectID, taskID, func(snapshot *store.Snapshot) error {
-		_, err := snapshot.Attachment(ctx, projectID, taskID, path)
+	err = s.read(ctx, principal, address.projectID, address.taskID, func(snapshot *store.Snapshot) error {
+		_, err := snapshot.Attachment(ctx, address.projectID, address.taskID, address.relativePath)
 		return err
 	})
 	if err != nil {
 		return err
 	}
-	if err := s.files.Delete(ctx, attachmentBucket, taskID+"/"+path); err != nil {
+	if err := s.files.Delete(ctx, attachmentBucket, address.storagePath); err != nil {
 		return fmt.Errorf("delete attachment content: %w", err)
 	}
-	if err := s.store.DeleteAttachment(ctx, projectID, taskID, path); err != nil {
+	if err := s.store.DeleteAttachment(ctx, address.projectID, address.taskID, address.relativePath); err != nil {
 		if errors.Is(err, core.ErrNotFound) {
 			return attachmentNotFound(err)
 		}

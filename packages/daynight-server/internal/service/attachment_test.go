@@ -43,6 +43,10 @@ func putAttachment(t *testing.T, attachments *Attachments, principal core.Princi
 	return attachment
 }
 
+func attachmentTestStoragePath(task core.Task, path string) string {
+	return task.ProjectID + "/" + task.ID[:2] + "/" + task.ID + "/" + path
+}
+
 func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
 	attachments, tasks, _, files, task, principal := attachmentService(t)
 	ctx := context.Background()
@@ -78,7 +82,7 @@ func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
 	if zero.SizeBytes != 0 {
 		t.Fatalf("empty size: %d", zero.SizeBytes)
 	}
-	if _, err := files.Put(ctx, attachmentBucket, task.ID+"/"+first.Path, strings.NewReader("different physical length")); err != nil {
+	if _, err := files.Put(ctx, attachmentBucket, attachmentTestStoragePath(task, first.Path), strings.NewReader("different physical length")); err != nil {
 		t.Fatal(err)
 	}
 	metadata, object, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, first.Path)
@@ -285,7 +289,7 @@ func TestAttachmentStorageFailuresAndMissingPhysicalFile(t *testing.T) {
 	_, _, err = failed.Open(ctx, principal, task.ProjectID, task.ID, "file")
 	assertAttachmentOperationalError(t, err, sentinel)
 	assertAttachmentOperationalError(t, failed.Delete(ctx, principal, task.ProjectID, task.ID, "file"), sentinel)
-	if err := files.Delete(ctx, attachmentBucket, task.ID+"/file"); err != nil {
+	if err := files.Delete(ctx, attachmentBucket, attachmentTestStoragePath(task, "file")); err != nil {
 		t.Fatal(err)
 	}
 	_, _, err = attachments.Open(ctx, principal, task.ProjectID, task.ID, "file")
@@ -354,7 +358,7 @@ func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
 				if !errors.As(err, &databaseError) {
 					t.Fatalf("metadata write error: %v", err)
 				}
-				object, err := files.Open(ctx, attachmentBucket, task.ID+"/file")
+				object, err := files.Open(ctx, attachmentBucket, attachmentTestStoragePath(task, "file"))
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -383,7 +387,7 @@ func TestAttachmentMetadataFailuresAfterStorageOperation(t *testing.T) {
 					t.Fatalf("metadata delete error: %v", err)
 				}
 			}
-			_, err = files.Open(ctx, attachmentBucket, task.ID+"/file")
+			_, err = files.Open(ctx, attachmentBucket, attachmentTestStoragePath(task, "file"))
 			if !errors.Is(err, fs.ErrNotExist) {
 				t.Fatalf("successful file deletion was hidden: %v", err)
 			}

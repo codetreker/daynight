@@ -233,9 +233,14 @@ metadata and byte hashes through download and inline preview routes, server
 stop/start and full stack recreation. Authenticated task-sync reads capture the
 project's epoch and prove it survives both normal operations. The check
 reconfigures the fixture and logs in again after recreation changes the gateway
-port. The two projects have separate database and attachment volumes; each
-rejects the other's project/task paths.
+port. These are two independent Compose deployments with separate database and
+attachment volumes; each rejects the other's project/task paths. Their isolation
+is deployment isolation, distinct from multiple Daynight projects in one server.
 Cleaning one deployment leaves the other's existing files and new uploads usable.
+Physical assertions use `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<path>`.
+The service tests separately create multiple Daynight projects within one database
+and root, with fixed same-prefix and different-prefix task UUIDs, to verify
+project and shard sibling behavior.
 
 For paired restore, the check stops the server, captures `pg_dump` and a `tar`
 archive of its attachment root, removes only that project's stack and application
@@ -250,6 +255,15 @@ entrypoint and the ordinary service user. Reads, previews and another nonroot
 upload must succeed after restoration. The
 [localhost backup procedure](../localhost/README.md#persistence-and-backup)
 owns the operator commands and the accepted pre-existing consistency limitation.
+
+The [offline layout upgrade](../localhost/README.md#attachment-layout-upgrade)
+uses explicit plan/apply/resume operations before ordinary HTTP startup. The
+server migration acceptance keeps genuine old task-only bytes, covers a project
+UUID equal to an old task UUID, and checks full directory/content inventories,
+unchanged business rows, failure and interruption continuation. This is separate
+from the deployment check's new-layout restart/restore journey. Maintenance does
+not rotate task_cache_epoch; a historical restore still follows the rotation
+contract above. Source-bound results must identify the actual scenarios run.
 
 Source-bound receipts are written under `.tmp/attachment-deployment-*/` and the
 two normal `.tmp/dev-ci/<run-id>/` directories. They record owned project and

@@ -103,7 +103,12 @@ test('native observations distinguish an admitted prefix, publication and discar
     assert.equal(target.storage.kind, 'native');
     const controls = createAuthCombinedTarget(target, run);
     assert.deepEqual(await controls.observeUpload(upload), emptyObservation);
-    const directory = join(target.storage.root, 'task-attachments', taskId, 'nested');
+    const legacyDirectory = join(target.storage.root, 'task-attachments', taskId, 'nested');
+    await mkdir(legacyDirectory, { recursive: true });
+    await writeFile(join(legacyDirectory, '.daynight-upload-obsolete'), prefix);
+    assert.deepEqual(await controls.observeUpload(upload), emptyObservation);
+    const taskRoot = join(target.storage.root, 'task-attachments', projectId, taskId.slice(0, 2), taskId);
+    const directory = join(taskRoot, 'nested');
     await mkdir(directory, { recursive: true });
     const temporary = join(directory, '.daynight-upload-owned');
     await writeFile(temporary, prefix);
@@ -116,7 +121,7 @@ test('native observations distinguish an admitted prefix, publication and discar
     await rename(temporary, join(directory, basename(upload.path)));
     state.database = { metadataRows: 1, memberRows: 1, memberVersion: '9223372036854775807' };
     assert.deepEqual(await controls.observeUpload(upload), { ...emptyObservation, finalExists: true, metadataRows: 1 });
-    await rm(join(target.storage.root, 'task-attachments', taskId), { recursive: true });
+    await rm(taskRoot, { recursive: true });
     state.database = { metadataRows: 0, memberRows: 0, memberVersion: null };
     assert.deepEqual(await controls.observeUpload(upload), { ...emptyObservation, memberRows: 0, memberVersion: null });
     const queries = calls.filter(({ args }) => args[0] === 'exec').map(({ args }) => args.at(-1)!);
@@ -127,7 +132,7 @@ test('native observations distinguish an admitted prefix, publication and discar
 test('native observation refuses ambiguous temporary files and filesystem aliases', async () => {
   await withTarget('native', async ({ target, run }) => {
     const controls = createAuthCombinedTarget(target, run);
-    const taskRoot = join(target.storage.root, 'task-attachments', taskId);
+    const taskRoot = join(target.storage.root, 'task-attachments', projectId, taskId.slice(0, 2), taskId);
     const directory = join(taskRoot, 'nested');
     await mkdir(directory, { recursive: true });
     await writeFile(join(directory, '.daynight-upload-one'), prefix);
@@ -140,6 +145,18 @@ test('native observation refuses ambiguous temporary files and filesystem aliase
     await symlink(target.acceptanceDirectory, directory, 'dir');
     await safeFailure(controls.observeUpload(upload));
   });
+});
+
+test('native observations reject directory aliases at each project, shard and task boundary', async () => {
+  for (const segments of [[projectId], [projectId, taskId.slice(0, 2)], [projectId, taskId.slice(0, 2), taskId]]) {
+    await withTarget('native', async ({ target, run }) => {
+      const controls = createAuthCombinedTarget(target, run);
+      const parent = join(target.storage.root, 'task-attachments', ...segments.slice(0, -1));
+      await mkdir(parent, { recursive: true });
+      await symlink(target.acceptanceDirectory, join(parent, segments.at(-1)!), 'dir');
+      await safeFailure(controls.observeUpload(upload));
+    });
+  }
 });
 
 test('target controls reject invalid paths, source receipts and changed PostgreSQL ownership before SQL', async () => {
@@ -203,6 +220,8 @@ test('container probes require server project, service and image before position
     assert.equal(probe.args[2], 'sh');
     assert.equal(probe.args[3], '-c');
     assert.equal(probe.args[4]!.includes(upload.path), false, 'The fixed shell program must receive paths only as positional arguments.');
+    assert.deepEqual(probe.args.slice(6), [target.storage.root, projectId, taskId.slice(0, 2), taskId,
+      'nested', basename(upload.path), String(prefix.length)]);
     assert.equal(probe.args.at(-2), basename(upload.path));
     assert.equal(probe.args.at(-1), String(prefix.length));
     state.files = '0\t0\t-\t0';

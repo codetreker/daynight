@@ -15,18 +15,21 @@ import (
 var exit = os.Exit
 
 func main() {
-	exit(run(context.Background(), os.Getenv, os.Stderr))
+	exit(run(context.Background(), os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
 }
 
-func run(ctx context.Context, getenv func(string) string, output io.Writer) int {
-	logger := slog.New(slog.NewJSONHandler(output, nil))
+func run(ctx context.Context, args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	logger := slog.New(slog.NewJSONHandler(stderr, nil))
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if len(args) != 0 {
+		return runAttachmentMigration(ctx, args, getenv, stdout, logger)
+	}
 	config, err := server.LoadConfig(getenv)
 	if err != nil {
 		server.LogFailure(logger, ctx, "configuration", "load", err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	runtime, err := server.Start(ctx, config, logger, func(dependencies server.Dependencies) (http.Handler, error) {
 		return server.New(dependencies, config, logger)
 	})

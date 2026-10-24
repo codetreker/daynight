@@ -2,12 +2,14 @@
 
 状态：通用存储、附件元数据、文件 HTTP/预览入口、CLI 附件命令、Web 管理界面和
 部署持久卷及独立附件完整阅读页已实现，停止写入后的配套备份恢复已有真实容器验证。跨层组合验收复用
-真实服务、安装 CLI 和生产浏览器。
+真实服务、安装 CLI 和生产浏览器。附件业务层统一按项目和 task 前缀组织存储地址，
+显式离线维护命令完成存量布局切换。
 
 行为要求由[附件需求](../spec/daynight-task-attachments.md)拥有；本文解释通用存储接口、
 附件元数据及各端集成机制。
-[决策记录](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-storage-design.md)
-保存选择依据、已接受的限制及重新评估条件。决策采用不表示功能已经交付。
+[附件基础决策](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-storage-design.md)与
+[项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)
+保存选择依据、已接受的限制及重新评估条件。
 
 [鉴权架构](daynight-auth.md)通过当前会话或 PAT 与项目成员权限保护所有附件
 请求；行为见[鉴权需求](../spec/daynight-auth.md)。`Attachments` 方法显式接收 principal，在
@@ -75,7 +77,7 @@ flowchart TD
 
 服务内通用文件存储包位于 `internal/filestorage/`，本地实现在其
 `local/` 子包。该包不依赖 task、project、HTTP 或 PG。附件服务选择 bucket、组成
-逻辑路径，调用 Storage 并读写附件元数据；其他业务可以用自己的 bucket 复用它。
+存储路径，调用 Storage 并读写附件元数据；其他业务可以用自己的 bucket 复用它。
 
 HTTP 层负责流传输、响应头、错误映射和 URL 路径解析。附件服务负责 task 归属、
 业务路径及元数据。PG store 沿用具体实现；文件内容的 Storage 是本设计明确的
@@ -91,20 +93,26 @@ Task 附件使用固定 bucket：
 
 ```text
 bucket = task-attachments
-path   = <canonicalTaskId>/<attachmentRelativePath>
+path   = <canonicalProjectId>/<canonicalTaskId[:2]>/<canonicalTaskId>/<attachmentRelativePath>
 ```
 
 例如：
 
 ```text
 task-attachments /
-  8cb70697-87ec-4bfb-a9cb-bf9e065b51e8/docs/design.md
-  8cb70697-87ec-4bfb-a9cb-bf9e065b51e8/mockup/index.html
+  <canonicalProjectId>/8c/8cb70697-87ec-4bfb-a9cb-bf9e065b51e8/docs/design.md
+  <canonicalProjectId>/8c/8cb70697-87ec-4bfb-a9cb-bf9e065b51e8/mockup/index.html
 ```
 
-Task ID 使用服务已有的规范 UUID 写法。用户文件名与路径保留原貌，不转小写、
-不静默改名、不作 Unicode 归一化。拒绝绝对路径、空路径段、`.`、`..`、反斜杠及
-控制字符；路径校验后才进行物理路径解析。
+project 和 task 使用服务已有的规范 UUID 写法。附件业务层的私有地址构造器依次规范化 project ID、
+task ID，校验原始附件相对路径，再精确拼接地址。规范化后才取 task UUID 前两个字符，最多 256 个分片；
+同一分片内每个 task 仍有完整 UUID 目录。原始路径校验必须在添加前缀之前，避免前缀掩盖 `C:/file` 等
+原本非法输入；不使用会清理路径的 join。用户文件名保留大小写和合法 Unicode 原貌，不静默改名或归一化。
+拒绝绝对路径、空路径段、`.`、`..`、反斜杠及控制字符。
+
+Put/Open/Delete 共用业务地址值中的规范化 ID、原始相对路径和派生存储路径。principal 与原始输入校验后，
+既有快照检查项目成员、task 归属和逻辑冲突或元数据；通过准入后才执行文件 I/O。List 仅查询元数据，
+元数据和公开 URL 继续使用原有 task 内路径，浏览器与 CLI 无需计算、传入或感知分片。
 
 已有文件 `docs` 时不能创建 `docs/design.md`；已有 `docs/design.md` 时不能创建
 文件 `docs`。附件服务检查该业务冲突，LocalStorage 也明确暴露实际文件系统冲突。
@@ -114,8 +122,8 @@ LocalStorage 准备根目录时探测实际大小写能力；Linux 不支持时�
 只有文件系统能解析但目录项没有精确拼写的路径才判为别名冲突，不用 Unicode
 case folding 模拟文件系统规则。创建父目录前、发布临时文件、打开和删除时均受
 该检查保护；命名空间修改由同一实例的锁串行化。别名写入返回已有路径冲突响应，
-不写入元数据；原文件内容和目录保持不变。这不提供不同大小写名称共存能力，
-也不增加物理路径编码、布局迁移或跨进程协调。Linux gate 保留真实共存测试，
+不写入元数据；原文件内容和目录保持不变。这不提供不同大小写名称共存能力。
+大小写检查不改变业务寻址，也不提供普通操作的跨进程协调。Linux gate 保留真实共存测试，
 macOS APFS 专项仍可显式运行，日常开发无需镜像。
 [开发文件系统覆盖决策](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
 记录这项平台覆盖取舍。
@@ -125,18 +133,23 @@ macOS APFS 专项仍可显式运行，日常开发无需镜像。
 ```text
 <storage-root>/
   task-attachments/
-    <canonicalTaskId>/
-      docs/
-        design.md
-      mockup/
-        index.html
-        assets/
-          style.css
+    <canonicalProjectId>/
+      <taskShard>/
+        <canonicalTaskId>/
+          docs/
+            design.md
+          mockup/
+            index.html
+            assets/
+              style.css
 ```
 
-Task ID 前缀分片可以由本地实现在有目录规模依据时采用；它不进入逻辑路径、PG 或
-API。当前布局没有分片配置或迁移工具。新增其他用途只需使用其他 bucket，bucket
-按首次写入创建，不增加 bucket 管理 API。
+project/shard/task 前缀由附件业务层的一个私有函数生成，运行时与离线迁移复用该函数。
+LocalStorage 仅按接收的 bucket/path 操作，不理解 project 或 task。普通删除逐层移除空祖先，
+可清理空 task、shard 和 project 目录，在 bucket 前停止；非空兄弟目录保持不变。
+项目目录提供地址组织，根约束与符号链接解析仍遵循通用 LocalStorage 合同，不能等同为独立操作系统沙箱。
+新增其他用途只需使用其他 bucket，bucket 按首次写入创建，不增加 bucket 管理 API 或分片配置。
+旧 task-only 布局使用下述显式离线迁移切换，普通请求只使用新布局。
 
 ## Storage 接口与本地实现
 
@@ -200,8 +213,8 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 | `created_at`、`updated_at` | PG 生成的创建与更新时间 |
 
 以 `(task_id, path)` 作为主键，path 使用 `COLLATE "C"` 保持排序与唯一性区分大小写。业务服务在读写前检查 project/task
-归属，不新增 foreign key。Bucket 是附件服务中的固定值，存储路径由 taskId 与 path
-推导，表中不保存 `storage_key` 或物理根目录。
+归属，不新增 foreign key。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
+推导，表中不保存分片、`storage_key` 或物理根目录。布局转换不需要新增表、列、索引或修改历史 SQL 迁移。
 
 覆盖保留 `created_at`，更新 MIME、大小和 `updated_at`。删除后重新上传同一路径
 创建新的附件记录。分页按相对路径的确定顺序进行 keyset 读取，cursor 包含上次路径，
@@ -213,7 +226,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 ## 上传、覆盖、读取与删除
 
 上传依次校验业务输入和归属、调用 `Storage.Put`、创建或更新 PG 元数据，全部成功
-后才返回成功。Storage 直接写入固定逻辑路径，不分配持久化唯一 key。
+后才返回成功。Storage 写入业务层推导的固定地址，不分配持久化唯一 key。
 
 删除先检查附件记录与归属，再调用 `Storage.Delete`，随后删除 PG 元数据。读取先检查
 归属及附件记录，再按推导路径调用 `Open`；缺失附件返回 404。记录存在而实际内容
@@ -230,8 +243,113 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 不同操作，不承诺跨介质的全局提交顺序。
 
 该问题是已接受的限制。错误必须明确返回，并说明文件操作可能已经生效；客户端不
-隐式重试写操作。实现不增加跨存储锁、补偿、回滚、状态机、对账、后台回收或自动
-恢复机制，也不将一致性修复作为本方案的交付条件。
+隐式重试写操作。普通附件操作不增加用于修复 K1 的跨存储锁、补偿、回滚、状态机、对账、后台回收或自动
+恢复机制。离线布局维护的清单只描述目录转换，预存不一致会阻止迁移，不将业务一致性修复作为交付条件。
+
+## 存量布局迁移
+
+`daynight-server migrate-attachment-layout` 是同一二进制的显式维护入口，提供
+`plan`、`apply --operation-id <uuid>` 和 `resume --operation-id <uuid>`。
+无参数仍进入原有 HTTP 启动，未知参数在网络连接或监听前失败。维护入口只加载
+`DAYNIGHT_DATABASE_URL` 与 `DAYNIGHT_STORAGE_ROOT`，使用只读查询建立当前数据库及实际 schema
+身份和快照，不调用会自动执行 SQL 迁移的 `store.Open`，也不构造鉴权客户端或 HTTP runtime。
+它不重写 project/task/attachment 行；现有 `task_cache_epoch` 和历史 schema 保持原样。
+
+命令的成功退出码为 0，失败为 1。stdout 只输出一个紧凑 JSON 摘要，phase 为
+`planned` 或 `complete`；完整清单保存在存储根内的操作目录中。
+
+```json
+{"operationId":"<uuid>","phase":"planned","taskCount":2,"fileCount":3,"totalBytes":1024,"unregisteredCount":0,"manifestPath":".attachment-layout-<uuid>/manifest.json","receiptPath":null}
+```
+
+taskCount 表示实际存在的 task 根目录数；完成时 receiptPath 指向根内的相对回执位置。
+清点、暂存、核验和发布使用 JSON stderr 阶段日志，以 `component=attachment_layout_migration`、
+operationId、phase、step 及适用的 projectId/taskId 关联。失败日志另含 category、cause 和脱敏 diagnostic。
+日志和清单不包含凭据、完整敏感 DSN、文件正文或宿主绝对路径。错误保留原有 cause，
+取消沿命令 context 传到查询、散列与移动间的检查；
+同步 rename 已发生时先核对实际位置，不能把取消解释为回滚。进程结束释放 PG 连接、维护锁和根句柄。
+
+### 操作边界与清点
+
+操作方停止全部服务实例及直接数据库/文件写入方，保留旧镜像并捕获配套 PG/附件根备份，
+保持停写直至核验和切换结束。PG advisory lock 只串行同一数据库的维护调用，不能阻止普通业务写入。
+备份及回退的命令由[部署说明](../../deployment/localhost/README.md#attachment-layout-upgrade)拥有。
+
+维护编排位于附件业务包，复用相同的 project/shard/task 前缀函数。普通文件接口保持 Put/Open/Delete，
+不增加通用 Rename 或让适配器理解 task。维护过程显式打开配置的 os.Root，所有操作相对于该根句柄。
+根内独占 operation 目录、UUID、当前数据库身份与归属/元数据摘要，以及完整文件树共同绑定续作；
+不另造平台 inode 身份要求，也不根据目录名猜测布局已经迁移。
+
+plan 先检查所有保留格式的 operation 目录。未完成操作以 `resume_required` 报告对应 operationId，
+要求显式 resume；已完成操作以 `already_migrated` 报告该 ID，要求用同一操作的 apply/resume 验证，
+两种状态都不创建新计划。即使公开 bucket 缺失或附件表为空，也不能绕过既有操作。这个检查也保护
+仅含已知 task 未登记文件、且 project/task UUID 同名的已完成树，避免被误当作旧目录再次嵌套。
+清点在任何移动前完成，保存不可变 manifest：
+
+- 当前数据库及实际 schema 的可核对身份、task→project 映射和完整业务行摘要；含凭据的 DSN 不入清单。
+- 每个 task 根的存在状态、全部目录项（含空目录），普通文件的原始相对路径、大小和 SHA-256。
+- 所有原始/目标地址，以及已登记文件和已知 task 内未登记普通文件的分类。
+
+每个 task 目录须能通过 tasks 确定已有 project，附件行归属必须一致。登记文件缺失、实际大小不符、
+未知 task、符号链接或特殊文件均阻止移动；已知 task 内未登记普通文件随整个目录保留并列明，
+不补写元数据。真正空存储生成零计数计划及 operation ID，apply 复核后只写空操作回执，不执行 rename。
+普通新安装可以直接从空存储启动，无需维护回执。
+
+### 暂存、发布与续作
+
+计划初始化使用根内独占的 `.attachment-plan-<operationId>/` 未发布准备目录，与正式操作前缀
+`.attachment-layout-` 分离。在准备目录内原子写入并同步 manifest，以及绑定 manifest 摘要的初始
+planned 状态，再同步目录；检查正式目标不存在后，整体 rename 为 `.attachment-layout-<operationId>/`，
+随后同步根目录。正式操作只有在完整初始记录对已准备后才可见，plan_created 日志与成功 JSON 均在提升后输出。
+plan_initializing 和 plan_prepared 阶段日志分别标记准备目录已创建和完整记录对已持久化。
+
+准备目录只含计划记录，不接收任何附件内容。提升前的普通错误仅清理本次独占的未发布尝试，
+保留原始错误及清理失败；进程终止留下的准备目录不匹配正式操作前缀，不会被当作未完成操作阻止新 plan，
+也不自动扫描回收。提升前可以重新 plan；提升后即使同步或输出失败，也保留完整正式操作并使用原 ID 显式续作。
+这一区别不增加后台清理或一般恢复机制。
+
+正式 `.attachment-layout-<operationId>/` 保存 manifest、阶段记录和回执。source 与 target 是阶段路径：
+source 在旧 bucket rename 前必须不存在，target 在重组阶段才创建。后续阶段记录继续通过临时文件、
+同步、rename 和父目录同步持久化，先记录计划再修改目录。所有目录移动要求同一文件系统，
+权限、跨设备和 rename 错误明确暴露，不通过复制改写执行方式。
+
+```text
+旧：task-attachments/<taskId>/...
+暂存：.attachment-layout-<operationId>/source/<taskId>/...
+目标：.attachment-layout-<operationId>/target/<projectId>/<shard>/<taskId>/...
+发布：task-attachments/<projectId>/<shard>/<taskId>/...
+```
+
+apply 在移动前重新核对 manifest、完整内容和当前数据库摘要，然后执行：
+
+1. 把整个旧 bucket rename 为 source，避免独立 UUID 主键允许的旧 task ID 与新 project ID 同名冲突。
+2. 创建 target 的 project/shard 父目录，将每个完整 task 子树移入其唯一目标。
+3. 核对完整目标树、目录项、大小及 SHA-256；使用新的独立只读快照证明业务行未变，不能复用初始 repeatable-read 快照。
+4. 记录待发布阶段，将 target rename 到仍不存在的最终 bucket。
+5. 核对已发布树的结构、大小及新的元数据摘要，写完成回执；source 应为空或已移除。
+
+每次移动前检查目标不存在；在停写和维护调用串行的前提下，不覆盖或合并任何已有目标。
+正常 plan/apply 共三遍完整流式散列：清点、移动前复核、发布前核验。发布后 rename 的仍是已核验且保持停写的
+同一子树，只复核位置、结构、大小、元数据与回执。每遍内容读取为 O(totalBytes)，使用固定读取缓冲，
+不把全部字节载入内存；resume 或完成后重新验证可增加散列遍数。备份 tar 另需完整内容读取。
+
+| 阶段 | 可解释并继续的实际状态 | 必须拒绝的状态 |
+|---|---|---|
+| 暂存旧 bucket | 旧 bucket 或 source 恰有一处，且完整匹配旧清单 | 两处都有、两处都无、内容或元数据已改变 |
+| 重组 task | 每个 task 恰在 source 或 target 一处且内容匹配 | 两处都有、两处都无或出现未登记目标 |
+| 发布 | target 单独存在，或最终 bucket 单独存在并完整匹配目标清单 | 两者同时存在或最终内容不匹配 |
+| 完成 | 最终 bucket 匹配，source 不存在或为空；空操作匹配空清单 | 后续内容变化；不得重复移动 |
+
+合法推进为 planned→evacuated→placing→verified→published→complete，空操作由 planned 直接完成。
+resume 只接受显式 operation ID，按完整清单解释阶段记录与实际位置之间的相邻状态：
+记录可能先于尚未执行的 rename，也可能落后于刚完成的 rename。最终 bucket 已发布而回执未写入时，
+完整核对后写回执；完成的同一操作重跑只验证。任何无法解释的状态都保持停写并明确失败，
+不自动重建目录或修复元数据。
+
+普通进程中断后的续作由故障注入验证；目录同步不承诺任意文件系统和硬件断电下的事务性。
+不能解释的状态使用配套备份恢复。启动新镜像后验证原有 URL 的列表、读取及相对预览，业务写入方随后恢复。
+回退复用保留的旧镜像和匹配备份，在恢复写入前可保全既有数据；恢复写入后回退须另行处理新增数据。
+这个显式布局转换不改变 K1，也不是普通请求的旧路径读取或后台恢复机制。
 
 ## HTTP API
 
@@ -583,8 +701,8 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 
 - Storage：bucket 隔离、真实相对路径、同路径完整覆盖、原始字节一致、实际大小、
   缺失与权限错误、取消、普通失败的临时文件清理及路径不能越出根目录。
-- 附件服务与 PG：task 归属、大小写及同名路径、文件/目录冲突、覆盖保留元数据身份、
-  删除、分页和 task 版本/状态/图不受附件操作影响。
+- 附件服务与 PG：同实例 project 隔离、规范化 UUID 分片、同/不同分片 task 的同名路径独立、
+  原始路径校验、文件/目录冲突、覆盖保留元数据身份、删除、分页和 task 版本/状态/图不变。
 - HTTP：二进制单文件上传、原样读取、下载与 inline 响应、相对资源、URL 编码、
   非法路径拒绝，以及失败明确暴露；不以跨介质原子性作为验收条件。
 - CLI：实际构建入口的上传、完整列表、文本和二进制 stdout、背压、取消、管道中断、
@@ -592,6 +710,9 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
 - Web：详情页签与状态保留、共用完整附件页的两种展示、独立模式地址同步与前进后退、
   嵌入模式选择不写历史、单文件操作、相对资源、真实内容绘制、唯一纵向滚动与读至
   结尾、键盘与原生 frame 行为，以及失败恢复和切换文件时的过期请求取消。
+- 布局迁移：真实旧目录、project/task UUID 同名、空根及空目录、未登记普通文件、缺失与冲突、
+  初始记录公开前失败或终止后的重新计划、完整记录对的原子提升、后续记录和 rename 前后的中断、
+  发布后回执歧义、同操作续作及完整目录/内容/业务行不变。
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
 

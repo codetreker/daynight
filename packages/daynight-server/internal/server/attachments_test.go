@@ -93,7 +93,7 @@ func TestAttachmentHTTPFileLifecycleAndActualContent(t *testing.T) {
 	if replaced.Path != file || replaced.SizeBytes != 3 || replaced.ContentType != "text/plain; charset=utf-8" || !replaced.CreatedAt.Equal(created.CreatedAt) || !replaced.UpdatedAt.After(created.UpdatedAt) {
 		t.Fatalf("overwritten attachment: %+v", replaced)
 	}
-	if _, err := files.Put(context.Background(), "task-attachments", task.ID+"/"+file, strings.NewReader("actual opened bytes")); err != nil {
+	if _, err := files.Put(context.Background(), "task-attachments", task.ProjectID+"/"+task.ID[:2]+"/"+task.ID+"/"+file, strings.NewReader("actual opened bytes")); err != nil {
 		t.Fatal(err)
 	}
 	response := attachmentRequest(handler, http.MethodGet, location, "", nil)
@@ -219,7 +219,7 @@ func TestAttachmentHTTPScopesConflictsAndFailures(t *testing.T) {
 	for _, contentType := range []string{"not a mime", "text/plain; invalid", "text/plain; charset=utf-8; charset=latin1"} {
 		assertProjectError(t, attachmentRequest(handler, http.MethodPut, file, contentType, nil), http.StatusBadRequest, "invalid_input")
 	}
-	if err := files.Delete(context.Background(), "task-attachments", task.ID+"/docs/design.md"); err != nil {
+	if err := files.Delete(context.Background(), "task-attachments", task.ProjectID+"/"+task.ID[:2]+"/"+task.ID+"/docs/design.md"); err != nil {
 		t.Fatal(err)
 	}
 	assertProjectError(t, attachmentRequest(handler, http.MethodGet, file, "", nil), http.StatusInternalServerError, "internal_error")

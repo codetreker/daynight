@@ -7,7 +7,10 @@ HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
 executable serves project, task, complete task-graph and task-summary synchronization routes together with the
 embedded task dashboard. Generic bucket/path local storage, task attachment
-metadata and file/preview HTTP endpoints are implemented. Dependency rows also
+metadata and file/preview HTTP endpoints are implemented. Attachment addresses
+are grouped by project and the first two canonical task UUID characters; an
+explicit offline maintenance command migrates the old task-only layout.
+Dependency rows also
 persist an ordinary/external classification and task/graph reads expose the
 required external subset. Public create and versioned PATCH accept explicit
 classification while preserving all-edge execution and project authorization.
@@ -296,9 +299,79 @@ repair a pre-existing cross-store mismatch. Browser management and CLI commands
 remain separate from the backend file API below.
 
 The [real-container attachment check](../../deployment/dev-ci/README.md#attachment-persistence-check)
-verifies nonroot volume writes, nested original bytes and previews, restart and
-full recreation, two-project isolation, targeted cleanup and fresh-volume paired
-restore followed by another upload.
+covers nonroot volume writes, nested original bytes and previews, restart and
+full recreation, isolation between deployments, targeted cleanup and fresh-volume
+paired restore followed by another upload. Single-instance project and shard
+isolation is checked separately using one database and storage root.
+
+## Attachment layout maintenance
+
+The same executable provides an explicit offline entry point:
+
+```bash
+daynight-server migrate-attachment-layout plan
+daynight-server migrate-attachment-layout apply --operation-id OPERATION_UUID
+daynight-server migrate-attachment-layout resume --operation-id OPERATION_UUID
+```
+
+It reads only `DAYNIGHT_DATABASE_URL` and `DAYNIGHT_STORAGE_ROOT`, performs
+read-only database queries, and does not start HTTP, initialize authentication or
+run automatic SQL migrations. No arguments still select ordinary service startup;
+unknown command grammar fails before connecting or listening. Maintenance returns
+0 on success and 1 on failure. Success stdout is one compact JSON summary with
+operationId, phase (`planned` or `complete`), taskCount, fileCount, totalBytes,
+unregisteredCount, manifestPath and receiptPath. Paths are storage-root relative;
+plan has a null receiptPath. JSON diagnostics use stderr and preserve safe
+operation/category/phase correlation without credentials or host paths.
+
+Stop all server instances and direct database/file writers, retain the old image,
+and capture a matching database/directory backup before planning. Keep writers
+stopped through migration and verification. The database advisory lock serializes
+maintenance invocations; it does not prevent application writes.
+
+Planning prepares and synchronizes the complete manifest and initial planned
+state in a private `.attachment-plan-<operationId>/` directory, then atomically
+promotes that directory to the reserved `.attachment-layout-<operationId>/`
+namespace and synchronizes the storage root. A visible official operation thus
+already has both initial records. Ordinary errors before promotion clean only
+that attempt, preserving any cleanup error. Process-termination leftovers contain
+no attachments, are ignored by operation discovery and do not prevent a new
+plan; maintenance does not sweep other attempts. Errors after promotion retain
+the official records for explicit same-operation continuation. The plan_created
+event and success summary follow promotion.
+
+A manifest binds the operation to database/schema identity, unchanged business
+rows and the complete source tree, including empty task roots/directories and
+regular-file SHA-256 values. Known-task unregistered regular files are preserved
+and reported without creating metadata. Unknown ownership, registered missing or
+size-mismatched files, symlinks, special files and target conflicts fail explicitly.
+An unfinished operation rejects a new plan as `resume_required`, identifying the
+operationId to resume even if its old bucket is absent and the attachment table
+is empty. A completed operation rejects a new plan as `already_migrated` with
+its operationId; use apply/resume for that same operation to verify it. This
+also prevents a completed tree containing only known-task unregistered files
+from being nested again when project and task UUIDs happen to match.
+
+The command stages the whole old bucket under an operation directory inside the
+configured storage root, then moves complete task trees into project/shard/task targets. Full target
+content and a fresh independent database snapshot are checked before publication.
+No target is overwritten or merged. This separate namespace handles a valid
+project UUID equal to an old task UUID. Three normal full hash passes cover
+planning, pre-move revalidation and pre-publication verification; file bytes are
+streamed. A final rename publishes the already-verified tree, followed by
+structure/size/metadata checks and a completion receipt. Resume reconciles only
+manifest-explained positions, including publication before its receipt; it does
+not guess from directory names or repair K1. Empty plans and completed operations
+remain explicitly verifiable.
+
+The command preserves business metadata, existing schema and task cache epochs.
+Rollback uses the retained image and matching paired backup; restoring historical
+database content follows that version's epoch invalidation contract. Restore
+before reopening writers to avoid discarding new writes. The
+[architecture](../../docs/design/daynight-task-attachments.md#存量布局迁移) owns the
+state and failure rules; the
+[upgrade runbook](../../deployment/localhost/README.md#attachment-layout-upgrade)
+owns the operator sequence.
 
 ## Task attachment API
 
@@ -326,7 +399,13 @@ means `application/octet-stream`; invalid types are rejected. Binary uploads do
 not use the existing 1 MiB JSON decoder.
 
 Metadata is stored in `task_attachments`, keyed by task and path with C collation;
-the storage address is `task-attachments/<taskId>/<path>`. List cursors bind the
+the service derives the storage address as
+`task-attachments/<canonicalProjectId>/<canonicalTaskId[:2]>/<canonicalTaskId>/<path>`.
+Canonical IDs and the original task-relative path are validated before adding
+that prefix. The shared business-layer mapper serves runtime and maintenance
+operations; the generic Storage interface remains bucket/path only. API/CLI
+parameters, returned paths, content URLs and relative preview resources retain
+their existing logical form. List cursors bind the
 project, task and list type and page by path, with no cross-page snapshot.
 Attachment operations leave task fields, properties, version and timestamps
 unchanged. Path conflicts return `409 path_conflict`; missing scoped records

@@ -80,7 +80,7 @@ const directoryExists = async (path: string): Promise<boolean> => {
 const nativeFiles = async (root: string, input: UploadInput): Promise<FileObservation> => {
   requireValue(await realpath(root) === root);
   let directory = root;
-  for (const part of ['task-attachments', input.taskId, ...input.path.split('/').slice(0, -1)]) {
+  for (const part of ['task-attachments', input.projectId, input.taskId.slice(0, 2), input.taskId, ...input.path.split('/').slice(0, -1)]) {
     directory = join(directory, part);
     if (!await directoryExists(directory)) return emptyFiles();
   }
@@ -124,13 +124,13 @@ const nativeFiles = async (root: string, input: UploadInput): Promise<FileObserv
 const containerProbe = `set -eu
 directory=$1
 [ -d "$directory" ] && [ ! -L "$directory" ] || exit 1
-for segment in task-attachments "$2"; do
+for segment in task-attachments "$2" "$3" "$4"; do
   directory="$directory/$segment"
   [ ! -L "$directory" ] || exit 1
   if [ ! -e "$directory" ]; then printf '0\\t0\\t-\\t0\\n'; exit 0; fi
   if [ ! -d "$directory" ]; then [ ! -e "$directory" ] || exit 1; printf '0\\t0\\t-\\t0\\n'; exit 0; fi
 done
-remaining=$3
+remaining=$5
 while [ -n "$remaining" ]; do
   segment=\${remaining%%/*}
   if [ "$segment" = "$remaining" ]; then remaining=; else remaining=\${remaining#*/}; fi
@@ -150,13 +150,13 @@ for file in "$directory"/.daynight-upload-*; do
   files=$((files + 1))
   bytes=$((bytes + size))
   checksum=-
-  if [ "$files" -eq 1 ] && [ "$size" -eq "$5" ]; then
+  if [ "$files" -eq 1 ] && [ "$size" -eq "$7" ]; then
     if value=$(sha256sum "$file" 2>/dev/null); then checksum=\${value%% *}; elif [ -e "$file" ]; then exit 1; fi
   fi
 done
 final=0
-[ ! -L "$directory/$4" ] || exit 1
-if [ -e "$directory/$4" ]; then [ -f "$directory/$4" ] || exit 1; final=1; fi
+[ ! -L "$directory/$6" ] || exit 1
+if [ -e "$directory/$6" ]; then [ -f "$directory/$6" ] || exit 1; final=1; fi
 printf '%s\\t%s\\t%s\\t%s\\n' "$files" "$bytes" "$checksum" "$final"
 `;
 
@@ -201,7 +201,7 @@ export const createAuthCombinedTarget = (target: CombinedTarget, run: CombinedCo
           requireValue(identity === `${target.projectLabel.value}|server|${target.storage.imageId}`);
           const parts = input.path.split('/');
           const fields = (await command(['exec', target.storage.containerId, 'sh', '-c', containerProbe, 'auth-combined-upload',
-            target.storage.root, input.taskId, parts.slice(0, -1).join('/'), parts.at(-1)!, String(input.prefixBytes)])).split('\t');
+            target.storage.root, input.projectId, input.taskId.slice(0, 2), input.taskId, parts.slice(0, -1).join('/'), parts.at(-1)!, String(input.prefixBytes)])).split('\t');
           requireValue(fields.length === 4 && fields.slice(0, 2).every((value) => /^(0|[1-9]\d*)$/.test(value))
             && (fields[2] === '-' || digest.test(fields[2]!)) && (fields[3] === '0' || fields[3] === '1'));
           files = { temporaryFiles: Number(fields[0]), temporaryBytes: Number(fields[1]), temporarySha256: fields[2] === '-' ? null : fields[2]!, finalExists: fields[3] === '1' };
