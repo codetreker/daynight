@@ -379,8 +379,13 @@ delete operations. Direct database writers must not bypass these service rules.
 Store tests use unique owned schemas and real PostgreSQL sessions. They prove
 old-schema property migration with unchanged metadata, multi-migration exclusion,
 rollback after partial writes, snapshot consistency, project-lock serialization,
-independent projects and cancellation. Rollback and
-advisory unlock use independent bounded contexts and preserve original causes.
+independent projects and cancellation. Index-definition assertions resolve the
+fixture's schema-qualified object before deparsing it; predicates on a global
+catalog view can evaluate a deparser before namespace filtering. Correct,
+wrong-order and missing-index cases retain a same-named fallback-schema index to
+verify isolation. The [index assertion decision](../../.agents/notes/implemented/testing/2026-10-24-schema-owned-index-assertions.md)
+records the query-ordering rationale. Rollback and advisory unlock use
+independent bounded contexts and preserve original causes.
 
 ## Project API
 
