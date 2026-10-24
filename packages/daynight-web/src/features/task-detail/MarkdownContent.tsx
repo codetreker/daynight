@@ -1,6 +1,7 @@
 import { createContext, useContext, type ComponentPropsWithoutRef, type MouseEvent } from 'react';
 import Markdown, { defaultUrlTransform, type ExtraProps } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { MermaidFlowchart } from './MermaidFlowchart';
 import '../../styles/markdown.css';
 
 type MarkdownContentProps = {
@@ -17,7 +18,15 @@ const MarkdownLink = ({ node, ...props }: ComponentPropsWithoutRef<'a'> & ExtraP
   return <a {...props} onClick={(event) => links.onLinkClick?.(links.references.get(node!)!, event)} />;
 };
 const MarkdownTable = ({ node: _node, ...props }: ComponentPropsWithoutRef<'table'> & ExtraProps) => <div className="markdown-table"><table {...props} /></div>;
-const components = { a: MarkdownLink, table: MarkdownTable };
+const MarkdownPre = ({ node, ...props }: ComponentPropsWithoutRef<'pre'> & ExtraProps) => {
+  const code = node?.children[0];
+  if (code?.type === 'element' && code.tagName === 'code' && Array.isArray(code.properties.className) && code.properties.className.includes('language-mermaid')) {
+    const source = code.children.filter((child) => child.type === 'text').map((child) => child.value).join('');
+    return <MermaidFlowchart key={source} source={source} />;
+  }
+  return <pre {...props} />;
+};
+const components = { a: MarkdownLink, table: MarkdownTable, pre: MarkdownPre };
 
 export const MarkdownContent = ({ text, className, resolveUrl, onLinkClick }: MarkdownContentProps) => {
   const references = new WeakMap<object, string>();

@@ -12,6 +12,8 @@ import type {
   TaskGraphSummary,
   TaskProperties,
   TaskStatus,
+  WorkerClaim,
+  WorkerPhase,
 } from "./types";
 import { isTaskVersion } from "./json";
 
@@ -173,9 +175,33 @@ const pullRequest = (value: unknown): PullRequestProperty => {
   return { url: string(data.url), title: string(data.title) };
 };
 
+const fields = (value: unknown, names: readonly string[]): Record<string, unknown> => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !names.includes(key))) return malformed();
+  return data;
+};
+const workerText = (value: unknown): string => {
+  const parsed = string(value);
+  if (!parsed.isWellFormed() || parsed.includes("\0") || !/[^\p{White_Space}]/u.test(parsed)) return malformed();
+  return parsed;
+};
+const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
+const workerClaim = (value: unknown): WorkerClaim | null => {
+  if (value === null) return null;
+  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
+  const machine = fields(data.machine, ["id", "name"]);
+  const herdr = data.herdr === null ? null : fields(data.herdr, ["session", "workspaceId", "paneId"]);
+  return {
+    claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
+    userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: workerText(machine.name) }, platform: executionPlatform(data.platform),
+    agent: data.agent === "codex" || data.agent === "copilot" ? data.agent : malformed(), worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
+    herdr: herdr === null ? null : { session: workerText(herdr.session), workspaceId: workerText(herdr.workspaceId), paneId: workerText(herdr.paneId) },
+    nativeSessionId: data.nativeSessionId === null ? null : workerText(data.nativeSessionId), claimedAt: timestamp(data.claimedAt),
+  };
+};
 const properties = (value: unknown): TaskProperties => {
   const data = record(value);
-  return { pullRequests: array(data.pullRequests, pullRequest) };
+  return { pullRequests: array(data.pullRequests, pullRequest), worker: workerClaim(data.worker) };
 };
 
 export const parseTaskDetail = (value: unknown, projectId: string, taskId: string): TaskDetail => {
@@ -201,6 +227,8 @@ export const parseTaskDetail = (value: unknown, projectId: string, taskId: strin
     updatedAt: timestamp(data.updatedAt),
   };
   if (parsed.projectId !== projectId || parsed.id !== taskId) return malformed();
+  if (parsed.properties.worker?.state === "active" && parsed.status !== "in_progress") return malformed();
+  if (parsed.properties.worker?.state === "released" && parsed.status !== "todo") return malformed();
   return parsed;
 };
 

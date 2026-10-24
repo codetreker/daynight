@@ -35,7 +35,7 @@ const taskId = "20000000-0000-0000-0000-000000000001";
 const otherTask = "20000000-0000-0000-0000-000000000002";
 const time = "2026-10-20T12:00:00.123456Z";
 const node: GraphTask = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, titlePreview: "任务一", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
-const detail: TaskDetail = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
+const detail: TaskDetail = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, id: taskId, projectId, title: "任务一", description: "完整描述", properties: { worker: null, pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
 const graph = (id = projectId): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
   project: { settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: "https://github.com/example/repo", createdAt: time, updatedAt: time },
   tasks: [node], summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
@@ -584,7 +584,7 @@ describe("task details", () => {
 
   it("coalesces graph receipts behind slow details without cancellation and reads the newest properties", async () => {
     const slow = deferred<TaskDetail>();
-    const updated = { ...detail, description: "updated", properties: { pullRequests: [{ title: "PR", url: "https://example.com/pr/1" }] } };
+    const updated = { ...detail, description: "updated", properties: { worker: null, pullRequests: [{ title: "PR", url: "https://example.com/pr/1" }] } };
     detailRequest.mockReturnValueOnce(slow.promise).mockResolvedValueOnce(updated);
     const { result, rerender } = renderHook(({ revision }) => useTaskDetail(projectId, taskId, revision, node), { initialProps: { revision: 1 } });
     const signal = detailRequest.mock.calls[0]![2];
@@ -611,7 +611,7 @@ describe("task details", () => {
     expect(result.current).toMatchObject({ detail: first, status: "ready" });
     rerender({ revision: 3 });
     expect(result.current.error).toBe(failure);
-    await act(async () => { retry.resolve({ ...detail, description: "new description", properties: { pullRequests: [] } }); });
+    await act(async () => { retry.resolve({ ...detail, description: "new description", properties: { worker: null, pullRequests: [] } }); });
     await waitFor(() => expect(result.current.error).toBeNull());
     expect(result.current.detail!.description).toBe("new description");
     expect(result.current.detail!.properties.pullRequests).toBe(first.properties.pullRequests);

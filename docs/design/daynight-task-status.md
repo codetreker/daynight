@@ -78,7 +78,7 @@ Content-Type: application/json
 {"version":123,"status":"in_progress"}
 ```
 
-只接受 version/status，不接受 query、时间、allowAgents、元数据或依赖。复用[严格对象和版本解析](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/server/http.go#L27-L68)，拒绝重复/未知/大小写变化字段、null、非正 int64 版本和无效状态，不归一化、不回退。
+普通调用接受 version/status；done 目标另可提供 claimId，用于 owner 完成当前 active 执行。其他目标拒绝 claimId，不接受 query、时间、allowAgents、元数据或依赖。复用[严格对象和版本解析](https://github.com/codetreker/daynight/blob/18c794918ef0506a04bf294dad9cd8058ef2696b/packages/daynight-server/internal/server/http.go#L27-L68)，拒绝重复/未知/大小写变化字段、null、非正 int64 版本和无效状态，不归一化、不回退。
 
 成功为 200、no-store 和现有完整 Task。保留 session/PAT、Cookie Origin、成员权限、非成员资源隐藏，以及受认证的 405 路径。普通成员与管理员的状态写入权限相同。删除四个旧动作路由，不重定向或保留别名。
 
@@ -86,6 +86,7 @@ Content-Type: application/json
 type SetTaskStatus struct {
     Version int64
     Status  core.TaskStatus
+    ClaimID *string
 }
 
 func (s *Tasks) SetStatus(
@@ -101,9 +102,10 @@ func (s *Tasks) SetStatus(
 1. 核验当前成员，读取当前项目内任务。
 2. 比较精确 expected version，不符返回 version_conflict。
 3. 同状态返回 changed=false，无存储修改。
-4. 实际进入 in_progress/done，要求全部直接前置完成。
-5. done 返回其他状态，要求没有 in_progress/done 直接后继。
-6. 构造完整 TaskWrite，一次写入状态、时间、版本和 updatedAt，保留全部其他字段。
+4. 对实际改变检查 worker 归属；active 完成匹配 owner/claim，释放与 released 接续使用专用入口。
+5. 实际进入 in_progress/done，要求全部直接前置完成。
+6. done 返回其他状态，要求没有 in_progress/done 直接后继。
+7. 构造完整 TaskWrite，一次写入状态、归属终态、时间、版本和 updatedAt，保留全部其他字段。
 
 事务错误优先于暂存的领域拒绝，提交或回滚失败不能伪装为成功/资源不存在。invalid_transition 仍服务于 in_progress 中禁止实际改变 allowAgents 的既有规则，不因删除动作前态判断而全局删掉。
 
@@ -119,7 +121,7 @@ func (s *Tasks) SetStatus(
 
 ## 九种组合与依赖一致性
 
-所有组合均检查权限和版本。表中的依赖条件只针对实际改变：
+所有组合均检查权限和版本。下表描述无 active/released 执行归属任务的普通状态语义；worker 管理中的实际转换同时遵循[认领保护](daynight-worker-claims.md)。表中的依赖条件只针对实际改变：
 
 | 当前 → 目标 | todo | in_progress | done |
 |---|---|---|---|
@@ -214,7 +216,7 @@ const expectedVersion = operation.version + (changed ? 1n : 0n);
 
 ## Worker、可观测性与调用预算
 
-[worker 归属](daynight-worker.md)仍是独立功能。setter 不添加 claimId，不停止进程或执行 release/transfer；未来 active claim 暴露前，归属约束必须接入同一服务/事务，普通 setter 不能绕过 claim-bound 完成或释放/移交。自动 claim 仍核验 ready、allowAgents、平台、版本、唯一归属；移交仍要求 owner/admin、旧执行已停止、原工作区连续性和旧 claim 失效。
+[Worker 认领基础](daynight-worker-claims.md)接入同一项目写事务。SetTaskStatus 的可选 ClaimID 仅供 done；普通 CLI setTaskStatus 保持 version/status，typed completeWorkerTask 提供 done 与 claimId。成员/版本及同状态 no-op 之后，实际转换检查归属：active 完成要求 owner/当前 claim，普通退回不能替代 release；released 未完成成果须认领或人工 resume，completed 历史保留普通重开。自动 claim 重验 ready、allowAgents、平台、版本及唯一归属；移交要求 source owner/admin、当前目标成员、停止和原成果连续性。运行时不由状态 setter 启动。
 
 复用 request context、X-Request-ID 和 JSON slog。handler logger 记录资源 ID，context 进入 service/store；安全日志保留 type/component/phase/cause/error_code/diagnostic，不记录凭据、请求正文、SQL 或驱动敏感信息。状态资源日志用 set_status 阶段和 changed/unchanged 结果，不能把无修改说成状态改变。服务器不引入后台执行，取消向事务传播。
 

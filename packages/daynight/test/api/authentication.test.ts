@@ -8,7 +8,7 @@ const otherProjectId = "33333333-3333-3333-3333-333333333333";
 const taskId = "22222222-2222-2222-2222-222222222222";
 const time = "2026-10-20T01:02:03.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
+const task = { id: taskId, projectId, title: "Task", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const attachment = { path: "reports/result.bin", contentType: "application/octet-stream", sizeBytes: 5, createdAt: time, updatedAt: time };
 const token = "opaque.+/_~=-token";
 const cleanups: (() => void | Promise<void>)[] = [];

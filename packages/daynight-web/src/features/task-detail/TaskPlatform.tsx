@@ -5,6 +5,7 @@ import type { ExecutionPlatform, TaskDetail } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { taskReviewKey } from './freshness';
 import { TaskConfirmation } from './TaskConfirmation';
+import { TaskControlTip, TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
 import type { TaskMutationState } from './TaskDetailSession';
 
 export const TaskPlatformBadge = ({ requiredPlatform, compact = false }: {
@@ -42,8 +43,8 @@ export const TaskPlatformSelect = ({ detail, disabled, describedBy, onReview }: 
 }) => {
   const { messages: { platform: m } } = useI18n();
   const saved = detail.requiredPlatform === null ? '' : detail.requiredPlatform;
-  return <select className="task-platform-select" aria-label={m.title} aria-describedby={describedBy}
-    title={detail.status === 'in_progress' ? m.locked : m.help} value={saved} disabled={disabled}
+  return <TaskControlTip text={detail.status === 'in_progress' ? m.locked : null} label={m.title} id={`${describedBy}-tip`}><select className="task-platform-select" aria-label={m.title} aria-describedby={detail.status === 'in_progress' ? `${describedBy}-tip` : undefined}
+    title={detail.status === 'in_progress' ? undefined : m.help} value={saved} disabled={disabled}
     onChange={(event) => {
       const selected = event.currentTarget.value === '' ? null : executionPlatform(event.currentTarget.value);
       event.currentTarget.value = saved;
@@ -51,7 +52,7 @@ export const TaskPlatformSelect = ({ detail, disabled, describedBy, onReview }: 
     }}>
     <option value="">{m.any}</option>
     {(['windows', 'linux', 'macos'] as const).map((platform) => <option value={platform} key={platform}>{m.names[platform]}</option>)}
-  </select>;
+  </select></TaskControlTip>;
 };
 
 const PlatformError = ({ error }: { readonly error: unknown }) => {
@@ -64,7 +65,7 @@ const PlatformError = ({ error }: { readonly error: unknown }) => {
   return <><p>{message}</p>{error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}{' '}<code>{error.requestId}</code></p>}</>;
 };
 
-export const TaskPlatformFeedback = ({ id, detail, mutation, onReconcile }: {
+export const TaskPlatformFeedback = ({ id, mutation, onReconcile }: {
   readonly id?: string;
   readonly detail: TaskDetail | null;
   readonly mutation: TaskMutationState;
@@ -72,16 +73,17 @@ export const TaskPlatformFeedback = ({ id, detail, mutation, onReconcile }: {
 }) => {
   const { messages: { platform: m } } = useI18n();
   const relevant = mutation.operation?.action === 'requiredPlatform';
+  const event = useMutationNoticeEvent(mutation);
   const busy = relevant && (mutation.phase === 'pending' || mutation.reconciling);
   const unresolved = relevant && (mutation.phase === 'unknown' || mutation.reconciliationError !== null);
   const summary = !relevant ? null : mutation.reconciling ? m.checking : mutation.phase === 'pending' ? m.pending
     : mutation.phase === 'confirmed' ? m.confirmed : mutation.phase === 'unknown' ? m.unknown
       : mutation.phase === 'conflict' ? m.conflict : mutation.phase === 'reconciled' ? m.reconciled : null;
-  return <div id={id} className="task-platform-feedback" aria-live="polite" aria-busy={busy}>
-    {detail?.status === 'in_progress' && <p>{m.locked}</p>}
+  return <div id={id} className="task-platform-feedback" aria-live="polite" aria-busy={busy}><TaskDetailNotice active={relevant && mutation.phase !== 'idle'} event={event}
+    initiallyVisible={mutation.phase !== 'confirmed'} tone={mutation.phase === 'confirmed' ? 'success' : mutation.phase === 'refused' ? 'error' : unresolved || mutation.phase === 'conflict' ? 'warning' : 'info'} recoverable={unresolved}>
     {summary !== null && <p role={unresolved || mutation.phase === 'conflict' ? 'alert' : 'status'}>{summary}</p>}
     {unresolved && <button className="button" type="button" disabled={busy} onClick={onReconcile}>{mutation.reconciling ? m.checking : m.checkState}</button>}
     {relevant && mutation.error !== null && <div className="task-platform-error" role="alert"><PlatformError error={mutation.error} /></div>}
     {relevant && mutation.reconciliationError !== null && <div className="task-platform-error" role="alert"><p>{m.checkFailed}</p><PlatformError error={mutation.reconciliationError} /></div>}
-  </div>;
+  </TaskDetailNotice></div>;
 };

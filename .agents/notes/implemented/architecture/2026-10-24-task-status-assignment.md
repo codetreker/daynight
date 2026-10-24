@@ -72,5 +72,7 @@ facts. Existing history tests must pin their original migration prefix. Reader,
 summary or UI leftovers can make the new protocol incoherent. Same-state responses
 may carry fresh derived readiness despite unchanged revisions. Current-attempt
 reset intentionally discards an abandoned interval; immutable attempt history is
-a different stored model. Future worker claims must integrate their fencing into
-the same transaction before exposure, because setting a state cannot stop a process.
+a different stored model. The [worker claim foundation](2026-10-24-worker-claim-foundation.md)
+integrates its fencing into the same transaction. Claim-bound done accepts the
+current claim ID; explicit release and resume protect stopped execution and
+resource continuity. Setting a state cannot stop a process.

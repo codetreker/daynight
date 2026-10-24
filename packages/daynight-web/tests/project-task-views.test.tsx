@@ -64,7 +64,7 @@ beforeEach(() => {
   graphRequest.mockReset(); graphRequest.mockImplementation(async (id) => snapshot(seeds, id));
   vi.mocked(getTask).mockReset();
   vi.mocked(getTask).mockImplementation(async (projectId, id) => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
-    id, projectId, title: `详情 ${id}`, description: '', properties: { pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true,
+    id, projectId, title: `详情 ${id}`, description: '', properties: { worker: null, pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true,
     createdAt: timestamp, updatedAt: timestamp,
   }));
 });

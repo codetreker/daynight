@@ -56,6 +56,9 @@ var taskStatusAssignmentSQL string
 //go:embed migrations/015_task_sync.sql
 var taskSyncSQL string
 
+//go:embed migrations/016_task_worker.sql
+var taskWorkerSQL string
+
 type migration struct {
 	version int64
 	sql     string
@@ -77,6 +80,7 @@ var schemaMigrations = []migration{
 	{version: 13, sql: taskRequiredPlatformSQL},
 	{version: 14, sql: taskStatusAssignmentSQL},
 	{version: 15, sql: taskSyncSQL},
+	{version: 16, sql: taskWorkerSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

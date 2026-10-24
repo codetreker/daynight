@@ -182,7 +182,7 @@ const detail = (graph: TaskGraph, task: GraphTask | TaskDetail, scenario: Browsi
   description: scenario === 'empty' ? '' : scenario === 'long'
     ? Array.from({ length: 24 }, (_, index) => `验收记录 ${index + 1}：完成任务范围内的实现与验证，确认依赖关系、任务状态与实际交付结果一致。普通依赖划定任务链；外部前置可作为多条任务链的上下文显示，已完成的前置仍保留在依赖图中。完整内容在详情窗口内滚动，标题栏、关闭按钮和底部说明持续可见。`).join('\n\n')
     : '完成任务范围内的实现与验证，确认依赖关系、任务状态与实际交付结果一致。\n\n普通依赖划定任务链；外部前置可作为多条任务链的上下文显示，已完成的前置仍保留在依赖图中。',
-  properties: { pullRequests: [] },
+  properties: { worker: null, pullRequests: [] },
 });
 
 type SceneState = {

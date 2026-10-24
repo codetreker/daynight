@@ -52,9 +52,10 @@ Cancel, close and Escape submit nothing. The switch keeps confirmed server
 state until success and actual changes are disabled during `in_progress`.
 Successful permission changes observed in the open detail show a floating status
 bubble for three seconds without moving the heading, tabs or reading area.
-Pending, refusal, unknown-result, reconciliation and locked feedback retain their
-existing behavior. Dismissing a bubble changes only presentation; reopening a
-detail with an already confirmed result does not replay it.
+Pending, refusal, unknown-result, reconciliation, read and freshness notices use
+the shared floating notification layer. Locked controls explain their reason
+through hover and keyboard-focus tooltips. Dismissing a bubble changes only
+presentation; reopening a detail with an already confirmed result does not replay it.
 Standalone rows and graph nodes show each task's permission without turning a
 root value into a chain aggregate. Full task and graph decoders require an
 explicit boolean `allowAgents`; missing, null and nonboolean values fail.
@@ -230,9 +231,11 @@ blur listener, per-card request or server worker. Clock samples and settings sta
 outside graph-index, projection and layout dependencies.
 
 Task cards and standalone rows show live elapsed or frozen completed duration.
-Unknown starts show no inferred duration. An exact millisecond comparison strictly
-above saved minutes adds amber treatment, icon and Possibly stuck / 可能卡住了
-while retaining the running status; completion removes that warning. Localized
+Unknown starts show no inferred duration. For running tasks with `allowAgents=true`,
+an exact millisecond comparison strictly above saved minutes adds amber treatment,
+icon and Possibly stuck / 可能卡住了 while retaining the running status. Tasks
+with `allowAgents=false` retain live duration without warning text, styling or
+accessible warning meaning; completion removes any warning. Localized
 text distinguishes less than one minute and uses floored day/hour/minute units
 without changing comparison. Semantic `time`, its title and `aria-describedby`
 provide exact endpoints, elapsed duration and saved threshold. Button names stay
@@ -403,8 +406,11 @@ the old session; late responses cannot populate another task or identity.
 
 Permission changes are forbidden during in_progress; automatic discovery requires
 allowAgents=true, while explicitly designated execution accepts either value.
-Permission success uses a three-second toast; persistent failures and reconciliation
-remain accessible. Status does not stop a process, transfer worker ownership or
+Ordinary and successful notices use three-second bubbles; errors and notices
+with actions use eight seconds. Hover or focus pauses expiry. Close and expiry
+change only presentation; unresolved recovery remains accessible from a compact
+floating trigger, without changing write locks or replaying writes. Status does
+not stop a process, transfer worker ownership or
 provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
 owns server rules, migration and timing. The [component fixture](tests/mockups/browsing.html)
 uses production sessions/styles for frontend behavior; actual service acceptance
@@ -517,11 +523,16 @@ statistics and both task-category lists together. The
 owns the scheduling and scope. With `pnpm web:dev`,
 `/tests/mockups/auto-refresh.html` uses the real project page, styles and controlled
 responses to explore periodic changes, delayed reads and recoverable failures
-without Go or PostgreSQL. Production verification uses the real-service journeys.
+without Go or PostgreSQL. The [notification mockup](tests/mockups/notifications.html)
+uses the shared detail surface for lock tooltips, success, unknown-write, stale
+snapshot and refresh-error feedback in dialog and page containers. Production
+verification uses the real-service journeys.
 
 Same-resource graph and detail refresh retain successful data while loading and
-on recoverable failure. Errors stay visible during automatic retries until a
+on recoverable failure. Errors remain in state during automatic retries until a
 successful response clears them, including a failure before any successful read.
+Project errors stay visible; task-detail bubbles expire while keeping recovery
+reachable from the floating entry.
 Automatic detail reads and queued follow-ups wait while the document is hidden;
 requests already in flight may finish. A verified same-user project `404 not_found`
 clears the project snapshot and persistent base; unavailable detail reads clear
@@ -533,9 +544,12 @@ are unchanged, focus, attachment selection, upload inputs, pending writes and
 preview frame. Ordinary background reads add no heading progress paragraph,
 so unchanged responses keep the heading, tabs and active reading panel bounds
 stable before, during and after the request. Read errors, required freshness
-and stale-snapshot feedback remain explicit. The
+and stale-snapshot feedback remain explicit through timed floating bubbles. The
 [detail refresh decision](../../.agents/notes/implemented/bug-fix/2026-10-23-quiet-task-detail-refresh.md)
-owns that presentation. Project and task changes release the old resource state.
+owns quiet polling; the
+[notification decision](../../.agents/notes/implemented/bug-fix/2026-10-24-task-detail-notifications.md)
+owns layout-independent feedback and recovery. Project and task changes release
+the old resource state.
 Project listing and attachment metadata/content keep their independent refresh actions.
 Live detail never changes graph counters;
 a changed prerequisite can alter readiness without revising the task itself.
@@ -577,7 +591,10 @@ for focusing a surviving trigger after DOM removal.
 
 Task descriptions render CommonMark and GFM using the same `MarkdownContent`
 renderer and styles as Markdown attachments: headings, paragraphs, lists,
-checkboxes, quotes, fenced code, tables, links and images. Raw HTML remains text;
+checkboxes, quotes, fenced code, tables, links and images. Mermaid fences render
+static flowcharts under the
+[shared diagram requirements](../../docs/spec/daynight-task-inspection.md#markdown-流程图).
+Raw HTML remains text;
 URL protocols retain the renderer's existing policy. Empty descriptions use the
 current interface language. Markdown and localized messages do not change the
 stored string or CLI/API output. Wide tables and code scroll within their local
@@ -602,9 +619,32 @@ close and existing authentication invalidation release its requests and state.
 Same-path overwrite and explicit attachment refresh retain the existing revision
 and preview reload behavior.
 
+Mermaid 12.2.0 loads on demand for `mermaid` fenced blocks. `flowchart` and `graph`
+provide nodes, arrows, branches, Chinese labels and TD/LR directions. A block
+accepts at most 50,000 UTF-16 code units and 500 edges; limits use the same local
+error/source presentation. Each diagram has independent loading/error feedback and inspectable source; an invalid block
+does not interrupt the document or other diagrams. Before drawing, the pinned
+Mermaid parser identifies image nodes, including escaped metadata keys. A node
+with an image resource or `imageSquare` type receives an explicit localized
+refusal and visible source, without occupying the rendering queue. Ordinary
+shape metadata and literal `@{` labels keep their normal Mermaid meaning.
+Supporting image nodes requires an interruptible isolated rendering context;
+a timeout alone cannot interrupt Mermaid's internal image decoding or release
+its shared state. Successful diagrams are inert SVG images. Diagram directives
+and frontmatter cannot override application security or theme configuration.
+Custom style resources and ordinary Markdown images retain normal browser
+resource behavior; flowchart rendering is not network-isolated. The current
+light palette matches Markdown;
+wide diagrams retain readable labels in a focusable local scroll region at
+320px. Task/attachment changes and unmount invalidate obsolete render results
+and release owned rendering resources. The
+[flowchart design](../../docs/design/daynight-task-inspection.md#mermaid-流程图)
+owns staging, serialization and image lifetime.
+
 Run `pnpm web:dev` and open `/tests/mockups/markdown.html` for the production
 `TaskDetailSurface` and `TaskDetailReading` composition with final styles and
-frontend-only task/attachment fixtures. Description links, detail tabs, relations,
+frontend-only task/attachment fixtures. Flowchart results, failures and source,
+description links, detail tabs, relations,
 existing task actions and attachment management are interactive without Go or
 PostgreSQL. Query parameters choose the task, tab, file, page mode and attachment
 scenario. This entry and `/tests/mockups/attachments.html` share
@@ -618,7 +658,8 @@ addresses initialize the tab and attachment selection from their navigation stat
 its metadata row, beside a localized Copy button. This writes the exact ID with
 `navigator.clipboard.writeText` and exposes success or a recoverable failure; the
 ID remains selectable when browser clipboard access fails. Copy feedback belongs
-to the displayed task and is cleared when that identity changes. The separate
+to the displayed task, uses timed bubbles and is cleared when that identity
+changes. The separate
 Attachments tab places the path-addressed file tree, refresh and upload on the
 left and the selected file's preview on the right. A vertical divider separates independently
 scrollable panes; narrow layouts retain this left/right placement. The
@@ -665,7 +706,10 @@ Its source, build, browser and cleanup receipts retain the scope of that result;
 a local browser override does not establish hosted-CI browser behavior.
 
 Markdown uses `react-markdown` 10.1.0 with `remark-gfm` 4.0.1 for CommonMark and GFM
-including tables. Raw HTML remains escaped. Relative images and links resolve
+including tables, plus the shared static Mermaid flowcharts described above.
+The embedded preview and standalone reader retain the same per-diagram error,
+source, lifecycle and narrow-layout behavior. Raw HTML remains escaped. Relative
+images and links resolve
 from the Markdown file's directory to the task preview route; standalone `#fragment`
 links remain on the rendered document. Paths that escape the task root are
 rejected. Text, JSON and source previews preserve text and newlines. Images use
@@ -704,7 +748,8 @@ automatic-execution permission, execution platform and attachment management.
 `TaskDetailDialog` owns only the modal portal, inertness, scroll lock, focus loop,
 Escape and focus restoration. `TaskDetailPage` provides an ordinary full-page
 container, return-to-project link and language selector. The platform select
-stays in the status row with live feedback beneath it. Status, permission and
+stays in the status row, with its lock explanation in a hover/focus tooltip
+and operation feedback in the shared floating layer. Status, permission and
 platform use the same confirmation/review owner; file deletion keeps its own
 modal confirmation. These interactions remain available in either container.
 The standalone page and native frames do not install the outer dialog's keys.
@@ -732,7 +777,10 @@ changes preserve the existing cancellation and state-isolation rules.
 The page owns a real `useTaskGraph` snapshot for relationship titles, successors
 and freshness, then composes the shared detail session. Initial loading, initial
 failure and retained-snapshot refresh errors stay distinct; failure cannot become
-an empty graph. Each successful graph revision still rereads full task details,
+an empty graph. Retained-snapshot errors use the shared floating layer inside
+the detail surface, as do the page language selector's preference-storage notices,
+preserving tab and reading geometry. Each successful graph
+revision still rereads full task details,
 even when the graph projection is unchanged. Same-identity foreground auth
 revalidation retains ordinary page visibility, interaction and component identity.
 Unchanged detail refreshes retain focus, inputs, preview and heading/panel geometry.
@@ -1152,7 +1200,7 @@ scenario annotations validated in each target's report.
 | TT3 | `project-settings`: real-service direct entry/reload, administrator save and independent member read, project isolation, exact settings versions above 2^53, stale conflict and demotion, read-only member recovery, actual commit with lost response and failed-read retry without PATCH replay, bilingual 320px/390px form/control/navigation containment and unclipped text |
 | TT1–TT2, TT4–TT6 | `task-execution-time`: real PostgreSQL crossing with graph deliveries held and an incorrect client wall clock, one-second local progress, stable focus/DOM/geometry/edges/viewport, real saved-threshold changes, installed-CLI completion and frozen polling, unknown legacy starts, sub-minute/multi-day/shared/external cards and standalone rows, bilingual 320px/390px layout; browser GET/HEAD only, with fixture mutations through authenticated API or installed CLI |
 | FA1–FA12 | `task-attachments`: installed CLI and production UI share real task/files on native and container targets; exact bytes, file mutations, detail tabs, shared full attachment panel, unique preview scroll owners, rendered formats, standalone address/history and embedded-local selection. Independent real-service probes add end-of-document wheel/keyboard, native PDF final-page paint, fault/retry and unchanged task/graph proof |
-| TI8–TI9 | `task-description-markdown`: installed CLI and real API preserve Unicode/CRLF Markdown bytes and versioned full replacement; bilingual 1440px/320px rich rendering, escaped HTML, URL policy, task-root images/encoded references, paginated loading/list failure/retry, invalid/missing/preview failure states, one-controller navigation/focus, overwrite refresh, modified native href and HTML frame interaction; inspection→Details→relative attachment→close preserves graph selection/geometry/view |
+| TI8–TI9, TI15 | `task-description-markdown`: installed CLI and real API preserve Unicode/CRLF Markdown bytes and versioned full replacement; bilingual 1440px/320px rich rendering, escaped HTML, URL policy, task-root images/encoded references, paginated loading/list failure/retry, invalid/missing/preview failure states, one-controller navigation/focus, overwrite refresh, modified native href and HTML frame interaction; TD/LR/Chinese flowcharts, independent failures/source, static image safety, content switches and standalone reload share the three Markdown entries; inspection→Details→relative attachment→close preserves graph selection/geometry/view |
 | TP-V1, TP-V7, TP-V8 | `detail-navigation`, `refresh-staleness`, `keyboard-focus`, `narrow-layout`: real API round trips for empty/NUL/control/long/HTML-looking values and duplicates, complete locally paged lists with bounded row counts, page/collection reset and focus, plain-text unsafe addresses, isolated HTTP(S) navigation, rereading properties and compact graph responses |
 | L1–L4 | `language-startup-preferences`: browser default, saved override, reload, route metadata, shared selectors and unchanged user data |
 | L2, L4–L5 | `language-state-preservation`: graph geometry/viewport, fullscreen and modal focus, PR page, file input and iframe identity; pending upload, overwrite and deletion execute once |

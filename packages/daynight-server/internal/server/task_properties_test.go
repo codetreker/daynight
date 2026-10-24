@@ -37,7 +37,7 @@ func TestTaskHTTPPropertiesRoundTripAndMutationSemantics(t *testing.T) {
 	if err := database.Pool.QueryRow(context.Background(), "SELECT properties FROM tasks WHERE id=$1", task.ID).Scan(&stored); err != nil || strings.ContainsRune(stored, 0) || !strings.Contains(stored, `\u0000`) {
 		t.Fatalf("NUL was not persisted as escaped JSON text: %q, %v", stored, err)
 	}
-	noop := updateHTTPTask(t, handler, task, map[string]any{"properties": api.TaskProperties{PullRequests: want}})
+	noop := updateHTTPTask(t, handler, task, map[string]any{"properties": api.TaskWritableProperties{PullRequests: want}})
 	if !reflect.DeepEqual(noop, task) {
 		t.Fatal("equal properties changed task metadata")
 	}
@@ -51,11 +51,11 @@ func TestTaskHTTPPropertiesRoundTripAndMutationSemantics(t *testing.T) {
 	}
 	reordered := slices.Clone(want)
 	slices.Reverse(reordered)
-	changed := updateHTTPTask(t, handler, omitted, map[string]any{"properties": api.TaskProperties{PullRequests: reordered}})
+	changed := updateHTTPTask(t, handler, omitted, map[string]any{"properties": api.TaskWritableProperties{PullRequests: reordered}})
 	if changed.Version != omitted.Version+1 || !slices.Equal(changed.Properties.PullRequests, reordered) || !changed.UpdatedAt.After(omitted.UpdatedAt) {
 		t.Fatal("array order was not part of change detection")
 	}
-	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(changed), jsonBody(t, map[string]any{"version": omitted.Version, "properties": changed.Properties})), http.StatusConflict, "version_conflict")
+	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(changed), jsonBody(t, map[string]any{"version": omitted.Version, "properties": api.TaskWritableProperties{PullRequests: changed.Properties.PullRequests}})), http.StatusConflict, "version_conflict")
 	page := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID)+"?limit=100", ""), http.StatusOK)
 	if !slices.ContainsFunc(page.Items, func(item api.Task) bool { return reflect.DeepEqual(item, changed) }) {
 		t.Fatal("full properties missing from paginated task resources")
@@ -64,7 +64,7 @@ func TestTaskHTTPPropertiesRoundTripAndMutationSemantics(t *testing.T) {
 	if graph.Code != http.StatusOK || strings.Contains(graph.Body.String(), "pullRequests") || strings.Contains(graph.Body.String(), "properties") || strings.Contains(graph.Body.String(), "acceptance-secret") {
 		t.Fatalf("graph projection selected properties: %s", graph.Body)
 	}
-	cleared := updateHTTPTask(t, handler, changed, map[string]any{"properties": api.TaskProperties{PullRequests: []api.PullRequestProperty{}}})
+	cleared := updateHTTPTask(t, handler, changed, map[string]any{"properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{}}})
 	if cleared.Properties.PullRequests == nil || len(cleared.Properties.PullRequests) != 0 || cleared.Version != changed.Version+1 {
 		t.Fatal("empty list did not clear references")
 	}

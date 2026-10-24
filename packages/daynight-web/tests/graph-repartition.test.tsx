@@ -60,7 +60,7 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   const after = before.map((task) => task.id === B ? { ...task, dependsOn: [], blockedBy: [], ready: true } : task);
   graphRequest.mockResolvedValueOnce(graph(before)).mockResolvedValueOnce(graph(after));
   const detached = after.find((task) => task.id === B)!;
-  vi.mocked(getTask).mockResolvedValue({ ...detached, projectId, title: detached.titlePreview, description: '', properties: { pullRequests: [] }, version: 2n });
+  vi.mocked(getTask).mockResolvedValue({ ...detached, projectId, title: detached.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: 2n });
   const view = render(<ProjectPage projectId={projectId} />, { container: root });
   await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(4));
   fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));

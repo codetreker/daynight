@@ -115,7 +115,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 `TaskDetailDialog` 通过 body portal 相对可用视口居中，最大宽度 960px，桌面四周
 至少 24px；600px 及以下边距为 12px。外壳最大高度为
 `min(880px, 100dvh − 2 × gutter)`，公共标题、状态、页签和底部说明处于面板滚动区
-之外，关闭入口始终可访问。顶栏的 `h2.task-detail-title` 直接使用实际任务标题并提供对话框的可访问名称；没有已加载详情时使用加载或失败状态标题。完整标题自身有界、可聚焦并原生滚动，状态、新标签和关闭控件保持可访问；详情通过同一个 `LocaleProvider` 使用应用当前语言，顶栏保留实际标题、当前状态菜单、按当前任务/页签/附件生成的新标签链接与关闭入口。正文头部只保留状态与提示。`task-detail.css` 使用统一的 `task-detail-*` 类名。
+之外，关闭入口始终可访问。顶栏的 `h2.task-detail-title` 直接使用实际任务标题并提供对话框的可访问名称；没有已加载详情时使用加载或失败状态标题。完整标题自身有界、可聚焦并原生滚动，状态、新标签和关闭控件保持可访问；详情通过同一个 `LocaleProvider` 使用应用当前语言，顶栏保留实际标题、当前状态菜单、按当前任务/页签/附件生成的新标签链接与关闭入口。正文头部只保留状态和操作控件；提示归属独立浮层。`task-detail.css` 使用统一的 `task-detail-*` 类名。
 `TaskDetailPanels` 提供默认概览及附件页签，两面板保持挂载并以 hidden/inert 隔离
 隐藏控件；页签使用可访问关联、roving tabindex、方向键与 Home/End 自动激活。
 project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有两种容器共用的
@@ -127,7 +127,7 @@ project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有�
 拥有；文件渲染与滚动由[独立附件阅读页](daynight-task-attachments.md#独立附件阅读页)拥有。
 
 概览是详情中任务内容的滚动所有者。阅读主栏展示共享 CommonMark/GFM 视图渲染的描述和关联 PR，265px 辅栏
-展示时间、完整 ID、直接前置、当前阻塞项和直接后续。ID 旁的复制按钮直接调用 `navigator.clipboard.writeText` 写入完整 ID；成功和失败反馈属于当前 ID，切换任务时清除。失败保留可选择的完整 ID 与重试入口，不显示虚假的复制成功。850px 及以下辅栏为 225px，
+展示时间、完整 ID、直接前置、当前阻塞项和直接后续。ID 旁的复制按钮直接调用 `navigator.clipboard.writeText` 写入完整 ID；成功和失败反馈属于当前 ID，以限时气泡展示，切换任务时清除。失败保留可选择的完整 ID 与重试入口，不显示虚假的复制成功。850px 及以下辅栏为 225px，
 600px 及以下堆叠为单栏；长文本换行，表格和代码在局部横向滚动。附件页签占满正文
 宽度，在所有支持宽度保持左列表、右预览；父级正文、面板及右侧外壳隐藏溢出，每侧
 分别拥有滚动。Markdown/文本/图片由预览正文纵向滚动，HTML/PDF 由拟合正文的
@@ -164,10 +164,10 @@ PR 区域在描述之后，标题与 URL 分别使用文本节点，空字符串
 不能只比较图 receipt 序号。已知任务信息改变且尚待必需读取时显示旧详情反馈；完整
 详情已经完成所需读取、与图字段仍不符时提示刷新全图，不能把旧详情误称为旧图。
 普通后台读取只保留现有正文，不在标题区增删网络进度段落；读取错误或 `requiresFreshRead`
-才显示旧详情说明。网络 `refreshing` 继续控制读取中的陈旧比较，独立于该可见提示。
+才通过限时气泡显示旧详情说明。网络 `refreshing` 继续控制读取中的陈旧比较，独立于该可见提示。
 因此未变化响应在等待前后不会挤动页签或缩小正文与附件区域。
 [详情刷新呈现决策](../../.agents/notes/implemented/bug-fix/2026-10-23-quiet-task-detail-refresh.md)
-记录原因与取舍。详情读取成功不会单独修改画布或统计。
+记录普通轮询保持安静的原因；[详情提示决策](../../.agents/notes/implemented/bug-fix/2026-10-24-task-detail-notifications.md)拥有错误与新鲜度反馈的浮层呈现。详情读取成功不会单独修改画布或统计。
 
 `TaskDetailReading` 将唯一的 `useAttachments` 控制器交给描述导航与附件页签的
 `TaskAttachmentsPanel`。列举、
@@ -186,9 +186,17 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 卸载时，`useLayoutEffect` 同步移除键盘监听、恢复背景 inert 与 body 滚动状态；独立的 `useEffect([])` cleanup 在 DOM 删除后，调用 ref 中最新的焦点恢复回调。刷新可能同时卸载对话框和相邻任务链，恢复必须等旧节点真正移除后再检查 `isConnected`，否则焦点会先落到即将删除的节点，随后丢失到 body。关系跳转继续复用对话框，不触发卸载恢复。具体失败机制与验证由[焦点恢复决策](../../.agents/notes/implemented/bug-fix/2026-10-20-drawer-focus-restoration.md)记录。
 
+### 任务详情提示
+
+`TaskDetailSurface` 内的公共提示层承接状态、自动执行、平台、复制、保留详情、刷新失败和过期快照反馈；独立页保留图快照时的刷新失败，以及顶部语言偏好读取/保存提示，也进入该层；语言选择器的其他调用位置保持自身呈现。浮层位于容器右下方，不参与标题、页签和面板的高度分配，并限制堆叠宽高，长错误在气泡内部滚动。首次加载失败和附件列表、预览的内容状态仍属于各自面板。
+
+普通与成功气泡显示 3 秒，错误和带操作气泡显示 8 秒，支持手动关闭；悬停或焦点在气泡内时暂停，离开后继续计时。语言切换和普通重绘保留原展示期限；已经确认的成功不在重开详情时重播。关闭或超时只改变呈现，不改变 mutation、原始错误、版本、新鲜度或禁写状态。未解决的刷新与 GET 核对可从紧凑浮动入口重新打开；气泡消失时若焦点仍在其中，恢复到有效入口，保持模态焦点约束。
+
+运行中锁定说明由自动执行和平台控件的 tooltip 提供，禁用控件的包裹入口可接收键盘焦点，并提供可访问说明。tooltip 支持悬停和聚焦，保持原控件的禁用值和禁止提交语义，不分配正文高度。
+
 ### 自动执行许可与确认
 
-详情和图 DTO 的 `allowAgents` 均严格解码为布尔；缺失、null 或其他类型拒绝。`TaskAgentPermission` 在标题下的公共状态行右侧组合标签与 switch，左侧为状态、ready 和可选平台。状态来自已确认详情，不做乐观切换；此入口在概览与附件页均可用，不重复渲染状态 badge 或 Overview 编辑区。窄屏左组内换行，右侧与首行状态顶部对齐；锁定、失败、未知结果和人工等待反馈靠近控件。`TaskAgentPermissionFeedback` 仅在当前详情观察到同一操作从 pending 变为 confirmed 时显示成功气泡，3 秒后移除；气泡定位于对话框之上，不参与标题、页签及正文的高度分配。计时与显示状态属于呈现，不清除或改写会话中的 mutation；挂载时已有 confirmed 结果、普通刷新和语言切换均不重播，卸载清理计时。独立任务行和图节点的紧凑许可标记只表达自身任务，根链条目不聚合许可，也不增加图卡高度。
+详情和图 DTO 的 `allowAgents` 均严格解码为布尔；缺失、null 或其他类型拒绝。`TaskAgentPermission` 在标题下的公共状态行右侧组合标签与 switch，左侧为状态、ready 和可选平台。状态来自已确认详情，不做乐观切换；此入口在概览与附件页均可用，不重复渲染状态 badge 或 Overview 编辑区。窄屏左组内换行，右侧与首行状态顶部对齐；锁定原因通过控件 tooltip 展示，失败、未知结果和人工等待反馈归属详情提示层。`TaskAgentPermissionFeedback` 仅在当前详情观察到同一操作从 pending 变为 confirmed 时显示成功气泡，3 秒后移除；气泡定位于对话框之上，不参与标题、页签及正文的高度分配。计时与显示状态属于呈现，不清除或改写会话中的 mutation；挂载时已有 confirmed 结果、普通刷新和语言切换均不重播，卸载清理计时。独立任务行和图节点的紧凑许可标记只表达自身任务，根链条目不聚合许可，也不增加图卡高度。
 
 两个方向复用 `TaskConfirmation` 的模态、取消初始焦点、长任务名滚动、下层 inert 和焦点恢复。确认冻结目标布尔值、身份、源状态和精确版本；后台已知变化使确认失效。`TaskDetailSession` 与状态设置及平台确认共用同一个进行中 operation；pending、未知或必需核对期间阻止相冲突写入，关闭/重开详情、切换任务或项目不会把原操作交给新资源。普通可选周期 GET 不废弃仍有效的版本。
 
@@ -200,9 +208,9 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 `TaskPlatform` 模块中的 `TaskPlatformSelect` 提供平台入口，`TaskPlatformConfirmation` 与 `TaskPlatformFeedback` 拥有确认和反馈。选择当前值不创建操作；选择不同值只建立 `PlatformConfirmation`，捕获已审阅的完整详情、project/task、源平台、目标平台和精确 version。选择不限平台的目标为 null。下拉框立即保持原已确认值，目标值由确认窗口的当前/目标转换说明表达，不保存独立选择草稿或乐观更新。后台已知详情或版本变化使确认失效，不能静默换版本提交旧决定。`matchesPlatformReview` 以 `taskReviewKey` 验证原审阅。`TaskDetailSurface` 在弹窗与独立页共用 `DetailConfirmation` 的 status/permission/platform 判别联合，保存唯一的本地确认并统一校验与提交路由，避免确认相互叠加；父详情在最上层确认开启时保持 inert。
 
-确认复用 `TaskConfirmation` 的长任务名、取消初始焦点、Tab/Shift+Tab 限制、Escape 和遮罩关闭；现有可选 `content` 区域容纳当前平台与目标平台转换说明，状态确认继续使用该区域展示其转换与计时后果。确认按钮只提交一次所捕获的目标与版本；取消、关闭和 Escape 均不写入，返回仍连接且可用的平台 select。入口已消失或被禁用时，焦点回退至详情标题。成功、失败、冲突和未知结果反馈靠近状态行的平台入口，切换详情页签仍可访问；既有 `TaskDetailReading` 面板及附件工作空间的身份、输入、预览和阅读状态保持。
+确认复用 `TaskConfirmation` 的长任务名、取消初始焦点、Tab/Shift+Tab 限制、Escape 和遮罩关闭；现有可选 `content` 区域容纳当前平台与目标平台转换说明，状态确认继续使用该区域展示其转换与计时后果。确认按钮只提交一次所捕获的目标与版本；取消、关闭和 Escape 均不写入，返回仍连接且可用的平台 select。入口已消失或被禁用时，焦点回退至详情标题。成功、失败、冲突和未知结果反馈由详情提示层展示，切换详情页签仍可访问；既有 `TaskDetailReading` 面板及附件工作空间的身份、输入、预览和阅读状态保持。
 
-`TaskDetailSessions.setRequiredPlatform` 复用单任务 mutation 及 `canSetRequiredPlatform` 的可用条件，API client 的 `setTaskRequiredPlatform` 通过普通 PATCH 只发送 version 与 requiredPlatform。pending、结果未知、核对及已知陈旧期间同时阻止许可和状态写入；`in_progress` 禁用平台入口并说明锁定原因。关闭详情、切换任务或项目后，已提交操作仍属于原 task。API client 接受精确原版本的服务空操作或单次版本增长；确认只提交相对源平台的真实变化，会话要求单次增长并核验身份、目标平台及未变状态和许可，然后安装完整详情并刷新图。明确失败保留已保存值，版本冲突读取当前任务后要求新决定，断连、5xx、协议错误或响应丢失先 GET 核对且不重放 PATCH。服务端同值和运行锁语义由[服务架构](daynight-server.md)拥有，控件分配的取舍由[确认下拉框决策](../../.agents/notes/implemented/simplification/2026-10-24-task-platform-confirmation-control.md)拥有。
+`TaskDetailSessions.setRequiredPlatform` 复用单任务 mutation 及 `canSetRequiredPlatform` 的可用条件，API client 的 `setTaskRequiredPlatform` 通过普通 PATCH 只发送 version 与 requiredPlatform。pending、结果未知、核对及已知陈旧期间同时阻止许可和状态写入；`in_progress` 禁用平台入口，并通过可悬停及键盘聚焦的 tooltip 说明锁定原因。关闭详情、切换任务或项目后，已提交操作仍属于原 task。API client 接受精确原版本的服务空操作或单次版本增长；确认只提交相对源平台的真实变化，会话要求单次增长并核验身份、目标平台及未变状态和许可，然后安装完整详情并刷新图。明确失败保留已保存值，版本冲突读取当前任务后要求新决定，断连、5xx、协议错误或响应丢失先 GET 核对且不重放 PATCH。服务端同值和运行锁语义由[服务架构](daynight-server.md)拥有，控件分配的取舍由[确认下拉框决策](../../.agents/notes/implemented/simplification/2026-10-24-task-platform-confirmation-control.md)拥有。
 
 ### 版本化状态设置与任务会话
 
@@ -232,7 +240,7 @@ generation 和 confirmed-version floor 防止旧读取覆盖确认结果。
 冲突保留原错误并 GET 重读，下一次设置重新确认。网络、5xx、协议错误或丢响应为 unknown，
 只 GET 核对，读取到目标状态也不归因原请求成功；核对失败同时保留写入和读取错误，持续禁写。
 404 清除旧正文和面板但保留操作反馈及 GET 重试；晚到结果只属于原键。状态和错误双语播报。
-许可成功使用 3 秒浮层；持久错误/核对入口不能因附件独立阅读或页签切换而丢失。
+操作、复制、读取错误、保留数据和过期快照反馈统一使用详情提示层；持久错误/核对入口不能因超时、附件独立阅读或页签切换而丢失。
 
 [三状态架构](daynight-task-status.md)拥有 service、依赖、计时、迁移和完整响应分支。
 [实际组件夹具](../../packages/daynight-web/tests/mockups/browsing.html)复用生产会话与样式，
@@ -799,7 +807,7 @@ store 的 SQL 直接读取 `left(title, previewCharacters)` 与 `char_length(tit
 统计和任务内容保持原有位置；自动周期更新最近成功读取时间。
 [刷新提示决策](../../.agents/notes/implemented/simplification/2026-10-22-project-refresh-notice.md)
 记录该呈现方式。刷新保留上次成功图和详情；恢复性失败保留旧数据、上次成功时间及明确错误，
-自动重试期间错误继续可见，首次读取失败后也保留错误而不重复进入加载播报，成功后清除。成功图数据变化时
+自动重试期间保留错误，项目页持续显示；任务详情由限时气泡展示，并在气泡关闭后保留紧凑恢复入口。首次读取失败后也保留错误而不重复进入加载播报，成功后清除。成功图数据变化时
 一次替换统计、索引和两类条目；当前展开根仍可见则保留，否则选择最新可见根；
 没有可见根时保留原偏好，明确的全部折叠继续保留。偏好保存不参与同步请求；
 页签滚动位置分别恢复，不保存详情选择、图坐标或画布视口。当前详情仍存在则

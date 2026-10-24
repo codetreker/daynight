@@ -50,9 +50,13 @@ resource and release old task state.
 Recoverable failures retain old data, its successful receipt time and a visible
 error. Automatic attempts keep that error until success clears it, including
 initial failures without retained data, so retries do not repeatedly announce
-loading. A principal-verified same-user project not_found response clears its snapshot
-and persistent base; missing or malformed identity headers remain protocol
-failures. Unavailable detail reads clear their own content. A 401 follows the authentication owner's session-loss lifecycle and
+loading. In task details, the
+[notification layer](../bug-fix/2026-10-24-task-detail-notifications.md) owns
+timed error presentation and keeps recovery reachable after expiry; the stored
+error remains unchanged. A principal-verified same-user project not_found response
+clears its snapshot and persistent base; missing or malformed identity headers
+remain protocol failures. Unavailable detail reads clear their own content.
+A 401 follows the authentication owner's session-loss lifecycle and
 releases user-owned content. Project listing and attachment metadata/content
 retain their existing independent refresh and mutation rules.
 

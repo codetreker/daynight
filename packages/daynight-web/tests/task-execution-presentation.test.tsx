@@ -23,7 +23,7 @@ const graph: TaskGraphData = {
     settings: { version: 1n, executionWarningMinutes: 60 } },
   summary: { total: 3, todo: 0, inProgress: 1, done: 2, ready: 0, blocked: 0 },
   tasks: [task("A"), task("B"), task("C", { titlePreview: "A deliberately long shared task title preserving the existing card controls", titleTruncated: true,
-    status: "in_progress", startedAt: start, dependsOn: ["A", "B"] })],
+    status: "in_progress", allowAgents: true, startedAt: start, dependsOn: ["A", "B"] })],
 };
 const index = buildGraphIndex(graph);
 const snapshot = (elapsedMilliseconds: number, warningMinutes = 60): GraphSnapshot => ({
@@ -97,7 +97,7 @@ describe("task execution presentation", () => {
     let monotonic = 0;
     vi.mocked(performance.now).mockImplementation(() => monotonic);
     const end = "2026-10-22T03:04:00.123456789Z";
-    const rows = [task("running", { status: "in_progress", startedAt: start }),
+    const rows = [task("running", { status: "in_progress", allowAgents: true, startedAt: start }),
       task("completed", { startedAt: start, completedAt: end }), task("unknown", { status: "in_progress" })];
     const rowGraph = { ...graph, tasks: rows, summary: { ...graph.summary, inProgress: 2, done: 1 } };
     const rowIndex = buildGraphIndex(rowGraph);
@@ -129,6 +129,32 @@ describe("task execution presentation", () => {
     expect(completed).not.toHaveClass("standalone-row-stuck");
     expect(running).toHaveFocus();
     expect(view.container.querySelector('[aria-live], [role="status"], [role="alert"]')).toBeNull();
+  });
+
+  it.each(["en", "zh-CN"] as const)("keeps overdue tasks without Agent permission timed and free of warnings in %s", async (locale) => {
+    const manualGraph = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, allowAgents: false })) };
+    const manualIndex = buildGraphIndex(manualGraph);
+    const content = (elapsed: number) => <TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(elapsed), graph: manualGraph, index: manualIndex }}>
+      <TaskGraph index={manualIndex} rootId="A" onOpenTask={noop} />
+      <StandaloneList index={manualIndex} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} showCompleted onShowCompletedChange={noop} />
+    </TaskExecutionClockProvider>;
+    const view = renderWithLocale(content(3_601_000), { locale });
+    await waitFor(() => expect(view.container.querySelector(".task-node-in_progress")).not.toBeNull());
+    const card = view.container.querySelector<HTMLElement>(".task-node-in_progress")!;
+    const row = document.getElementById("standalone-task-C")!;
+    for (const elapsed of [3_601_000, 7_201_000]) {
+      view.rerender(content(elapsed));
+      for (const element of [card, row]) {
+        expect(element.querySelector(".task-duration")).toHaveAttribute("datetime", `PT${(elapsed / 1000).toFixed(3)}S`);
+        expect(element).not.toHaveClass("task-node-stuck");
+        expect(element).not.toHaveClass("standalone-row-stuck");
+        expect(element.querySelector(".task-stuck-label")).toBeNull();
+      }
+      for (const button of [card.querySelector(".task-node-body")!, row]) {
+        expect(button).toHaveAccessibleDescription(/60/);
+        expect(button).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
+      }
+    }
   });
 
   it.each(["en", "zh-CN"] as const)("omits unknown completed and running execution without requiring a fabricated clock in %s", (locale: Locale) => {

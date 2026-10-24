@@ -19,6 +19,13 @@ const fixture = (projects: readonly Project[] = []) => {
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
     listProjects: vi.fn<ApiClient["listProjects"]>().mockResolvedValue(projects),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),
+    listTaskPage: async () => { throw new Error("Unused worker API method"); },
+    claimWorkerTask: async () => { throw new Error("Unused worker API method"); },
+    updateWorkerClaim: async () => { throw new Error("Unused worker API method"); },
+    completeWorkerTask: async () => { throw new Error("Unused worker API method"); },
+    releaseWorkerClaim: async () => { throw new Error("Unused worker API method"); },
+    transferWorkerClaim: async () => { throw new Error("Unused worker API method"); },
+    resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
     createTask: unavailable, getTask: unavailable, listTasks: unavailable, listReadyTasks: unavailable, updateTask: unavailable, setTaskStatus: unavailable, getTaskGraph: unavailable,
     putTaskAttachment: unavailable, listTaskAttachments: unavailable, readTaskAttachment: unavailable, removeTaskAttachment: unavailable,
   };

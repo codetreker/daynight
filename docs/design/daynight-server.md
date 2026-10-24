@@ -61,7 +61,7 @@ store 只投影任务自身的 160 字符标题预览、业务 version、状态�
 不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
-[时间窗口架构](daynight-task-sync.md)；当前 Web 仍使用完整图。
+[时间窗口架构](daynight-task-sync.md)；当前 Web 仍使用完整图。Worker 归属修改沿用已有 version/updatedAt 事务，因此摘要可见其版本变化；摘要不包含 properties，身份核对仍 GET 已知任务，不增加 worker 查询投影。
 
 ## 目录与调用方向
 
@@ -179,7 +179,7 @@ Task 只使用 `todo`、`in_progress`、`done`，创建与数据库默认均为 
 `Tasks.SetStatus` 复用 `Tasks.write`，在项目锁和成员复核后先比较精确版本，再处理同状态 no-op。
 实际进入 in_progress/done 检查全部直接前置，done 退回检查全部直接 active/done 后继；普通与外部边一致。
 反向查询仅取稳定排序的阻塞 ID，使用已有反向索引，不读取正文或级联修改。
-同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、属性、许可、requiredPlatform 及两类依赖，附件保持独立。
+同状态 +0，实际改变 +1，完整 TaskWrite 保留正文、许可、requiredPlatform 及两类依赖，附件保持独立。Worker claim-bound done 在同一事务更新受保护属性；普通 setter 不能释放 active 或开始/完成 released 成果。[认领架构](daynight-worker-claims.md)拥有归属检查和显式人工接续。
 
 普通 Update DTO 没有 status，允许标题、描述、依赖、许可、平台和属性。完整候选校验保证
 in_progress/done 的全部直接前置已 done，todo 允许未完成前置。引用必须同 project 且存在；
@@ -253,12 +253,16 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
 | `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
-| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标三状态 |
+| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标三状态，done 可带当前 claimId |
+| `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
+| `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
+| `POST .../tasks/{taskId}/worker-claim/transfer` | owner/admin 向当前目标成员原子移交 |
+| `POST .../tasks/{taskId}/worker-claim/resume` | owner/admin 显式人工接续 released 原成果 |
 
 创建 project 的输入为 `name` 和 `repoUrl`。创建 task 的输入为 `title`、可省略的
 `description`、`dependsOn`、`externalDependsOn` 与 `properties`；省略描述表示空字符串，省略依赖和
 PR 引用表示空数组。创建成功
-返回 `201`、资源体和对应资源的 `Location`；读取及更新成功返回 `200`。
+返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create/PATCH 不能提供 properties.worker，PR 更新保留它。
 
 项目设置 PATCH 独立接受必填正 int64 `version` 和 `1..2147483647` 的 `executionWarningMinutes`，
 拒绝 query、缺失/未知/重复字段及非法类型，不接受 Project 其他字段。

@@ -1,6 +1,14 @@
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  mermaid: {
+    loading: "正在渲染流程图…", diagram: "流程图", source: "查看 Mermaid 源码",
+    failed: "无法渲染此流程图，请检查下方 Mermaid 源码。",
+    configuration: "不支持图块内配置，请移除 Mermaid 指令或 frontmatter，并检查下方源码。",
+    unsupported: "仅支持 Mermaid 流程图，请使用 flowchart 或 graph 开始图块。",
+    tooLarge: "流程图源码超过 50,000 个字符，请缩减下方源码。",
+    image: "不支持图片节点，请在下方 Mermaid 源码中使用文字节点。",
+  },
   status: {
     title: "设置任务状态",
     menu: "任务状态",
@@ -34,6 +42,7 @@ export const inspection: InspectionMessages = {
     requestFailed: "状态请求失败。",
   },
   detail: {
+    dismissNotice: "关闭提示", showNotice: "查看任务提示",
     openInNewTab: "在新标签页打开", returnToProject: "返回任务所在项目",
     overview: "概览",
     title: "任务详情", close: "关闭任务详情", loading: "正在加载任务详情", failed: "任务详情加载失败",

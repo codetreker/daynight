@@ -48,7 +48,7 @@ flowchart LR
 组合候选值与检测变化。`internal/jsonobject` 复用严格对象解析，
 `internal/taskproperties` 以具体类型编解码持久化文档及属性 patch，`store` 在
 完整 task 读写中调用该 codec。CLI 和 web 各自在已有 API 层
-声明相同资源结构，不引入跨语言共享代码生成或运行时属性插件。
+声明相同资源结构，不引入跨语言共享代码生成或运行时属性插件。完整存储/读取类型包含只读 worker；公共创建和 patch DTO 单独只接受 PR 字段，[认领架构](daynight-worker-claims.md)拥有受保护操作。
 
 ```go
 type PullRequestProperty struct {
@@ -58,6 +58,7 @@ type PullRequestProperty struct {
 
 type TaskProperties struct {
     PullRequests []PullRequestProperty
+    Worker       *WorkerClaim
 }
 
 type TaskPropertiesPatch struct {
@@ -66,7 +67,7 @@ type TaskPropertiesPatch struct {
 ```
 
 完整领域资源始终使用非 nil 列表；API 的具体 DTO 使用 `url`、`title`、
-`pullRequests` JSON 名称。Patch 指针只表达是否提供属性，内容值本身没有默认值
+`pullRequests` JSON 名称及显式 worker:null/对象。Patch 指针只表达是否提供属性，内容值本身没有默认值
 语义。创建入口构造显式空列表；迁移处理旧数据，读取路径不会为缺失或损坏数据补值。
 
 ## 持久化与迁移
@@ -79,7 +80,7 @@ ALTER TABLE tasks ADD COLUMN properties text NOT NULL
     DEFAULT '{"pullRequests":[]}';
 ```
 
-这一默认值有明确业务含义：已有任务没有关联 PR。迁移由既有启动迁移事务执行，
+这是属性列最初的默认值，表达已有任务没有关联 PR。016_task_worker.sql 在规范文本的末尾插入 worker:null，并把当前默认值改为同时包含两字段；不调用 JSON/JSONB cast 或重新解释 PR 字符串，NUL 转义与既有 Unicode 内容保持原值。迁移由既有启动迁移事务执行，
 不改变 task 的 `version`、`created_at` 或 `updated_at`。应用创建与更新仍显式写入
 完整属性值，默认值只负责迁移与缺省空属性语义。
 
@@ -88,7 +89,7 @@ ALTER TABLE tasks ADD COLUMN properties text NOT NULL
 指出 JSONB 会将 Unicode 转义转成内部文本并拒绝 `\u0000`；采用 JSONB 会额外
 限制调用方可保存的内容。当前没有属性查询需求，文本列与有类型的应用编解码匹配。
 
-Store 用具体的持久化 DTO 编码与严格解码，校验必需结构、非 null 数组及已知字段；
+Store 用具体的完整属性 DTO 编码与严格解码，校验必需结构、非 null PR 数组、显式可空 worker 及已知字段；公共属性写入使用独立 codec，即使 worker 为 null/原值也拒绝。
 不使用 `map[string]any` 或存储任意请求片段。损坏 JSON、未知持久化字段、错误类型
 及缺失字段均使读取失败并保留错误链。序列化表示并非公开契约；比较用领域值，
 不比较 JSON key 排列、转义写法或字符串化结果。
@@ -124,7 +125,7 @@ NUL、协议或仓库结构限制。既有请求 1 MiB 上限自然约束一次�
 Service 在已有 project 写事务内读取当前 task、比较期望版本、构造完整候选状态，
 再执行既有状态及依赖校验。`properties:{}` 不产生属性修改意图；若也没有其他
 可修改字段，则按既有空 patch 规则拒绝。已提供的 `pullRequests` 替换完整数组，
-其余预定义属性在将来仍按字段存在性保留。
+未提供的其他属性保留，worker 仅能通过受控归属操作修改。
 
 按数组顺序逐项比较两个字符串；相等列表不改变版本和时间。真实属性变化与其他
 真实字段变化合计只执行一次版本递增。写入失败与取消通过原有事务完整回滚。
@@ -242,7 +243,7 @@ GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有�
 | 能力 | 当前行为与后续增加代价 |
 |---|---|
 | 其他预定义属性 | 未知写入字段被拒绝。增加时修改具体类型、校验、输出与存储迁移；既有行通过迁移补充结构，读取不做旧格式 fallback。 |
-| 属性过滤、排序和反向 PR 查 task | 当前列表只有 status/ready。未来需要定义文本或身份比较、查询投影、索引与 cursor 绑定；文本 JSON 不承诺可低成本直接查询。 |
+| 属性过滤、排序和反向 PR 查 task | 当前列表支持状态、ready、自动许可与兼容平台，不按属性反查。未来属性查询须定义比较、投影、索引与 cursor 绑定；Worker 恢复使用 SQLite 已知 taskId 的 GET，无需 owner/worker 反向索引。 |
 | PR 标题抓取与状态同步 | 当前值由调用方维护。未来要定义凭据、网络故障、生命周期及与人工值的所有权，作为独立设计。 |
 | 网页编辑、逐项增删 | 网页只读，CLI 提交完整列表。未来可复用 task version；必须显式处理并发冲突，不能静默合并。 |
 

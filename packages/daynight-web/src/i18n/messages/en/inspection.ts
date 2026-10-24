@@ -1,6 +1,14 @@
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  mermaid: {
+    loading: "Rendering flowchart…", diagram: "Flowchart", source: "View Mermaid source",
+    failed: "Unable to render this flowchart. Check the Mermaid source below.",
+    configuration: "Diagram configuration is not supported. Remove Mermaid directives or frontmatter and check the source below.",
+    unsupported: "Only Mermaid flowcharts are supported. Start the diagram with flowchart or graph.",
+    tooLarge: "Flowchart source exceeds 50,000 characters. Reduce the source below.",
+    image: "Image nodes are not supported. Use text nodes in the Mermaid source below.",
+  },
   status: {
     title: "Set task status",
     menu: "Task status",
@@ -34,6 +42,7 @@ export const inspection: InspectionMessages = {
     requestFailed: "The status request failed.",
   },
   detail: {
+    dismissNotice: "Dismiss notification", showNotice: "Show task notification",
     openInNewTab: "Open in new tab", returnToProject: "Return to task project",
     overview: "Overview",
     title: "Task details", close: "Close task details", loading: "Loading task details", failed: "Task details could not be loaded",

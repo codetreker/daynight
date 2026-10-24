@@ -85,7 +85,7 @@ beforeEach(() => {
 beforeEach(() => {
   graphRequest.mockReset(); detailRequest.mockReset();
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
-    id, projectId: project, title: `详情 ${id}`, description: "文本", properties: { pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
+    id, projectId: project, title: `详情 ${id}`, description: "文本", properties: { worker: null, pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
   }));
 });
 
@@ -154,7 +154,7 @@ describe("project dashboard", () => {
 
   it("re-reads a retained detail after a new graph revision without using detail responses to patch graph statistics", async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph());
-    detailRequest.mockResolvedValue({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: B, projectId, title: `详情 ${B}`, description: "更新后的详情", properties: { pullRequests: [] }, status: "done", version: 1n, dependsOn: [A], blockedBy: [], ready: false, createdAt: time, updatedAt: time });
+    detailRequest.mockResolvedValue({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: B, projectId, title: `详情 ${B}`, description: "更新后的详情", properties: { worker: null, pullRequests: [] }, status: "done", version: 1n, dependsOn: [A], blockedBy: [], ready: false, createdAt: time, updatedAt: time });
     render(<ProjectPage projectId={projectId} />);
     fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
     await screen.findByText(`详情 ${B}`);
