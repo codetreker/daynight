@@ -69,8 +69,11 @@ directory. Uploaded contents are confirmed before linking, and full-field update
 preserve Markdown and valid references. The create-task reference owns authoring
 examples; no new stored format or format flag is introduced. A task-specific
 primary Markdown owns detailed solution, full acceptance and evidence. Shared Goal
-and design inputs remain at their source task ID and attachment path, or a verified
-immutable repository URL;
+and design inputs remain with their owners. Each Goal delivery description
+directly identifies its architecture task and relevant document attachment paths,
+even for indirect successors. Repository documents retain the architecture task
+identity and a verified immutable URL. Registration verifies every source index,
+and execution reads the listed inputs before implementation;
 registration does not copy the same document packet to every task. Independently
 required snapshots retain source version and purpose.
 

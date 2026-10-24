@@ -25,9 +25,13 @@ its role from the actual task content and context. Apply that stage's input and
 output requirements. Requirements and solution discussions start from their stage briefs;
 the completed requirements, applicable UI prototype, and architecture are outputs
 of the stages that produce them. Delivery tasks require the delivered design and
-applicable prototype. When a prototype is a required input, view and exercise it
-with its resources. An unfinished output of the current stage is not a missing
-input.
+applicable prototype. Before implementation, read every required architecture
+document listed in the delivery task's description using its architecture task ID
+and full attachment paths or verified immutable repository references. This also
+applies when the architecture task is only an indirect prerequisite. Confirm the
+description's references satisfy the Goal protocol. When a prototype is a required
+input, view and exercise it with its resources. An unfinished output of the current
+stage is not a missing input.
 
 An explicitly user-selected task may use the manual execution path regardless of
 `allowAgents` or platform compatibility; a fixed queue explicitly selected by the
@@ -51,11 +55,11 @@ ownership. Both kinds must be done before entering in_progress or done. Classifi
 never grants permission to execute a prerequisite, enable automatic
 execution, or remove a blocker.
 A missing or unreadable primary Markdown, missing Solution or Acceptance criteria,
-or absent required input leaves execution unready. Resolve it within the
-existing authorization or return the concrete issue. Do not infer requirements
-from a title, silently invent acceptance criteria, or move detailed plans into
-the description. Do not execute prerequisites as an implicit expansion of the
-requested task.
+or missing or unreadable required architecture reference or input leaves execution
+unready. Resolve it within the existing authorization or return the concrete issue.
+Do not infer requirements from a title, silently invent acceptance criteria, or
+move detailed plans into the description. Do not execute prerequisites as an
+implicit expansion of the requested task.
 
 Creation leaves a task `todo` and does not execute it. An explicit request to
 start the current Goal discussion, or the user-directed transition that starts

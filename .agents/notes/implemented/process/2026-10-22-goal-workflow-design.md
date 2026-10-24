@@ -46,11 +46,16 @@ together within the owning task.
 
 Attachments follow content ownership. The Goal owns goal.md; architecture owns its
 phase plan, design and registered breakdown; implementation and acceptance own only
-their respective plans and later evidence. Shared inputs are read from the confirmed
-source task ID and attachment path, or a verified immutable repository URL. Existing
-CLI reads support those references; no new link scheme or API is introduced. Copying
-an entire common packet to every task is not the registration default. An independently
-required snapshot must name its source version and purpose.
+their respective plans and later evidence. Every delivery description directly
+identifies the architecture task and relevant document attachment paths, including
+indirect successors whose direct prerequisite is another implementation task.
+Repository documents retain the owning architecture task and verified immutable
+references. Registration checks each description's source index; executors read
+the listed inputs before implementation. This gives independent consumers the
+confirmed design's location without copying its content or changing dependency
+edges. Existing CLI reads support those references; no new link scheme or API is
+introduced. An independently required snapshot must name its source version and
+purpose.
 
 Four skill modes remain. The initial protocol made create-task register the pair
 and return, run-task execute one stage, and explicitly activated autopilot select
@@ -108,7 +113,9 @@ retains completed requirements and design as inputs. Instruction review must cov
 stage transitions, permission boundaries, partial registration and whole-Goal
 completion, description-only assignment comprehension, and attachment ownership;
 recursive copy and installer checks establish artifact integrity
-separately from instruction behavior.
+separately from instruction behavior. The architecture-to-A-to-B scenario checks
+that B directly retains its applicable architecture references and that an
+executor with no discussion history reads them before implementation.
 
 The protocol adds no server-side enforcement, lock, state, telemetry or migration.
 Existing version and attachment concurrency rules still apply. The current task

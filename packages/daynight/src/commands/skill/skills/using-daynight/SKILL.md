@@ -89,9 +89,12 @@ and completing `run-task` never activate it.
   acceptance criteria, and evidence. Confirm resources before linking them;
   description-relative links start at this task's attachment root. Attach resources
   according to actual ownership and need; reference shared inputs at their verified
-  source. Express all prerequisites through `dependsOn` and their explicit external
-  subset through `externalDependsOn`. Ordinary edges connect confirmed work in
-  the same chain; mark a verified prerequisite from another chain as external.
+  source. Each Goal delivery task's description directly identifies the architecture
+  task and required architecture documents, including indirect successors; follow
+  the Goal protocol's reference and readback rules. Express all prerequisites through
+  `dependsOn` and their explicit external subset through `externalDependsOn`.
+  Ordinary edges connect confirmed work in the same chain; mark a verified
+  prerequisite from another chain as external.
   Both kinds block execution. CLI dependency options replace the full relationship
   set; preserve needed ordinary and external edges as the handbook requires.
 - Automatic task selection requires `allowAgents=true`, readiness, and
