@@ -44,8 +44,10 @@ The [operator procedure](../../../../deployment/localhost/README.md#persistence-
 stops the server and other writers before capturing a matching `pg_dump` and
 attachment-root archive. A one-off container from the production image runs
 `tar` with the normal service user. Restore initializes fresh volumes, restores
-SQL and files before starting the server, and verifies existing reads/previews
-and new writes. The real-container check exercises the same ordering after
+SQL and files, rotates affected project task-cache epochs while writers remain
+stopped, then starts the server and verifies existing reads/previews and new
+writes. The [summary API decision](2026-10-24-task-summary-window-api.md) owns
+cache history invalidation; ordinary restarts keep the epoch unchanged. The real-container check exercises the same ordering after
 destroying its owned source volumes. Test archives and dumps are removed;
 source-bound receipts remain with the PR or CI evidence.
 

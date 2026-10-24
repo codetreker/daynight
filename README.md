@@ -52,10 +52,18 @@ completed duration and an amber possible-stall warning above that saved threshol
 A shared project clock advances database time with monotonic browser elapsed
 time, keeping ticks outside graph layout.
 
+The approved [task-cache requirements](docs/spec/daynight-task-sync.md) and
+[architecture](docs/design/daynight-task-sync.md) define browser IndexedDB task
+summaries, five-second polling with a configurable ten-second task-timestamp
+overlap, and on-demand detail caching. The server window endpoint, configuration,
+project epoch and authenticated-response identity header are implemented; browser
+IndexedDB integration remains pending, and the running Web still reads complete
+task graphs under the existing refresh contract.
+
 | Component | Location | Implementation status | Requirements and design |
 |---|---|---|---|
 | `daynight` | `packages/daynight/` | Implemented `review`, npm global `update`, guided `setup`, Bash/zsh `completion` generation and setup, the public task-management skill bundle and interactive Agent installation, shared configuration, server HTTP and repository binding foundations plus project, task and single-file attachment commands; native installed service and resource-budget acceptance implemented | [Client requirements](docs/spec/daynight.md), [client design](docs/design/daynight.md), [completion design](docs/design/daynight-completion.md), [review requirements](docs/spec/daynight-review.md), [review design](docs/design/daynight-review.md), [project/task requirements](docs/spec/daynight-project-task.md), [design](docs/design/daynight-project-task.md) |
-| `daynight-server` | `packages/daynight-server/` | Project/task/graph APIs, mandatory UniAuth/session/PAT authentication, project memberships, PostgreSQL transactions and embedded browser assets implemented | [Requirements](docs/spec/daynight-server.md), [design](docs/design/daynight-server.md) |
+| `daynight-server` | `packages/daynight-server/` | Project/task/graph and time-window summary APIs, mandatory UniAuth/session/PAT authentication, project memberships, PostgreSQL transactions and embedded browser assets implemented | [Requirements](docs/spec/daynight-server.md), [design](docs/design/daynight-server.md) |
 | `daynight-web` | `packages/daynight-web/` | Project browsing, statistics, read-only task graphs with complete prerequisite context and task details, attachment management/preview, embedded delivery, graph production acceptance and strict coverage delivered; English/Simplified Chinese interface and locale persistence implemented | [Requirements](docs/spec/daynight-web.md), [architecture](docs/design/daynight-web.md), [language requirements](docs/spec/daynight-web-i18n.md), [language design](docs/design/daynight-web-i18n.md), [preview](docs/design/mockups/task-dashboard.html) |
 
 The adopted [task attachment requirements](docs/spec/daynight-task-attachments.md) and
