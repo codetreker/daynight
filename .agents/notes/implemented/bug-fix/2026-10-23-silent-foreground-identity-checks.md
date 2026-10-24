@@ -31,7 +31,10 @@ arrives first. New resource reads and writes wait until identity is verified. Ea
 generation and supports cancellation. Same-user success resumes requests; an
 identity change or session clear invalidates the generation before releasing the
 wait, cancelling old-identity requests before fetch. Identity checks and logout
-bypass the wait. Superseded checks cannot release it; failed checks keep it
+bypass the wait. Independently verified project not_found notifications also
+withdraw matching cached access immediately; they grant no content and their
+persistent cleanup still waits for the identity gate. Superseded checks cannot
+release it; failed checks keep it
 pending through recovery. This keeps a visible account label from authorizing
 an action with another account's shared Cookie.
 
@@ -61,8 +64,10 @@ Keeping checks and separating their presentation preserves timely detection.
 ## Consequences
 
 Ordinary tab returns retain visible content, dialogs, focus and browsing state.
-Already loaded content remains visible and interactive while the account check
-is pending, including when another tab has changed the shared session. New
+The account check alone leaves loaded content visible and interactive while
+pending, including when another tab has changed the shared session. A separately
+verified project access loss immediately withdraws its content, including during
+that pause; identity checking does not defer negative access decisions. New
 resource requests wait for identity confirmation before dispatch and still
 authenticate and authorize on the server. This explicitly accepts a display
 interval until the check confirms the change; it does not

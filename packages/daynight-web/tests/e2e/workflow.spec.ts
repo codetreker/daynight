@@ -58,6 +58,36 @@ const within = async <T,>(promise: Promise<T>, label: string, timeoutMs = 15_000
     })]);
   } finally { clearTimeout(timer); }
 };
+const holdProjectSync = async (page: Page, projectId: string) => {
+  const path = `/api/v1/projects/${projectId}/task-sync`;
+  const pattern = (url: URL) => url.pathname === path;
+  const fetched = deferred<void>();
+  const release = deferred<void>();
+  const active = new Set<Promise<void>>();
+  const handler: Parameters<Page['route']>[1] = (route) => {
+    let pending!: Promise<void>;
+    pending = (async () => {
+      const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });
+      expect(response.status()).toBe(200);
+      fetched.resolve();
+      await within(release.promise, 'project sync admission release');
+      if (route.request().failure() !== null) await route.abort('aborted');
+      else await route.fulfill({ status: response.status(), headers: response.headers(), body: await response.body() });
+    })().finally(() => { active.delete(pending); });
+    active.add(pending);
+    return pending;
+  };
+  await page.route(pattern, handler);
+  return {
+    requested: () => within(fetched.promise, 'project sync requested by detail admission'),
+    release: () => release.resolve(),
+    close: async () => {
+      release.resolve();
+      await within(Promise.all([...active]), 'project sync route cleanup');
+      await page.unroute(pattern, handler);
+    },
+  };
+};
 const loadAllProjects = async (page: Page): Promise<void> => {
   await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
   await expect(page.getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
@@ -724,9 +754,9 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
 
   await pauseRefreshClock(page);
   independent = await updateTask(request, project.id, independent.id, { version: independent.version, dependsOn: [predecessor.id] });
+  const joinedSync = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
   await standalone(page, independent.id).click();
-  await expect(dialog.locator('.task-detail-stale')).toBeVisible();
-  await dialog.getByRole('button', { name: '刷新任务图', exact: true }).click();
+  expect((await joinedSync).status()).toBe(200);
   await expect(dialog.locator('.task-detail-title')).toHaveText(independent.title);
   await expect(standalone(page, independent.id)).toHaveCount(0);
   await page.keyboard.press('Escape');
@@ -737,9 +767,9 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await viewTab(page, '任务链').click();
   await expect(inspectTask(page, independent.id)).toBeVisible();
   independent = await updateTask(request, project.id, independent.id, { version: independent.version, dependsOn: [] });
+  const splitSync = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
   await details(page, independent.id).click();
-  await expect(dialog.locator('.task-detail-stale')).toBeVisible();
-  await dialog.getByRole('button', { name: '刷新任务图', exact: true }).click();
+  expect((await splitSync).status()).toBe(200);
   await expect(dialog.locator('.task-detail-title')).toHaveText(independent.title);
   await expect(inspectTask(page, independent.id)).toHaveCount(0);
   await page.keyboard.press('Escape');
@@ -792,8 +822,20 @@ test('detail-navigation', scenario('detail-navigation'), async ({ page, api: req
   await updateTask(request, project.id, b.id, { version: b.version, dependsOn: [a.id, unknown.id] });
   let detailReads = 0;
   page.on('request', (request) => { if (new URL(request.url()).pathname === `/api/v1/projects/${project.id}/tasks/${b.id}`) detailReads++; });
+  const admission = await holdProjectSync(page, project.id);
+  const admittedSync = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
   await details(page, b.id).click();
   const dialog = page.locator('.task-detail-dialog');
+  try {
+    await admission.requested();
+    await expect(dialog.locator('.task-detail-title')).toHaveText('正在加载任务详情');
+    await expect(dialog.locator('.task-description')).toHaveCount(0);
+    await expect(dialog.locator('.task-detail-title-row button[aria-haspopup="menu"]')).toHaveCount(0);
+    await expect(stat(page, '任务总数')).toHaveText('3');
+    admission.release();
+    expect((await admittedSync).status()).toBe(200);
+    await expect(stat(page, '任务总数')).toHaveText('4');
+  } finally { await admission.close(); }
   await expect(dialog.locator('.task-detail-title')).toHaveText(title);
   expect(await dialog.getByRole('region', { name: '描述', exact: true }).locator('.task-description').textContent()).toBe(description);
   await expect(dialog.locator('.task-detail-full-id > span').first()).toHaveText(b.id);
@@ -840,7 +882,7 @@ test('detail-navigation', scenario('detail-navigation'), async ({ page, api: req
   await page.keyboard.press('Shift+Tab');
   await expect(pageSelection).toBeFocused();
   await expect(dialog.getByRole('region', { name: '前置依赖', exact: true }).getByRole('button', { name: `${a.title}，普通依赖`, exact: true })).toBeVisible();
-  const unknownReference = dialog.getByRole('region', { name: '前置依赖', exact: true }).getByRole('button', { name: `${unknown.id}，普通依赖`, exact: true });
+  const unknownReference = dialog.getByRole('region', { name: '前置依赖', exact: true }).getByRole('button', { name: `${unknown.title}，普通依赖`, exact: true });
   await expect(unknownReference).toBeVisible();
   await expect(dialog.getByRole('region', { name: '任务图快照中的直接后续', exact: true }).getByRole('button', { name: `${c.title}，普通依赖`, exact: true })).toBeVisible();
   await dialog.getByRole('region', { name: '任务图快照中的直接后续', exact: true }).getByRole('button', { name: `${c.title}，普通依赖`, exact: true }).click();
@@ -850,10 +892,10 @@ test('detail-navigation', scenario('detail-navigation'), async ({ page, api: req
   await dialog.getByRole('region', { name: '前置依赖', exact: true }).getByRole('button', { name: `${Array.from(title).slice(0, 160).join('')}…，普通依赖`, exact: true }).click();
   await expect(dialog.locator('.task-detail-title')).toHaveText(title);
   await checkPullRequests(dialog, pullRequests);
-  await dialog.getByRole('region', { name: '前置依赖', exact: true }).getByRole('button', { name: `${unknown.id}，普通依赖`, exact: true }).click();
+  await dialog.getByRole('region', { name: '前置依赖', exact: true }).getByRole('button', { name: `${unknown.title}，普通依赖`, exact: true }).click();
   await expect(dialog.locator('.task-detail-title')).toHaveText(unknown.title);
-  await expect(dialog.getByText('当前任务尚未包含在任务图中，请刷新任务图以查看后续关系。')).toBeVisible();
-  await expect(stat(page, '任务总数')).toHaveText('3');
+  await expect(dialog.getByText('当前任务尚未包含在任务图中，请刷新任务图以查看后续关系。')).toHaveCount(0);
+  await expect(stat(page, '任务总数')).toHaveText('4');
   await screenshot(page, info, 'detail-navigation');
 });
 
@@ -882,32 +924,40 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   expect(current.blockedBy).toEqual([]);
   await inspectTask(page, dependent.id).click();
   await expect(inspectTask(page, dependent.id)).toHaveAttribute('aria-pressed', 'true');
+  const derivedSync = await holdProjectSync(page, project.id);
+  const derivedResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
   await details(page, dependent.id).click();
   const dialog = page.locator('.task-detail-dialog');
-  await expect(dialog.locator('.task-detail-title')).toHaveText(dependent.title);
-  await expect(dialog.locator('.task-detail-ready')).toHaveText('可开始');
-  await expect(dialog.getByText('任务详情与当前任务图不同，刷新后可查看一致的进度和关系。')).toBeVisible();
-  await expect(stat(page, '已完成')).toHaveText('0');
-  await expect(stat(page, '被阻塞')).toHaveText('1');
-  await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
-  const graphResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
-  await dialog.getByRole('button', { name: '刷新任务图', exact: true }).click();
-  expect((await graphResponse).status()).toBe(200);
+  try {
+    await derivedSync.requested();
+    await expect(dialog.locator('.task-detail-title')).toHaveText(dependent.title);
+    await expect(dialog.locator('.task-detail-blocked')).toHaveText('被阻塞');
+    await expect(dialog.getByText('任务详情与当前任务图不同，刷新后可查看一致的进度和关系。')).toBeVisible();
+    await expect(dialog.locator('.task-detail-title-row button[aria-haspopup="menu"]')).toBeDisabled();
+    await expect(stat(page, '已完成')).toHaveText('0');
+    await expect(stat(page, '被阻塞')).toHaveText('1');
+    await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
+    derivedSync.release();
+    expect((await derivedResponse).status()).toBe(200);
+  } finally { await derivedSync.close(); }
   await expect(stat(page, '已完成')).toHaveText('1');
   await expect(stat(page, '被阻塞')).toHaveText('0');
   await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('进行中');
   await expect(root(page, predecessor.id).locator('.root-progress-label')).toHaveText('1/2 已完成');
   await expect(inspectTask(page, predecessor.id).locator('.graph-status')).toHaveText('已完成');
   await expect(dialog.locator('.task-detail-title')).toHaveText(dependent.title);
+  await expect(dialog.locator('.task-detail-ready')).toHaveText('可开始');
   await expect(dialog.locator('.task-detail-stale')).toHaveCount(0);
   await expect(inspectTask(page, dependent.id).locator('.graph-blocked-badge')).toHaveCount(0);
   await page.keyboard.press('Escape');
   const pullRequests = Array.from({ length: 205 }, (_, index) => ({ title: `刷新前关联 ${index + 1}`, url: '  new arbitrary URL\0  ' }));
   let changed = await updateTask(request, project.id, dependent.id, { version: current.version, properties: { pullRequests } });
   expect(changed.properties.pullRequests).toEqual(pullRequests);
+  const propertiesSync = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
   await details(page, dependent.id).click();
+  expect((await propertiesSync).status()).toBe(200);
   await checkPullRequests(dialog, pullRequests);
-  await expect(dialog.locator('.task-detail-stale')).toBeVisible();
+  await expect(dialog.locator('.task-detail-stale')).toHaveCount(0);
   await dialog.getByRole('combobox', { name: '关联 PR 页码' }).selectOption('2');
   await dialog.getByRole('combobox', { name: '关联 PR 页码' }).focus();
   await checkPullRequests(dialog, pullRequests, 2);
@@ -933,8 +983,16 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   const repeatedRefresh = async (panel: string, retained: () => Promise<void>): Promise<void> => {
     // The CSS opening animation is awaited separately from the mocked polling clock.
     await dialog.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
+    const unchanged = await expectStableAutomaticDetailRefresh(page, project.id, dependent.id, async () => {
+      expect(await nextAutomaticRefresh(page, project.id)).toBe(200);
+    }, retained, false);
+    geometryEvidence.push({ panel, cycle: 0, reading: unchanged });
     for (let cycle = 1; cycle <= 3; cycle++) {
       const reading = await expectStableAutomaticDetailRefresh(page, project.id, dependent.id, async () => {
+        const previousVersion = changed.version;
+        changed = await updateTask(request, project.id, dependent.id, { version: previousVersion,
+          description: `${dependent.description}\n\n后台正文更新 ${panel}/${geometryEvidence.length}/${cycle}。` });
+        expect(changed.version).toBe(previousVersion + 1);
         expect(await nextAutomaticRefresh(page, project.id)).toBe(200);
       }, retained);
       geometryEvidence.push({ panel, cycle, reading });
@@ -1321,7 +1379,10 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(dialog).toHaveCount(0);
   await expect(fullscreen).toBeVisible();
   await expect(trigger).toBeFocused();
+  const reopenedDetail = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/tasks/${b.id}`);
   await page.keyboard.press('Space');
+  expect((await reopenedDetail).status()).toBe(200);
+  expect(await (await reopenedDetail).finished()).toBeNull();
   await expect(dialog.locator('.task-detail-title')).toHaveText(b.title);
   expect(detailReads).toBe(2);
   await close.click();
@@ -1393,9 +1454,9 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
     currentTask = await updateTask(request, project.id, b.id, { version: currentTask.version, dependsOn: [] });
     await inspectTask(page, b.id).click();
     await expect(inspectTask(page, b.id)).toHaveAttribute('aria-pressed', 'true');
+    const repartitioned = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
     await trigger.click();
-    await expect(dialog.locator('.task-detail-stale')).toBeVisible();
-    await dialog.getByRole('button', { name: '刷新任务图', exact: true }).click();
+    expect((await repartitioned).status()).toBe(200);
     await expect(dialog.locator('.task-detail-title')).toHaveText(b.title);
     await expect(trigger).toHaveCount(0);
     await expect(page.locator('.task-node-selected')).toHaveCount(0);

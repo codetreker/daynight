@@ -842,7 +842,7 @@ describe("authenticated application shell", () => {
       started = true;
       await act(async () => finishStatus(json(detail())));
       await within(dialog).findByRole("button", { name: "进行中" });
-      expect(within(dialog).getByRole("button", { name: "进行中" })).toBeEnabled();
+      await waitFor(() => expect(within(dialog).getByRole("button", { name: "进行中" })).toBeEnabled());
     } finally { view.unmount(); root.remove(); }
   });
 

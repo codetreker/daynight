@@ -1,4 +1,4 @@
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -32,10 +32,8 @@ const attachment: Attachment = {
 };
 let root: HTMLDivElement;
 
-const syncFixture = createGraphSyncFixture();
 beforeEach(() => {
-  syncFixture.reset();
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n }));
 });
 
 beforeEach(() => {
@@ -112,6 +110,6 @@ describe('graph inspection and detail reading integration', () => {
     expect(graphSnapshot(view.container)).toEqual(state);
     expect(setTaskStatus).not.toHaveBeenCalled();
     expect(graphRequest).toHaveBeenCalledTimes(1);
-    expect(getTask).toHaveBeenCalledExactlyOnceWith(graph.project.id, detailNode.id, expect.any(AbortSignal));
+    expect(getTask).toHaveBeenCalledExactlyOnceWith(graph.project.id, detailNode.id, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function) });
   });
 });

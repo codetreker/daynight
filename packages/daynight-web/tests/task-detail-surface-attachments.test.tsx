@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { ApiError, attachmentPageUrl } from '../src/api/client';
 import type { Attachment, AttachmentPage as Page } from '../src/api/types';
@@ -12,7 +12,12 @@ import type { AttachmentUrls } from '../src/features/task-detail/attachments/Tas
 import type { AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
 import { createLocaleRender } from './helpers/renderWithLocale';
 
-const render = createLocaleRender('zh-CN');
+import { createTaskSessionWorld } from './helpers/taskSessions';
+import { TEST_VIEWER_ID } from './helpers/taskSync';
+
+let world: ReturnType<typeof createTaskSessionWorld>;
+const localeRender = createLocaleRender('zh-CN');
+const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: { scope: world.scope } });
 const projectId = '00000000-0000-4000-8000-000000000100';
 const taskId = '00000000-0000-4000-8000-000000000001';
 const timestamp = '2026-10-21T00:00:00Z';
@@ -42,7 +47,12 @@ const Reader = ({ api, path, id, urls }: { readonly api: AttachmentApi; readonly
     attachmentApi={api} {...(urls === undefined ? {} : { attachmentUrls: urls })} onNavigate={(next) => { setSelection(next); navigateTaskDetail(projectId, id, next); }} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} /></TaskDetailSessionBoundary>;
 };
 const page = (api: AttachmentApi, path = 'docs/readme.md', id = taskId) => <Reader key={id} api={api} path={path} id={id} />;
-beforeEach(() => { vi.stubGlobal('fetch', vi.fn(async (url: string) => resourceResponse(detailFixture(projectId, url.split('/').at(-1)!)))); });
+beforeEach(async () => {
+  world = createTaskSessionWorld();
+  await world.sync([detailFixture(projectId, taskId), detailFixture(projectId, '00000000-0000-4000-8000-000000000002')]);
+  vi.stubGlobal('fetch', vi.fn(async (url: string) => resourceResponse(detailFixture(projectId, url.split('/').at(-1)!), TEST_VIEWER_ID)));
+});
+afterEach(() => world.dispose());
 
 describe('full-detail attachment surface', () => {
   it('uses the complete shared file panel and synchronizes explicit selections without duplicate history entries', async () => {

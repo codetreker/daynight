@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { ApiError } from '../../src/api/client';
 import type { TaskDetailNavigation } from '../../src/app/router';
 import { TaskDetailSurface } from '../../src/features/task-detail/TaskDetailSurface';
-import { TaskDetailSessionBoundary } from '../../src/features/task-detail/TaskDetailSession';
+import { TaskDetailFixtureBoundary } from './TaskDetailFixtureBoundary';
 import { LocaleProvider } from '../../src/i18n/LocaleProvider';
 import { LanguageSelector } from '../../src/i18n/LanguageSelector';
 import { createAttachmentFixture } from './fixture';
@@ -15,6 +15,7 @@ const query = new URLSearchParams(window.location.search);
 const scenario = query.get('notice') ?? 'normal';
 const page = query.get('mode') === 'page';
 const fixture = createTaskDetailFixture({ initialStatus: scenario === 'locked' ? 'in_progress' : 'todo' });
+await fixture.ready;
 const attachments = createAttachmentFixture('files');
 if (scenario === 'unknown') fixture.failNextMutation();
 if (scenario === 'stale') fixture.holdGraph();
@@ -42,7 +43,7 @@ const NotificationsMockup = () => {
     onSelectTask: (id: string) => { setTaskId(id); setSelection({ tab: 'overview', path: null }); }, graphError, onRefreshGraph: () => { setGraphError(null); fixture.refreshGraph(); },
     attachmentApi: attachments.api, attachmentUrls: { ...attachments.urls, page: (path: string) => detailUrl(taskId, { tab: 'attachments', path }) },
   };
-  return <TaskDetailSessionBoundary>{page
+  return <TaskDetailFixtureBoundary fixture={fixture}>{page
     ? <TaskDetailSurface {...shared} presentation="page" />
     : <>
       <main className="content">
@@ -58,7 +59,7 @@ const NotificationsMockup = () => {
       </main>
       {open && createPortal(<TaskDetailSurface {...shared} presentation="dialog" onClose={() => setOpen(false)} onRestoreFocus={() => document.getElementById('open-detail')?.focus()} />, document.body)}
     </>}
-  </TaskDetailSessionBoundary>;
+  </TaskDetailFixtureBoundary>;
 };
 
 const root = document.getElementById('root');

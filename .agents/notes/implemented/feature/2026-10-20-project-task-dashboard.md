@@ -109,7 +109,9 @@ partially supersedes the original right-side layout with a centered reading shel
 and responsive content columns, while retaining this modal lifecycle.
 Latest detail data never patches graph statistics.
 Readiness, blocking, dependency, status, preview and timestamp differences produce
-a refresh notice; a new graph revision rereads the selected detail.
+a refresh notice. The [detail-cache decision](../architecture/2026-10-24-task-view-timestamp-window.md)
+owns business-version-driven reads, matching intrinsic reuse and live admission;
+a clock-only graph receipt does not reread unchanged details.
 
 The pinned React Flow dependency needs a declaration-only mapped-type correction
 under exact optional property checking. Two system declarations explicitly

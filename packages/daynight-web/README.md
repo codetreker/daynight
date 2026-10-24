@@ -181,9 +181,9 @@ stores. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and bounded counts for both active and invalidated manifests.
 An invalidated manifest has a recognized reason, null epoch/Project/watermark and
-zero task/edge counts; it cannot retain a usable incremental baseline. The details store and guarded transaction
-interface are shared infrastructure; intrinsic detail content, LRU and
-change-driven detail GETs are not connected yet.
+zero task/edge counts; it cannot retain a usable incremental baseline. The shared
+details store and guarded transaction interface support intrinsic content reuse,
+bounded LRU and business-version-driven detail reads.
 
 `beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
 `applySync` validates the transaction's complete durable set and atomically saves
@@ -195,22 +195,33 @@ repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
 invalidate detail records, replace published indexes or broadcast.
 
 The current mount requires its own successful online project sync before private
-cache publication. `Daynight-User-ID` is checked before decoding or acting on a
-sync response. A verified different principal synchronously releases old content
+cache publication. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
+mutation responses. A verified different principal synchronously releases old content
 and starts identity verification. Headerless or malformed-principal errors retain
-valid cached content; only a verified same-user `404 not_found` invalidates the
-project. Scope invalidation aborts current work and releases memory before its
+valid cached content. Project-sync not_found, a trusted not_found for a task known
+when GET started, or a trusted task-write not_found immediately withdraw matching
+project admission. Unknown task IDs remain local errors. Captured ticket checks
+prevent an old-generation response from clearing a replacement generation. Scope invalidation aborts current work and releases memory before its
 user-specific persistent purge; ordinary disposal closes resources and preserves
-the durable base. Foreground request gating also covers local reads/publication.
+the durable base. Foreground gating covers durable reads and positive publication;
+negative access events hide content immediately while persistence waits for the
+gate. `canRevokeProject` and `revokeProject` check the captured user fence/generation,
+retire local reuse synchronously, and purge only the matching durable generation
+through the existing transaction. Scope-owned cleanup outlives the view; failure
+keeps admission denied, and beginSync retries cleanup before a fresh online sync.
+An old graph receipt alone cannot re-admit the detail.
 
-Broadcast hints contain no task content or authority. Authorized receivers read
-committed stores without issuing another network request. Failed IDB opening,
+Ordinary broadcast hints contain no task content or access grant; authorized
+receivers reread committed stores without another network request. Negative hints
+carry userFence/revokedGeneration and immediately deny matching peers, including
+a bound cold peer with no projection, without rebroadcast. Stale hints cannot
+replace a newer generation or denial. Failed IDB opening,
 blocked upgrades, abnormal close, corruption or writes use existing visible
 error/Retry states and retain an allowed current view. Missing or malformed user
 scope records are repaired in one four-store transaction: replace the fence,
 clear only that user's summaries/details and invalidate its project baselines.
-The repair never parses or reuses the damaged fence. Memory binding, scope
-retirement and hints wait for commit; a cold scope can then bind the replacement,
+The repair never parses or reuses the damaged fence. For that user-corruption
+repair, memory binding, scope retirement and hints wait for commit; a cold scope can then bind the replacement,
 while an already-bound scope retires and requests identity verification. A failed
 repair rolls back without retiring the detecting scope, exposing a retryable
 storage error. Other users remain intact, and stale tickets fail against the new
@@ -218,7 +229,63 @@ fence before publication. There is no silent network-only fallback. `Task sync` 
 received/changed/duplicate counts, cache hit and apply duration; duplicate includes
 ignored old versions. Failure diagnostics expose categories and a depth-limited allowlist of cause
 names/codes, without raw messages, stacks, task bodies or credentials. The [cache architecture](../../docs/design/daynight-task-sync.md)
-owns the algorithm, schema, failure rules and remaining detail integration.
+owns the algorithm, schema, failure rules and detail integration.
+
+## Persistent task details
+
+`TaskDetailSessions(scope)` uses the same authenticated scope and schema-1 details
+store as project summaries. `detail-cache.ts` validates intrinsic bodies against
+the current summary and guarded lifecycle ticket, then materializes readiness and
+blockers from the complete local graph. Full current properties, including
+nullable worker metadata, remain intact. A new summary version invalidates its
+detail; prerequisite-only changes update derived fields without successor GETs.
+Raw server-derived disagreements are retained separately before materialization,
+so stale feedback and write restrictions cannot disappear through local overwrite.
+Every admitted opening calls `requireOpeningRead` before operation blocking is
+considered, recording an in-memory opening generation that its live GET must
+satisfy. Pending/unknown operations delay the GET without losing that demand;
+disk, mutation results, same-version no-ops/refusals and reconciliation begun
+before reopening cannot grant later-opening authority. Duplicate polling receipts
+do not create openings. Project-generation changes immediately clear the old body,
+PR data and loadedRevision, cancel old reads/pending bodies and reset freshness
+and committed-version floors. Render-time generation checks suppress old content
+before effects, even when the replacement GET hangs or fails. Operation intent
+and confirmed/unknown phases survive, while canceled reconciliation becomes
+retryable; only same-generation refresh failures retain the successful body. During foreground auth pauses, rendering getters retain only
+previously observed memory values; requests, transactions and new-mount admission
+still wait for identity verification.
+
+`readCachedDetail` touches lastUsedAt on a real cache read. `saveDetail` skips
+identical persistent content and returns matching/older/newer admission. The
+session holds newer GETs for project synchronization before installation. A
+validated confirmed write can show its newer raw body after guarded lifecycle
+checks, with mismatch/fresh-read restrictions, until summaries catch up; it is
+not persisted ahead of the summary. The feed exposes current rows and can skip
+intermediate business versions. A pending body above the summary keeps waiting;
+an exact match is admitted under its captured ticket. When the summary overtakes
+it, the session discards that body and queues the required GET with its original
+purpose through the existing queue, retaining operation intent, outcome and
+version floors. Ordinary reads fail visibly through detail error/Retry and clear
+their own blocker on successful GET. Mutation readback retains reconciliation
+purpose and keeps Check state/Retry usable on failure; ordinary recovery cannot
+leave a hidden reconciliation blocker. Duplicate receipts do not loop mutation
+readback, and explicit Retry only reads. Neither operation writes summaries
+or their watermark. Limits are 32 records per project, 8 MiB total and 2 MiB per
+record, using UTF-8 bytes from exact intrinsic JSON; LRU uses lastUsedAt with task
+ID as a tie-breaker. Oversized successful bodies stay readable in the active
+session without persistence. Corrupt detail rows or aggregate budgets clear only
+the project's details under the captured lifecycle, then expose the original
+error; Retry reads actual storage and performs live GET. Cleanup/write failures
+remain visible rather than enabling a silent network-only path.
+
+Detail GET and all three task mutations require explicit `TaskResponseAdmission`
+with userId and onPrincipalMismatch. Same-user HTTP 200 confirms the remote write
+response before payload parsing, separately from whether a body can be installed
+or cached. Malformed bodies require GET-only reconciliation; cache failures keep
+the confirmed operation and an error without replaying a write. Existing pending,
+unknown, reconciling and exact-version gates remain. The
+[cache architecture](../../docs/design/daynight-task-sync.md#6-投影时钟与详情)
+owns the complete admission, race, budget and failure rules.
 
 ## Task execution time and possible stalls
 
@@ -522,10 +589,12 @@ An open project automatically requests task-sync every five seconds while the
 document is visible. Hidden documents start no periodic reads; returning requests
 immediately unless a sync is already active. Automatic ticks skip active syncs.
 Manual refresh cancels the active read and starts immediately. Every successful
-response updates the mount's receipt time and current detail read, including
-duplicate-only responses; this preserves the current detail-session policy until
-persistent detail reuse is connected. `GraphSnapshot.revision` is this successful
-mount-local receipt, not a task version or durable commit counter. Equivalent
+response updates the mount's clock receipt, including duplicate-only responses.
+Detail content follows its own summary business version and project generation;
+unchanged receipts do not cause GETs or detail writes. Receipt-driven recovery
+still retries failed reads and raw graph disagreements. `GraphSnapshot.revision`
+is the successful mount-local receipt and online-admission signal, not a task
+version or durable commit counter. Equivalent
 task data retains its index and layout; settings-only changes update Project
 metadata without rebuilding task projections, and changed intrinsic data replaces
 statistics and both task-category lists together. The
@@ -538,8 +607,8 @@ uses the shared detail surface for lock tooltips, success, unknown-write, stale
 snapshot and refresh-error feedback in dialog and page containers. Production
 verification uses the real-service journeys.
 
-Same-resource graph and detail refresh retain successful data while loading and
-on recoverable failure. Errors remain in state during automatic retries until a
+Same-resource, same-generation graph and detail refresh retain successful data
+while loading and on recoverable failure. Errors remain in state during automatic retries until a
 successful response clears them, including a failure before any successful read.
 Project errors stay visible; task-detail bubbles expire while keeping recovery
 reachable from the floating entry.
@@ -789,9 +858,11 @@ and freshness, then composes the shared detail session. Initial loading, initial
 failure and retained-snapshot refresh errors stay distinct; failure cannot become
 an empty graph. Retained-snapshot errors use the shared floating layer inside
 the detail surface, as do the page language selector's preference-storage notices,
-preserving tab and reading geometry. Each successful graph
-revision still rereads full task details,
-even when the graph projection is unchanged. Same-identity foreground auth
+preserving tab and reading geometry. Matching persistent detail content is
+available only after this mount's successful project sync, and opening still
+performs a live GET before writes. Task business versions, project generations
+and recovery needs drive later reads; clock-only graph receipts do not reread
+unchanged details. Same-identity foreground auth
 revalidation retains ordinary page visibility, interaction and component identity.
 Unchanged detail refreshes retain focus, inputs, preview and heading/panel geometry.
 Each window reads its own resources; task objects, snapshots and confirmations
