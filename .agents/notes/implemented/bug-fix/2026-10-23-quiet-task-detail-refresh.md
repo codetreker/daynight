@@ -30,10 +30,12 @@ own precise-version status setting and required freshness; ordinary optional rea
 not change status-write eligibility. This decision narrows the presentation of
 retained reads without changing either lifecycle.
 
-The production `refresh-staleness` journey measures heading, tabs and the active
-reading panel before, during and after held detail responses triggered by the
-existing scheduler. Repeated unchanged responses isolate request presentation
-from natural layout changes caused by new data. Component checks retain the
+The production `refresh-staleness` journey waits for the dialog opening
+animation to finish before measuring heading, tabs and the active reading panel
+before, during and after held detail responses triggered by the existing
+scheduler. Advancing a simulated JavaScript clock does not establish that the
+CSS opening transform has settled. Repeated unchanged responses isolate request
+presentation from natural layout changes caused by new data. Component checks retain the
 error, required-fresh-read and status cases; browser checks establish geometry
 and retained interaction state at supported viewport sizes. Its only browser
 mutation is one registered fixture-file PUT: the real server commits the upload

@@ -195,6 +195,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     await expect(directory).not.toHaveAttribute('open');
     await selectFile(attachments, 'docs/guide.md');
     const body = attachments.locator('.attachment-preview-body');
+    await expect(body.locator('.attachment-markdown')).toContainText('段落 60：附件与任务详情共享生命周期。');
     await body.evaluate(element => { element.scrollTop = 180; });
     const before = await body.evaluate(element => element.scrollTop); expect(before).toBeGreaterThan(0);
     await tab(reader, 'overview').click(); await expectAddress(reader, project.id, task.id, 'overview', 'docs/guide.md');
