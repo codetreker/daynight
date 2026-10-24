@@ -431,7 +431,7 @@ func acceptancePartialFailure(t *testing.T, scenario *acceptanceScenario) {
 		CREATE FUNCTION acceptance_reject_second_edge() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN
 		IF NEW.task_id='%s'::uuid AND NEW.depends_on_task_id='%s'::uuid THEN
-			IF NOT EXISTS (SELECT 1 FROM tasks WHERE id=NEW.task_id AND title='Changed' AND description='Changed' AND version=2 AND properties::jsonb = '{"pullRequests":[{"url":"changed","title":"Changed"}]}'::jsonb)
+			IF NOT EXISTS (SELECT 1 FROM tasks WHERE id=NEW.task_id AND title='Changed' AND description='Changed' AND version=2 AND properties::jsonb = '{"pullRequests":[{"url":"changed","title":"Changed"}],"worker":null}'::jsonb)
 			OR NOT EXISTS (SELECT 1 FROM task_dependencies WHERE task_id=NEW.task_id AND depends_on_task_id='%s'::uuid) THEN
 				RAISE EXCEPTION USING ERRCODE='P1002', MESSAGE='acceptance-secret barrier was not reached';
 			END IF;

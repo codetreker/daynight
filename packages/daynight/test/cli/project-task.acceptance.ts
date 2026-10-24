@@ -317,15 +317,16 @@ it("runs the actual installed launcher through native project/task discovery, pe
     scenarios.push("installed-pr-pairing-empty-duplicates-raw-text-json-replace-and-clear");
 
     const multiline = [{ url: " arbitrary\r\nURL ", title: " 标题\n\r\u001b[2J " }, { url: "", title: "" }, { url: " arbitrary\r\nURL ", title: " 标题\n\r\u001b[2J " }];
+    const multilineProperties = { pullRequests: multiline };
     const multilinePairs = ["--pull-request-title", multiline[0]!.title, "--pull-request-url", multiline[0]!.url, "--pull-request-url=", "--pull-request-url", multiline[2]!.url, "--pull-request-title=", "--pull-request-title", multiline[2]!.title];
     const createdMultiline = await invoke(["task", "create", "--title", "Multiline PR task", ...multilinePairs, ...explicit], outside, 0, true, "node-entry");
-    expect(requests.at(-1)!.body).toEqual({ title: "Multiline PR task", properties: { pullRequests: multiline } });
+    expect(requests.at(-1)!.body).toEqual({ title: "Multiline PR task", properties: multilineProperties });
     expect(createdMultiline.stdout).toContain("1. Title:  标题\\n\\r\\u001b[2J \n     URL:  arbitrary\\r\\nURL ");
-    properties = { worker: null, pullRequests: multiline };
+    properties = { ...multilineProperties, worker: null };
     const multilineUpdateAt = requests.length;
     await invoke(["task", "update", taskId, ...multilinePairs, ...explicit], outside, 0, true, "node-entry");
     expect(requests.slice(multilineUpdateAt).map(({ method }) => method)).toEqual(["GET", "GET", "PATCH"]);
-    expect(requests.at(-1)!.body).toEqual({ version: 9_007_199_254_740_993n, properties });
+    expect(requests.at(-1)!.body).toEqual({ version: 9_007_199_254_740_993n, properties: multilineProperties });
     for (const args of [["task", "show", taskId], ["task", "list"]]) {
       const json = await invoke([...args, "--json", ...explicit], outside, 0, true, "node-entry");
       expect(parseApiJson(json.stdout)).toEqual(args[1] === "list" ? [taskListItem({ ...task(), properties })] : { ...task(), properties, version: 9_007_199_254_740_993n });
