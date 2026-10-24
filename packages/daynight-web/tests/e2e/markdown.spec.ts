@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Locator, Page, TestInfo } from '@playwright/test';
-import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
+import { attachmentDownloadUrl, attachmentPageUrl, attachmentPreviewUrl } from '../../src/api/client';
 import { parseTaskGraph } from '../../src/api/parse';
 import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
 import { createProject, createTask, expect, test, updateTask } from './fixtures';
@@ -253,7 +253,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     const readerErrors: string[] = [];
     flowchartReader.on('pageerror', (error) => readerErrors.push(error.message));
     try {
-      await flowchartReader.goto(attachmentPreviewUrl(project.id, task.id, 'plan.md'));
+      await flowchartReader.goto(attachmentPageUrl(project.id, task.id, 'plan.md'));
       await expectFlowcharts(flowchartReader.locator('.attachment-preview-body'));
       await flowchartReader.reload();
       await expectFlowcharts(flowchartReader.locator('.attachment-preview-body'));
@@ -262,7 +262,11 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
       expect(await flowchartReader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await readerContent.locator('.mermaid-diagram').nth(1).scrollIntoViewIfNeeded();
       await capture(flowchartReader, info, 'flowchart-standalone-reader-320');
-      await flowchartReader.getByRole('link', { name: '嵌套资料', exact: true }).click();
+      const docsDirectory = flowchartReader.locator('.attachment-sidebar summary').filter({ hasText: /^▱ docs$/ }).locator('..');
+      await expect(docsDirectory).toHaveCount(1);
+      if (await docsDirectory.getAttribute('open') === null) await docsDirectory.locator(':scope > summary').click();
+      await docsDirectory.locator('.attachment-file-name').filter({ hasText: /^child\.md$/ }).locator('..').click();
+      await expect(flowchartReader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, 'docs/child.md'), baseURL).href);
       await expect(flowchartReader.locator('.attachment-preview-body .mermaid-flowchart')).toHaveCount(1);
       await expect.poll(() => flowchartReader.locator('.attachment-preview-body .mermaid-diagram img').evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
       expect(await flowchartReader.locator('.attachment-preview-body .mermaid-flowchart').textContent()).not.toContain('未闭合节点');
