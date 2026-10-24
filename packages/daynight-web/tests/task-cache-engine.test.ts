@@ -194,7 +194,7 @@ it("re-reads hints for authorized projects and never relays hints or repeated co
 
 it("exposes fenced detail transactions whose detail timestamps cannot advance the project maximum", async () => {
   const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal());
-  const detail: TaskIntrinsicDetail = { id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: later };
+  const detail: TaskIntrinsicDetail = { id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { worker: null, pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: later };
   await cache.detailTransaction(ticket, signal(), async (details, manifest, summaries) => {
     expect(summaries.get(taskId(1))!.version).toBe(1n);
     await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
