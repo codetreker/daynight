@@ -105,7 +105,7 @@ func TestRunStartupFailures(t *testing.T) {
 			values[key] = value
 		}
 		var output bytes.Buffer
-		if code := run(context.Background(), func(key string) string { return values[key] }, &output); code != 1 {
+		if code := run(context.Background(), nil, func(key string) string { return values[key] }, io.Discard, &output); code != 1 {
 			t.Fatalf("startup failure returned %d", code)
 		}
 		if strings.Contains(output.String(), "top-secret") || !strings.Contains(output.String(), `"phase":"`) {
@@ -113,7 +113,7 @@ func TestRunStartupFailures(t *testing.T) {
 		}
 	}
 	var output bytes.Buffer
-	if code := run(context.Background(), func(string) string { return "" }, &output); code != 1 || !strings.Contains(output.String(), "DAYNIGHT_DATABASE_URL is required") {
+	if code := run(context.Background(), nil, func(string) string { return "" }, io.Discard, &output); code != 1 || !strings.Contains(output.String(), "DAYNIGHT_DATABASE_URL is required") {
 		t.Fatalf("configuration error is not actionable: %s", &output)
 	}
 	values := testEnvironment(t)
@@ -123,7 +123,7 @@ func TestRunStartupFailures(t *testing.T) {
 	}
 	defer listener.Close()
 	values["DAYNIGHT_LISTEN_ADDR"] = listener.Addr().String()
-	if code := run(context.Background(), func(key string) string { return values[key] }, &output); code != 1 || !strings.Contains(output.String(), "HTTP listen failed") {
+	if code := run(context.Background(), nil, func(key string) string { return values[key] }, io.Discard, &output); code != 1 || !strings.Contains(output.String(), "HTTP listen failed") {
 		t.Fatalf("occupied listener was not diagnosed: %s", &output)
 	}
 }
@@ -147,20 +147,30 @@ func TestRunStopsAfterStartup(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	output := &stoppingWriter{stop: cancel}
-	if code := run(ctx, func(key string) string { return values[key] }, output); code != 0 || !strings.Contains(output.String(), `"phase":"stopped"`) {
+	if code := run(ctx, nil, func(key string) string { return values[key] }, io.Discard, output); code != 0 || !strings.Contains(output.String(), `"phase":"stopped"`) {
 		t.Fatalf("clean shutdown returned %d: %s", code, output.String())
 	}
 }
 
 func TestMainUsesProcessConfigurationAndExitCode(t *testing.T) {
 	t.Setenv("DAYNIGHT_DATABASE_URL", "")
-	previous := exit
-	defer func() { exit = previous }()
+	previousExit, previousArgs, previousStderr := exit, os.Args, os.Stderr
+	defer func() { exit, os.Args, os.Stderr = previousExit, previousArgs, previousStderr }()
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	os.Args, os.Stderr = []string{"daynight-server"}, writer
 	code := -1
 	exit = func(value int) { code = value }
 	main()
-	if code != 1 {
-		t.Fatalf("process exit code %d", code)
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	output, err := io.ReadAll(reader)
+	if err != nil || code != 1 || !bytes.Contains(output, []byte("DAYNIGHT_DATABASE_URL is required")) {
+		t.Fatalf("process configuration exit code %d: %s, %v", code, output, err)
 	}
 }
 
@@ -194,7 +204,7 @@ func TestRunServesProjectAndTaskAPI(t *testing.T) {
 	finished := make(chan int, 1)
 	stopped := make(chan struct{})
 	go func() {
-		finished <- run(ctx, func(key string) string { return values[key] }, output)
+		finished <- run(ctx, nil, func(key string) string { return values[key] }, io.Discard, output)
 		close(stopped)
 	}()
 	t.Cleanup(func() {

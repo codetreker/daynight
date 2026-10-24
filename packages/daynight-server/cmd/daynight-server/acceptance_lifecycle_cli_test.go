@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -340,6 +342,22 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		beforeEdges, beforeAttachments := acceptanceMigrationMaterials(t, fixture, projectID, ids)
 		if len(beforeLedger) != 12 {
 			t.Fatal("upgrade fixture did not use the genuine v12 migration prefix")
+		}
+		acceptanceMigrateAttachmentLayout(t, fixture)
+		if !reflect.DeepEqual(acceptanceMigrationLedger(t, fixture), beforeLedger) || !reflect.DeepEqual(acceptanceHistoricalRows(t, fixture, ids), beforeFailure) {
+			t.Fatal("attachment layout maintenance changed historical SQL resources")
+		}
+		layoutEdges, layoutAttachments := acceptanceMigrationMaterials(t, fixture, projectID, ids)
+		if layoutEdges != beforeEdges || layoutAttachments != beforeAttachments {
+			t.Fatal("attachment layout maintenance changed historical dependencies or attachment metadata")
+		}
+		if _, err := os.Stat(legacyPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("attachment layout maintenance left the genuine old content path")
+		}
+		migratedPath := filepath.Join(fixture.storageRoot, "task-attachments", projectID, ids[1][:2], ids[1], "plans", "legacy.md")
+		migratedBytes, err := os.ReadFile(migratedPath)
+		if err != nil || !bytes.Equal(migratedBytes, legacyBytes) {
+			t.Fatal("attachment layout maintenance did not preserve historical bytes at the final path")
 		}
 		failed := fixture.launch(t, nil)
 		failed.stopped(t, 1)

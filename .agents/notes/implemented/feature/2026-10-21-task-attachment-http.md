@@ -21,7 +21,11 @@ provides the deployment volumes and paired backup/restore validation.
 Migration 004 adds one `task_attachments` table keyed by `(task_id, path)` with
 C-collated path, ownership, content type, actual write size and timestamps.
 There is no attachment ID, foreign key, storage key or historical object table.
-The storage address remains `task-attachments/<canonicalTaskId>/<path>`.
+The [project-grouped layout](../architecture/2026-10-24-project-sharded-attachment-layout.md)
+derives the current address as
+`task-attachments/<canonicalProjectId>/<canonicalTaskId[:2]>/<canonicalTaskId>/<path>`
+in the attachment business layer. HTTP paths and metadata retain the original
+task-relative identity; clients do not supply a physical shard.
 
 The concrete PG store supplies scoped metadata queries and a path-keyset page.
 The service validates project/task ownership before file IO. List cursors bind
@@ -54,7 +58,9 @@ safe handling.
 K1 remains accepted and untreated. File IO and PG updates are separate operations;
 normal errors propagate even if storage already changed. Missing metadata is a
 scoped 404, while an existing record whose bytes are missing remains a storage
-failure. No coordinator, compensation, recovery, ledger or scanner is introduced.
+failure. Normal HTTP operations add no K1 coordinator, compensation, recovery
+ledger or scanner. Explicit offline layout maintenance has its own bounded conversion
+manifest and does not repair business consistency.
 
 ## Alternatives
 
@@ -82,9 +88,11 @@ Attachment operations do not update task fields, properties, versions, status,
 dependencies or timestamps. Multiple files still update independently, and PG
 records can disagree with storage after partial or concurrent failures.
 
-The schema and existing migration acceptance assert exactly one entry for each
-of versions 1 through 4. Tests use real PG and LocalStorage for metadata and
-content; failure doubles implement only the already-required Storage interface.
+The original HTTP delivery verified exactly one migration entry for each of
+versions 1 through 4. Current schema migrations retain their own lifecycle
+acceptance; layout maintenance does not mutate that ledger. Tests use real PG
+and LocalStorage for metadata and content; failure doubles implement only the
+already-required Storage interface.
 HTTP checks cover original paths, MIME, actual length, scoped errors and aborted
 streams. An actual built-process probe verifies raw bytes, relative resources
 and restart persistence. Source-bound results remain in the PR and CI.

@@ -29,11 +29,18 @@ adopted cross-component design; the CLI and Web notes own their transport,
 rendering and output choices.
 
 Generic file storage uses bucket and real relative path addressing through
-Put/Open/Delete. The initial adapter is local disk. Task attachment consumers use
-the task-attachments bucket and canonical task ID as the first path component.
-Physical sharding is an adapter detail, not another persisted or public path.
-The initial layout directly mirrors bucket and path; no sharding configuration
-or migration mechanism is part of this delivery.
+Put/Open/Delete. The initial adapter is local disk. The
+[project-grouped layout decision](2026-10-24-project-sharded-attachment-layout.md)
+owns current attachment addressing: the business layer supplies canonical
+project/task-shard/task prefixes while public paths remain task-relative.
+
+At initial adoption, a globally unique task ID directly followed the
+`task-attachments` bucket. Potential physical sharding was left to a local
+adapter, and that delivery introduced no sharding configuration or migration
+mechanism. The direct tree was sufficient for the initial path-based file API
+without another stored identity. The later project-grouped decision supersedes
+that layout and responsibility choice while preserving this note's single-file,
+preview-trust and K1 boundaries.
 
 One PostgreSQL attachment table owns task association, relative path and file
 metadata. Directories are inferred from paths. Each upload, overwrite or deletion

@@ -229,7 +229,7 @@ Two Compose-managed named volumes hold application data:
 | Volume | Container path | Content |
 |---|---|---|
 | `postgres-data` | `/var/lib/postgresql` | PostgreSQL data, including users, sessions, project membership and attachment metadata |
-| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<taskId>/<relativePath>` |
+| `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<projectId>/<taskId[:2]>/<taskId>/<relativePath>` |
 
 Names are scoped to the Compose project. Server startup applies its embedded
 migrations. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
@@ -326,6 +326,114 @@ backup service or cross-store recovery mechanism. The
 owns the volume and validation rationale. The
 [dev-ci attachment check](../dev-ci/README.md#attachment-persistence-check)
 exercises this procedure with disposable data and confirms scoped cleanup.
+
+## Attachment layout upgrade
+
+Task attachment storage uses project directories, then the first two canonical
+task UUID characters, then the complete task UUID. Public API/CLI paths and
+relative preview resources remain task-relative. The old
+`task-attachments/<taskId>/<relativePath>` layout requires the explicit offline
+maintenance command; ordinary HTTP startup and requests do not move files or
+select an old location.
+
+Stop every server instance and all direct database/file writers for the entire
+upgrade. Keep an independently tagged old image and a matching pre-migration
+`pg_dump`/storage archive. The [normal backup](#persistence-and-backup) resumes
+the stack after archival; for a layout upgrade, keep it stopped through planning,
+application and verification. Maintenance uses only the database/root settings
+and the image's normal UID/GID `10001:10001`; it does not need UniAuth to run.
+
+From `deployment/localhost/`, capture the old image identity and backup pair,
+then build the new server image without starting it:
+
+```bash
+(
+  set -eu
+  MIGRATION_STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+  MIGRATION_DIR="../../.tmp/daynight-attachment-layout-$MIGRATION_STAMP"
+  mkdir -p "$MIGRATION_DIR"
+  OLD_SERVER_IMAGE="$(docker inspect --format '{{.Image}}' "$(docker compose ps --all -q server)")"
+  OLD_SERVER_TAG="daynight-attachment-layout-before:$MIGRATION_STAMP"
+  docker image tag "$OLD_SERVER_IMAGE" "$OLD_SERVER_TAG"
+  printf '%s\n' "$OLD_SERVER_TAG" > "$MIGRATION_DIR/old-server-image"
+  docker compose stop server
+  docker compose exec -T postgres pg_dump --no-owner --no-acl \
+    -U daynight -d daynight > "$MIGRATION_DIR/postgres.sql"
+  docker compose run --rm --no-deps -T --entrypoint tar server \
+    -C /var/lib/daynight/storage -cpf - . > "$MIGRATION_DIR/attachments.tar"
+  docker compose build server
+  docker compose run --rm --no-deps -T server \
+    migrate-attachment-layout plan > "$MIGRATION_DIR/plan.json"
+  cat "$MIGRATION_DIR/plan.json"
+  printf 'Migration artifacts: %s\n' "$MIGRATION_DIR"
+)
+```
+
+The JSON summary supplies the operationId and storage-root-relative manifestPath.
+Review the counts and any unregistered known-task files reported by the manifest.
+Registered missing files, size or ownership mismatches, unknown task roots,
+symlinks/special files and conflicts stop the operation; they are not repaired or
+silently skipped. A genuinely empty store still yields a zero-count plan and
+operation ID. The server remains stopped after a failed command.
+
+Set these values to the retained directory and the operationId from that plan:
+
+```bash
+(
+  set -eu
+  MIGRATION_DIR=../../.tmp/daynight-attachment-layout-YYYYMMDDTHHMMSSZ
+  OPERATION_ID=UUID_FROM_PLAN
+  docker compose run --rm --no-deps -T server \
+    migrate-attachment-layout apply --operation-id "$OPERATION_ID" \
+    > "$MIGRATION_DIR/receipt.json"
+  cat "$MIGRATION_DIR/receipt.json"
+)
+```
+
+Only a successful `phase=complete` result means the new bucket passed content and
+fresh-snapshot metadata verification. The command first stages the old bucket,
+then moves whole task subtrees and finally publishes the verified target. It
+preserves all business rows and task_cache_epoch. The database advisory lock
+only serializes maintenance commands; operator-established quiescence is still
+required. The three full hash passes and backup read determine the stopped-write
+window, so estimate it from actual bytes and storage throughput.
+
+If a process stops or a move fails, retain the operation directory, keep writers
+stopped and use its existing ID; do not issue another plan or remove staged data:
+
+```bash
+docker compose run --rm --no-deps -T server \
+  migrate-attachment-layout resume --operation-id OPERATION_UUID
+```
+
+Resume accepts only positions and contents explained by that manifest. An old
+bucket already moved to source is not an empty installation. Publication before
+the completion receipt can be verified and completed; the same completed
+operation can be verified again without moving files. Conflicting or unexplained
+states remain failures. Source symlinks are rejected by maintenance even though
+the generic local adapter retains its existing root-confined symlink behavior.
+
+After the command succeeds, start the new image while business clients and other
+writers remain paused:
+
+```bash
+docker compose up --no-build --detach --wait --wait-timeout 120
+```
+
+Check the original attachment lists, downloads and relative previews, including
+HTML/Markdown resources, before resuming those writers. Archive the manifest,
+completion receipt, JSON diagnostics and backup pair with the old image tag.
+
+For rollback, keep writers stopped and use the matching pre-migration SQL/file
+pair plus the retained old server image in the [fresh-volume restore](#persistence-and-backup)
+procedure. Restoring historical content is distinct from layout migration:
+rotate affected task_cache_epoch values where that schema supports task-sync
+before reopening its server. A retained version that predates task-cache epochs
+must use its matching schema and restore procedure, not current-version SQL.
+Before new writes resume, this restores the captured state. After writers resume,
+restoring that backup would discard subsequent changes and requires a separate
+data-preservation decision. Maintenance is not a backup system or general
+filesystem/PG reconciliation service.
 
 ## Exposure
 

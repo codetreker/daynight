@@ -315,10 +315,10 @@ func acceptanceAttachmentFailures(t *testing.T, cli *acceptanceCLI, fixture *acc
 		cli.attachmentRefusal(t, process, method, "not_found", http.StatusNotFound,
 			"task", "attachment", operation, task.ID, removedPath)
 	}
-	if _, err := os.Stat(filepath.Join(fixture.storageRoot, "task-attachments", task.ID, "remove", "me.txt")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(fixture.storageRoot, "task-attachments", task.ProjectID, task.ID[:2], task.ID, "remove", "me.txt")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("successful attachment deletion left its content file")
 	}
-	stored := filepath.Join(fixture.storageRoot, "task-attachments", task.ID, "assets", "data.bin")
+	stored := filepath.Join(fixture.storageRoot, "task-attachments", task.ProjectID, task.ID[:2], task.ID, "assets", "data.bin")
 	backup := filepath.Join(cli.root, "storage-failure-backup.bin")
 	if err := os.Rename(stored, backup); err != nil {
 		t.Fatal("cannot create ordinary missing-content failure fixture")

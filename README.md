@@ -72,7 +72,12 @@ bucket/path file storage, single-file task attachments, same-origin browser
 preview and binary CLI reads. Generic local storage and startup, attachment
 metadata, file/preview HTTP APIs, CLI put/list/read/remove commands, browser file
 management, persistent deployment volumes and paired backup/restore are
-implemented. Task details open on Overview and provide a separate Attachments
+implemented. Attachment business addressing groups bytes by project and a
+two-character task UUID shard while public paths remain transparent. The same
+server binary exposes explicit offline layout migration; the
+[upgrade runbook](deployment/localhost/README.md#attachment-layout-upgrade) owns
+stopped-write planning, verification, continuation and backup rollback. Task
+details open on Overview and provide a separate Attachments
 tab with adjacent file and preview panes at every supported width. Each pane
 owns its scroll region; the preview has exactly one vertical scroll owner,
 including native HTML/PDF documents. A link beside Download opens the same complete

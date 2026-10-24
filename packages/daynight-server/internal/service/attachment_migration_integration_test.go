@@ -1,0 +1,546 @@
+package service
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+)
+
+type attachmentMigrationIntegrationOwner struct {
+	projectID string
+	taskID    string
+}
+
+type attachmentMigrationIntegrationFixture struct {
+	database    *store.Store
+	databaseURL string
+	root        string
+	projects    []string
+	owners      []attachmentMigrationIntegrationOwner
+	files       map[string][]byte
+}
+
+func attachmentMigrationIntegrationSetup(t *testing.T) *attachmentMigrationIntegrationFixture {
+	t.Helper()
+	_, database, project, databaseURL, principal := taskService(t)
+	other, err := NewProjects(database).Create(t.Context(), principal, CreateProject{Name: "Migration secondary", RepoURL: "host:migration-secondary"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &attachmentMigrationIntegrationFixture{database: database, databaseURL: databaseURL,
+		root: t.TempDir(), projects: []string{project.ID, other.ID}, files: map[string][]byte{}}
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) addTask(t *testing.T, projectID, taskID string) attachmentMigrationIntegrationOwner {
+	t.Helper()
+	if _, err := fixture.database.Pool.Exec(t.Context(), `INSERT INTO tasks(id,project_id,title) VALUES ($1,$2,'Migration fixture')`, taskID, projectID); err != nil {
+		t.Fatal(err)
+	}
+	owner := attachmentMigrationIntegrationOwner{projectID: projectID, taskID: taskID}
+	fixture.owners = append(fixture.owners, owner)
+	return owner
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) writeLegacy(t *testing.T, owner attachmentMigrationIntegrationOwner, path string, content []byte, registered bool) {
+	t.Helper()
+	name := filepath.Join(fixture.root, "task-attachments", owner.taskID, filepath.FromSlash(path))
+	if err := os.MkdirAll(filepath.Dir(name), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(name, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fixture.files[owner.taskID+"/"+path] = bytes.Clone(content)
+	if registered {
+		if _, _, err := fixture.database.PutAttachment(t.Context(), core.Attachment{ProjectID: owner.projectID,
+			TaskID: owner.taskID, Path: path, ContentType: "application/octet-stream", SizeBytes: int64(len(content))}); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) seed(t *testing.T) {
+	t.Helper()
+	first := fixture.addTask(t, fixture.projects[0], "ab000000-0000-4000-8000-000000000001")
+	second := fixture.addTask(t, fixture.projects[0], "ab000000-0000-4000-8000-000000000002")
+	third := fixture.addTask(t, fixture.projects[1], "cd000000-0000-4000-8000-000000000003")
+	collision := fixture.addTask(t, fixture.projects[1], fixture.projects[0])
+	empty := fixture.addTask(t, fixture.projects[1], "ef000000-0000-4000-8000-000000000004")
+	fixture.writeLegacy(t, first, "文档 space/binary%_?#.bin", []byte{0, 255, 128, 13, 10}, true)
+	fixture.writeLegacy(t, second, "empty.txt", []byte{}, true)
+	fixture.writeLegacy(t, third, "site/index.html", []byte("<p>nested content</p>\n"), true)
+	fixture.writeLegacy(t, collision, "docs/nested.md", []byte("# UUID collision\n"), true)
+	fixture.writeLegacy(t, first, "unregistered.bin", []byte("preserved without inventing metadata"), false)
+	for _, directory := range []string{filepath.Join(second.taskID, "empty-dir", "nested"), empty.taskID} {
+		if err := os.MkdirAll(filepath.Join(fixture.root, "task-attachments", directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fixture.database.Pool.Exec(t.Context(), `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id) VALUES ($1,$2,$3)`,
+		fixture.projects[0], first.taskID, second.taskID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(fixture.root, "another-bucket"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fixture.root, "another-bucket", "untouched.bin"), []byte("other bucket"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) run(t *testing.T, action, operationID string) (AttachmentMigrationSummary, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	return MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, action, operationID,
+		slog.New(slog.NewJSONHandler(io.Discard, nil)))
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) requireRun(t *testing.T, action, operationID string) AttachmentMigrationSummary {
+	t.Helper()
+	summary, err := fixture.run(t, action, operationID)
+	if err != nil {
+		t.Fatalf("%s: %v", action, err)
+	}
+	return summary
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) databaseSnapshot(t *testing.T) map[string]string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	result := map[string]string{}
+	for _, table := range []string{"projects", "tasks", "task_dependencies", "task_attachments", "schema_migrations"} {
+		query := fmt.Sprintf(`SELECT COALESCE(jsonb_agg(data ORDER BY data::text COLLATE "C"),'[]'::jsonb)::text FROM (SELECT to_jsonb(t) AS data FROM %s t) rows`, table)
+		var data string
+		if err := fixture.database.Pool.QueryRow(ctx, query).Scan(&data); err != nil {
+			t.Fatal(err)
+		}
+		result[table] = data
+	}
+	return result
+}
+
+type attachmentMigrationIntegrationEntry struct {
+	mode fs.FileMode
+	size int64
+	hash string
+	link string
+}
+
+func attachmentMigrationIntegrationTree(t *testing.T, directory string) map[string]attachmentMigrationIntegrationEntry {
+	t.Helper()
+	result := map[string]attachmentMigrationIntegrationEntry{}
+	err := filepath.WalkDir(directory, func(name string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(directory, name)
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		value := attachmentMigrationIntegrationEntry{mode: info.Mode().Type()}
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(name)
+			if err != nil {
+				return err
+			}
+			digest := sha256.Sum256(data)
+			value.size, value.hash = int64(len(data)), hex.EncodeToString(digest[:])
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			value.link, err = os.Readlink(name)
+			if err != nil {
+				return err
+			}
+		}
+		result[filepath.ToSlash(relative)] = value
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return result
+}
+
+func (fixture *attachmentMigrationIntegrationFixture) assertPublished(t *testing.T, legacy map[string]attachmentMigrationIntegrationEntry) {
+	t.Helper()
+	expected := map[string]attachmentMigrationIntegrationEntry{".": {mode: fs.ModeDir}}
+	for _, owner := range fixture.owners {
+		for relative, entry := range legacy {
+			if relative != owner.taskID && !strings.HasPrefix(relative, owner.taskID+"/") {
+				continue
+			}
+			prefix := owner.projectID + "/" + owner.taskID[:2]
+			expected[owner.projectID] = attachmentMigrationIntegrationEntry{mode: fs.ModeDir}
+			expected[prefix] = attachmentMigrationIntegrationEntry{mode: fs.ModeDir}
+			expected[prefix+"/"+relative] = entry
+		}
+	}
+	actual := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("published tree differs:\nactual %#v\nexpected %#v", actual, expected)
+	}
+	for _, owner := range fixture.owners {
+		for name, want := range fixture.files {
+			if !strings.HasPrefix(name, owner.taskID+"/") {
+				continue
+			}
+			actual, err := os.ReadFile(filepath.Join(fixture.root, "task-attachments", owner.projectID, owner.taskID[:2], filepath.FromSlash(name)))
+			if err != nil || !bytes.Equal(actual, want) {
+				t.Fatalf("published bytes %s: %v, %v", name, actual, err)
+			}
+		}
+	}
+}
+
+func attachmentMigrationIntegrationError(t *testing.T, err error, category string) *AttachmentMigrationError {
+	t.Helper()
+	var migration *AttachmentMigrationError
+	if !errors.As(err, &migration) || migration.Category != category || migration.Diagnostic == "" {
+		t.Fatalf("expected migration error %s, got %#v", category, err)
+	}
+	return migration
+}
+
+type attachmentMigrationIntegrationEvent struct {
+	OperationID string `json:"operationId"`
+	Phase       string `json:"phase"`
+	Step        string `json:"step"`
+	TaskID      string `json:"taskId"`
+}
+
+type attachmentMigrationIntegrationLog struct {
+	t      *testing.T
+	notify func(attachmentMigrationIntegrationEvent)
+}
+
+func (log attachmentMigrationIntegrationLog) Write(data []byte) (int, error) {
+	var event attachmentMigrationIntegrationEvent
+	if err := json.Unmarshal(data, &event); err != nil {
+		log.t.Fatalf("migration emitted invalid JSON: %v", err)
+	}
+	log.notify(event)
+	return len(data), nil
+}
+
+func attachmentMigrationIntegrationLogger(t *testing.T, notify func(attachmentMigrationIntegrationEvent)) *slog.Logger {
+	t.Helper()
+	return slog.New(slog.NewJSONHandler(attachmentMigrationIntegrationLog{t: t, notify: notify}, nil))
+}
+
+func TestAttachmentMigrationPreservesRealLegacyTrees(t *testing.T) {
+	fixture := attachmentMigrationIntegrationSetup(t)
+	fixture.seed(t)
+	beforeDatabase := fixture.databaseSnapshot(t)
+	legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+	other := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "another-bucket"))
+	plan := fixture.requireRun(t, "plan", "")
+	if plan.Phase != "planned" || plan.TaskCount != 5 || plan.FileCount != 5 || plan.UnregisteredCount != 1 || plan.ReceiptPath != nil {
+		t.Fatalf("plan summary: %#v", plan)
+	}
+	var total int64
+	for _, data := range fixture.files {
+		total += int64(len(data))
+	}
+	if plan.TotalBytes != total || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) ||
+		!reflect.DeepEqual(attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments")), legacy) {
+		t.Fatal("planning changed source data or misreported its byte inventory")
+	}
+	manifest, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(plan.ManifestPath)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete := fixture.requireRun(t, "apply", plan.OperationID)
+	if complete.Phase != "complete" || complete.ReceiptPath == nil || complete.FileCount != plan.FileCount || complete.UnregisteredCount != 1 {
+		t.Fatalf("completion summary: %#v", complete)
+	}
+	fixture.assertPublished(t, legacy)
+	if !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) ||
+		!reflect.DeepEqual(attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "another-bucket")), other) {
+		t.Fatal("layout maintenance changed PostgreSQL rows or another bucket")
+	}
+	currentManifest, err := os.ReadFile(filepath.Join(fixture.root, filepath.FromSlash(plan.ManifestPath)))
+	if err != nil || !bytes.Equal(currentManifest, manifest) {
+		t.Fatalf("immutable plan changed: %v", err)
+	}
+	wholeRoot := attachmentMigrationIntegrationTree(t, fixture.root)
+	for _, action := range []string{"apply", "resume"} {
+		if actual := fixture.requireRun(t, action, plan.OperationID); !reflect.DeepEqual(actual, complete) {
+			t.Fatalf("completed %s differs: %#v", action, actual)
+		}
+		if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, fixture.root), wholeRoot) {
+			t.Fatalf("completed %s changed filesystem content", action)
+		}
+	}
+	_, err = fixture.run(t, "plan", "")
+	if rejected := attachmentMigrationIntegrationError(t, err, "already_migrated"); rejected.OperationID != plan.OperationID {
+		t.Fatalf("new plan did not identify the completed operation: %#v", rejected)
+	}
+}
+
+func TestAttachmentMigrationRejectsInconsistentLegacySourcesBeforeMoves(t *testing.T) {
+	for _, category := range []string{"missing", "size", "metadata_owner", "task_owner", "unknown_task", "symlink", "invalid_metadata"} {
+		t.Run(category, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			owner := fixture.owners[0]
+			file := filepath.Join(fixture.root, "task-attachments", owner.taskID, "文档 space", "binary%_?#.bin")
+			wantCategory := "ownership"
+			switch category {
+			case "missing":
+				if err := os.Remove(file); err != nil {
+					t.Fatal(err)
+				}
+				wantCategory = "missing_content"
+			case "size":
+				if _, err := fixture.database.Pool.Exec(t.Context(), `UPDATE task_attachments SET size_bytes=size_bytes+1 WHERE task_id=$1`, owner.taskID); err != nil {
+					t.Fatal(err)
+				}
+				wantCategory = "missing_content"
+			case "metadata_owner":
+				if _, err := fixture.database.Pool.Exec(t.Context(), `UPDATE task_attachments SET project_id=$1 WHERE task_id=$2`, fixture.projects[1], owner.taskID); err != nil {
+					t.Fatal(err)
+				}
+			case "task_owner":
+				if _, err := fixture.database.Pool.Exec(t.Context(), `UPDATE tasks SET project_id='ff000000-0000-4000-8000-000000000099' WHERE id=$1`, owner.taskID); err != nil {
+					t.Fatal(err)
+				}
+			case "unknown_task":
+				if err := os.Mkdir(filepath.Join(fixture.root, "task-attachments", "ff000000-0000-4000-8000-000000000099"), 0o700); err != nil {
+					t.Fatal(err)
+				}
+			case "symlink":
+				if err := os.Symlink("unregistered.bin", filepath.Join(fixture.root, "task-attachments", owner.taskID, "alias")); err != nil {
+					t.Fatal(err)
+				}
+				wantCategory = "unsafe_entry"
+			case "invalid_metadata":
+				if _, err := fixture.database.Pool.Exec(t.Context(), `UPDATE task_attachments SET path='C:/file' WHERE task_id=$1`, owner.taskID); err != nil {
+					t.Fatal(err)
+				}
+				wantCategory = "invalid_metadata"
+			}
+			beforeTree, beforeDatabase := attachmentMigrationIntegrationTree(t, fixture.root), fixture.databaseSnapshot(t)
+			_, err := fixture.run(t, "plan", "")
+			attachmentMigrationIntegrationError(t, err, wantCategory)
+			if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, fixture.root), beforeTree) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("rejected source inventory changed files or PostgreSQL")
+			}
+		})
+	}
+}
+
+func TestAttachmentMigrationResumesAfterObservedPhaseCancellation(t *testing.T) {
+	for _, step := range []string{"plan_created", "bucket_evacuated", "task_moved", "target_verified", "bucket_published", "complete"} {
+		t.Run(step, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+			beforeDatabase := fixture.databaseSnapshot(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			observed := false
+			logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+				if event.Step == step && !observed {
+					observed = true
+					cancel()
+				}
+			})
+			var plan AttachmentMigrationSummary
+			if step == "plan_created" {
+				var err error
+				plan, err = MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
+				if err != nil {
+					t.Fatalf("persisted plan: %v", err)
+				}
+			} else {
+				plan = fixture.requireRun(t, "plan", "")
+				_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
+				if step == "complete" {
+					if err != nil {
+						t.Fatalf("persisted completion: %v", err)
+					}
+				} else if !errors.Is(err, context.Canceled) {
+					t.Fatalf("canceled %s lost its cause: %v", step, err)
+				}
+			}
+			if !observed {
+				t.Fatalf("lifecycle step %s was not emitted", step)
+			}
+			if complete := fixture.requireRun(t, "resume", plan.OperationID); complete.Phase != "complete" {
+				t.Fatalf("resumed phase: %#v", complete)
+			}
+			fixture.assertPublished(t, legacy)
+			if !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("cancel/resume changed PostgreSQL rows")
+			}
+		})
+	}
+}
+
+func TestAttachmentMigrationChecksFreshMetadataBeforeMovingAndPublishing(t *testing.T) {
+	for _, phase := range []string{"before_apply", "before_publish"} {
+		t.Run(phase, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+			beforeDatabase := fixture.databaseSnapshot(t)
+			plan := fixture.requireRun(t, "plan", "")
+			mutate := func() {
+				if _, err := fixture.database.Pool.Exec(t.Context(), `UPDATE tasks SET title='Changed during migration' WHERE id=$1`, fixture.owners[0].taskID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			logger := slog.New(slog.NewJSONHandler(io.Discard, nil))
+			injected := false
+			if phase == "before_apply" {
+				mutate()
+			} else {
+				logger = attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+					if event.Step == "target_verified" && !injected {
+						injected = true
+						mutate()
+					}
+				})
+			}
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
+			attachmentMigrationIntegrationError(t, err, "metadata_changed")
+			if phase == "before_apply" {
+				if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments")), legacy) {
+					t.Fatal("metadata drift before apply moved legacy content")
+				}
+			} else {
+				if !injected {
+					t.Fatal("prepublication metadata drift was not injected")
+				}
+				if _, err := os.Stat(filepath.Join(fixture.root, "task-attachments")); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("metadata drift published the final bucket: %v", err)
+				}
+			}
+			if _, err := fixture.database.Pool.Exec(t.Context(), `UPDATE tasks SET title='Migration fixture' WHERE id=$1`, fixture.owners[0].taskID); err != nil {
+				t.Fatal(err)
+			}
+			fixture.requireRun(t, "resume", plan.OperationID)
+			fixture.assertPublished(t, legacy)
+			if !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("drift recovery changed database rows beyond the controlled mutation")
+			}
+		})
+	}
+}
+
+func TestAttachmentMigrationUnregisteredCollisionRequiresItsOriginalOperation(t *testing.T) {
+	fixture := attachmentMigrationIntegrationSetup(t)
+	owner := fixture.addTask(t, fixture.projects[0], fixture.projects[0])
+	fixture.writeLegacy(t, owner, "unregistered.bin", []byte("only unregistered bytes"), false)
+	legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+	beforeDatabase := fixture.databaseSnapshot(t)
+	plan := fixture.requireRun(t, "plan", "")
+	if plan.UnregisteredCount != 1 {
+		t.Fatalf("unregistered inventory: %#v", plan)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+		if event.Step == "bucket_evacuated" {
+			cancel()
+		}
+	})
+	if _, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled source evacuation: %v", err)
+	}
+	_, err := fixture.run(t, "plan", "")
+	if blocked := attachmentMigrationIntegrationError(t, err, "resume_required"); blocked.OperationID != plan.OperationID {
+		t.Fatalf("incomplete operation was mistaken for an empty install: %#v", blocked)
+	}
+	fixture.requireRun(t, "resume", plan.OperationID)
+	fixture.assertPublished(t, legacy)
+	completeTree := attachmentMigrationIntegrationTree(t, fixture.root)
+	_, err = fixture.run(t, "plan", "")
+	if blocked := attachmentMigrationIntegrationError(t, err, "already_migrated"); blocked.OperationID != plan.OperationID {
+		t.Fatalf("completed collision layout was mistaken for legacy layout: %#v", blocked)
+	}
+	fixture.requireRun(t, "resume", plan.OperationID)
+	if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, fixture.root), completeTree) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+		t.Fatal("completed unregistered collision migration was repeated or changed data")
+	}
+}
+
+func TestAttachmentMigrationEmptyPlanAndInvalidOperationDoNotMoveData(t *testing.T) {
+	fixture := attachmentMigrationIntegrationSetup(t)
+	beforeDatabase := fixture.databaseSnapshot(t)
+	plan := fixture.requireRun(t, "plan", "")
+	if plan.TaskCount != 0 || plan.FileCount != 0 || plan.TotalBytes != 0 || plan.UnregisteredCount != 0 || plan.OperationID == "" {
+		t.Fatalf("empty plan: %#v", plan)
+	}
+	complete := fixture.requireRun(t, "apply", plan.OperationID)
+	if complete.ReceiptPath == nil || complete.Phase != "complete" {
+		t.Fatalf("empty completion: %#v", complete)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.root, "task-attachments")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("empty migration unexpectedly created a bucket: %v", err)
+	}
+	_, err := fixture.run(t, "resume", "invalid-operation")
+	attachmentMigrationIntegrationError(t, err, "invalid_input")
+	if !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+		t.Fatal("empty or invalid operation changed PostgreSQL")
+	}
+}
+
+func TestAttachmentMigrationDoesNotOverwriteAConflictingTarget(t *testing.T) {
+	fixture := attachmentMigrationIntegrationSetup(t)
+	fixture.seed(t)
+	plan := fixture.requireRun(t, "plan", "")
+	owner := fixture.owners[0]
+	destination := filepath.Join(fixture.root, ".attachment-layout-"+plan.OperationID, "target", owner.projectID, owner.taskID[:2], owner.taskID)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	injected := false
+	logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+		if event.Step == "bucket_evacuated" && !injected {
+			injected = true
+			if err := os.MkdirAll(destination, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(destination, "sentinel"), []byte("must not replace"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	})
+	_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "apply", plan.OperationID, logger)
+	if err == nil || !injected {
+		t.Fatalf("conflicting target was accepted: %v", err)
+	}
+	if actual, err := os.ReadFile(filepath.Join(destination, "sentinel")); err != nil || string(actual) != "must not replace" {
+		t.Fatalf("conflicting destination was overwritten: %q, %v", actual, err)
+	}
+	source := filepath.Join(fixture.root, ".attachment-layout-"+plan.OperationID, "source", owner.taskID, "文档 space", "binary%_?#.bin")
+	if actual, err := os.ReadFile(source); err != nil || !bytes.Equal(actual, fixture.files[owner.taskID+"/文档 space/binary%_?#.bin"]) {
+		t.Fatalf("source content was lost during target conflict: %v, %v", actual, err)
+	}
+	if _, err := os.Stat(filepath.Join(fixture.root, "task-attachments")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("conflicting target published a final bucket: %v", err)
+	}
+}
