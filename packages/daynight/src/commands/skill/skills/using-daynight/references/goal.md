@@ -134,11 +134,48 @@ replacement semantics. Do not create dependencies merely to group cards.
 Upload each task's own primary Markdown and needed resources. Keep shared
 requirements with the requirements task and the solution and breakdown with the
 solution task. Consumers reference the verified source task ID and attachment
-path, or an immutable repository source. Read back every task, required attachment,
-shared input, and dependency before reporting the breakdown registered. Keep the
-solution discussion `in_progress` when registration is incomplete. If the accepted
-solution materially changes, obtain renewed user confirmation before registering
-or advancing the changed work.
+path, or an immutable repository source. Every delivery task's description must
+directly list the architecture task ID and every architecture document required
+for that task, using its full attachment path under the source task. For a
+repository document, retain the architecture task ID and use a verified immutable
+repository reference. Include applicable sections when they clarify what to read.
+This applies to indirect successors as well as delivery roots; a reference only
+in another task or the delivery task's own primary Markdown is insufficient.
+These input references do not add execution dependencies or duplicate shared
+documents.
+
+For an illustrative `architecture → A → B` chain, A delivers the upload API and B
+delivers its retry controls. B depends on A and directly names the architecture
+inputs in its description. The following task ID and paths are hypothetical;
+replace them with verified sources when registering real work:
+
+```markdown
+## Objective and scope
+Implement upload retry controls using the delivered upload API. Preserve the
+selected files and show the confirmed error-specific retry actions.
+
+## Completion conditions
+Retryable failures offer retry; permanent failures explain the required action.
+Successful retry clears the error without losing the selected files.
+
+## Architecture inputs
+Architecture task: `11111111-1111-4111-8111-111111111111`.
+Read these attachments from that task before implementation:
+
+- `design/architecture.md`: upload flow and component responsibilities.
+- `design/upload-errors.md`: error classification and retry behavior.
+
+## Task plan
+This task's `plan.md` owns its implementation plan and full acceptance criteria.
+```
+
+Read back every task, required attachment, shared input, and dependency before
+reporting the breakdown registered. Check each delivery task's description,
+including indirect successors, for the architecture task ID and every required
+document reference; confirm that each reference resolves to the intended readable
+content. Keep the solution discussion `in_progress` when registration is incomplete.
+If the accepted solution materially changes, obtain renewed user confirmation
+before registering or advancing the changed work.
 
 ## Preserve ownership and recover partial registration
 
