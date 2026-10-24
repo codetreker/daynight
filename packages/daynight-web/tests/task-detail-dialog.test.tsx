@@ -625,13 +625,15 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('switch', { name: '自动执行' })).toHaveFocus();
     await user.tab();
-    expect(refresh).toHaveFocus();
-    await user.tab();
     expect(screen.getByRole('tab', { name: '概览' })).toHaveFocus();
     await user.tab();
     expect(successor).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('button', { name: '复制任务 ID' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: '关闭提示' })).toHaveFocus();
+    await user.tab();
+    expect(refresh).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('heading', { name: first.title })).toHaveFocus();
     await user.tab();
@@ -646,6 +648,10 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('button', { name: '已完成' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('heading', { name: first.title })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(refresh).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: '关闭提示' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('button', { name: '复制任务 ID' })).toHaveFocus();
     await user.tab({ shift: true });

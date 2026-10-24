@@ -249,9 +249,18 @@ test('task-status-recovery', { annotation: { type: 'scenario', description: 'tas
     await expect(detail(page).getByRole('combobox', { name: /^(执行平台|Execution platform)$/, exact: true })).toBeDisabled();
     await detail(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     await open(page, project.id, other.id); await expect(trigger(page)).toHaveText(/待处理/);
-    release.resolve(); await expect.poll(() => lifecycle.show(project.id, task.id, 'pending-original-task')).toMatchObject({ status: 'done' });
+    const committedResponse = page.waitForResponse((response) => response.url() === endpoint && response.request().method() === 'PUT');
+    // The session refreshes the graph only after publishing its confirmed write.
+    const confirmedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-graph` && response.status() === 200);
+    release.resolve();
+    const delivered = await committedResponse; expect(delivered.status()).toBe(200); expect(await delivered.finished()).toBeNull();
+    expect(await (await confirmedGraph).finished()).toBeNull();
+    await page.clock.runFor(32);
+    expect(await lifecycle.show(project.id, task.id, 'pending-original-task')).toMatchObject({ status: 'done' });
     await expect(trigger(page)).toHaveText(/待处理/);
-    await open(page, project.id, task.id); await expect(trigger(page)).toHaveText(/已完成/); await expectConfirmed(page);
+    await open(page, project.id, task.id); await expect(trigger(page)).toHaveText(/已完成/);
+    await expect(detail(page).locator('.task-status-feedback [role="status"]')).toHaveCount(0);
+    expect(lifecycle.evidence.writes).toHaveLength(2);
     await select(page, 'todo'); await confirm(page); await expect(trigger(page)).toHaveText(/待处理/); await expectConfirmed(page);
     const reopened = await lifecycle.show(project.id, task.id, 'reopened-after-pending'); expect(reopened).toMatchObject({ status: 'todo', startedAt: null, completedAt: null });
     expect(lifecycle.evidence.writes).toHaveLength(3);

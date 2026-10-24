@@ -14,9 +14,10 @@ layout stability while a request is pending.
 ## Decision
 
 Routine same-task detail reads retain the mounted content without adding a
-progress paragraph to the heading. Required freshness and read errors continue
-to expose the retained-detail explanation, while stale-snapshot warnings and
-status reconciliation keep their own feedback. The dialog distinguishes
+progress paragraph to the heading. Required freshness and read errors expose the retained-detail explanation,
+while stale-snapshot warnings and status reconciliation keep their own feedback
+through the layout-independent layer owned by the
+[notification decision](2026-10-24-task-detail-notifications.md). The dialog distinguishes
 network activity from those actionable states. It still suppresses a stale
 comparison while a read is pending, since the response can reconcile it.
 
@@ -29,10 +30,12 @@ own precise-version status setting and required freshness; ordinary optional rea
 not change status-write eligibility. This decision narrows the presentation of
 retained reads without changing either lifecycle.
 
-The production `refresh-staleness` journey measures heading, tabs and the active
-reading panel before, during and after held detail responses triggered by the
-existing scheduler. Repeated unchanged responses isolate request presentation
-from natural layout changes caused by new data. Component checks retain the
+The production `refresh-staleness` journey waits for the dialog opening
+animation to finish before measuring heading, tabs and the active reading panel
+before, during and after held detail responses triggered by the existing
+scheduler. Advancing a simulated JavaScript clock does not establish that the
+CSS opening transform has settled. Repeated unchanged responses isolate request
+presentation from natural layout changes caused by new data. Component checks retain the
 error, required-fresh-read and status cases; browser checks establish geometry
 and retained interaction state at supported viewport sizes. Its only browser
 mutation is one registered fixture-file PUT: the real server commits the upload
@@ -54,15 +57,18 @@ a presentation defect.
 
 **Hide all retained-data and stale-state feedback.** This removes movement but
 also conceals genuine errors and the reason status setting requires another read.
-Those states remain visible and may legitimately change the layout.
+The original decision retained these states in the reading layout because they
+require action. The notification decision preserves that visibility through
+timed overlays and a persistent recovery entry without allocating reading height.
 
 ## Consequences
 
 Unchanged background reads keep the current heading, tab bar and reading area
 in place. Their existing DOM, focus, scroll, PR pagination, attachment drafts,
 pending writes and preview lifecycle remain independent of graph polling.
-Actual content, errors and freshness changes can still change the visible
-layout; stability applies to the transport transition itself.
+Actual task content can still change the visible layout. Errors and freshness
+feedback use the notification layer, extending layout stability beyond the
+ordinary transport transition.
 
 The transient refreshing-detail catalog entry is removed from both languages
 and the typed catalog. No service, database, polling transport or new request

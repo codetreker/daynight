@@ -149,11 +149,18 @@ test('task-platform', scenario, async ({ page, api, allowBrowserWrites }, info) 
     const running = await startTask(api, own.id, task); expect(running.requiredPlatform).toBe('macos');
     await detail(page).getByRole('button', { name: '关闭任务详情', exact: true }).click(); await page.reload(); await open(page, task.id);
     await expect(platform(page)).toBeDisabled();
-    await expect(detail(page).getByText('任务正在进行中，保持此状态时无法修改执行平台。')).toBeVisible();
+    const lockedPlatform = detail(page).getByRole('group', { name: '执行平台', exact: true });
+    await lockedPlatform.focus();
+    await expect(lockedPlatform.getByRole('tooltip')).toHaveClass('task-control-tip-bubble');
+    await expect(platform(page)).toHaveAccessibleDescription('任务正在进行中，保持此状态时无法修改执行平台。');
+    await page.keyboard.press('Escape');
+    await expect(lockedPlatform.locator('.task-control-tip-bubble')).toHaveCount(0);
+    await expect(detail(page)).toBeVisible();
     for (const { locale, width } of [{ locale: 'zh-CN', width: 390 }, { locale: 'en', width: 390 }, { locale: 'zh-CN', width: 320 }, { locale: 'en', width: 320 }]) {
       await detail(page).getByRole('button', { name: /^(关闭任务详情|Close task details)$/, exact: true }).click();
       await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
       await page.setViewportSize({ width, height: 844 }); await open(page, task.id); await geometry(page);
+      await detail(page).getByRole('group', { name: locale === 'zh-CN' ? '执行平台' : 'Execution platform', exact: true }).hover();
       const screenshot = info.outputPath(`task-platform-locked-${locale}-${width}.png`); await page.screenshot({ path: screenshot, animations: 'disabled' });
       await info.attach('scenario-screenshot', { path: screenshot, contentType: 'image/png' });
     }

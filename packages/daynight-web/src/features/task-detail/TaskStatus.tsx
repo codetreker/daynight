@@ -3,6 +3,7 @@ import { ApiError } from '../../api/client';
 import type { TaskDetail, TaskStatus } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { TaskMutationState } from './TaskDetailSession';
+import { TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
 
 const statuses: readonly TaskStatus[] = ['todo', 'in_progress', 'done'];
 export const TaskStatusMenu = ({ status, disabled, onSelect }: {
@@ -64,26 +65,23 @@ const StatusError = ({ error }: { readonly error: unknown }) => {
   return <><p>{message}</p>{error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}{' '}<code>{error.requestId}</code></p>}</>;
 };
 
-export const TaskStatusFeedback = ({ detail, mutation, onReconcile }: {
+export const TaskStatusFeedback = ({ mutation, onReconcile }: {
   readonly detail: TaskDetail | null;
   readonly mutation: TaskMutationState;
   readonly onReconcile: () => void;
 }) => {
   const { messages: { inspection: { status: m } } } = useI18n();
-  const message = useRef<HTMLParagraphElement>(null);
-  useLayoutEffect(() => {
-    if (mutation.phase !== 'idle' && document.activeElement === document.body) message.current?.focus();
-  }, [mutation.phase, detail?.status]);
-  if (mutation.phase === 'idle' || mutation.operation?.action !== 'status') return null;
+  const event = useMutationNoticeEvent(mutation);
+  const relevant = mutation.phase !== 'idle' && mutation.operation?.action === 'status';
   const busy = mutation.phase === 'pending' || mutation.reconciling;
   const unresolved = mutation.phase === 'unknown' || mutation.reconciliationError !== null;
   const summary = mutation.reconciling ? m.checking : mutation.phase === 'pending' ? m.pending
     : mutation.phase === 'confirmed' ? m.confirmed : mutation.phase === 'unknown' ? m.unknown : mutation.phase === 'conflict' ? m.conflict : mutation.phase === 'reconciled' ? m.reconciled : null;
-  const tone = mutation.phase === 'confirmed' ? 'success' : mutation.phase === 'refused' ? 'error' : unresolved || mutation.phase === 'conflict' ? 'warning' : undefined;
-  return <section className="task-status-feedback" data-tone={tone} aria-label={m.menu} aria-busy={busy}>
+  const tone = mutation.phase === 'confirmed' ? 'success' : mutation.phase === 'refused' ? 'error' : unresolved || mutation.phase === 'conflict' ? 'warning' : 'info';
+  return <TaskDetailNotice active={relevant} event={event} initiallyVisible={mutation.phase !== 'confirmed'} tone={tone} recoverable={unresolved}><section className="task-status-feedback" data-tone={tone} aria-label={m.menu} aria-busy={busy}>
     {unresolved && <div className="task-status-controls"><button className="button" type="button" disabled={busy} onClick={onReconcile}>{mutation.reconciling ? m.checking : m.checkState}</button></div>}
-    {summary !== null && <p className="task-status-message" ref={message} tabIndex={-1} role={unresolved || mutation.phase === 'conflict' ? 'alert' : 'status'}>{summary}</p>}
+    {summary !== null && <p className="task-status-message" role={unresolved || mutation.phase === 'conflict' ? 'alert' : 'status'}>{summary}</p>}
     {mutation.error !== null && <div className="task-status-error" role="alert"><StatusError error={mutation.error} /></div>}
     {mutation.reconciliationError !== null && <div className="task-status-error" role="alert"><p>{m.checkFailed}</p><StatusError error={mutation.reconciliationError} /></div>}
-  </section>;
+  </section></TaskDetailNotice>;
 };

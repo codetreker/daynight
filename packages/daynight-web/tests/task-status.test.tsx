@@ -228,7 +228,7 @@ describe('status in shared production task details', () => {
     await navigateProject(project, 'Approval project');
     dialog = await openStandalone('Task 3');
     expect(within(dialog).getByRole('button', { name: 'In progress' })).toBeVisible();
-    expect(within(dialog).getByText('Task status confirmed.')).toBeVisible();
+    expect(within(dialog).queryByText('Task status confirmed.')).toBeNull();
     expect(within(dialog).queryByRole('button', { name: 'To do' })).toBeNull();
     expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, standalone, 'in_progress', 9007199254740993n, expect.any(AbortSignal));
   });
@@ -248,11 +248,11 @@ describe('status in shared production task details', () => {
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
     dialog = screen.getByRole('dialog');
     await within(dialog).findByRole('button', { name: status === 'done' ? 'Done' : 'In progress' });
-    expect(within(dialog).getByText('Task status confirmed.')).toBeVisible();
+    expect(within(dialog).queryByText('Task status confirmed.')).toBeNull();
     expect(within(dialog).getByRole('button', { name: status === 'done' ? 'Done' : 'In progress' })).toBeEnabled();
     expect(within(dialog).queryByRole('button', { name: 'To do' })).toBeNull();
     view.setLocale('zh-CN');
-    expect(within(dialog).getByText('任务状态已确认。')).toBeVisible();
+    expect(within(dialog).queryByText('任务状态已确认。')).toBeNull();
     expect(within(dialog).getByRole('button', { name: status === 'done' ? '已完成' : '进行中' })).toBeVisible();
   });
 
