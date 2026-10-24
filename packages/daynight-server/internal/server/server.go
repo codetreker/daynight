@@ -29,6 +29,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	NewMembershipRoutes(service.NewMemberships(dependencies.Store), auth, logger).RegisterRoutes(mux)
 	projectRoutes(mux, service.NewProjects(dependencies.Store), auth, logger)
 	taskRoutes(mux, service.NewTasks(dependencies.Store), auth, logger)
+	taskSyncRoutes(mux, service.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
 	attachmentRoutes(mux, service.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
 	healthRoutes(mux, dependencies.Store, logger)
 	uiRoutes(mux, logger)

@@ -14,7 +14,7 @@ import (
 func configuredTestConfig() Config {
 	return Config{
 		DatabaseURL: "postgres://database", StorageRoot: "storage", ListenAddress: "127.0.0.1:0",
-		StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second,
+		StartupTimeout: 5 * time.Second, ShutdownTimeout: time.Second, TaskSyncOverlap: 10 * time.Second,
 		PublicOrigin: "https://daynight.example", UniAuthURL: "https://auth.example",
 		UniAuthAppID: "configuration-test", UniAuthAppSecret: "configuration-test",
 		UniAuthCallbackURL: "https://daynight.example/api/v1/auth/callback",
@@ -36,18 +36,24 @@ func configEnvironment(values map[string]string) func(string) string {
 
 func TestLoadConfig(t *testing.T) {
 	config, err := LoadConfig(configEnvironment(nil))
-	if err != nil || config.StorageRoot != "storage" || config.ListenAddress != "127.0.0.1:8787" || config.StartupTimeout != 10*time.Second || config.ShutdownTimeout != 10*time.Second {
+	if err != nil || config.StorageRoot != "storage" || config.ListenAddress != "127.0.0.1:8787" || config.StartupTimeout != 10*time.Second || config.ShutdownTimeout != 10*time.Second || config.TaskSyncOverlap != 10*time.Second {
 		t.Fatalf("unexpected defaults: %+v, %v", config, err)
 	}
 	config, err = LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_LISTEN_ADDR": "[::1]:0"}))
 	if err != nil || config.ListenAddress != "[::1]:0" {
 		t.Fatalf("IPv6 loopback rejected: %+v, %v", config, err)
 	}
+	for value, want := range map[string]time.Duration{"250ms": 250 * time.Millisecond, "30s": 30 * time.Second, "1m30s": 90 * time.Second, "1ns": time.Nanosecond} {
+		config, err := LoadConfig(configEnvironment(map[string]string{"DAYNIGHT_TASK_SYNC_OVERLAP": value}))
+		if err != nil || config.TaskSyncOverlap != want {
+			t.Fatalf("explicit task sync overlap %s ignored: %+v %v", value, config, err)
+		}
+	}
 }
 
 func TestConfigRejectsInvalidInputs(t *testing.T) {
-	for _, field := range []string{"DAYNIGHT_STARTUP_TIMEOUT", "DAYNIGHT_SHUTDOWN_TIMEOUT"} {
-		for _, value := range []string{"-1s", "0s", "password", "1"} {
+	for _, field := range []string{"DAYNIGHT_STARTUP_TIMEOUT", "DAYNIGHT_SHUTDOWN_TIMEOUT", "DAYNIGHT_TASK_SYNC_OVERLAP"} {
+		for _, value := range []string{"-1s", "0s", "password", "1", "99999999999999999999h"} {
 			_, err := LoadConfig(configEnvironment(map[string]string{field: value}))
 			if err == nil || !strings.Contains(err.Error(), field) || strings.Contains(err.Error(), value) {
 				t.Fatalf("invalid duration not safely diagnosed: %v", err)
@@ -76,6 +82,8 @@ func TestConfigRejectsInvalidInputs(t *testing.T) {
 		{"blank database", func(config *Config) { config.DatabaseURL = " " }},
 		{"missing startup timeout", func(config *Config) { config.StartupTimeout = 0 }},
 		{"negative shutdown timeout", func(config *Config) { config.ShutdownTimeout = -time.Second }},
+		{"missing task sync overlap", func(config *Config) { config.TaskSyncOverlap = 0 }},
+		{"negative task sync overlap", func(config *Config) { config.TaskSyncOverlap = -time.Second }},
 	} {
 		t.Run(invalid.name, func(t *testing.T) {
 			config := configuredTestConfig()

@@ -24,6 +24,7 @@ type Config struct {
 	ListenAddress       string
 	StartupTimeout      time.Duration
 	ShutdownTimeout     time.Duration
+	TaskSyncOverlap     time.Duration
 }
 
 type ConfigurationError struct {
@@ -36,11 +37,15 @@ func (e *ConfigurationError) Error() string { return fmt.Sprintf("%s %s", e.Fiel
 func (e *ConfigurationError) Unwrap() error { return e.cause }
 
 func LoadConfig(getenv func(string) string) (Config, error) {
-	startupTimeout, err := loadTimeout(getenv, "DAYNIGHT_STARTUP_TIMEOUT")
+	startupTimeout, err := loadDuration(getenv, "DAYNIGHT_STARTUP_TIMEOUT")
 	if err != nil {
 		return Config{}, err
 	}
-	shutdownTimeout, err := loadTimeout(getenv, "DAYNIGHT_SHUTDOWN_TIMEOUT")
+	shutdownTimeout, err := loadDuration(getenv, "DAYNIGHT_SHUTDOWN_TIMEOUT")
+	if err != nil {
+		return Config{}, err
+	}
+	taskSyncOverlap, err := loadDuration(getenv, "DAYNIGHT_TASK_SYNC_OVERLAP")
 	if err != nil {
 		return Config{}, err
 	}
@@ -69,6 +74,7 @@ func LoadConfig(getenv func(string) string) (Config, error) {
 		ListenAddress:       address,
 		StartupTimeout:      startupTimeout,
 		ShutdownTimeout:     shutdownTimeout,
+		TaskSyncOverlap:     taskSyncOverlap,
 	}
 	return config, config.Validate()
 }
@@ -92,7 +98,7 @@ func (c Config) identityClient() (*uniauth.Client, error) {
 	return client, nil
 }
 
-func loadTimeout(getenv func(string) string, field string) (time.Duration, error) {
+func loadDuration(getenv func(string) string, field string) (time.Duration, error) {
 	value := getenv(field)
 	if value == "" {
 		return 10 * time.Second, nil
@@ -138,6 +144,9 @@ func (c Config) Validate() error {
 	}
 	if c.StartupTimeout <= 0 || c.ShutdownTimeout <= 0 {
 		return &ConfigurationError{Field: "timeouts", Rule: "startup and shutdown must be positive"}
+	}
+	if c.TaskSyncOverlap <= 0 {
+		return &ConfigurationError{Field: "DAYNIGHT_TASK_SYNC_OVERLAP", Rule: "must be a positive Go duration"}
 	}
 	return nil
 }

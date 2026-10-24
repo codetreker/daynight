@@ -45,6 +45,7 @@ services:
       DAYNIGHT_DATABASE_URL: postgres://daynight:daynight-local@postgres:5432/daynight?sslmode=disable
       DAYNIGHT_LISTEN_ADDR: 127.0.0.1:8787
       DAYNIGHT_STORAGE_ROOT: /var/lib/daynight/storage
+      DAYNIGHT_TASK_SYNC_OVERLAP: ${DAYNIGHT_TASK_SYNC_OVERLAP:-10s}
       DAYNIGHT_PUBLIC_ORIGIN: ${DAYNIGHT_PUBLIC_ORIGIN:?Set DAYNIGHT_PUBLIC_ORIGIN in deployment/localhost/.env}
       DAYNIGHT_UNIAUTH_URL: ${DAYNIGHT_UNIAUTH_URL:?Set DAYNIGHT_UNIAUTH_URL in deployment/localhost/.env}
       DAYNIGHT_UNIAUTH_APP_ID: ${DAYNIGHT_UNIAUTH_APP_ID:?Set DAYNIGHT_UNIAUTH_APP_ID in deployment/localhost/.env}

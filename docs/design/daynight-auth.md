@@ -74,6 +74,15 @@ member 都可执行这些资源操作；管理员角色额外管理成员、邀�
 todo，通用元数据更新不接收 status，没有旧状态写入旁路。任务版本、int64、
 图容量和现有分页合同保持。
 
+## 认证响应归属
+
+`Authentication.Require` 在 AuthenticateRequest 成功之后、调用业务 handler 之前，
+从准入 principal 写入 `Daynight-User-ID`。因此 GET、空写结果及下游资源错误共用
+一个归属边界，认证失败不泄露未准入身份，也不回显调用方提供的值。会话/PAT 选择、
+Origin 检查、角色和业务授权仍由原入口执行；该头只是响应证明。跨窗口 Cookie
+可能变化时，后续持久任务缓存据此核对实际响应与自身身份域，不能只凭先前 `/me`
+结果命名。[任务同步设计](daynight-task-sync.md)拥有缓存接入规则。
+
 ## 登录方式发现
 
 公开 GET /api/v1/auth/providers 通过 SDK Providers(ctx, callbackURL) 读取
