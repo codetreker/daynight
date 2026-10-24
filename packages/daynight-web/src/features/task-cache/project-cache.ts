@@ -1,9 +1,10 @@
 import type { IDBPObjectStore, IDBPTransaction } from "idb";
 import { ApiError, authRequestsPaused, isAbortError, requestId, waitForAuthRequests } from "../../api/client";
-import { id, project as parseProject } from "../../api/parse";
+import { canonicalId } from "../../api/parse";
 import { parseTaskSummary } from "../../api/task-sync";
 import type { Project, TaskSummary, TaskSync } from "../../api/types";
 import { TASK_CACHE_STORES, TaskCacheDatabase, TaskCacheError, type ProjectRecord, type TaskCacheSchema } from "./database";
+import { validateProjectManifest, validateUserScope } from "./lifecycle";
 import { GraphDataError } from "../task-graph/model";
 import { compareTimestamps, maxUpdatedAt, projectSummaries, sameProject, sameSummary, type TaskProjection } from "./projection";
 
@@ -120,7 +121,6 @@ export class TaskCacheScope {
       const result = await work(transaction);
       if (!allowInvalidated) this.assertLive(signal);
       await completion;
-      if (!allowInvalidated) this.assertLive(signal);
       return result;
     } catch (error) {
       abort();
@@ -133,40 +133,56 @@ export class TaskCacheScope {
       this.pending.delete(transaction);
     }
   }
-  private bindFence(userFence: string): string {
-    if (this.userFence !== null && this.userFence !== userFence) {
-      this.close(); this.onIdentityMismatch(); return released();
+  private async replaceUserScope(transaction: Transaction, cause: "corrupt" | "user"): Promise<string> {
+    const userFence = crypto.randomUUID();
+    await transaction.objectStore("userScopes").put({ userId: this.userId, userFence });
+    for (const name of ["summaries", "details"] as const) {
+      for await (const cursor of transaction.objectStore(name).index("by-user").iterate(this.userId)) await cursor.delete();
     }
-    this.userFence = userFence;
+    for await (const cursor of transaction.objectStore("projects").index("by-user").iterate(this.userId)) {
+      const projectId = cursor.primaryKey[1];
+      if (canonicalId(projectId) === projectId) await cursor.update(invalidated(this.userId, projectId, userFence, cause));
+      else await cursor.delete();
+    }
     return userFence;
   }
-  private async ensureFence(transaction: Transaction): Promise<string> {
-    const store = transaction.objectStore("userScopes");
-    const current = await store.get(this.userId);
-    if (current !== undefined) {
-      try { if (current.userId !== this.userId) throw new Error("Invalid user ownership"); return this.bindFence(id(current.userFence)); }
-      catch (error) { if (isAbortError(error)) throw error; throw new TaskCacheError("corrupt", error); }
+  private async userTransaction<T>(work: (transaction: Transaction, userFence: string) => Promise<T>, signal: AbortSignal): Promise<T> {
+    const outcome = await this.transaction(async (transaction) => {
+      const stored = await transaction.objectStore("userScopes").get(this.userId);
+      let userFence: string;
+      try { userFence = validateUserScope(stored, this.userId).userFence; }
+      catch (error) {
+        if (!(error instanceof TaskCacheError) || error.category !== "corrupt") throw error;
+        return { kind: "repaired" as const, userFence: await this.replaceUserScope(transaction, "corrupt") };
+      }
+      if (this.userFence !== null && this.userFence !== userFence) return { kind: "changed" as const, userFence };
+      return { kind: "result" as const, userFence, value: await work(transaction, userFence) };
+    }, signal);
+    // Lifecycle changes become visible only after their transaction is durable.
+    if (outcome.kind === "repaired" && !this.isInvalidated && !authRequestsPaused()) this.hint(null);
+    if (this.userFence !== null && this.userFence !== outcome.userFence && !this.isInvalidated) {
+      this.close(); this.onIdentityMismatch(); return released();
     }
-    const userFence = crypto.randomUUID();
-    await store.put({ userId: this.userId, userFence });
-    return this.bindFence(userFence);
+    this.assertLive(signal);
+    this.userFence = outcome.userFence;
+    if (outcome.kind === "repaired") return this.userTransaction(work, signal);
+    if (outcome.kind === "changed") return released();
+    return outcome.value;
+  }
+  private async manifest(transaction: Transaction, projectId: string, userFence: string): Promise<ProjectRecord | undefined> {
+    const value = await transaction.objectStore("projects").get([this.userId, projectId]);
+    return value === undefined ? undefined : validateProjectManifest(value, this.userId, projectId, userFence);
   }
   private async stored(transaction: Transaction, manifest: ProjectRecord): Promise<readonly TaskSummary[]> {
-    const user = await transaction.objectStore("userScopes").get(this.userId);
     const rows = await transaction.objectStore("summaries").index("by-project").getAll([this.userId, manifest.projectId]);
     try {
-      if (user !== undefined) this.bindFence(id(user.userFence));
-      if (manifest.userId !== this.userId || manifest.userFence !== user?.userFence ||
-        manifest.state !== "active" || manifest.invalidatedBy !== null || manifest.epoch === null || manifest.project === null ||
-        id(manifest.cacheGeneration) !== manifest.cacheGeneration || id(manifest.epoch) !== manifest.epoch ||
-        parseProject(manifest.project).id !== manifest.projectId) throw new Error("Invalid project manifest");
       const tasks = rows.map((row) => {
         if (row.userId !== this.userId || row.projectId !== manifest.projectId || row.taskId !== row.summary.id || typeof row.summary.version !== "bigint") throw new Error("Invalid summary ownership");
         return parseTaskSummary({ ...row.summary, version: row.summary.version.toString() });
       });
       if (tasks.length !== manifest.taskCount || edgeCount(tasks) !== manifest.edgeCount ||
         maxUpdatedAt(tasks) !== manifest.maxUpdatedAt) throw new Error("Summary manifest does not match its complete set");
-      projectSummaries(manifest.project, tasks, manifest.project.updatedAt);
+      projectSummaries(manifest.project!, tasks, manifest.project!.updatedAt);
       return tasks;
     } catch (error) { if (error instanceof TaskCacheError || isAbortError(error)) throw error; throw new TaskCacheError("corrupt", error); }
   }
@@ -195,15 +211,13 @@ export class TaskCacheScope {
     projectId = requestId(projectId);
     await this.ready(signal);
     try {
-      return await this.transaction(async (transaction) => {
-        const userFence = await this.ensureFence(transaction);
-        let manifest = await transaction.objectStore("projects").get([this.userId, projectId]);
+      return await this.userTransaction(async (transaction, userFence) => {
+        let manifest = await this.manifest(transaction, projectId, userFence);
         if (manifest === undefined) {
           manifest = invalidated(this.userId, projectId, userFence);
           await transaction.objectStore("projects").put(manifest);
-        } else if (manifest.userFence !== userFence) throw new TaskCacheError("corrupt");
+        }
         if (manifest.state === "active") await this.stored(transaction, manifest);
-        else if (manifest.state !== "invalidated") throw new TaskCacheError("corrupt");
         return { userId: this.userId, projectId, userFence, cacheGeneration: manifest.cacheGeneration, epoch: manifest.epoch, maxUpdatedAt: manifest.maxUpdatedAt };
       }, signal);
     } catch (error) {
@@ -218,10 +232,9 @@ export class TaskCacheScope {
     if (response.project.id !== ticket.projectId || ticket.userId !== this.userId) return protocol();
     let result: { manifest: ProjectRecord; tasks: readonly TaskSummary[]; changed: boolean; changedTaskIds: readonly string[] };
     try {
-      result = await this.transaction(async (transaction) => {
-        const user = await transaction.objectStore("userScopes").get(this.userId);
-        const current = await transaction.objectStore("projects").get([this.userId, ticket.projectId]);
-        if (user?.userFence !== ticket.userFence || current === undefined || current.userFence !== ticket.userFence || current.cacheGeneration !== ticket.cacheGeneration) return released();
+      result = await this.userTransaction(async (transaction, userFence) => {
+        const current = await this.manifest(transaction, ticket.projectId, userFence);
+        if (userFence !== ticket.userFence || current === undefined || current.cacheGeneration !== ticket.cacheGeneration) return released();
         const previous = current.state === "active" ? await this.stored(transaction, current) : [];
         if (response.mode === "delta" && (current.state !== "active" || response.epoch !== current.epoch || response.epoch !== ticket.epoch)) return protocol();
         if (response.mode === "snapshot" && ticket.epoch === response.epoch) return protocol();
@@ -270,8 +283,8 @@ export class TaskCacheScope {
   async readProject(projectId: string, signal: AbortSignal): Promise<CachedProject | null> {
     projectId = requestId(projectId);
     await this.ready(signal);
-    const stored = await this.transaction(async (transaction) => {
-      const manifest = await transaction.objectStore("projects").get([this.userId, projectId]);
+    const stored = await this.userTransaction(async (transaction, userFence) => {
+      const manifest = await this.manifest(transaction, projectId, userFence);
       if (manifest?.state === "invalidated" && manifest.invalidatedBy === "corrupt") throw new TaskCacheError("corrupt");
       if (manifest === undefined || manifest.state === "invalidated") return null;
       return { manifest, tasks: await this.stored(transaction, manifest) };
@@ -286,11 +299,10 @@ export class TaskCacheScope {
   ): Promise<T> {
     await this.ready(signal);
     if (ticket.userId !== this.userId) return released();
-    return this.transaction(async (transaction) => {
-      const user = await transaction.objectStore("userScopes").get(this.userId);
-      const manifest = await transaction.objectStore("projects").get([this.userId, ticket.projectId]);
-      if (manifest === undefined || manifest.state !== "active" || user?.userFence !== ticket.userFence ||
-        manifest.userFence !== ticket.userFence || manifest.cacheGeneration !== ticket.cacheGeneration) return released();
+    return this.userTransaction(async (transaction, userFence) => {
+      const manifest = await this.manifest(transaction, ticket.projectId, userFence);
+      if (manifest === undefined || manifest.state !== "active" || userFence !== ticket.userFence ||
+        manifest.cacheGeneration !== ticket.cacheGeneration) return released();
       const summaries = await this.stored(transaction, manifest);
       return work(transaction.objectStore("details"), manifest, new Map(summaries.map((summary) => [summary.id, summary])));
     }, signal);
@@ -311,8 +323,7 @@ export class TaskCacheScope {
   async invalidateProject(projectId: string, signal: AbortSignal, cause: "access" | "corrupt" = "access"): Promise<void> {
     projectId = requestId(projectId);
     await this.ready(signal);
-    await this.transaction(async (transaction) => {
-      const fence = await this.ensureFence(transaction);
+    await this.userTransaction(async (transaction, fence) => {
       await this.clearProjectRows(transaction, projectId);
       await transaction.objectStore("projects").put(invalidated(this.userId, projectId, fence, cause));
     }, signal);
@@ -326,16 +337,8 @@ export class TaskCacheScope {
     this.lifetime.abort();
     for (const transaction of this.pending) { try { transaction.abort(); } catch { /* Already committed. */ } }
     this.projections.clear(); this.authorizedProjects.clear(); this.listeners.clear();
-    this.purge = this.transaction(async (transaction) => {
-      const userFence = crypto.randomUUID();
-      await transaction.objectStore("userScopes").put({ userId: this.userId, userFence });
-      for (const name of ["summaries", "details"] as const) {
-        for await (const cursor of transaction.objectStore(name).index("by-user").iterate(this.userId)) await cursor.delete();
-      }
-      for await (const cursor of transaction.objectStore("projects").index("by-user").iterate(this.userId)) {
-        await cursor.update(invalidated(this.userId, cursor.value.projectId, userFence, "user"));
-      }
-    }, undefined, true).then(() => { this.hint(null); }).finally(() => { this.close(); });
+    this.purge = this.transaction(async (transaction) => { await this.replaceUserScope(transaction, "user"); }, undefined, true)
+      .then(() => { this.hint(null); }).finally(() => { this.close(); });
     // Session clearing is synchronous; storage failure remains observable without blocking identity removal.
     void this.purge.catch((error: unknown) => { console.error("Task cache user cleanup failed", { error_category: error instanceof TaskCacheError ? error.category : "storage" }); });
     return this.purge;

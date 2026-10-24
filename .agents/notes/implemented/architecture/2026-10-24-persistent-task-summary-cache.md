@@ -26,7 +26,21 @@ cache generations; summaries owns intrinsic task rows; details establishes the
 shared intrinsic-detail record and transaction shape. Manifest counts, edges,
 maximum time, ownership and graph validity are checked against the complete
 durable collection before applying a delta. Missing independent rows are
-corruption, even when the remaining graph is valid.
+corruption, even when the remaining graph is valid. Central lifecycle validation
+also checks invalidated manifests: ownership and canonical fences/generations
+must match, the reason is recognized, epoch/Project/watermark are null, and both
+counts are zero. An invalidated record cannot preserve an old incremental epoch.
+
+Missing or malformed user scope records require a user-wide repair because their
+fence guards every project owned by that user. One dedicated transaction replaces
+the fence without parsing the damaged value, clears that user's summaries/details
+and invalidates its rebuildable project baselines. Other users remain intact.
+Binding memory, retiring scopes and broadcasting wait for transaction completion.
+An unbound scope then binds the new fence and resumes; a bound scope retires and
+requests identity verification instead of adopting a replacement lifetime. Failed
+repair rolls back, retains a live retry path and exposes the storage failure.
+All data entrypoints use this lifecycle check, and stale tickets or scopes cannot
+publish across the replacement after commit.
 
 TaskCacheScope belongs to the authenticated user/session generation and spans
 project, standalone task and attachment routes. Every mounted project view needs

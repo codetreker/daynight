@@ -278,3 +278,101 @@ it("preserves caller cancellation when its signal aborts an active native transa
   cancellation.mockRestore(); expect(controller.signal.aborted).toBe(true);
   expect((await cache.readProject(projectId, signal()))!.manifest).toEqual(initial.project.manifest);
 });
+
+it.each([
+  { epoch }, { maxUpdatedAt: time }, { project }, { taskCount: 1 }, { edgeCount: 1 },
+  { cacheGeneration: "damaged" }, { userFence: "damaged" }, { invalidatedBy: null }, { state: "unknown" },
+])("rebuilds a malformed invalidated manifest before constructing its next snapshot ticket %#", async (change) => {
+  const cache = scope(); await seed(cache); await cache.invalidateProject(projectId, signal()); const database = await inspect();
+  const previous = (await database.get("projects", [userId, projectId]))!;
+  await database.put("projects", { ...previous, ...change } as typeof previous);
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+  const ticket = await cache.beginSync(projectId, signal());
+  expect(ticket).toMatchObject({ epoch: null, maxUpdatedAt: null }); expect(ticket.cacheGeneration).not.toBe(previous.cacheGeneration);
+  expect(warning).toHaveBeenCalled();
+  const result = await cache.applySync(ticket, response([task(1)], { mode: "snapshot" }), signal());
+  expect(result.project.manifest).toMatchObject({ state: "active", epoch, taskCount: 1 });
+});
+
+const addStoredDetail = async (database: IDBPDatabase<TaskCacheSchema>, owner: string, ownerProject: string) => {
+  const manifest = (await database.get("projects", [owner, ownerProject]))!;
+  const { titlePreview: _preview, titleTruncated: _truncated, ...intrinsic } = task(1);
+  await database.put("details", { userId: owner, projectId: ownerProject, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration,
+    detail: { ...intrinsic, projectId: ownerProject, title: "Task", description: "Body", properties: { worker: null, pullRequests: [] } }, byteSize: 100, lastUsedAt: 1 });
+};
+
+it("repairs a cold user's damaged fence atomically across projects and four stores while preserving another user", async () => {
+  const original = scope(); const other = scope(otherUser); await seed(original); await seed(original, [task(1)], { ...project, id: otherProject }); await seed(other);
+  const database = await inspect(); await addStoredDetail(database, userId, projectId); await addStoredDetail(database, userId, otherProject); await addStoredDetail(database, otherUser, projectId);
+  const otherBefore = await Promise.all([database.get("userScopes", otherUser), database.getAllFromIndex("projects", "by-user", otherUser), database.getAllFromIndex("summaries", "by-user", otherUser), database.getAllFromIndex("details", "by-user", otherUser)]);
+  original.dispose(); await database.put("userScopes", { userId, userFence: "damaged" });
+  const mismatch = vi.fn(); const cold = scope(userId, mismatch); const ticket = await cold.beginSync(projectId, signal());
+  expect(ticket).toMatchObject({ epoch: null, maxUpdatedAt: null }); expect(ticket.userFence).not.toBe("damaged");
+  expect(cold.signal.aborted).toBe(false); expect(mismatch).not.toHaveBeenCalled();
+  expect(await database.getAllFromIndex("summaries", "by-user", userId)).toEqual([]); expect(await database.getAllFromIndex("details", "by-user", userId)).toEqual([]);
+  expect(await database.get("projects", [userId, otherProject])).toMatchObject({ state: "invalidated", invalidatedBy: "corrupt", userFence: ticket.userFence, epoch: null });
+  expect(await Promise.all([database.get("userScopes", otherUser), database.getAllFromIndex("projects", "by-user", otherUser), database.getAllFromIndex("summaries", "by-user", otherUser), database.getAllFromIndex("details", "by-user", otherUser)])).toEqual(otherBefore);
+  await cold.applySync(ticket, response([task(2)], { mode: "snapshot" }), signal()); expect(cold.getSummaryVersion(projectId, taskId(2))).toBe(1n);
+});
+
+it("retires an old bound scope only after its damaged-fence replacement commits and fences another tab's outstanding ticket", async () => {
+  let database: IDBPDatabase<TaskCacheSchema>;
+  const observations: Array<{ userFence: string; state: string }> = [];
+  const mismatch = vi.fn(() => { void database.get("userScopes", userId).then((user) => observations.push({ userFence: user!.userFence, state: "committed" })); });
+  const bound = scope(userId, mismatch); const otherTab = scope(); await seed(bound); database = await inspect(); const late = await otherTab.beginSync(projectId, signal());
+  const before = await bound.beginSync(projectId, signal()); await database.put("userScopes", { userId, userFence: "damaged" });
+  await expect(bound.beginSync(projectId, signal())).rejects.toMatchObject({ name: "AbortError" });
+  expect(mismatch).toHaveBeenCalledOnce(); expect(bound.isInvalidated).toBe(true);
+  const user = (await database.get("userScopes", userId))!; expect(user.userFence).not.toBe(before.userFence); expect(user.userFence).not.toBe("damaged");
+  expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", userFence: user.userFence });
+  await vi.waitFor(() => expect(observations).toEqual([{ userFence: user.userFence, state: "committed" }]));
+  await expect(otherTab.applySync(late, response([task(2)]), signal())).rejects.toMatchObject({ name: "AbortError" });
+  const fresh = scope(); const ticket = await fresh.beginSync(projectId, signal()); await fresh.applySync(ticket, response([task(2)], { mode: "snapshot" }), signal());
+  expect((await database.getAllFromIndex("summaries", "by-user", userId)).map((row) => row.taskId)).toEqual([taskId(2)]);
+});
+
+it.each([["cold", "quota"], ["bound", "quota"], ["cold", "abort"], ["bound", "abort"]] as const)("rolls a failed %s/%s user repair back without rebinding or identity callbacks, then recovers on Retry", async (mode, fault) => {
+  const mismatch = vi.fn(); const original = scope(userId, mismatch); await seed(original); const database = await inspect(); await addStoredDetail(database, userId, projectId);
+  const old = await original.beginSync(projectId, signal()); await database.put("userScopes", { userId, userFence: "damaged" });
+  if (mode === "cold") original.dispose();
+  const repairing = mode === "cold" ? scope(userId, mismatch) : original;
+  const before = await Promise.all([database.get("userScopes", userId), database.getAllFromIndex("projects", "by-user", userId), database.getAllFromIndex("summaries", "by-user", userId), database.getAllFromIndex("details", "by-user", userId)]);
+  const update = fake.IDBCursor.prototype.update;
+  const failure = vi.spyOn(fake.IDBCursor.prototype, "update").mockImplementation(function (this: IDBCursorWithValue, ...args) {
+    if (this.source instanceof IDBIndex && this.source.objectStore.name === "projects") {
+      if (fault === "quota") throw new DOMException("Quota exceeded", "QuotaExceededError");
+      const request = update.apply(this, args); this.source.objectStore.transaction.abort(); return request;
+    }
+    return update.apply(this, args);
+  });
+  await expect(repairing.beginSync(projectId, signal())).rejects.toMatchObject({ category: "storage", cause: { name: fault === "quota" ? "QuotaExceededError" : "AbortError" } });
+  expect(repairing.isInvalidated).toBe(false); expect(repairing.signal.aborted).toBe(false); expect(mismatch).not.toHaveBeenCalled();
+  failure.mockRestore();
+  expect(await Promise.all([database.get("userScopes", userId), database.getAllFromIndex("projects", "by-user", userId), database.getAllFromIndex("summaries", "by-user", userId), database.getAllFromIndex("details", "by-user", userId)])).toEqual(before);
+  if (mode === "bound") {
+    await expect(repairing.beginSync(projectId, signal())).rejects.toMatchObject({ name: "AbortError" }); expect(mismatch).toHaveBeenCalledOnce();
+  } else {
+    const ticket = await repairing.beginSync(projectId, signal()); expect(ticket.userFence).not.toBe(old.userFence); expect(ticket.epoch).toBeNull(); expect(mismatch).not.toHaveBeenCalled();
+  }
+});
+
+it("validates invalidated lifecycle records at read, detail and apply boundaries before treating them as baselines", async () => {
+  const cache = scope(); await seed(cache); await cache.invalidateProject(projectId, signal()); const ticket = await cache.beginSync(projectId, signal()); const database = await inspect();
+  const manifest = (await database.get("projects", [userId, projectId]))!;
+  await database.put("projects", { ...manifest, epoch });
+  await expect(cache.readProject(projectId, signal())).rejects.toMatchObject({ category: "corrupt" });
+  await expect(cache.detailTransaction(ticket, signal(), async () => {})).rejects.toMatchObject({ category: "corrupt" });
+  await expect(cache.applySync(ticket, response([task(1)], { mode: "snapshot" }), signal())).rejects.toMatchObject({ category: "corrupt" });
+  expect((await cache.beginSync(projectId, signal())).epoch).toBeNull();
+});
+
+it("repairs a missing user record without retaining orphaned private rows or malformed project keys", async () => {
+  const original = scope(); await seed(original); const database = await inspect(); original.dispose();
+  await database.delete("userScopes", userId);
+  const manifest = (await database.get("projects", [userId, projectId]))!;
+  await database.put("projects", { ...manifest, projectId: "malformed-project-key" });
+  const fresh = scope(); const ticket = await fresh.beginSync(projectId, signal());
+  expect(ticket.epoch).toBeNull(); expect(await database.getAllFromIndex("summaries", "by-user", userId)).toEqual([]);
+  expect(await database.get("projects", [userId, "malformed-project-key"])).toBeUndefined();
+  expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", userFence: ticket.userFence });
+});

@@ -178,7 +178,10 @@ session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
 schema 1 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
 stores. User fences, project generations and validated manifests guard late
-responses and cross-tab transactions. The details store and guarded transaction
+responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
+fences/generations and bounded counts for both active and invalidated manifests.
+An invalidated manifest has a recognized reason, null epoch/Project/watermark and
+zero task/edge counts; it cannot retain a usable incremental baseline. The details store and guarded transaction
 interface are shared infrastructure; intrinsic detail content, LRU and
 change-driven detail GETs are not connected yet.
 
@@ -203,8 +206,15 @@ the durable base. Foreground request gating also covers local reads/publication.
 Broadcast hints contain no task content or authority. Authorized receivers read
 committed stores without issuing another network request. Failed IDB opening,
 blocked upgrades, abnormal close, corruption or writes use existing visible
-error/Retry states and retain an allowed current view. There is no silent
-network-only fallback. `Task sync` diagnostics report cycle/project IDs,
+error/Retry states and retain an allowed current view. Missing or malformed user
+scope records are repaired in one four-store transaction: replace the fence,
+clear only that user's summaries/details and invalidate its project baselines.
+The repair never parses or reuses the damaged fence. Memory binding, scope
+retirement and hints wait for commit; a cold scope can then bind the replacement,
+while an already-bound scope retires and requests identity verification. A failed
+repair rolls back without retiring the detecting scope, exposing a retryable
+storage error. Other users remain intact, and stale tickets fail against the new
+fence before publication. There is no silent network-only fallback. `Task sync` diagnostics report cycle/project IDs,
 received/changed/duplicate counts, cache hit and apply duration; duplicate includes
 ignored old versions. Failure diagnostics expose categories and a depth-limited allowlist of cause
 names/codes, without raw messages, stacks, task bodies or credentials. The [cache architecture](../../docs/design/daynight-task-sync.md)

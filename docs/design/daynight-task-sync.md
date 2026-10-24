@@ -132,6 +132,8 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 | summaries / [userId,projectId,taskId] | 已接受的任务自身摘要及业务 version |
 | details / [userId,projectId,taskId] | 已建立的详情记录类型：userFence、cacheGeneration、完整自身内容、byteSize、lastUsedAt；内容读写策略尚未接入 |
 
+`lifecycle.ts` 统一验证用户记录与两类 manifest：userId/projectId 必须匹配请求归属，userFence 和 cacheGeneration 必须是规范 UUID，计数必须是容量上限内的非负安全整数。active manifest 要求 invalidatedBy=null、合法 epoch/Project，且 taskCount 为零当且仅当 maxUpdatedAt=null；invalidated manifest 要求明确的 access/corrupt/user 原因、epoch/project/maxUpdatedAt 全为 null、taskCount/edgeCount 全为零。失效状态不能保留可用于增量请求的旧 epoch。
+
 不存派生 ready/blockedBy，不把 bigint 当作 IDB 键，也不 JSON.stringify bigint。`projects` 的 `by-user` 索引支持用户清理；`summaries`、`details` 的 `by-user` 与 `by-project` 索引支持定向读取和清理。`TaskIntrinsicDetail = Omit<TaskDetail, "ready" | "blockedBy">` 固定详情存储边界，尚不表示详情内容已经持久化。
 
 `TaskCacheProvider` 在认证分支内、`TaskDetailSessionProvider` 外提供同一个 `TaskCacheScope`，同时覆盖项目页、独立任务页和附件路径页。scope 以用户与会话 generation 隔离；普通同用户核验保留它。`beginSync` 返回 epoch、水位和生命周期 ticket，`applySync` 原子应用响应，`readProject` 读取实际持久集合，`getAuthorizedProject` 只返回本 scope 已获在线准入的内存投影。`getSummaryVersion` 和 `subscribe` 提供精确业务版本与变更通知；`detailTransaction` 在相同 fence/generation 校验后开放四 store 内的详情事务。
@@ -139,14 +141,14 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 ### 每轮应用
 
 1. 当前身份通过核验后读取本项目 M/epoch 及生命周期 fence，发起网络请求。解码、身份验证与网络等待在 IDB 事务之外。
-2. 开一个跨四 store 的 readwrite 事务，重读 userFence 与项目 cacheGeneration，要求仍与请求时的生命周期相符；初次缺失基线也先建立用户 fence。重置/注销后的迟到请求不能重新创建已清理内容。
+2. 开一个跨四 store 的 readwrite 事务，验证用户记录及项目 manifest，重读 userFence 与项目 cacheGeneration，要求仍与请求时的生命周期相符。初次缺失用户记录也先建立新的持久 fence；重置/注销后的迟到请求不能重新创建已清理内容。beginSync、applySync、readProject 和 detailTransaction 共用该验证与用户恢复边界。
 3. active 项目先校验当前持久集合的 taskCount、edgeCount 与精确最大 updatedAt 是否等于 manifest，并验证行归属、类型和图结构。少一条独立任务也属于损坏；不能把更小集合重新计数后视为正常。校验失败中止本次应用，使基线 invalidated 后无 since 完整重建。校验通过后，delta 从**此刻的完整持久摘要集合**按 id 与业务 version 合并。更高版本替换；相等版本保留原内容且自身字段必须一致；较旧版本忽略。Project 按已有 settings.version 合并，迟到旧设置不得回退。
 4. 从合并集合重新计算精确 maxUpdatedAt、依赖与统计并完成图校验。只写真实改变的行、对应详情失效与确有变化的元数据；摘要与水位一起提交。snapshot 在生命周期仍匹配时完整替换并更新 cacheGeneration。
 5. 等 tx.done 后发布实际合并的快照。重复行不重写、不触发详情失效，不改变可见任务/索引/布局引用；仍能提供本页新的访问确认与时钟样本。
 
 仅比较 M 是否相等不足以保证内容 CAS：不同任务或任务版本可以共享时间戳。本方案在串行的 IDB 写事务内读取并合并当前集合，不增加另一套本地提交序号。事务内只等待 IDB 请求并做有界纯计算，不等待 fetch、timer 或异步 crypto。1,000/5,000 上限限制全集合校验成本；每轮可能读取全部本地摘要，这个成本实测，不声称本地工作量严格为变化量。
 
-真正需要重建时先使项目基线 invalidated 并分配新 cacheGeneration，再无时间边界取 snapshot。相同 epoch 的空项目后续走 delta，不因重复空集合不断轮换 generation。
+项目 manifest 不合法或完整摘要集合损坏时，先定向清除本项目摘要/详情、建立符合 null/零值约束的新 invalidated manifest 及 cacheGeneration，再无时间边界取 snapshot。相同 epoch 的空项目后续走 delta，不因重复空集合不断轮换 generation。
 
 ### 多标签页与广播
 
@@ -178,7 +180,7 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 持久数据不保存授权，每次挂载的项目视图在本挂载成功同步前不显示磁盘私有内容；本地命中与广播不能授予首次访问。已打开视图在网络故障时保留并显示现有读取错误。权威 404 立即隐藏项目，保留 invalidated generation 并定向清除；账号退出/换号/失效通过 `invalidateScope` 同步中止 scope、释放内存，再事务轮换 userFence、清除该用户摘要和详情并保留失效 manifest，阻止迟到 bootstrap 恢复它。`dispose` 仅关闭当前 scope，保留可重用持久记录。
 
-IDB 打开、blocked、异常 close、读取、配额和写入失败进入现有失败/保留快照错误区及 Retry。blocked 5,000ms 后报告错误，迟到打开的连接关闭。重试先重开必要连接并读取真实存储；结构损坏记录原因并完整重建，失败不无限重试。不引入静默网络模式或新的产品布局。
+IDB 打开、blocked、异常 close、读取、配额和写入失败进入现有失败/保留快照错误区及 Retry。blocked 5,000ms 后报告错误，迟到打开的连接关闭。重试先重开必要连接并读取真实存储；结构损坏记录原因并完整重建，失败不无限重试。用户记录缺失、归属错误或 userFence 畸形时，不再次依赖该损坏 fence 做项目失效。一个独立的四 store 修复事务直接写新用户 fence、清除该用户摘要/详情，并把其可识别项目基线重建为失效记录；无法识别的项目键被清除。其他用户保持。修复提交前不修改内存绑定、退役 scope 或发送提示；修复失败原子回滚，检测它的 scope 保持可重试并显示存储错误。提交后，尚未绑定的冷 scope 绑定新 fence 再继续原读取；已经绑定旧 fence 的 scope 关闭并发起身份核验，不能采用替代 fence。其他标签页的旧 ticket 在后续事务中被新 fence 拒绝，已完成事务也须通过提交后的 scope 检查才可发布。不引入静默网络模式或新的产品布局。
 
 schema 升级时关闭旧连接，在升级事务清除可重建缓存并轮换生命周期 fence。组件/身份释放关闭句柄、通道、timer 并取消读请求；已提交修改继续由身份级详情会话核对。保留现有筛选、焦点、视口、全屏、滚动和附件 frame，以及对话框、独立任务详情页、独立附件工作区的读取与操作。TaskDetailPage 也使用 useTaskGraph，必须接入相同缓存合同。
 
