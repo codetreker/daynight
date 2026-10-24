@@ -89,8 +89,9 @@ const expectFlowcharts = async (container: Locator): Promise<void> => {
   expect(drawings[0]!.text).toContain('是否通过？');
   expect(drawings[0]!.text).toContain('完成');
   expect(drawings[0]!.paths).toBeGreaterThanOrEqual(5);
-  expect(drawings[1]!.text).toContain('包含中文与 English');
-  expect(drawings[1]!.text).toContain('@{ 字面标签');
+  const horizontalLabels = drawings[1]!.text!.replace(/\s+/g, '');
+  expect(horizontalLabels).toContain('包含中文与English');
+  expect(horizontalLabels).toContain('@{字面标签');
   expect(drawings.every((drawing) => drawing.scripts === 0)).toBe(true);
   const failures = container.locator('.mermaid-flowchart').filter({ has: container.page().getByRole('alert') });
   await expect(failures).toHaveCount(failedFlowcharts.length);
@@ -189,7 +190,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     await expect(description.getByRole('heading', { name: '交付说明 Delivery', exact: true })).toBeVisible();
     await expect(description.getByRole('table')).toHaveCount(1);
     await expect(description.locator('blockquote')).toContainText('可见结果');
-    const ordinaryCode = description.locator('pre').filter({ has: description.locator('code.language-typescript') });
+    const ordinaryCode = description.locator('pre:has(code.language-typescript)');
     await expect(ordinaryCode).toHaveText(longCode);
     await expectFlowcharts(description);
     const firstSource = description.locator('.mermaid-flowchart').nth(3);
