@@ -144,6 +144,14 @@ in another task or the delivery task's own primary Markdown is insufficient.
 These input references do not add execution dependencies or duplicate shared
 documents.
 
+Read back every task, required attachment, shared input, and dependency before
+reporting the breakdown registered. Check each delivery task's description,
+including indirect successors, for the architecture task ID and every required
+document reference; confirm that each reference resolves to the intended readable
+content. Keep the solution discussion `in_progress` when registration is incomplete.
+If the accepted solution materially changes, obtain renewed user confirmation
+before registering or advancing the changed work.
+
 For an illustrative `architecture → A → B` chain, A delivers the upload API and B
 delivers its retry controls. B depends on A and directly names the architecture
 inputs in its description. The following task ID and paths are hypothetical;
@@ -168,14 +176,6 @@ Read these attachments from that task before implementation:
 ## Task plan
 This task's `plan.md` owns its implementation plan and full acceptance criteria.
 ```
-
-Read back every task, required attachment, shared input, and dependency before
-reporting the breakdown registered. Check each delivery task's description,
-including indirect successors, for the architecture task ID and every required
-document reference; confirm that each reference resolves to the intended readable
-content. Keep the solution discussion `in_progress` when registration is incomplete.
-If the accepted solution materially changes, obtain renewed user confirmation
-before registering or advancing the changed work.
 
 ## Preserve ownership and recover partial registration
 
