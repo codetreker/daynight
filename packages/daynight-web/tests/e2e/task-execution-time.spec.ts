@@ -6,7 +6,7 @@ import { parseApiJson, stringifyApiJson } from '../../src/api/json';
 import { parseTaskDetail, parseTaskGraph, project as parseProject } from '../../src/api/parse';
 import { decodeProjectJson, decodeTaskGraphJson } from '../../src/api/project-json';
 import type { TaskDetail } from '../../src/api/types';
-import { createProject, createTask, startTask, executeTask, finishTask, expect, seedRunningTaskStart, seedExternalDependencies, test, type Task } from './fixtures';
+import { createProject, createTask, startTask, executeTask, expect, seedRunningTaskStart, seedExternalDependencies, test, type Task } from './fixtures';
 import type { AuthenticatedAPI } from './authentication';
 import { expectedChainMembers } from './visible-topology';
 
@@ -236,8 +236,11 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     const freezeResponse = page.waitForResponse((response) => new URL(response.url()).pathname === syncPath);
     await freezeResponse; expect(await duration(ticking).getAttribute('datetime')).toBe(frozen);
     evidence.timing.completedDuration = frozen; evidence.progress.push('completed-duration-frozen-across-poll');
-    await finishTask(api, project.id, legacy);
+    const unknownBeforeCompletion = await record(project.id, legacy.id, 'legacy-before-completion');
+    expect(unknownBeforeCompletion).toEqual(legacyUnknown);
+    await success(['task', 'set-status', legacy.id, 'done', '--project', project.id, '--if-version', String(unknownBeforeCompletion.version)]);
     const completedLegacy = await record(project.id, legacy.id, 'completed-legacy-remains-unknown');
+    expect(completedLegacy.version).toBe(unknownBeforeCompletion.version + 1n);
     expect(completedLegacy.startedAt).toBeNull(); expect(completedLegacy.completedAt).not.toBeNull();
     await retained.dispose();
     await openTimingChain();

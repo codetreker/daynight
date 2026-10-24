@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Page, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type ProjectRecord } from '../../src/features/task-cache/database';
 import { authenticatedAPI, bearerContext, browserAuthentication, tokenContext, type AuthenticatedAPI } from './authentication';
 import { executeTask, createProject, createTask, expect, test } from './fixtures';
 
@@ -167,9 +168,12 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(originalFrame).not.toBeNull();
     const identityRequests: string[] = [];
     const graphRequests: string[] = [];
+    const membershipRequests: string[] = [];
+    const graphResponses: { readonly number: number; readonly status: number; readonly principal: string | null }[] = [];
     const requestOrder: string[] = [];
     const identityRequestNumbers = new WeakMap<object, number>();
     const graphRequestNumbers = new WeakMap<object, number>();
+    const membershipRequestNumbers = new WeakMap<object, number>();
     const pendingGraphWindows: { readonly identity: 'same-user' | 'changed-user'; readonly baseline: number; readonly beforeRelease: number }[] = [];
     page.on('request', (request) => {
       const pathname = new URL(request.url()).pathname;
@@ -181,11 +185,51 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
         graphRequests.push(request.method());
         graphRequestNumbers.set(request, graphRequests.length);
         requestOrder.push(`graph-request:${graphRequests.length}`);
+      } else if (pathname === `/api/v1/projects/${own.id}/members`) {
+        membershipRequests.push(request.method());
+        membershipRequestNumbers.set(request, membershipRequests.length);
+        requestOrder.push(`membership-request:${membershipRequests.length}`);
       }
     });
     page.on('response', (response) => {
-      if (new URL(response.url()).pathname === '/api/v1/me') requestOrder.push(`identity-response:${identityRequestNumbers.get(response.request())!}`);
+      const pathname = new URL(response.url()).pathname;
+      if (pathname === '/api/v1/me') requestOrder.push(`identity-response:${identityRequestNumbers.get(response.request())!}`);
+      else if (pathname === `/api/v1/projects/${own.id}/task-sync`) graphResponses.push({
+        number: graphRequestNumbers.get(response.request())!, status: response.status(), principal: response.headers()['daynight-user-id'] ?? null,
+      });
     });
+    const cachePrivacy = () => page.evaluate(async ({ databaseName, schema, aliceId, bobId, projectId }) => {
+      if (!(await indexedDB.databases()).some((database) => database.name === databaseName)) throw new Error('The authenticated project did not create its native task cache.');
+      const database = await new Promise<IDBDatabase>((resolve, reject) => {
+        const opening = indexedDB.open(databaseName);
+        opening.onsuccess = () => resolve(opening.result);
+        opening.onerror = () => reject(opening.error);
+      });
+      try {
+        if (database.version !== schema) throw new Error('The native task cache schema differs from the acceptance fixture.');
+        const transaction = database.transaction(['projects', 'summaries', 'details'], 'readonly');
+        const done = new Promise<void>((resolve, reject) => {
+          transaction.oncomplete = () => resolve();
+          transaction.onerror = () => reject(transaction.error);
+          transaction.onabort = () => reject(transaction.error);
+        });
+        const read = <T,>(request: IDBRequest<T>) => new Promise<T>((resolve, reject) => {
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const [aliceProjects, aliceSummaries, aliceDetails, bobProject, bobSummaries, bobDetails] = await Promise.all([
+          read(transaction.objectStore('projects').index('by-user').getAll(aliceId)) as Promise<ProjectRecord[]>,
+          read(transaction.objectStore('summaries').index('by-user').count(aliceId)),
+          read(transaction.objectStore('details').index('by-user').count(aliceId)),
+          read(transaction.objectStore('projects').get([bobId, projectId])) as Promise<ProjectRecord | undefined>,
+          read(transaction.objectStore('summaries').index('by-project').count([bobId, projectId])),
+          read(transaction.objectStore('details').index('by-project').count([bobId, projectId])),
+        ]);
+        await done;
+        return { aliceActiveProjects: aliceProjects.filter((project) => project.state === 'active').length, aliceSummaries, aliceDetails,
+          bobOwnProjectActive: bobProject?.state === 'active', bobSummaries, bobDetails };
+      } finally { database.close(); }
+    }, { databaseName: TASK_CACHE_DATABASE, schema: TASK_CACHE_SCHEMA, aliceId: aliceUser.id, bobId: bobUser.id, projectId: own.id });
     const queueGraphWhileAway = async (): Promise<void> => {
       expect(await page.evaluate(() => document.hasFocus())).toBe(false);
       const refresh = page.locator('.project-title-actions>button');
@@ -278,6 +322,8 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await otherTab.bringToFront();
     await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
     const changedUserGraphBaseline = graphRequests.length;
+    const cacheBeforeAccountChange = await cachePrivacy();
+    expect(cacheBeforeAccountChange.aliceSummaries, 'The old account has real persisted summaries before switching identities').toBeGreaterThan(0);
     requestOrder.push('external-departure:2');
     await queueGraphWhileAway();
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
@@ -298,16 +344,40 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await expect(page.getByRole('link', { name: '账户设置：Alice', exact: true })).toBeVisible();
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     pendingGraphWindows.push({ identity: 'changed-user', baseline: changedUserGraphBaseline, beforeRelease: graphRequests.length });
+    const changedUserMembershipBaseline = membershipRequests.length;
+    const deniedMembership = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/members`
+      && membershipRequestNumbers.get(response.request())! > changedUserMembershipBaseline);
     heldChecks[2]!.release();
     await heldChecks[2]!.completed;
+    const membershipRefusal = await deniedMembership;
+    expect(membershipRefusal.request().method()).toBe('GET');
+    expect(membershipRefusal.status()).toBe(404);
+    expect(membershipRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
+    expect((await membershipRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
     await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
     await expect(page.getByRole('heading', { name: own.name, exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
     expect(identityRequests).toEqual(['GET', 'GET', 'GET']);
-    await expect.poll(() => graphRequests.length).toBeGreaterThan(changedUserGraphBaseline);
     expect(requestOrder).toContain('identity-response:3');
-    expect(requestOrder.indexOf(`graph-request:${changedUserGraphBaseline + 1}`)).toBeGreaterThan(requestOrder.indexOf('identity-response:3'));
-    await info.attach('auth-real-tab-return', { body: Buffer.from(JSON.stringify({ identityRequests, graphRequests, pendingGraphWindows, requestOrder, continuity })), contentType: 'application/json' });
+    const identityConfirmedAt = requestOrder.indexOf('identity-response:3');
+    expect(requestOrder.indexOf(`membership-request:${membershipRequestNumbers.get(membershipRefusal.request())!}`)).toBeGreaterThan(identityConfirmedAt);
+    for (let number = changedUserGraphBaseline + 1; number <= graphRequests.length; number++) {
+      expect(requestOrder.indexOf(`graph-request:${number}`)).toBeGreaterThan(identityConfirmedAt);
+    }
+    for (const response of graphResponses.filter((response) => response.number > changedUserGraphBaseline)) {
+      expect(response.status).toBe(404); expect(response.principal).toBe(bobUser.id);
+    }
+    await expect(page.locator('.stats, .root-list, .standalone-list, .task-detail-dialog, iframe')).toHaveCount(0);
+    await expect(page.getByText(task.title, { exact: true })).toHaveCount(0);
+    expect(await originalShell!.evaluate((element) => element.isConnected)).toBe(false);
+    expect(await originalDetail!.evaluate((element) => element.isConnected)).toBe(false);
+    expect(await originalFrame!.evaluate((element) => element.isConnected)).toBe(false);
+    let cacheAfterAccountChange: Awaited<ReturnType<typeof cachePrivacy>> | undefined;
+    await expect.poll(async () => { cacheAfterAccountChange = await cachePrivacy(); return cacheAfterAccountChange; }, {
+      message: 'Changing accounts purges the old cache namespace and never authorizes its project for the new account',
+    }).toEqual({ aliceActiveProjects: 0, aliceSummaries: 0, aliceDetails: 0, bobOwnProjectActive: false, bobSummaries: 0, bobDetails: 0 });
+    const membershipDenial = { status: membershipRefusal.status(), principal: membershipRefusal.headers()['daynight-user-id'] };
+    await info.attach('auth-real-tab-return', { body: Buffer.from(JSON.stringify({ identityRequests, graphRequests, graphResponses, membershipRequests, membershipDenial, pendingGraphWindows, requestOrder, continuity, cacheBeforeAccountChange, cacheAfterAccountChange })), contentType: 'application/json' });
     await picture(page, info, 'auth-account-return');
   } finally {
     for (const check of heldChecks) check.release();
