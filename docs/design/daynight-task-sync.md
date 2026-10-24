@@ -17,7 +17,7 @@
 客户端摘要最大 updatedAt → 服务端减去配置窗口 → 返回匹配任务摘要
 ```
 
-客户端只把已成功合并的项目同步摘要用于计算水位。服务端读取当前任务事实，不保存历史变更流。重复行是协议正常部分；前端借助任务已有 version 判断是否替换内容。
+客户端只把已成功合并的项目同步摘要用于计算水位。服务端读取当前任务事实，不保存历史变更流，也不承诺依次返回每个业务版本；一次同步可以从 v5 直接读到 v7。重复行是协议正常部分；前端借助任务已有 version 判断是否替换内容。
 
 | 现有机制 | 用途及证据 |
 |---|---|
@@ -168,7 +168,7 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 `TaskDetailSessions(scope)` 复用认证 scope 的 `beginSync` 和 `detailTransaction`，保持 status、allowAgents、requiredPlatform 三类写操作的同一所有者；状态写入仍使用 PUT /tasks/{taskId}/status。`useTaskDetail(projectId,taskId,revision,observedTask)` 保留调用形式，从 scope 读取摘要业务版本和项目 generation。只有本次挂载的 revision>0 才准入可显示内容；scope 中其他页面已有的授权集合不能替代它。
 
-每次已准入的详情打开先调用 `requireOpeningRead(projectId,taskId)` 记录这次 opening 的 live GET 要求，再判断 pending/unknown/reconciling 是否阻止读取；阻止期间要求仍保留，解除后合并执行必要 GET。openingGeneration/liveOpeningGeneration 只在内存中识别该要求，不是 DB、协议或项目水位。GET 捕获开始时的 opening，磁盘正文、写结果、同版本 no-op/拒绝响应以及重开前已开始的 reconciliation 均不能满足后一次 opening；重复五秒 receipt 不创建新 opening。取得当前生命周期 ticket 后可以显示匹配摘要版本的持久自身正文，live GET 成功前 requiresFreshRead 保持，磁盘内容不启用写操作。网络在事务外进行，响应通过实际用户核对后，保存事务再次验证 ticket、当前摘要和已有详情。较旧结果不覆盖正文。较新的 GET 结果保留待安装并触发项目同步；已确认且通过目标/版本校验的较新写正文，在受保护生命周期检查后可暂时按原始服务端字段显示，同时保持 graphMismatch、requiresFreshRead 和禁写，不提前持久化。两类结果都等摘要版本匹配后才采用本地派生并持久化，不推进项目覆盖。snapshot 会轮换项目 generation，不能跨 generation 采用旧 ticket 或待安装正文；任何 generation 变化立即释放旧详情正文、PR 和 loadedRevision，取消旧读取/待安装结果，并重置 liveVersion、已确认版本下界、读取错误与新鲜度；相同 taskId/version/时间也不能证明属于同一历史。hook 在 observer effect 前也以 `hasCurrentGeneration` 阻止旧正文闪现，新 GET 挂起或失败时不能保留旧 generation 的内容。操作 confirmed/unknown 的意图和阶段仍保留，旧核对取消后 reconciling 复位，以便显式 GET 核对恢复；同 generation 的刷新失败继续保留当前成功正文。
+每次已准入的详情打开先调用 `requireOpeningRead(projectId,taskId)` 记录这次 opening 的 live GET 要求，再判断 pending/unknown/reconciling 是否阻止读取；阻止期间要求仍保留，解除后合并执行必要 GET。openingGeneration/liveOpeningGeneration 只在内存中识别该要求，不是 DB、协议或项目水位。GET 捕获开始时的 opening，磁盘正文、写结果、同版本 no-op/拒绝响应以及重开前已开始的 reconciliation 均不能满足后一次 opening；重复五秒 receipt 不创建新 opening。取得当前生命周期 ticket 后可以显示匹配摘要版本的持久自身正文，live GET 成功前 requiresFreshRead 保持，磁盘内容不启用写操作。网络在事务外进行，响应通过实际用户核对后，保存事务再次验证 ticket、当前摘要和已有详情。较旧结果不覆盖正文。较新的 GET 结果保留待安装并触发项目同步；已确认且通过目标/版本校验的较新写正文，在受保护生命周期检查后可暂时按原始服务端字段显示，同时保持 graphMismatch、requiresFreshRead 和禁写，不提前持久化。暂存结果高于摘要版本时继续等待，版本相等时按原有 ticket 校验采用本地派生并持久化，不额外 GET（新的 opening 要求仍独立保留）。若当前摘要已越过暂存版本，则丢弃该过期 payload 和旧 liveVersion，在同一请求队列中合并一次优先 GET-only reconciliation；空闲时执行，活动读或写结束后再排空。保留原操作意图、阶段和已确认版本下界，旧 payload 不安装也不满足 opening。核对 GET 失败或仍返回旧版本时，退出 reconciling 并保留 reconciliationError 与可用的检查状态/Retry；重复摘要不自动形成核对循环，显式 Retry 只 GET。以上过程不推进项目覆盖。snapshot 会轮换项目 generation，不能跨 generation 采用旧 ticket 或待安装正文；任何 generation 变化立即释放旧详情正文、PR 和 loadedRevision，取消旧读取/待安装结果，并重置 liveVersion、已确认版本下界、读取错误与新鲜度；相同 taskId/version/时间也不能证明属于同一历史。hook 在 observer effect 前也以 `hasCurrentGeneration` 阻止旧正文闪现，新 GET 挂起或失败时不能保留旧 generation 的内容。操作 confirmed/unknown 的意图和阶段仍保留，旧核对取消后 reconciling 复位，以便显式 GET 核对恢复；同 generation 的刷新失败继续保留当前成功正文。
 
 摘要自身 version 变化使对应详情失效并读取新内容。相同 version 的前置变化直接从完整本地图重新物化 ready/blockedBy，不下载所有后继。description、PR 或 worker 属性变化由业务 version 被发现。收到 live GET/写响应时，先以原始服务端派生字段检查 isTaskStale，再物化本地派生值；`graphMismatch` 保存差异证据并继续提示、禁写和触发项目同步，不能用覆盖后的相同值消除它。成功读取或本地图收敛后才解除对应限制。重复 receipt 仅在读取错误、缺失新鲜观察、原始差异或核对未完成时提供必要恢复机会。
 

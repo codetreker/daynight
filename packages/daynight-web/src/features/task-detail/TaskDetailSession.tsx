@@ -31,7 +31,7 @@ type Entry = {
   generation: number;
   read: AbortController | null;
   committedVersion: bigint | null;
-  queuedRevision: number | null;
+  queuedRead: { readonly revision: number; readonly reconciliation: boolean } | null;
   observedTask: GraphTask | undefined;
   observedVersion: bigint | null;
   observedGeneration: string | null;
@@ -104,7 +104,7 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { state: initialState(), generation: 0, read: null, committedVersion: null, queuedRevision: null, observedTask: undefined, observedVersion: null, observedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
@@ -151,14 +151,31 @@ export class TaskDetailSessions {
     const requiresFreshRead = entry.liveVersion !== version || entry.liveOpeningGeneration !== entry.openingGeneration || !admitted || entry.mismatch !== null || !matching ||
       entry.committedVersion !== null && entry.state.detail !== null && entry.state.detail.version < entry.committedVersion;
     if (detail !== entry.state.detail || requiresFreshRead !== entry.state.requiresFreshRead) this.publish(entry, { ...entry.state, detail, requiresFreshRead, graphMismatch: entry.mismatch !== null });
-    if (entry.pending !== null && entry.pending.detail.version === version && task !== undefined && admitted) {
+    // A current-state feed may skip the intermediate version held by a detail response.
+    if (entry.pending !== null && version !== null && entry.pending.detail.version < version && task !== undefined && admitted) {
       const pending = entry.pending;
       entry.pending = null;
-      void this.accept(projectId, taskId, pending.detail, pending.ticket, pending.revision, pending.reconciliation, this.scope.signal, pending.generation, pending.writeGeneration, pending.readOpeningGeneration)
-        .catch((error: unknown) => { if (!this.disposed && !this.scope.isInvalidated && !isAbortError(error)) this.publish(entry, { ...entry.state, refreshing: false, error }); });
+      entry.liveVersion = null;
+      entry.queuedRead = { revision: pending.revision, reconciliation: true };
+      this.publish(entry, { ...entry.state, requiresFreshRead: true,
+        mutation: { ...entry.state.mutation, reconciling: true, reconciliationError: null } });
+      this.drainReads(projectId, taskId);
       return false;
     }
-    return changed || entry.state.error !== null || entry.mismatch !== null || entry.read === null && entry.pending === null && (!matching || entry.liveVersion !== version || entry.liveOpeningGeneration !== entry.openingGeneration);
+    if (entry.pending !== null && entry.pending.detail.version === version && task !== undefined && admitted) {
+      const pending = entry.pending;
+      const generation = entry.generation;
+      entry.pending = null;
+      void this.accept(projectId, taskId, pending.detail, pending.ticket, pending.revision, pending.reconciliation, this.scope.signal, pending.generation, pending.writeGeneration, pending.readOpeningGeneration)
+        .catch((error: unknown) => {
+          if (this.disposed || this.scope.isInvalidated || isAbortError(error) || generation !== entry.generation ||
+            this.projectGeneration(projectId) !== pending.ticket.cacheGeneration) return;
+          this.failRead(entry, error, pending.reconciliation);
+        });
+      return false;
+    }
+    if (entry.pending !== null) return false;
+    return changed || entry.state.error !== null || entry.mismatch !== null || entry.read === null && (!matching || entry.liveVersion !== version || entry.liveOpeningGeneration !== entry.openingGeneration);
   }
   subscribe = (projectId: string, taskId: string, listener: () => void): (() => void) => {
     const entry = this.entry(projectId, taskId);
@@ -184,19 +201,31 @@ export class TaskDetailSessions {
   cancelRead(projectId: string, taskId: string): void {
     const entry = this.entry(projectId, taskId);
     entry.generation++;
-    entry.queuedRevision = null;
+    entry.queuedRead = null;
     entry.read?.abort();
     entry.read = null;
   }
   releaseRead(projectId: string, taskId: string): void {
     if (!this.entry(projectId, taskId).state.mutation.reconciling) this.cancelRead(projectId, taskId);
   }
+  private drainReads(projectId: string, taskId: string): void {
+    const entry = this.entry(projectId, taskId);
+    if (this.disposed || this.scope.isInvalidated || !entry.admitted || entry.read !== null || entry.state.mutation.phase === "pending") return;
+    const queued = entry.queuedRead;
+    if (queued === null) return;
+    entry.queuedRead = null;
+    if (queued.reconciliation) void this.read(projectId, taskId, queued.revision, true, true);
+    else if (entry.listeners.size > 0) this.load(projectId, taskId, queued.revision, "automatic");
+  }
   load(projectId: string, taskId: string, revision: number, mode: "open" | "refresh" | "automatic" = "refresh"): void {
     const entry = this.entry(projectId, taskId);
     if (!entry.admitted || entry.state.mutation.phase === "pending" || entry.state.mutation.phase === "unknown" || entry.state.mutation.reconciling) return;
     if (mode === "automatic") {
       if (document.visibilityState === "hidden") return;
-      if (entry.read !== null) { entry.queuedRevision = revision; return; }
+      if (entry.read !== null) {
+        if (entry.queuedRead === null || !entry.queuedRead.reconciliation) entry.queuedRead = { revision, reconciliation: false };
+        return;
+      }
     }
     void this.read(projectId, taskId, revision, false, mode !== "open", mode === "automatic");
   }
@@ -204,6 +233,14 @@ export class TaskDetailSessions {
     const entry = this.entry(projectId, taskId);
     if (entry.state.mutation.phase === "pending" || entry.state.mutation.reconciling) return;
     void this.read(projectId, taskId, entry.state.revision, true, true);
+  }
+  private failRead(entry: Entry, error: unknown, reconciliation: boolean): void {
+    const missing = error instanceof ApiError && error.kind === "server" && error.status === 404;
+    const detail = missing ? null : entry.state.detail;
+    this.publish(entry, { ...entry.state, detail, loadedRevision: missing ? null : entry.state.loadedRevision, status: detail !== null ? "ready" : "error", refreshing: false,
+      requiresFreshRead: reconciliation || entry.state.requiresFreshRead,
+      error: reconciliation && detail !== null ? null : error,
+      mutation: reconciliation ? { ...entry.state.mutation, reconciling: false, reconciliationError: error } : entry.state.mutation });
   }
   private async accept(projectId: string, taskId: string, detail: TaskDetail, ticket: SyncTicket, revision: number, reconciliation: boolean, signal: AbortSignal, generation: number | null = null, writeGeneration: number | null = null, readOpeningGeneration: number | null = null): Promise<void> {
     const entry = this.entry(projectId, taskId);
@@ -237,7 +274,10 @@ export class TaskDetailSessions {
       return;
     }
     const node = entry.observedTask;
-    if (node === undefined || !entry.admitted || this.summaryVersion(projectId, taskId) !== detail.version) return;
+    if (node === undefined || !entry.admitted || this.summaryVersion(projectId, taskId) !== detail.version) {
+      if (reconciliation) this.failRead(entry, new ApiError("protocol"), true);
+      return;
+    }
     // Compare the server fields before local materialization preserves dependency-race evidence.
     entry.mismatch = isTaskStale(node, detail) ? detail : null;
     if (writeGeneration === null || writeGeneration === entry.generation) entry.liveVersion = detail.version;
@@ -249,6 +289,10 @@ export class TaskDetailSessions {
       detail: preserveCollection(entry.state.detail, materializeDetail(admitted.detail, node)), status: "ready", refreshing: false,
       requiresFreshRead: entry.liveVersion !== detail.version || entry.liveOpeningGeneration !== entry.openingGeneration || entry.mismatch !== null, graphMismatch: entry.mismatch !== null, error: storageError, mutation });
     if (entry.mismatch !== null || reconciliation) this.refreshProject(projectId);
+    if (entry.liveOpeningGeneration !== entry.openingGeneration) {
+      if (entry.queuedRead === null) entry.queuedRead = { revision, reconciliation: false };
+      this.drainReads(projectId, taskId);
+    }
   }
   private async read(projectId: string, taskId: string, revision: number, reconciliation: boolean, retainLoaded: boolean, automatic = false): Promise<void> {
     if (this.disposed || this.scope.isInvalidated) return;
@@ -280,18 +324,14 @@ export class TaskDetailSessions {
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
       if (signal.aborted || generation !== entry.generation || this.disposed || !retain && !reconciliation && isAbortError(error)) return;
-      const missing = error instanceof ApiError && error.kind === "server" && error.status === 404;
-      const detail = missing ? null : entry.state.detail;
-      this.publish(entry, { ...entry.state, detail, loadedRevision: missing ? null : entry.state.loadedRevision, status: detail !== null ? "ready" : "error", refreshing: false,
-        error: reconciliation && detail !== null ? null : error,
-        mutation: reconciliation ? { ...entry.state.mutation, reconciling: false, reconciliationError: error } : entry.state.mutation });
+      this.failRead(entry, error, reconciliation);
     } finally {
       if (generation === entry.generation) {
         entry.read = null;
-        const queued = entry.queuedRevision !== null ? entry.queuedRevision
-          : openingGeneration !== entry.openingGeneration ? entry.state.revision : null;
-        entry.queuedRevision = null;
-        if (queued !== null && entry.listeners.size > 0 && !this.disposed) this.load(projectId, taskId, queued, "automatic");
+        if (entry.queuedRead === null && openingGeneration !== entry.openingGeneration) {
+          entry.queuedRead = { revision: entry.state.revision, reconciliation: false };
+        }
+        this.drainReads(projectId, taskId);
       }
     }
   }
@@ -385,7 +425,7 @@ export class TaskDetailSessions {
           if (phase === "conflict") this.refreshProject(projectId);
           if (!this.disposed) await this.read(projectId, taskId, entry.state.revision, true, true);
         }
-      }
+      } finally { this.drainReads(projectId, taskId); }
     })();
   }
   dispose(): void {

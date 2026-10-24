@@ -249,7 +249,14 @@ identical persistent content and returns matching/older/newer admission. The
 session holds newer GETs for project synchronization before installation. A
 validated confirmed write can show its newer raw body after guarded lifecycle
 checks, with mismatch/fresh-read restrictions, until summaries catch up; it is
-not persisted ahead of the summary. Neither operation writes summaries
+not persisted ahead of the summary. The feed exposes current rows and can skip
+intermediate business versions. A pending body above the summary keeps waiting;
+an exact match is admitted under its captured ticket. When the summary overtakes
+it, the session discards that body and queues one GET-only reconciliation through
+the existing read queue, retaining operation intent, outcome and version floors.
+Failed or still-stale readback releases the active reconciliation and keeps Check
+state/Retry usable; duplicate receipts do not loop it, and explicit Retry only
+reads. Neither operation writes summaries
 or their watermark. Limits are 32 records per project, 8 MiB total and 2 MiB per
 record, using UTF-8 bytes from exact intrinsic JSON; LRU uses lastUsedAt with task
 ID as a tie-breaker. Oversized successful bodies stay readable in the active

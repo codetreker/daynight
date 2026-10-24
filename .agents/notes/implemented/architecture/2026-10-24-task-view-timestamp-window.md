@@ -38,8 +38,16 @@ explicit GET recovery paths.
 
 Network results carry the lifecycle ticket captured before dispatch. Guarded
 transactions compare the current summary and stored detail versions before
-installation. Older bodies cannot replace newer content. A newer GET waits for matching
-project synchronization. A validated confirmed write can display its raw body
+installation. Older bodies cannot replace newer content. The feed exposes
+current task rows and may skip intermediate business versions. A newer GET
+waits while its version is ahead of the summary and is admitted on an exact
+match. If the summary overtakes a pending payload, the session discards that
+payload and queues one priority GET-only reconciliation through the existing
+read queue, after any active read/write. Original operation intent, phase and
+version floors survive; the discarded body neither installs nor satisfies an
+opening. Failed or still-stale readback releases active reconciliation with a
+visible recovery action; duplicate receipts do not form an automatic readback
+loop, and explicit Retry only reads. A validated confirmed write can display its raw body
 after guarded lifecycle checks while remaining stale and write-disabled, without
 persisting it ahead of the summary or changing the project watermark. A new
 project generation immediately clears the old detail body, PR data and loaded

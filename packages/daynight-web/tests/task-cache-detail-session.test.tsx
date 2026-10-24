@@ -6,7 +6,8 @@ import type { TaskDetail } from "../src/api/types";
 import { pauseAuthRequests } from "../src/api/client";
 import { TaskCacheProvider } from "../src/features/task-cache/TaskCacheProvider";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
-import { TaskDetailSessionProvider, TaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
+import { TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
+import { TaskCacheError } from "../src/features/task-cache/database";
 import { saveDetail } from "../src/features/task-detail/detail-cache";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { detailFixture, graphFixture, resourceResponse } from "./helpers/taskDetail";
@@ -296,4 +297,130 @@ it("does not let reconciliation started before reopening satisfy the new opening
   expect(latest.current?.mutation.phase).toBe("reconciled"); expect(latest.current?.canSetStatus).toBe(false);
   freshRead.resolve(resourceResponse(detail, TEST_VIEWER_ID)); await waitFor(() => expect(latest.current?.canSetStatus).toBe(true));
   expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1);
+});
+
+
+it.each(["done", "todo"] as const)("reconciles a lost write when current summaries skip its pending version and final status is %s", async (status) => {
+  const initial = body();
+  const intermediate = { ...initial, version: 6n, status: "done" as const, ready: false, completedAt: "2026-10-22T10:00:20Z", updatedAt: "2026-10-22T10:00:20Z" };
+  const current = { ...intermediate, version: 7n, status, ready: status === "todo", completedAt: status === "done" ? intermediate.completedAt : null,
+    description: "Current content after another edit", properties: { worker: null, pullRequests: [{ url: "https://example.test/current", title: "Current PR" }] }, updatedAt: "2026-10-22T10:00:21Z" };
+  const scope = await seed([initial]); const fresh = deferred<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(initial, TEST_VIEWER_ID)).mockRejectedValueOnce(new Error("Write result lost"))
+    .mockResolvedValueOnce(resourceResponse(intermediate, TEST_VIEWER_ID)).mockReturnValueOnce(fresh.promise); vi.stubGlobal("fetch", fetch);
+  const { result, rerender } = renderHook(({ revision, observed }) => ({ ...useTaskDetail(projectId, taskId, revision, observed), sessions: useTaskDetailSessions() }), { initialProps: { revision: 1, observed: node(scope) }, wrapper: wrapper(scope) });
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true)); const refresh = vi.fn(); const unsubscribe = result.current.sessions.subscribeProject(projectId, refresh);
+  act(() => result.current.setStatus("done", initial.version)); await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+  expect(fetch).toHaveBeenCalledTimes(3); expect(result.current.mutation).toMatchObject({ phase: "unknown", reconciling: true });
+  for (const revision of [2, 3]) { await act(async () => { await apply(scope, [initial]); }); rerender({ revision, observed: node(scope) }); }
+  expect(fetch).toHaveBeenCalledTimes(3);
+  await act(async () => { await apply(scope, [current]); }); rerender({ revision: 4, observed: node(scope) });
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4)); expect(result.current.canSetStatus).toBe(false);
+  expect(result.current.mutation).toMatchObject({ operation: { action: "status", status: "done", version: initial.version }, phase: "unknown", reconciling: true });
+  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1);
+  expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined();
+  fresh.resolve(resourceResponse(current, TEST_VIEWER_ID));
+  await waitFor(() => expect(result.current.mutation).toMatchObject({ phase: "reconciled", reconciling: false, reconciliationError: null }));
+  expect(result.current.detail?.version).toBe(7n); expect(result.current.detail?.status).toBe(status); expect(result.current.canSetStatus).toBe(true);
+  expect(result.current.mutation.operation).toEqual({ action: "status", status: "done", version: initial.version });
+  expect((await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).detail.version).toBe(7n); connection.close();
+  expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1); unsubscribe();
+});
+
+it.each(["server", "stale"] as const)("keeps skipped-version reconciliation recoverable after a %s read failure and a new opening", async (failure) => {
+  const initial = body(); const intermediate = { ...initial, version: 6n, status: "done" as const, ready: false, completedAt: "2026-10-22T10:00:20Z", updatedAt: "2026-10-22T10:00:20Z" };
+  const current = { ...intermediate, version: 7n, description: "Version seven material", updatedAt: "2026-10-22T10:00:21Z" }; const scope = await seed([initial]);
+  const retry = deferred<Response>(); const failedResponse = failure === "stale" ? resourceResponse(intermediate, TEST_VIEWER_ID) : new Response(JSON.stringify({ error: { code: "internal_error", message: "Read failed", requestId: "pending-read-failed" } }), { status: 503, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) });
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(initial, TEST_VIEWER_ID)).mockRejectedValueOnce(new Error("Lost PUT response"))
+    .mockResolvedValueOnce(resourceResponse(intermediate, TEST_VIEWER_ID)).mockResolvedValueOnce(failedResponse).mockReturnValueOnce(retry.promise); vi.stubGlobal("fetch", fetch);
+  const latest = { current: null as ReturnType<typeof useTaskDetail> | null, sessions: null as TaskDetailSessions | null }; let observed = node(scope);
+  const Probe = ({ revision }: { readonly revision: number }) => { latest.sessions = useTaskDetailSessions(); latest.current = useTaskDetail(projectId, taskId, revision, observed); return null; };
+  const Host = ({ visible, revision }: { readonly visible: boolean; readonly revision: number }) => <TaskCacheProvider scope={scope}><TaskDetailSessionProvider>{visible && <Probe revision={revision} />}</TaskDetailSessionProvider></TaskCacheProvider>;
+  const view = render(<Host visible revision={1} />); await waitFor(() => expect(latest.current?.canSetStatus).toBe(true)); const refresh = vi.fn(); const unsubscribe = latest.sessions!.subscribeProject(projectId, refresh);
+  act(() => latest.current!.setStatus("done", initial.version)); await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+  view.rerender(<Host visible={false} revision={1} />); view.rerender(<Host visible revision={2} />);
+  expect(latest.current?.canSetStatus).toBe(false); expect(fetch).toHaveBeenCalledTimes(3);
+  await act(async () => { await apply(scope, [current]); }); observed = node(scope); view.rerender(<Host visible revision={3} />);
+  await waitFor(() => expect(latest.current?.mutation).toMatchObject({ phase: "unknown", reconciling: false, reconciliationError: { kind: failure === "stale" ? "protocol" : "server" } }));
+  expect(fetch).toHaveBeenCalledTimes(4); expect(latest.current?.requiresFreshRead).toBe(true); expect(latest.current?.canSetStatus).toBe(false);
+  for (const revision of [4, 5]) { await act(async () => { await apply(scope, [current]); }); view.rerender(<Host visible revision={revision} />); }
+  expect(fetch).toHaveBeenCalledTimes(4);
+  act(() => latest.current!.reconcile()); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(5)); expect(latest.current?.canSetStatus).toBe(false);
+  retry.resolve(resourceResponse(current, TEST_VIEWER_ID)); await waitFor(() => expect(latest.current?.mutation).toMatchObject({ phase: "reconciled", reconciling: false, reconciliationError: null }));
+  expect(latest.current?.detail?.version).toBe(7n); expect(latest.current?.canSetStatus).toBe(true); expect(latest.current?.mutation.operation).toEqual({ action: "status", status: "done", version: 5n });
+  expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1); unsubscribe();
+});
+
+it("retains a confirmed future payload through duplicate receipts and admits an exact matching summary without GET", async () => {
+  const initial = body(); const saved = { ...initial, version: 6n, status: "done" as const, ready: false, completedAt: "2026-10-22T10:00:20Z", updatedAt: "2026-10-22T10:00:20Z" };
+  const scope = await seed([initial]); const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(initial, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse(saved, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch);
+  const { result, rerender } = renderHook(({ revision, observed }) => useTaskDetail(projectId, taskId, revision, observed), { initialProps: { revision: 1, observed: node(scope) }, wrapper: wrapper(scope) });
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true)); act(() => result.current.setStatus("done", initial.version));
+  await waitFor(() => expect(result.current.mutation.phase).toBe("confirmed")); expect(result.current.detail?.version).toBe(6n); expect(result.current.canSetStatus).toBe(false);
+  for (const revision of [2, 3]) { await act(async () => { await apply(scope, [initial]); }); rerender({ revision, observed: node(scope) }); }
+  expect(fetch).toHaveBeenCalledTimes(2); expect(result.current.detail?.version).toBe(6n);
+  await act(async () => { await apply(scope, [saved]); }); rerender({ revision: 4, observed: node(scope) });
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true)); expect(result.current.detail?.version).toBe(6n); expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+
+it("ends exact-match pending reconciliation after storage admission fails and allows GET-only Retry", async () => {
+  const initial = body(); const saved = { ...initial, version: 6n, status: "done" as const, ready: false, completedAt: "2026-10-22T10:00:20Z", updatedAt: "2026-10-22T10:00:20Z" }; const scope = await seed([initial]);
+  const retry = deferred<Response>(); const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(initial, TEST_VIEWER_ID)).mockRejectedValueOnce(new Error("Lost PUT"))
+    .mockResolvedValueOnce(resourceResponse(saved, TEST_VIEWER_ID)).mockReturnValueOnce(retry.promise); vi.stubGlobal("fetch", fetch);
+  const { result, rerender } = renderHook(({ revision, observed }) => ({ ...useTaskDetail(projectId, taskId, revision, observed), sessions: useTaskDetailSessions() }), { initialProps: { revision: 1, observed: node(scope) }, wrapper: wrapper(scope) });
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true)); const refresh = vi.fn(); const unsubscribe = result.current.sessions.subscribeProject(projectId, refresh);
+  act(() => result.current.setStatus("done", initial.version)); await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+  expect(result.current.mutation).toMatchObject({ phase: "unknown", reconciling: true }); await act(async () => { await apply(scope, [saved]); });
+  const failure = new TaskCacheError("storage", new DOMException("Injected admission failure", "UnknownError"));
+  const fault = vi.spyOn(scope, "detailTransaction").mockRejectedValueOnce(failure).mockRejectedValueOnce(failure);
+  rerender({ revision: 2, observed: node(scope) });
+  await waitFor(() => expect(result.current.mutation).toMatchObject({ phase: "unknown", reconciling: false, reconciliationError: failure }));
+  expect(fault).toHaveBeenCalledTimes(2); expect(result.current.canSetStatus).toBe(false); expect(result.current.requiresFreshRead).toBe(true); expect(fetch).toHaveBeenCalledTimes(3);
+  fault.mockRestore(); act(() => result.current.reconcile()); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4));
+  expect(result.current.mutation.reconciling).toBe(true); retry.resolve(resourceResponse(saved, TEST_VIEWER_ID));
+  await waitFor(() => expect(result.current.mutation).toMatchObject({ phase: "reconciled", reconciling: false, reconciliationError: null }));
+  expect(result.current.detail?.version).toBe(6n); expect(result.current.canSetStatus).toBe(true); expect(result.current.mutation.operation).toEqual({ action: "status", status: "done", version: 5n });
+  expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1); unsubscribe();
+});
+
+it("does not let an old pending admission failure finalize a newer generation's active reconciliation", async () => {
+  const initial = body(); const saved = { ...initial, version: 6n, status: "done" as const, ready: false, completedAt: "2026-10-22T10:00:20Z", updatedAt: "2026-10-22T10:00:20Z" };
+  const restored = body({ version: 1n, description: "Restored current generation" }); const scope = await seed([initial]); const fresh = deferred<Response>(); const oldGuard = deferred<never>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(initial, TEST_VIEWER_ID)).mockRejectedValueOnce(new Error("Lost PUT"))
+    .mockResolvedValueOnce(resourceResponse(saved, TEST_VIEWER_ID)).mockReturnValueOnce(fresh.promise); vi.stubGlobal("fetch", fetch);
+  const { result, rerender } = renderHook(({ revision, observed }) => ({ ...useTaskDetail(projectId, taskId, revision, observed), sessions: useTaskDetailSessions() }), { initialProps: { revision: 1, observed: node(scope) }, wrapper: wrapper(scope) });
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true)); const refresh = vi.fn(); const unsubscribe = result.current.sessions.subscribeProject(projectId, refresh);
+  act(() => result.current.setStatus("done", initial.version)); await waitFor(() => expect(refresh).toHaveBeenCalledOnce()); await act(async () => { await apply(scope, [saved]); });
+  const failure = new TaskCacheError("storage"); const fault = vi.spyOn(scope, "detailTransaction").mockRejectedValueOnce(failure).mockImplementationOnce(() => oldGuard.promise);
+  rerender({ revision: 2, observed: node(scope) }); await waitFor(() => expect(fault).toHaveBeenCalledTimes(2));
+  await act(async () => { await apply(scope, [restored], true); }); rerender({ revision: 3, observed: node(scope) }); act(() => result.current.reconcile());
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4)); expect(result.current.mutation).toMatchObject({ phase: "unknown", reconciling: true, reconciliationError: null });
+  await act(async () => { oldGuard.reject(failure); await expect(oldGuard.promise).rejects.toBe(failure); });
+  expect(result.current.mutation).toMatchObject({ phase: "unknown", reconciling: true, reconciliationError: null }); expect(result.current.detail).toBeNull();
+  fresh.resolve(resourceResponse(restored, TEST_VIEWER_ID)); await waitFor(() => expect(result.current.mutation.phase).toBe("reconciled"));
+  expect(result.current.detail?.description).toBe(restored.description); expect(result.current.canSetStatus).toBe(true);
+  expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1); fault.mockRestore(); unsubscribe();
+});
+
+it("ends pending reconciliation if the summary advances after matching persistence but before publication", async () => {
+  const initial = body(); const saved = { ...initial, version: 6n, status: "done" as const, ready: false, completedAt: "2026-10-22T10:00:20Z", updatedAt: "2026-10-22T10:00:20Z" };
+  const current = { ...saved, version: 7n, description: "Current after admission commit", updatedAt: "2026-10-22T10:00:21Z" }; const scope = await seed([initial]);
+  const fresh = deferred<Response>(); const committed = deferred<void>(); const publish = deferred<void>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(initial, TEST_VIEWER_ID)).mockRejectedValueOnce(new Error("Lost PUT"))
+    .mockResolvedValueOnce(resourceResponse(saved, TEST_VIEWER_ID)).mockReturnValueOnce(fresh.promise); vi.stubGlobal("fetch", fetch);
+  const { result, rerender } = renderHook(({ revision, observed }) => ({ ...useTaskDetail(projectId, taskId, revision, observed), sessions: useTaskDetailSessions() }), { initialProps: { revision: 1, observed: node(scope) }, wrapper: wrapper(scope) });
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true)); const refresh = vi.fn(); const unsubscribe = result.current.sessions.subscribeProject(projectId, refresh);
+  act(() => result.current.setStatus("done", initial.version)); await waitFor(() => expect(refresh).toHaveBeenCalledOnce()); await act(async () => { await apply(scope, [saved]); });
+  const original = scope.detailTransaction.bind(scope); const fault = vi.spyOn(scope, "detailTransaction").mockImplementationOnce(async (...args) => {
+    const result = await original(...args); committed.resolve(); await publish.promise; return result;
+  });
+  rerender({ revision: 2, observed: node(scope) }); await committed.promise;
+  await act(async () => { await apply(scope, [current]); }); rerender({ revision: 3, observed: node(scope) });
+  await act(async () => { publish.resolve(); });
+  await waitFor(() => expect(result.current.mutation).toMatchObject({ phase: "unknown", reconciling: false, reconciliationError: { kind: "protocol" } }));
+  expect(result.current.detail?.version).toBe(5n); expect(fetch).toHaveBeenCalledTimes(3); fault.mockRestore();
+  act(() => result.current.reconcile()); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4)); fresh.resolve(resourceResponse(current, TEST_VIEWER_ID));
+  await waitFor(() => expect(result.current.mutation.phase).toBe("reconciled")); expect(result.current.detail?.version).toBe(7n); expect(result.current.canSetStatus).toBe(true);
+  expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1); unsubscribe();
 });
