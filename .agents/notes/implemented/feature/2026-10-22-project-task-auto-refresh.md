@@ -48,7 +48,10 @@ resource and release old task state.
 Recoverable failures retain old data, its successful receipt time and a visible
 error. Automatic attempts keep that error until success clears it, including
 initial failures without retained data, so retries do not repeatedly announce
-loading. A 404 clears
+loading. In task details, the
+[notification layer](../bug-fix/2026-10-24-task-detail-notifications.md) owns
+timed error presentation and keeps recovery reachable after expiry; the stored
+error remains unchanged. A 404 clears
 the unavailable graph or detail rather than retaining previously accessible
 content. A 401 follows the authentication owner's session-loss lifecycle and
 releases user-owned content. Project listing and attachment metadata/content

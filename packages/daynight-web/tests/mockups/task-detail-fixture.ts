@@ -11,20 +11,23 @@ const task = (id: string, title: string, status: TaskDetail['status']): TaskDeta
   id, projectId: detailProjectId, title, description: '# 任务交付\n\n使用同一套完整任务详情查看资料与操作。\n\n- [方案与验收](docs/guide.md)\n- [交互原型](site/index.html)\n- [长文档](docs/tall.md)',
   status, version: 1n, allowAgents: false, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [],
   ready: status === 'todo', startedAt: null, completedAt: status === 'done' ? timestamp : null,
-  properties: { pullRequests: [{ title: 'Share complete task details between dialog and page', url: 'https://github.com/example/project/pull/42' }] },
+  properties: { worker: null, pullRequests: [{ title: 'Share complete task details between dialog and page', url: 'https://github.com/example/project/pull/42' }] },
   createdAt: timestamp, updatedAt: timestamp,
 });
 
-export const createTaskDetailFixture = () => {
+export const createTaskDetailFixture = (options: { readonly initialStatus?: TaskDetail['status'] } = {}) => {
   const priorId = '00000000-0000-4000-8000-000000000002';
   const nextId = '00000000-0000-4000-8000-000000000003';
-  const first = { ...task(detailTaskId, 'Markdown 流程图与完整任务详情', 'todo'),
+  const first = { ...task(detailTaskId, 'Markdown 流程图与完整任务详情', options.initialStatus ?? 'todo'),
     description: `${flowcharts.replaceAll('(../', '(').replace('(guide.md)', '(docs/guide.md)')}\n\n[在附件页阅读相同内容](docs/flowcharts.md)` };
   const prior = task(priorId, '完成资料准备与需求确认', 'done');
   const next = task(nextId, '验证任务详情与附件交互', 'todo');
   const tasks = new Map([[first.id, { ...first, dependsOn: [priorId] }], [prior.id, prior], [next.id, { ...next, dependsOn: [first.id], blockedBy: [first.id], ready: false }]]);
   const listeners = new Set<() => void>();
   let revision = 0;
+  let readFailures = 0;
+  let failWrite = false;
+  let holdGraph = false;
   const build = (): GraphSnapshot => {
     for (const [id, item] of tasks) {
       const blockedBy = item.dependsOn.filter((dependency) => tasks.get(dependency)!.status !== 'done');
@@ -44,7 +47,7 @@ export const createTaskDetailFixture = () => {
     return { graph, index: buildGraphIndex(graph), revision: ++revision, receivedAt: Date.now(), receivedMonotonic: performance.now(), observedAt: graph.observedAt };
   };
   let snapshot = build();
-  const refresh = () => { snapshot = build(); listeners.forEach((listener) => listener()); };
+  const refresh = () => { if (!holdGraph) snapshot = build(); listeners.forEach((listener) => listener()); };
   const originalFetch = window.fetch;
   const json = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: { 'Content-Type': 'application/json' } });
   const fetcher: typeof window.fetch = async (input, options) => {
@@ -54,6 +57,7 @@ export const createTaskDetailFixture = () => {
     const current = match === null ? undefined : tasks.get(match[1]!);
     if (current === undefined) return json({ error: { code: 'not_found', message: 'Fixture task unavailable.', requestId: 'fixture-task' } }, 404);
     if (options?.method === 'PUT' || options?.method === 'PATCH') {
+      if (failWrite) { failWrite = false; readFailures = 1; throw new TypeError('Fixture connection interrupted before a write response.'); }
       const patch = JSON.parse(String(options.body));
       if (BigInt(patch.version) !== current.version) return json({ error: { code: 'version_conflict', message: 'Fixture version changed.', requestId: 'fixture-version' } }, 409);
       const status = patch.status as TaskDetail['status'];
@@ -64,8 +68,14 @@ export const createTaskDetailFixture = () => {
       tasks.set(updated.id, updated); refresh();
       return json(updated);
     }
+    if (readFailures > 0) { readFailures--; return json({ error: { code: 'unavailable', message: 'Fixture detail refresh unavailable.', requestId: 'fixture-detail-refresh' } }, 503); }
     return json(current);
   };
   window.fetch = fetcher;
-  return { refresh, snapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, dispose: () => { if (window.fetch === fetcher) window.fetch = originalFetch; } };
+  return {
+    failRefresh: () => { readFailures = 1; refresh(); },
+    failNextMutation: () => { failWrite = true; },
+    holdGraph: () => { holdGraph = true; },
+    refreshGraph: () => { holdGraph = false; refresh(); },
+    refresh, snapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, dispose: () => { if (window.fetch === fetcher) window.fetch = originalFetch; } };
 };

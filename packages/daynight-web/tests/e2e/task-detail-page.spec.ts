@@ -195,6 +195,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     await expect(directory).not.toHaveAttribute('open');
     await selectFile(attachments, 'docs/guide.md');
     const body = attachments.locator('.attachment-preview-body');
+    await expect(body.locator('.attachment-markdown')).toContainText('段落 60：附件与任务详情共享生命周期。');
     await body.evaluate(element => { element.scrollTop = 180; });
     const before = await body.evaluate(element => element.scrollTop); expect(before).toBeGreaterThan(0);
     await tab(reader, 'overview').click(); await expectAddress(reader, project.id, task.id, 'overview', 'docs/guide.md');
@@ -263,6 +264,10 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     const reconcile = surface(reader).getByRole('button', { name: '核对实际任务', exact: true });
     await expect(reconcile).toBeEnabled(); await expect(platform).toBeDisabled(); await expect(automatic).toBeDisabled();
     expect((await (await api.get(taskPath(project.id, task.id))).json() as Task).requiredPlatform).toBe('macos');
+    await surface(reader).locator('.task-detail-toast').filter({ has: reader.getByRole('button', { name: '核对实际任务', exact: true }) }).getByRole('button', { name: '关闭提示', exact: true }).click();
+    await expect(reconcile).toHaveCount(0); await expect(platform).toBeDisabled();
+    await surface(reader).getByRole('button', { name: '查看任务提示', exact: true }).first().click();
+    await expect(reconcile).toBeEnabled();
     blockReconciliation = false; await reconcile.click(); await expect(platform).toHaveValue('macos'); await expect(platform).toBeEnabled();
     expect(platformWrites.map(write => write.status)).toEqual([200, 409, 200, 200]);
     await selectStatus(reader, 'in_progress');

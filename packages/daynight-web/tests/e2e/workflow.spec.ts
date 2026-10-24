@@ -931,6 +931,8 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   const viewports = [{ width: 1440, height: 900 }, { width: 320, height: 800 }, { width: 844, height: 390 }];
   const geometryEvidence: { panel: string; cycle: number; reading: Awaited<ReturnType<typeof expectStableAutomaticDetailRefresh>> }[] = [];
   const repeatedRefresh = async (panel: string, retained: () => Promise<void>): Promise<void> => {
+    // The CSS opening animation is awaited separately from the mocked polling clock.
+    await dialog.evaluate(element => Promise.all(element.getAnimations().map(animation => animation.finished)));
     for (let cycle = 1; cycle <= 3; cycle++) {
       const reading = await expectStableAutomaticDetailRefresh(page, project.id, dependent.id, async () => {
         expect(await nextAutomaticRefresh(page, project.id)).toBe(200);

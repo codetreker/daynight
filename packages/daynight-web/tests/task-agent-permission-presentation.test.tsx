@@ -9,7 +9,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 
 const detail: TaskDetail = {
   requiredPlatform: null, allowAgents: false, id: 'task', projectId: 'project', title: 'Deployment acceptance', description: '',
-  properties: { pullRequests: [] }, status: 'todo', version: 12n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
+  properties: { worker: null, pullRequests: [] }, status: 'todo', version: 12n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
   startedAt: null, completedAt: null, createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z',
 };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
@@ -32,7 +32,7 @@ describe('automatic execution presentation', () => {
     const view = mount();
     const control = screen.getByRole('switch', { name: 'Automatic execution' });
     expect(control).toHaveAttribute('aria-checked', 'false');
-    expect(control).toHaveAttribute('aria-describedby', feedbackId);
+    expect(control).not.toHaveAttribute('aria-describedby');
     fireEvent.click(control);
     expect(view.onClick).toHaveBeenCalledOnce();
     expect(control).toHaveAttribute('aria-checked', 'false');
@@ -107,8 +107,7 @@ describe('automatic execution presentation', () => {
     const confirmed = { ...permission, phase: 'confirmed' as const };
     const view = mount({ ...permission, phase: 'pending' });
     view.update(confirmed);
-    expect(screen.getByRole('status')).toHaveClass('task-detail-toast');
-    expect(view.container.querySelector(`#${feedbackId}`)).toBeEmptyDOMElement();
+    expect(screen.getByRole('status').closest('.task-detail-toast')).not.toBeNull();
     act(() => vi.advanceTimersByTime(2999));
     expect(screen.getByRole('status')).toBeVisible();
     view.update({ ...confirmed });

@@ -1,19 +1,19 @@
 # Worker 架构设计
 
-状态：自动执行许可和平台要求的持久化、普通 PATCH、CLI 筛选/更新、Web 确认开关与平台确认下拉框已实现；worker 运行时与唯一 worker claim 尚未实现。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
+状态：自动执行许可、平台要求及唯一 worker claim 的服务端/typed client 基础已实现；前台 worker、SQLite 执行存储、Herdr 和人工管理命令仍待运行时交付。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
 
 ## 目标与当前基础
 
 `daynight worker run` 是一个前台常驻 CLI：通过 REST 领取多仓库中允许 Agent 执行的任务，使用系统管理的稳定 worktree 与专用 Herdr 执行，持久化状态并完成恢复和清理。Agent 负责完整交付循环，worker 负责归属、资源和完成核验。
 
-设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，worker 仍待实现。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
+设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，认领基础由[归属架构](daynight-worker-claims.md)拥有，worker 运行时仍待实现。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
 
 | 当前基础 | 复用点 |
 |---|---|
 | [命令组合](../../packages/daynight/src/commands/review/command.ts) | definition → command → runtime，业务按命令懒加载。 |
 | [项目写锁](https://github.com/codetreker/daynight/blob/e533b8610ec38522fd5387e4715b573734bd16c2/packages/daynight-server/internal/core/store/project_tx.go#L29-L39)、[版本检查](https://github.com/codetreker/daynight/blob/e533b8610ec38522fd5387e4715b573734bd16c2/packages/daynight-server/internal/service/task.go#L100-L120) | 同一事务中检查资格、权限、版本和归属。 |
 | [属性 codec](../../packages/daynight-server/internal/taskproperties/codec.go) | 新增预定义属性，保留已有 PR 属性；读与写权限分开。 |
-| [REST client](../../packages/daynight/src/api/client.ts)、[分页范围](../../packages/daynight-server/internal/service/page.go) | 复用认证、int64、游标和不确定写入分类；扩展自动执行许可/平台/worker 筛选。 |
+| [REST client](../../packages/daynight/src/api/client.ts)、[分页范围](../../packages/daynight-server/internal/service/page.go) | 复用认证、int64、游标和不确定写入分类；新任务使用许可/平台候选筛选，已有执行按 SQLite 中的 taskId 读取详情。 |
 | [review store](../../packages/daynight/src/commands/review/store.ts)、[worktrees](../../packages/daynight/src/commands/review/adapters/worktrees.ts) | 复用必要的持久性、Git/路径原语；worker 自己拥有状态和可提交分支。 |
 
 ## 总体结构
@@ -83,7 +83,7 @@ Agent 类型不变时仓库字段覆盖全局字段；切换类型时按新类�
 
 ## 服务端模型与资格查询
 
-`allowAgents` 与 `requiredPlatform` 已在完整 task、图投影、普通 PATCH 与列表筛选中实现；持久化、可空字段存在性、锁定和版本事务见[服务架构](daynight-server.md)。本节的 worker claim 与执行归属仍描述后续集成契约，不表示当前服务已开放这些 endpoint。
+`allowAgents` 与 `requiredPlatform` 已在完整 task、图投影、普通 PATCH 与列表筛选中实现；持久化、可空字段存在性、锁定和版本事务见[服务架构](daynight-server.md)。worker claim、执行归属和状态保护已接入同一事务；[归属架构](daynight-worker-claims.md)拥有具体字段、endpoint 与授权。运行时资源启动和恢复是独立能力。
 
 任务顶层字段：
 
@@ -92,15 +92,15 @@ allowAgents: boolean
 requiredPlatform: null | windows | linux | macos
 ```
 
-旧任务经各自迁移取得 `allowAgents=true`、平台 null，保留其他数据、版本和时间；新任务为 `allowAgents=false`，未指定平台时为 null。创建输入拒绝 `allowAgents`，平台接受省略、null 或三个枚举之一。普通 task PATCH 中许可未提供保持、显式 false 关闭、null 和其他类型拒绝；平台未提供保持、枚举设置、null 清除。资源必须显式输出 requiredPlatform，严格 DTO 不以缺字段 fallback 兼容旧数据。许可和平台变化均在 in_progress 锁定，精确版本同值请求不增加版本或时间；普通人工 claim 保持不受两字段限制。
+旧任务经各自迁移取得 `allowAgents=true`、平台 null，保留其他数据、版本和时间；新任务为 `allowAgents=false`，未指定平台时为 null。创建输入拒绝 `allowAgents`，平台接受省略、null 或三个枚举之一。普通 task PATCH 中许可未提供保持、显式 false 关闭、null 和其他类型拒绝；平台未提供保持、枚举设置、null 清除。资源必须显式输出 requiredPlatform，严格 DTO 不以缺字段 fallback 兼容旧数据。许可和平台变化均在 in_progress 锁定，精确版本同值请求不增加版本或时间；普通人工状态设置保持不受两字段限制；released 执行通过显式人工 resume 接续原成果。
 
-Web 在任务详情标题下的同一状态行中，左侧显示状态、ready 与可选平台信息，右侧显示单一“自动执行” / “Automatic execution”标签与开关组合。组合控件同时表达服务端已确认的许可状态并提供操作入口；详情仅保留此组合控件，自动执行状态不另设 badge 或下方 Overview 开关。列表中的自动执行状态标记保持其原有用途。实际任务标题直接用于详情顶栏并保留有界的完整文本键盘阅读，长标题与窄屏不覆盖状态或开关；平台等左侧信息仅在左组内换行，右侧控件保持右对齐并与第一行状态顶部对齐。错误、未知结果、锁定和等待人工输入的反馈紧邻该控件保留。成功反馈由详情中观察到的 pending→confirmed 转换触发，以不参与布局的浮动气泡展示 3 秒；持久 mutation 状态继续归属任务会话，关闭重开不重播已确认结果。
+Web 在任务详情标题下的同一状态行中，左侧显示状态、ready 与可选平台信息，右侧显示单一“自动执行” / “Automatic execution”标签与开关组合。组合控件同时表达服务端已确认的许可状态并提供操作入口；详情仅保留此组合控件，自动执行状态不另设 badge 或下方 Overview 开关。列表中的自动执行状态标记保持其原有用途。实际任务标题直接用于详情顶栏并保留有界的完整文本键盘阅读，长标题与窄屏不覆盖状态或开关；平台等左侧信息仅在左组内换行，右侧控件保持右对齐并与第一行状态顶部对齐。锁定原因通过支持悬停与键盘聚焦的控件 tooltip 展示；错误、未知结果和等待人工输入的反馈由[详情提示层](daynight-web.md#任务详情提示)展示为限时浮动气泡，恢复入口与会话写入保护保持可达。成功反馈由详情中观察到的 pending→confirmed 转换触发，以不参与布局的浮动气泡展示 3 秒；持久 mutation 状态继续归属任务会话，关闭重开不重播已确认结果。
 
 每次开启或关闭都打开对应确认框；确认按钮直接提交目标值及打开确认框时观察到的精确 version。取消、Escape 或关闭不提交，开关保持服务端已确认值；请求成功后安装完整返回 task 并刷新图。修改与 status 共用单 task 写入控制，提交或结果不确定期间阻止重复写入；确认拒绝保留原值，版本冲突读取最新状态并要求重新决定，断连/5xx/协议错误先核对实际结果，不自动重发。任务切换、关闭详情和后台刷新保持请求归属，已提交操作不依赖弹框仍然挂载。
 
 开启框说明 worker 可在任务处于 todo、依赖完成并符合运行条件时自动领取；关闭框说明 worker 将不再自动领取。自动执行许可与 ready 独立，手工 set-status 与普通元数据修改均保留许可。实际切换在 `in_progress` 拒绝；权限和版本检查先于同值判定，精确版本同值 PATCH 返回原 task，不增加版本或更新时间。关闭许可不隐式停止执行或移交资源。
 
-确认表示明确操作意图，不能从 session/PAT 类型推断物理人工。CLI/skill 禁止自动 worker 自行启用许可，操作沿用现有项目成员写权限。Web 的双向确认、状态展示和失败交互遵循本节的布局与操作规则，具体组件与工作空间请求归属由[看板设计](daynight-web.md#自动执行许可与确认)拥有。CLI update/list/ready 的 `--allow-agents true|false` 映射到该普通更新或查询字段；随包自动候选同时使用 true 与实际平台兼容筛选，领取前从最新完整详情重验许可、ready 和平台；明确由用户指定的单任务执行仍可普通 claim，自动选出的 ID 不属于人工例外。
+确认表示明确操作意图，不能从 session/PAT 类型推断物理人工。CLI/skill 禁止自动 worker 自行启用许可，操作沿用现有项目成员写权限。Web 的双向确认、状态展示和失败交互遵循本节的布局与操作规则，具体组件与工作空间请求归属由[看板设计](daynight-web.md#自动执行许可与确认)拥有。CLI update/list/ready 的 `--allow-agents true|false` 映射到该普通更新或查询字段；随包自动候选同时使用 true 与实际平台兼容筛选，领取前从最新完整详情重验许可、ready 和平台；明确由用户指定的单任务执行沿用人工状态设置；已有 released 归属时使用显式人工 resume，自动选出的 ID 不属于人工例外。
 
 平台兼容查询已接入现有列表。随包 autopilot 从实际 process.platform 映射 win32/windows、darwin/macos、linux/linux（含 WSL），不确定或不支持时等待；ready 与补充 list 均传同一实际平台，领取前完整详情重验绑定精确版本。后续 worker daemon 以自身真实运行平台消费该接口：
 
@@ -110,49 +110,17 @@ GET /api/v1/projects/{project}/tasks?ready=true&allowAgents=true&compatiblePlatf
 
 查询可按 `allowAgents=true|false` 筛选，缺省保留现有全量任务语义。`allowAgents=true` 与 ready、`compatiblePlatform` 在排序/limit 前组合过滤，并加入游标范围。`compatiblePlatform` 包含 null 与相同平台，CLI list/ready 的 `--compatible-platform` 直接映射该查询并保留至每页；客户端拒绝不满足声明条件的响应，不在本地删项。Web 平台确认与既有许可和状态设置共用任务会话，界面与请求机制由[看板设计](daynight-web.md#平台要求与确认下拉框)拥有。沿用服务端创建时间/UUID 顺序。后续 Worker 按空闲名额读取候选，合法冲突后考虑下一个；空页/无兼容候选不占名额。已有未完成 worktree 的候选还需确认本机持有原执行资料，否则跳过并显示需要人工移交，不能在另一机器新建空 worktree。
 
-### 受保护的执行属性
+### 受保护的执行属性与操作
 
-`properties.worker` 是服务端拥有的预定义属性，普通 create/PATCH 即使原样提供也拒绝；其他属性更新保留它。示意：
+完整 Task 的 properties 包含 pullRequests 与 worker:null|WorkerClaim。worker 记录 state=active/released/completed、用户、worker/机器、实际平台、agent、worktreeId、阶段和已取得的 Herdr/原生会话；普通 create/PATCH 不能写该字段。PR 与归属更新相互保留，图仍不包含属性。
 
-```json
-{
-  "claimId": "uuid",
-  "active": true,
-  "userId": "authenticated-user-id",
-  "workerId": "stable-worker-id",
-  "machine": {"id": "stable-machine-id", "name": "build-machine"},
-  "platform": "linux",
-  "agent": "codex",
-  "worktreeId": "stable-task-worktree-id",
-  "phase": "executing",
-  "herdr": {"session": "w", "workspaceId": "w1", "paneId": "w1:p1"},
-  "nativeSessionId": null,
-  "claimedAt": "server-timestamp"
-}
-```
+[归属架构](daynight-worker-claims.md)拥有严格 DTO、文本迁移和完整 HTTP 契约。自动 POST worker-claim 在项目写锁内重验成员、精确版本、ready、allowAgents、平台和无 active claim；PATCH 只允许当前 owner 更新当前 claim 的执行摘要。调用者在请求前生成并持久化新的、从不复用的 claimId，服务端保留最后记录并拒绝其 ID 被重新使用。
 
-用户与服务器时间由服务端确定；机器/平台和运行资源是 worker 报告的事实，不建立机器认证或远端硬件证明系统。该属性是最新记录的归属/状态，不是在线保证，不以更新时间过期 claim。完成/释放后保留其最后执行信息并标为非 active，详细本地执行记录仍在 SQLite。
+完成使用现有 PUT status 的 done 目标及匹配 claimId，要求当前 owner；普通 setter 不能释放 active 执行，也不能开始或完成 released 未完成成果。同版本同状态仍是不修改的成功。没有 worker 记录或仅有 completed 历史的任务保留普通三状态行为。
 
-### 操作与事务
+Release 要求原 owner/admin 与停止确认，返回 todo、清空任务起止时间并保留原 worktree、身份和会话。自动重新认领须保留 worktreeId/agent 并确认连续性；显式人工 resume 仅允许原 owner/admin 接续 released 成果，保留人工安排不受自动许可/平台过滤的规则。Transfer 由原 owner/admin 提交，服务端核验目标当前成员、平台及原工作区，保持 in_progress 和任务计时，安装新的目标 claim。目标身份与授权提交者分别校验。
 
-手工执行采用当前 `PUT .../status`；计划中的自动领取走 `/worker-claim`。未来暴露 active claim 前须把归属/fencing 接入同一 task-service 事务，使普通 setter 不能绕过 claim-bound 完成或释放。当前状态接口不接受 claimId，不按凭据类型猜测模式。
-
-| 操作 | 必要输入与行为 |
-|---|---|
-| 普通 task PATCH | version 与可选 allowAgents/requiredPlatform；许可为布尔值，平台可设置/清除。`in_progress` 拒绝实际切换；精确版本同值更新不改版本或时间。|
-| `POST .../worker-claim` | version、预先落库的 claimId、worker/机器/平台/agent、worktreeId；成功原子写 in_progress 与唯一 active claim。|
-| `PATCH .../worker-claim` | version、claimId 及会话/阶段摘要；仅当前 owner 可更新，不能更换身份、自动执行许可、平台或 status。|
-| 计划中的 claim-bound 完成 | 复用状态服务的 done 目标与计时/版本规则；active claim 须匹配 claimId 和 owner，公开协议与普通 setter 的互斥接入必须同批交付。普通人工任务沿用 PUT status。|
-| `POST .../worker-claim/release` | version、claimId、明确停止确认；仅当前执行用户或项目管理员，可将已停止执行释放回 todo，保留自动执行许可/平台和原 worktree 关联。|
-| `POST .../worker-claim/transfer` | version、旧 claimId、新 claim/目标用户与 worker/机器/平台、原 worktreeId、停止及连续性确认；原子切换归属，保持 in_progress。|
-
-Claim 在项目写锁内依次检查成员权限、version、todo/依赖、allowAgents/平台、无其他 active claim；成功只增加一次版本。会话更新、完成、release/transfer 同时检查当前 claim。一般 metadata 更新不能绕过这些入口。
-
-Release 是 worker 专用的归属释放，不恢复通用 status PATCH；普通 setter 不能替代停止确认或归属释放。释放后 ready 且 allowAgents=true 的任务可以再次竞争；原工作区绑定仍保留，其他机器没有延续资料时不得重新开始。自动执行许可/平台编辑与新 claim 的竞争仍受 version/锁定规则约束。
-
-沿用现有错误 envelope：输入或只读字段为 `400 invalid_input`，认证/所有者权限为既有 401/403，非成员/不存在为 404；旧版本为 `409 version_conflict`，资格或生命周期不符为 `409 invalid_transition`，旧 claim 为 `409 claim_conflict`。错误不转成空候选或成功。
-
-服务端 fencing 只拒绝旧 Daynight 写入，不能撤销 Git 托管凭据或停止另一个进程。人工移交必须先确认旧执行已停，不能仅换 claimId 就允许第二个 agent。
+服务端只校验身份、标识及明确确认，不远程证明机器状态；停止、原成果和会话资料仍须由执行方核实。Daynight fencing 拒绝旧 claim 的写入，不能撤销 Git 托管凭据或终止原进程。失联不自动释放归属。
 
 ## SQLite：两个业务表
 
@@ -187,7 +155,9 @@ claiming → preparing → executing → verifying → completing → cleaning �
 
 等待原因、暂停与恢复时间是当前 phase 的字段，不创建第二套 task 生命周期。claiming 结果不确定也暂占名额；preparing 到 completing、等待及暂停占名额；远端完成确认后 cleaning 不占交付名额，清理只需单独重试。降低并发不抢占已有执行。
 
-启动顺序为锁/SQLite → 核对已有执行 → 专用 Herdr → 调度。每次轮询、claim、更新和核验使用新的有界 REST Operation，挂到统一取消信号；不能把整个常驻命令套进现有五分钟总期限。
+启动顺序为锁/SQLite → 核对已有执行 → 专用 Herdr → 调度。已有执行取自 SQLite 的原记录或显式移交导入记录，按已保存的 server origin、projectId、taskId 逐个读取任务详情，核对 claim、归属与工作区绑定。新任务调度查询满足许可、ready、平台且没有有效 claim 的候选，再由服务端事务原子认领；并发失败方不启动执行资源。
+
+恢复及未知认领结果核对使用已持久化的 taskId，不要求按 userId/workerId 反查已认领任务，也不为此新增服务端投影列、索引或 claim 表。认领请求发出前先保存 taskId、claimId 与 pending_action；SQLite 或原执行资料缺失时报告恢复问题，保留现状交由人工处理。每次轮询、claim、更新和核验直接调用进程内 ApiClient，使用新的有界 REST Operation，挂到统一取消信号；不能把整个常驻命令套进现有五分钟总期限。
 
 稳定分支和目录由 task 身份决定，不由 attempt 决定。创建前持久化预期路径/worktreeId，Git 所有权标记关联它；恢复核对实际 Git common directory、分支及持有标记，禁止套用 review 的 reset/clean。删除前必须确认执行已停、归属正确且交付完成。
 
@@ -217,15 +187,15 @@ Worker 核验当前 claim、task/附件可读、引用 PR 的仓库/提交/真�
 
 原生托管检查复用当前 GitHub/gh 读取能力；不能核实的托管结果不得仅凭 URL 或文字当作已合并。额外托管适配不是领取/归属模型的前提，完成检查接口保持具体结果和错误，遇到缺少适配则等待人工核验。
 
-必要操作入口只有运行、明确恢复及受控任务 claim 管理：
+服务端和 typed client 已提供受控 claim 管理；运行时计划提供以下人工命令和资源准备流程：
 
 - `worker run`：启动并恢复、观察、调度和显示。
 - `worker retry <task-id>`：只为已暂停的本地执行授权一次额外恢复，不清空计数，不换会话、不释放 claim；请求落 SQLite，前台实例消费。
 - `task release <task-id> --claim-id <id> --stopped-confirmed`：显式释放已停止的 worker claim，沿用 `--project` 与 `--if-version` 语义。
-- `worker transfer <task-id> --source-state <sqlite-snapshot> --stopped-confirmed --continuity-confirmed`：在接收方操作，当前 worker 配置提供目标身份/仓库/实际平台；source-state 是可只读打开的一致 SQLite 快照，跨机器资料准备由人工完成。
+- `worker transfer <task-id> --source-state <sqlite-snapshot> --stopped-confirmed --continuity-confirmed`：接收方准备原资料与目标身份，source-state 是可只读打开的一致 SQLite 快照；提交移交须使用原 owner/admin 的授权，接收者身份本身不授予提交权限。跨机器资料准备由人工完成。
 - Release/transfer 复用服务端权限和事务。接收方先准备原 worktree/native history，并将选定执行记录从原 SQLite 只读导入本地；保留 worktreeId/冻结配置，不复制 worker_state。操作记录 pending transfer 后调用服务端，再核对新归属完成导入。字段/路径缺失时拒绝而非重做。
 
-Transfer 后，目标 worker 还要查询归属于自己的 in_progress 执行并核对本地已导入记录；这是显式移交后的恢复，不是绕过 ready 的新自动 claim。原用户或项目管理员仍需持有现有项目权限，普通成员不能借此更换他人归属。
+Transfer 后，目标 worker 从已导入 execution 取得已知 taskId，直接读取该任务详情，确认新 claim、目标归属与工作区绑定后继续原执行。这是显式移交后的恢复，不是绕过 ready 的新自动 claim。原用户或项目管理员仍需持有现有项目权限，普通成员不能借此更换他人归属。
 
 ## 退出、恢复与清理
 
@@ -265,7 +235,7 @@ Linux 本地 Herdr 0.8.2 的隔离无原生 agent 冒烟已验证：原始 JSON 
 
 ## 模型入口大小
 
-模型入口只使用随包 `using-daynight` 与既有 task CLI。启动上下文传 task/claim/session/worktree 标识及技能路径，不复制完整 Goal 或全部交互资源。初始设计对三个代表性输入的测量中，简介为 1708～3067 个 UTF-8 字节，主 Markdown 为 7588～15259 个字节；这些是当时输入的测量范围，后续资料修改不受该大小约束。
+Agent 的模型入口使用随包 `using-daynight` 与既有 task CLI；Worker 自己的任务操作直接调用进程内 typed ApiClient。启动上下文传 task/claim/session/worktree 标识及技能路径，不复制完整 Goal 或全部交互资源。初始设计对三个代表性输入的测量中，简介为 1708～3067 个 UTF-8 字节，主 Markdown 为 7588～15259 个字节；这些是当时输入的测量范围，后续资料修改不受该大小约束。
 
 读取一个普通任务至少需要详情、附件清单、主 Markdown 三次现有 CLI 操作，额外 UI/证据按需读取。保留完整要求，不截断来制造固定 token 上限；具体 token 随 agent/model、仓库指示变化，原生验收记录实际模型使用量。未增加 report tool、模型 RPC 或通用 MCP 服务。
 

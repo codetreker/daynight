@@ -300,3 +300,58 @@ func TestQueriesFailuresPreserveCauses(t *testing.T) {
 		t.Fatalf("replace dependency error: %v", err)
 	}
 }
+
+func TestProjectWriteClockUsesDatabaseStatementTimeAndUTC(t *testing.T) {
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	ctx := context.Background()
+	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+		if _, err := tx.tx.Exec(ctx, "SET LOCAL TIME ZONE 'Asia/Kolkata'"); err != nil {
+			return err
+		}
+		var before, after time.Time
+		if err := tx.tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&before); err != nil {
+			return err
+		}
+		observed, err := tx.ObservedAt(ctx)
+		if err != nil {
+			return err
+		}
+		if err := tx.tx.QueryRow(ctx, "SELECT clock_timestamp()").Scan(&after); err != nil {
+			return err
+		}
+		if observed.Location() != time.UTC || observed.Before(before) || observed.After(after) {
+			t.Fatalf("project clock is not a UTC database statement timestamp: before %s observed %s after %s", before, observed, after)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertMigrationPoolReusable(t, database.Pool)
+}
+
+func TestProjectWriteClockPreservesQueryFailureCause(t *testing.T) {
+	database := isolatedStore(t)
+	project := queryProject(t, database, 1)
+	ctx := context.Background()
+	var completed *ProjectTx
+	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+		completed = tx
+		canceled, cancel := context.WithCancel(ctx)
+		cancel()
+		observed, err := tx.ObservedAt(canceled)
+		var failure *Error
+		if !observed.IsZero() || !errors.Is(err, context.Canceled) || !errors.As(err, &failure) || failure.Phase != "read project clock" {
+			t.Fatalf("canceled project clock lost its query cause: observed %s, error %v", observed, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	observed, err := completed.ObservedAt(ctx)
+	var failure *Error
+	if !observed.IsZero() || !errors.Is(err, pgx.ErrTxClosed) || !errors.As(err, &failure) || failure.Phase != "read project clock" {
+		t.Fatalf("completed project clock hid its closed transaction: observed %s, error %v", observed, err)
+	}
+	assertMigrationPoolReusable(t, database.Pool)
+}

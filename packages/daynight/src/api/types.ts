@@ -35,7 +35,27 @@ export type PullRequestProperty = {
   readonly title: string;
 };
 
-export type TaskProperties = { readonly pullRequests: readonly PullRequestProperty[] };
+export type WorkerState = "active" | "released" | "completed";
+export type WorkerAgent = "codex" | "copilot";
+export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
+export type WorkerMachine = { readonly id: string; readonly name: string };
+export type WorkerHerdr = { readonly session: string; readonly workspaceId: string; readonly paneId: string };
+export type WorkerClaim = {
+  readonly claimId: string;
+  readonly state: WorkerState;
+  readonly userId: string;
+  readonly workerId: string;
+  readonly machine: WorkerMachine;
+  readonly platform: TaskPlatform;
+  readonly agent: WorkerAgent;
+  readonly worktreeId: string;
+  readonly phase: WorkerPhase;
+  readonly herdr: WorkerHerdr | null;
+  readonly nativeSessionId: string | null;
+  readonly claimedAt: string;
+};
+export type WritableTaskProperties = { readonly pullRequests: readonly PullRequestProperty[]; readonly worker?: never };
+export type TaskProperties = { readonly pullRequests: readonly PullRequestProperty[]; readonly worker: WorkerClaim | null };
 
 export type Task = {
   readonly id: string;
@@ -84,7 +104,7 @@ export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly description?: string;
-  readonly properties?: TaskProperties;
+  readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
 };
@@ -94,12 +114,43 @@ export type UpdateTaskInput = {
   readonly requiredPlatform?: TaskPlatform | null;
   readonly title?: string;
   readonly description?: string;
-  readonly properties?: TaskProperties;
+  readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
 };
 export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus };
+export type WorkerClaimDescriptor = {
+  readonly claimId: string;
+  readonly workerId: string;
+  readonly machine: WorkerMachine;
+  readonly platform: TaskPlatform;
+  readonly agent: WorkerAgent;
+  readonly worktreeId: string;
+};
+export type ClaimWorkerTaskInput = WorkerClaimDescriptor & { readonly version: bigint; readonly continuityConfirmed?: boolean };
+export type UpdateWorkerClaimInput = {
+  readonly version: bigint;
+  readonly claimId: string;
+  readonly phase?: WorkerPhase;
+  readonly herdr?: WorkerHerdr | null;
+  readonly nativeSessionId?: string | null;
+};
+export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claimId: string };
+export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };
+export type TransferWorkerClaimInput = CompleteWorkerTaskInput & {
+  readonly newClaimId: string;
+  readonly target: Omit<WorkerClaimDescriptor, "claimId" | "worktreeId"> & { readonly userId: string };
+  readonly worktreeId: string;
+  readonly stoppedConfirmed: true;
+  readonly continuityConfirmed: true;
+};
+export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
+  readonly version: bigint;
+  readonly previousClaimId: string;
+  readonly continuityConfirmed: true;
+};
 export type TaskFilters = { readonly status?: TaskStatus; readonly ready?: boolean; readonly allowAgents?: boolean; readonly compatiblePlatform?: TaskPlatform };
+export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
 export type ReadyTaskFilters = Pick<TaskFilters, "allowAgents" | "compatiblePlatform">;
 export type ErrorDetails = {
   readonly taskIds?: readonly string[];

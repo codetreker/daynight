@@ -1,9 +1,10 @@
-import { useEffect, useId, useRef, useState, type RefObject } from 'react';
+import { useId, type RefObject } from 'react';
 import { ApiError } from '../../api/client';
 import type { TaskDetail } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { taskReviewKey } from './freshness';
 import { TaskConfirmation } from './TaskConfirmation';
+import { TaskControlTip, TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
 import type { TaskMutationState } from './TaskDetailSession';
 
 export type AgentPermissionConfirmation = { readonly detail: TaskDetail; readonly allowAgents: boolean };
@@ -34,8 +35,8 @@ export const TaskAgentPermissionSwitch = ({ detail, disabled, onClick, described
   const labelId = useId();
   return <div className="task-automation-control">
     <span id={labelId}>{m.label}</span>
-    <button className="task-automation-switch" type="button" role="switch" aria-checked={detail.allowAgents}
-      aria-labelledby={labelId} aria-describedby={describedBy} disabled={disabled} onClick={onClick}><span aria-hidden="true" /></button>
+    <TaskControlTip text={detail.status === 'in_progress' ? m.locked : null} label={m.label} id={`${describedBy}-tip`}><button className="task-automation-switch" type="button" role="switch" aria-checked={detail.allowAgents}
+      aria-labelledby={labelId} aria-describedby={detail.status === 'in_progress' ? `${describedBy}-tip` : undefined} disabled={disabled} onClick={onClick}><span aria-hidden="true" /></button></TaskControlTip>
   </div>;
 };
 
@@ -49,7 +50,7 @@ const PermissionError = ({ error }: { readonly error: unknown }) => {
   return <><p>{message}</p>{error instanceof ApiError && error.requestId !== null && <p className="request-id">{common.requestId}{' '}<code>{error.requestId}</code></p>}</>;
 };
 
-export const TaskAgentPermissionFeedback = ({ detail, mutation, id, onReconcile }: {
+export const TaskAgentPermissionFeedback = ({ mutation, id, onReconcile }: {
   readonly detail: TaskDetail | null;
   readonly mutation: TaskMutationState;
   readonly id: string;
@@ -57,27 +58,17 @@ export const TaskAgentPermissionFeedback = ({ detail, mutation, id, onReconcile 
 }) => {
   const { messages: { automation: m } } = useI18n();
   const relevant = mutation.operation?.action === 'allowAgents';
-  const previous = useRef(mutation);
-  const [showSuccess, setShowSuccess] = useState(false);
-  useEffect(() => {
-    const observed = previous.current;
-    previous.current = mutation;
-    setShowSuccess(false);
-    if (!relevant || mutation.phase !== 'confirmed' || observed.phase === 'confirmed' && observed.operation === mutation.operation) return;
-    setShowSuccess(true);
-    const timer = window.setTimeout(() => setShowSuccess(false), 3000);
-    return () => window.clearTimeout(timer);
-  }, [mutation.phase, mutation.operation]);
+  const event = useMutationNoticeEvent(mutation);
   const busy = relevant && (mutation.phase === 'pending' || mutation.reconciling);
   const unresolved = relevant && (mutation.phase === 'unknown' || mutation.reconciliationError !== null);
   const message = !relevant ? null : mutation.reconciling ? m.checking : mutation.phase === 'pending' ? m.pending
-    : mutation.phase === 'unknown' ? m.unknown
+    : mutation.phase === 'confirmed' ? m.confirmed : mutation.phase === 'unknown' ? m.unknown
       : mutation.phase === 'conflict' ? m.conflict : mutation.phase === 'reconciled' ? m.reconciled : null;
-  return <><div id={id} className="task-automation-feedback" aria-live="polite" aria-busy={busy}>
-    {detail?.status === 'in_progress' && <p>{m.locked}</p>}
+  return <div id={id} className="task-automation-feedback" aria-live="polite" aria-busy={busy}><TaskDetailNotice active={relevant && mutation.phase !== 'idle'} event={event}
+    initiallyVisible={mutation.phase !== 'confirmed'} tone={mutation.phase === 'confirmed' ? 'success' : mutation.phase === 'refused' ? 'error' : unresolved || mutation.phase === 'conflict' ? 'warning' : 'info'} recoverable={unresolved}>
     {message !== null && <p role={unresolved || mutation.phase === 'conflict' ? 'alert' : 'status'}>{message}</p>}
     {unresolved && <button className="button" type="button" disabled={busy} onClick={onReconcile}>{mutation.reconciling ? m.checking : m.checkState}</button>}
     {relevant && mutation.error !== null && <div className="task-automation-error" role="alert"><PermissionError error={mutation.error} /></div>}
     {relevant && mutation.reconciliationError !== null && <div className="task-automation-error" role="alert"><p>{m.checkFailed}</p><PermissionError error={mutation.reconciliationError} /></div>}
-  </div>{showSuccess && <div className="task-detail-toast" role="status">{m.confirmed}</div>}</>;
+  </TaskDetailNotice></div>;
 };

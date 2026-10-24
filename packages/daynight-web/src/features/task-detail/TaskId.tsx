@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { TaskDetailNotice } from './TaskDetailNotice';
 
 export const TaskId = ({ value }: { readonly value: string }) => {
   const { messages: { inspection: { detail: m } } } = useI18n();
@@ -17,7 +18,9 @@ export const TaskId = ({ value }: { readonly value: string }) => {
     }
   };
   return <><span>{value}</span><button className="button task-detail-copy" type="button" aria-label={m.copyTaskId} disabled={state === 'pending'} onClick={() => { void copy(); }}>{m.copy}</button>
-    {state === 'copied' && <span className="task-detail-copy-feedback" role="status">{m.copied}</span>}
-    {state === 'failed' && <span className="task-detail-copy-feedback task-detail-copy-error" role="alert">{m.copyFailed}</span>}
+    <TaskDetailNotice active={state === 'copied' || state === 'failed'} event={`${generation.current}/${state}`} tone={state === 'failed' ? 'error' : 'success'}>
+      {state === 'copied' && <span role="status">{m.copied}</span>}
+      {state === 'failed' && <span role="alert">{m.copyFailed}</span>}
+    </TaskDetailNotice>
   </>;
 };

@@ -14,6 +14,10 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// Catalog predicates can be evaluated before schema filters. Resolve the
+// fixture-owned OID first so concurrent schema cleanup stays outside this check.
+const taskSyncIndexColumnsQuery = `SELECT pg_get_indexdef(format('%I.%I', current_schema(), 'tasks_project_updated_id')::regclass) LIKE '%(project_id, updated_at, id)%'`
+
 func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 	s := isolatedStore(t)
 	ctx := context.Background()
@@ -125,12 +129,75 @@ func TestTaskSyncEpochMigrationAndStableHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	var indexed bool
-	if err := pool.QueryRow(ctx, `SELECT EXISTS(SELECT FROM pg_indexes WHERE schemaname=current_schema() AND indexname='tasks_project_updated_id' AND indexdef LIKE '%(project_id, updated_at, id)%')`).Scan(&indexed); err != nil || !indexed {
-		t.Fatalf("window index absent: %v %v", indexed, err)
+	if err := pool.QueryRow(ctx, taskSyncIndexColumnsQuery).Scan(&indexed); err != nil {
+		t.Fatal(err)
+	}
+	if !indexed {
+		t.Fatal("window index column order is not (project_id, updated_at, id)")
 	}
 	var after time.Time
 	if err := pool.QueryRow(ctx, "SELECT updated_at FROM tasks").Scan(&after); err != nil || !after.After(before) {
 		t.Fatalf("normal task mutation clock lost: %v", err)
+	}
+}
+
+func TestTaskSyncIndexCheckStaysInFixtureSchema(t *testing.T) {
+	ctx := context.Background()
+	fallback := emptyPool(t)
+	if _, err := fallback.Exec(ctx, `CREATE TABLE tasks(project_id integer, updated_at integer, id integer);
+		CREATE INDEX tasks_project_updated_id ON tasks(project_id, updated_at, id)`); err != nil {
+		t.Fatal(err)
+	}
+	var fallbackSchema string
+	if err := fallback.QueryRow(ctx, "SELECT current_schema()").Scan(&fallbackSchema); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name      string
+		indexDDL  string
+		want      bool
+		wantError bool
+	}{
+		{"correct order", "CREATE INDEX tasks_project_updated_id ON tasks(project_id, updated_at, id)", true, false},
+		{"wrong order", "CREATE INDEX tasks_project_updated_id ON tasks(id, updated_at, project_id)", false, false},
+		{"missing index", "", false, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pool := emptyPool(t)
+			conn, err := pool.Acquire(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(conn.Release)
+			if _, err := conn.Exec(ctx, "CREATE TABLE tasks(project_id integer, updated_at integer, id integer)"); err != nil {
+				t.Fatal(err)
+			}
+			if test.indexDDL != "" {
+				if _, err := conn.Exec(ctx, test.indexDDL); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var schema string
+			if err := conn.QueryRow(ctx, "SELECT current_schema()").Scan(&schema); err != nil {
+				t.Fatal(err)
+			}
+			searchPath := pgx.Identifier{schema}.Sanitize() + ", " + pgx.Identifier{fallbackSchema}.Sanitize()
+			if _, err := conn.Exec(ctx, "SELECT set_config('search_path', $1, false)", searchPath); err != nil {
+				t.Fatal(err)
+			}
+			var indexed bool
+			err = conn.QueryRow(ctx, taskSyncIndexColumnsQuery).Scan(&indexed)
+			if test.wantError {
+				var pgErr *pgconn.PgError
+				if !errors.As(err, &pgErr) || pgErr.Code != "42P01" {
+					t.Fatalf("missing fixture index did not fail: indexed=%v err=%v", indexed, err)
+				}
+				return
+			}
+			if err != nil || indexed != test.want {
+				t.Fatalf("fixture index column order: indexed=%v want=%v err=%v", indexed, test.want, err)
+			}
+		})
 	}
 }
 

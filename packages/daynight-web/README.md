@@ -51,9 +51,10 @@ Cancel, close and Escape submit nothing. The switch keeps confirmed server
 state until success and actual changes are disabled during `in_progress`.
 Successful permission changes observed in the open detail show a floating status
 bubble for three seconds without moving the heading, tabs or reading area.
-Pending, refusal, unknown-result, reconciliation and locked feedback retain their
-existing behavior. Dismissing a bubble changes only presentation; reopening a
-detail with an already confirmed result does not replay it.
+Pending, refusal, unknown-result, reconciliation, read and freshness notices use
+the shared floating notification layer. Locked controls explain their reason
+through hover and keyboard-focus tooltips. Dismissing a bubble changes only
+presentation; reopening a detail with an already confirmed result does not replay it.
 Standalone rows and graph nodes show each task's permission without turning a
 root value into a chain aggregate. Full task and graph decoders require an
 explicit boolean `allowAgents`; missing, null and nonboolean values fail.
@@ -363,8 +364,11 @@ the old session; late responses cannot populate another task or identity.
 
 Permission changes are forbidden during in_progress; automatic discovery requires
 allowAgents=true, while explicitly designated execution accepts either value.
-Permission success uses a three-second toast; persistent failures and reconciliation
-remain accessible. Status does not stop a process, transfer worker ownership or
+Ordinary and successful notices use three-second bubbles; errors and notices
+with actions use eight seconds. Hover or focus pauses expiry. Close and expiry
+change only presentation; unresolved recovery remains accessible from a compact
+floating trigger, without changing write locks or replaying writes. Status does
+not stop a process, transfer worker ownership or
 provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
 owns server rules, migration and timing. The [component fixture](tests/mockups/browsing.html)
 uses production sessions/styles for frontend behavior; actual service acceptance
@@ -475,11 +479,16 @@ replaces statistics and both task-category lists together. The
 owns the scheduling and scope. With `pnpm web:dev`,
 `/tests/mockups/auto-refresh.html` uses the real project page, styles and controlled
 responses to explore periodic changes, delayed reads and recoverable failures
-without Go or PostgreSQL. Production verification uses the real-service journeys.
+without Go or PostgreSQL. The [notification mockup](tests/mockups/notifications.html)
+uses the shared detail surface for lock tooltips, success, unknown-write, stale
+snapshot and refresh-error feedback in dialog and page containers. Production
+verification uses the real-service journeys.
 
 Same-resource graph and detail refresh retain successful data while loading and
-on recoverable failure. Errors stay visible during automatic retries until a
+on recoverable failure. Errors remain in state during automatic retries until a
 successful response clears them, including a failure before any successful read.
+Project errors stay visible; task-detail bubbles expire while keeping recovery
+reachable from the floating entry.
 Automatic detail reads and queued follow-ups wait while the document is hidden;
 requests already in flight may finish. A 404 clears unavailable graph or detail data;
 401 follows the authentication lifecycle and releases the workspace. A resource
@@ -489,9 +498,12 @@ are unchanged, focus, attachment selection, upload inputs, pending writes and
 preview frame. Ordinary background reads add no heading progress paragraph,
 so unchanged responses keep the heading, tabs and active reading panel bounds
 stable before, during and after the request. Read errors, required freshness
-and stale-snapshot feedback remain explicit. The
+and stale-snapshot feedback remain explicit through timed floating bubbles. The
 [detail refresh decision](../../.agents/notes/implemented/bug-fix/2026-10-23-quiet-task-detail-refresh.md)
-owns that presentation. Project and task changes release the old resource state.
+owns quiet polling; the
+[notification decision](../../.agents/notes/implemented/bug-fix/2026-10-24-task-detail-notifications.md)
+owns layout-independent feedback and recovery. Project and task changes release
+the old resource state.
 Project listing and attachment metadata/content keep their independent refresh actions.
 Live detail never changes graph counters;
 a changed prerequisite can alter readiness without revising the task itself.
@@ -600,7 +612,8 @@ addresses initialize the tab and attachment selection from their navigation stat
 its metadata row, beside a localized Copy button. This writes the exact ID with
 `navigator.clipboard.writeText` and exposes success or a recoverable failure; the
 ID remains selectable when browser clipboard access fails. Copy feedback belongs
-to the displayed task and is cleared when that identity changes. The separate
+to the displayed task, uses timed bubbles and is cleared when that identity
+changes. The separate
 Attachments tab places the path-addressed file tree, refresh and upload on the
 left and the selected file's preview on the right. A vertical divider separates independently
 scrollable panes; narrow layouts retain this left/right placement. The
@@ -689,7 +702,8 @@ automatic-execution permission, execution platform and attachment management.
 `TaskDetailDialog` owns only the modal portal, inertness, scroll lock, focus loop,
 Escape and focus restoration. `TaskDetailPage` provides an ordinary full-page
 container, return-to-project link and language selector. The platform select
-stays in the status row with live feedback beneath it. Status, permission and
+stays in the status row, with its lock explanation in a hover/focus tooltip
+and operation feedback in the shared floating layer. Status, permission and
 platform use the same confirmation/review owner; file deletion keeps its own
 modal confirmation. These interactions remain available in either container.
 The standalone page and native frames do not install the outer dialog's keys.
@@ -717,7 +731,10 @@ changes preserve the existing cancellation and state-isolation rules.
 The page owns a real `useTaskGraph` snapshot for relationship titles, successors
 and freshness, then composes the shared detail session. Initial loading, initial
 failure and retained-snapshot refresh errors stay distinct; failure cannot become
-an empty graph. Each successful graph revision still rereads full task details,
+an empty graph. Retained-snapshot errors use the shared floating layer inside
+the detail surface, as do the page language selector's preference-storage notices,
+preserving tab and reading geometry. Each successful graph
+revision still rereads full task details,
 even when the graph projection is unchanged. Same-identity foreground auth
 revalidation retains ordinary page visibility, interaction and component identity.
 Unchanged detail refreshes retain focus, inputs, preview and heading/panel geometry.

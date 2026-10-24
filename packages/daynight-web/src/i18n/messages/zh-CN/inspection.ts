@@ -42,6 +42,7 @@ export const inspection: InspectionMessages = {
     requestFailed: "状态请求失败。",
   },
   detail: {
+    dismissNotice: "关闭提示", showNotice: "查看任务提示",
     openInNewTab: "在新标签页打开", returnToProject: "返回任务所在项目",
     overview: "概览",
     title: "任务详情", close: "关闭任务详情", loading: "正在加载任务详情", failed: "任务详情加载失败",
