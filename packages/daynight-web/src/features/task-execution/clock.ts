@@ -1,6 +1,6 @@
 import type { GraphTask } from "../../api/types";
 
-export type ExecutionTask = Pick<GraphTask, "status" | "startedAt" | "completedAt">;
+export type ExecutionTask = Pick<GraphTask, "status" | "allowAgents" | "startedAt" | "completedAt">;
 export type TaskExecution = {
   readonly kind: "running" | "completed";
   readonly elapsedMilliseconds: number;
@@ -33,7 +33,7 @@ export const taskExecution = (task: ExecutionTask, snapshot: ClockSnapshot): Tas
     ? Math.max(0, snapshot.serverMilliseconds - Date.parse(startedAt))
     : Date.parse(task.completedAt!) - Date.parse(startedAt);
   return {
-    kind, elapsedMilliseconds, overdue: kind === "running" && elapsedMilliseconds > snapshot.warningMinutes * 60_000,
+    kind, elapsedMilliseconds, overdue: task.allowAgents && kind === "running" && elapsedMilliseconds > snapshot.warningMinutes * 60_000,
     warningMinutes: snapshot.warningMinutes, startedAt, completedAt: task.completedAt,
   };
 };

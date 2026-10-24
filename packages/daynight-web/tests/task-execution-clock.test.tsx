@@ -11,7 +11,7 @@ const start = "2026-10-23T00:00:00Z";
 const epoch = Date.parse(start);
 const projectId = "10000000-0000-4000-8000-000000000001";
 const otherProjectId = "10000000-0000-4000-8000-000000000002";
-const running: ExecutionTask = { status: "in_progress", startedAt: start, completedAt: null };
+const running: ExecutionTask = { allowAgents: true, status: "in_progress", startedAt: start, completedAt: null };
 const input = (warningMinutes = 60): ClockInput => ({ observedAt: start, receivedMonotonic: 100, warningMinutes });
 const snapshot = (observedAt = start, receivedMonotonic = 0, warningMinutes = 60, id = projectId): GraphSnapshot => {
   const graph: TaskGraph = {
@@ -43,9 +43,9 @@ const environment = () => {
 };
 
 describe("execution intervals", () => {
-  it.each([{ elapsed: 3_599_000, overdue: false }, { elapsed: 3_600_000, overdue: false }, { elapsed: 3_601_000, overdue: true }])
-    ("compares exact elapsed $elapsed against the saved threshold", ({ elapsed, overdue }) => {
-      expect(taskExecution(running, { serverMilliseconds: epoch + elapsed, warningMinutes: 60 }))
+  it.each([true, false].flatMap((allowAgents) => [3_599_000, 3_600_000, 3_601_000].map((elapsed) => ({ allowAgents, elapsed, overdue: allowAgents && elapsed > 3_600_000 }))))
+    ("compares exact elapsed $elapsed with allowAgents=$allowAgents against the saved threshold", ({ allowAgents, elapsed, overdue }) => {
+      expect(taskExecution({ ...running, allowAgents }, { serverMilliseconds: epoch + elapsed, warningMinutes: 60 }))
         .toMatchObject({ kind: "running", elapsedMilliseconds: elapsed, overdue, startedAt: start, completedAt: null });
     });
 
@@ -58,10 +58,10 @@ describe("execution intervals", () => {
   });
 
   it.each([
-    { status: "todo", startedAt: start, completedAt: null },
-    { status: "in_progress", startedAt: null, completedAt: null },
-    { status: "done", startedAt: null, completedAt: start },
-    { status: "done", startedAt: start, completedAt: null },
+    { allowAgents: false, status: "todo", startedAt: start, completedAt: null },
+    { allowAgents: true, status: "in_progress", startedAt: null, completedAt: null },
+    { allowAgents: true, status: "done", startedAt: null, completedAt: start },
+    { allowAgents: true, status: "done", startedAt: start, completedAt: null },
   ] satisfies ExecutionTask[])("omits timing without a measurable $status execution", (task) => {
     expect(taskExecution(task, { serverMilliseconds: epoch, warningMinutes: 60 })).toBeNull();
   });
