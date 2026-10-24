@@ -136,8 +136,9 @@ export class TaskDetailSessions {
     if (lifecycleChanged) {
       this.cancelRead(projectId, taskId);
       entry.liveVersion = null; entry.committedVersion = null; entry.pending = null; entry.mismatch = null;
-      this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: "loading", refreshing: false,
-        requiresFreshRead: true, graphMismatch: false, error: null,
+      const deniedError = cacheGeneration === null ? entry.state.error : null;
+      this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: deniedError === null ? "loading" : "error", refreshing: false,
+        requiresFreshRead: true, graphMismatch: false, error: deniedError,
         mutation: { ...entry.state.mutation, reconciling: false, reconciliationError: null } });
     }
     const changed = lifecycleChanged || entry.observedVersion !== version;
@@ -156,9 +157,9 @@ export class TaskDetailSessions {
       const pending = entry.pending;
       entry.pending = null;
       entry.liveVersion = null;
-      entry.queuedRead = { revision: pending.revision, reconciliation: true };
+      entry.queuedRead = { revision: pending.revision, reconciliation: pending.reconciliation };
       this.publish(entry, { ...entry.state, requiresFreshRead: true,
-        mutation: { ...entry.state.mutation, reconciling: true, reconciliationError: null } });
+        mutation: pending.reconciliation ? { ...entry.state.mutation, reconciling: true, reconciliationError: null } : entry.state.mutation });
       this.drainReads(projectId, taskId);
       return false;
     }
@@ -231,11 +232,21 @@ export class TaskDetailSessions {
   }
   reconcile(projectId: string, taskId: string): void {
     const entry = this.entry(projectId, taskId);
-    if (entry.state.mutation.phase === "pending" || entry.state.mutation.reconciling) return;
-    void this.read(projectId, taskId, entry.state.revision, true, true);
+    if (!entry.admitted || entry.state.mutation.phase === "pending" || entry.state.mutation.reconciling) return;
+    void this.read(projectId, taskId, entry.state.revision, entry.state.mutation.operation !== null, true);
+  }
+  private async revokeAccess(ticket: SyncTicket, error: ApiError, signal: AbortSignal): Promise<void> {
+    if (!this.scope.canRevokeProject(ticket)) return;
+    for (const [key, entry] of this.entries) {
+      if (!key.startsWith(`${ticket.projectId}/`)) continue;
+      entry.admitted = false; entry.liveVersion = null; entry.pending = null; entry.queuedRead = null; entry.mismatch = null;
+      this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, graphMismatch: false, error,
+        mutation: { ...entry.state.mutation, reconciling: false, reconciliationError: entry.state.mutation.reconciling ? error : entry.state.mutation.reconciliationError } });
+    }
+    await this.scope.revokeProject(ticket, signal, true, error);
   }
   private failRead(entry: Entry, error: unknown, reconciliation: boolean): void {
-    const missing = error instanceof ApiError && error.kind === "server" && error.status === 404;
+    const missing = error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
     const detail = missing ? null : entry.state.detail;
     this.publish(entry, { ...entry.state, detail, loadedRevision: missing ? null : entry.state.loadedRevision, status: detail !== null ? "ready" : "error", refreshing: false,
       requiresFreshRead: reconciliation || entry.state.requiresFreshRead,
@@ -284,7 +295,7 @@ export class TaskDetailSessions {
     if (readOpeningGeneration !== null) entry.liveOpeningGeneration = readOpeningGeneration;
     const mutation = reconciliation
       ? { ...entry.state.mutation, phase: entry.state.mutation.phase === "unknown" ? "reconciled" as const : entry.state.mutation.phase, reconciling: false, reconciliationError: null }
-      : entry.state.mutation;
+      : readOpeningGeneration !== null ? { ...entry.state.mutation, reconciling: false, reconciliationError: null } : entry.state.mutation;
     this.publish(entry, { ...entry.state, revision, loadedRevision: revision,
       detail: preserveCollection(entry.state.detail, materializeDetail(admitted.detail, node)), status: "ready", refreshing: false,
       requiresFreshRead: entry.liveVersion !== detail.version || entry.liveOpeningGeneration !== entry.openingGeneration || entry.mismatch !== null, graphMismatch: entry.mismatch !== null, error: storageError, mutation });
@@ -310,8 +321,11 @@ export class TaskDetailSessions {
       requiresFreshRead: !automatic || entry.state.requiresFreshRead,
       status: retain ? "ready" : automatic && entry.state.error !== null ? "error" : "loading", refreshing: retain, error: automatic ? entry.state.error : null,
       mutation: reconciliation ? { ...entry.state.mutation, reconciling: true, reconciliationError: null } : entry.state.mutation });
+    let ticket: SyncTicket | null = null;
+    let knownTask = false;
     try {
-      const ticket = await this.scope.beginSync(projectId, signal);
+      ticket = await this.scope.beginSync(projectId, signal);
+      knownTask = this.scope.getSummaryVersion(projectId, taskId) !== null;
       if (!retain && entry.admitted) {
         const cached = await readCachedDetail(this.scope, ticket, taskId, signal);
         const node = entry.observedTask;
@@ -324,6 +338,12 @@ export class TaskDetailSessions {
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
       if (signal.aborted || generation !== entry.generation || this.disposed || !retain && !reconciliation && isAbortError(error)) return;
+      const denied = knownTask && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
+      if (denied) {
+        try { await this.revokeAccess(ticket!, error, signal); }
+        catch (storageError) { if (!isAbortError(storageError) && !this.disposed && !this.scope.isInvalidated && generation === entry.generation && this.scope.canRevokeProject(ticket!)) this.failRead(entry, storageError, reconciliation); }
+        return;
+      }
       this.failRead(entry, error, reconciliation);
     } finally {
       if (generation === entry.generation) {
@@ -367,16 +387,18 @@ export class TaskDetailSessions {
       let validated = false;
       const changed = operation.action !== "status" || previous.status !== operation.status;
       const committedVersion = operation.version + (changed ? 1n : 0n);
+      const signal = this.scope.signal;
+      let ticket: SyncTicket | null = null;
       try {
-        const signal = this.scope.signal;
-        const ticket = await this.scope.beginSync(projectId, signal);
+        ticket = await this.scope.beginSync(projectId, signal);
         await this.scope.detailTransaction(ticket, signal, async (_store, _manifest, summaries) => {
           if (summaries.get(taskId)?.version !== operation.version) throw new ApiError("protocol");
         });
+        const requestTicket = ticket;
         const admission = { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch,
           onWriteConfirmed: () => {
             confirmed = true;
-            if (this.projectGeneration(projectId) === ticket.cacheGeneration) entry.committedVersion = committedVersion;
+            if (this.projectGeneration(projectId) === requestTicket.cacheGeneration) entry.committedVersion = committedVersion;
           } };
         submitted = true;
         const detail = operation.action === "allowAgents"
@@ -421,6 +443,11 @@ export class TaskDetailSessions {
         const phase = !submitted ? "refused" : error instanceof ApiError && error.kind === "server" && error.status !== null && error.status >= 400 && error.status < 500
           ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
         this.publish(entry, { ...entry.state, mutation: { operation, phase, error, reconciling: false, reconciliationError: null } });
+        if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+          try { await this.revokeAccess(ticket, error, signal); }
+          catch (storageError) { if (!isAbortError(storageError) && !this.disposed && !this.scope.isInvalidated && this.scope.canRevokeProject(ticket)) this.failRead(entry, storageError, false); }
+          return;
+        }
         if (phase === "conflict" || phase === "unknown") {
           if (phase === "conflict") this.refreshProject(projectId);
           if (!this.disposed) await this.read(projectId, taskId, entry.state.revision, true, true);

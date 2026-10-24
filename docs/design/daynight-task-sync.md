@@ -154,7 +154,7 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 各页独立维持约五秒轮询，无选主。IDB 写事务排序与当前集合的 version 合并防止乱序网络结果回退数据。只在任务自身内容、设置或生命周期实际变化后广播轻量提示；重复结果、显示时钟、纯读取不广播，也不转发提示。
 
-收到提示后读取当前持久集合并按当前身份/项目权限展示；无需仅因提示再发网络同步。首次项目访问仍须本页在线验证；已经打开的页沿用自身时钟锚点，下一正常周期取得新样本。提示不是授权信息，丢失提示时下次正常同步仍重读当前持久集合，保证收敛。
+普通变更提示在提交后触发，接收方重读当前持久集合，不仅因提示再发网络。它不授予首次访问或提供可复用的时钟锚；已打开页沿用本页样本，下一正常周期重新同步。负向撤权提示在确认可信 not_found 后立即发送，不等待持久清理；其匹配、暂停期间处理和 CAS 清理见第 7 节。两类提示都不转发，不包含任务正文。
 
 ## 6. 投影、时钟与详情
 
@@ -166,9 +166,9 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 ### 详情内容、版本与读取
 
-`TaskDetailSessions(scope)` 复用认证 scope 的 `beginSync` 和 `detailTransaction`，保持 status、allowAgents、requiredPlatform 三类写操作的同一所有者；状态写入仍使用 PUT /tasks/{taskId}/status。`useTaskDetail(projectId,taskId,revision,observedTask)` 保留调用形式，从 scope 读取摘要业务版本和项目 generation。只有本次挂载的 revision>0 才准入可显示内容；scope 中其他页面已有的授权集合不能替代它。
+`TaskDetailSessions(scope)` 复用认证 scope 的 `beginSync` 和 `detailTransaction`，保持 status、allowAgents、requiredPlatform 三类写操作的同一所有者；状态写入仍使用 PUT /tasks/{taskId}/status。`useTaskDetail(projectId,taskId,revision,observedTask)` 保留调用形式，从 scope 读取摘要业务版本和项目 generation。可显示内容同时要求本次挂载的 revision>0 和 scope 当前仍授权的项目 generation；其他页面的集合不能替代本次 receipt，旧 receipt 也不能绕过已经撤销的 scope 准入。撤权错误和 Retry 在正文清除后继续可见，直到新的成功项目同步重新准入。
 
-每次已准入的详情打开先调用 `requireOpeningRead(projectId,taskId)` 记录这次 opening 的 live GET 要求，再判断 pending/unknown/reconciling 是否阻止读取；阻止期间要求仍保留，解除后合并执行必要 GET。openingGeneration/liveOpeningGeneration 只在内存中识别该要求，不是 DB、协议或项目水位。GET 捕获开始时的 opening，磁盘正文、写结果、同版本 no-op/拒绝响应以及重开前已开始的 reconciliation 均不能满足后一次 opening；重复五秒 receipt 不创建新 opening。取得当前生命周期 ticket 后可以显示匹配摘要版本的持久自身正文，live GET 成功前 requiresFreshRead 保持，磁盘内容不启用写操作。网络在事务外进行，响应通过实际用户核对后，保存事务再次验证 ticket、当前摘要和已有详情。较旧结果不覆盖正文。较新的 GET 结果保留待安装并触发项目同步；已确认且通过目标/版本校验的较新写正文，在受保护生命周期检查后可暂时按原始服务端字段显示，同时保持 graphMismatch、requiresFreshRead 和禁写，不提前持久化。暂存结果高于摘要版本时继续等待，版本相等时按原有 ticket 校验采用本地派生并持久化，不额外 GET（新的 opening 要求仍独立保留）。若当前摘要已越过暂存版本，则丢弃该过期 payload 和旧 liveVersion，在同一请求队列中合并一次优先 GET-only reconciliation；空闲时执行，活动读或写结束后再排空。保留原操作意图、阶段和已确认版本下界，旧 payload 不安装也不满足 opening。核对 GET 失败或仍返回旧版本时，退出 reconciling 并保留 reconciliationError 与可用的检查状态/Retry；重复摘要不自动形成核对循环，显式 Retry 只 GET。以上过程不推进项目覆盖。snapshot 会轮换项目 generation，不能跨 generation 采用旧 ticket 或待安装正文；任何 generation 变化立即释放旧详情正文、PR 和 loadedRevision，取消旧读取/待安装结果，并重置 liveVersion、已确认版本下界、读取错误与新鲜度；相同 taskId/version/时间也不能证明属于同一历史。hook 在 observer effect 前也以 `hasCurrentGeneration` 阻止旧正文闪现，新 GET 挂起或失败时不能保留旧 generation 的内容。操作 confirmed/unknown 的意图和阶段仍保留，旧核对取消后 reconciling 复位，以便显式 GET 核对恢复；同 generation 的刷新失败继续保留当前成功正文。
+每次已准入的详情打开先调用 `requireOpeningRead(projectId,taskId)` 记录这次 opening 的 live GET 要求，再判断 pending/unknown/reconciling 是否阻止读取；阻止期间要求仍保留，解除后合并执行必要 GET。openingGeneration/liveOpeningGeneration 只在内存中识别该要求，不是 DB、协议或项目水位。GET 捕获开始时的 opening，磁盘正文、写结果、同版本 no-op/拒绝响应以及重开前已开始的 reconciliation 均不能满足后一次 opening；重复五秒 receipt 不创建新 opening。取得当前生命周期 ticket 后可以显示匹配摘要版本的持久自身正文，live GET 成功前 requiresFreshRead 保持，磁盘内容不启用写操作。网络在事务外进行，响应通过实际用户核对后，保存事务再次验证 ticket、当前摘要和已有详情。较旧结果不覆盖正文。较新的 GET 结果保留待安装并触发项目同步；已确认且通过目标/版本校验的较新写正文，在受保护生命周期检查后可暂时按原始服务端字段显示，同时保持 graphMismatch、requiresFreshRead 和禁写，不提前持久化。暂存结果高于摘要版本时继续等待，版本相等时按原有 ticket 校验采用本地派生并持久化，不额外 GET（新的 opening 要求仍独立保留）。若当前摘要已越过暂存版本，则丢弃过期 payload 和旧 liveVersion，在原队列中合并必要 GET，空闲时执行，活动读或写结束后再排空。队列和 pending 保留发起用途：普通详情读取仍按普通读取恢复，操作结果核对仍按 reconciliation 恢复；原操作意图、阶段和已确认版本下界不因此改变，旧 payload 不安装也不满足 opening。普通读取失败进入可见的 detail error/Retry，不写入隐藏的 mutation reconciliationError；成功 GET 清除该读的错误和新鲜度阻塞。核对 GET 失败、仍旧版本、精确 pending 准入异常或提交后摘要再次前进时，退出当前 reconciling 并保留 reconciliationError 与检查状态/Retry；成功核对清除对应阻塞，保留操作归属。失败结果只作用于当前 entry/ticket generation，旧失败不能覆盖新读。重复摘要不形成核对循环，显式 Retry 只 GET。以上过程不推进项目覆盖。snapshot 会轮换项目 generation，不能跨 generation 采用旧 ticket 或待安装正文；任何 generation 变化立即释放旧详情正文、PR 和 loadedRevision，取消旧读取/待安装结果，并重置 liveVersion、已确认版本下界、读取错误与新鲜度；相同 taskId/version/时间也不能证明属于同一历史。hook 在 observer effect 前也以 `hasCurrentGeneration` 阻止旧正文闪现，新 GET 挂起或失败时不能保留旧 generation 的内容。操作 confirmed/unknown 的意图和阶段仍保留，旧核对取消后 reconciling 复位，以便显式 GET 核对恢复；同 generation 的刷新失败继续保留当前成功正文。
 
 摘要自身 version 变化使对应详情失效并读取新内容。相同 version 的前置变化直接从完整本地图重新物化 ready/blockedBy，不下载所有后继。description、PR 或 worker 属性变化由业务 version 被发现。收到 live GET/写响应时，先以原始服务端派生字段检查 isTaskStale，再物化本地派生值；`graphMismatch` 保存差异证据并继续提示、禁写和触发项目同步，不能用覆盖后的相同值消除它。成功读取或本地图收敛后才解除对应限制。重复 receipt 仅在读取错误、缺失新鲜观察、原始差异或核对未完成时提供必要恢复机会。
 
@@ -188,9 +188,17 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 ## 7. 身份、错误与本地生命周期
 
-沿用 AuthenticatedApp 的 foreground /me gate；持久读取、网络与发布也等待该 gate。暂停期间，详情渲染用 getter 只保留先前已观察的内存摘要版本/generation，未观察资源返回无值，不从持久缓存取得新准入。同步响应在正文、错误信封或破坏性项目失效之前核对 `Daynight-User-ID`。缺失或畸形头是协议错误，保留允许显示的旧视图与持久缓存；可信不同用户使旧 scope 同步失效，立即卸载旧认证内容，再核验身份。只有同用户认证通过的 `404 not_found` 才定向清理项目。
+沿用 AuthenticatedApp 的 foreground /me gate，持久读取、网络和正向内容发布等待身份核验。暂停期间详情渲染 getter 只保留先前已观察的内存版本/generation，未观察资源无值。已经确认的负向撤权立即记录并隐藏内容，允许 accessRevoked 事件和负向提示越过暂停；它们不读取新私有内容或授予访问，后续持久清理仍等待 gate。
 
-持久数据不保存授权，每次挂载的项目视图在本挂载成功同步前不显示磁盘私有内容；本地命中与广播不能授予首次访问。已打开视图在网络故障时保留并显示现有读取错误。权威 404 立即隐藏项目，保留 invalidated generation 并定向清除；账号退出/换号/失效通过 `invalidateScope` 同步中止 scope、释放内存，再事务轮换 userFence、清除该用户摘要和详情并保留失效 manifest，阻止迟到 bootstrap 恢复它。`dispose` 仅关闭当前 scope，保留可重用持久记录。
+实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户使旧 scope 同步失效，再核验身份。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。详情 GET 仅在发起时摘要中已有该任务才把可信 not_found 视为项目访问撤回；三类任务写的可信 not_found 使用同一撤权入口。未知任务地址的 404 保持任务局部错误，不触发项目重建循环。
+
+`canRevokeProject(ticket)` 在会话清正文前检查当前用户 fence、投影和待处理拒绝是否仍匹配 ticket，旧 E1 的 GET/写 404 因而不能清 E2。`revokeProject(ticket,signal,broadcast=true,reason?)` 接收可选的原始可信 ApiError，来源页立即撤权事件因而保留 requestId；没有本地 HTTP 响应的 peer 使用通用 not_found。该方法同步记住被拒绝的 cacheGeneration，移除内存投影/授权并发出 accessRevoked 事件。详情会话清除所属项目正文/loadedRevision，useTaskGraph 清除快照；旧 revision 不能重新准入。applySync 与 detailTransaction 在事务前后检查被拒绝 generation，readProject 在物化前检查；清理失败或已提交的旧结果不能重新发布这些内容。
+
+持久清理归 scope，超出观察它的对话框寿命。现有四 store RW 事务只在持久 userFence 和 manifest.cacheGeneration 仍等于捕获 ticket 时清除该项目 summaries/details，并写新的 invalidated manifest；不同用户、项目或 generation 不在该 CAS 清理范围。清理失败保留内存拒绝与可见存储错误。beginSync 先重试待处理清理，再建立同步基线；只有新的在线项目同步成功才重新显示私有内容。该机制不追踪 snapshot 后代或保证删除不同 generation 的磁盘记录，任何保留记录也不能代替在线准入。
+
+负向 BroadcastChannel 提示包含 `{userId,projectId,userFence,revokedGeneration}`。已绑定相同用户 fence 的冷标签页即使尚无投影也记录拒绝；已有投影必须匹配 generation。旧提示不能覆盖较新的投影或待处理拒绝，不转发提示。提示立即撤销复用权限，不等待发送方清理成功；接收方按相同 CAS 范围清理，不能把它当作内容或访问授予。
+
+持久数据不保存授权，普通可恢复故障只保留仍获准的同 generation 视图。退出/换号/401 通过 invalidateScope 同步中止 scope、释放内存，再事务轮换 userFence、清除该用户内容并保留失效 manifest；dispose 仅关闭当前 scope，保留可重用持久记录。
 
 IDB 打开、blocked、异常 close、读取、配额和写入失败进入现有失败/保留快照错误区及 Retry。blocked 5,000ms 后报告错误，迟到打开的连接关闭。重试先重开必要连接并读取真实存储；结构损坏记录原因并完整重建，失败不无限重试。用户记录缺失、归属错误或 userFence 畸形时，不再次依赖该损坏 fence 做项目失效。一个独立的四 store 修复事务直接写新用户 fence、清除该用户摘要/详情，并把其可识别项目基线重建为失效记录；无法识别的项目键被清除。其他用户保持。修复提交前不修改内存绑定、退役 scope 或发送提示；修复失败原子回滚，检测它的 scope 保持可重试并显示存储错误。提交后，尚未绑定的冷 scope 绑定新 fence 再继续原读取；已经绑定旧 fence 的 scope 关闭并发起身份核验，不能采用替代 fence。其他标签页的旧 ticket 在后续事务中被新 fence 拒绝，已完成事务也须通过提交后的 scope 检查才可发布。不引入静默网络模式或新的产品布局。
 

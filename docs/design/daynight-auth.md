@@ -209,7 +209,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 阻塞恢复状态分别管理：正常等待保留工作空间、详情和管理弹窗的可见性与交互，
 不添加隐藏样式、inert 或 aria-hidden，不打开模态层，因此焦点、输入和 frame
 生命周期不会被核验打断。同一用户成功沿用 session generation 与组件实例；确认
-身份变化时使共享请求失效并重建身份域，401 则清除会话。核验结果返回前继续展示
+身份变化时使共享请求失效并重建身份域，401 则清除会话。未另行确认资源撤权时，核验结果返回前继续展示
 已加载的内容。鉴权层在 layout effect 中注册顶层焦点与可见性生命周期；首次
 鉴权挂载若已隐藏或外部失焦，在子组件 passive 请求 effect 前暂停。后续顶层
 隐藏或外部失焦时立即取消并使旧核验失效，暂停共用 request 边界的普通 API
@@ -224,7 +224,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 [前台身份核验决策](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
-任务缓存的 TaskCacheProvider 在认证分支内、TaskDetailSessionProvider 外提供用户/会话 scope，覆盖项目、独立任务及附件路径页。成功同步前不从磁盘发布本挂载的私有内容。本地读取和广播发布与普通 API 一样等待 foreground gate。同步、详情 GET 与三类任务写响应先核对 `Daynight-User-ID`；缺失或畸形头作为协议错误保留原缓存，可信不同用户立即同步失效旧 scope 并卸载旧认证内容，再发起 `/me`。只有同用户验证通过的项目 `404 not_found` 定向清理项目。退出、换号或 401 同步释放内存与旧请求，再轮换持久 userFence 并清理该用户记录；普通同用户核验保留 scope，页面卸载仅关闭连接而保留可重建缓存。详情/写接口的 `TaskResponseAdmission` 明确当前 userId 和 mismatch 回调，正文与资源错误处理都在 principal 核对之后。已确认写响应与正文安装、缓存保存分开，后两者失败不重发远端操作。[缓存架构](daynight-task-sync.md)拥有完整事务、新鲜度和失效规则。
+任务缓存的 TaskCacheProvider 在认证分支内、TaskDetailSessionProvider 外提供用户/会话 scope，覆盖项目、独立任务及附件路径页。成功同步前不从磁盘发布本挂载的私有内容。持久读取与正向内容发布和普通 API 一样等待 foreground gate。可信资源 not_found 的负向撤权及匹配 userFence/generation 提示立即处理，不等待暂停结束；其 scope 所有的 CAS 持久清理仍等待 gate。同步、详情 GET 与三类任务写响应先核对 `Daynight-User-ID`；缺失或畸形头作为协议错误保留原缓存，可信不同用户立即同步失效旧 scope 并卸载旧认证内容，再发起 `/me`。项目同步，以及启动时已知任务的详情 GET 或三类任务写返回同用户可信 `404 not_found`，先检查捕获 ticket 是否仍属于当前 userFence/cacheGeneration，再同步清正文和项目准入，随后只清理匹配的持久 generation。未知任务地址 404 局部处理，旧 E1 响应不得清 E2；清理失败仍拒绝复用，新的在线项目同步成功后才重新显示。退出、换号或 401 同步释放内存与旧请求，再轮换持久 userFence 并清理该用户记录；普通同用户核验保留 scope，页面卸载仅关闭连接而保留可重建缓存。详情/写接口的 `TaskResponseAdmission` 明确当前 userId 和 mismatch 回调，正文与资源错误处理都在 principal 核对之后。已确认写响应与正文安装、缓存保存分开，后两者失败不重发远端操作。[缓存架构](daynight-task-sync.md)拥有完整事务、新鲜度和失效规则。
 
 现有图、项目浏览偏好和居中 TaskDetailDialog 继续复用，不增加任务字段编辑。
 `messages.auth` 的英语与简体中文契约覆盖所有新界面、标题、校验、无障碍名称、

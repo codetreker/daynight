@@ -424,3 +424,71 @@ it("ends pending reconciliation if the summary advances after matching persisten
   await waitFor(() => expect(result.current.mutation.phase).toBe("reconciled")); expect(result.current.detail?.version).toBe(7n); expect(result.current.canSetStatus).toBe(true);
   expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1); unsubscribe();
 });
+
+it("keeps ordinary skipped-version failures visible and clears their blockers on ordinary Retry", async () => {
+  const initial = body(); const six = { ...initial, version: 6n, updatedAt: "2026-10-22T10:00:06Z" }; const seven = { ...six, version: 7n, description: "Future seven", updatedAt: "2026-10-22T10:00:07Z" };
+  const eight = { ...seven, version: 8n, description: "Current eight", updatedAt: "2026-10-22T10:00:08Z" }; const scope = await seed([initial]); const failed = deferred<Response>(); const retry = deferred<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(initial, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse(seven, TEST_VIEWER_ID)).mockReturnValueOnce(failed.promise).mockReturnValueOnce(retry.promise); vi.stubGlobal("fetch", fetch);
+  const { result, rerender } = renderHook(({ revision, observed }) => ({ ...useTaskDetail(projectId, taskId, revision, observed), sessions: useTaskDetailSessions() }), { initialProps: { revision: 1, observed: node(scope) }, wrapper: wrapper(scope) });
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true)); const refresh = vi.fn(); const stop = result.current.sessions.subscribeProject(projectId, refresh);
+  await act(async () => { await apply(scope, [six]); }); rerender({ revision: 2, observed: node(scope) }); await waitFor(() => expect(refresh).toHaveBeenCalledOnce());
+  await act(async () => { await apply(scope, [eight]); }); rerender({ revision: 3, observed: node(scope) }); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+  failed.reject(new Error("Ordinary read offline")); await waitFor(() => expect(result.current.error).toMatchObject({ kind: "network" }));
+  expect(result.current.mutation).toMatchObject({ operation: null, phase: "idle", reconciling: false, reconciliationError: null });
+  act(() => result.current.retry()); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4)); retry.resolve(resourceResponse(eight, TEST_VIEWER_ID));
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true)); expect(result.current.canSetAgentPermission).toBe(true); expect(result.current.canSetRequiredPlatform).toBe(true);
+  expect(result.current.error).toBeNull(); expect(result.current.mutation).toMatchObject({ operation: null, phase: "idle", reconciliationError: null });
+  expect(fetch.mock.calls.every((call) => call[1]?.method === undefined)).toBe(true); stop();
+});
+
+it("revokes known cached detail admission after a trusted 404 before an offline Retry can restore it", async () => {
+  const detail = body({ description: "Private cached body" }); const scope = await seed([detail]);
+  const notFound = new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "detail-denied" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) });
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(detail, TEST_VIEWER_ID)).mockResolvedValueOnce(notFound).mockRejectedValue(new Error("Offline")); vi.stubGlobal("fetch", fetch);
+  const session = await open(scope); session.load(projectId, taskId, 2, "open");
+  await waitFor(() => expect(session.snapshot(projectId, taskId).detail).toBeNull()); await waitFor(() => expect(scope.getAuthorizedProject(projectId)).toBeNull());
+  session.load(projectId, taskId, 3, "refresh"); expect(session.snapshot(projectId, taskId).detail).toBeNull(); expect(fetch).toHaveBeenCalledTimes(2);
+  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1);
+  await waitFor(async () => expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined()); connection.close();
+});
+
+it("withdraws known detail access when its trusted 404 arrives during foreground revalidation", async () => {
+  const value = body(); const scope = await seed([value]); const response = deferred<Response>(); const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(value, TEST_VIEWER_ID)).mockReturnValueOnce(response.promise); vi.stubGlobal("fetch", fetch);
+  const session = await open(scope); session.load(projectId, taskId, 2, "open"); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); const resume = pauseAuthRequests();
+  response.resolve(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "paused-denied" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+  try { await waitFor(() => expect(session.snapshot(projectId, taskId).detail).toBeNull()); expect(session.snapshot(projectId, taskId).status).toBe("error"); }
+  finally { resume(); }
+  await waitFor(() => expect(scope.getAuthorizedProject(projectId)).toBeNull()); session.load(projectId, taskId, 3, "refresh"); expect(session.snapshot(projectId, taskId).detail).toBeNull(); expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("retains allowed cached content after a headerless 404 protocol error", async () => {
+  const value = body(); const scope = await seed([value]); const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(value, TEST_VIEWER_ID)).mockResolvedValueOnce(new Response("{}", { status: 404, headers: { "Content-Type": "application/json" } })); vi.stubGlobal("fetch", fetch);
+  const session = await open(scope); session.load(projectId, taskId, 2, "open"); await waitFor(() => expect(session.snapshot(projectId, taskId).error).toMatchObject({ kind: "protocol", status: 404 }));
+  expect(session.snapshot(projectId, taskId).detail?.id).toBe(taskId); expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
+});
+
+it.each(["status", "allowAgents", "requiredPlatform"] as const)("revokes accepted project content on a trusted %s write 404 without replaying it", async (action) => {
+  const value = body(); const scope = await seed([value]); const missing = new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "write-denied" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) });
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(value, TEST_VIEWER_ID)).mockResolvedValueOnce(missing); vi.stubGlobal("fetch", fetch); const session = await open(scope);
+  if (action === "status") session.setStatus(projectId, taskId, "done", value.version); else if (action === "allowAgents") session.setAgentPermission(projectId, taskId, true, value.version); else session.setRequiredPlatform(projectId, taskId, "linux", value.version);
+  await waitFor(() => expect(scope.getAuthorizedProject(projectId)).toBeNull()); expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: null, requiresFreshRead: true, mutation: { phase: "refused" } }); expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("does not let a late old-generation mutation 404 clear a newer task's accepted body", async () => {
+  const value = body(); const scope = await seed([value]); const write = deferred<Response>(); const otherId = "20000000-0000-4000-8000-000000000009"; const other = detailFixture(projectId, otherId, { title: "New history body", description: "E2 private content" });
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(value, TEST_VIEWER_ID)).mockReturnValueOnce(write.promise).mockResolvedValueOnce(resourceResponse(other, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch); const session = await open(scope);
+  session.setStatus(projectId, taskId, "done", value.version); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); await apply(scope, [value, other], true);
+  session.observe(projectId, taskId, node(scope)); session.observe(projectId, otherId, scope.getAuthorizedProject(projectId)!.index.nodes.get(otherId)); session.load(projectId, otherId, 2, "open");
+  await waitFor(() => expect(session.snapshot(projectId, otherId).detail?.description).toBe(other.description));
+  write.resolve(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "late-old-denied" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("refused")); expect(session.snapshot(projectId, otherId).detail?.description).toBe(other.description); expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
+});
+
+
+it("keeps a nonexistent task's trusted 404 local to that task without revoking its authorized project", async () => {
+  const value = body(); const scope = await seed([value]); const ticket = await scope.beginSync(projectId, signal()); await saveDetail(scope, ticket, value, signal());
+  const missingId = "20000000-0000-4000-8000-000000000099"; const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "unknown-task" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) })); vi.stubGlobal("fetch", fetch);
+  const session = new TaskDetailSessions(scope); sessions.push(session); session.observe(projectId, missingId, undefined); session.load(projectId, missingId, 1, "open");
+  await waitFor(() => expect(session.snapshot(projectId, missingId).error).toMatchObject({ kind: "server", code: "not_found" })); expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
+  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1); expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeDefined(); connection.close();
+});

@@ -198,19 +198,30 @@ The current mount requires its own successful online project sync before private
 cache publication. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
 mutation responses. A verified different principal synchronously releases old content
 and starts identity verification. Headerless or malformed-principal errors retain
-valid cached content; only a verified same-user `404 not_found` invalidates the
-project. Scope invalidation aborts current work and releases memory before its
+valid cached content. Project-sync not_found, a trusted not_found for a task known
+when GET started, or a trusted task-write not_found immediately withdraw matching
+project admission. Unknown task IDs remain local errors. Captured ticket checks
+prevent an old-generation response from clearing a replacement generation. Scope invalidation aborts current work and releases memory before its
 user-specific persistent purge; ordinary disposal closes resources and preserves
-the durable base. Foreground request gating also covers local reads/publication.
+the durable base. Foreground gating covers durable reads and positive publication;
+negative access events hide content immediately while persistence waits for the
+gate. `canRevokeProject` and `revokeProject` check the captured user fence/generation,
+retire local reuse synchronously, and purge only the matching durable generation
+through the existing transaction. Scope-owned cleanup outlives the view; failure
+keeps admission denied, and beginSync retries cleanup before a fresh online sync.
+An old graph receipt alone cannot re-admit the detail.
 
-Broadcast hints contain no task content or authority. Authorized receivers read
-committed stores without issuing another network request. Failed IDB opening,
+Ordinary broadcast hints contain no task content or access grant; authorized
+receivers reread committed stores without another network request. Negative hints
+carry userFence/revokedGeneration and immediately deny matching peers, including
+a bound cold peer with no projection, without rebroadcast. Stale hints cannot
+replace a newer generation or denial. Failed IDB opening,
 blocked upgrades, abnormal close, corruption or writes use existing visible
 error/Retry states and retain an allowed current view. Missing or malformed user
 scope records are repaired in one four-store transaction: replace the fence,
 clear only that user's summaries/details and invalidate its project baselines.
-The repair never parses or reuses the damaged fence. Memory binding, scope
-retirement and hints wait for commit; a cold scope can then bind the replacement,
+The repair never parses or reuses the damaged fence. For that user-corruption
+repair, memory binding, scope retirement and hints wait for commit; a cold scope can then bind the replacement,
 while an already-bound scope retires and requests identity verification. A failed
 repair rolls back without retiring the detecting scope, exposing a retryable
 storage error. Other users remain intact, and stale tickets fail against the new
@@ -252,11 +263,13 @@ checks, with mismatch/fresh-read restrictions, until summaries catch up; it is
 not persisted ahead of the summary. The feed exposes current rows and can skip
 intermediate business versions. A pending body above the summary keeps waiting;
 an exact match is admitted under its captured ticket. When the summary overtakes
-it, the session discards that body and queues one GET-only reconciliation through
-the existing read queue, retaining operation intent, outcome and version floors.
-Failed or still-stale readback releases the active reconciliation and keeps Check
-state/Retry usable; duplicate receipts do not loop it, and explicit Retry only
-reads. Neither operation writes summaries
+it, the session discards that body and queues the required GET with its original
+purpose through the existing queue, retaining operation intent, outcome and
+version floors. Ordinary reads fail visibly through detail error/Retry and clear
+their own blocker on successful GET. Mutation readback retains reconciliation
+purpose and keeps Check state/Retry usable on failure; ordinary recovery cannot
+leave a hidden reconciliation blocker. Duplicate receipts do not loop mutation
+readback, and explicit Retry only reads. Neither operation writes summaries
 or their watermark. Limits are 32 records per project, 8 MiB total and 2 MiB per
 record, using UTF-8 bytes from exact intrinsic JSON; LRU uses lastUsedAt with task
 ID as a tie-breaker. Oversized successful bodies stay readable in the active

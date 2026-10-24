@@ -26,7 +26,8 @@ The existing TaskDetailSessions uses that same authenticated cache scope and
 details store. It persists intrinsic complete task content, including exact
 version and all current properties, while materializing ready and blockedBy from
 the current complete projection. Opening a detail can display a matching durable
-body after this mount's online project admission, but still performs a live GET
+body after this mount's online project admission while the scope still authorizes
+the current generation, but still performs a live GET
 before enabling writes. Each admitted opening records its live-read demand before
 pending/unknown/reconciling operations can delay it. An in-memory opening
 generation binds the required GET; disk, mutations, no-op/refused responses and
@@ -42,12 +43,14 @@ installation. Older bodies cannot replace newer content. The feed exposes
 current task rows and may skip intermediate business versions. A newer GET
 waits while its version is ahead of the summary and is admitted on an exact
 match. If the summary overtakes a pending payload, the session discards that
-payload and queues one priority GET-only reconciliation through the existing
-read queue, after any active read/write. Original operation intent, phase and
-version floors survive; the discarded body neither installs nor satisfies an
-opening. Failed or still-stale readback releases active reconciliation with a
-visible recovery action; duplicate receipts do not form an automatic readback
-loop, and explicit Retry only reads. A validated confirmed write can display its raw body
+payload and queues the required GET with its original purpose. Ordinary detail
+reads retain their visible read-error/Retry path; mutation reconciliation retains
+its operation intent, phase and recovery path. A successful GET clears its own
+blocking read state without rewriting the original operation outcome. Failed or
+still-stale reconciliation releases active reconciling and keeps Check state
+usable. Pending admission failures obey the same purpose and current-generation
+checks, so an old failure cannot poison a newer read. Duplicate receipts do not
+form an automatic reconciliation loop, and explicit Retry only reads. A validated confirmed write can display its raw body
 after guarded lifecycle checks while remaining stale and write-disabled, without
 persisting it ahead of the summary or changing the project watermark. A new
 project generation immediately clears the old detail body, PR data and loaded
@@ -74,8 +77,26 @@ separately from payload validation and cache installation. Malformed payloads
 require GET-only readback; cache failures preserve the confirmed operation and
 visible error without replaying it. Existing pending/unknown/reconciling state,
 committed-version floors and exact write gates remain with the detail session.
-Closing a dialog releases ordinary reads, while submitted writes retain their
-session owner and identity fences.
+A verified same-principal not_found withdraws project reuse when a detail GET
+started for a known summary task, or when one of the three task writes reports
+it. Unknown task IDs remain local missing-resource errors. canRevokeProject checks
+the captured user fence and generation before the session clears content;
+revokeProject immediately retires that generation's admission and publishes an
+access event. A late old-generation 404 cannot clear a replacement generation.
+
+Scope-owned cleanup outlives the observing dialog. Its existing RW transaction
+purges summaries/details only when the durable user fence and manifest generation
+still match the captured ticket. Failure keeps memory denied and visible Retry;
+beginSync retries pending cleanup before a fresh online sync can grant display.
+Generation checks fence cache transactions and result publication, without
+snapshot-descendant tracking or a promise to purge unrelated/new generations.
+Negative hints bind user fence and generation, can deny a cold peer without a
+projection, and cannot replace a newer denial. They withdraw reuse immediately,
+including while auth is paused; persistence still waits for the identity gate.
+Positive hints remain post-commit store rereads and provide no access grant.
+
+Closing a dialog releases ordinary reads, while submitted writes and project
+cleanup retain their scope/session owner and identity fences.
 
 The [requirements](../../../../docs/spec/daynight-task-sync.md) own behavior and
 the [architecture](../../../../docs/design/daynight-task-sync.md) owns the current

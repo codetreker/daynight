@@ -35,7 +35,8 @@ Missing or malformed user scope records require a user-wide repair because their
 fence guards every project owned by that user. One dedicated transaction replaces
 the fence without parsing the damaged value, clears that user's summaries/details
 and invalidates its rebuildable project baselines. Other users remain intact.
-Binding memory, retiring scopes and broadcasting wait for transaction completion.
+For user-scope corruption repair, binding memory, retiring scopes and broadcasting
+wait for transaction completion.
 An unbound scope then binds the new fence and resumes; a bound scope retires and
 requests identity verification instead of adopting a replacement lifetime. Failed
 repair rolls back, retains a live retry path and exposes the storage failure.
@@ -45,19 +46,28 @@ publish across the replacement after commit.
 TaskCacheScope belongs to the authenticated user/session generation and spans
 project, standalone task and attachment routes. Every mounted project view needs
 its own successful authenticated sync before publishing private cached content.
-The foreground identity gate also covers local reads and publication. A valid
+The foreground identity gate also covers durable reads and positive content
+publication. Trusted negative access withdrawal immediately removes admission
+even while the gate is paused; its persistence still waits for the gate. A valid
 different response principal invalidates the scope and immediately releases the
 old authenticated UI. An absent or malformed principal is a protocol error;
-only a verified same-user not_found response can revoke project content.
-Invalidation rotates durable fences or generations before future work can be
-accepted, and logout releases memory synchronously while storage cleanup runs.
+only verified same-user not_found responses can revoke project content. Task
+reads revoke the project when their task was known at launch; unknown IDs remain
+local errors. Captured user fence/generation checks reject stale revocation before
+clearing content. Access withdrawal synchronously retires memory admission, then
+scope-owned CAS cleanup invalidates the matching durable generation. Cleanup
+failure keeps the denial until Retry and fresh online project admission. Logout
+also releases memory synchronously while user-wide storage cleanup runs.
 
 Visible-page five-second scheduling, automatic serialization and manual-refresh
 priority retain their existing owner. Duplicate or empty results update the
 mount's successful clock receipt without rewriting rows, invalidating detail
-records, replacing the published graph index or broadcasting. Hints carry only a scope
-and project; already-authorized receivers read the committed stores and do not
-start another network cycle. Timestamp comparison preserves UTC seconds and all
+records, replacing the published graph index or broadcasting. Ordinary hints
+carry scope/project and ask authorized receivers to reread committed stores
+without another network cycle. Access-negative hints instead carry user fence
+and revoked generation, withdraw matching reuse immediately before cleanup commits,
+and do not rebroadcast. A bound cold peer also records the denial; an old hint
+cannot replace a newer generation or pending denial. Neither hint grants access. Timestamp comparison preserves UTC seconds and all
 nine fractional digits. Task and settings versions remain bigint values.
 
 The [time-window API decision](2026-10-24-task-summary-window-api.md) owns server
