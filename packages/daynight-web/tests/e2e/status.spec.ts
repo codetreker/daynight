@@ -253,11 +253,11 @@ test('task-status-recovery', { annotation: { type: 'scenario', description: 'tas
     await detail(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     await open(page, project.id, other.id); await expect(trigger(page)).toHaveText(/待处理/);
     const committedResponse = page.waitForResponse((response) => response.url() === endpoint && response.request().method() === 'PUT');
-    // The session refreshes the graph only after publishing its confirmed write.
-    const confirmedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-graph` && response.status() === 200);
+    // The session synchronizes task summaries only after publishing its confirmed write.
+    const confirmedSync = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync` && response.status() === 200);
     release.resolve();
     const delivered = await committedResponse; expect(delivered.status()).toBe(200); expect(await delivered.finished()).toBeNull();
-    expect(await (await confirmedGraph).finished()).toBeNull();
+    expect(await (await confirmedSync).finished()).toBeNull();
     await page.clock.runFor(32);
     expect(await lifecycle.show(project.id, task.id, 'pending-original-task')).toMatchObject({ status: 'done' });
     await expect(trigger(page)).toHaveText(/待处理/);
