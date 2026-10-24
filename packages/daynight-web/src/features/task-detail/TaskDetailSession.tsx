@@ -240,8 +240,10 @@ export class TaskDetailSessions {
     for (const [key, entry] of this.entries) {
       if (!key.startsWith(`${ticket.projectId}/`)) continue;
       entry.admitted = false; entry.liveVersion = null; entry.pending = null; entry.queuedRead = null; entry.mismatch = null;
-      this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, graphMismatch: false, error,
-        mutation: { ...entry.state.mutation, reconciling: false, reconciliationError: entry.state.mutation.reconciling ? error : entry.state.mutation.reconciliationError } });
+      const state: DetailState = { ...entry.state, detail: null, loadedRevision: null, status: "error", refreshing: false, requiresFreshRead: true, graphMismatch: false, error,
+        mutation: { ...entry.state.mutation, reconciling: false, reconciliationError: entry.state.mutation.reconciling ? error : entry.state.mutation.reconciliationError } };
+      if (this.disposed) entry.state = state;
+      else this.publish(entry, state);
     }
     await this.scope.revokeProject(ticket, signal, true, error);
   }
@@ -427,6 +429,15 @@ export class TaskDetailSessions {
         this.refreshProject(projectId);
       } catch (error) {
         if (this.scope.isInvalidated) return;
+        // Access withdrawal belongs to the scope even after its observing UI session is disposed.
+        if (!confirmed && submitted && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
+          const state: DetailState = { ...entry.state, mutation: { operation, phase: "refused", error, reconciling: false, reconciliationError: null } };
+          if (this.disposed) entry.state = state;
+          else this.publish(entry, state);
+          try { await this.revokeAccess(ticket, error, signal); }
+          catch (storageError) { if (!isAbortError(storageError) && !this.disposed && !this.scope.isInvalidated && this.scope.canRevokeProject(ticket)) this.failRead(entry, storageError, false); }
+          return;
+        }
         if (this.disposed) {
           const phase = confirmed ? "confirmed" : error instanceof ApiError && error.kind === "server" && error.status !== null && error.status >= 400 && error.status < 500
             ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
@@ -443,11 +454,6 @@ export class TaskDetailSessions {
         const phase = !submitted ? "refused" : error instanceof ApiError && error.kind === "server" && error.status !== null && error.status >= 400 && error.status < 500
           ? error.code === "version_conflict" ? "conflict" : "refused" : "unknown";
         this.publish(entry, { ...entry.state, mutation: { operation, phase, error, reconciling: false, reconciliationError: null } });
-        if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
-          try { await this.revokeAccess(ticket, error, signal); }
-          catch (storageError) { if (!isAbortError(storageError) && !this.disposed && !this.scope.isInvalidated && this.scope.canRevokeProject(ticket)) this.failRead(entry, storageError, false); }
-          return;
-        }
         if (phase === "conflict" || phase === "unknown") {
           if (phase === "conflict") this.refreshProject(projectId);
           if (!this.disposed) await this.read(projectId, taskId, entry.state.revision, true, true);

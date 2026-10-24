@@ -492,3 +492,48 @@ it("keeps a nonexistent task's trusted 404 local to that task without revoking i
   await waitFor(() => expect(session.snapshot(projectId, missingId).error).toMatchObject({ kind: "server", code: "not_found" })); expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
   const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1); expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeDefined(); connection.close();
 });
+
+it.each(["status", "allowAgents", "requiredPlatform"] as const)("withdraws the live scope and peer cache after a disposed session's trusted %s write 404", async (action) => {
+  const value = body(); const scope = await seed([value]); const peer = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(peer); await apply(peer, [value]); const peerTicket = await peer.beginSync(projectId, signal());
+  const write = deferred<Response>(); const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(value, TEST_VIEWER_ID)).mockReturnValueOnce(write.promise); vi.stubGlobal("fetch", fetch); const session = await open(scope);
+  const listener = vi.fn(); session.subscribe(projectId, taskId, listener);
+  if (action === "status") session.setStatus(projectId, taskId, "done", value.version); else if (action === "allowAgents") session.setAgentPermission(projectId, taskId, true, value.version); else session.setRequiredPlatform(projectId, taskId, "linux", value.version);
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); session.dispose(); listener.mockClear(); expect(scope.isInvalidated).toBe(false);
+  write.resolve(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "disposed-write-denied" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+  await waitFor(() => expect(scope.getAuthorizedProject(projectId)).toBeNull()); await waitFor(() => expect(peer.getAuthorizedProject(projectId)).toBeNull());
+  expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: null, requiresFreshRead: true, mutation: { phase: "refused", error: { kind: "server", code: "not_found", requestId: "disposed-write-denied" } } });
+  await expect(peer.detailTransaction(peerTicket, signal(), async () => "private")).rejects.toMatchObject({ name: "AbortError" });
+  expect(listener).not.toHaveBeenCalled(); expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT" || call[1]?.method === "PATCH")).toHaveLength(1);
+});
+
+it.each(["missing", "malformed"] as const)("keeps a live scope authorized when a disposed write receives a %s-principal 404 protocol error", async (principal) => {
+  const value = body(); const scope = await seed([value]); const write = deferred<Response>(); const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(value, TEST_VIEWER_ID)).mockReturnValueOnce(write.promise); vi.stubGlobal("fetch", fetch); const session = await open(scope);
+  const revoke = vi.spyOn(scope, "revokeProject"); session.setStatus(projectId, taskId, "done", value.version); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); session.dispose();
+  const headers = new Headers({ "Content-Type": "application/json" }); if (principal === "malformed") headers.set("Daynight-User-ID", "invalid-principal");
+  write.resolve(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "untrusted-disposed-error" } }), { status: 404, headers }));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("unknown")); expect(scope.isInvalidated).toBe(false); expect(scope.getAuthorizedProject(projectId)).not.toBeNull(); expect(revoke).not.toHaveBeenCalled(); expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("does not let a disposed session's old write 404 withdraw a newly admitted history", async () => {
+  const value = body(); const restored = { ...value, description: "E2 content stays authorized" }; const scope = await seed([value]); const write = deferred<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(value, TEST_VIEWER_ID)).mockReturnValueOnce(write.promise).mockResolvedValueOnce(resourceResponse(restored, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch); const session = await open(scope);
+  session.setStatus(projectId, taskId, "done", value.version); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); session.dispose(); await apply(scope, [restored], true);
+  const current = await open(scope); const project = scope.getAuthorizedProject(projectId); const revoke = vi.spyOn(scope, "revokeProject");
+  write.resolve(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "old-disposed-denial" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+  await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("refused")); expect(scope.getAuthorizedProject(projectId)).toBe(project); expect(current.snapshot(projectId, taskId).detail?.description).toBe(restored.description); expect(revoke).not.toHaveBeenCalled();
+  expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1);
+});
+
+it("keeps scope denial retryable after a disposed write's trusted 404 purge fails", async () => {
+  const value = body(); const scope = await seed([value]); const ticket = await scope.beginSync(projectId, signal()); const write = deferred<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(value, TEST_VIEWER_ID)).mockReturnValueOnce(write.promise); vi.stubGlobal("fetch", fetch); const session = await open(scope); session.setStatus(projectId, taskId, "done", value.version); await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2)); session.dispose();
+  const original = IDBObjectStore.prototype.put; const fault = vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === "projects" && (args[0] as { state?: string }).state === "invalidated") throw new DOMException("Disposed denial purge failure", "QuotaExceededError"); return original.apply(this, args);
+  });
+  const events: unknown[] = []; scope.subscribe((event) => events.push(event));
+  write.resolve(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "disposed-purge-denied" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+  await waitFor(() => expect(events.some((event) => (event as { error?: { category?: string } }).error?.category === "storage")).toBe(true));
+  expect(scope.getAuthorizedProject(projectId)).toBeNull(); expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: null, mutation: { phase: "refused", error: { requestId: "disposed-purge-denied" } } });
+  await expect(scope.detailTransaction(ticket, signal(), async () => "private")).rejects.toMatchObject({ name: "AbortError" }); await expect(scope.beginSync(projectId, signal())).rejects.toMatchObject({ category: "storage" });
+  fault.mockRestore(); const recovered = await scope.beginSync(projectId, signal()); expect(recovered.epoch).toBeNull(); expect(fetch).toHaveBeenCalledTimes(2);
+});

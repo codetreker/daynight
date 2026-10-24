@@ -95,8 +95,15 @@ projection, and cannot replace a newer denial. They withdraw reuse immediately,
 including while auth is paused; persistence still waits for the identity gate.
 Positive hints remain post-commit store rereads and provide no access grant.
 
-Closing a dialog releases ordinary reads, while submitted writes and project
-cleanup retain their scope/session owner and identity fences.
+Closing a dialog releases ordinary reads. Disposing TaskDetailSessions does not
+end an authentication scope: navigating to invitations can remove the detail UI
+while a submitted write is still pending. A trusted not_found response therefore
+performs ticket-bound scope withdrawal before disposed-UI handling. The released
+session retains its refusal intent/error and clears its body without notifying
+its UI listeners, starting GETs or replaying a write. Ending the identity scope
+still takes precedence, and stale tickets cannot withdraw a replacement history.
+Submitted writes and project cleanup retain those scope ownership and identity
+fences beyond their observing UI.
 
 The [requirements](../../../../docs/spec/daynight-task-sync.md) own behavior and
 the [architecture](../../../../docs/design/daynight-task-sync.md) owns the current
