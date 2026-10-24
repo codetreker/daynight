@@ -12,6 +12,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -849,6 +850,311 @@ func TestAttachmentMigrationRejectsPublishedSourceLeftoversAndChangedBytes(t *te
 				category = "content_changed"
 			}
 			fixture.requireRejectedState(t, "resume", plan.OperationID, category)
+		})
+	}
+}
+
+func attachmentMigrationIntegrationPlanPair(t *testing.T, root, directory, operationID string) {
+	t.Helper()
+	manifest, err := os.ReadFile(filepath.Join(root, directory, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := os.ReadFile(filepath.Join(root, directory, "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planned struct {
+		OperationID string `json:"operationId"`
+	}
+	var stage struct {
+		OperationID    string `json:"operationId"`
+		Phase          string `json:"phase"`
+		ManifestSHA256 string `json:"manifestSha256"`
+	}
+	if err := json.Unmarshal(manifest, &planned); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(state, &stage); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(manifest)
+	if planned.OperationID != operationID || stage.OperationID != operationID || stage.Phase != "planned" || stage.ManifestSHA256 != hex.EncodeToString(digest[:]) {
+		t.Fatalf("published plan does not contain its complete matching record pair: manifest=%#v state=%#v", planned, stage)
+	}
+}
+
+func TestAttachmentMigrationPublishesOnlyCompletePlanRecordPair(t *testing.T) {
+	fixture := attachmentMigrationIntegrationSetup(t)
+	fixture.seed(t)
+	legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+	beforeDatabase := fixture.databaseSnapshot(t)
+	var milestones []string
+	logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+		private := ".attachment-plan-" + event.OperationID
+		official := ".attachment-layout-" + event.OperationID
+		switch event.Step {
+		case "plan_initializing":
+			milestones = append(milestones, event.Step)
+			if _, err := os.Stat(filepath.Join(fixture.root, private)); err != nil {
+				t.Fatalf("initializer namespace does not exist: %v", err)
+			}
+			for _, name := range []string{"manifest.json", "state.json"} {
+				if _, err := os.Stat(filepath.Join(fixture.root, private, name)); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("initializer announced after creating %s: %v", name, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(fixture.root, official)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("incomplete operation is visible in the official namespace: %v", err)
+			}
+		case "plan_prepared":
+			milestones = append(milestones, event.Step)
+			attachmentMigrationIntegrationPlanPair(t, fixture.root, private, event.OperationID)
+			if _, err := os.Stat(filepath.Join(fixture.root, official)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("operation published before its complete record pair was prepared: %v", err)
+			}
+		case "plan_created":
+			milestones = append(milestones, event.Step)
+			attachmentMigrationIntegrationPlanPair(t, fixture.root, official, event.OperationID)
+			if _, err := os.Stat(filepath.Join(fixture.root, private)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("published operation retained its initializer path: %v", err)
+			}
+		}
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+	defer cancel()
+	plan, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(milestones, []string{"plan_initializing", "plan_prepared", "plan_created"}) {
+		t.Fatalf("plan publication lifecycle: %v", milestones)
+	}
+	if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments")), legacy) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+		t.Fatal("atomic plan publication changed legacy bytes or business metadata")
+	}
+	fixture.requireRun(t, "apply", plan.OperationID)
+	fixture.assertPublished(t, legacy)
+}
+
+func TestAttachmentMigrationUnpublishedInitializationDoesNotBlockNewPlan(t *testing.T) {
+	for _, interrupted := range []string{"empty", "partial_manifest", "missing_state", "partial_state"} {
+		t.Run(interrupted, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+			beforeDatabase := fixture.databaseSnapshot(t)
+			prepared := fixture.requireRun(t, "plan", "")
+			private := filepath.Join(fixture.root, ".attachment-plan-"+prepared.OperationID)
+			if err := os.Rename(filepath.Join(fixture.root, ".attachment-layout-"+prepared.OperationID), private); err != nil {
+				t.Fatal(err)
+			}
+			switch interrupted {
+			case "empty":
+				for _, name := range []string{"manifest.json", "state.json"} {
+					if err := os.Remove(filepath.Join(private, name)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			case "partial_manifest":
+				if err := os.WriteFile(filepath.Join(private, "manifest.json"), []byte(`{"version":1,"operationId":`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Remove(filepath.Join(private, "state.json")); err != nil {
+					t.Fatal(err)
+				}
+			case "missing_state":
+				if err := os.Remove(filepath.Join(private, "state.json")); err != nil {
+					t.Fatal(err)
+				}
+			case "partial_state":
+				if err := os.WriteFile(filepath.Join(private, "state.json"), []byte(`{"phase":"planned"`), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			leftovers := attachmentMigrationIntegrationTree(t, private)
+			plan := fixture.requireRun(t, "plan", "")
+			if plan.OperationID == prepared.OperationID {
+				t.Fatal("fresh plan reused an unpublished interrupted operation")
+			}
+			attachmentMigrationIntegrationPlanPair(t, fixture.root, ".attachment-layout-"+plan.OperationID, plan.OperationID)
+			if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, private), leftovers) ||
+				!reflect.DeepEqual(attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments")), legacy) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("fresh plan altered ignored initializer remnants, legacy bytes or business metadata")
+			}
+			fixture.requireRun(t, "apply", plan.OperationID)
+			fixture.assertPublished(t, legacy)
+			fixture.requireRun(t, "resume", plan.OperationID)
+			if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, private), leftovers) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("completed fresh operation changed ignored initializer remnants or metadata")
+			}
+		})
+	}
+}
+
+func TestAttachmentMigrationInitializationFailureLeavesFreshPlanAvailable(t *testing.T) {
+	for _, failure := range []string{"cancel_before_records", "cancel_before_promotion", "stage_record_conflict"} {
+		t.Run(failure, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+			beforeDatabase := fixture.databaseSnapshot(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
+			defer cancel()
+			interruptedID := ""
+			logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+				if interruptedID != "" {
+					return
+				}
+				if failure == "cancel_before_promotion" && event.Step == "plan_prepared" {
+					attachmentMigrationIntegrationPlanPair(t, fixture.root, ".attachment-plan-"+event.OperationID, event.OperationID)
+					interruptedID = event.OperationID
+					cancel()
+				} else if failure != "cancel_before_promotion" && event.Step == "plan_initializing" {
+					interruptedID = event.OperationID
+					if failure == "cancel_before_records" {
+						cancel()
+					} else if err := os.Mkdir(filepath.Join(fixture.root, ".attachment-plan-"+event.OperationID, "state.json"), 0o700); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})
+			_, err := MigrateAttachmentLayout(ctx, fixture.databaseURL, fixture.root, "plan", "", logger)
+			if interruptedID == "" || err == nil {
+				t.Fatalf("initializer failure was not observed: operation=%s err=%v", interruptedID, err)
+			}
+			if failure == "stage_record_conflict" {
+				attachmentMigrationIntegrationError(t, err, "operation_conflict")
+			} else if !errors.Is(err, context.Canceled) {
+				t.Fatalf("initialization cancellation lost its cause: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.root, ".attachment-layout-"+interruptedID)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("failed initializer published an incomplete official operation: %v", err)
+			}
+			if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments")), legacy) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("failed initializer changed legacy bytes or metadata")
+			}
+			plan := fixture.requireRun(t, "plan", "")
+			attachmentMigrationIntegrationPlanPair(t, fixture.root, ".attachment-layout-"+plan.OperationID, plan.OperationID)
+			fixture.requireRun(t, "apply", plan.OperationID)
+			fixture.assertPublished(t, legacy)
+			if !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("fresh plan/apply after initializer failure changed business metadata")
+			}
+		})
+	}
+}
+
+func TestAttachmentMigrationHardStopDuringPlanInitialization(t *testing.T) {
+	if os.Getenv("DAYNIGHT_ATTACHMENT_INITIALIZER_CHILD") == "1" {
+		step := os.Getenv("DAYNIGHT_ATTACHMENT_INITIALIZER_STEP")
+		logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+			if event.Step != step {
+				return
+			}
+			if err := json.NewEncoder(os.Stdout).Encode(event); err != nil {
+				t.Fatal(err)
+			}
+			<-make(chan struct{})
+		})
+		ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+		defer cancel()
+		_, err := MigrateAttachmentLayout(ctx, os.Getenv("DAYNIGHT_ATTACHMENT_INITIALIZER_DATABASE"),
+			os.Getenv("DAYNIGHT_ATTACHMENT_INITIALIZER_ROOT"), "plan", "", logger)
+		t.Fatalf("initializer returned before its hard-stop checkpoint %q: %v", step, err)
+	}
+	for _, step := range []string{"plan_initializing", "plan_prepared"} {
+		t.Run(step, func(t *testing.T) {
+			fixture := attachmentMigrationIntegrationSetup(t)
+			fixture.seed(t)
+			legacy := attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments"))
+			beforeDatabase := fixture.databaseSnapshot(t)
+			ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+			defer cancel()
+			child := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestAttachmentMigrationHardStopDuringPlanInitialization$")
+			for _, entry := range os.Environ() {
+				if !strings.HasPrefix(entry, "DAYNIGHT_ATTACHMENT_INITIALIZER_") {
+					child.Env = append(child.Env, entry)
+				}
+			}
+			child.Env = append(child.Env, "DAYNIGHT_ATTACHMENT_INITIALIZER_CHILD=1", "DAYNIGHT_ATTACHMENT_INITIALIZER_STEP="+step,
+				"DAYNIGHT_ATTACHMENT_INITIALIZER_DATABASE="+fixture.databaseURL, "DAYNIGHT_ATTACHMENT_INITIALIZER_ROOT="+fixture.root)
+			var diagnostic bytes.Buffer
+			child.Stderr = &diagnostic
+			stdout, err := child.StdoutPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := child.Start(); err != nil {
+				t.Fatal(err)
+			}
+			waited := false
+			stopChild := func() {
+				if !waited {
+					_ = child.Process.Kill()
+					_ = child.Wait()
+					waited = true
+				}
+			}
+			t.Cleanup(stopChild)
+			type received struct {
+				event attachmentMigrationIntegrationEvent
+				err   error
+			}
+			ready := make(chan received, 1)
+			go func() {
+				var event attachmentMigrationIntegrationEvent
+				err := json.NewDecoder(stdout).Decode(&event)
+				ready <- received{event: event, err: err}
+			}()
+			var stopped attachmentMigrationIntegrationEvent
+			select {
+			case result := <-ready:
+				if result.err != nil {
+					stopChild()
+					t.Fatalf("initializer checkpoint: %v; stderr=%s", result.err, diagnostic.String())
+				}
+				stopped = result.event
+			case <-ctx.Done():
+				stopChild()
+				t.Fatalf("initializer did not reach %s before timeout: %v; stderr=%s", step, ctx.Err(), diagnostic.String())
+			}
+			if stopped.Step != step || stopped.OperationID == "" {
+				t.Fatalf("unexpected child checkpoint: %#v", stopped)
+			}
+			if err := child.Process.Kill(); err != nil {
+				t.Fatal(err)
+			}
+			err = child.Wait()
+			waited = true
+			var exited *exec.ExitError
+			if !errors.As(err, &exited) || exited.Success() {
+				t.Fatalf("initializer was not terminated at its checkpoint: %v", err)
+			}
+			private := filepath.Join(fixture.root, ".attachment-plan-"+stopped.OperationID)
+			if step == "plan_initializing" {
+				entries, err := os.ReadDir(private)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("hard stop before manifest did not leave an empty private initializer: %v, %v", entries, err)
+				}
+			} else {
+				attachmentMigrationIntegrationPlanPair(t, fixture.root, ".attachment-plan-"+stopped.OperationID, stopped.OperationID)
+			}
+			if _, err := os.Stat(filepath.Join(fixture.root, ".attachment-layout-"+stopped.OperationID)); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("hard-stopped initializer published an official operation: %v", err)
+			}
+			leftovers := attachmentMigrationIntegrationTree(t, private)
+			if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, filepath.Join(fixture.root, "task-attachments")), legacy) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("hard-stopped initializer changed legacy content or business metadata")
+			}
+			plan := fixture.requireRun(t, "plan", "")
+			attachmentMigrationIntegrationPlanPair(t, fixture.root, ".attachment-layout-"+plan.OperationID, plan.OperationID)
+			fixture.requireRun(t, "apply", plan.OperationID)
+			fixture.assertPublished(t, legacy)
+			fixture.requireRun(t, "resume", plan.OperationID)
+			if !reflect.DeepEqual(attachmentMigrationIntegrationTree(t, private), leftovers) || !reflect.DeepEqual(fixture.databaseSnapshot(t), beforeDatabase) {
+				t.Fatal("fresh plan/apply after hard termination changed abandoned private state or business metadata")
+			}
 		})
 	}
 }

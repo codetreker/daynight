@@ -371,3 +371,136 @@ func TestAttachmentMigrationCanceledHashReaderDoesNotConsumeContent(t *testing.T
 		t.Fatalf("canceled verification consumed content: n=%d err=%v buffer=%q remaining=%d", n, err, buffer, content.Len())
 	}
 }
+
+func TestAttachmentMigrationUnpublishedInitializationFailuresCanBeReplanned(t *testing.T) {
+	for _, scenario := range []struct {
+		name     string
+		step     string
+		category string
+		cause    error
+	}{
+		{"canceled before initialization", "", "canceled", context.Canceled},
+		{"preexisting private directory", "", "filesystem", fs.ErrExist},
+		{"manifest parent disappeared", "plan_initializing", "filesystem", fs.ErrNotExist},
+		{"initial stage occupied", "plan_initializing", "operation_conflict", nil},
+		{"root closed before manifest", "plan_initializing", "filesystem", nil},
+		{"root closed before promotion", "plan_prepared", "filesystem", nil},
+		{"prepared source disappeared", "plan_prepared", "filesystem", fs.ErrNotExist},
+		{"official destination occupied", "plan_prepared", "operation_conflict", nil},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			databaseURL, root, task, original := migrationRecordFixture(t)
+			official := filepath.Join(root, attachmentMigrationPrefix+original.OperationID)
+			data, err := os.ReadFile(filepath.Join(official, "manifest.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var manifest attachmentMigrationManifest
+			if err := json.Unmarshal(data, &manifest); err != nil {
+				t.Fatal(err)
+			}
+			holding := filepath.Join(root, "preserved-previous-plan")
+			if err := os.Rename(official, holding); err != nil {
+				t.Fatal(err)
+			}
+			pending := filepath.Join(root, attachmentMigrationPendingPrefix+original.OperationID)
+			opened, err := os.OpenRoot(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			closed := false
+			t.Cleanup(func() {
+				if !closed {
+					if err := opened.Close(); err != nil {
+						t.Error(err)
+					}
+				}
+			})
+			observed := false
+			logger := attachmentMigrationIntegrationLogger(t, func(event attachmentMigrationIntegrationEvent) {
+				if event.Step != scenario.step || observed {
+					return
+				}
+				observed = true
+				switch scenario.name {
+				case "manifest parent disappeared":
+					err = os.Remove(pending)
+				case "initial stage occupied":
+					err = os.Mkdir(filepath.Join(pending, "state.json"), 0o700)
+				case "root closed before manifest", "root closed before promotion":
+					err = opened.Close()
+					closed = true
+				case "prepared source disappeared":
+					err = os.RemoveAll(pending)
+				case "official destination occupied":
+					if err = os.Mkdir(official, 0o700); err == nil {
+						err = os.WriteFile(filepath.Join(official, "foreign"), []byte("not owned by initialization"), 0o600)
+					}
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			})
+			m := &attachmentMigration{root: opened, logger: logger, operation: original.OperationID, phase: "inventory"}
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			switch scenario.name {
+			case "canceled before initialization":
+				cancel()
+			case "preexisting private directory":
+				if err := os.Mkdir(pending, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(pending, "foreign"), []byte("preexisting private data"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err = m.initializePlan(ctx, manifest)
+			var failure *AttachmentMigrationError
+			if !errors.As(err, &failure) || failure.Category != scenario.category || scenario.cause != nil && !errors.Is(err, scenario.cause) {
+				t.Fatalf("unpublished initialization lost its original failure: %v", err)
+			}
+			if scenario.step != "" && !observed {
+				t.Fatalf("initialization lifecycle boundary %s was not observed", scenario.step)
+			}
+			if closed && !strings.Contains(err.Error(), "unpublished migration directory could not be removed") {
+				t.Fatalf("failed cleanup was hidden: %v", err)
+			}
+			if scenario.name == "official destination occupied" {
+				if actual, err := os.ReadFile(filepath.Join(official, "foreign")); err != nil || string(actual) != "not owned by initialization" {
+					t.Fatalf("failed promotion removed an unknown destination: %q %v", actual, err)
+				}
+				if err := os.RemoveAll(official); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := os.Stat(official); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("unpublished initialization exposed an official operation: %v", err)
+			}
+			if scenario.name == "preexisting private directory" {
+				if actual, err := os.ReadFile(filepath.Join(pending, "foreign")); err != nil || string(actual) != "preexisting private data" {
+					t.Fatalf("initialization cleaned a private directory it did not create: %q %v", actual, err)
+				}
+			} else if !closed {
+				if _, err := os.Stat(pending); !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("failed initialization retained its owned temporary directory: %v", err)
+				}
+			}
+			actual, err := os.ReadFile(filepath.Join(root, attachmentBucket, task.ID, "file.bin"))
+			if err != nil || !bytes.Equal(actual, []byte{0, 255, 1}) {
+				t.Fatalf("plan initialization changed legacy bytes: %v %v", actual, err)
+			}
+			retry, err := MigrateAttachmentLayout(t.Context(), databaseURL, root, "plan", "", slog.New(slog.NewJSONHandler(io.Discard, nil)))
+			if err != nil || retry.OperationID == original.OperationID || retry.Phase != "planned" {
+				t.Fatalf("a failed unpublished attempt prevented a new plan: %+v %v", retry, err)
+			}
+			retryData, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(retry.ManifestPath)))
+			var retryManifest attachmentMigrationManifest
+			if err != nil || json.Unmarshal(retryData, &retryManifest) != nil || retryManifest.DatabaseDigest != manifest.DatabaseDigest {
+				t.Fatalf("initialization failure changed database metadata: %s %v", retryData, err)
+			}
+			if actual, err := os.ReadFile(filepath.Join(holding, "manifest.json")); err != nil || !bytes.Equal(actual, data) {
+				t.Fatalf("initialization cleaned an unrelated root entry: %v", err)
+			}
+		})
+	}
+}

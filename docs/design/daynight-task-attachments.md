@@ -297,10 +297,21 @@ plan 先检查所有保留格式的 operation 目录。未完成操作以 `resum
 
 ### 暂存、发布与续作
 
-存储根内的 `.attachment-layout-<operationId>/` 保存 manifest、阶段记录和回执。
-source 与 target 是阶段路径：source 在旧 bucket rename 前必须不存在，target 在重组阶段才创建。
-清单与阶段记录通过临时文件、同步、rename 和父目录同步持久化，先记录计划再修改目录。
-所有目录移动要求同一文件系统，权限、跨设备和 rename 错误明确暴露，不通过复制改写执行方式。
+计划初始化使用根内独占的 `.attachment-plan-<operationId>/` 未发布准备目录，与正式操作前缀
+`.attachment-layout-` 分离。在准备目录内原子写入并同步 manifest，以及绑定 manifest 摘要的初始
+planned 状态，再同步目录；检查正式目标不存在后，整体 rename 为 `.attachment-layout-<operationId>/`，
+随后同步根目录。正式操作只有在完整初始记录对已准备后才可见，plan_created 日志与成功 JSON 均在提升后输出。
+plan_initializing 和 plan_prepared 阶段日志分别标记准备目录已创建和完整记录对已持久化。
+
+准备目录只含计划记录，不接收任何附件内容。提升前的普通错误仅清理本次独占的未发布尝试，
+保留原始错误及清理失败；进程终止留下的准备目录不匹配正式操作前缀，不会被当作未完成操作阻止新 plan，
+也不自动扫描回收。提升前可以重新 plan；提升后即使同步或输出失败，也保留完整正式操作并使用原 ID 显式续作。
+这一区别不增加后台清理或一般恢复机制。
+
+正式 `.attachment-layout-<operationId>/` 保存 manifest、阶段记录和回执。source 与 target 是阶段路径：
+source 在旧 bucket rename 前必须不存在，target 在重组阶段才创建。后续阶段记录继续通过临时文件、
+同步、rename 和父目录同步持久化，先记录计划再修改目录。所有目录移动要求同一文件系统，
+权限、跨设备和 rename 错误明确暴露，不通过复制改写执行方式。
 
 ```text
 旧：task-attachments/<taskId>/...
@@ -698,7 +709,8 @@ Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixt
   嵌入模式选择不写历史、单文件操作、相对资源、真实内容绘制、唯一纵向滚动与读至
   结尾、键盘与原生 frame 行为，以及失败恢复和切换文件时的过期请求取消。
 - 布局迁移：真实旧目录、project/task UUID 同名、空根及空目录、未登记普通文件、缺失与冲突、
-  每个记录和 rename 前后的中断、发布后回执歧义、同操作续作及完整目录/内容/业务行不变。
+  初始记录公开前失败或终止后的重新计划、完整记录对的原子提升、后续记录和 rename 前后的中断、
+  发布后回执歧义、同操作续作及完整目录/内容/业务行不变。
 - 部署：真实非 root 容器写入、同源 gateway 传输、正常重建保留附件、dev-ci 卷隔离
   及清理、配套备份恢复，以及正常重启保留 epoch、恢复后轮换 epoch 和旧 epoch 完整重建。
 

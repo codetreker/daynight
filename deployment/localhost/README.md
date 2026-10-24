@@ -370,6 +370,19 @@ then build the new server image without starting it:
 ```
 
 The JSON summary supplies the operationId and storage-root-relative manifestPath.
+An official `.attachment-layout-<operationId>/` directory appears only after the
+manifest and initial planned state have both been prepared and synchronized in
+`.attachment-plan-<operationId>/`, then promoted atomically. Plan preparation does
+not move attachment bytes. Ordinary errors before promotion clean only their own
+private attempt; a terminated process can leave an unpublished directory of plan
+records, which does not block another plan and is not automatically swept.
+
+If plan fails or terminates before an official operation is published, keep
+writers stopped and rerun plan. If publication occurred but its success summary
+was lost, the next plan reports `resume_required` with the official operationId;
+use that ID for explicit continuation. Post-publication failures retain the full
+initial record pair and require the same operation, even if no attachments have
+yet moved. Do not remove an official operation to bypass this check.
 Review the counts and any unregistered known-task files reported by the manifest.
 Registered missing files, size or ownership mismatches, unknown task roots,
 symlinks/special files and conflicts stop the operation; they are not repaired or
@@ -404,8 +417,9 @@ only serializes maintenance commands; operator-established quiescence is still
 required. The three full hash passes and backup read determine the stopped-write
 window, so estimate it from actual bytes and storage throughput.
 
-If a process stops or a move fails, retain the operation directory, keep writers
-stopped and use its existing ID; do not issue another plan or remove staged data:
+Once the official operation exists, a stopped process or failed move requires
+its existing ID. Retain the operation directory and staged data, keep writers
+stopped and resume rather than issuing another plan:
 
 ```bash
 docker compose run --rm --no-deps -T server \

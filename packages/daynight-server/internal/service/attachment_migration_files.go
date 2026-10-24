@@ -186,6 +186,56 @@ func (m *attachmentMigration) syncDirectory(name string) error {
 	return nil
 }
 
+func (m *attachmentMigration) initializePlan(ctx context.Context, manifest attachmentMigrationManifest) (result error) {
+	m.phase = "initializing"
+	if err := ctx.Err(); err != nil {
+		return m.failure("canceled", "Migration planning was canceled before its operation was published.", err)
+	}
+	pending := attachmentMigrationPendingPrefix + m.operation
+	if err := m.root.Mkdir(pending, 0o700); err != nil {
+		return m.failure("filesystem", "The unpublished migration directory could not be created.", err)
+	}
+	published := false
+	defer func() {
+		if published {
+			return
+		}
+		if err := m.root.RemoveAll(pending); err != nil {
+			result = errors.Join(result, m.failure("filesystem", "The unpublished migration directory could not be removed.", err))
+			return
+		}
+		result = errors.Join(result, m.syncDirectory("."))
+	}()
+	m.event(ctx, "initializing", "plan_initializing", attachmentMigrationOwner{})
+	if err := ctx.Err(); err != nil {
+		return m.failure("canceled", "Migration planning was canceled before its operation was published.", err)
+	}
+	hash, err := m.writeJSON(pending+"/manifest.json", manifest, false)
+	if err != nil {
+		return err
+	}
+	state := attachmentMigrationState{Version: 1, OperationID: m.operation, ManifestSHA256: hash, Phase: "planned"}
+	if _, err := m.writeJSON(pending+"/state.json", state, false); err != nil {
+		return err
+	}
+	m.event(ctx, "initializing", "plan_prepared", attachmentMigrationOwner{})
+	if err := ctx.Err(); err != nil {
+		return m.failure("canceled", "Migration planning was canceled before its operation was published.", err)
+	}
+	if _, err := m.root.Lstat(m.directory()); err == nil {
+		return m.failure("operation_conflict", "A migration operation directory already exists; the prepared plan was not published.", nil)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return m.failure("filesystem", "The migration operation destination could not be inspected.", err)
+	}
+	if err := m.root.Rename(pending, m.directory()); err != nil {
+		return m.failure("filesystem", "The prepared migration plan could not be published.", err)
+	}
+	// Publication transfers the complete record pair; later failures require this operation's resume.
+	published = true
+	m.phase = "planned"
+	return m.syncDirectory(".")
+}
+
 func (m *attachmentMigration) writeJSON(name string, value any, replace bool) (string, error) {
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {

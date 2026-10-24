@@ -329,6 +329,17 @@ and capture a matching database/directory backup before planning. Keep writers
 stopped through migration and verification. The database advisory lock serializes
 maintenance invocations; it does not prevent application writes.
 
+Planning prepares and synchronizes the complete manifest and initial planned
+state in a private `.attachment-plan-<operationId>/` directory, then atomically
+promotes that directory to the reserved `.attachment-layout-<operationId>/`
+namespace and synchronizes the storage root. A visible official operation thus
+already has both initial records. Ordinary errors before promotion clean only
+that attempt, preserving any cleanup error. Process-termination leftovers contain
+no attachments, are ignored by operation discovery and do not prevent a new
+plan; maintenance does not sweep other attempts. Errors after promotion retain
+the official records for explicit same-operation continuation. The plan_created
+event and success summary follow promotion.
+
 A manifest binds the operation to database/schema identity, unchanged business
 rows and the complete source tree, including empty task roots/directories and
 regular-file SHA-256 values. Known-task unregistered regular files are preserved

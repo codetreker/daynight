@@ -45,6 +45,16 @@ whole task tree and are reported without adding metadata. Unknown ownership,
 registered missing or size-mismatched files, source symlinks, special files and
 conflicts are explicit failures.
 
+The initial manifest and its bound planned state are prepared and synchronized
+in a private `.attachment-plan-<operationId>/` directory. An atomic rename
+publishes the complete pair under `.attachment-layout-<operationId>/`, followed
+by root-directory synchronization. Only then are plan_created and success output
+emitted. Before publication, ordinary errors clean only their own private attempt
+and retain any cleanup failure. Process-termination residue contains no attachment
+bytes, is not a resumable operation and does not block a new plan. Such residue
+is not automatically swept. After publication, failures retain the complete
+official records for explicit same-operation continuation.
+
 All writers must be stopped and a matching database/directory backup retained.
 A database advisory lock serializes maintenance invocations only. The command
 rejects new plans when an existing operation is unfinished (`resume_required`)
@@ -92,6 +102,11 @@ Separating the entire old bucket from the new target removes this collision.
 copy, but requires full extra content space, byte copying and root/volume
 cutover. Same-filesystem task-directory renames preserve content with a bounded
 operation manifest; the existing paired backup provides the rollback copy.
+
+**Expose an operation directory before writing its initial records.** A process
+can stop before the manifest exists, leaving a discoverable operation that blocks
+a new plan but cannot be resumed. Preparing the complete pair in an unpublished
+namespace and promoting it atomically makes every official operation actionable.
 
 **Migrate during ordinary access or read either layout.** That couples request
 behavior to upgrade progress and introduces compatibility paths into every file

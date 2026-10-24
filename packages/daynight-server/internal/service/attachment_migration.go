@@ -21,6 +21,7 @@ import (
 )
 
 const attachmentMigrationPrefix = ".attachment-layout-"
+const attachmentMigrationPendingPrefix = ".attachment-plan-"
 const attachmentMigrationLock int64 = 0x444e4154544c4159
 
 type AttachmentMigrationSummary struct {
@@ -376,17 +377,7 @@ func (m *attachmentMigration) plan(ctx context.Context) (AttachmentMigrationSumm
 	if err := m.validateManifest(manifest); err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
-	if err := m.root.Mkdir(m.directory(), 0o700); err != nil {
-		return AttachmentMigrationSummary{}, m.failure("filesystem", "The migration operation directory could not be created.", err)
-	}
-	if err := m.syncDirectory("."); err != nil {
-		return AttachmentMigrationSummary{}, err
-	}
-	hash, err := m.writeJSON(m.directory()+"/manifest.json", manifest, false)
-	if err != nil {
-		return AttachmentMigrationSummary{}, err
-	}
-	if err := m.saveState("planned", hash); err != nil {
+	if err := m.initializePlan(ctx, manifest); err != nil {
 		return AttachmentMigrationSummary{}, err
 	}
 	m.event(ctx, "planned", "plan_created", attachmentMigrationOwner{})
