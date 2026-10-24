@@ -560,7 +560,10 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await freshReader.close();
     expect(graphReads).toBe(1);
     expect(detailReads).toBe(1);
+    const secondOpen = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/tasks/${task.id}`);
     await trigger.click();
+    expect((await secondOpen).status()).toBe(200);
+    expect(await (await secondOpen).finished()).toBeNull();
     await dialog.getByRole('tab', { name: '附件', exact: true }).click();
     await expect(attachments.getByRole('heading', { name: `附件 · ${seeds.length}`, exact: true })).toBeVisible();
 
@@ -574,7 +577,10 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await expectReleased();
     expect(graphReads).toBe(1);
     expect(detailReads).toBe(2);
+    const thirdOpen = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/tasks/${task.id}`);
     await trigger.click();
+    expect((await thirdOpen).status()).toBe(200);
+    expect(await (await thirdOpen).finished()).toBeNull();
     await dialog.getByRole('tab', { name: '附件', exact: true }).click();
     await expect(attachments.getByRole('heading', { name: `附件 · ${seeds.length}`, exact: true })).toBeVisible();
 
