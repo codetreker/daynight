@@ -65,7 +65,7 @@ selection, epochs and response provenance. The
 [requirements](../../../../docs/spec/daynight-task-sync.md) and
 [architecture](../../../../docs/design/daynight-task-sync.md) own complete current
 contracts. This implements the summary portion of the
-[timestamp-window proposal](../../proposed/architecture/2026-10-24-task-view-timestamp-window.md)
+[timestamp-window decision](2026-10-24-task-view-timestamp-window.md)
 and replaces the transport portion of the
 [automatic-refresh decision](../feature/2026-10-22-project-task-auto-refresh.md).
 
@@ -88,10 +88,10 @@ ownership.
 
 **Enable persistent detail reuse with summary transport.** Detail freshness,
 mutation reconciliation and memory/disk budgets have independent behavior. Their
-integration remains additive because the database already owns the details
-store, intrinsic type, lifecycle checks and exact summary-version signal. The
-current detail session continues its existing GET behavior until that policy is
-connected.
+integration was kept additive by establishing the details store, intrinsic type,
+lifecycle checks and exact summary-version signal with summary transport. The
+[detail-cache decision](2026-10-24-task-view-timestamp-window.md) now connects the
+separate content, freshness and eviction policy to the same scope.
 
 ## Consequences
 
@@ -106,6 +106,6 @@ Native browser evidence is required for persistence, transaction failure and
 cross-tab behavior; fake-indexeddb supplies deterministic unit coverage without
 claiming browser scheduling or disk guarantees. The existing graph limits and
 four-dataset interaction budgets remain. Detail LRU, live-GET admission and
-change-driven detail refresh are still proposed in their owning design. The
+change-driven detail refresh are implemented by the detail-cache owner. The
 current GraphSnapshot revision remains a mount-local successful-read receipt,
 not a persistent revision or task version.

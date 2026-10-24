@@ -63,8 +63,9 @@ summaries, five-second polling with a configurable ten-second task-timestamp
 overlap, and on-demand detail caching. The server window endpoint, configuration,
 project epoch and authenticated-response identity header are implemented. Web
 project views now use persistent intrinsic summaries and atomically merge
-timestamp-window responses before deriving complete graphs locally. On-demand
-full-detail persistence and change-driven detail refresh remain pending.
+timestamp-window responses before deriving complete graphs locally. Full details
+use bounded intrinsic persistence and business-version-driven refresh, with a
+live read required on opening before mutations become available.
 
 | Component | Location | Implementation status | Requirements and design |
 |---|---|---|---|
@@ -555,7 +556,8 @@ single-file attachment management. An open project or standalone detail synchron
 its IndexedDB summary base every five seconds while visible, pauses automatic
 reads while hidden and synchronizes immediately on return. The current mount must
 complete a user-matched online sync before displaying persisted private data.
-Full details retain their current live-read lifecycle.
+Full details reuse matching intrinsic cached content, perform a live read on
+opening and refresh on business-version changes or recovery needs.
 Refresh retains browsing state and the mounted details, including attachment
 inputs and previews. Failed reads keep prior data with an error and recover on a
 later successful read; unavailable resources are cleared. The

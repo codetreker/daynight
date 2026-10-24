@@ -4,21 +4,26 @@ import { canSetStatus, canSetAgentPermission, canSetRequiredPlatform, useTaskDet
 
 export const useTaskDetail = (projectId: string, taskId: string, revision: number, observedTask: GraphTask | undefined) => {
   const sessions = useTaskDetailSessions();
-  const opened = useRef<{ readonly sessions: TaskDetailSessions; readonly projectId: string; readonly taskId: string; readonly revision: number } | null>(null);
+  const opened = useRef<{ readonly sessions: TaskDetailSessions; readonly projectId: string; readonly taskId: string; readonly revision: number; readonly version: bigint | null; readonly generation: string | null; readonly blockedRead: boolean } | null>(null);
   const sameIdentity = opened.current?.sessions === sessions && opened.current.projectId === projectId && opened.current.taskId === taskId;
   const subscribe = useCallback((listener: () => void) => sessions.subscribe(projectId, taskId, listener), [sessions, projectId, taskId]);
   const snapshot = useCallback(() => sessions.snapshot(projectId, taskId), [sessions, projectId, taskId]);
   const state = useSyncExternalStore(subscribe, snapshot);
+  const version = sessions.summaryVersion(projectId, taskId);
+  const generation = sessions.projectGeneration(projectId);
   const blockedRead = state.mutation.phase === "pending" || state.mutation.phase === "unknown" || state.mutation.reconciling;
   useEffect(() => {
-    sessions.observe(projectId, taskId, observedTask);
     const refresh = opened.current?.sessions === sessions && opened.current.projectId === projectId && opened.current.taskId === taskId;
-    const requested = opened.current?.revision;
-    opened.current = { sessions, projectId, taskId, revision };
-    if (!blockedRead && (!refresh || requested !== revision || sessions.snapshot(projectId, taskId).revision !== revision)) {
-      sessions.load(projectId, taskId, revision, refresh ? "automatic" : "open");
+    const previous = opened.current;
+    const opening = !refresh || previous === null || previous.revision <= 0;
+    if (revision > 0 && opening) sessions.requireOpeningRead(projectId, taskId);
+    const needsRead = sessions.observe(projectId, taskId, observedTask, revision > 0);
+    opened.current = { sessions, projectId, taskId, revision, version, generation, blockedRead };
+    const newReceipt = previous?.revision !== revision;
+    if (revision > 0 && !blockedRead && (opening || previous?.generation !== generation || needsRead && (previous?.version !== version || newReceipt || previous?.blockedRead === true))) {
+      sessions.load(projectId, taskId, revision, opening ? "open" : "automatic");
     }
-  }, [sessions, projectId, taskId, revision, observedTask, blockedRead]);
+  }, [sessions, projectId, taskId, revision, observedTask, blockedRead, version, generation]);
   useEffect(() => () => { sessions.releaseRead(projectId, taskId); }, [sessions, projectId, taskId]);
   const retry = useCallback(() => {
     const mutation = sessions.snapshot(projectId, taskId).mutation;
@@ -29,8 +34,8 @@ export const useTaskDetail = (projectId: string, taskId: string, revision: numbe
   const setAgentPermission = useCallback((allowAgents: boolean, version: bigint) => { sessions.setAgentPermission(projectId, taskId, allowAgents, version); }, [sessions, projectId, taskId]);
   const setRequiredPlatform = useCallback((requiredPlatform: ExecutionPlatform | null, version: bigint) => { sessions.setRequiredPlatform(projectId, taskId, requiredPlatform, version); }, [sessions, projectId, taskId]);
   const reconcile = useCallback(() => { sessions.reconcile(projectId, taskId); }, [sessions, projectId, taskId]);
-  const visible = sameIdentity || state.mutation.phase !== "idle" ? state
+  const visible = revision > 0 && sessions.hasCurrentGeneration(projectId, taskId) && (sameIdentity || state.mutation.phase !== "idle") ? state
     : { ...state, detail: null, loadedRevision: null, status: "loading" as const, refreshing: false, error: null };
-  const requiresFreshRead = sessions.requiresFreshRead(projectId, taskId, observedTask);
+  const requiresFreshRead = revision <= 0 || !sameIdentity || sessions.requiresFreshRead(projectId, taskId, observedTask);
   return { ...visible, requiresFreshRead, retry, setStatus, setAgentPermission, setRequiredPlatform, reconcile, canSetRequiredPlatform: canSetRequiredPlatform({ ...visible, requiresFreshRead }), canSetAgentPermission: canSetAgentPermission({ ...visible, requiresFreshRead }), canSetStatus: canSetStatus({ ...visible, requiresFreshRead }) };
 };

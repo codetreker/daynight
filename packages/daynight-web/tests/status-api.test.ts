@@ -1,8 +1,10 @@
+import { TEST_VIEWER_ID, viewerHeaders } from "./helpers/taskSync";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setTaskStatus, getTask, subscribeUnauthorized } from "../src/api/client";
 import { parseApiJson, stringifyApiJson } from "../src/api/json";
 import { parseTaskDetail } from "../src/api/parse";
 
+const admission = { userId: TEST_VIEWER_ID, onPrincipalMismatch: vi.fn() };
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
@@ -13,7 +15,7 @@ const task = { requiredPlatform: null, allowAgents: false, startedAt: null, comp
 };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200) => new Response(stringifyApiJson(value), {
-  status, headers: { "Content-Type": "application/json" },
+  status, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }),
 });
 const rawTask = (version: string) => {
   const { version: _version, ...fields } = task;
@@ -31,17 +33,17 @@ describe("lossless task versions", () => {
   it.each([1n, 9_007_199_254_740_993n, 9_223_372_036_854_775_807n])("reads the numeric wire version %s without rounding", async (version) => {
     const raw = rawTask(version.toString());
     expect(parseTaskDetail(parseApiJson(raw), projectId, taskId).version).toBe(version);
-    const reply = new Response(raw, { headers: { "Content-Type": "application/json" } });
+    const reply = new Response(raw, { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) });
     const nativeJson = vi.spyOn(reply, "json");
     fetchResponse(reply);
-    await expect(getTask(projectId, taskId, signal())).resolves.toMatchObject({ version });
+    await expect(getTask(projectId, taskId, signal(), admission)).resolves.toMatchObject({ version });
     expect(nativeJson).not.toHaveBeenCalled();
   });
 
   it.each(["null", "0", "-1", "1.5", "1.0", "1e3", "9223372036854775808", '"1"'])
     ("rejects malformed numeric-wire version %s", async (version) => {
-      fetchResponse(new Response(rawTask(version), { headers: { "Content-Type": "application/json" } }));
-      await expect(getTask(projectId, taskId, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
+      fetchResponse(new Response(rawTask(version), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+      await expect(getTask(projectId, taskId, signal(), admission)).rejects.toMatchObject({ kind: "protocol", status: 200 });
     });
 
   it("rejects missing versions and Number inputs whose original digits are unavailable", () => {
@@ -118,7 +120,7 @@ describe.each(['todo', 'in_progress', 'done'] as const)('%s status transport', (
     for (const delta of [0n, 1n]) {
       const saved = { ...task, version: version + delta, status: target, ready: target === 'todo' };
       const fetcher = fetchResponse(response(saved)); const abortSignal = signal();
-      await expect(setTaskStatus(projectId.toUpperCase(), taskId.toUpperCase(), target, version, abortSignal)).resolves.toEqual(saved);
+      await expect(setTaskStatus(projectId.toUpperCase(), taskId.toUpperCase(), target, version, abortSignal, admission)).resolves.toEqual(saved);
       expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/status`, {
         method: 'PUT', redirect: 'error', signal: abortSignal, cache: 'no-store', credentials: 'same-origin',
         headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: `{"version":${version},"status":"${target}"}`,
@@ -127,20 +129,20 @@ describe.each(['todo', 'in_progress', 'done'] as const)('%s status transport', (
   });
   it.each(['version_conflict', 'dependency_unsatisfied', 'not_found'])('preserves server refusal %s without retrying', async (code) => {
     const fetcher = fetchResponse(response({ error: { code, message: 'internal SQL', requestId: 'status-1' } }, 409));
-    await expect(setTaskStatus(projectId, taskId, target, 1n, signal())).rejects.toMatchObject({ kind: 'server', status: 409, code, requestId: 'status-1' });
+    await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'server', status: 409, code, requestId: 'status-1' });
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
   it('uses shared unauthorized notification', async () => {
     const listener = vi.fn(); const unsubscribe = subscribeUnauthorized(listener);
     try {
       fetchResponse(response({ error: { code: 'unauthenticated', message: 'expired', requestId: 'status-auth' } }, 401));
-      await expect(setTaskStatus(projectId, taskId, target, 1n, signal())).rejects.toMatchObject({ kind: 'server', status: 401 });
+      await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'server', status: 401 });
       expect(listener).toHaveBeenCalledOnce();
     } finally { unsubscribe(); }
   });
   it('allows maximum int64 expected version to reach a service refusal', async () => {
     const fetcher = fetchResponse(response({ error: { code: 'internal_error', message: 'overflow', requestId: 'max-version' } }, 500));
-    await expect(setTaskStatus(projectId, taskId, target, 9_223_372_036_854_775_807n, signal())).rejects.toMatchObject({ kind: 'server' });
+    await expect(setTaskStatus(projectId, taskId, target, 9_223_372_036_854_775_807n, signal(), admission)).rejects.toMatchObject({ kind: 'server' });
     expect(fetcher.mock.calls[0]?.[1].body).toBe(`{"version":9223372036854775807,"status":"${target}"}`);
   });
   it.each([
@@ -148,33 +150,33 @@ describe.each(['todo', 'in_progress', 'done'] as const)('%s status transport', (
     { ...task, version: 3n },
   ])('rejects mismatching response scope, status or version %#', async (fields) => {
     fetchResponse(response(Object.assign({}, task, { status: target, version: 2n }, fields)));
-    await expect(setTaskStatus(projectId, taskId, target, 1n, signal())).rejects.toMatchObject({ kind: 'protocol', status: 200 });
+    await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol', status: 200 });
   });
   it('rejects a different three-state target and unexpected successful status', async () => {
     fetchResponse(response({ ...task, status: target === 'done' ? 'todo' : 'done', version: 2n }));
-    await expect(setTaskStatus(projectId, taskId, target, 1n, signal())).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
     fetchResponse(response({ ...task, status: target, version: 2n }, 201));
-    await expect(setTaskStatus(projectId, taskId, target, 1n, signal())).rejects.toMatchObject({ kind: 'protocol', status: 201 });
+    await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol', status: 201 });
   });
   it('rejects malformed scope, state and version before I/O', async () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher);
-    await expect(setTaskStatus('bad', taskId, target, 1n, signal())).rejects.toMatchObject({ kind: 'protocol' });
-    await expect(setTaskStatus(projectId, 'bad', target, 1n, signal())).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(setTaskStatus('bad', taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(setTaskStatus(projectId, 'bad', target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
     for (const version of [0n, -1n, 9_223_372_036_854_775_808n, 9_007_199_254_740_992 as unknown as bigint]) {
-      await expect(setTaskStatus(projectId, taskId, target, version, signal())).rejects.toMatchObject({ kind: 'protocol' });
+      await expect(setTaskStatus(projectId, taskId, target, version, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
     }
-    await expect(setTaskStatus(projectId, taskId, 'proposed' as never, 1n, signal())).rejects.toMatchObject({ kind: 'protocol' });
+    await expect(setTaskStatus(projectId, taskId, 'proposed' as never, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol' });
     expect(fetcher).not.toHaveBeenCalled();
   });
   it('retains network/body causes and never replays writes', async () => {
     const failure = new TypeError('response lost'); const fetcher = vi.fn().mockRejectedValue(failure); vi.stubGlobal('fetch', fetcher);
-    await expect(setTaskStatus(projectId, taskId, target, 1n, signal())).rejects.toMatchObject({ kind: 'network', cause: failure });
+    await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'network', cause: failure });
     const reply = response({ ...task, status: target, version: 2n }); vi.spyOn(reply, 'text').mockRejectedValue(failure); fetcher.mockResolvedValue(reply);
-    await expect(setTaskStatus(projectId, taskId, target, 1n, signal())).rejects.toMatchObject({ kind: 'protocol', cause: failure });
+    await expect(setTaskStatus(projectId, taskId, target, 1n, signal(), admission)).rejects.toMatchObject({ kind: 'protocol', cause: failure });
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
   it('preserves cancellation before I/O', async () => {
     const fetcher = vi.fn(); vi.stubGlobal('fetch', fetcher); const controller = new AbortController(); const reason = new Error('project changed'); controller.abort(reason);
-    await expect(setTaskStatus(projectId, taskId, target, 1n, controller.signal)).rejects.toBe(reason); expect(fetcher).not.toHaveBeenCalled();
+    await expect(setTaskStatus(projectId, taskId, target, 1n, controller.signal, admission)).rejects.toBe(reason); expect(fetcher).not.toHaveBeenCalled();
   });
 });

@@ -1,4 +1,5 @@
-import { TEST_VIEWER_ID, taskSyncResponse, taskSyncQuery } from "./helpers/taskSync";
+import { createTaskSessionWorld } from './helpers/taskSessions';
+import { TEST_VIEWER_ID, taskSyncResponse, taskSyncQuery, viewerHeaders } from "./helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { App } from '../src/app/App';
@@ -10,7 +11,7 @@ import { detailFixture, graphFixture, resourceResponse, snapshotFixture } from '
 import { createLocaleRender } from './helpers/renderWithLocale';
 
 const localeRender = createLocaleRender('zh-CN');
-const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
+const render: typeof localeRender = (ui, options) => localeRender(ui, { taskCache: true, ...options });
 const projectId = '00000000-0000-4000-8000-000000000100';
 const taskId = '00000000-0000-4000-8000-000000000001';
 const otherId = '00000000-0000-4000-8000-000000000002';
@@ -34,9 +35,9 @@ const installed = (initial?: TaskDetail) => {
         const timing = target === 'todo' ? { startedAt: null, completedAt: null } : target === 'in_progress' ? { startedAt: '2026-10-24T11:00:00Z', completedAt: null } : { startedAt: task.status === 'in_progress' ? task.startedAt : null, completedAt: '2026-10-24T11:05:00Z' };
         const next = { ...task, ...(match[2] === 'status' ? changedStatus ? { status: target, ready: target === 'todo' && task.blockedBy.length === 0, ...timing } : {} : Object.hasOwn(body, 'allowAgents') ? { allowAgents: body.allowAgents as boolean } : { requiredPlatform: body.requiredPlatform as TaskDetail['requiredPlatform'] }), version: task.version + (match[2] === 'status' && !changedStatus ? 0n : 1n) };
         tasks.set(task.id, next);
-        return resourceResponse(next);
+        return resourceResponse(next, TEST_VIEWER_ID);
       }
-      return resourceResponse(task);
+      return resourceResponse(task, TEST_VIEWER_ID);
     }
     if (url.includes('/attachments?')) return resourceResponse({ items: [...paths].map((path) => ({ path, contentType: 'text/plain', sizeBytes: 12, createdAt: first.createdAt, updatedAt: first.updatedAt })), nextCursor: null });
     if (url.includes('/attachments/files/')) {
@@ -146,7 +147,7 @@ describe('standalone full task details', () => {
     await screen.findByRole('heading', { name: '独立任务' });
   });
 
-  it('rereads full details after an unchanged five-second graph receipt while retaining the mounted view', async () => {
+  it('reuses full details after an unchanged five-second graph receipt while retaining the mounted view', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     const fixture = installed();
     window.history.replaceState(null, '', address());
@@ -156,7 +157,7 @@ describe('standalone full task details', () => {
     expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([url]) => new URL(url, location.origin).pathname.endsWith('/task-sync'))).toHaveLength(2));
-    await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(2));
+    expect(fixture.fetcher.mock.calls.filter(([url]) => url === `${root}/tasks/${taskId}`)).toHaveLength(1);
     expect(screen.getByRole('heading', { name: '独立任务' })).toBe(title);
     expect(document.querySelector('.task-detail-body')).toBe(body);
     expect(screen.queryByRole('status')).toBeNull();
@@ -231,7 +232,7 @@ describe('standalone full task details', () => {
         const task = fixture.tasks.get(taskId)!;
         fixture.tasks.set(taskId, { ...task, version: task.version + 1n });
         if (failure === 'unknown') throw new TypeError('Lost response');
-        return new Response(JSON.stringify({ error: { code: 'version_conflict', message: 'Task changed', requestId: 'status-conflict' } }), { status: 409, headers: { 'Content-Type': 'application/json' } });
+        return new Response(JSON.stringify({ error: { code: 'version_conflict', message: 'Task changed', requestId: 'status-conflict' } }), { status: 409, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
       }
       return fixture.handler(url, options);
     });
@@ -256,7 +257,9 @@ describe('standalone full task details', () => {
     document.body.append(application);
     window.history.replaceState(null, '', `/projects/${projectId}`);
     const historyLength = window.history.length;
-    const view = render(<TaskDetailDialog projectId={projectId} taskId={taskId} snapshot={snapshotFixture([...fixture.tasks.values()])} onSelectTask={vi.fn()} onClose={vi.fn()} onRestoreFocus={vi.fn()} onRefreshGraph={vi.fn()} />, { container: application });
+    const world = createTaskSessionWorld();
+    await world.sync([...fixture.tasks.values()]);
+    const view = render(<TaskDetailDialog projectId={projectId} taskId={taskId} snapshot={snapshotFixture([...fixture.tasks.values()])} onSelectTask={vi.fn()} onClose={vi.fn()} onRestoreFocus={vi.fn()} onRefreshGraph={vi.fn()} />, { container: application, taskCache: { scope: world.scope } });
     try {
       const dialog = await screen.findByRole('dialog', { name: '独立任务' });
       const popout = within(dialog).getByRole('link', { name: '在新标签页打开' });
@@ -278,7 +281,7 @@ describe('standalone full task details', () => {
       expect(popout).toHaveAttribute('href', address('attachments'));
       expect(window.location.pathname).toBe(`/projects/${projectId}`);
       expect(window.history.length).toBe(historyLength);
-    } finally { view.unmount(); application.remove(); }
+    } finally { view.unmount(); world.dispose(); application.remove(); }
   });
 
   it('rejects invalid tabs and preserves a requested tab in the login return address', async () => {

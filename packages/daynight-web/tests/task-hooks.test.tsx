@@ -1,10 +1,11 @@
+import { createTaskSessionWorld } from "./helpers/taskSessions";
 import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { performance as nodePerformance } from "node:perf_hooks";
 import * as cacheProjection from "../src/features/task-cache/projection";
 import { TestTaskCacheBoundary } from "./helpers/taskCache";
 import { createGraphSyncFixture } from "./helpers/taskSync";
 import { act, renderHook as renderHookWithoutSession, waitFor as waitForWithRealTimers, type RenderHookOptions } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphTask, TaskDetail, TaskGraph } from "../src/api/types";
 import { ApiError, setTaskStatus, getTask, getTaskSync } from "../src/api/client";
 import { useTaskGraph } from "../src/features/projects/useTaskGraph";
@@ -23,8 +24,10 @@ const waitFor: typeof waitForWithRealTimers = async (assertion, options) => {
   }
 };
 
+let detailWorld: ReturnType<typeof createTaskSessionWorld> | null = null;
+
 const renderHook = <Result, Props,>(render: (props: Props) => Result, options?: RenderHookOptions<Props>) =>
-  renderHookWithoutSession(render, { ...options, wrapper: ({ children }) => <TestTaskCacheBoundary><TaskDetailSessionBoundary>{children}</TaskDetailSessionBoundary></TestTaskCacheBoundary> });
+  renderHookWithoutSession(render, { ...options, wrapper: ({ children }) => <TestTaskCacheBoundary {...(detailWorld === null ? {} : { scope: detailWorld.scope })}><TaskDetailSessionBoundary>{children}</TaskDetailSessionBoundary></TestTaskCacheBoundary> });
 
 vi.mock("../src/api/client", async (original) => ({ ...await original<typeof import("../src/api/client")>(), setTaskStatus: vi.fn(), getTask: vi.fn(), getTaskSync: vi.fn() }));
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
@@ -382,47 +385,51 @@ describe("task graph snapshots", () => {
 });
 
 describe("task details", () => {
+  beforeEach(() => { detailWorld = createTaskSessionWorld(); });
+  afterEach(() => { detailWorld?.dispose(); detailWorld = null; });
+  const seed = (...details: TaskDetail[]) => detailWorld!.sync(details);
+  const observed = (value: TaskDetail) => detailWorld!.node(value.projectId, value.id);
+  const prerequisite: TaskDetail = { ...detail, id: otherTask, title: "Prerequisite" };
+
   it("invalidates a cached reviewed detail when only its external subset changes", async () => {
-    const reviewed = { ...detail, status: "todo" as const, ready: false, dependsOn: [otherTask], blockedBy: [otherTask] };
-    const observed = { ...node, status: "todo" as const, ready: false, dependsOn: [otherTask], blockedBy: [otherTask] };
-    const changed = { ...reviewed, externalDependsOn: [otherTask] };
+    const reviewed = { ...detail, ready: false, dependsOn: [otherTask], blockedBy: [otherTask] };
+    const changed = { ...reviewed, externalDependsOn: [otherTask], version: reviewed.version + 1n };
+    await seed(prerequisite, reviewed);
     const pending = deferred<TaskDetail>();
     detailRequest.mockResolvedValueOnce(reviewed).mockReturnValueOnce(pending.promise);
     const { result, rerender } = renderHook(({ revision, snapshot }) => useTaskDetail(projectId, taskId, revision, snapshot), {
-      initialProps: { revision: 1, snapshot: observed },
+      initialProps: { revision: 1, snapshot: observed(reviewed) },
     });
     await waitFor(() => expect(result.current.canSetStatus).toBe(true));
-    rerender({ revision: 2, snapshot: { ...observed, externalDependsOn: [otherTask] } });
-    expect(result.current.detail).toBe(reviewed);
+    const first = result.current.detail;
+    await seed(changed);
+    rerender({ revision: 2, snapshot: observed(changed) });
+    expect(result.current.detail).toBe(first);
     expect(result.current.requiresFreshRead).toBe(true);
     expect(result.current.canSetStatus).toBe(false);
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(2));
     await act(async () => { pending.resolve(changed); });
-    expect(result.current.detail).toBe(changed);
+    await waitFor(() => expect(result.current.detail).toEqual(changed));
     expect(result.current.requiresFreshRead).toBe(false);
     expect(result.current.canSetStatus).toBe(true);
-    expect(detailRequest).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps an observed reviewed version usable through repeated six-second reads and five-second unchanged graph receipts", async () => {
+  it("keeps a slow reviewed version through unchanged five-second receipts and derives prerequisite completion without another GET", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
-    const reviewed = { ...detail, status: "todo" as const, ready: false, dependsOn: [otherTask], blockedBy: [otherTask] };
-    const reviewedNode = { ...node, status: "todo" as const, ready: false, dependsOn: [otherTask], blockedBy: [otherTask] };
-    let observed: GraphTask = reviewedNode;
-    let served: TaskDetail = reviewed;
+    const reviewed = { ...detail, ready: false, dependsOn: [otherTask], blockedBy: [otherTask] };
     let predecessor: GraphTask = { ...node, id: otherTask, titlePreview: "Prerequisite" };
-    graphRequest.mockImplementation(async () => ({ ...graph(), tasks: [observed, predecessor], summary: {
-      total: 2, todo: (predecessor.status === "todo" ? 1 : 0) + 1, inProgress: 0,
-      done: predecessor.status === "done" ? 1 : 0, ready: (predecessor.ready ? 1 : 0) + (observed.ready ? 1 : 0), blocked: observed.ready ? 0 : 1,
+    graphRequest.mockImplementation(async () => ({ ...graph(), tasks: [{ ...node, dependsOn: [otherTask], blockedBy: predecessor.status === "done" ? [] : [otherTask], ready: predecessor.status === "done" }, predecessor], summary: {
+      total: 2, todo: predecessor.status === "todo" ? 2 : 1, inProgress: 0,
+      done: predecessor.status === "done" ? 1 : 0, ready: 1, blocked: predecessor.status === "done" ? 0 : 1,
     } }));
     let active = 0;
     let maximumActive = 0;
     detailRequest.mockImplementation(async (_project, _task, signal) => {
       maximumActive = Math.max(maximumActive, ++active);
-      const response = served;
       await new Promise((resolve) => setTimeout(resolve, 6_000));
       active--;
       expect(signal.aborted).toBe(false);
-      return response;
+      return reviewed;
     });
     let graphRevision = 0;
     const { result } = renderHook(() => {
@@ -430,7 +437,7 @@ describe("task details", () => {
       graphRevision = snapshot?.revision ?? 0;
       return useTaskDetail(projectId, taskId, snapshot?.revision ?? 0, snapshot?.index.nodes.get(taskId));
     });
-    await waitFor(() => expect(graphRevision).toBeGreaterThan(0));
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledOnce());
     let elapsed = 0;
     const advance = async (duration: number) => {
       let remaining = duration;
@@ -444,30 +451,28 @@ describe("task details", () => {
     };
     for (let cycle = 1; cycle <= 3; cycle++) {
       await advance(6_000);
-      expect(result.current.detail).toEqual(reviewed);
+      await waitFor(() => expect(result.current.detail).toEqual(reviewed));
       expect(result.current.canSetStatus).toBe(true);
       expect(setTaskStatus).not.toHaveBeenCalled();
     }
-    expect(detailRequest).toHaveBeenCalledTimes(4);
+    const first = result.current.detail;
+    expect(detailRequest).toHaveBeenCalledOnce();
     expect(maximumActive).toBe(1);
-    expect(result.current.loadedRevision).toBeLessThan(result.current.revision);
+    expect(graphRevision).toBe(4);
     predecessor = { ...predecessor, status: "done", ready: false };
-    observed = { ...reviewedNode, blockedBy: [], ready: true };
-    served = { ...reviewed, blockedBy: [], ready: true };
     await advance(2_000);
-    await waitFor(() => expect(result.current.canSetStatus).toBe(false));
-    await advance(4_000);
-    expect(result.current.detail).toEqual(reviewed);
-    expect(result.current.requiresFreshRead).toBe(true);
-    expect(result.current.canSetStatus).toBe(false);
-    await advance(6_000);
-    expect(result.current.detail).toEqual(served);
+    await waitFor(() => expect(result.current.detail).toMatchObject({ version: reviewed.version, ready: true, blockedBy: [] }));
+    expect(result.current.detail!.properties.pullRequests).toBe(first!.properties.pullRequests);
+    expect(result.current.requiresFreshRead).toBe(false);
     expect(result.current.canSetStatus).toBe(true);
+    await advance(10_000);
+    expect(detailRequest).toHaveBeenCalledOnce();
     expect(maximumActive).toBe(1);
     expect(setTaskStatus).not.toHaveBeenCalled();
   });
 
   it("loads independently, retries failures locally and never exposes an old detail while retrying", async () => {
+    await seed(detail);
     const retry = deferred<TaskDetail>();
     detailRequest.mockRejectedValueOnce(new Error("detail unavailable")).mockReturnValueOnce(retry.promise);
     const { result } = renderHook(() => useTaskDetail(projectId, taskId, 1, node));
@@ -475,11 +480,13 @@ describe("task details", () => {
     expect(result.current.detail).toBeNull();
     act(() => result.current.retry());
     expect(result.current).toMatchObject({ status: "loading", detail: null, error: null });
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(2));
     await act(async () => { retry.resolve(detail); });
-    expect(result.current).toMatchObject({ status: "ready", detail, error: null });
+    await waitFor(() => expect(result.current).toMatchObject({ status: "ready", detail, error: null }));
   });
 
-  it("clears immediately for identity changes and retains loaded details through a same-identity graph refresh", async () => {
+  it("clears immediately for identity changes and retains loaded details through an unchanged graph receipt", async () => {
+    await seed(detail, { ...detail, id: otherTask }, { ...detail, id: otherTask, projectId: otherProject });
     detailRequest.mockImplementation(async (project, task) => ({ ...detail, projectId: project, id: task }));
     const renders: Array<{ key: string; displayed: string | null }> = [];
     const { result, rerender } = renderHook(({ project, task, revision }) => {
@@ -503,58 +510,71 @@ describe("task details", () => {
     const first = renders.length;
     rerender({ project: otherProject, task: otherTask, revision: 2 });
     expect(renders[first]?.displayed).toBe(otherTask);
-    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(4));
-    expect(detailRequest).toHaveBeenCalledTimes(4);
+    expect(detailRequest).toHaveBeenCalledTimes(3);
+    expect(result.current.canSetStatus).toBe(true);
   });
 
   it.each([new Error("Background detail read failed"), new DOMException("Background read cancelled", "AbortError")])("retains loaded details and the actual background error until a fresh retry succeeds %#", async (error) => {
     const pending = deferred<TaskDetail>();
     const recovery = deferred<TaskDetail>();
-    const reviewed = { ...detail, status: "todo" as const, ready: false };
-    const fresh = { ...reviewed, version: reviewed.version + 1n, title: "Updated task" };
-    detailRequest.mockResolvedValueOnce(reviewed).mockReturnValueOnce(pending.promise).mockReturnValueOnce(recovery.promise);
-    const reviewedNode = { ...node, status: "todo" as const, ready: false };
-    const { result, rerender } = renderHook(({ revision, observed }) => useTaskDetail(projectId, taskId, revision, observed), { initialProps: { revision: 1, observed: reviewedNode } });
+    const fresh = { ...detail, version: detail.version + 1n, title: "Updated task" };
+    await seed(detail);
+    detailRequest.mockResolvedValueOnce(detail).mockReturnValueOnce(pending.promise).mockReturnValueOnce(recovery.promise);
+    const { result, rerender } = renderHook(({ revision, snapshot }) => useTaskDetail(projectId, taskId, revision, snapshot), { initialProps: { revision: 1, snapshot: observed(detail) } });
     await waitFor(() => expect(result.current.loadedRevision).toBe(1));
-    rerender({ revision: 2, observed: { ...reviewedNode, titlePreview: fresh.title } });
-    expect(result.current.detail).toBe(reviewed);
+    const first = result.current.detail;
+    await seed(fresh);
+    rerender({ revision: 2, snapshot: observed(fresh) });
+    expect(result.current.detail).toBe(first);
     expect(result.current.refreshing).toBe(true);
     expect(result.current.canSetStatus).toBe(false);
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(2));
     await act(async () => { pending.reject(error); });
-    expect(result.current).toMatchObject({ detail: reviewed, status: "ready", loadedRevision: 1, revision: 2, refreshing: false, error });
+    await waitFor(() => expect(result.current).toMatchObject({ detail: first, status: "ready", loadedRevision: 1, revision: 2, refreshing: false, error }));
     expect(result.current.error).toBe(error);
     expect(result.current.canSetStatus).toBe(false);
     act(() => result.current.retry());
-    expect(result.current.detail).toBe(reviewed);
+    expect(result.current.detail).toBe(first);
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(3));
     await act(async () => { recovery.resolve(fresh); });
-    expect(result.current).toMatchObject({ detail: fresh, loadedRevision: 2, refreshing: false, error: null, canSetStatus: true });
+    await waitFor(() => expect(result.current).toMatchObject({ detail: fresh, loadedRevision: 2, refreshing: false, error: null, canSetStatus: true }));
   });
 
-  it("performs the deferred background read when status mutation finishes after the graph revision changes", async () => {
+  it("admits a confirmed status body at the current summary version and preserves explicit refresh", async () => {
+    await seed(detail);
     const mutation = deferred<TaskDetail>();
     const refresh = deferred<TaskDetail>();
-    const reviewed = { ...detail, status: "todo" as const, ready: false };
-    const started = { ...detail, status: "in_progress" as const, ready: false, startedAt: time, version: reviewed.version + 1n };
-    detailRequest.mockResolvedValueOnce(reviewed).mockReturnValueOnce(refresh.promise);
+    const started = { ...detail, status: "in_progress" as const, ready: false, startedAt: time, version: detail.version + 1n };
+    detailRequest.mockResolvedValueOnce(detail).mockReturnValueOnce(refresh.promise);
     vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
-    const { result, rerender } = renderHook(({ revision }) => useTaskDetail(projectId, taskId, revision, node), { initialProps: { revision: 1 } });
+    const { result, rerender } = renderHook(({ revision, snapshot }) => useTaskDetail(projectId, taskId, revision, snapshot), { initialProps: { revision: 1, snapshot: observed(detail) } });
     await waitFor(() => expect(result.current.loadedRevision).toBe(1));
     act(() => result.current.setStatus("in_progress", result.current.detail!.version));
-    rerender({ revision: 2 });
-    rerender({ revision: 3 });
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledOnce());
+    await seed(started);
+    rerender({ revision: 2, snapshot: observed(started) });
+    rerender({ revision: 3, snapshot: observed(started) });
     expect(detailRequest).toHaveBeenCalledTimes(1);
     expect(result.current.mutation.phase).toBe("pending");
     await act(async () => { mutation.resolve(started); });
+    await waitFor(() => expect(result.current.mutation.phase).toBe("confirmed"));
+    await waitFor(() => expect(result.current.detail).toEqual(started));
+    expect(result.current.canSetStatus).toBe(true);
+    expect(detailRequest).toHaveBeenCalledTimes(1);
+    expect(result.current.loadedRevision).toBe(1);
+    act(() => result.current.retry());
     await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(2));
-    expect(result.current).toMatchObject({ detail: started, refreshing: true, loadedRevision: 1 });
+    expect(result.current).toMatchObject({ detail: started, refreshing: true });
     await act(async () => { refresh.resolve(started); });
-    expect(result.current).toMatchObject({ detail: started, refreshing: false, loadedRevision: 3, error: null });
+    await waitFor(() => expect(result.current).toMatchObject({ detail: started, refreshing: false, loadedRevision: 3, error: null }));
   });
 
   it("aborts superseded details and ignores late values without patching the graph", async () => {
+    await seed(detail, { ...detail, id: otherTask });
     const late = deferred<TaskDetail>();
     detailRequest.mockReturnValueOnce(late.promise).mockResolvedValueOnce({ ...detail, id: otherTask });
     const { result, rerender } = renderHook(({ task }) => useTaskDetail(projectId, task, 1, { ...node, id: task }), { initialProps: { task: taskId } });
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledOnce());
     const oldSignal = detailRequest.mock.calls[0]![2];
     rerender({ task: otherTask });
     expect(oldSignal.aborted).toBe(true);
@@ -564,9 +584,11 @@ describe("task details", () => {
   });
 
   it("ignores a cancelled failure and cleans up requests on unmount", async () => {
+    await seed(detail);
     const late = deferred<TaskDetail>();
     detailRequest.mockReturnValueOnce(late.promise).mockResolvedValueOnce(detail);
     const { result, rerender, unmount } = renderHook(({ revision }) => useTaskDetail(projectId, taskId, revision, node), { initialProps: { revision: 1 } });
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledOnce());
     rerender({ revision: 2 });
     expect(detailRequest).toHaveBeenCalledTimes(1);
     act(() => result.current.retry());
@@ -576,48 +598,59 @@ describe("task details", () => {
     const pending = deferred<TaskDetail>();
     detailRequest.mockReturnValueOnce(pending.promise);
     act(() => result.current.retry());
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(3));
     const pendingSignal = detailRequest.mock.calls.at(-1)![2];
     unmount();
     expect(pendingSignal.aborted).toBe(true);
     await act(async () => { pending.resolve(detail); });
   });
 
-  it("coalesces graph receipts behind slow details without cancellation and reads the newest properties", async () => {
+  it("coalesces business-version changes behind slow details without cancellation and reads the newest properties", async () => {
+    await seed(detail);
     const slow = deferred<TaskDetail>();
-    const updated = { ...detail, description: "updated", properties: { worker: null, pullRequests: [{ title: "PR", url: "https://example.com/pr/1" }] } };
+    const updated = { ...detail, version: detail.version + 2n, description: "updated", properties: { worker: null, pullRequests: [{ title: "PR", url: "https://example.com/pr/1" }] } };
     detailRequest.mockReturnValueOnce(slow.promise).mockResolvedValueOnce(updated);
     const { result, rerender } = renderHook(({ revision }) => useTaskDetail(projectId, taskId, revision, node), { initialProps: { revision: 1 } });
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledOnce());
     const signal = detailRequest.mock.calls[0]![2];
+    await seed({ ...detail, version: detail.version + 1n });
     rerender({ revision: 2 });
+    await seed(updated);
     rerender({ revision: 3 });
     expect(detailRequest).toHaveBeenCalledTimes(1);
     expect(signal.aborted).toBe(false);
     await act(async () => { slow.resolve(detail); });
-    expect(detailRequest).toHaveBeenCalledTimes(2);
-    expect(result.current.detail).toEqual(updated);
-    await waitFor(() => expect(result.current.error).toBeNull());
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(result.current.detail).toEqual(updated));
+    expect(result.current.loadedRevision).toBe(3);
+    expect(result.current.error).toBeNull();
   });
 
   it("retains successful detail and PR pagination identity through failures and automatically recovers", async () => {
+    await seed(detail);
     const retry = deferred<TaskDetail>();
     const failure = new Error("offline");
+    const updated = { ...detail, version: detail.version + 1n, description: "new description" };
     detailRequest.mockResolvedValueOnce(detail).mockRejectedValueOnce(failure).mockReturnValueOnce(retry.promise);
     const { result, rerender } = renderHook(({ revision }) => useTaskDetail(projectId, taskId, revision, node), { initialProps: { revision: 1 } });
     await waitFor(() => expect(result.current.status).toBe("ready"));
     const first = result.current.detail!;
+    await seed(updated);
     rerender({ revision: 2 });
     expect(result.current.detail).toBe(first);
     await waitFor(() => expect(result.current.error).toBe(failure));
     expect(result.current).toMatchObject({ detail: first, status: "ready" });
     rerender({ revision: 3 });
     expect(result.current.error).toBe(failure);
-    await act(async () => { retry.resolve({ ...detail, description: "new description", properties: { worker: null, pullRequests: [] } }); });
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(3));
+    await act(async () => { retry.resolve(updated); });
     await waitFor(() => expect(result.current.error).toBeNull());
     expect(result.current.detail!.description).toBe("new description");
     expect(result.current.detail!.properties.pullRequests).toBe(first.properties.pullRequests);
   });
 
   it("retries an initial detail failure on an unchanged graph receipt and discards retained data on not-found", async () => {
+    await seed(detail);
     const recovery = deferred<TaskDetail>();
     const failure = new Error("offline");
     detailRequest.mockRejectedValueOnce(failure).mockReturnValueOnce(recovery.promise)
@@ -626,34 +659,44 @@ describe("task details", () => {
     await waitFor(() => expect(result.current.status).toBe("error"));
     rerender({ revision: 2 });
     expect(result.current).toMatchObject({ status: "error", detail: null, error: failure });
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(2));
     await act(async () => { recovery.resolve(detail); });
     await waitFor(() => expect(result.current.detail).toEqual(detail));
     rerender({ revision: 3 });
+    expect(detailRequest).toHaveBeenCalledTimes(2);
+    act(() => result.current.retry());
     await waitFor(() => expect(result.current.status).toBe("error"));
     expect(result.current.detail).toBeNull();
+    expect(detailRequest).toHaveBeenCalledTimes(3);
   });
 
-  it("defers automatic details while hidden and resumes on the next graph receipt", async () => {
+  it("defers an automatic business-version read while hidden and resumes on the next graph receipt", async () => {
+    await seed(detail);
     const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     const pending = deferred<TaskDetail>();
-    detailRequest.mockReturnValueOnce(pending.promise).mockResolvedValueOnce({ ...detail, description: "latest" });
+    const latest = { ...detail, description: "latest", version: detail.version + 1n };
+    detailRequest.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(latest);
     const { result, rerender } = renderHook(({ revision }) => useTaskDetail(projectId, taskId, revision, node), { initialProps: { revision: 1 } });
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledOnce());
+    await seed(latest);
     rerender({ revision: 2 });
     visibility.mockReturnValue("hidden");
     await act(async () => { pending.resolve(detail); });
+    await waitFor(() => expect(result.current.refreshing).toBe(false));
     expect(detailRequest).toHaveBeenCalledTimes(1);
     rerender({ revision: 3 });
     expect(detailRequest).toHaveBeenCalledTimes(1);
     visibility.mockReturnValue("visible");
     rerender({ revision: 4 });
-    await waitFor(() => expect(result.current.detail!.description).toBe("latest"));
+    await waitFor(() => expect(result.current.detail?.description).toBe("latest"));
     expect(detailRequest).toHaveBeenCalledTimes(2);
   });
 
   it("does not turn an AbortError into a displayed failure", async () => {
+    await seed(detail);
     detailRequest.mockRejectedValueOnce(new DOMException("Aborted", "AbortError"));
     const { result } = renderHook(() => useTaskDetail(projectId, taskId, 1, node));
-    await act(async () => { await Promise.resolve(); });
+    await waitFor(() => expect(detailRequest).toHaveBeenCalledOnce());
     await waitFor(() => expect(result.current.error).toBeNull());
     expect(result.current.detail).toBeNull();
   });

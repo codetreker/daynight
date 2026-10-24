@@ -1,12 +1,17 @@
 import type { GraphTask, TaskDetail } from "../../api/types";
+import { compareTimestamps } from "../task-cache/projection";
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean =>
   left.length === right.length && left.every((id) => right.includes(id));
 
+const sameTime = (left: string | null, right: string | null): boolean =>
+  left === null || right === null ? left === right : compareTimestamps(left, right) === 0;
+
 export const isTaskStale = (snapshotNode: GraphTask | undefined, detail: TaskDetail): boolean => {
   if (snapshotNode === undefined) return true;
   const title = Array.from(detail.title);
-  return snapshotNode.id !== detail.id || snapshotNode.updatedAt !== detail.updatedAt || snapshotNode.status !== detail.status ||
+  return snapshotNode.id !== detail.id || !sameTime(snapshotNode.updatedAt, detail.updatedAt) || !sameTime(snapshotNode.createdAt, detail.createdAt) ||
+    !sameTime(snapshotNode.startedAt, detail.startedAt) || !sameTime(snapshotNode.completedAt, detail.completedAt) || snapshotNode.status !== detail.status ||
     snapshotNode.allowAgents !== detail.allowAgents || snapshotNode.requiredPlatform !== detail.requiredPlatform || snapshotNode.ready !== detail.ready || !sameIds(snapshotNode.dependsOn, detail.dependsOn) ||
     !sameIds(snapshotNode.externalDependsOn, detail.externalDependsOn) ||
     !sameIds(snapshotNode.blockedBy, detail.blockedBy) || snapshotNode.titlePreview !== title.slice(0, 160).join("") ||

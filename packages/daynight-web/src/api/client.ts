@@ -200,14 +200,22 @@ export const getTaskSync = async (
   return json(response, signal, (value) => parseTaskSync(value, project), decodeTaskGraphJson);
 };
 
-export const getTask = (projectId: string, taskId: string, signal: AbortSignal): Promise<TaskDetail> => {
+export type TaskResponseAdmission = {
+  readonly userId: string;
+  readonly onPrincipalMismatch: () => void;
+  readonly onWriteConfirmed?: () => void;
+};
+
+export const getTask = async (projectId: string, taskId: string, signal: AbortSignal, admission: TaskResponseAdmission): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
-  return read(`/api/v1/projects/${project}/tasks/${task}`, signal, (data) => parseTaskDetail(data, project, task));
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json" } });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  return json(response, signal, (data) => parseTaskDetail(data, project, task));
 };
 
 export const setTaskStatus = async (
-  projectId: string, taskId: string, status: TaskStatus, exactVersion: bigint, signal: AbortSignal,
+  projectId: string, taskId: string, status: TaskStatus, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
 ): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
@@ -216,6 +224,8 @@ export const setTaskStatus = async (
     method: "PUT", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, status }),
   });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, task);
     if (response.status !== 200 || result.status !== status || result.version !== exactVersion && result.version !== exactVersion + 1n) {
@@ -226,7 +236,7 @@ export const setTaskStatus = async (
 };
 
 export const setTaskAgentPermission = async (
-  projectId: string, taskId: string, allowAgents: boolean, exactVersion: bigint, signal: AbortSignal,
+  projectId: string, taskId: string, allowAgents: boolean, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
 ): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
@@ -235,6 +245,8 @@ export const setTaskAgentPermission = async (
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, allowAgents }),
   });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, task);
     if (response.status !== 200 || result.allowAgents !== allowAgents || result.version !== exactVersion && result.version !== exactVersion + 1n) {
@@ -245,7 +257,7 @@ export const setTaskAgentPermission = async (
 };
 
 export const setTaskRequiredPlatform = async (
-  projectId: string, taskId: string, requiredPlatform: ExecutionPlatform | null, exactVersion: bigint, signal: AbortSignal,
+  projectId: string, taskId: string, requiredPlatform: ExecutionPlatform | null, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
 ): Promise<TaskDetail> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
@@ -254,6 +266,8 @@ export const setTaskRequiredPlatform = async (
     method: "PATCH", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     body: stringifyApiJson({ version: exactVersion, requiredPlatform }),
   });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
   return json(response, signal, (data) => {
     const result = parseTaskDetail(data, project, task);
     if (response.status !== 200 || result.requiredPlatform !== requiredPlatform || result.version !== exactVersion && result.version !== exactVersion + 1n) {

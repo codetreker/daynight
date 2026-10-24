@@ -51,10 +51,11 @@ response provenance rather than granting access.
 The [requirements](../../../../docs/spec/daynight-task-sync.md) and
 [architecture](../../../../docs/design/daynight-task-sync.md) own the protocol.
 This delivers the server portion of the
-[broader browser-cache proposal](../../proposed/architecture/2026-10-24-task-view-timestamp-window.md).
+[browser-cache decision](2026-10-24-task-view-timestamp-window.md).
 The [persistent summary cache](2026-10-24-persistent-task-summary-cache.md) consumes
-this feed and derives complete project views locally. Intrinsic detail persistence
-and refresh policy remain separately scoped work.
+this feed and derives complete project views locally. The
+[detail-cache decision](2026-10-24-task-view-timestamp-window.md) supplies intrinsic
+detail persistence and version-driven reads within the same scope.
 
 ## Alternatives
 

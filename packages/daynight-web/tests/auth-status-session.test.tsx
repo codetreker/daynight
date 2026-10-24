@@ -1,4 +1,4 @@
-import { createGraphSyncFixture } from "./helpers/taskSync";
+import { taskSyncFromGraph, taskSyncEpoch } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAuthConfig, listMembers, logout, me } from '../src/api/auth';
@@ -16,11 +16,12 @@ vi.mock('../src/api/client', async (original) => ({ ...await original<typeof imp
 }));
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 
-const confirmStatus = (button: HTMLElement) => {
+const confirmStatus = async (button: HTMLElement) => {
   fireEvent.click(button);
   fireEvent.click(screen.getByRole('menuitemradio', { name: 'In progress' }));
   const confirmation = screen.getByRole('alertdialog', { name: 'Set task status' });
   fireEvent.click(within(confirmation).getByRole('button', { name: 'Confirm status' }));
+  await waitFor(() => expect(setTaskStatus).toHaveBeenCalledTimes(1));
 };
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const project = id(100); const otherProject = id(200); const task = id(1); const otherTask = id(2);
@@ -36,21 +37,30 @@ const returnFromAnotherWindow = () => {
 const initial = (projectId = project): TaskDetail => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: projectId === project ? task : otherTask, projectId,
   version: 9007199254740993n, title: `${currentUser.name} task ${projectId === project ? 'P' : 'Q'}`, description: `${currentUser.name} reviewed content`,
   properties: { worker: null, pullRequests: [] }, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp });
+const serverDetails = new Map<string, TaskDetail>();
+const serverDetail = (projectId: string): TaskDetail => {
+  const key = `${currentUser.id}:${projectId}`;
+  let detail = serverDetails.get(key);
+  if (detail === undefined) { detail = initial(projectId); serverDetails.set(key, detail); }
+  return detail;
+};
 const graph = (projectId: string): TaskGraph => {
-  const detail = initial(projectId);
+  const detail = serverDetail(projectId);
   return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: `${currentUser.name} project ${projectId === project ? 'P' : 'Q'}`, repoUrl: 'https://example.com/repo', createdAt: stamp, updatedAt: stamp },
-    tasks: [{ requiredPlatform: detail.requiredPlatform, allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: null, completedAt: null, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp }],
-    summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 } };
+    tasks: [{ requiredPlatform: detail.requiredPlatform, allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: detail.startedAt, completedAt: detail.completedAt, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: detail.blockedBy, ready: detail.ready, createdAt: detail.createdAt, updatedAt: detail.updatedAt }],
+    summary: { total: 1, todo: detail.status === 'todo' ? 1 : 0, inProgress: detail.status === 'in_progress' ? 1 : 0, done: detail.status === 'done' ? 1 : 0, ready: detail.ready ? 1 : 0, blocked: 0 } };
 };
 const deferred = <T,>() => {
   let resolve!: (value: T) => void; let reject!: (error: unknown) => void;
   const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject };
 };
 let root: HTMLDivElement;
-const syncFixture = createGraphSyncFixture();
 beforeEach(() => {
-  syncFixture.reset();
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));
+  serverDetails.clear();
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, userId, signal) => {
+    expect(userId).toBe(currentUser.id);
+    return taskSyncFromGraph(await graphRequest(projectId, signal), { query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version });
+  });
 });
 
 beforeEach(() => {
@@ -66,7 +76,7 @@ beforeEach(() => {
   vi.mocked(listMembers).mockReset().mockImplementation(async (projectId) => [{ projectId, userId: currentUser.id, role: 'member', version: 1n,
     name: currentUser.name, email: currentUser.email, avatarUrl: null, createdAt: stamp, updatedAt: stamp }]);
   graphRequest.mockReset().mockImplementation(async (projectId) => graph(projectId));
-  vi.mocked(getTask).mockReset().mockImplementation(async (projectId) => initial(projectId));
+  vi.mocked(getTask).mockReset().mockImplementation(async (projectId, _taskId, _signal, admission) => { expect(admission.userId).toBe(currentUser.id); return serverDetail(projectId); });
   vi.mocked(setTaskStatus).mockReset();
 });
 afterEach(() => { cleanup(); root.remove(); });
@@ -91,7 +101,7 @@ describe('authenticated status ownership', () => {
     vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     mount(); await screen.findByRole('heading', { name: 'Alice project P' });
     let dialog = await open('Alice task P');
-    confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     const attachmentTab = within(dialog).getByRole('tab', { name: 'Attachments' });
     fireEvent.click(attachmentTab);
     returnFromAnotherWindow();
@@ -109,7 +119,9 @@ describe('authenticated status ownership', () => {
     expect(within(dialog).getByRole('button', { name: 'To do' })).toBeDisabled();
     expect(setTaskStatus).toHaveBeenCalledTimes(1);
     expect(vi.mocked(getTask).mock.calls.filter(([projectId]) => projectId === project)).toHaveLength(1);
-    await act(async () => { mutation.resolve({ ...original, status: 'in_progress', ready: false, startedAt: '2026-10-22T00:01:00Z', version: original.version + 1n, updatedAt: '2026-10-22T00:01:00Z' }); });
+    const updated: TaskDetail = { ...original, status: 'in_progress', ready: false, startedAt: '2026-10-22T00:01:00Z', version: original.version + 1n, updatedAt: '2026-10-22T00:01:00Z' };
+    serverDetails.set(`${alice.id}:${project}`, updated);
+    await act(async () => { mutation.resolve(updated); });
     await within(dialog).findByRole('button', { name: 'In progress' });
     expect(within(dialog).getByRole('button', { name: 'In progress' })).toBeVisible();
   });
@@ -119,7 +131,7 @@ describe('authenticated status ownership', () => {
     vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     mount(); await screen.findByRole('heading', { name: 'Alice project P' });
     let dialog = await open('Alice task P');
-    confirmStatus(within(dialog).getByRole('button', { name: 'To do' })); close(dialog);
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' })); close(dialog);
     currentUser = bob; returnFromAnotherWindow();
     await screen.findByRole('heading', { name: 'Bob project P' });
     dialog = await open('Bob task P');
@@ -138,7 +150,7 @@ describe('authenticated status ownership', () => {
     const mutation = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     mount(); await screen.findByRole('heading', { name: 'Alice project P' });
     const dialog = await open('Alice task P');
-    confirmStatus(within(dialog).getByRole('button', { name: 'To do' })); close(dialog);
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' })); close(dialog);
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
     await screen.findByRole('heading', { name: 'Sign in to your workspace' });
     const reads = vi.mocked(getTask).mock.calls.length;

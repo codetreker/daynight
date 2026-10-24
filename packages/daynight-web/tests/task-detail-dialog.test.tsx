@@ -1,14 +1,19 @@
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
-import { createLocaleRender, renderWithLocale } from './helpers/renderWithLocale';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { renderWithLocale } from './helpers/renderWithLocale';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ReactElement } from 'react';
 import type { GraphTask, Project, TaskDetail, TaskGraph } from '../src/api/types';
 import { stringifyApiJson } from '../src/api/json';
 import type { GraphSnapshot } from '../src/features/projects/useTaskGraph';
 import { TaskDetailDialog, type TaskDetailDialogProps } from '../src/features/task-detail/TaskDetailDialog';
+import { dialogFocusables } from '../src/features/task-detail/focus';
 import { buildGraphIndex } from '../src/features/task-graph/model';
+import { TEST_VIEWER_ID, viewerHeaders } from './helpers/taskSync';
+import { createTaskSessionWorld } from './helpers/taskSessions';
 
-const render = createLocaleRender('zh-CN');
+let world: ReturnType<typeof createTaskSessionWorld>;
+const snapshotDetails = new WeakMap<GraphSnapshot, readonly TaskDetail[]>();
 
 vi.mock('../src/features/task-detail/attachments/TaskAttachments', () => ({
   TaskAttachmentsPanel: ({ projectId, taskId }: { readonly projectId: string; readonly taskId: string }) => <section aria-label="附件" data-project-id={projectId} data-task-id={taskId}><input aria-label="附件草稿" defaultValue="" /></section>,
@@ -37,12 +42,14 @@ const snapshot = (tasks = [detail()], revision = 1): GraphSnapshot => {
       blocked: tasks.filter((task) => task.status === 'todo' && !task.ready).length,
     },
   };
-  return { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
+  const value = { observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision };
+  snapshotDetails.set(value, tasks);
+  return value;
 };
-const response = (task: TaskDetail) => new Response(stringifyApiJson(task), { headers: { 'Content-Type': 'application/json' } });
+const response = (task: TaskDetail) => new Response(stringifyApiJson(task), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
 const failure = (code = 'internal_error') => new Response(JSON.stringify({ error: {
   code, message: 'private database password', requestId: 'task-detail-request-123',
-} }), { status: code === 'not_found' ? 404 : 500, headers: { 'Content-Type': 'application/json' } });
+} }), { status: code === 'not_found' ? 404 : 500, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
   let reject!: (error: unknown) => void;
@@ -57,9 +64,17 @@ const props = (changes: Partial<TaskDetailDialogProps> = {}): TaskDetailDialogPr
   projectId, taskId: id(1), snapshot: snapshot(), onSelectTask: vi.fn(), onClose: vi.fn(),
   onRestoreFocus: () => trigger.focus(), onRefreshGraph: vi.fn(), ...changes,
 });
-const open = (options = props()) => render(<TaskDetailDialog {...options} />, { container: host });
+const open = async (options = props(), locale: 'en' | 'zh-CN' = 'zh-CN') => {
+  await world.sync(snapshotDetails.get(options.snapshot)!);
+  const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale, container: host, taskCache: { scope: world.scope } });
+  return { ...view, rerender: async (ui: ReactElement<TaskDetailDialogProps>) => {
+    await world.sync(snapshotDetails.get(ui.props.snapshot)!);
+    view.rerender(ui);
+  } };
+};
 
 beforeEach(() => {
+  world = createTaskSessionWorld();
   root = document.createElement('div');
   root.id = 'root';
   host = document.createElement('div');
@@ -69,7 +84,7 @@ beforeEach(() => {
   document.body.append(root);
   trigger.focus();
 });
-afterEach(() => { cleanup(); root.remove(); document.body.style.overflow = ''; });
+afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
   it('retranslates a to-do task and its unfinished to-do prerequisite without a ready badge or refetch', async () => {
@@ -78,7 +93,7 @@ describe('task detail dialog', () => {
     const fetch = vi.fn().mockResolvedValue(response(reviewed));
     vi.stubGlobal('fetch', fetch);
     const options = props({ snapshot: snapshot([reviewed, prerequisite]) });
-    const view = renderWithLocale(<TaskDetailDialog {...options} />, { locale: 'en', container: host });
+    const view = await open(options, 'en');
     await screen.findByRole('heading', { name: '任务 1' });
     const original = screen.getByRole('dialog', { name: reviewed.title });
     expect(within(original).getByRole('heading', { level: 2, name: reviewed.title }).closest('.task-detail-header')).not.toBeNull();
@@ -113,7 +128,7 @@ describe('task detail dialog', () => {
     const nextExternal = detail(5, { status: 'todo', dependsOn: [selected.id], externalDependsOn: [selected.id], blockedBy: [selected.id], ready: false });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(selected)));
     const options = props({ taskId: selected.id, snapshot: snapshot([ordinary, external, selected, nextOrdinary, nextExternal]) });
-    const view = open(options); await screen.findByRole('heading', { name: '任务 3' });
+    const view = await open(options); await screen.findByRole('heading', { name: '任务 3' });
     const predecessors = screen.getByRole('region', { name: '前置依赖' });
     const blockers = screen.getByRole('region', { name: '当前未完成的前置' });
     const successors = screen.getByRole('region', { name: '任务图快照中的直接后续' });
@@ -130,8 +145,8 @@ describe('task detail dialog', () => {
     fireEvent.click(externalSuccessor);
     expect(options.onSelectTask).toHaveBeenCalledWith(nextExternal.id);
     const changed = snapshot([ordinary, external, selected,
-      { ...nextOrdinary, externalDependsOn: [selected.id] }, { ...nextExternal, externalDependsOn: [] }], 2);
-    view.rerender(<TaskDetailDialog {...options} snapshot={changed} />);
+      { ...nextOrdinary, externalDependsOn: [selected.id], version: nextOrdinary.version + 1n }, { ...nextExternal, externalDependsOn: [], version: nextExternal.version + 1n }], 2);
+    await view.rerender(<TaskDetailDialog {...options} snapshot={changed} />);
     expect(within(successors).getByRole('button', { name: /任务 4.*外部依赖/ })).toBeVisible();
     expect(within(successors).getByRole('button', { name: /任务 5.*普通依赖/ })).toBeVisible();
     expect(within(predecessors).getByRole('button', { name: /任务 2.*外部依赖/ })).toBeVisible();
@@ -139,7 +154,7 @@ describe('task detail dialog', () => {
 
   it('opens on overview and keeps task-scoped attachments in their own mounted panel', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail())));
-    open();
+    await open();
     await screen.findByRole('heading', { name: '任务 1' });
     const overview = screen.getByRole('tabpanel', { name: '概览' });
     expect(overview).toContainElement(screen.getByRole('region', { name: '关联 PR' }));
@@ -160,16 +175,16 @@ describe('task detail dialog', () => {
     const fetch = vi.fn().mockReturnValue(pending.promise);
     vi.stubGlobal('fetch', fetch);
     document.body.style.overflow = 'scroll';
-    const view = open();
+    const view = await open();
     const dialog = screen.getByRole('dialog');
     expect(root.contains(dialog)).toBe(false);
     expect(root.hasAttribute('inert')).toBe(true);
     expect(document.body.style.overflow).toBe('hidden');
     expect(screen.getByRole('status')).toHaveAccessibleName('正在加载任务详情');
     expect(screen.getByRole('button', { name: '关闭任务详情' })).toHaveFocus();
-    expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/tasks/${id(1)}`);
+    await waitFor(() => expect(fetch.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/tasks/${id(1)}`));
     await act(async () => { pending.resolve(response(detail())); });
-    expect(screen.getByRole('heading', { name: '任务 1' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '任务 1' })).toBeVisible();
     expect(screen.getByText('可开始')).toBeVisible();
     expect(screen.getByText('无前置依赖')).toBeVisible();
     expect(screen.getByText('所有前置已完成')).toBeVisible();
@@ -195,7 +210,7 @@ describe('task detail dialog', () => {
       { title: '很长的标题'.repeat(200), url: 'x'.repeat(5000) },
     ];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail(1, { properties: { worker: null, pullRequests } }))));
-    open();
+    await open();
     const region = await screen.findByRole('region', { name: '关联 PR' });
     expect(within(region).getByRole('heading')).toHaveTextContent('关联 PR · 5');
     const items = within(region).getAllByRole('listitem');
@@ -219,7 +234,7 @@ describe('task detail dialog', () => {
       { title: '保留原值', url: '  HTTP://EXAMPLE.COM/pull/2  ' },
     ];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail(1, { properties: { worker: null, pullRequests } }))));
-    open();
+    await open();
     const region = await screen.findByRole('region', { name: '关联 PR' });
     const links = within(region).getAllByRole('link');
     expect(links).toHaveLength(2);
@@ -262,24 +277,24 @@ describe('task detail dialog', () => {
     expect(links[1]).toHaveFocus();
   });
 
-  it('rereads changed properties after graph refresh', async () => {
+  it('waits for a matching summary before publishing a newer detail body', async () => {
     const old = detail();
-    const fresh = detail(1, { properties: { worker: null, pullRequests: [{ title: '新的关联', url: 'arbitrary' }] }, updatedAt: '2026-10-21T10:00:00Z' });
-    const fetch = vi.fn().mockResolvedValueOnce(response(fresh)).mockResolvedValueOnce(response(fresh));
+    const fresh = detail(1, { version: 2n, properties: { worker: null, pullRequests: [{ title: '新的关联', url: 'arbitrary' }] }, updatedAt: '2026-10-21T10:00:00Z' });
+    const fetch = vi.fn().mockResolvedValueOnce(response(fresh));
     vi.stubGlobal('fetch', fetch);
     const initial = props({ snapshot: snapshot([old]) });
-    const view = open(initial);
-    await screen.findByRole('button', { name: '刷新任务图' });
-    expect(screen.getByText('新的关联')).toBeVisible();
-    view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([fresh], 2)} />);
+    const view = await open(initial);
+    await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    expect(screen.queryByText('新的关联')).toBeNull();
+    await view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([fresh], 2)} />);
     await screen.findByText('新的关联');
     expect(screen.queryByRole('button', { name: '刷新任务图' })).toBeNull();
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it('exposes malformed properties as a detail error without deriving an empty list', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stringifyApiJson({ ...detail(), properties: null }), { headers: { 'Content-Type': 'application/json' } })));
-    open();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stringifyApiJson({ ...detail(), properties: null }), { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) })));
+    await open();
     await screen.findByRole('alert');
     expect(screen.queryByText('暂无关联 PR')).toBeNull();
     expect(screen.queryByRole('region', { name: '关联 PR' })).toBeNull();
@@ -293,7 +308,7 @@ describe('task detail dialog', () => {
     const c = detail(3, { title: '后续任务', dependsOn: [b.id], blockedBy: [b.id], ready: false });
     const selected = vi.fn();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(b)));
-    open(props({ taskId: b.id, snapshot: snapshot([a, b, c]), onSelectTask: selected }));
+    await open(props({ taskId: b.id, snapshot: snapshot([a, b, c]), onSelectTask: selected }));
     await screen.findByRole('heading', { name: title });
     expect(screen.getByRole('region', { name: '描述' }).querySelector('.task-description')?.textContent).toBe(description);
     expect(document.querySelector('img')).toBeNull();
@@ -307,53 +322,53 @@ describe('task detail dialog', () => {
     expect(screen.getAllByText(b.id)).toHaveLength(1);
   });
 
-  it('lets unknown dependency IDs open details and labels unavailable successor context explicitly', async () => {
+  it('waits for a complete summary when navigation reaches a task outside the admitted graph', async () => {
+    const prerequisite = detail(9);
     const unknown = detail(8, { dependsOn: [id(9)], blockedBy: [id(9)], ready: false, description: '' });
-    const onRefreshGraph = vi.fn();
-    const onSelectTask = vi.fn();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(unknown)));
-    open(props({ taskId: unknown.id, onRefreshGraph, onSelectTask }));
-    await screen.findByRole('heading', { name: '任务 8' });
+    const fetch = vi.fn().mockResolvedValue(response(unknown));
+    vi.stubGlobal('fetch', fetch);
+    const initial = props({ taskId: unknown.id });
+    const view = await open(initial);
+    await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    expect(screen.queryByRole('heading', { name: unknown.title })).toBeNull();
+    await view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([detail(), unknown, prerequisite], 2)} />);
+    await screen.findByRole('heading', { name: unknown.title });
     expect(screen.getByText('暂无描述')).toBeVisible();
-    expect(screen.queryByText('无后续任务')).toBeNull();
-    expect(screen.getByText('当前任务尚未包含在任务图中，请刷新任务图以查看后续关系。')).toBeVisible();
-    const references = screen.getAllByRole('button', { name: `${id(9)}，普通依赖` });
+    const references = screen.getAllByRole('button', { name: `${prerequisite.title}，普通依赖` });
     expect(references).toHaveLength(2);
     fireEvent.click(references[0]!);
-    expect(onSelectTask).toHaveBeenCalledWith(id(9));
-    fireEvent.click(screen.getByRole('button', { name: '刷新任务图' }));
-    expect(onRefreshGraph).toHaveBeenCalledOnce();
+    expect(initial.onSelectTask).toHaveBeenCalledWith(prerequisite.id);
   });
 
-  it('detects readiness changes without timestamp changes and rereads details after graph refresh', async () => {
+  it('preserves raw readiness mismatch and rematerializes matching content after dependency sync', async () => {
     const old = detail(2, { dependsOn: [id(1)], blockedBy: [id(1)], ready: false });
     const fresh = detail(2, { dependsOn: [id(1)], blockedBy: [], ready: true });
-    const fetch = vi.fn().mockResolvedValueOnce(response(fresh)).mockResolvedValueOnce(response(fresh));
+    const fetch = vi.fn().mockResolvedValueOnce(response(fresh));
     vi.stubGlobal('fetch', fetch);
     const first = props({ taskId: old.id, snapshot: snapshot([detail(), old]) });
-    const view = open(first);
+    const view = await open(first);
     await screen.findByRole('button', { name: '刷新任务图' });
-    expect(screen.getByText('可开始')).toBeVisible();
-    const refreshed = snapshot([detail(1, { status: 'done', ready: false }), fresh], 2);
-    view.rerender(<TaskDetailDialog {...first} snapshot={refreshed} />);
+    expect(screen.getByText('被阻塞')).toBeVisible();
+    expect(screen.getByRole('button', { name: '待处理' })).toBeDisabled();
+    const refreshed = snapshot([detail(1, { status: 'done', ready: false, version: 2n }), fresh], 2);
+    await view.rerender(<TaskDetailDialog {...first} snapshot={refreshed} />);
     expect(document.querySelector('.task-detail-retained')).toBeNull();
     expect(screen.getByRole('heading', { name: fresh.title })).toBeVisible();
     await screen.findByRole('heading', { name: fresh.title });
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(screen.getByText('可开始')).toBeVisible();
     expect(screen.queryByRole('button', { name: '刷新任务图' })).toBeNull();
   });
 
   it.each([
     { locale: 'en', overview: 'Overview', statusLabel: 'To do' },
     { locale: 'zh-CN', overview: '概览', statusLabel: '待处理' },
-  ] as const)('keeps unchanged automatic reads quiet and status selection available in $locale', async ({ locale, overview, statusLabel }) => {
+  ] as const)('keeps unchanged summary receipts quiet and status selection available in $locale', async ({ locale, overview, statusLabel }) => {
     const reviewed = detail(1, { status: 'todo', ready: true });
-    const updates = [deferred<Response>(), deferred<Response>(), deferred<Response>()];
     const fetch = vi.fn().mockResolvedValueOnce(response(reviewed));
-    for (const update of updates) fetch.mockReturnValueOnce(update.promise);
     vi.stubGlobal('fetch', fetch);
     const initial = props({ snapshot: snapshot([reviewed]) });
-    const view = renderWithLocale(<TaskDetailDialog {...initial} />, { locale, container: host });
+    const view = await open(initial, locale);
     await screen.findByRole('heading', { name: reviewed.title });
     const heading = document.querySelector<HTMLElement>('.task-detail-heading')!;
     const panel = screen.getByRole('tabpanel', { name: overview });
@@ -361,18 +376,13 @@ describe('task detail dialog', () => {
     panel.scrollTop = 140;
     statusButton.focus();
 
-    for (const [index, update] of updates.entries()) {
-      view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([reviewed], index + 2)} />);
-      expect(fetch).toHaveBeenCalledTimes(index + 2);
+    for (const index of [0, 1, 2]) {
+      await view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([reviewed], index + 2)} />);
+      expect(fetch).toHaveBeenCalledOnce();
       expect(within(heading).queryByRole('status')).toBeNull();
       expect(statusButton).toBeEnabled();
       expect(statusButton).toHaveFocus();
       expect(screen.getByRole('tabpanel', { name: overview })).toBe(panel);
-      expect(panel.scrollTop).toBe(140);
-      await act(async () => { update.resolve(response(reviewed)); });
-      expect(within(heading).queryByRole('status')).toBeNull();
-      expect(statusButton).toBeEnabled();
-      expect(statusButton).toHaveFocus();
       expect(panel.scrollTop).toBe(140);
     }
   });
@@ -382,8 +392,9 @@ describe('task detail dialog', () => {
     const recovery = deferred<Response>();
     const fetch = vi.fn().mockResolvedValueOnce(response(detail())).mockReturnValueOnce(update.promise).mockReturnValueOnce(recovery.promise);
     vi.stubGlobal('fetch', fetch);
+    const fresh = detail(1, { description: '新的描述', version: 2n });
     const initial = props();
-    const view = open(initial);
+    const view = await open(initial);
     await screen.findByRole('heading', { name: '任务 1' });
     fireEvent.click(screen.getByRole('tab', { name: '附件' }));
     const panel = screen.getByRole('tabpanel', { name: '附件' });
@@ -393,7 +404,8 @@ describe('task detail dialog', () => {
     draft.focus();
     const body = document.querySelector('.task-detail-body')!;
     body.scrollTop = 140;
-    view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([detail()], 2)} />);
+    await view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([fresh], 2)} />);
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     expect(screen.queryByText('正在加载任务详情')).toBeNull();
     expect(screen.getByRole('tabpanel', { name: '附件' })).toBe(panel);
     expect(screen.getByRole('region', { name: '附件' })).toBe(attachment);
@@ -405,11 +417,11 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('region', { name: '附件' })).toBe(attachment);
     expect(draft).toHaveValue('notes/working.md');
     expect(draft).toHaveFocus();
-    view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([detail()], 3)} />);
+    await view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([fresh], 3)} />);
     expect(screen.getByRole('alert')).toBeVisible();
     expect(screen.getByText('当前显示之前读取的任务详情，确认最新详情前无法修改任务。')).toBe(retained);
-    await act(async () => { recovery.resolve(response(detail(1, { description: '新的描述' }))); });
-    expect(screen.queryByRole('alert')).toBeNull();
+    await act(async () => { recovery.resolve(response(fresh)); });
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
     expect(document.querySelector('.task-detail-retained')).toBeNull();
     expect(screen.getByRole('tabpanel', { name: '附件' })).toBe(panel);
     expect(screen.getByRole('region', { name: '附件' })).toBe(attachment);
@@ -426,29 +438,30 @@ describe('task detail dialog', () => {
     const update = deferred<Response>();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response(original)).mockReturnValueOnce(update.promise));
     const initial = props({ snapshot: snapshot([original]) });
-    const view = open(initial);
+    const view = await open(initial);
     const next = await screen.findByRole('button', { name: '下一页' });
     fireEvent.click(next);
     const page = screen.getByRole('combobox', { name: '关联 PR 页码' });
     page.focus();
     expect(page).toHaveValue('1');
     expect(screen.getByText('PR 100')).toBeVisible();
-    view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([original], 2)} />);
-    await act(async () => { update.resolve(response({ ...original, description: '新的描述' })); });
+    const fresh = { ...original, description: '新的描述', version: original.version + 1n };
+    await view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([fresh], 2)} />);
+    await act(async () => { update.resolve(response(fresh)); });
     expect(screen.getByRole('combobox', { name: '关联 PR 页码' })).toBe(page);
     expect(page).toHaveValue('1');
     expect(page).toHaveFocus();
     expect(screen.getByText('PR 100')).toBeVisible();
-    expect(screen.getByText('新的描述')).toBeVisible();
+    expect(await screen.findByText('新的描述')).toBeVisible();
   });
 
   it('removes retained content and attachments when a refresh reports a missing task', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(response(detail())).mockResolvedValueOnce(failure('not_found'));
     vi.stubGlobal('fetch', fetch);
     const initial = props();
-    const view = open(initial);
+    const view = await open(initial);
     await screen.findByRole('heading', { name: '任务 1' });
-    view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([detail()], 2)} />);
+    await view.rerender(<TaskDetailDialog {...initial} snapshot={snapshot([detail(1, { version: 2n })], 2)} />);
     await screen.findByRole('alert');
     expect(screen.queryByRole('heading', { name: '任务 1' })).toBeNull();
     expect(document.querySelector('[data-task-id]')).toBeNull();
@@ -462,14 +475,15 @@ describe('task detail dialog', () => {
     vi.stubGlobal('fetch', fetch);
     const originalRestore = vi.fn();
     const latestRestore = vi.fn(() => trigger.focus());
-    const initial = props({ onRestoreFocus: originalRestore });
-    const view = open(initial);
+    const initial = props({ onRestoreFocus: originalRestore, snapshot: snapshot([detail(), detail(2), detail(3)]) });
+    const view = await open(initial);
     await screen.findByRole('heading', { name: '任务 1' });
-    view.rerender(<TaskDetailDialog {...initial} taskId={id(2)} />);
+    await view.rerender(<TaskDetailDialog {...initial} taskId={id(2)} />);
     expect(screen.queryByRole('heading', { name: '任务 1' })).toBeNull();
     expect(screen.getByRole('status')).toHaveAccessibleName('正在加载任务详情');
+    await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     const firstSignal = fetch.mock.calls[1]?.[1].signal as AbortSignal;
-    view.rerender(<TaskDetailDialog {...initial} taskId={id(3)} onRestoreFocus={latestRestore} />);
+    await view.rerender(<TaskDetailDialog {...initial} taskId={id(3)} onRestoreFocus={latestRestore} />);
     expect(firstSignal.aborted).toBe(true);
     await act(async () => { second.resolve(response(detail(3))); });
     await screen.findByRole('heading', { name: '任务 3' });
@@ -486,10 +500,10 @@ describe('task detail dialog', () => {
 
   it('keeps failures local, hides private errors, and retries with fresh detail', async () => {
     const fetch = vi.fn().mockResolvedValueOnce(failure()).mockRejectedValueOnce(new Error('private token'))
-      .mockResolvedValueOnce(new Response('{}', { headers: { 'Content-Type': 'application/json' } }))
-      .mockResolvedValueOnce(response(detail(1, { status: 'in_progress', ready: false })));
+      .mockResolvedValueOnce(new Response('{}', { headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) }))
+      .mockResolvedValueOnce(response(detail()));
     vi.stubGlobal('fetch', fetch);
-    open();
+    await open();
     const alert = await screen.findByRole('alert');
     expect(alert).toHaveAccessibleName('任务详情加载失败');
     expect(alert).toHaveTextContent('task-detail-request-123');
@@ -503,14 +517,14 @@ describe('task detail dialog', () => {
     expect(screen.getByText('暂时无法读取任务详情，请重试。')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '重试详情' }));
     await screen.findByRole('heading', { name: '任务 1' });
-    expect(screen.getByText('进行中')).toBeVisible();
+    expect(screen.getByRole('button', { name: '待处理' })).toBeVisible();
     expect(screen.queryByRole('alert')).toBeNull();
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
   it('shows a useful not-found message without inventing task content', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(failure('not_found')));
-    open();
+    await open();
     await screen.findByRole('alert');
     expect(screen.getByText('这个任务已无法读取，请刷新任务图。')).toBeVisible();
     expect(screen.queryByRole('heading', { name: '任务 1' })).toBeNull();
@@ -523,7 +537,7 @@ describe('task detail dialog', () => {
     const onClose = vi.fn();
     vi.stubGlobal('fetch', fetch);
     const options = props({ onClose });
-    open(options);
+    await open(options);
     const close = screen.getByRole('button', { name: '关闭任务详情' });
     const user = userEvent.setup();
     await user.tab();
@@ -567,7 +581,7 @@ describe('task detail dialog', () => {
     const restored = vi.fn();
     vi.stubGlobal('fetch', fetch);
     const options = props({ snapshot: snapshot([first, second]), onSelectTask: selected, onRestoreFocus: restored });
-    const view = open(options);
+    const view = await open(options);
     const successor = await screen.findByRole('button', { name: /^任务 2，普通依赖$/ });
     const shell = screen.getByRole('dialog');
     const close = screen.getByRole('button', { name: '关闭任务详情' });
@@ -575,7 +589,7 @@ describe('task detail dialog', () => {
     successor.focus();
     await user.keyboard('{Enter}');
     expect(selected).toHaveBeenCalledWith(second.id);
-    view.rerender(<TaskDetailDialog {...options} taskId={second.id} />);
+    await view.rerender(<TaskDetailDialog {...options} taskId={second.id} />);
     expect(screen.getByRole('dialog')).toBe(shell);
     expect(screen.getByRole('button', { name: '关闭任务详情' })).toBe(close);
     expect(document.body.style.overflow).toBe('hidden');
@@ -590,7 +604,7 @@ describe('task detail dialog', () => {
     expect(restored).not.toHaveBeenCalled();
   });
 
-  it('removes the portal, inert state, scroll lock, and keyboard listener before restoring focus', () => {
+  it('removes the portal, inert state, scroll lock, and keyboard listener before restoring focus', async () => {
     vi.stubGlobal('fetch', vi.fn().mockReturnValue(new Promise<Response>(() => {})));
     document.body.style.overflow = 'auto';
     const onClose = vi.fn();
@@ -602,60 +616,36 @@ describe('task detail dialog', () => {
       fireEvent.keyDown(trigger, { key: 'Escape' });
       expect(onClose).not.toHaveBeenCalled();
     });
-    const view = open(props({ onClose, onRestoreFocus }));
+    const view = await open(props({ onClose, onRestoreFocus }));
     view.unmount();
     expect(onRestoreFocus).toHaveBeenCalledOnce();
     expect(trigger).toHaveFocus();
   });
 
   it('keeps graph refresh and truncated relation controls in the current focus cycle', async () => {
-    const first = detail(1, { status: 'done', ready: false });
+    const prerequisite = detail(3, { status: 'done', ready: false });
+    const first = detail(1, { status: 'done', ready: false, dependsOn: [prerequisite.id] });
     const second = detail(2, { title: '很长的后续任务标题'.repeat(30), dependsOn: [first.id], blockedBy: [], ready: true });
-    const latest = { ...first, updatedAt: '2026-10-20T10:00:00.000000001Z' };
+    const latest = { ...first, blockedBy: [prerequisite.id] };
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(latest)));
-    open(props({ snapshot: snapshot([first, second]) }));
-    await screen.findByRole('heading', { name: first.title });
-    expect(screen.getByText('已完成')).toBeVisible();
-    const close = screen.getByRole('button', { name: '关闭任务详情' });
-    const refresh = screen.getByRole('button', { name: '刷新任务图' });
+    await open(props({ snapshot: snapshot([first, second, prerequisite]) }));
+    const refresh = await screen.findByRole('button', { name: '刷新任务图' });
+    const dialog = screen.getByRole('dialog');
     const successor = screen.getByRole('button', { name: `${Array.from(second.title).slice(0, 160).join('')}…，普通依赖` });
+    expect(screen.getByRole('button', { name: '已完成' })).toBeDisabled();
+    const controls = dialogFocusables(dialog);
+    expect(controls).toContain(refresh);
+    expect(controls).toContain(successor);
     const user = userEvent.setup();
-    await user.tab();
-    expect(screen.getByRole('combobox', { name: '执行平台' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('switch', { name: '自动执行' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('tab', { name: '概览' })).toHaveFocus();
-    await user.tab();
-    expect(successor).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('button', { name: '复制任务 ID' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('button', { name: '关闭提示' })).toHaveFocus();
-    await user.tab();
-    expect(refresh).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('heading', { name: first.title })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('button', { name: '已完成' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
-    await user.tab();
-    expect(close).toHaveFocus();
-    await user.tab({ shift: true });
-    expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
-    await user.tab({ shift: true });
-    expect(screen.getByRole('button', { name: '已完成' })).toHaveFocus();
-    await user.tab({ shift: true });
-    expect(screen.getByRole('heading', { name: first.title })).toHaveFocus();
-    await user.tab({ shift: true });
-    expect(refresh).toHaveFocus();
-    await user.tab({ shift: true });
-    expect(screen.getByRole('button', { name: '关闭提示' })).toHaveFocus();
-    await user.tab({ shift: true });
-    expect(screen.getByRole('button', { name: '复制任务 ID' })).toHaveFocus();
-    await user.tab({ shift: true });
-    expect(successor).toHaveFocus();
+    controls[0]!.focus();
+    for (let index = 1; index <= controls.length; index++) {
+      await user.tab();
+      expect(controls[index % controls.length]).toHaveFocus();
+    }
+    for (let index = controls.length - 1; index >= 0; index--) {
+      await user.tab({ shift: true });
+      expect(controls[index]).toHaveFocus();
+    }
   });
 
   it('cancels in-flight details on close and preserves pre-existing inert state', async () => {
@@ -663,7 +653,8 @@ describe('task detail dialog', () => {
     const fetch = vi.fn().mockReturnValue(pending.promise);
     vi.stubGlobal('fetch', fetch);
     root.setAttribute('inert', '');
-    const view = open();
+    const view = await open();
+    await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
     const signal = fetch.mock.calls[0]?.[1].signal as AbortSignal;
     view.unmount();
     expect(signal.aborted).toBe(true);

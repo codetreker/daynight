@@ -1,5 +1,7 @@
-import { createGraphSyncFixture } from "./helpers/taskSync";
-import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import { performance as nodePerformance } from 'node:perf_hooks';
+import { TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
+import { act, cleanup, fireEvent, screen, waitFor as waitForWithRealTimers, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { ApiError, setTaskStatus, checkAttachmentPreview, getTask, getTaskSync, listAttachments, putAttachment, readAttachmentText } from '../src/api/client';
@@ -13,13 +15,26 @@ vi.mock('../src/api/client', async (original) => ({ ...await original<typeof imp
   getTask: vi.fn(), getTaskSync: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(), putAttachment: vi.fn(),
   readAttachmentText: vi.fn(), checkAttachmentPreview: vi.fn(),
 }));
+// Durable cache checks finish on event-loop tasks while polling time stays under test control.
+const waitFor: typeof waitForWithRealTimers = async (assertion, options) => {
+  if (!vi.isFakeTimers()) return waitForWithRealTimers(assertion, options);
+  const deadline = nodePerformance.now() + (options?.timeout ?? 1_000);
+  for (;;) {
+    await act(async () => { await nextEventLoopTurn(); });
+    try { return await assertion(); }
+    catch (error) { if (nodePerformance.now() >= deadline) throw error; }
+  }
+};
+
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 
-const confirmStatus = (button: HTMLElement) => {
+const confirmStatus = async (button: HTMLElement) => {
+  const previousWrites = vi.mocked(setTaskStatus).mock.calls.length;
   fireEvent.click(button);
   fireEvent.click(screen.getByRole('menuitemradio', { name: 'In progress' }));
   const confirmation = screen.getByRole('alertdialog', { name: 'Set task status' });
   fireEvent.click(within(confirmation).getByRole('button', { name: 'Confirm status' }));
+  await waitFor(() => expect(setTaskStatus).toHaveBeenCalledTimes(previousWrites + 1));
 };
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const project = id(100); const parent = id(1); const child = id(2); const standalone = id(3);
@@ -28,10 +43,11 @@ const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => 
   version: 9007199254740993n, title: `Task ${number}`, description: `Complete description ${number}`, properties: { worker: null, pullRequests: [] },
   status: 'todo', dependsOn, blockedBy: [], ready: true, createdAt: time, updatedAt: time });
 let records: Map<string, TaskDetail>;
+const otherRecords = new Map<string, TaskDetail>();
 const graph = (): TaskGraph => {
   const tasks = [...records.values()].map((task) => {
     const blockedBy = task.dependsOn.filter((dependency) => records.get(dependency)!.status !== 'done');
-    return { requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: null, completedAt: null, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
+    return { requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0, createdAt: time, updatedAt: task.updatedAt };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: project, name: 'Approval project', repoUrl: 'https://example.com/repo', createdAt: time, updatedAt: time }, tasks,
@@ -51,15 +67,14 @@ const deferred = <T,>() => {
 };
 const stat = (label: string) => screen.getByText(label, { selector: '.stat-label' }).parentElement!.querySelector('.stat-number')!;
 let root: HTMLDivElement;
-const syncFixture = createGraphSyncFixture();
 beforeEach(() => {
-  syncFixture.reset();
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => (projectId === project ? records : otherRecords).get(task.id)!.version }));
 });
 
 beforeEach(() => {
   installGraphMeasurements();
   root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+  otherRecords.clear();
   records = new Map([{ ...seed(1), status: 'done' as const, ready: false }, seed(2, [parent]), seed(3)].map((task) => [task.id, task]));
   graphRequest.mockReset().mockImplementation(async () => graph());
   vi.mocked(getTask).mockReset().mockImplementation(async (_project, taskId) => records.get(taskId)!);
@@ -94,7 +109,7 @@ describe('status in shared production task details', () => {
     let otherReads = 0;
     vi.mocked(getTask).mockImplementation(async (_project, taskId) => taskId === standalone && ++otherReads === 2 ? refresh.promise : records.get(taskId)!);
     mount(); let dialog = await openChild();
-    confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
@@ -160,7 +175,7 @@ describe('status in shared production task details', () => {
     });
     vi.mocked(setTaskStatus).mockRejectedValueOnce(original);
     mount(); const dialog = await openChild();
-    confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     const failed = await within(dialog).findByRole('heading', { name: 'Task details could not be loaded' });
     const alert = within(dialog).getByRole('alert', { name: failed.textContent! });
     expect(alert).toHaveTextContent('This task can no longer be read. Refresh the task graph.');
@@ -179,15 +194,16 @@ describe('status in shared production task details', () => {
     expect(dialog.querySelector('.task-detail-panels')).toBeNull();
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry details' }));
     await within(dialog).findByRole('heading', { name: 'Task 2' });
-    await waitFor(() => expect(reads).toBe(4));
+    await waitFor(() => expect(reads).toBe(3));
     expect(setTaskStatus).toHaveBeenCalledTimes(1);
-    expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled();
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled());
     expect(within(dialog).getByText('The status request did not receive a confirmed response from the service.')).toBeVisible();
   });
 
   it('owns pending status across real App project routes and isolates its late result from the current project', async () => {
     const otherProject = id(200); const otherTask = id(4);
     const other = { ...seed(4), projectId: otherProject };
+    otherRecords.set(otherTask, other);
     const otherGraph: TaskGraph = { observedAt: "2026-10-20T12:00:00Z",
       project: { ...graph().project, id: otherProject, name: 'Other project' },
       tasks: [{ requiredPlatform: other.requiredPlatform, allowAgents: other.allowAgents, externalDependsOn: other.externalDependsOn, startedAt: null, completedAt: null, id: otherTask, titlePreview: other.title, titleTruncated: false, status: 'todo',
@@ -213,7 +229,7 @@ describe('status in shared production task details', () => {
     const close = (dialog: HTMLElement) => fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     await screen.findByRole('heading', { name: 'Approval project' });
     let dialog = await openStandalone('Task 3');
-    confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     close(dialog);
     await navigateProject(otherProject, 'Other project');
     dialog = await openStandalone('Task 4');
@@ -231,7 +247,7 @@ describe('status in shared production task details', () => {
     await act(async () => { mutation.resolve(commit(standalone)); });
     expect(within(dialog).getByRole('heading', { name: 'Task 4' })).toBeVisible();
     expect(within(dialog).getByRole('button', { name: 'To do' })).toBeVisible();
-    expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled();
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled());
     expect(graphRequest.mock.calls.filter(([projectId]) => projectId === otherProject)).toHaveLength(otherGraphCalls);
     close(dialog);
     await navigateProject(project, 'Approval project');
@@ -239,7 +255,7 @@ describe('status in shared production task details', () => {
     expect(within(dialog).getByRole('button', { name: 'In progress' })).toBeVisible();
     expect(within(dialog).queryByText('Task status confirmed.')).toBeNull();
     expect(within(dialog).queryByRole('button', { name: 'To do' })).toBeNull();
-    expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, standalone, 'in_progress', 9007199254740993n, expect.any(AbortSignal));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, standalone, 'in_progress', 9007199254740993n, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
   });
 
   it.each(['in_progress', 'done'] as const)('retains the status receipt when a later detail read reaches %s', async (status) => {
@@ -249,7 +265,7 @@ describe('status in shared production task details', () => {
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
     let dialog = screen.getByRole('dialog');
     await within(dialog).findByRole('heading', { name: 'Task 3' });
-    confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await within(dialog).findByText('Task status confirmed.');
     const current = records.get(standalone)!;
     records.set(standalone, { ...current, status, ready: false, version: current.version + 1n, updatedAt: '2026-10-22T00:02:00Z' });
@@ -258,7 +274,7 @@ describe('status in shared production task details', () => {
     dialog = screen.getByRole('dialog');
     await within(dialog).findByRole('button', { name: status === 'done' ? 'Done' : 'In progress' });
     expect(within(dialog).queryByText('Task status confirmed.')).toBeNull();
-    expect(within(dialog).getByRole('button', { name: status === 'done' ? 'Done' : 'In progress' })).toBeEnabled();
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: status === 'done' ? 'Done' : 'In progress' })).toBeEnabled());
     expect(within(dialog).queryByRole('button', { name: 'To do' })).toBeNull();
     view.setLocale('zh-CN');
     expect(within(dialog).queryByText('任务状态已确认。')).toBeNull();
@@ -282,13 +298,13 @@ describe('status in shared production task details', () => {
     let dialog = await openChild();
     expect(within(dialog).getByRole('region', { name: 'Unfinished prerequisites' })).toHaveTextContent('All prerequisites are complete');
     const action = within(dialog).getByRole('button', { name: 'To do' });
-    confirmStatus(action); fireEvent.click(action);
+    await confirmStatus(action); fireEvent.click(action);
     expect(action).toBeDisabled();
     expect(within(dialog).getByRole('region', { name: 'Task status' })).toHaveAttribute('aria-busy', 'true');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     dialog = await openChild();
     expect(within(dialog).getByRole('button', { name: 'To do' })).toBeDisabled();
-    expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, child, 'in_progress', 9007199254740993n, expect.any(AbortSignal));
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(project, child, 'in_progress', 9007199254740993n, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
     expect(getTask).toHaveBeenCalledTimes(1);
     await act(async () => { mutation.resolve(commit()); });
     await waitFor(() => expect(stat('In progress')).toHaveTextContent('1'));
@@ -310,7 +326,7 @@ describe('status in shared production task details', () => {
     vi.mocked(setTaskStatus).mockImplementation(async () => commit());
     graphRequest.mockResolvedValueOnce(graph()).mockRejectedValueOnce(new ApiError('network')).mockImplementation(async () => graph());
     mount(); const dialog = await openChild();
-    confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
+    await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await within(dialog).findByText('Task status confirmed.');
     await screen.findByRole('heading', { name: 'Refresh failed' });
     expect(within(dialog).getByText(/The status response is confirmed and retained/)).toBeVisible();
@@ -319,7 +335,7 @@ describe('status in shared production task details', () => {
     expect(stat('To do')).toHaveTextContent('2');
     fireEvent.click(within(dialog).getByRole('button', { name: 'Refresh task graph' }));
     await waitFor(() => expect(stat('In progress')).toHaveTextContent('1'));
-    expect(within(dialog).queryByText(/The status response is confirmed and retained/)).toBeNull();
+    await waitFor(() => expect(within(dialog).queryByText(/The status response is confirmed and retained/)).toBeNull());
     expect(within(dialog).queryByRole('button', { name: 'To do' })).toBeNull();
   });
 
@@ -331,14 +347,14 @@ describe('status in shared production task details', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
     const oldSignal = graphRequest.mock.calls[1]![1]; const oldGraph = graph();
-    const dialog = await openChild(); confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
+    const dialog = await openChild(); await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
     const otherDialog = screen.getByRole('dialog');
     await within(otherDialog).findByRole('heading', { name: 'Task 3' });
     await act(async () => { mutation.resolve(commit()); });
-    expect(oldSignal.aborted).toBe(true);
+    await waitFor(() => expect(oldSignal.aborted).toBe(true));
     await act(async () => { obsolete.resolve(oldGraph); });
     expect(within(otherDialog).getByRole('heading', { name: 'Task 3' })).toBeVisible();
     await act(async () => { fresh.resolve(graph()); });

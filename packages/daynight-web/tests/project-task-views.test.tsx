@@ -51,11 +51,17 @@ let root: HTMLDivElement;
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
 const syncFixture = createGraphSyncFixture();
+const servedGraphs = new Map<string, TaskGraph>();
+const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
   syncFixture.reset();
+  servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
-    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+    const sync = syncFixture.toSync(value, query, replacementEpochs.get(value));
+    servedGraphs.set(projectId, value);
+    for (const task of sync.tasks) servedVersions.set(`${projectId}/${task.id}`, task.version);
+    return sync;
   });
 });
 
@@ -63,10 +69,10 @@ beforeEach(() => {
   root = document.createElement('div'); root.id = 'root'; document.body.append(root);
   graphRequest.mockReset(); graphRequest.mockImplementation(async (id) => snapshot(seeds, id));
   vi.mocked(getTask).mockReset();
-  vi.mocked(getTask).mockImplementation(async (projectId, id) => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
-    id, projectId, title: `详情 ${id}`, description: '', properties: { worker: null, pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true,
-    createdAt: timestamp, updatedAt: timestamp,
-  }));
+  vi.mocked(getTask).mockImplementation(async (projectId, id) => {
+    const task = servedGraphs.get(projectId)!.tasks.find((item) => item.id === id)!;
+    return { ...task, id, projectId, title: task.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: servedVersions.get(`${projectId}/${id}`)! };
+  });
 });
 afterEach(() => { cleanup(); root.remove(); });
 const mount = () => {
@@ -78,7 +84,7 @@ const openStandalone = async (id: string) => {
   fireEvent.click(tab('standalone'));
   const trigger = row(id); trigger.focus(); fireEvent.click(trigger);
   const dialog = screen.getByRole('dialog');
-  await within(dialog).findByRole('heading', { name: `详情 ${id}` });
+  await within(dialog).findByRole('heading', { name: `任务 ${id}` });
   return { trigger, dialog };
 };
 
@@ -292,23 +298,25 @@ describe('project task views', () => {
   });
 
   it('keeps details when refresh adds an edge and returns focus to the active category tab when its row vanishes', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     graphRequest.mockResolvedValueOnce(snapshot([seed(canonicalTask(3))])).mockResolvedValueOnce(snapshot([seed(canonicalTask(3)), seed(canonicalTask(4), 'todo', [canonicalTask(3)])]));
     mount(); await screen.findByRole('tab', { name: '独立任务' }); const { trigger, dialog } = await openStandalone(canonicalTask(3));
-    fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     await screen.findByRole('heading', { name: '暂无独立任务' });
     expectUnfinishedCounts(2, 0);
     expect(trigger.isConnected).toBe(false); expect(dialog).toBeVisible();
-    await waitFor(() => expect(getTask).toHaveBeenCalledTimes(2));
+    expect(getTask).toHaveBeenCalledOnce();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     await waitFor(() => expect(tab('standalone')).toHaveFocus());
     fireEvent.click(tab('chains')); expect(document.getElementById(`task-root-${canonicalTask(3)}`)).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('keeps details while refresh removes an edge and falls back to the still-active chain tab', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     graphRequest.mockResolvedValueOnce(snapshot([seed(canonicalTask(1)), seed(canonicalTask(2), 'todo', [canonicalTask(1)])])).mockResolvedValueOnce(snapshot([seed(canonicalTask(1)), seed(canonicalTask(2))]));
     mount(); fireEvent.click(await screen.findByTestId('graph-node'));
-    const dialog = await screen.findByRole('dialog'); await within(dialog).findByRole('heading', { name: `详情 ${canonicalTask(1)}` });
-    fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
+    const dialog = await screen.findByRole('dialog'); await within(dialog).findByRole('heading', { name: `任务 ${canonicalTask(1)}` });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     await screen.findByRole('heading', { name: '暂无任务链' }); expect(dialog).toBeVisible();
     expectUnfinishedCounts(0, 2);
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' }); await waitFor(() => expect(tab('chains')).toHaveFocus());
