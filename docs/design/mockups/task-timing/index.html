@@ -23,7 +23,7 @@
 
 <body>
   <main class="preview">
-    <header class="preview-header"><p class="eyebrow">TASK CARDS</p><h1>任务执行耗时</h1><p class="subtitle">进行中的任务实时展示耗时；超过项目提醒阈值时，醒目标记「可能卡住了」。</p></header>
+    <header class="preview-header"><p class="eyebrow">TASK CARDS</p><h1>任务执行耗时</h1><p class="subtitle">进行中的任务实时展示耗时；允许 Agent 的任务超过项目提醒阈值时，醒目标记「可能卡住了」。</p></header>
     <aside class="preview-controls" aria-labelledby="preview-controls-title">
       <h2 class="control-heading" id="preview-controls-title">Preview controls</h2>
       <div class="control-row"><label>Project <select id="project"><option value="alpha">项目 Alpha</option><option value="beta">项目 Beta</option></select></label><label>Viewport <select id="width"><option value="wide">Wide</option><option value="narrow">Narrow · 320 px</option></select></label><label>Data state <select id="data-state"><option value="loaded">Loaded</option><option value="loading">Loading</option><option value="error">Error</option><option value="empty">Empty</option></select></label><label>Language <select id="locale"><option value="zh-CN">简体中文</option><option value="en">English</option></select></label></div>
@@ -33,13 +33,13 @@
     <section class="product-surface" id="samples" aria-label="任务卡片展示">
       <div class="surface-toolbar"><h2 id="cards-heading">项目 Alpha · 任务卡片</h2><span id="saved-summary"></span></div>
       <div id="sample-content"></div>
-      <p class="surface-foot" id="timing-foot">从最后一次进入「进行中」开始计时；完成后固定耗时。仅进行中任务的实际耗时超过阈值时显示提醒。</p><p class="surface-foot inspection-summary" id="inspection-summary" role="status">点击卡片选择任务；「详情」独立打开内容。</p>
+      <p class="surface-foot" id="timing-foot">从最后一次进入「进行中」开始计时；完成后固定耗时。仅允许 Agent 的进行中任务实际耗时超过阈值时显示提醒。</p><p class="surface-foot inspection-summary" id="inspection-summary" role="status">点击卡片选择任务；「详情」独立打开内容。</p>
     </section>
     <div class="settings-heading"><p class="eyebrow" id="settings-eyebrow">项目设置</p><h2 id="settings-heading">项目 Alpha</h2><p id="settings-scope-hint">设置仅适用于当前项目。</p></div>
     <section class="panel product-surface" id="settings" aria-labelledby="threshold-title">
-      <div class="panel-heading"><div><h2 id="threshold-title">任务执行提醒</h2><p id="threshold-description">为执行时间过长的进行中任务显示「可能卡住了」。</p></div><span class="settings-scope" id="settings-scope-label">项目级设置</span></div>
+      <div class="panel-heading"><div><h2 id="threshold-title">任务执行提醒</h2><p id="threshold-description">为允许 Agent 且执行时间过长的进行中任务显示「可能卡住了」。</p></div><span class="settings-scope" id="settings-scope-label">项目级设置</span></div>
       <form class="panel-body" id="threshold-form" novalidate>
-        <div class="field"><label for="threshold" id="threshold-label">提醒阈值</label><div class="number-unit"><input id="threshold" name="threshold" type="number" min="1" step="1" value="60" required aria-describedby="threshold-hint threshold-error"><span id="threshold-unit">分钟</span></div><p class="hint" id="threshold-hint">默认 60 分钟。任务耗时等于阈值时不提醒；超过阈值后提醒。保存后应用到当前项目的进行中任务。</p><p class="field-error" id="threshold-error" role="alert" hidden></p></div>
+        <div class="field"><label for="threshold" id="threshold-label">提醒阈值</label><div class="number-unit"><input id="threshold" name="threshold" type="number" min="1" step="1" value="60" required aria-describedby="threshold-hint threshold-error"><span id="threshold-unit">分钟</span></div><p class="hint" id="threshold-hint">默认 60 分钟。任务耗时等于阈值时不提醒；超过阈值后提醒。保存后应用到当前项目允许 Agent 的进行中任务。</p><p class="field-error" id="threshold-error" role="alert" hidden></p></div>
         <div class="settings-actions"><button class="button primary" id="save-threshold" type="submit">保存设置</button><button class="button" id="cancel-threshold" type="button">取消</button><span class="settings-state" id="settings-message" role="status"></span></div>
       </form>
     </section>
@@ -68,33 +68,34 @@
     let inspectedId = null;
     let detailTaskId = null;
     let showContext = false;
-    let live = {id:'d94f7821',title:'展示最近一次任务执行耗时',status:'in_progress',start:initialTime-45*60000,end:null};
+    let live = {id:'d94f7821',allowAgents:true,title:'展示最近一次任务执行耗时',status:'in_progress',start:initialTime-45*60000,end:null};
     let pending = null;
     let settingsMessage = '';
     const settingsCopy = {
-      'zh-CN':{eyebrow:'项目设置',scopeHint:'设置仅适用于当前项目。',title:'任务执行提醒',description:'为执行时间过长的进行中任务显示「可能卡住了」。',scope:'项目级设置',label:'提醒阈值',unit:'分钟',hint:'默认 60 分钟。任务耗时等于阈值时不提醒；超过阈值后提醒。保存后应用到当前项目的进行中任务。',save:'保存设置',busy:'保存中…',cancel:'取消',invalid:'请输入大于 0 的整数分钟数。',failed:'保存失败，请重试。当前生效的阈值保持不变。',saved:'设置已保存。',pending:'正在保存…',unsaved:'尚未保存；卡片继续使用已保存的阈值。',cancelled:'已取消修改。',cards:'任务卡片'},
-      en:{eyebrow:'PROJECT SETTINGS',scopeHint:'Settings apply to the current project only.',title:'Task execution alerts',description:'Show “Possibly stuck” on tasks that remain in progress beyond the threshold.',scope:'Project setting',label:'Alert threshold',unit:'minutes',hint:'Default: 60 minutes. No warning at exactly the threshold; warn only after it is exceeded. Saving applies the threshold to this project’s running tasks.',save:'Save settings',busy:'Saving…',cancel:'Cancel',invalid:'Enter a positive whole number of minutes.',failed:'Save failed. Please retry. The saved threshold remains in effect.',saved:'Settings saved.',pending:'Saving…',unsaved:'Unsaved changes; cards still use the saved threshold.',cancelled:'Changes cancelled.',cards:'Task cards'}
+      'zh-CN':{eyebrow:'项目设置',scopeHint:'设置仅适用于当前项目。',title:'任务执行提醒',description:'为允许 Agent 且执行时间过长的进行中任务显示「可能卡住了」。',scope:'项目级设置',label:'提醒阈值',unit:'分钟',hint:'默认 60 分钟。任务耗时等于阈值时不提醒；超过阈值后提醒。保存后应用到当前项目允许 Agent 的进行中任务。',save:'保存设置',busy:'保存中…',cancel:'取消',invalid:'请输入大于 0 的整数分钟数。',failed:'保存失败，请重试。当前生效的阈值保持不变。',saved:'设置已保存。',pending:'正在保存…',unsaved:'尚未保存；卡片继续使用已保存的阈值。',cancelled:'已取消修改。',cards:'任务卡片'},
+      en:{eyebrow:'PROJECT SETTINGS',scopeHint:'Settings apply to the current project only.',title:'Task execution alerts',description:'Show “Possibly stuck” on tasks that allow Agents and remain in progress beyond the threshold.',scope:'Project setting',label:'Alert threshold',unit:'minutes',hint:'Default: 60 minutes. No warning at exactly the threshold; warn only after it is exceeded. Saving applies the threshold to this project’s running tasks that allow Agents.',save:'Save settings',busy:'Saving…',cancel:'Cancel',invalid:'Enter a positive whole number of minutes.',failed:'Save failed. Please retry. The saved threshold remains in effect.',saved:'Settings saved.',pending:'Saving…',unsaved:'Unsaved changes; cards still use the saved threshold.',cancelled:'Changes cancelled.',cards:'Task cards'}
     };
     const copy = () => settingsCopy[locale];
     const projectName = () => locale==='en'?projects[projectId].name.replace('项目','Project'):projects[projectId].name;
     let lastWarning = false;
     const minute = 60000;
     const samples = [
-      {id:'9d8e721a',title:'完善任务卡片中的执行耗时展示',status:'done',start:initialTime-45*minute,end:initialTime,caption:'Done · 45 minutes, frozen'},
-      {id:'b4e690c2',title:'修正任务标题中的拼写',status:'done',start:initialTime-23000,end:initialTime,caption:'Done · less than a minute'},
-      {id:'13ce4b8d',title:'完成跨服务任务执行链路验证，覆盖长标题与多天执行场景',status:'done',start:initialTime-(2*1440+3*60+15)*minute,end:initialTime,shared:true,expandable:true,caption:'Done · multiple days · expandable 136 px'},
-      {id:'2c9837fd',title:'整理任务状态转换的验证用例',status:'in_progress',start:initialTime-45*minute,end:null,caption:'In progress · live elapsed'},
-      {id:'72b19a8c',title:'排查持续执行中的同步任务',status:'in_progress',start:initialTime-75*minute,end:null,caption:'In progress · above default 60-minute threshold'},
-      {id:'6a1f52e9',title:'补充任务执行耗时的使用说明',status:'todo',start:null,end:null,blocked:true,caption:'To do · no elapsed or warning'},
-      {id:'85c42fd1',title:'历史已完成任务',status:'done',start:null,end:null,caption:'Unknown completed history · omitted'},
-      {id:'37e9aa01',title:'历史进行中任务',status:'in_progress',start:null,end:null,caption:'Unknown active start · no invented elapsed or warning'}
+      {id:'9d8e721a',allowAgents:false,title:'完善任务卡片中的执行耗时展示',status:'done',start:initialTime-45*minute,end:initialTime,caption:'Done · 45 minutes, frozen'},
+      {id:'b4e690c2',allowAgents:false,title:'修正任务标题中的拼写',status:'done',start:initialTime-23000,end:initialTime,caption:'Done · less than a minute'},
+      {id:'13ce4b8d',allowAgents:false,title:'完成跨服务任务执行链路验证，覆盖长标题与多天执行场景',status:'done',start:initialTime-(2*1440+3*60+15)*minute,end:initialTime,shared:true,expandable:true,caption:'Done · multiple days · expandable 136 px'},
+      {id:'2c9837fd',allowAgents:true,title:'整理任务状态转换的验证用例',status:'in_progress',start:initialTime-45*minute,end:null,caption:'In progress · live elapsed'},
+      {id:'72b19a8c',allowAgents:true,title:'排查持续执行中的同步任务',status:'in_progress',start:initialTime-75*minute,end:null,caption:'In progress · above default 60-minute threshold'},
+      {id:'09ad2e60',allowAgents:false,title:'人工处理中的长期任务',status:'in_progress',start:initialTime-75*minute,end:null,caption:'In progress · Agents disabled · elapsed without warning'},
+      {id:'6a1f52e9',allowAgents:false,title:'补充任务执行耗时的使用说明',status:'todo',start:null,end:null,blocked:true,caption:'To do · no elapsed or warning'},
+      {id:'85c42fd1',allowAgents:false,title:'历史已完成任务',status:'done',start:null,end:null,caption:'Unknown completed history · omitted'},
+      {id:'37e9aa01',allowAgents:true,title:'历史进行中任务',status:'in_progress',start:null,end:null,caption:'Unknown active start · no invented elapsed or warning'}
     ];
-    const contextTask = {id:'4ce298b0',title:'已展开的前置任务',status:'done',start:initialTime-26*minute,end:initialTime,external:true,caption:'Expanded prerequisite · 96 px'};
+    const contextTask = {id:'4ce298b0',allowAgents:false,title:'已展开的前置任务',status:'done',start:initialTime-26*minute,end:initialTime,external:true,caption:'Expanded prerequisite · 96 px'};
     const html = (value) => String(value).replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
     const status = (task) => statuses[locale][task.status];
     const elapsed = (task) => task.start === null ? null : task.status === 'in_progress' ? clock-task.start : task.status === 'done' && task.end !== null ? task.end-task.start : null;
     const threshold = () => projects[projectId].threshold*minute;
-    const stuck = (task) => task.status === 'in_progress' && elapsed(task) !== null && elapsed(task)>threshold();
+    const stuck = (task) => task.allowAgents && task.status === 'in_progress' && elapsed(task) !== null && elapsed(task)>threshold();
     const warning = () => locale === 'en' ? 'Possibly stuck' : '可能卡住了';
     const duration = (ms) => {
       if(ms<minute) return locale==='en'?'< 1 min':'不足 1 分钟';
@@ -143,7 +144,7 @@
       if(lastWarning!==stuck(live)) $('#warning-announcement').textContent=stuck(live)?`${live.title}：${warningDetail()}`:'执行示例的超时提醒已解除。';
       lastWarning=stuck(live);
     };
-    const render = (message) => { $('#inspection-summary').textContent=inspectedId?(locale==='en'?`Selected task: ${inspectedId}. Details remains an independent control.`:`已选择任务：${inspectedId}。「详情」可独立打开内容。`):(locale==='en'?'Select a card body to inspect; Details opens the task independently.':'点击卡片选择任务；「详情」独立打开内容。'); $('#timing-foot').textContent=locale==='en'?'Elapsed time starts at the latest entry into In progress and freezes on Done. Only active tasks strictly above the saved threshold show a warning.':'从最后一次进入「进行中」开始计时；完成后固定耗时。仅进行中任务的实际耗时超过阈值时显示提醒。'; $('#cards-heading').textContent=`${projectName()} · ${copy().cards}`; $('#saved-summary').textContent=locale==='en'?`Saved alert threshold: ${projects[projectId].threshold} minutes`:`已保存提醒阈值：${projects[projectId].threshold} 分钟`; renderSamples(); renderLive(message); };
+    const render = (message) => { $('#inspection-summary').textContent=inspectedId?(locale==='en'?`Selected task: ${inspectedId}. Details remains an independent control.`:`已选择任务：${inspectedId}。「详情」可独立打开内容。`):(locale==='en'?'Select a card body to inspect; Details opens the task independently.':'点击卡片选择任务；「详情」独立打开内容。'); $('#timing-foot').textContent=locale==='en'?'Elapsed time starts at the latest entry into In progress and freezes on Done. Only running tasks that allow Agents and strictly exceed the saved threshold show a warning.':'从最后一次进入「进行中」开始计时；完成后固定耗时。仅允许 Agent 的进行中任务实际耗时超过阈值时显示提醒。'; $('#cards-heading').textContent=`${projectName()} · ${copy().cards}`; $('#saved-summary').textContent=locale==='en'?`Saved alert threshold: ${projects[projectId].threshold} minutes`:`已保存提醒阈值：${projects[projectId].threshold} 分钟`; renderSamples(); renderLive(message); };
     const syncSettings = () => {
       const busy=pending!==null;
       ['#threshold','#save-threshold','#cancel-threshold','#project'].forEach(selector=>$(selector).disabled=busy);
@@ -196,7 +197,7 @@
     $('#at-threshold').addEventListener('click',()=>{$('#auto').checked=false;live.status='in_progress';live.start=clock-threshold();live.end=null;renderLive('已加载边界示例并暂停自动时钟；实际耗时恰好等于已保存阈值，不显示提醒。前进 1 秒后将超过阈值。');});
     $('#same-state').addEventListener('click',()=>setStatus(live.status));
     $('#metadata').addEventListener('click',()=>{edits++;live.title=edits%2?'展示任务最近一次完整执行的耗时':'展示最近一次任务执行耗时';renderLive('标题已修改；开始时间与完成时间保持不变。');});
-    $('#reset').addEventListener('click',()=>{clock=initialTime;edits=0;live={id:'d94f7821',title:'展示最近一次任务执行耗时',status:'todo',start:null,end:null};render('已重置为新的待处理示例；需先进入进行中，再完成。');});
+    $('#reset').addEventListener('click',()=>{clock=initialTime;edits=0;live={id:'d94f7821',allowAgents:true,title:'展示最近一次任务执行耗时',status:'todo',start:null,end:null};render('已重置为新的待处理示例；需先进入进行中，再完成。');});
     document.addEventListener('click',event=>{
       if(event.target.closest('[data-retry]')){$('#data-state').value='loaded';renderSamples();}
       const inspect=event.target.closest('[data-inspect]');

@@ -69,9 +69,13 @@ Hiding, the final running unsubscribe and unmount release timer/listener work.
 Visibility return publishes the elapsed monotonic difference immediately, while
 the existing guarded graph hook separately obtains a fresh database sample.
 
-Strict unrounded threshold comparison drives amber icon/text warnings on graph
-cards and standalone rows. It preserves running status, exact endpoint descriptions,
-existing accessible names, selection, external dashes and card geometry. Time
+Known-start running tasks with `allowAgents=true` use strict unrounded threshold
+comparison to drive amber icon/text warnings on graph cards and standalone rows.
+Automatic-execution permission scopes the attention signal without changing
+timing: tasks with `allowAgents=false` retain live duration and have no warning
+text, styling or accessible warning meaning. The presentation preserves running
+status, exact endpoint descriptions, existing accessible names, selection, external
+dashes and card geometry. Time
 updates stay local to consumers; the graph index and layout retain their identity.
 Standalone visual timing does not become part of its button name, and tick
 updates do not use live regions. Root-chain progress never claims an individual

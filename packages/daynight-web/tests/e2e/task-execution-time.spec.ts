@@ -6,7 +6,7 @@ import { parseApiJson, stringifyApiJson } from '../../src/api/json';
 import { parseTaskDetail, parseTaskGraph, project as parseProject } from '../../src/api/parse';
 import { decodeProjectJson, decodeTaskGraphJson } from '../../src/api/project-json';
 import type { TaskDetail } from '../../src/api/types';
-import { createProject, createTask, startTask, executeTask, finishTask, expect, seedRunningTaskStart, seedExternalDependencies, test } from './fixtures';
+import { createProject, createTask, startTask, executeTask, finishTask, expect, seedRunningTaskStart, seedExternalDependencies, test, type Task } from './fixtures';
 import type { AuthenticatedAPI } from './authentication';
 import { expectedChainMembers } from './visible-topology';
 
@@ -110,23 +110,40 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
       await createTask(api, project.id, { title: 'Completed prerequisite B' }),
     ];
     for (const root of roots) await executeTask(api, project.id, root);
-    const external = await startTask(api, project.id, await createTask(api, project.id, { title: 'Overdue external prerequisite' }));
+    const startAgentTask = async (input: Parameters<typeof createTask>[2]) => {
+      const created = await createTask(api, project.id, input);
+      const response = await api.patch(`/api/v1/projects/${project.id}/tasks/${created.id}`, {
+        data: { version: created.version, allowAgents: true },
+      });
+      expect(response.status()).toBe(200);
+      const enabled = await response.json() as Task;
+      expect(enabled.allowAgents).toBe(true);
+      return startTask(api, project.id, enabled);
+    };
+    const external = await startAgentTask({ title: 'Overdue external prerequisite' });
     const blockedMerge = await createTask(api, project.id, { title: 'Blocked merge exposes the external running prerequisite', dependsOn: [roots[1]!.id, external.id] });
     await seedExternalDependencies(api, project.id, blockedMerge, [external.id]);
     const classifiedMerge = await record(project.id, blockedMerge.id, 'blocked-merge-external-classification');
     expect(classifiedMerge.externalDependsOn).toEqual([external.id]);
-    const crossing = await startTask(api, project.id, await createTask(api, project.id, { title: 'Current attempt crosses the saved threshold', dependsOn: roots.map(({ id }) => id) }));
+    const crossing = await startAgentTask({ title: 'Current attempt crosses the saved threshold', dependsOn: roots.map(({ id }) => id) });
     await createTask(api, project.id, { title: 'Keeps completed timing visible in the active chain', dependsOn: [crossing.id] });
-    const multiParent = await startTask(api, project.id, await createTask(api, project.id, { title: 'Long multi-parent multi-day execution title '.repeat(7), dependsOn: roots.map(({ id }) => id) }));
+    const multiParent = await startAgentTask({ title: 'Long multi-parent multi-day execution title '.repeat(7), dependsOn: roots.map(({ id }) => id) });
     const brief = await createTask(api, project.id, { title: 'Known sub-minute completed task', dependsOn: [roots[1]!.id] });
     await executeTask(api, project.id, brief);
-    const standalone = await startTask(api, project.id, await createTask(api, project.id, { title: 'Long standalone multi-day execution '.repeat(6) }));
+    const standalone = await startAgentTask({ title: 'Long standalone multi-day execution '.repeat(6) });
+    const manualGraph = await startTask(api, project.id, await createTask(api, project.id, { title: 'Manual graph task over the warning threshold', dependsOn: [roots[1]!.id] }));
+    const manualStandalone = await startTask(api, project.id, await createTask(api, project.id, { title: 'Manual standalone task over the warning threshold' }));
     const legacy = await startTask(api, project.id, await createTask(api, project.id, { title: 'Historical unknown execution start' }));
     const briefRow = await createTask(api, project.id, { title: 'Known sub-minute standalone completion' });
     await executeTask(api, project.id, briefRow);
     await seedRunningTaskStart(project.id, external.id, 2 * 86_400_000);
     await seedRunningTaskStart(project.id, multiParent.id, 3 * 86_400_000 + 17 * 60_000);
     await seedRunningTaskStart(project.id, standalone.id, 4 * 86_400_000 + 25 * 60_000);
+    for (const manual of [manualGraph, manualStandalone]) {
+      expect(manual.allowAgents).toBe(false);
+      await seedRunningTaskStart(project.id, manual.id, 2 * 86_400_000);
+      await record(project.id, manual.id, 'overdue-without-agent-permission');
+    }
     const legacyBefore = await record(project.id, legacy.id, 'legacy-before-seed');
     await seedRunningTaskStart(project.id, legacy.id, null);
     const legacyUnknown = await record(project.id, legacy.id, 'legacy-unknown-start');
@@ -187,7 +204,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     const rawGraph = await success(['task', 'graph', '--project', project.id, '--json']); evidence.graphReads.push(rawGraph);
     const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(rawGraph)), project.id);
     const members = expectedChainMembers(graph.tasks, roots[0]!.id);
-    expect(members).toHaveLength(7);
+    expect(members).toHaveLength(8);
     expect(members).toEqual(expect.arrayContaining([roots[0]!.id, roots[1]!.id, crossing.id, multiParent.id, blockedMerge.id, brief.id]));
     expect(members).not.toContain(external.id);
     evidence.timing.ordinaryComponentMembers = members;
@@ -231,6 +248,11 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
       await expect(card(page, roots[1]!.id)).toHaveCount(1);
       await expect(page.locator('.task-node-external')).toHaveCount(1);
       await expect(card(page, multiParent.id).locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+      const manualCard = card(page, manualGraph.id);
+      expect(await elapsed(manualCard)).toBeGreaterThan(3_600_000);
+      await expect(manualCard).not.toHaveClass(/task-node-stuck/);
+      await expect(manualCard.locator('.task-stuck-label')).toHaveCount(0);
+      await expect(manualCard.locator('.task-node-body')).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
       await expect(duration(card(page, brief.id))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
       expect(await page.locator('.root-toggle time.task-duration').count(), 'Chain summaries have no individual task duration').toBe(0);
       for (const width of [390, 320]) {
@@ -246,6 +268,11 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
       const showCompleted = page.locator('.completed-chain-control input'); await showCompleted.check();
       const row = page.locator(`#standalone-task-${standalone.id}`);
       await expect(row.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
+      const manualRow = page.locator(`#standalone-task-${manualStandalone.id}`);
+      expect(await elapsed(manualRow)).toBeGreaterThan(3_600_000);
+      await expect(manualRow).not.toHaveClass(/standalone-row-stuck/);
+      await expect(manualRow.locator('.task-stuck-label')).toHaveCount(0);
+      await expect(manualRow).not.toHaveAccessibleDescription(/Possibly stuck|可能卡住了/);
       const unknown = page.locator(`#standalone-task-${legacy.id}`); await expect(unknown).toBeVisible(); await expect(unknown.locator('.root-status')).toHaveText(locale === 'en' ? 'Done' : '已完成'); await expect(duration(unknown)).toHaveCount(0); await expect(unknown.locator('.task-stuck-label')).toHaveCount(0);
       await expect(duration(page.locator(`#standalone-task-${briefRow.id}`))).toContainText(locale === 'en' ? '< 1 min' : '不足 1 分钟');
       for (const width of [390, 320]) {

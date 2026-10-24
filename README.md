@@ -48,7 +48,8 @@ Task timestamps, the database graph clock, persistent project thresholds and
 matching CLI/Web reader contracts are implemented. Members can read the threshold
 at `/projects/{projectId}/settings`; administrators can save it with a settings
 version. Graph cards and standalone rows display live elapsed time, frozen
-completed duration and an amber possible-stall warning above that saved threshold.
+completed duration. Running tasks with `allowAgents=true` show an amber
+possible-stall warning above that saved threshold.
 A shared project clock advances database time with monotonic browser elapsed
 time, keeping ticks outside graph layout.
 

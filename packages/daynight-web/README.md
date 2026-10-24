@@ -191,9 +191,11 @@ blur listener, per-card request or server worker. Clock samples and settings sta
 outside graph-index, projection and layout dependencies.
 
 Task cards and standalone rows show live elapsed or frozen completed duration.
-Unknown starts show no inferred duration. An exact millisecond comparison strictly
-above saved minutes adds amber treatment, icon and Possibly stuck / 可能卡住了
-while retaining the running status; completion removes that warning. Localized
+Unknown starts show no inferred duration. For running tasks with `allowAgents=true`,
+an exact millisecond comparison strictly above saved minutes adds amber treatment,
+icon and Possibly stuck / 可能卡住了 while retaining the running status. Tasks
+with `allowAgents=false` retain live duration without warning text, styling or
+accessible warning meaning; completion removes any warning. Localized
 text distinguishes less than one minute and uses floored day/hour/minute units
 without changing comparison. Semantic `time`, its title and `aria-describedby`
 provide exact endpoints, elapsed duration and saved threshold. Button names stay
