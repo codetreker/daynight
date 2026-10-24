@@ -84,9 +84,10 @@ field would not establish that the caller is physically human.
 Task resources, graph projections, strict readers, filters and update writers
 carry the boolean explicitly. The database migration owns old data;
 runtime readers do not invent a default for missing fields. The flag is applied
-before candidate pagination and included in cursor scope. Future worker claim
-must recheck it inside the claim transaction. A local filter on a bounded page
-cannot establish that no eligible work exists.
+before candidate pagination and included in cursor scope. The [worker claim
+foundation](2026-10-24-worker-claim-foundation.md) rechecks it inside the claim
+transaction. A local filter on a bounded page cannot establish that no eligible
+work exists.
 
 Switch changes share the task write gate with status setting and confirmed
 platform changes. The [platform control decision](../simplification/2026-10-24-task-platform-confirmation-control.md)

@@ -8,13 +8,11 @@
 
 ## 目标与范围
 
-Task 可以附加 server 预定义的、有明确数据结构的属性。当前属性目录只有
-`pullRequests`，用于记录任务关联的多个 PR。属性定义随 server 代码发布；调用方
-填写已定义的属性，未知属性作为输入错误拒绝。
+Task 使用 server 预定义且有明确结构的属性。pullRequests 保存任务关联的 PR，允许公共创建/更新；worker 是服务端拥有的只读执行归属，具体规则由[认领架构](../design/daynight-worker-claims.md)拥有。属性定义随 server 代码发布；未知属性和受保护属性的公共写入作为输入错误拒绝。
 
 | 编号 | 必需行为 |
 |---|---|
-| TP1 | Task 完整资源包含 `properties.pullRequests`，值为有序数组，每项包含字符串 `url` 与 `title`。 |
+| TP1 | Task 完整资源包含 properties.pullRequests 有序数组和必填 worker:null 或执行归属；每个 PR 含字符串 url 与 title。 |
 | TP2 | 每个 task 可以关联多个 PR，允许跨仓库；相同项可以重复出现，顺序属于数据。 |
 | TP3 | Server 保存解码后的字符串内容，保留空字符串、空白、大小写、控制字符和重复项；不做 URL 格式、PR 存在性、仓库匹配、标题内容校验或内容转换。 |
 | TP4 | 创建与更新 task 支持属性；属性、普通字段及依赖在现有 task 事务内原子提交。 |
@@ -32,7 +30,8 @@ Task 可以附加 server 预定义的、有明确数据结构的属性。当前�
     "pullRequests": [
       { "url": "https://github.com/owner/repo/pull/123", "title": "实现登录接口" },
       { "url": "any caller-supplied text", "title": "" }
-    ]
+    ],
+    "worker": null
   }
 }
 ```
@@ -48,8 +47,7 @@ key 顺序不属于持久化数据；既有解码器对错误 Unicode 转义的�
 
 ## 创建与更新
 
-创建时，省略 `properties` 或 `pullRequests` 都得到空数组。所有完整 task 响应
-始终包含 `"properties":{"pullRequests":[]}` 或实际列表，不返回缺失字段或 `null`。
+创建时，省略 properties 或 pullRequests 得到空 PR 数组，并创建 worker:null。所有完整 task 响应始终返回两字段，不能缺失；只有 worker 本身允许 null。公共 create/PATCH 提供 worker 时，即使为 null 或原值也返回 invalid_input。执行属性更新和普通 PR 更新相互保留；worker 的状态及会话结构由[认领架构](../design/daynight-worker-claims.md)拥有。
 
 PATCH 继续要求正整数 `version`，并按以下规则处理：
 
@@ -60,7 +58,7 @@ PATCH 继续要求正整数 `version`，并按以下规则处理：
 | `"properties": {"pullRequests": [...]}` | 替换完整 PR 列表 |
 | `"properties": {"pullRequests": []}` | 清空 PR 列表 |
 
-属性按已出现的属性名更新；将来添加其他预定义属性时，省略那些属性仍表示保留。
+公共属性 patch 只接受已出现的可写字段；省略字段表示保留，worker 始终由受控归属操作维护。
 不按数组项做隐式合并、追加或删除。逐项比较 `url`、`title` 及数组顺序，判定是否
 真实变化；交换顺序属于变化，等值列表属于无变化。过期版本始终返回
 `409 version_conflict`，即使列表值与当前值相同。
@@ -106,7 +104,7 @@ PATCH 继续要求正整数 `version`，并按以下规则处理：
 | TP-V2 | 嵌套未知字段、重复 key、null、错误类型和缺失 url/title 均拒绝；请求体限制沿用既有行为。 |
 | TP-V3 | 创建默认空列表；更新省略、空对象、替换、清空、无变化、重排和过期版本均符合本文约定。 |
 | TP-V4 | 同一版本并发更新仅一个成功；混合字段/依赖/属性更新在拒绝、取消与数据库失败时完整回滚。 |
-| TP-V5 | 迁移真实旧 schema 后保留原有数据、版本与时间，后续重启不重复迁移；坏的属性存储值暴露读取错误。 |
+| TP-V5 | PR 与 worker:null 迁移保留原有字符串、版本与时间，后续重启不重复迁移；坏的属性存储值暴露读取错误，读取不默认补齐缺失 worker。 |
 | TP-V6 | CLI 配对、互斥、空值、横线开头值、帮助及补全与既有参数语义一致，参数错误先于 I/O。 |
 | TP-V7 | 网页覆盖空、单项、多项、重复、空标题、长文本及不可导航地址，以及 100/101 项分页边界、末页、集合替换重置和完整原值；挂载项不超过 100，任意输入都不会作为脚本或 HTML 执行，焦点、关闭与窄屏交互保持有效。 |
 | TP-V8 | 图响应不包含属性，列表保持分页与快照语义；既有请求、响应及命令预算仍被执行，超限明确失败。 |

@@ -12,7 +12,7 @@ const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-20T12:34:56.123456Z";
 const project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "Core project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
 const task = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
-  id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo", version: 9007199254740993n,
+  id: taskId, projectId, title: "A task", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
 const graphTask = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
@@ -170,11 +170,11 @@ describe("response parsing", () => {
       { url: 'javascript:alert(1)', title: '  ' },
       { url: '  arbitrary\0URL\n\t', title: '<script>文本</script>\n\0' },
     ];
-    expect(parseTaskDetail({ ...task, properties: { pullRequests } }, projectId, taskId).properties)
-      .toEqual({ pullRequests });
-    expect(parseTaskDetail({ ...task, properties: { pullRequests, futureField: true } }, projectId, taskId).properties)
-      .toEqual({ pullRequests });
-    expect(parseTaskGraph({ ...graph, tasks: [{ ...graphTask, properties: { pullRequests } }] }, projectId)).toEqual(graph);
+    expect(parseTaskDetail({ ...task, properties: { worker: null, pullRequests } }, projectId, taskId).properties)
+      .toEqual({ pullRequests, worker: null });
+    expect(parseTaskDetail({ ...task, properties: { worker: null, pullRequests, futureField: true } }, projectId, taskId).properties)
+      .toEqual({ pullRequests, worker: null });
+    expect(parseTaskGraph({ ...graph, tasks: [{ ...graphTask, properties: { worker: null, pullRequests } }] }, projectId)).toEqual(graph);
   });
 
   it.each([

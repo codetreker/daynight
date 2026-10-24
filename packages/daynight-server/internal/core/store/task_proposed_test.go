@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
@@ -181,7 +182,19 @@ func scanHistoricalTask(row pgx.Row) (core.Task, error) {
 	if err != nil {
 		return core.Task{}, err
 	}
-	task.Properties, err = taskproperties.Decode([]byte(properties))
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal([]byte(properties), &fields); err != nil {
+		return core.Task{}, err
+	}
+	if _, current := fields["worker"]; current {
+		task.Properties, err = taskproperties.Decode([]byte(properties))
+	} else {
+		var patch core.TaskPropertiesPatch
+		patch, err = taskproperties.DecodePatch([]byte(properties))
+		if err == nil && patch.PullRequests != nil {
+			task.Properties = core.TaskProperties{PullRequests: *patch.PullRequests}
+		}
+	}
 	task.CreatedAt, task.UpdatedAt = task.CreatedAt.UTC(), task.UpdatedAt.UTC()
 	task.StartedAt, task.CompletedAt = utcTime(task.StartedAt), utcTime(task.CompletedAt)
 	return task, err

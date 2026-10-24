@@ -25,6 +25,7 @@ func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, 
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.update))
 	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(handler.setStatus))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
+	workerRoutes(mux, handler, auth, logger)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-graph", auth.Require(handler.graph))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-graph", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
@@ -43,10 +44,19 @@ func propertiesResponse(properties core.TaskProperties) api.TaskProperties {
 	for index, item := range properties.PullRequests {
 		result.PullRequests[index] = api.PullRequestProperty{URL: item.URL, Title: item.Title}
 	}
+	if worker := properties.Worker; worker != nil {
+		result.Worker = &api.WorkerClaim{ClaimID: worker.ClaimID, State: string(worker.State), UserID: worker.UserID,
+			WorkerID: worker.WorkerID, Machine: api.WorkerMachine{ID: worker.Machine.ID, Name: worker.Machine.Name},
+			Platform: string(worker.Platform), Agent: string(worker.Agent), WorktreeID: worker.WorktreeID,
+			Phase: string(worker.Phase), NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC()}
+		if worker.Herdr != nil {
+			result.Worker.Herdr = &api.WorkerHerdr{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}
+		}
+	}
 	return result
 }
 
-func propertyValues(properties api.TaskProperties) core.TaskProperties {
+func propertyValues(properties api.TaskWritableProperties) core.TaskProperties {
 	result := core.TaskProperties{PullRequests: make([]core.PullRequestProperty, len(properties.PullRequests))}
 	for index, item := range properties.PullRequests {
 		result.PullRequests[index] = core.PullRequestProperty{URL: item.URL, Title: item.Title}
@@ -90,7 +100,7 @@ func (h *taskHandler) resource(request *http.Request, principal core.Principal) 
 }
 
 func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, error) {
-	input := api.CreateTaskRequest{DependsOn: []string{}, Properties: api.TaskProperties{PullRequests: []api.PullRequestProperty{}}}
+	input := api.CreateTaskRequest{DependsOn: []string{}, Properties: api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{}}}
 	var err error
 	input.Title, err = requiredString(fields, "title")
 	if err != nil {
@@ -299,7 +309,7 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 	}
 	values := service.UpdateTask{RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn}
 	if input.Properties != nil && input.Properties.PullRequests != nil {
-		properties := propertyValues(api.TaskProperties{PullRequests: *input.Properties.PullRequests})
+		properties := propertyValues(api.TaskWritableProperties{PullRequests: *input.Properties.PullRequests})
 		values.Properties.PullRequests = &properties.PullRequests
 	}
 	task, err := h.tasks.Update(request.Context(), principal, projectID, id, values)

@@ -90,7 +90,7 @@ func TestTaskStatusMigrationConvertsOnlyLegacyStatesAndPreservesMaterials(t *tes
 	if err := pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&lower); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:14]); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&upper); err != nil {
@@ -121,8 +121,8 @@ func TestTaskStatusMigrationConvertsOnlyLegacyStatesAndPreservesMaterials(t *tes
 			t.Fatalf("migration changed legacy materials or lost the exact version: expected %#v actual %#v", original, after[index])
 		}
 	}
-	ready := snapshotTask(t, database, project.ID, queryID(10))
-	blocked := snapshotTask(t, database, project.ID, queryID(11))
+	ready := statusMigrationTask(t, database, project.ID, queryID(10))
+	blocked := statusMigrationTask(t, database, project.ID, queryID(11))
 	if !ready.Ready || blocked.Ready || !reflect.DeepEqual(blocked.BlockedBy, []string{queryID(14)}) || !reflect.DeepEqual(blocked.ExternalDependsOn, []string{queryID(14)}) {
 		t.Fatalf("converted readiness lost ordinary or external prerequisites: ready %#v blocked %#v", ready, blocked)
 	}
@@ -130,14 +130,14 @@ func TestTaskStatusMigrationConvertsOnlyLegacyStatesAndPreservesMaterials(t *tes
 	if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version=14`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:14]); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version=14`).Scan(&repeated); err != nil || !applied.Equal(repeated) || !reflect.DeepEqual(statusMigrationRows(t, database), after) || !reflect.DeepEqual(statusMigrationRelatedFacts(t, database), facts) {
 		t.Fatalf("repeated migration changed ledger or resources: %v", err)
 	}
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Default todo')`, queryID(30), project.ID)
-	created := snapshotTask(t, database, project.ID, queryID(30))
+	created := statusMigrationTask(t, database, project.ID, queryID(30))
 	if created.Status != core.TaskTodo || !created.Ready || created.AllowAgents || created.RequiredPlatform != nil || created.Version != 1 || created.StartedAt != nil || created.CompletedAt != nil || !created.CreatedAt.Equal(created.UpdatedAt) {
 		t.Fatalf("current database defaults are not an unstarted todo: %#v", created)
 	}
@@ -174,7 +174,7 @@ func TestTaskStatusMigrationRollsBackDefaultRowsConstraintAndLedger(t *testing.T
 			}
 			mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,version) VALUES($1,$2,'Legacy default',$3)`, queryID(10), project.ID, version)
 			before, facts := statusMigrationRows(t, database), statusMigrationRelatedFacts(t, database)
-			err := migrate(ctx, pool, schemaMigrations)
+			err := migrate(ctx, pool, schemaMigrations[:14])
 			var cause *pgconn.PgError
 			if !errors.As(err, &cause) || cause.Code != code {
 				t.Fatalf("migration did not preserve its failure: %v", err)
@@ -196,7 +196,7 @@ func TestTaskStatusMigrationRollsBackDefaultRowsConstraintAndLedger(t *testing.T
 			} else {
 				mustQueryExec(t, database, `DROP TRIGGER reject_status_ledger ON schema_migrations; DROP FUNCTION reject_status_ledger()`)
 			}
-			if err := migrate(ctx, pool, schemaMigrations); err != nil {
+			if err := migrate(ctx, pool, schemaMigrations[:14]); err != nil {
 				t.Fatalf("migration could not succeed after the cause was repaired: %v", err)
 			}
 			for _, row := range statusMigrationRows(t, database) {
@@ -206,4 +206,13 @@ func TestTaskStatusMigrationRollsBackDefaultRowsConstraintAndLedger(t *testing.T
 			}
 		})
 	}
+}
+
+func statusMigrationTask(t *testing.T, database *Store, projectID, id string) core.Task {
+	t.Helper()
+	task, err := scanHistoricalTask(database.Pool.QueryRow(context.Background(), `SELECT `+taskProjection+` FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, projectID, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return task
 }

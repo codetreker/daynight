@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可与可选平台要求的服务端/CLI/Web 控制及候选筛选已实现；worker 运行时与唯一 worker claim 仍是后续能力。[架构](../design/daynight-worker.md)说明机制。
+本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选及唯一认领的服务端/typed client 基础已实现；前台运行、SQLite、Herdr、人工管理命令和完整交付仍须运行时验收。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
 
 ## 目标与范围
 
@@ -50,10 +50,11 @@ AND no active claim
 ```
 
 - 服务端在同一事务中重新核验当前自动执行许可、平台、状态、依赖、精确版本与归属，覆盖查询和领取之间的变化。
-- 同一 task 跨用户、机器和 worker 只有一个有效 agent claim。竞争失败方不得启动执行；请求结果不确定时先查询实际归属。
+- 同一 task 跨用户、机器和 worker 只有一个有效 agent claim。竞争失败方不得启动执行；请求结果不确定时按已持久化 taskId 读取该任务的实际归属。调用者在每次认领/移交前生成并持久化新的 claimId，并且从不复用旧 ID；服务端保存最后归属并拒绝重复使用其 ID。
 - 任务使用受保护的 properties 保存当前执行用户、稳定机器 ID 与名称、实际平台、worker/claim 标识、agent 类型、Herdr session/workspace/pane 及原生 agent session ID。尚未取得的会话信息与已取得信息区分，取得后补全。
-- 用户以服务端认证身份为准。普通 properties 更新不能伪造或覆盖执行归属；执行更新保留 PR 等其他属性。
-- 会话补全、执行更新、移交与完成均核验当前 claim，旧执行方不能覆盖新归属或完成新执行方的任务。
+- 初始认领/人工接续用户以服务端认证身份为准，移交目标由服务端验证为当前项目成员。完整 properties 必须包含 worker:null 或 active/released/completed 的归属记录；普通 create/PATCH 即使原样或以 null 提供 worker 也拒绝，PR 等其他属性更新保留 worker。
+- 会话补全、执行更新、移交与完成均核验当前 claim 与精确任务版本，旧执行方不能覆盖新归属或完成新执行方的任务。普通状态修改不能释放 active claim，或开始/完成 released 的未完成成果；原 owner/admin 可通过显式人工 resume 确认原工作区连续性后接续，保留人工执行不受自动许可/平台过滤的规则。
+- Worker 的任务查询、认领、归属更新、完成及管理操作直接调用 CLI 进程内 typed ApiClient，不启动 daynight 子进程；每次 HTTP 操作独立有界，未知结果读取核对而不自动重发。
 
 ### W-05：调度与全局并发
 
@@ -79,21 +80,21 @@ AND no active claim
 ### W-08：人工介入与显式移交
 
 - 需要人工输入或授权时保留自动执行许可、平台、claim、worktree、原会话和并发名额，前台显示等待原因及原会话入口；人工通过 Herdr 处理后继续。
-- 原执行用户或项目管理员可显式移交，并受项目访问权限约束。移交前须确认旧 agent 已停止，且原 worktree 成果和执行关联可继续使用。
+- 原执行用户或项目管理员可显式移交，并受项目访问权限约束。授权提交者与目标分别校验，目标必须是当前项目成员；接收者身份不自动授予替换原归属的权限。移交前须确认旧 agent 已停止，且原 worktree 成果和执行关联可继续使用。
 - 无法确认停止、无法取得成果或执行平台不合格时保持暂停和原归属。跨机器移交必须先取得可继续的原成果，不能静默重新开始。
-- 移交保持唯一有效 claim，使旧 claim 失去更新能力。
+- 移交保持唯一有效 claim，使旧 claim 失去更新能力；保留任务 in_progress 与执行计时，重新记录目标认领时间。释放返回 todo 并清空执行时间，保留原资源绑定；重新认领或人工 resume 使用原 worktreeId/agent 与连续性确认，开始新的执行区间。
 
 ### W-09：SQLite、退出与恢复
 
 - SQLite 保存当前执行状态与恢复所需检查点：worker 身份、仓库轮转位置、claim、冻结配置、worktree/分支、会话关联、最新状态、交付引用、失败原因、恢复次数、暂停与待清理事项。
-- 影响外部资源的动作先保存恢复检查点。重启先核对 SQLite、服务端、Git 和 Herdr 的实际状态，再恢复任务和领取新任务；不确定的 claim、worktree、agent、PR、合并或清理结果不能按“未发生”直接重做。
+- 影响外部资源的动作先保存恢复检查点，认领前记录 server origin、projectId、taskId 与 claimId。重启使用 SQLite 原记录或显式移交导入记录中的已知 taskId，逐任务读取详情，核对服务端归属、Git 和 Herdr 的实际状态，再恢复任务和领取新任务；不确定的 claim、worktree、agent、PR、合并或清理结果不能按“未发生”直接重做。恢复不要求按用户或 worker 反查已认领任务。
 - Worker 崩溃或机器失联不自动释放 claim，由原 worker 恢复或人工移交。worker 死亡不证明 agent 或工具已停止；无法确认原执行是否停止时暂停，避免重复 agent。
 - Ctrl+C 停止新领取、当前 agent 与专用 Herdr，保存可恢复状态并保留未完成 claim/worktree。重启继续原任务。
 - 异常退出或基础设施故障在原 worktree/会话上按配置上限恢复；计数、原因及暂停状态持久化，重启不清零。超限保留资源与名额，等待人工处理或明确恢复操作。
 
 ### W-10：完成核验与清理
 
-- Agent 交付循环结束后，worker 独立核对当前 claim、task 与附件可读性、PR 仓库/提交/合并及必要检查、worktree 成果整合和验收证据引用，再通过服务端正常完成接口结束当前 claim。开发任务须具备 PR、检查/审查、合并及合并后验收证据。
+- Agent 交付循环结束后，worker 独立核对当前 claim、task 与附件可读性、PR 仓库/提交/合并及必要检查、worktree 成果整合和验收证据引用，再通过服务端 PUT status 的 done 目标携带当前 claimId 结束当前 claim。开发任务须具备 PR、检查/审查、合并及合并后验收证据。
 - Agent 负责执行并记录任务验收；其验收文字是执行方声明，不是任意自然语言条件的独立证明。证据缺失、相互冲突或任务明确要求人工验收时保持 task 未完成，在原会话请求处理；不要求通用 Markdown 验收解析器或形式化证明。
 - 完成后停止本 task 执行资源并删除 worktree，保留 SQLite 执行记录、PR/交付引用及 claim/session 标识。完成后修改自动执行许可或平台不能改写历史归属和实际平台。
 - 删除失败记录具体错误和待清理状态，重启后只继续清理，不能重新执行已完成任务。清理不能影响其他任务或人工 Herdr。

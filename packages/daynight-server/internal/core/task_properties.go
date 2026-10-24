@@ -7,6 +7,7 @@ type PullRequestProperty struct {
 
 type TaskProperties struct {
 	PullRequests []PullRequestProperty
+	Worker       *WorkerClaim
 }
 
 type TaskPropertiesPatch struct {

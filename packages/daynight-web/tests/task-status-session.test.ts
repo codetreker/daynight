@@ -13,7 +13,7 @@ const dependency = '20000000-0000-4000-8000-000000000003';
 const version = 9007199254740993n;
 const stamp = '2026-10-22T00:00:00Z'; const nextStamp = '2026-10-22T00:01:00Z';
 const initial: TaskDetail = { requiredPlatform: 'linux', allowAgents: false, externalDependsOn: [dependency], startedAt: null, completedAt: null, id: task, projectId: project, version,
-  title: 'Reviewed task', description: 'Complete original description', properties: { pullRequests: [{ title: 'Original PR', url: 'https://example.com/pr/1' }] },
+  title: 'Reviewed task', description: 'Complete original description', properties: { worker: null, pullRequests: [{ title: 'Original PR', url: 'https://example.com/pr/1' }] },
   status: 'todo', dependsOn: [dependency], blockedBy: [], ready: true, createdAt: stamp, updatedAt: stamp };
 const source = (status: TaskStatus): TaskDetail => ({ ...initial, status, ready: status === 'todo', startedAt: status === 'todo' ? null : stamp, completedAt: status === 'done' ? stamp : null });
 const result = (previous: TaskDetail, status: TaskStatus): TaskDetail => previous.status === status ? previous : ({ ...previous, status, ready: status === 'todo', version: previous.version + 1n, updatedAt: nextStamp,
@@ -51,7 +51,7 @@ describe('versioned status session', () => {
   });
   it.each([
     { id: otherTask }, { projectId: otherProject }, { title: 'Unreviewed title' }, { description: 'Unreviewed content' }, { allowAgents: true }, { requiredPlatform: 'windows' as const },
-    { externalDependsOn: [] }, { dependsOn: [] }, { properties: { pullRequests: [] } }, { createdAt: nextStamp },
+    { externalDependsOn: [] }, { dependsOn: [] }, { properties: { worker: null, pullRequests: [] } }, { createdAt: nextStamp },
   ])('rejects a confirmed status write that changes unrelated material %#', async (changed) => {
     const saved = result(initial, 'in_progress'); reads.mockResolvedValueOnce(initial).mockResolvedValueOnce(saved); writes.mockResolvedValueOnce({ ...saved, ...changed });
     const sessions = new TaskDetailSessions(); await open(sessions); submit(sessions);

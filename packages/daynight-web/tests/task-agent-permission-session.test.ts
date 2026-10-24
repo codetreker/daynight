@@ -8,7 +8,7 @@ vi.mock('../src/api/client', async (original) => ({ ...await original<typeof imp
 const project = '10000000-0000-4000-8000-000000000001';
 const id = '20000000-0000-4000-8000-000000000001';
 const initial: TaskDetail = { requiredPlatform: 'macos', id, projectId: project, title: 'Task', description: '', status: 'todo', version: 9007199254740993n,
-  allowAgents: false, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], properties: { pullRequests: [] }, startedAt: null, completedAt: null,
+  allowAgents: false, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], properties: { worker: null, pullRequests: [] }, startedAt: null, completedAt: null,
   createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z' };
 const changed = { ...initial, allowAgents: true, version: initial.version + 1n };
 const reads = vi.mocked(getTask); const writes = vi.mocked(setTaskAgentPermission);

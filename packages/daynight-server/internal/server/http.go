@@ -198,7 +198,7 @@ func writeError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusGone
 		case "not_found":
 			status = http.StatusNotFound
-		case "path_conflict", "version_conflict", "invalid_transition", "last_admin", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded":
+		case "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "last_admin", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded":
 			status = http.StatusConflict
 		}
 		if status != http.StatusInternalServerError {

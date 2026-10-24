@@ -9,6 +9,11 @@ type PullRequestProperty struct {
 
 type TaskProperties struct {
 	PullRequests []PullRequestProperty `json:"pullRequests"`
+	Worker       *WorkerClaim          `json:"worker"`
+}
+
+type TaskWritableProperties struct {
+	PullRequests []PullRequestProperty `json:"pullRequests"`
 }
 
 type TaskPropertiesPatch struct {
@@ -16,12 +21,12 @@ type TaskPropertiesPatch struct {
 }
 
 type CreateTaskRequest struct {
-	RequiredPlatform  *string        `json:"requiredPlatform,omitempty"`
-	ExternalDependsOn []string       `json:"externalDependsOn,omitempty"`
-	Properties        TaskProperties `json:"properties"`
-	Title             string         `json:"title"`
-	Description       string         `json:"description"`
-	DependsOn         []string       `json:"dependsOn"`
+	RequiredPlatform  *string                `json:"requiredPlatform,omitempty"`
+	ExternalDependsOn []string               `json:"externalDependsOn,omitempty"`
+	Properties        TaskWritableProperties `json:"properties"`
+	Title             string                 `json:"title"`
+	Description       string                 `json:"description"`
+	DependsOn         []string               `json:"dependsOn"`
 }
 
 type UpdateTaskRequest struct {
@@ -36,8 +41,9 @@ type UpdateTaskRequest struct {
 }
 
 type TaskStatusUpdateRequest struct {
-	Version int64  `json:"version"`
-	Status  string `json:"status"`
+	Version int64   `json:"version"`
+	Status  string  `json:"status"`
+	ClaimID *string `json:"claimId,omitempty"`
 }
 
 type Task struct {

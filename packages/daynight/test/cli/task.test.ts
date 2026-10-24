@@ -17,7 +17,7 @@ const secondId = "b1b2c3d4-1111-4222-8333-123456789abd";
 const thirdId = "b1b2c3d4-1111-4222-8333-123456789abe";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project 中文", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
+const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
   id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
   status: value.status, allowAgents: value.allowAgents, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
@@ -544,14 +544,18 @@ describe("compiled task commands", () => {
     const f = await fixture();
     try {
       const supplied = [{ url: "", title: "" }, { url: "-arbitrary=a,b", title: " 标题\n\u001b[2J " }, { url: "-arbitrary=a,b", title: " 标题\n\u001b[2J " }];
-      const returned = { pullRequests: [...supplied, { url: "\0not a URL", title: "\0" }] };
+      const returned = { worker: null, pullRequests: [...supplied, { url: "\0not a URL", title: "\0" }] };
       let current = task({ title: "Task 中文\n\u001b[2J", description: "Full description\n\u001b[2J", properties: returned, version: 9_223_372_036_854_775_807n });
       let conflict = false;
       const { requests } = await f.serve((request, response) => {
         if (request.method === "POST") respond(response, current, 201);
         else if (request.method === "PATCH") {
           if (conflict) refuse(response, "version_conflict", "pr-conflict", 409);
-          else { current = { ...current, ...(request.body as object) }; respond(response, current); }
+          else {
+            const input = request.body as { readonly properties?: { readonly pullRequests: Task["properties"]["pullRequests"] } };
+            current = { ...current, ...(request.body as object), ...(input.properties === undefined ? {} : { properties: { ...input.properties, worker: current.properties.worker } }) };
+            respond(response, current);
+          }
         } else if (request.pathname === taskPath) respond(response, { items: [current], nextCursor: null });
         else respond(response, current);
       });
@@ -604,7 +608,7 @@ describe("compiled task commands", () => {
   it("requests a single bounded ready page and preserves full task JSON and empty output", async () => {
     const f = await fixture();
     try {
-      let items = [task({ description: "Ready details", properties: { pullRequests: [{ url: "\0 arbitrary URL", title: "Ready\nPR" }] }, version: 9_223_372_036_854_775_807n })];
+      let items = [task({ description: "Ready details", properties: { worker: null, pullRequests: [{ url: "\0 arbitrary URL", title: "Ready\nPR" }] }, version: 9_223_372_036_854_775_807n })];
       let cursor: string | null = "unrequested next page";
       const { requests } = await f.serve((request, response) => {
         if (request.query.has("cursor")) refuse(response, "internal_error", "unexpected-ready-cursor", 500);

@@ -4,7 +4,7 @@ import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
 import { canonicalId, parsePage, parseProject, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, ErrorDetails, Project, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput } from "./types.js";
+import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, ErrorDetails, Project, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, TransferWorkerClaimInput, UpdateWorkerClaimInput, WorkerClaim, WorkerClaimDescriptor, WritableTaskProperties, WorkerHerdr, Page, TaskPageQuery } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
@@ -56,9 +56,16 @@ export type ApiClient = {
   createTask(projectId: string, input: CreateTaskInput): Promise<Task>;
   getTask(projectId: string, taskId: string): Promise<Task>;
   listTasks(projectId: string, filters?: TaskFilters): Promise<readonly Task[]>;
+  listTaskPage(projectId: string, query: TaskPageQuery): Promise<Page<Task>>;
   listReadyTasks(projectId: string, limit: number, filters?: ReadyTaskFilters): Promise<readonly Task[]>;
   updateTask(projectId: string, taskId: string, input: UpdateTaskInput): Promise<Task>;
   setTaskStatus(projectId: string, taskId: string, input: SetTaskStatusInput): Promise<Task>;
+  claimWorkerTask(projectId: string, taskId: string, input: ClaimWorkerTaskInput): Promise<Task>;
+  updateWorkerClaim(projectId: string, taskId: string, input: UpdateWorkerClaimInput): Promise<Task>;
+  completeWorkerTask(projectId: string, taskId: string, input: CompleteWorkerTaskInput): Promise<Task>;
+  releaseWorkerClaim(projectId: string, taskId: string, input: ReleaseWorkerClaimInput): Promise<Task>;
+  transferWorkerClaim(projectId: string, taskId: string, input: TransferWorkerClaimInput): Promise<Task>;
+  resumeWorkerTask(projectId: string, taskId: string, input: ResumeWorkerTaskInput): Promise<Task>;
   getTaskGraph(projectId: string): Promise<TaskGraph>;
   putTaskAttachment(projectId: string, taskId: string, path: string, input: PutTaskAttachmentInput): Promise<TaskAttachment>;
   listTaskAttachments(projectId: string, taskId: string): Promise<readonly TaskAttachment[]>;
@@ -305,6 +312,37 @@ export const createApiClient = (options: {
     }
   };
 
+  const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
+    if (filters.status !== undefined && filters.status !== "todo" && filters.status !== "in_progress" && filters.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
+    if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
+    if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
+    if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
+    return { ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }) };
+  };
+  const filteredTask = (value: unknown, project: string, filters: TaskFilters): Task => {
+    const task = parseTask(value, project);
+    if ((filters.status !== undefined && task.status !== filters.status) || (filters.ready !== undefined && task.ready !== filters.ready) || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents) || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)) throw new ProtocolError("Task does not match the requested filters.");
+    return task;
+  };
+  const writableProperties = (properties: WritableTaskProperties | undefined): void => {
+    if (properties !== undefined && Object.hasOwn(properties, "worker")) throw new Error("Worker ownership cannot be supplied through ordinary task properties.");
+  };
+  const taskVersion = (version: bigint): void => {
+    if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
+  };
+  const herdrMatches = (actual: WorkerHerdr | null, expected: WorkerHerdr | null): boolean => actual === null || expected === null ? actual === expected : actual.session === expected.session && actual.workspaceId === expected.workspaceId && actual.paneId === expected.paneId;
+  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.worktreeId === canonicalId(descriptor.worktreeId);
+  const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim) => boolean, sameValue = false): Promise<Task> => {
+    const project = resourceId(projectId), task = resourceId(taskId);
+    taskVersion(input.version);
+    return exchange({ operation: action, projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}${suffix}`, method, { kind: "json", parse: (value) => {
+      const result = parseTask(value, project, task);
+      const worker = result.properties.worker;
+      if (worker === null || (result.version !== input.version + 1n && !(sameValue && result.version === input.version)) || !matches(result, worker)) throw new ProtocolError("Task does not match the requested worker operation.");
+      return result;
+    } }, [200], { kind: "json", value: input }, true);
+  };
+
   return {
     createProject: (input) => request({ operation: "project.create" }, "/projects", "POST", (value) => parseProject(value), { name: input.name, repoUrl: input.repoUrl }),
     getProject: (projectId) => {
@@ -314,6 +352,7 @@ export const createApiClient = (options: {
     listProjects: () => list({ operation: "project.list" }, "/projects", (value) => parseProject(value), (project) => project.id),
     createTask: (projectId, input) => {
       const project = resourceId(projectId);
+      writableProperties(input.properties);
       return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => parseTask(value, project), {
         title: input.title,
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
@@ -329,13 +368,18 @@ export const createApiClient = (options: {
     },
     listTasks: (projectId, filters = {}) => {
       const project = resourceId(projectId);
-      if (filters.status !== undefined && filters.status !== "todo" && filters.status !== "in_progress" && filters.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
-      const query = { ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }) };
-      return list({ operation: "task.list", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, (value) => {
-        const task = parseTask(value, project);
-        if ((filters.status !== undefined && task.status !== filters.status) || (filters.ready !== undefined && task.ready !== filters.ready) || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents) || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)) throw new ProtocolError("Task does not match the requested filters.");
-        return task;
-      }, (task) => task.id, query);
+      return list({ operation: "task.list", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, (value) => filteredTask(value, project, filters), (task) => task.id, taskFilterQuery(filters));
+    },
+    listTaskPage: (projectId, query) => {
+      const project = resourceId(projectId);
+      if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new Error("Task page limit must be an integer from 1 to 100.");
+      if (query.cursor !== undefined && (typeof query.cursor !== "string" || query.cursor === "")) throw new Error("Task page cursor must be a nonempty string.");
+      const search = new URLSearchParams({ ...taskFilterQuery(query), limit: String(query.limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
+      return request({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", (value) => {
+        const page = parsePage(value, (item) => filteredTask(item, project, query), (task) => task.id);
+        if (page.items.length > query.limit) throw new ProtocolError("Task page exceeds the requested limit.");
+        return page;
+      });
     },
     listReadyTasks: (projectId, limit, filters = {}) => {
       const project = resourceId(projectId);
@@ -354,6 +398,7 @@ export const createApiClient = (options: {
     },
     updateTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
+      writableProperties(input.properties);
       return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => parseTask(value, project, task), {
         version: input.version,
         ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
@@ -368,13 +413,19 @@ export const createApiClient = (options: {
     setTaskStatus: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       if (input.status !== "todo" && input.status !== "in_progress" && input.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
-      if (typeof input.version !== "bigint" || input.version < 1n || input.version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
+      taskVersion(input.version);
       return exchange({ operation: "task.set-status", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/status`, "PUT", { kind: "json", parse: (value) => {
         const result = parseTask(value, project, task);
         if (result.status !== input.status || (result.version !== input.version && result.version !== input.version + 1n)) throw new ProtocolError("Task does not match the requested status or version.");
         return result;
       } }, [200], { kind: "json", value: { version: input.version, status: input.status } }, true);
     },
+    claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
+    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId), true),
+    completeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.complete", "/status", "PUT", { ...input, status: "done" }, (task, worker) => task.status === "done" && worker.state === "completed" && worker.claimId === canonicalId(input.claimId), true),
+    releaseWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.release", "/worker-claim/release", "POST", input, (task, worker) => task.status === "todo" && worker.state === "released" && worker.claimId === canonicalId(input.claimId)),
+    transferWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.transfer", "/worker-claim/transfer", "POST", input, (task, worker) => task.status === "in_progress" && worker.state === "active" && worker.userId === canonicalId(input.target.userId) && descriptorMatches(worker, { ...input.target, claimId: input.newClaimId, worktreeId: input.worktreeId })),
+    resumeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.resume", "/worker-claim/resume", "POST", input, (task, worker) => task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
     putTaskAttachment: (projectId, taskId, path, input) => {
       const project = resourceId(projectId), task = resourceId(taskId), attachmentPath = validateAttachmentPath(path);
       return exchange({ operation: "task.attachment.put", projectId: project, taskId: task }, `${attachmentPrefix(project, task)}/files/${encodeAttachmentPath(attachmentPath)}`, "PUT", { kind: "json", parse: (value) => parseTaskAttachment(value, attachmentPath) }, [200, 201], { kind: "bytes", value: input.body, contentType: input.contentType }, true);

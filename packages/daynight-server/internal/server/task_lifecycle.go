@@ -19,7 +19,7 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		writeError(w, request, logger, "task", "set_status", invalidInput("task status does not accept query parameters"))
 		return
 	}
-	fields, err := decodeObject(w, request, "version", "status")
+	fields, err := decodeObject(w, request, "version", "status", "claimId")
 	if err != nil {
 		writeError(w, request, logger, "task", "set_status", err)
 		return
@@ -35,7 +35,12 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		writeError(w, request, logger, "task", "set_status", err)
 		return
 	}
-	task, err := h.tasks.SetStatus(request.Context(), principal, projectID, id, service.SetTaskStatus{Version: input.Version, Status: core.TaskStatus(input.Status)})
+	input.ClaimID, err = optionalString(fields, "claimId")
+	if err != nil {
+		writeError(w, request, logger, "task", "set_status", err)
+		return
+	}
+	task, err := h.tasks.SetStatus(request.Context(), principal, projectID, id, service.SetTaskStatus{Version: input.Version, Status: core.TaskStatus(input.Status), ClaimID: input.ClaimID})
 	if err != nil {
 		writeError(w, request, logger, "task", "set_status", err)
 		return
