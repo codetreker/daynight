@@ -334,11 +334,15 @@ rows and the complete source tree, including empty task roots/directories and
 regular-file SHA-256 values. Known-task unregistered regular files are preserved
 and reported without creating metadata. Unknown ownership, registered missing or
 size-mismatched files, symlinks, special files and target conflicts fail explicitly.
-An unfinished operation must be resumed before another plan, even if its old
-bucket is now absent and the attachment table is empty.
+An unfinished operation rejects a new plan as `resume_required`, identifying the
+operationId to resume even if its old bucket is absent and the attachment table
+is empty. A completed operation rejects a new plan as `already_migrated` with
+its operationId; use apply/resume for that same operation to verify it. This
+also prevents a completed tree containing only known-task unregistered files
+from being nested again when project and task UUIDs happen to match.
 
-The command stages the whole old bucket under a root-owned operation directory,
-then moves complete task trees into project/shard/task targets. Full target
+The command stages the whole old bucket under an operation directory inside the
+configured storage root, then moves complete task trees into project/shard/task targets. Full target
 content and a fresh independent database snapshot are checked before publication.
 No target is overwritten or merged. This separate namespace handles a valid
 project UUID equal to an old task UUID. Three normal full hash passes cover

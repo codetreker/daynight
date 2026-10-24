@@ -263,9 +263,10 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 ```
 
 taskCount 表示实际存在的 task 根目录数；完成时 receiptPath 指向根内的相对回执位置。
-清点、暂存、核验、发布和失败使用 JSON stderr 日志，以 `component=attachment_layout_migration`、
-operationId、phase、category 及适用的 projectId/taskId 关联。日志和清单不包含凭据、完整敏感 DSN、
-文件正文或宿主绝对路径。错误保留原有 cause，取消沿命令 context 传到查询、散列与移动间的检查；
+清点、暂存、核验和发布使用 JSON stderr 阶段日志，以 `component=attachment_layout_migration`、
+operationId、phase、step 及适用的 projectId/taskId 关联。失败日志另含 category、cause 和脱敏 diagnostic。
+日志和清单不包含凭据、完整敏感 DSN、文件正文或宿主绝对路径。错误保留原有 cause，
+取消沿命令 context 传到查询、散列与移动间的检查；
 同步 rename 已发生时先核对实际位置，不能把取消解释为回滚。进程结束释放 PG 连接、维护锁和根句柄。
 
 ### 操作边界与清点
@@ -279,8 +280,11 @@ operationId、phase、category 及适用的 projectId/taskId 关联。日志和�
 根内独占 operation 目录、UUID、当前数据库身份与归属/元数据摘要，以及完整文件树共同绑定续作；
 不另造平台 inode 身份要求，也不根据目录名猜测布局已经迁移。
 
-plan 先检查所有保留格式的 operation 目录。有未完成操作时，必须报告对应 ID 并要求显式 resume，
-即使公开 bucket 缺失或附件表为空也不能创建新计划。清点在任何移动前完成，保存不可变 manifest：
+plan 先检查所有保留格式的 operation 目录。未完成操作以 `resume_required` 报告对应 operationId，
+要求显式 resume；已完成操作以 `already_migrated` 报告该 ID，要求用同一操作的 apply/resume 验证，
+两种状态都不创建新计划。即使公开 bucket 缺失或附件表为空，也不能绕过既有操作。这个检查也保护
+仅含已知 task 未登记文件、且 project/task UUID 同名的已完成树，避免被误当作旧目录再次嵌套。
+清点在任何移动前完成，保存不可变 manifest：
 
 - 当前数据库及实际 schema 的可核对身份、task→project 映射和完整业务行摘要；含凭据的 DSN 不入清单。
 - 每个 task 根的存在状态、全部目录项（含空目录），普通文件的原始相对路径、大小和 SHA-256。

@@ -47,8 +47,11 @@ conflicts are explicit failures.
 
 All writers must be stopped and a matching database/directory backup retained.
 A database advisory lock serializes maintenance invocations only. The command
-checks unfinished operations before treating an absent bucket as an empty
-installation. The whole old bucket moves into an operation-owned source
+rejects new plans when an existing operation is unfinished (`resume_required`)
+or completed (`already_migrated`), reporting its operation ID for continuation
+or same-operation verification. This check precedes empty-store classification
+and prevents a completed zero-metadata tree from being nested again when a
+project UUID equals a task UUID. The whole old bucket moves into an operation-owned source
 namespace; complete task directories then move into a separate target tree.
 The target is published only after full content validation and a fresh
 independent database snapshot. Destination existence is checked under the

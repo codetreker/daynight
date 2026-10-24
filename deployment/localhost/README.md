@@ -374,7 +374,13 @@ Review the counts and any unregistered known-task files reported by the manifest
 Registered missing files, size or ownership mismatches, unknown task roots,
 symlinks/special files and conflicts stop the operation; they are not repaired or
 silently skipped. A genuinely empty store still yields a zero-count plan and
-operation ID. The server remains stopped after a failed command.
+operation ID. Existing unfinished operations reject a new plan with
+`category=resume_required` and their operationId. Existing completed operations
+reject a new plan with `category=already_migrated` and their operationId; use
+apply/resume with that same ID for verification. Do not remove a completed
+operation to make plan run again: its record prevents reinterpreting the new
+tree as legacy data, including zero-metadata project/task UUID collisions.
+The server remains stopped after a failed command.
 
 Set these values to the retained directory and the operationId from that plan:
 
