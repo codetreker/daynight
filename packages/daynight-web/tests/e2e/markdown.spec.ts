@@ -82,8 +82,11 @@ const expectFlowcharts = async (container: Locator): Promise<void> => {
   const drawings = await diagrams.locator('img').evaluateAll(async (images) => Promise.all(images.map(async (image) => {
     const text = await (await fetch((image as HTMLImageElement).src)).text();
     const svg = new DOMParser().parseFromString(text, 'image/svg+xml');
+    const attributes = [...svg.querySelectorAll('*')].flatMap((element) => [...element.attributes]);
     return { text: svg.documentElement.textContent, paths: svg.querySelectorAll('path').length,
-      scripts: svg.querySelectorAll('script, foreignObject, a').length };
+      scripts: svg.querySelectorAll('script, foreignObject').length,
+      events: attributes.filter((attribute) => /^on/i.test(attribute.name)).map((attribute) => attribute.name),
+      references: attributes.filter((attribute) => attribute.localName === 'href').map((attribute) => attribute.value.replace(/[\u0000-\u0020\u007f]/g, '').toLowerCase()) };
   })));
   expect(drawings[0]!.text).toContain('开始');
   expect(drawings[0]!.text).toContain('是否通过？');
@@ -92,7 +95,12 @@ const expectFlowcharts = async (container: Locator): Promise<void> => {
   const horizontalLabels = drawings[1]!.text!.replace(/\s+/g, '');
   expect(horizontalLabels).toContain('包含中文与English');
   expect(horizontalLabels).toContain('@{字面标签');
-  expect(drawings.every((drawing) => drawing.scripts === 0)).toBe(true);
+  for (const drawing of drawings) {
+    expect(drawing.scripts).toBe(0);
+    expect(drawing.events).toEqual([]);
+    expect(drawing.references.filter((reference) => /^(?:javascript|vbscript):|^data:(?:text\/html|image\/svg\+xml)/.test(reference))).toEqual([]);
+  }
+  await diagrams.first().getByRole('img').click();
   const failures = container.locator('.mermaid-flowchart').filter({ has: container.page().getByRole('alert') });
   await expect(failures).toHaveCount(failedFlowcharts.length);
   for (const [index, source] of failedFlowcharts.entries()) await expect(failures.nth(index).locator('pre code')).toHaveText(source);
