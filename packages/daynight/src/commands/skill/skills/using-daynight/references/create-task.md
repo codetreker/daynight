@@ -84,6 +84,10 @@ breakdown stay with the design task. Consumers identify the source task ID and
 attachment path and confirm the contents using the installed CLI's attachment
 read command. For repository inputs, use verified immutable references. Do not
 assume a `task://` scheme, cross-task relative links, or a fixed service host.
+For every Goal delivery task, list the architecture task ID and all required
+architecture document references directly in its description, including indirect
+successors. Use the Goal protocol's full attachment paths or immutable repository
+references; keep these input references separate from execution dependencies.
 Do not upload the same whole packet to every task. Create a separate snapshot
 only when the task needs an independent copy, recording its purpose, original
 source, and source revision or content identity.
@@ -173,7 +177,9 @@ valid links and images, the two required primary-document sections, real source
 identities, complete prerequisites and their intended external subset, and applicable mock UI resources and
 interaction. For a Goal, verify only the current discussion stage and its brief;
 verify later stages and delivery tasks when their confirmation gate permits
-registration.
+registration. When registering delivery work, check every task's description,
+including indirect successors, for its architecture task ID and required document
+references, and read the referenced contents under the Goal protocol.
 Registration is complete only when required artifacts and associations are
 confirmed readable. Registration leaves work todo and does not execute it. A Goal
 discussion-start request is scoped execution authorization for that discussion,

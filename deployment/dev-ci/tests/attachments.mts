@@ -62,6 +62,7 @@ const readJson = async (file: string) => {
 
 type Metadata = { path: string; contentType: string; sizeBytes: number; createdAt: string; updatedAt: string };
 type Ready = { runId: string; project: string; projectId: string; taskId: string; volumes: string[] };
+type TaskSync = { mode: 'snapshot' | 'delta'; epoch: string; project: { id: string }; tasks: { id: string }[] };
 
 const projectCheck = async (name: string, root: string) => {
   const runId = process.env.DAYNIGHT_DEV_CI_RUN_ID;
@@ -133,11 +134,24 @@ const projectCheck = async (name: string, root: string) => {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: `Attachment persistence ${name}`, repoUrl: 'https://github.com/example/attachment-persistence.git' }),
   }, 201)).json();
+  assert.match(createdProject.id, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   const createdTask = await (await request(`/api/v1/projects/${createdProject.id}/tasks`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title: 'Persist nested attachment files', description: name }),
   }, 201)).json();
   const prefix = `/api/v1/projects/${createdProject.id}/tasks/${createdTask.id}`;
+  const syncObservations: { phase: string; epoch: string; mode: string; taskIds: string[] }[] = [];
+  const taskSync = async (phase: string, query?: URLSearchParams) => {
+    const suffix = query ? `?${query}` : '';
+    const result = await (await request(`/api/v1/projects/${createdProject.id}/task-sync${suffix}`)).json() as TaskSync;
+    assert.match(result.epoch, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.equal(result.project.id, createdProject.id);
+    assert.equal(result.mode, 'snapshot');
+    assert.deepEqual(result.tasks.map(task => task.id), [createdTask.id]);
+    syncObservations.push({ phase, epoch: result.epoch, mode: result.mode, taskIds: result.tasks.map(task => task.id) });
+    await json(path.join(directory, 'task-sync.json'), { project, projectId: createdProject.id, observations: syncObservations });
+    return result;
+  };
   const files = [
     { path: 'docs/nested/design.md', type: 'text/markdown', bytes: Buffer.from(`# ${name}\nNested UTF-8 附件\n`) },
     { path: 'assets/blob.bin', type: 'application/octet-stream', bytes: Buffer.from([0, 255, 128, 13, 10, ...Buffer.from(name)]) },
@@ -195,10 +209,12 @@ const projectCheck = async (name: string, root: string) => {
   try {
     await verify();
     if (name === 'primary') {
-      await act('stop and restart server, then verify exact metadata and bytes');
+      const initialSync = await taskSync('before restart');
+      await act('stop and restart server, then verify exact metadata, bytes and task cache epoch');
       await composeCommand(['stop', '--timeout', '20', 'server']);
       await composeCommand(['up', '--no-build', '--detach', '--wait', '--wait-timeout', '120', 'server']);
       assert.equal(await discoverOrigin(), origin);
+      assert.equal((await taskSync('after restart')).epoch, initialSync.epoch);
       await verify();
       await act('force recreate production stack while retaining both volumes');
       await composeCommand(['down', '--remove-orphans', '--timeout', '20']);
@@ -206,7 +222,9 @@ const projectCheck = async (name: string, root: string) => {
       origin = await discoverOrigin();
       authenticated = await login({ origin });
       assert.equal(await volumeCheck(), attachmentVolume);
+      assert.equal((await taskSync('after recreation')).epoch, initialSync.epoch);
       await verify();
+      const backedUpSync = await taskSync('before backup');
       await act('stop server writes and capture paired PostgreSQL dump and attachment archive');
       await composeCommand(['stop', '--timeout', '20', 'server']);
       const stopped = JSON.parse(await command(['inspect', await composeCommand(['ps', '--all', '--quiet', 'server'])]));
@@ -214,7 +232,7 @@ const projectCheck = async (name: string, root: string) => {
       await composeCommand(['exec', '-T', 'postgres', 'pg_dump', '--no-owner', '--no-acl', '-U', 'daynight', '-d', 'daynight'], { output: dump });
       await composeCommand(['run', '--rm', '--no-deps', '-T', '--entrypoint', 'tar', 'server', '-C', storageRoot, '-cpf', '-', '.'], { output: archive });
       await json(path.join(directory, 'backup.json'), {
-        project, stoppedWrites: true, dumpSha256: hash(await readFile(dump)), archiveSha256: hash(await readFile(archive)),
+        project, stoppedWrites: true, taskCacheEpoch: backedUpSync.epoch, dumpSha256: hash(await readFile(dump)), archiveSha256: hash(await readFile(archive)),
         attachments: files.map(file => ({ path: file.path, sha256: hash(file.bytes) })), metadata,
       });
       await act('destroy only this project and its volumes, then restore the matching pair into fresh volumes');
@@ -228,13 +246,23 @@ const projectCheck = async (name: string, root: string) => {
       }, 'fresh PostgreSQL health');
       await composeCommand(['exec', '-T', 'postgres', 'psql', '--set', 'ON_ERROR_STOP=1', '-U', 'daynight', '-d', 'daynight'], { input: dump });
       await composeCommand(['run', '--rm', '--no-deps', '-T', '--entrypoint', 'tar', 'server', '-C', storageRoot, '-xpf', '-'], { input: archive });
+      await act('rotate the restored fixture project task cache epoch before starting the server');
+      const rotated = await composeCommand(['exec', '-T', 'postgres', 'psql', '--set', 'ON_ERROR_STOP=1', '-U', 'daynight', '-d', 'daynight',
+        '--command', `UPDATE projects SET task_cache_epoch = gen_random_uuid() WHERE id = '${createdProject.id}'::uuid`]);
+      assert.equal(rotated, 'UPDATE 1');
       await reconfigure();
       origin = await discoverOrigin();
       authenticated = await login({ origin });
       await volumeCheck();
+      const restoredSync = await taskSync('after restore');
+      assert.notEqual(restoredSync.epoch, backedUpSync.epoch);
+      const oldEpochSync = await taskSync('old epoch after restore', new URLSearchParams({
+        epoch: backedUpSync.epoch, since: '9999-12-31T23:59:59Z',
+      }));
+      assert.equal(oldEpochSync.epoch, restoredSync.epoch);
       await verify();
       await newUpload('restored/new.txt');
-      await act('paired restore preserves reads and previews and accepts a new nonroot upload');
+      await act('paired restore replaces the task cache epoch, returns an old-epoch snapshot and preserves attachment reads and writes');
     }
     const ready: Ready = { project, runId: runId!, projectId: createdProject.id, taskId: createdTask.id, volumes };
     await json(path.join(root, `${name}-ready.json`), ready);
@@ -329,7 +357,7 @@ const main = async () => {
     await json(path.join(root, 'secondary-finish.json'), true);
     await ended('secondary');
     await json(path.join(root, 'result.json'), { result: 'passed', cleanupResult: 'passed' });
-    console.log('PASS production attachment volume permissions, persistence, isolation, paired restore and cleanup');
+    console.log('PASS production attachment volume permissions, persistence, isolation, paired restore, task cache epoch and cleanup');
   } catch (error) {
     await json(path.join(root, 'result.json'), { result: 'failed', error: String(error) });
     throw error;

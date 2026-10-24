@@ -136,8 +136,10 @@ Markdown 引用反馈绑定其所属的语义任务/页签/文件选择；首次
 公开 skill 源为 `packages/daynight/src/commands/skill/skills/using-daynight/`。
 入口、create-task、run-task、handbook 和适用 Goal 指引要求 Markdown 自足简介，
 包含具体问题、行动、范围、交付物、约束、简明完成条件和真实引用。任务专属主
-Markdown 仍拥有详细 Solution、完整 Acceptance criteria 与证据；共享要求、设计和
-原型引用实际来源，不复制整套资料。`[方案与验收](plan.md)` 或
+Markdown 仍拥有详细 Solution、完整 Acceptance criteria 与证据。每个 Goal 交付正文
+直接列出架构任务 ID 及适用文档完整附件路径，间接后继同样保留入口；登记时核验，
+实施前读取所列输入，仓库文档保留架构任务身份与不可变引用。资料引用不新增执行
+依赖；共享要求、设计和原型引用实际来源，不复制整套资料。`[方案与验收](plan.md)` 或
 `[交互原型](mockui/index.html)` 只用于实际归属且确认上传的文件。依赖、PR 属性、
 Goal 阶段、创建/实现/合并权限继续独立。创建默认 todo，登记不执行；已有明确执行范围覆盖 ready 后继，
 通过精确版本 set-status 开始或完成，不另设任务审批。状态不授予实现、发布或合并权限。
