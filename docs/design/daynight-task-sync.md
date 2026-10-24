@@ -202,7 +202,7 @@ schema 升级时关闭旧连接，在升级事务清除可重建缓存并轮换�
 | task-cache/projection | 完整事实到既有图模型的纯函数 |
 | useTaskGraph、TaskDetailSession、AuthenticatedApp | 保留现有调度、会话和浏览状态 |
 
-服务端沿用 slog JSON、request_id/user_id/project_id，记录 phase、mode、since、window、returned_tasks、duration。客户端按周期 UUID 记录 received/changed/duplicate 数、cache_hit、apply_ms 和 error_category；duplicate 包含相等版本与被忽略的旧版本。存储错误保留 cause 错误链；不记录 Cookie、令牌或任务正文，不新增遥测上传。
+服务端沿用 slog JSON、request_id/user_id/project_id，记录 phase、mode、since、window、returned_tasks、duration。客户端按周期 UUID 记录 received/changed/duplicate 数、cache_hit、apply_ms 和 error_category；duplicate 包含相等版本与被忽略的旧版本。失败通过 `task-cache/diagnostics` 输出受限深度的清洗 cause：只保留固定错误名称、分类和允许的 API code，不输出原始 message、stack 或任意正文。存储错误仍保留原 cause 错误链供本地处理；不记录 Cookie、令牌或任务正文，不新增遥测上传。
 
 每个 timer、fetch、IDB 事务、提示与详情操作都由当前 scope/coordinator/session 拥有；携带请求 ID、项目和身份 generation，失败回到对应周期，释放后不发布。没有服务端后台清理或日志消费任务。
 

@@ -206,8 +206,8 @@ blocked upgrades, abnormal close, corruption or writes use existing visible
 error/Retry states and retain an allowed current view. There is no silent
 network-only fallback. `Task sync` diagnostics report cycle/project IDs,
 received/changed/duplicate counts, cache hit and apply duration; duplicate includes
-ignored old versions. Failure diagnostics expose categories without task bodies
-or credentials. The [cache architecture](../../docs/design/daynight-task-sync.md)
+ignored old versions. Failure diagnostics expose categories and a depth-limited allowlist of cause
+names/codes, without raw messages, stacks, task bodies or credentials. The [cache architecture](../../docs/design/daynight-task-sync.md)
 owns the algorithm, schema, failure rules and remaining detail integration.
 
 ## Task execution time and possible stalls
