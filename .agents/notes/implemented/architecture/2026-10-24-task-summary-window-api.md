@@ -52,8 +52,9 @@ The [requirements](../../../../docs/spec/daynight-task-sync.md) and
 [architecture](../../../../docs/design/daynight-task-sync.md) own the protocol.
 This delivers the server portion of the
 [broader browser-cache proposal](../../proposed/architecture/2026-10-24-task-view-timestamp-window.md).
-The current browser continues complete-graph polling; its IndexedDB and intrinsic
-detail integration remain separately scoped work.
+The [persistent summary cache](2026-10-24-persistent-task-summary-cache.md) consumes
+this feed and derives complete project views locally. Intrinsic detail persistence
+and refresh policy remain separately scoped work.
 
 ## Alternatives
 
@@ -78,8 +79,9 @@ is available at the existing middleware boundary and avoids guessed ownership.
 ## Consequences
 
 The API supplies latest bounded task summaries without changing existing task,
-complete-graph or CLI resources. No browser cache, event history, deletion feed,
-background cleanup or new task execution authority is introduced. Future task
+complete-graph or CLI resources. The API itself introduces no event history,
+deletion feed, background cleanup or new task execution authority; browser
+persistence belongs to the summary-cache decision. Future task
 deletion must add removal semantics or invalidate the project epoch.
 
 Validation covers real PostgreSQL snapshots, equal/submicrosecond boundaries,

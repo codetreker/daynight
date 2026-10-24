@@ -102,3 +102,15 @@ export type AttachmentPage = {
   readonly items: readonly Attachment[];
   readonly nextCursor: string | null;
 };
+
+export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
+  readonly version: bigint;
+};
+
+export type TaskSync = {
+  readonly mode: "snapshot" | "delta";
+  readonly epoch: string;
+  readonly project: Project;
+  readonly observedAt: string;
+  readonly tasks: readonly TaskSummary[];
+};

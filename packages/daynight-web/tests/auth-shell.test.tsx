@@ -1,4 +1,10 @@
-import { withDetailResources } from './helpers/taskDetail';
+import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
+import { taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import { performance as nodePerformance } from 'node:perf_hooks';
+import { openDB } from 'idb';
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
+import type { TaskGraph } from '../src/api/types';
 import { stringifyWireJson } from "./helpers/wireJson";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -25,14 +31,18 @@ const now = "2026-10-22T10:00:00Z";
 const user = (id = userId, name = "Alice") => ({ id, name, email: `${name}@example.com`, emailVerified: true, avatarUrl: null });
 const project = (name = "私有项目") => ({ settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name, repoUrl: "https://github.com/example/repo", createdAt: now, updatedAt: now });
 const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: "Alice", email: "alice@example.com", avatarUrl: null, role, version: 12, createdAt: now, updatedAt: now });
-const json = (body: unknown, status = 200) => new Response(stringifyWireJson(body), { status, headers: { "Content-Type": "application/json" } });
+let serverUserId = userId;
+const json = (body: unknown, status = 200, principal = serverUserId) => new Response(stringifyWireJson(body), { status, headers: status === 401 ? { "Content-Type": "application/json" } : viewerHeaders(principal, { "Content-Type": "application/json" }) });
+const isTaskSync = (url: string) => new URL(url, window.location.origin).pathname.endsWith('/task-sync');
+const graphResponse = (value: TaskGraph, url: string, version = 1n) => taskSyncResponse(value, { query: taskSyncQuery(new URL(url, window.location.origin)), versionForTask: () => version, viewerId: serverUserId });
+const withDetailResources = (project: string, task: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>) => withTestDetailResources(project, task, fallback, {}, () => serverUserId);
 const fail = (status: number, code: string) => json({ error: { code, message: "hidden server details", requestId: "rq-safe" } }, status);
-const graph = () => json({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } });
+const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
-  if (url === "/api/v1/me") return json(user());
+  if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
   if (url.endsWith("/members")) return json({ items: [member()] });
-  if (url.endsWith("/task-graph")) return graph();
+  if (isTaskSync(url)) return graph(url);
   if (url.startsWith("/api/v1/projects")) return json({ items: [project()], nextCursor: null });
   throw new Error(`Unexpected request ${url}`);
 };
@@ -44,6 +54,7 @@ const install = (handler: (url: string) => Response | Promise<Response> = defaul
 
 beforeEach(() => {
   window.sessionStorage.clear();
+  serverUserId = userId;
   topLevelFocused = true; visibility = "visible";
   vi.spyOn(document, "hasFocus").mockImplementation(() => topLevelFocused);
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
@@ -153,6 +164,7 @@ describe("authenticated application shell", () => {
     fireEvent(window, new Event("focus"));
     fireEvent(document, new Event("visibilitychange"));
     expect(meCalls).toBe(2);
+    serverUserId = otherId;
     await act(async () => finishCheck(json(user(otherId, "Bob"))));
     await screen.findByRole("link", { name: "账户设置：Bob" });
     expect(screen.queryByRole("link", { name: "账户设置：Alice" })).toBeNull();
@@ -169,9 +181,9 @@ describe("authenticated application shell", () => {
     const dispatchedGraphs: Array<{ cookie: string; label: string | null }> = [];
     const fetcher = vi.fn((url: string) => {
       if (url === "/api/v1/me") return ++meCalls === 1 ? Promise.resolve(json(user())) : new Promise<Response>((done) => { finishCheck = done; });
-      if (url.endsWith("/task-graph")) {
+      if (isTaskSync(url)) {
         dispatchedGraphs.push({ cookie: cookieAccount, label: document.querySelector(".account-name")?.textContent ?? null });
-        return Promise.resolve(json({ observedAt: now, project: project(`${cookieAccount} 的项目`), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }));
+        return Promise.resolve(graphResponse({ observedAt: now, project: project(`${cookieAccount} 的项目`), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url));
       }
       if (url.endsWith("/members")) return Promise.resolve(json({ items: [member(cookieAccount === "Alice" ? userId : otherId)] }));
       return Promise.resolve(defaults(url));
@@ -183,6 +195,7 @@ describe("authenticated application shell", () => {
     fireEvent(document, new Event("visibilitychange"));
     fireEvent(window, new Event("blur"));
     cookieAccount = changed ? "Bob" : "Alice";
+    serverUserId = changed ? otherId : userId;
     if (order === "focus-first") {
       topLevelFocused = true;
       fireEvent(window, new Event("focus"));
@@ -208,13 +221,111 @@ describe("authenticated application shell", () => {
     await act(async () => finishCheck(json(changed ? user(otherId, "Bob") : user())));
     const name = changed ? "Bob" : "Alice";
     await screen.findByRole("heading", { name: `${name} 的项目` });
-    expect(dispatchedGraphs).toEqual([{ cookie: "Alice", label: "Alice" }, { cookie: name, label: name }]);
+    await waitFor(() => expect(dispatchedGraphs).toEqual([{ cookie: "Alice", label: "Alice" }, { cookie: name, label: name }]));
     expect(meCalls).toBe(2);
     if (changed) {
       expect(oldHeading.isConnected).toBe(false);
       expect(screen.queryByRole("link", { name: "账户设置：Alice" })).toBeNull();
       expect(screen.queryByRole("heading", { name: "Alice 的项目" })).toBeNull();
     } else expect(screen.getByRole("heading", { name: "Alice 的项目" })).toBe(oldHeading);
+  });
+
+  it("evicts the old project and open detail as soon as a sync response proves another principal while identity is pending", async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const waitForCacheUi = async (assertion: () => void) => {
+      const deadline = nodePerformance.now() + 1_000;
+      for (;;) {
+        await act(async () => { await nextEventLoopTurn(); });
+        try { assertion(); return; }
+        catch (error) { if (nodePerformance.now() >= deadline) throw error; }
+      }
+    };
+    const taskId = '00000000-0000-4000-8000-000000000005';
+    const detail = detailFixture(projectId, taskId, { title: 'Alice-only task', description: 'Alice-only private detail' });
+    const aliceGraph = { ...graphFixture([detail]), project: project('Alice 的项目') };
+    let meCalls = 0;
+    let finishIdentity!: (response: Response) => void;
+    let identityFinished = false;
+    const recheckViews: Array<{ authenticatedShell: boolean; privateDetail: boolean }> = [];
+    const fetcher = vi.fn((url: string) => {
+      if (url === '/api/v1/me') {
+        if (++meCalls === 1) return Promise.resolve(json(user()));
+        recheckViews.push({ authenticatedShell: document.querySelector('.auth-shell') !== null, privateDetail: document.body.textContent!.includes('Alice-only private detail') });
+        return new Promise<Response>((resolve) => { finishIdentity = resolve; });
+      }
+      if (url.endsWith('/members')) return Promise.resolve(json({ items: [member(serverUserId)] }));
+      if (isTaskSync(url)) return Promise.resolve(graphResponse(serverUserId === userId ? aliceGraph : { ...aliceGraph, project: project('Bob 的项目'), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url));
+      if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return Promise.resolve(json(detail));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal('fetch', fetcher);
+    window.history.replaceState(null, '', `/projects/${projectId}`);
+    const root = document.createElement('div'); root.id = 'root'; document.body.append(root);
+    const view = render(<AuthenticatedApp />, { container: root });
+    try {
+      await waitForCacheUi(() => expect(screen.getByRole('heading', { name: 'Alice 的项目' })).toBeInTheDocument());
+      const heading = screen.getByRole('heading', { name: 'Alice 的项目' });
+      fireEvent.click(screen.getByRole('tab', { name: '独立任务' }));
+      fireEvent.click(screen.getByRole('button', { name: /Alice-only task/ }));
+      const dialog = screen.getByRole('dialog');
+      await waitForCacheUi(() => expect(within(dialog).getByText('Alice-only private detail')).toBeInTheDocument());
+      serverUserId = otherId;
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await waitForCacheUi(() => expect(meCalls).toBe(2));
+      expect(identityFinished).toBe(false);
+      expect(recheckViews).toEqual([{ authenticatedShell: false, privateDetail: false }]);
+      expect(heading.isConnected).toBe(false);
+      expect(dialog.isConnected).toBe(false);
+      expect(document.querySelector('.auth-shell')).toBeNull();
+      expect(screen.queryByText('Alice-only private detail')).toBeNull();
+      expect(screen.queryByRole('link', { name: '账户设置：Alice' })).toBeNull();
+      expect(screen.queryByRole('heading', { name: 'Bob 的项目' })).toBeNull();
+      expect(screen.getByRole('heading', { name: '正在确认登录状态' })).toBeInTheDocument();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(fetcher.mock.calls.filter(([url]) => isTaskSync(url))).toHaveLength(2);
+      expect(meCalls).toBe(2);
+      await act(async () => { identityFinished = true; finishIdentity(json(user(otherId, 'Bob'))); });
+      await waitForCacheUi(() => expect(screen.getByRole('heading', { name: 'Bob 的项目' })).toBeInTheDocument());
+      expect(screen.queryByText('Alice-only private detail')).toBeNull();
+    } finally { view.unmount(); root.remove(); }
+  });
+
+  it.each([null, 'invalid-principal'])("retains the authorized view and stored rows for an untrusted 404 principal header (%s)", async (principal) => {
+    const taskId = '00000000-0000-4000-8000-000000000005';
+    const initial = { ...graphFixture([detailFixture(projectId, taskId)]), project: project() };
+    let responseMode: 'valid' | 'untrusted' | 'not-found' = 'valid';
+    install((url) => {
+      if (!isTaskSync(url)) return defaults(url);
+      if (responseMode === 'valid') return graphResponse(initial, url);
+      if (responseMode === 'not-found') return fail(404, 'not_found');
+      const headers = new Headers({ 'Content-Type': 'application/json' });
+      if (principal !== null) headers.set('Daynight-User-ID', principal);
+      return new Response(stringifyWireJson({ error: { code: 'not_found', message: 'Untrusted resource absence.', requestId: 'untrusted-404' } }), { status: 404, headers });
+    });
+    window.history.replaceState(null, '', `/projects/${projectId}`);
+    render(<AuthenticatedApp />);
+    const heading = await screen.findByRole('heading', { name: '私有项目' });
+    const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
+    try {
+      const before = await database.get('projects', [userId, projectId]);
+      const summaries = await database.getAllFromIndex('summaries', 'by-project', [userId, projectId]);
+      expect(before?.state).toBe('active');
+      expect(summaries).toHaveLength(1);
+      responseMode = 'untrusted';
+      fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+      await screen.findByRole('heading', { name: '刷新失败' });
+      expect(screen.getByText('任务图数据不完整或不一致，请重试。')).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: '私有项目' })).toBe(heading);
+      expect(screen.queryByRole('heading', { name: '项目不存在' })).toBeNull();
+      expect(await database.get('projects', [userId, projectId])).toEqual(before);
+      expect(await database.getAllFromIndex('summaries', 'by-project', [userId, projectId])).toEqual(summaries);
+      responseMode = 'not-found';
+      fireEvent.click(screen.getByRole('button', { name: '重试刷新' }));
+      await screen.findByRole('heading', { name: '项目不存在' });
+      expect(screen.queryByRole('heading', { name: '私有项目' })).toBeNull();
+      await waitFor(async () => expect((await database.get('projects', [userId, projectId]))?.state).toBe('invalidated'));
+      expect(await database.getAllFromIndex('summaries', 'by-project', [userId, projectId])).toEqual([]);
+    } finally { database.close(); }
   });
 
   it.each(["hidden", "unfocused"])("pauses direct-project reads when the authenticated workspace first mounts %s", async (away) => {
@@ -241,7 +352,7 @@ describe("authenticated application shell", () => {
     expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects"))).toHaveLength(0);
     await act(async () => finishCheck(json(user())));
     await screen.findByRole("heading", { name: "私有项目" });
-    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/task-graph"))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => isTaskSync(url))).toHaveLength(1);
   });
 
   it("supersedes an identity check on departure before its response can release queued project reads", async () => {
@@ -265,18 +376,18 @@ describe("authenticated application shell", () => {
     expect(checks[0]!.signal.aborted).toBe(true);
     fireEvent(window, new Event("blur"));
     await act(async () => checks[0]!.resolve(user()));
-    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/task-graph"))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => isTaskSync(url))).toHaveLength(1);
     expect(meCalls).toBe(2);
     expect(screen.getByRole("heading", { name: "私有项目" })).toBe(heading);
     visibility = "visible";
     fireEvent(document, new Event("visibilitychange"));
     await act(async () => {});
-    expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/task-graph"))).toHaveLength(1);
+    expect(fetcher.mock.calls.filter(([url]) => isTaskSync(url))).toHaveLength(1);
     topLevelFocused = true;
     fireEvent(window, new Event("focus"));
     await waitFor(() => expect(checks).toHaveLength(2));
     await act(async () => checks[1]!.resolve(user()));
-    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/task-graph"))).toHaveLength(2));
+    await waitFor(() => expect(fetcher.mock.calls.filter(([url]) => isTaskSync(url))).toHaveLength(2));
     expect(screen.getByRole("heading", { name: "私有项目" })).toBe(heading);
   });
 
@@ -330,6 +441,7 @@ describe("authenticated application shell", () => {
     expect(screen.getByRole("status")).toHaveTextContent("正在加载访问令牌…");
     expect(document.body).not.toHaveClass("auth-session-checking");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
+    serverUserId = outcome === "changed" ? otherId : userId;
     await act(async () => finishCheck(outcome === "same" ? json(user()) : outcome === "changed" ? json(user(otherId, "Bob")) : fail(401, "unauthenticated")));
     if (outcome === "same") {
       await screen.findByText("Confirmed account token");
@@ -431,6 +543,7 @@ describe("authenticated application shell", () => {
     expect(screen.queryByRole("dialog", { name: "重新确认当前账户" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "访问令牌已创建" })).toBe(reveal);
     expect(reveal.isConnected).toBe(true);
+    serverUserId = otherId;
     await act(async () => checks[1]!.resolve(user(otherId, "Bob")));
     await screen.findByRole("link", { name: "账户设置：Bob" });
     expect(reveal.isConnected).toBe(false);
@@ -455,6 +568,7 @@ describe("authenticated application shell", () => {
     expect(document.body).toHaveClass("auth-session-checking");
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "重新确认当前账户" })).toBeInTheDocument();
+    serverUserId = otherId;
     await act(async () => finishRetry(json(user(otherId, "Bob"))));
     await screen.findByRole("link", { name: "账户设置：Bob" });
     expect(document.body).not.toHaveClass("auth-session-checking");
@@ -486,6 +600,7 @@ describe("authenticated application shell", () => {
     expect(screen.getByRole("status", { name: "正在加载项目" })).toBeInTheDocument();
 
     currentUser = user(otherId, "Bob");
+    serverUserId = otherId;
     returnFromAnotherWindow();
     expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
     expect(document.body).not.toHaveClass("auth-session-checking");
@@ -493,7 +608,7 @@ describe("authenticated application shell", () => {
     expect(pendingMe).toBeTypeOf("function");
     await act(async () => pendingMe(json(currentUser)));
     await screen.findByRole("heading", { name: "Bob 的项目" });
-    await act(async () => pendingProject(json({ items: [project("Alice 的旧项目")], nextCursor: null })));
+    await act(async () => pendingProject(json({ items: [project("Alice 的旧项目")], nextCursor: null }, 200, userId)));
     expect(screen.queryByRole("heading", { name: "Alice 的旧项目" })).toBeNull();
     expect(screen.getByRole("link", { name: "账户设置：Bob" })).toBeInTheDocument();
     expect(oldSignal.aborted).toBe(true);
@@ -610,6 +725,7 @@ describe("authenticated application shell", () => {
     await screen.findByRole("heading", { name: "项目成员" });
     expect(document.body.textContent).toContain("私有项目");
     switched = true;
+    serverUserId = otherId;
     returnFromAnotherWindow();
     await screen.findByRole("link", { name: "账户设置：Bob" });
     await waitFor(() => expect(document.body.textContent).not.toContain("私有项目"));
@@ -619,7 +735,7 @@ describe("authenticated application shell", () => {
   it("clears all workspace data on a real resource401 while keeping project404 local", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
     let denied = false;
-    install((url) => url.endsWith("/task-graph") && denied ? fail(404, "not_found") : defaults(url));
+    install((url) => isTaskSync(url) && denied ? fail(404, "not_found") : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" });
     denied = true;
@@ -627,7 +743,7 @@ describe("authenticated application shell", () => {
     await screen.findByRole("heading", { name: "项目不存在" });
     expect(screen.getByRole("link", { name: "账户设置：Alice" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
-    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(url.endsWith("/task-graph") ? fail(401, "unauthenticated") : defaults(url))));
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(isTaskSync(url) ? fail(401, "unauthenticated") : defaults(url))));
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await screen.findByRole("heading", { name: "登录你的工作空间" });
     expect(screen.getByText("登录状态已过期。重新登录后可继续访问项目。")).toBeInTheDocument();
@@ -648,17 +764,23 @@ describe("authenticated application shell", () => {
   });
 
   it("clears the workspace and stops automatic graph reads after a resource401", async () => {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] });
     window.history.replaceState(null, "", `/projects/${projectId}`);
     let expired = false;
-    const fetcher = install((url) => expired && url.endsWith("/task-graph") ? fail(401, "unauthenticated") : defaults(url));
+    const fetcher = install((url) => expired && isTaskSync(url) ? fail(401, "unauthenticated") : defaults(url));
     await act(async () => { render(<AuthenticatedApp />); });
-    expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
+    await vi.waitFor(async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByRole("heading", { name: "私有项目" })).toBeInTheDocument();
+    });
     expired = true;
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-    expect(screen.getByRole("heading", { name: "登录你的工作空间" })).toBeInTheDocument();
+    await vi.waitFor(async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(screen.getByRole("heading", { name: "登录你的工作空间" })).toBeInTheDocument();
+    });
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
-    const graphReads = () => fetcher.mock.calls.filter(([url]) => url.endsWith("/task-graph")).length;
+    const graphReads = () => fetcher.mock.calls.filter(([url]) => isTaskSync(url)).length;
     expect(graphReads()).toBe(2);
     await act(async () => { await vi.advanceTimersByTimeAsync(20_000); });
     expect(graphReads()).toBe(2);
@@ -680,7 +802,7 @@ describe("authenticated application shell", () => {
     let finishStatus!: (response: Response) => void;
     const detail = () => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, id: taskId, projectId, title: "Lifecycle task", description: "Reviewed lifecycle content", properties: { pullRequests: [] },
       status: started ? "in_progress" : "todo", version: started ? 8 : 7, dependsOn: [], blockedBy: [], ready: !started, createdAt: now, updatedAt: now });
-    const taskGraph = () => json({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [{ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, id: taskId, titlePreview: "Lifecycle task", titleTruncated: false,
+    const taskGraph = (): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [{ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, id: taskId, titlePreview: "Lifecycle task", titleTruncated: false,
       status: started ? "in_progress" : "todo", dependsOn: [], blockedBy: [], ready: !started, createdAt: now, updatedAt: now }],
       summary: { total: 1, todo: started ? 0 : 1, inProgress: started ? 1 : 0, done: 0, ready: started ? 0 : 1, blocked: 0 } });
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
@@ -688,7 +810,7 @@ describe("authenticated application shell", () => {
       if (url === `${taskUrl}/attachments?limit=100`) return Promise.resolve(json({ items: [{ path: "docs/guide.md", contentType: "text/markdown", sizeBytes: 12, createdAt: now, updatedAt: now }], nextCursor: null }));
       if (url === `${taskUrl}/attachments/files/docs/guide.md`) return Promise.resolve(new Response("# Status reference"));
       if (url === taskUrl) return Promise.resolve(json(detail()));
-      return Promise.resolve(url.endsWith("/task-graph") ? taskGraph() : defaults(url));
+      return Promise.resolve(isTaskSync(url) ? graphResponse(taskGraph(), url, started ? 8n : 7n) : defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
     window.history.replaceState(null, "", `/projects/${projectId}`);
@@ -815,6 +937,7 @@ describe("authenticated standalone attachment reader", () => {
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(3));
     bob = true;
+    serverUserId = otherId;
     await act(async () => identify(json(user(otherId, "Bob"))));
     await within(await screen.findByRole("group", { name: "附件预览" })).findByRole("alert");
     expect(frame.isConnected).toBe(false);
@@ -859,6 +982,7 @@ describe("invitation handoff", () => {
     expect(screen.getByRole("button", { name: "正在加入…" })).toBeDisabled();
     expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
     expect(document.body).not.toHaveClass("auth-session-checking");
+    serverUserId = outcome === "changed" ? otherId : userId;
     await act(async () => finishCheck(outcome === "same" ? json(user()) : outcome === "changed" ? json(user(otherId, "Bob")) : fail(401, "unauthenticated")));
     if (outcome === "same") {
       await screen.findByRole("heading", { name: "私有项目" });

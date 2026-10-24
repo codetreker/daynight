@@ -208,10 +208,17 @@ export const seedTaskVersion = async (projectId: string, taskId: string, version
   const target = await ownedDatabase();
   const result = await command('docker', ['exec', target.postgresContainer, 'psql', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1',
     '--username', 'daynight', '--dbname', target.database, '--tuples-only', '--no-align', '--command',
-    `UPDATE tasks SET version = ${version} WHERE project_id = '${projectId}' AND id = '${taskId}' RETURNING version`], {
+    `BEGIN;
+      DO $fixture$ BEGIN
+        PERFORM id FROM projects WHERE id = '${projectId}' FOR UPDATE;
+        IF NOT FOUND THEN RAISE EXCEPTION 'Owned version project is missing'; END IF;
+      END $fixture$;
+      UPDATE tasks SET version = ${version}, updated_at = statement_timestamp()
+        WHERE project_id = '${projectId}' AND id = '${taskId}' AND version < ${version} RETURNING version;
+      COMMIT;`], {
     cwd: process.cwd(), timeoutMs: 15_000, quiet: true,
   });
-  expect(result.split('\n')[0], 'Owned task version fixture updates exactly the selected row').toBe(String(version));
+  expect(result.split('\n').filter((line) => /^[0-9]+$/.test(line)), 'Owned task version fixture updates exactly the selected row').toEqual([String(version)]);
 };
 
 // Classification reads are exercised independently of public write support by
@@ -274,10 +281,17 @@ export const seedRunningTaskStart = async (projectId: string, taskId: string, ag
   const start = ageMs === null ? 'NULL' : `statement_timestamp() - ${ageMs} * interval '1ms'`;
   const result = await command('docker', ['exec', target.postgresContainer, 'psql', '--no-psqlrc', '--set', 'ON_ERROR_STOP=1',
     '--username', 'daynight', '--dbname', target.database, '--tuples-only', '--no-align', '--command',
-    `UPDATE tasks SET started_at = ${start} WHERE project_id = '${projectId}' AND id = '${taskId}' AND status = 'in_progress' AND completed_at IS NULL RETURNING id`], {
+    `BEGIN;
+      DO $fixture$ BEGIN
+        PERFORM id FROM projects WHERE id = '${projectId}' FOR UPDATE;
+        IF NOT FOUND THEN RAISE EXCEPTION 'Owned timing project is missing'; END IF;
+      END $fixture$;
+      UPDATE tasks SET started_at = ${start}, version = version + 1, updated_at = statement_timestamp()
+        WHERE project_id = '${projectId}' AND id = '${taskId}' AND status = 'in_progress' AND completed_at IS NULL RETURNING id;
+      COMMIT;`], {
     cwd: process.cwd(), timeoutMs: 15_000, quiet: true,
   });
-  expect(result.split('\n')[0], 'Owned timing fixture updates exactly the selected running task').toBe(taskId);
+  expect(result.split('\n').filter((line) => uuid.test(line)), 'Owned timing fixture updates exactly the selected running task').toEqual([taskId]);
 };
 
 export const seedProjectSettingsVersion = async (projectId: string, version: bigint): Promise<void> => {

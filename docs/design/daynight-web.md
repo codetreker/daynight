@@ -23,10 +23,10 @@ SDK 提供 App-aware provider discovery；发现失败与用户会话失效分�
 [语言设计](daynight-web-i18n.md)拥有已实现的类型化目录、Intl 格式化器、首屏解析、常驻 Provider、共享选择器和全部现有第一方组件的双语呈现；[双语需求](../spec/daynight-web-i18n.md)拥有完整覆盖与验收。语言偏好使用独立的 origin-local 键，不改变本文的项目浏览记录、API、图或附件生命周期。
 
 [执行计时架构](daynight-task-timing.md)的起止字段与数据库 `observedAt` 已进入严格 API 读取器。
-`useTaskGraph` 将最新服务端样本保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。
+`useTaskGraph` 从 task-sync 获取最新服务端样本，保存为独立 snapshot 字段，保持仅时钟变化时的图/索引身份。[缓存架构](daynight-task-sync.md)拥有已实现的 IndexedDB 摘要、原子增量应用和身份生命周期；当前详情继续已有会话 GET 策略，按需持久详情仍待接入。
 [外部依赖架构](daynight-external-dependencies.md)的存储及严格读取准备也已实现：
 GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去重及完整依赖的子集，
-图内容指纹和详情描述符纳入该集合。buildGraphIndex 用普通依赖构造弱连通分量，
+摘要自身内容比较和详情描述符纳入该集合。buildGraphIndex 用普通依赖构造弱连通分量，
 完整依赖用于验证、上下文和检查；关系标签和虚线消费显式性质，卡片角色另按成员集合计算。
 项目阈值、精确设置版本、管理员设置页及局部执行计时/提醒共同接入。
 
@@ -392,6 +392,7 @@ packages/daynight-web/
   src/api/{types,client,parse}.ts    DTO、请求、运行时解析与错误
   src/i18n/                         语言目录、格式化器、生产根 Provider 与共享选择器
   src/features/projects/           ProjectsPage、ProjectPage、ProjectTaskTabs、StandaloneList、偏好 hooks、统计卡
+  src/features/task-cache/         四 store、身份 scope、原子摘要合并及完整本地图投影
   src/features/task-graph/          model.ts、layout.ts、dashes.ts、ChainList、TaskGraph、TaskNode
   src/features/task-detail/         TaskDetailDialog、TaskDetailSession、详情请求 hook、PR 展示及 focus helper
   src/features/task-detail/attachments/  路径树、附件 hook、操作和内容预览
@@ -414,7 +415,8 @@ packages/daynight-server/
 | 浏览器 app/router | URL 解析、history/popstate、页面装卸与 404 | 组合页面，不直接 fetch |
 | api/client、api/parse | 相对 `/api` 请求、AbortSignal、JSON/附件 DTO 校验、文件传输、HEAD 与 typed error | 不引用组件和图布局 |
 | i18n | 两种目录、格式化、当前语言、独立保存与偏好错误、共用选择器 | 生产根及独立入口显式挂载；领域组件订阅展示，不调用业务 API 或图布局 |
-| projects hooks | 列表游标、完整图快照、加载/刷新状态、按项目隔离的视图偏好 | 图读取调用 api 并交给 model；偏好只访问浏览器存储 |
+| projects hooks | 列表游标、完整派生图快照、加载/刷新状态、按项目隔离的视图偏好 | 摘要同步调用 api 和 task-cache；偏好只访问浏览器存储 |
+| task-cache | schema、用户/项目 fence、当前持久集合合并、摘要版本与提交后发布 | 网络与解码在事务外；纯投影复用 model，不拥有页面交互 |
 | task-graph/model | 全边验证、普通分量、派生代表、成员进度与全前置闭包 | 仅依赖 DTO 类型与标准集合 |
 | task-graph/visibility | 概览BFS、直接邻居批次、实际S协调和完整诱导投影 | 依赖完整model数据，不调用API |
 | task-graph/layout | 将投影映射为确定的节点坐标和边 | 依赖 model 与 Dagre |
@@ -454,11 +456,10 @@ flowchart LR
 
 ### 前端数据和状态所有权
 
-不用通用全局 task store，也不引入 Redux 或查询框架。页面维护图加载与当前资源；
-专用 TaskDetailSession 只保存项目/任务键对应的详情与状态操作，纯图模型只计算派生内容。
+认证身份下的 TaskCacheScope 拥有持久摘要及可发布投影，页面维护图加载与当前资源；不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与状态操作，纯图模型只计算派生内容。TaskCacheProvider 包裹全部认证路由并位于详情 Provider 外，独立任务和附件路径页共享该 scope。
 
 - `useProjects` 拥有当前已加载页、nextCursor 和下一页错误。首次请求、加载更多和刷新有各自状态；刷新使旧游标及旧请求失效。
-- `useTaskGraph(projectId)` 拥有完整 TaskGraph、接收时间、独立数据库样本、成功 revision、请求序号、refresh 与可见页面轮询。图解析完成后立即捕获 receivedMonotonic，早于指纹/索引计算；每次成功读取成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。缓存比较独立 Project 指纹与 tasks/summary 指纹；仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。Project 指纹中的设置版本仅内部转十进制字符串，API/输出仍是无损数字。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本。
+- `useTaskGraph(projectId)` 拥有完整派生 TaskGraph、接收时间、独立数据库样本、成功 receipt revision、请求序号、refresh 与可见页面轮询。严格解析 task-sync 后立即捕获 receivedMonotonic，早于 IDB 应用和索引计算；每次成功同步成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。TaskCacheScope 在一个事务内按业务版本合并当前完整持久集合，再提交摘要与最大 updatedAt；相等/旧版行不写入。仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。设置版本保持 bigint。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本；磁盘或其他标签页不能提供它。
 - `TaskExecutionClockProvider` 按项目拥有稳定 context/store，将最新服务端时间、单调接收时间和已保存阈值在 layout effect 一起发布。useTaskExecution 仅让已知起点的运行任务订阅一个可见页一秒 ticker；完成任务只订阅设置说明，未知任务无活动订阅。隐藏时暂停，恢复可见立即发布单调差值；正常轮询独立刷新锚点，最后运行订阅与 provider 卸载清理 timer/listener。计时局部更新不进入 GraphIndex、投影、布局或边路由；既有身份 guard 继续约束 API，没有新增失焦监听或网络轮询。
 - `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、各自完成筛选和浏览位置。`ChainList` 使用可见代表序列，完整 `GraphIndex` 保存全部成员、上下文基础与项目统计。偏好 hook 通过 componentByTask 把原保存任务解析到当前代表，不因代表变化改写仍有效的成员定位值；分量不可见或任务消失时使用最新可见回退，没有可见链时保留定位/null。详情绑定 task ID，分类和完成筛选不关闭仍存在的详情。
 - `useTaskDetail(projectId, taskId)` 消费 TaskDetailSession 中该键的详情与状态操作状态，
@@ -474,7 +475,7 @@ flowchart LR
   写操作和预览 frame；task/project 切换仍以资源 key 卸载旧状态。
 - `useAttachments(projectId, taskId)` 独立拥有按页加载的文件、选择、写操作与预览；所有结果绑定 project/task，预览还绑定 path。列表校验重复游标和目录冲突，续页失败保留已读取文件并明确标记不完整；刷新取消旧列表请求。所选路径或 `updatedAt` 改变时取消并重新读取内容，同路径覆盖后增加预览 revision。
 - 图与详情的已加载数据分别绑定 projectId 与 `(projectId,taskId)`。渲染时只显示 key 相符的数据；key 变化立即显示新资源的加载状态，不能等 effect 清理后再去掉旧内容。同资源刷新才保留旧快照，取消/序号检查不能代替这一显示身份约束。对话框的焦点外壳保持独立，关系跳转不把焦点临时恢复到旧节点。
-- API client 的明确入口为 `listProjects(query, signal)`、`getTaskGraph(projectId, signal)`、`getTask(projectId, taskId, signal)` 与 versioned `setTaskStatus`、`setTaskAgentPermission`、`setTaskRequiredPlatform`。错误类型区分已取消、网络/解析失败和服务端错误码；错误页面只展示脱敏文案及 requestId。图响应的 project.id、详情响应的 projectId/id 必须与规范化后的请求资源匹配，否则按协议错误拒绝显示。
+- API client 的明确入口为 `listProjects(query, signal)`、`getTaskSync(projectId, query, expectedUserId, signal, onPrincipalMismatch)`、`getTaskGraph(projectId, signal)`（完整图调用者与对照）、`getTask(projectId, taskId, signal)` 与 versioned `setTaskStatus`、`setTaskAgentPermission`、`setTaskRequiredPlatform`。错误类型区分已取消、网络/解析失败和服务端错误码；错误页面只展示脱敏文案及 requestId。图响应的 project.id、详情响应的 projectId/id 必须与规范化后的请求资源匹配，否则按协议错误拒绝显示。
 - 页面导航使用 `pushState`，浏览器返回使用 `popstate`；在组件装卸边界取消请求。未知路径、无法解码的路径或无效 projectId 有明确错误页面，不发起拼接后的非法请求。
 
 项目视图偏好均由 `useProjectViewPreferences.ts` 中的专用 hooks 读取和保存，使用下列
@@ -783,12 +784,12 @@ store 的 SQL 直接读取 `left(title, previewCharacters)` 与 `char_length(tit
 ## 请求、刷新与故障
 
 项目列表、图、详情和附件请求分别归属其页面或选择。项目任务页在 document 可见时
-每 5 秒读取完整图；隐藏后停止定时触发，重新可见时立即读取并重新开始计时。自动
-触发遇到活动图请求时跳过，返回可见时也沿用活动读取；手动刷新取消活动图请求并
+每 5 秒读取 task-sync 并原子合并摘要；隐藏后停止定时触发，重新可见时立即读取并重新开始计时。自动
+触发遇到活动同步请求时跳过，返回可见时也沿用活动读取；手动刷新取消活动同步请求并
 立即开始新读取。隐藏不取消已发出的读取。导航和卸载清除定时器并取消所属请求，
 请求序号和资源身份检查阻止晚到结果覆盖当前数据；取消不展示失败通知。
 
-每次成功图读取都推进成功 revision，重读仍存在的当前详情，即使图内容没有变化，
+每次成功项目同步都推进本挂载的 receipt revision，重读仍存在的当前详情，即使图内容没有变化，
 详情读取失败后也能在后续周期恢复。任务与统计相同的图复用索引与布局，设置变化只替换 Project 元数据，新的成功接收时间、单调接收时间与独立数据库样本仍更新。
 同任务详情在刷新及恢复性失败时保留正文，详情读取期间的多次刷新合并为一次后续
 请求；页面隐藏时自动详情读取与后续队列等待，已有读取可以完成。正文、附件和预览不重新挂载，普通后台读取不增加标题区高度；无变化数据在请求开始、等待和完成时保持标题、页签与当前面板的实际几何稳定。相同有序 PR 值保持引用和分页，内容变化才
@@ -800,17 +801,16 @@ store 的 SQL 直接读取 `left(title, previewCharacters)` 与 `char_length(tit
 记录该呈现方式。刷新保留上次成功图和详情；恢复性失败保留旧数据、上次成功时间及明确错误，
 自动重试期间错误继续可见，首次读取失败后也保留错误而不重复进入加载播报，成功后清除。成功图数据变化时
 一次替换统计、索引和两类条目；当前展开根仍可见则保留，否则选择最新可见根；
-没有可见根时保留原偏好，明确的全部折叠继续保留。偏好保存不参与图 API 请求；
+没有可见根时保留原偏好，明确的全部折叠继续保留。偏好保存不参与同步请求；
 页签滚动位置分别恢复，不保存详情选择、图坐标或画布视口。当前详情仍存在则
 重读详情，不存在则关闭并提示。打开的详情不被后台刷新抢走焦点。
 
-定时范围只包含项目完整图与当前详情。项目列表继续手动分页和刷新；附件的列表、
+定时范围只包含项目摘要同步与当前详情。项目列表继续手动分页和刷新；附件的列表、
 写操作与预览保持独立状态，预览选择变化会取消旧内容请求，刷新或写入后按其
 元数据规则重读。附件写入不自动重试，失败时明确展示错误，保留 K1 的结果可能
 已生效语义。
 
-后端图超限是可解释的页面拒绝。HTTP 404 清除对应不可访问图或详情，项目错误
-提供返回入口；401 由认证层结束会话并卸载工作空间，详情同样清除旧内容。其他
+后端图超限是可解释的页面拒绝。同用户 principal 核对通过的项目 `404 not_found` 清除对应图及持久基线，缺失或无效身份头作为协议错误保留原有效内容；不可访问详情清除自身内容。项目错误提供返回入口；401 由认证层结束会话并卸载工作空间，详情同样清除旧内容。其他
 错误提供重试和 requestId，避免渲染原始响应内容。标题和仓库地址使用文本节点；
 描述使用 CommonMark/GFM，原始 HTML 保持文本，URL 沿用已有安全处理。描述与附件
 Markdown 复用渲染器，分别使用任务根与文档目录；其他附件内容按
@@ -821,12 +821,12 @@ Markdown 复用渲染器，分别使用任务根与文档目录；其他附件�
 
 浏览器页面拥有可见性驱动的定时读取，不增加服务端调度、推送连接或浏览器遥测服务。请求经过既有浏览器 fetch、图布局与 HTTP/数据库机制；验收环境另包含 dev-ci 子命令和 Compose 资源的生命周期。
 
-- 浏览器的图请求范围由 projectId 和请求序号关联，详情由 projectId/taskId 和请求序号关联；组件卸载清理图定时器，组件卸载或选择变化负责取消请求。
+- 浏览器的摘要同步由 cycle_id、projectId 和请求序号关联，记录 received/changed/duplicate、cache_hit、apply_ms 与错误分类；duplicate 包含相等与旧版行。四 store 的事务、通道和身份失效由 TaskCacheScope 拥有，详情由 projectId/taskId 和请求序号关联；组件卸载清理图定时器，组件卸载或选择变化负责取消请求。
 - dev-ci 验收按 run ID、Compose project 与 image ID 关联启动、健康、测试和清理阶段；资源所有权及取消后的清理由[dev-ci 契约](#dev-ci-验收部署)定义。通过该 run 的清单与 phase/result 字段核对容器、卷和网络的最终状态。
 - HTTP 入口沿用现有 requestId；图用例日志附 project_id、component、phase、耗时和 node_count/edge_count，禁止记录标题、描述、repoUrl、SQL 或完整响应。
 - 使用既有请求 context 进入 store。布局同步计算只属于当前快照；卸载图后释放节点、边和视口，不保留其他展开图实例。
 - API 错误在 HTTP 边界记录一次；浏览器仅展示脱敏 message 与 requestId。静态资源请求也走现有访问日志，不新增第二套错误上报。
-- 验证时访问指定项目的 task-graph，从浏览器 Network 记录响应或错误的 requestId；在服务结构化日志中按该 requestId 与 project_id 过滤，确认一次请求的状态、耗时和图规模。禁止用任务正文定位。
+- 验证时从浏览器 Network 的 task-sync 记录响应或错误的 requestId（完整图仍可作对照）；在服务结构化日志中按该 requestId 与 project_id 过滤，确认一次请求的状态、耗时和图规模。禁止用任务正文定位。
 
 模型工具预算不适用：本功能不新增模型调用或工具接口。
 
@@ -834,7 +834,7 @@ Markdown 复用渲染器，分别使用任务根与文档目录；其他附件�
 
 自动刷新采用两类时间控制：`refresh-staleness` 使用真实服务变化验证周期更新与
 恢复；附件和双语隔离场景控制浏览器定时器，精确断言操作自身的读写次数。容量
-场景保留浏览器原生 5 秒定时器与性能时钟，按初始读取或定时回调标记每次图请求，
+场景保留浏览器原生 5 秒定时器与性能时钟，按初始读取或定时回调标记每次 task-sync 请求，
 验证折叠和重新展开本身不触发图读取。请求归因与性能计时分别观测，周期请求
 继续计入实际浏览器工作。滚动恢复根据实际 `scrollTop` 连续 100ms 稳定判定，
 由测试进程的单调时钟约束在 3,000ms 内；浏览器定时器受控时也能完成观测。

@@ -224,6 +224,8 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 [前台身份核验决策](../../.agents/notes/implemented/bug-fix/2026-10-23-silent-foreground-identity-checks.md)
 记录这一呈现策略及其取舍。同源 iframe 内外切换仍保持顶层 focus，不重复发起
 这类核验。
+任务缓存的 TaskCacheProvider 在认证分支内、TaskDetailSessionProvider 外提供用户/会话 scope，覆盖项目、独立任务及附件路径页。成功同步前不从磁盘发布本挂载的私有内容。本地读取和广播发布与普通 API 一样等待 foreground gate。同步响应先核对 `Daynight-User-ID`；缺失或畸形头作为协议错误保留原缓存，可信不同用户立即同步失效旧 scope 并卸载旧认证内容，再发起 `/me`。只有同用户验证通过的项目 `404 not_found` 定向清理项目。退出、换号或 401 同步释放内存与旧请求，再轮换持久 userFence 并清理该用户记录；普通同用户核验保留 scope，页面卸载仅关闭连接而保留可重建缓存。[缓存架构](daynight-task-sync.md)拥有完整事务和失效规则。
+
 现有图、项目浏览偏好和居中 TaskDetailDialog 继续复用，不增加任务字段编辑。
 `messages.auth` 的英语与简体中文契约覆盖所有新界面、标题、校验、无障碍名称、
 错误和异步通知；通知存语义，渲染时取当前语言，日期/计数使用原生格式化器。

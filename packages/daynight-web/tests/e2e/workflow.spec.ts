@@ -88,7 +88,7 @@ const pauseRefreshClock = async (page: Page): Promise<void> => {
   await expect(page.locator('.snapshot-time time')).toHaveAttribute('datetime', /^2030-/);
 };
 const nextAutomaticRefresh = async (page: Page, projectId: string): Promise<number> => {
-  const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-graph`);
+  const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
   await page.clock.fastForward(5_000);
   return (await response).status();
 };
@@ -533,7 +533,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     }));
     const before = await appearance();
     last = await seedExternalDependencies(request, shortcut.id, last, [first.id]);
-    const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${shortcut.id}/task-graph`);
+    const response = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${shortcut.id}/task-sync`);
     await page.getByRole('button', { name: '刷新', exact: true }).click(); expect((await response).status()).toBe(200);
     await expect(page.locator(`.task-dependency-edge[data-id="${first.id}->${last.id}"]`)).toHaveAttribute('data-external', 'true');
     await expect(page.locator(`.task-dependency-edge[data-id="${middle.id}->${last.id}"]`)).toHaveAttribute('data-external', 'false');
@@ -890,7 +890,7 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   await expect(stat(page, '已完成')).toHaveText('0');
   await expect(stat(page, '被阻塞')).toHaveText('1');
   await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
-  const graphResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-graph`);
+  const graphResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
   await dialog.getByRole('button', { name: '刷新任务图', exact: true }).click();
   expect((await graphResponse).status()).toBe(200);
   await expect(stat(page, '已完成')).toHaveText('1');
@@ -1138,7 +1138,7 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   await expect(details(page, task.id)).toBeFocused();
   await page.getByRole('button', { name: '放大', exact: true }).click();
   await withDependencyFailure(async () => {
-    const failed = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-graph`);
+    const failed = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
     await page.getByRole('button', { name: '刷新', exact: true }).click();
     const response = await failed;
     expect(response.status()).toBe(500);
@@ -1188,10 +1188,10 @@ test('deep-links', scenario('deep-links'), async ({ page, api: request }, info) 
 
   const fetched = deferred<void>();
   const release = deferred<void>();
-  const pattern = `**/api/v1/projects/${first.id}/task-graph`;
+  const pattern = (url: URL) => url.pathname === `/api/v1/projects/${first.id}/task-sync`;
   const aborted: string[] = [];
   page.on('requestfailed', (request) => {
-    if (new URL(request.url()).pathname === `/api/v1/projects/${first.id}/task-graph`) aborted.push(request.failure()?.errorText ?? 'missing-error');
+    if (new URL(request.url()).pathname === `/api/v1/projects/${first.id}/task-sync`) aborted.push(request.failure()?.errorText ?? 'missing-error');
   });
   await page.route(pattern, async (route) => {
     const response = await authenticatedAPI(page.context().request).fetch(route.request(), { timeout: 15_000, maxRetries: 0 });

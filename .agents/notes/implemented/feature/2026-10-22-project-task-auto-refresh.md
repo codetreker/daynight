@@ -12,12 +12,14 @@ preview while it is being used.
 
 ## Decision
 
-An open project reads its complete task graph every five seconds while the
-document is visible. Hiding the document pauses new periodic reads without
+An open project synchronizes its task summaries every five seconds while the
+document is visible. The [persistent summary-cache decision](../architecture/2026-10-24-persistent-task-summary-cache.md)
+replaces the original complete-graph transport while preserving this scheduling
+and the complete derived snapshot presented to components. Hiding the document pauses new periodic reads without
 cancelling an active read. Returning to a visible document starts a read
 immediately unless one is already active, and restarts the five-second interval.
-Automatic ticks skip an active graph request. Manual refresh cancels the current
-graph read and starts immediately. Navigation and unmount release the timer and
+Automatic ticks skip an active project sync. Manual refresh cancels the current
+sync read and starts immediately. Navigation and unmount release the timer and
 owned requests; resource identity and request generation continue to reject late
 responses.
 
@@ -48,9 +50,9 @@ resource and release old task state.
 Recoverable failures retain old data, its successful receipt time and a visible
 error. Automatic attempts keep that error until success clears it, including
 initial failures without retained data, so retries do not repeatedly announce
-loading. A 404 clears
-the unavailable graph or detail rather than retaining previously accessible
-content. A 401 follows the authentication owner's session-loss lifecycle and
+loading. A principal-verified same-user project not_found response clears its snapshot
+and persistent base; missing or malformed identity headers remain protocol
+failures. Unavailable detail reads clear their own content. A 401 follows the authentication owner's session-loss lifecycle and
 releases user-owned content. Project listing and attachment metadata/content
 retain their existing independent refresh and mutation rules.
 
@@ -64,7 +66,7 @@ and its existing performance and cleanup gates.
 
 Attachment and language isolation checks control the browser clock when counting
 requests attributable to an action. Capacity checks keep native browser timers
-and performance clocks: test-side instrumentation labels each graph request as
+and performance clocks: test-side instrumentation labels each project-sync request as
 an initial read or a five-second callback read, proving collapse/reopen adds no
 read while periodic requests remain observable. This avoids replacing a causal
 guarantee with an absolute request count over a timed workflow. Scroll recovery
@@ -80,7 +82,7 @@ explicit action. It does not meet automatic task-status monitoring.
 **Use SSE or WebSocket notifications.** Push could reduce unchanged reads and
 propagate changes sooner, but requires a server notification transport and
 connection lifecycle beyond task-page refresh. It remains an additive capability:
-a future notification can trigger the same complete graph read. Keeping graph
+a future notification can trigger the same project synchronization. Keeping graph
 projection, detail ownership and resource isolation independent of the trigger
 preserves that extension without replacing their consistency rules.
 
@@ -93,10 +95,12 @@ five-second interval. Hidden pages may apply an already active read and obtain
 fresh data again on return. Automatic cycles update successful receipt time
 without repeatedly showing the manual-refresh busy state.
 
-Polling adds complete graph and selected-detail reads even when data has not
-changed. Reference reuse avoids unnecessary layout work but does not remove
-transport or database cost. Push transport should be reconsidered if this load
-or the five-second visibility delay becomes material. A live detail and graph
+Polling can repeatedly transfer the final timestamp-overlap window and still
+starts selected-detail reads under the current detail-session receipt policy.
+Reference reuse avoids unnecessary layout work; duplicate summaries also avoid
+persistent writes and broadcast. Intrinsic detail reuse and change-driven GETs
+remain part of the [detail-cache proposal](../../proposed/architecture/2026-10-24-task-view-timestamp-window.md). Push transport should be reconsidered if this load
+or the five-second visibility delay becomes material. A live detail and project sync
 remain independent reads; stale-data detection still offers a full graph refresh.
 The [approval lifecycle](2026-10-22-task-approval-lifecycle.md) separately supplies
 versioned status setting and its shared task sessions. Task descriptors, current read

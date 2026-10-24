@@ -1,8 +1,9 @@
+import { createGraphSyncFixture } from "./helpers/taskSync";
 import { cleanup, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { setTaskStatus, attachmentPreviewRoot, getTask, getTaskGraph, listAttachments, readAttachmentText } from '../src/api/client';
-import type { Attachment, TaskDetail } from '../src/api/types';
+import { setTaskStatus, attachmentPreviewRoot, getTask, getTaskSync, listAttachments, readAttachmentText } from '../src/api/client';
+import type { Attachment, TaskDetail, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { installGraphMeasurements } from './graph-measurements';
@@ -10,10 +11,13 @@ import { browsingProjects } from './mockups/browsing-fixture';
 
 vi.mock('../src/api/client', async (original) => ({
   ...await original<typeof import('../src/api/client')>(),
-  setTaskStatus: vi.fn(), getTaskGraph: vi.fn(), getTask: vi.fn(), listAttachments: vi.fn(), readAttachmentText: vi.fn(),
+  setTaskStatus: vi.fn(), getTaskSync: vi.fn(), getTask: vi.fn(), listAttachments: vi.fn(), readAttachmentText: vi.fn(),
 }));
 
-const render = createLocaleRender('zh-CN');
+const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
+
+const localeRender = createLocaleRender('zh-CN');
+const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 const graph = browsingProjects['complete-context'];
 const rootId = graph.tasks.find((task) => task.titlePreview === '外部上下文 · 链内交付起点')!.id;
 const selectedId = graph.tasks.find((task) => task.titlePreview === '外部前置 · 菱形合流')!.id;
@@ -28,6 +32,12 @@ const attachment: Attachment = {
 };
 let root: HTMLDivElement;
 
+const syncFixture = createGraphSyncFixture();
+beforeEach(() => {
+  syncFixture.reset();
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));
+});
+
 beforeEach(() => {
   installGraphMeasurements();
   vi.mocked(setTaskStatus).mockReset();
@@ -35,7 +45,7 @@ beforeEach(() => {
   root.id = 'root';
   document.body.append(root);
   window.localStorage.setItem(`daynight:project-view:${graph.project.id}`, JSON.stringify({ expandedRootId: rootId }));
-  vi.mocked(getTaskGraph).mockReset().mockResolvedValue(graph);
+  graphRequest.mockReset().mockResolvedValue(graph);
   vi.mocked(getTask).mockReset().mockResolvedValue(detail);
   vi.mocked(listAttachments).mockReset().mockResolvedValue({ items: [attachment], nextCursor: null });
   vi.mocked(readAttachmentText).mockReset().mockResolvedValue('# Attachment acceptance\n\n![Diagram](../images/diagram.svg)\n\nAll checks passed.');
@@ -60,7 +70,7 @@ const graphSnapshot = (container: HTMLElement) => ({
 
 describe('graph inspection and detail reading integration', () => {
   it.each([false, true])('retains the selected dependency path while task permission %s opens Markdown and its attachment in the same dialog', async (allowAgents) => {
-    vi.mocked(getTaskGraph).mockResolvedValue({ ...graph, tasks: graph.tasks.map((task) => task.id === detailNode.id ? { ...task, allowAgents } : task) });
+    graphRequest.mockResolvedValue({ ...graph, tasks: graph.tasks.map((task) => task.id === detailNode.id ? { ...task, allowAgents } : task) });
     vi.mocked(getTask).mockResolvedValue({ ...detail, allowAgents });
     const user = userEvent.setup();
     const view = render(<ProjectPage projectId={graph.project.id} />, { container: root });
@@ -101,7 +111,7 @@ describe('graph inspection and detail reading integration', () => {
     expect(trigger).toHaveFocus();
     expect(graphSnapshot(view.container)).toEqual(state);
     expect(setTaskStatus).not.toHaveBeenCalled();
-    expect(getTaskGraph).toHaveBeenCalledTimes(1);
+    expect(graphRequest).toHaveBeenCalledTimes(1);
     expect(getTask).toHaveBeenCalledExactlyOnceWith(graph.project.id, detailNode.id, expect.any(AbortSignal));
   });
 });

@@ -1,4 +1,5 @@
 import { stringifyWireJson } from "../helpers/wireJson";
+import { taskSyncQuery, taskSyncResponse, TEST_VIEWER_ID, viewerHeaders } from "../helpers/taskSync";
 import type { GraphTask, TaskDetail, TaskGraph, TaskGraphSummary, TaskStatus } from '../../src/api/types';
 import { isTaskVersion, parseApiJson } from '../../src/api/json';
 
@@ -187,6 +188,7 @@ const detail = (graph: TaskGraph, task: GraphTask | TaskDetail, scenario: Browsi
 type SceneState = {
   readonly scenario: BrowsingScenario;
   readonly initial: TaskGraph;
+  readonly epoch: string;
   readonly tasks: Map<string, TaskDetail>;
   readonly attempts: Map<string, number>;
   readonly failedTaskReads: Set<string>;
@@ -208,7 +210,7 @@ export type BrowsingFixture = (() => void) & {
 };
 
 const jsonResponse = (value: unknown, status = 200): Response => new Response(stringifyWireJson(value), {
-  status, headers: { 'Content-Type': 'application/json' },
+  status, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }),
 });
 const fault = (code: string, status: number): Response => jsonResponse({
   error: { code, message: `Preview request failed: ${code}.`, requestId: `mockup-${code}` },
@@ -244,7 +246,7 @@ export const installBrowsingFixture = (): BrowsingFixture => {
   const emit = () => { revision++; for (const listener of listeners) listener(); };
   const states = new Map((Object.keys(browsingProjects) as BrowsingScenario[]).map((scenario) => {
     const initial = browsingProjects[scenario];
-    const state: SceneState = { scenario, initial, tasks: new Map(initial.tasks.map((task) => [
+    const state: SceneState = { scenario, initial, epoch: crypto.randomUUID(), tasks: new Map(initial.tasks.map((task) => [
       task.id, detail(initial, task, scenario === 'long320' ? 'long' : 'normal', isStatusScenario(scenario) ? 9_007_199_254_740_993n : 1n),
     ])), attempts: new Map(), failedTaskReads: new Set(), pending: new Map(), graphReads: 0, failedGraphReads: false };
     return [initial.project.id, state];
@@ -256,7 +258,7 @@ export const installBrowsingFixture = (): BrowsingFixture => {
     if (current.status === status) return jsonResponse(current);
     if ((status === 'in_progress' || status === 'done') && current.blockedBy.length !== 0) return fault('dependency_unsatisfied', 409);
     if (current.status === 'done' && [...state.tasks.values()].some((task) => task.dependsOn.includes(taskId) && task.status !== 'todo')) return fault('dependency_unsatisfied', 409);
-    const now = new Date(Date.parse(current.updatedAt) + 1_000).toISOString();
+    const now = new Date(Math.max(...[...state.tasks.values()].map((task) => Date.parse(task.updatedAt))) + 1_000).toISOString();
     const updated: TaskDetail = { ...current, status, version: current.version + 1n, updatedAt: now,
       startedAt: status === 'in_progress' ? now : status === 'todo' || current.status === 'todo' ? null : current.startedAt,
       completedAt: status === 'done' ? now : null };
@@ -272,7 +274,7 @@ export const installBrowsingFixture = (): BrowsingFixture => {
     signal?.throwIfAborted();
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin);
     if (url.origin !== location.origin) throw new Error(`Unknown browsing preview origin: ${url.origin}`);
-    const graphMatch = /^\/api\/v1\/projects\/([^/]+)\/task-graph$/.exec(url.pathname);
+    const graphMatch = /^\/api\/v1\/projects\/([^/]+)\/(task-graph|task-sync)$/.exec(url.pathname);
     const taskMatch = /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)(\/(?:attachments|status))?$/.exec(url.pathname);
     const projectId = graphMatch?.[1] ?? taskMatch?.[1];
     const state = projectId === undefined ? undefined : states.get(projectId);
@@ -283,7 +285,8 @@ export const installBrowsingFixture = (): BrowsingFixture => {
         signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
       });
       if (state.scenario === 'error' && count === 0 || state.scenario === 'refresh-error' && count === 1 || state.failedGraphReads) return fault('internal_error', 500);
-      return jsonResponse(graphSnapshot(state));
+      const snapshot = graphSnapshot(state);
+      return graphMatch[2] === 'task-sync' ? taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: state.epoch, versionForTask: (task) => state.tasks.get(task.id)!.version, viewerId: TEST_VIEWER_ID }) : jsonResponse(snapshot);
     }
     const storedTask = state?.tasks.get(taskMatch?.[2] ?? '');
     const task = state !== undefined && storedTask !== undefined ? currentTask(state, storedTask.id) : undefined;

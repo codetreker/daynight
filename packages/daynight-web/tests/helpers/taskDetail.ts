@@ -2,6 +2,7 @@ import type { TaskDetail, TaskGraph } from '../../src/api/types';
 import { stringifyWireJson } from './wireJson';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
 import type { GraphSnapshot } from '../../src/features/projects/useTaskGraph';
+import { taskSyncQuery, taskSyncResponse, TEST_VIEWER_ID, viewerHeaders } from './taskSync';
 
 const timestamp = '2026-10-22T10:00:00Z';
 export const detailFixture = (projectId: string, taskId: string, changes: Partial<TaskDetail> = {}): TaskDetail => ({
@@ -30,10 +31,12 @@ export const snapshotFixture = (details: readonly TaskDetail[], revision = 1): G
   const graph = graphFixture(details);
   return { graph, index: buildGraphIndex(graph), revision, observedAt: graph.observedAt, receivedMonotonic: performance.now(), receivedAt: Date.now() };
 };
-export const resourceResponse = (body: unknown): Response => new Response(stringifyWireJson(body), { headers: { 'Content-Type': 'application/json' } });
-export const withDetailResources = (projectId: string, taskId: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>, changes: Partial<TaskDetail> = {}) =>
+export const resourceResponse = (body: unknown, viewerId?: string): Response => new Response(stringifyWireJson(body), { headers: viewerId === undefined ? { 'Content-Type': 'application/json' } : viewerHeaders(viewerId, { 'Content-Type': 'application/json' }) });
+export const withDetailResources = (projectId: string, taskId: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>, changes: Partial<TaskDetail> = {}, viewer: string | (() => string) = TEST_VIEWER_ID) =>
   (url: string, options?: RequestInit): Response | Promise<Response> => {
     const task = detailFixture(projectId, taskId, changes);
+    const parsed = new URL(url, location.origin);
+    if (parsed.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(parsed), versionForTask: () => task.version, viewerId: typeof viewer === 'string' ? viewer : viewer() });
     if (url === `/api/v1/projects/${projectId}/task-graph`) return resourceResponse(graphFixture([task]));
     if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return resourceResponse(task);
     return fallback(url, options);

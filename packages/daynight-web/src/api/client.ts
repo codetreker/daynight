@@ -1,7 +1,9 @@
 import mime from "mime";
+import { parseTaskSync } from "./task-sync";
+import { timestamp } from "./parse";
 import { isTaskVersion, parseApiJson, stringifyApiJson } from "./json";
 import { canonicalId, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail, parseTaskGraph } from "./parse";
-import type { ExecutionPlatform, Attachment, AttachmentPage, GraphLimitDetails, ProjectPage, TaskDetail, TaskGraph, TaskStatus } from "./types";
+import type { ExecutionPlatform, Attachment, AttachmentPage, GraphLimitDetails, ProjectPage, TaskDetail, TaskGraph, TaskStatus, TaskSync } from "./types";
 import { decodeProjectPageJson, decodeTaskGraphJson } from "./project-json";
 
 const serverMessages: Readonly<Record<string, string>> = {
@@ -67,6 +69,8 @@ export const pauseAuthRequests = (): (() => void) => {
   return () => { if (authPause === pause && pause.owner === owner) releaseAuthRequests(); };
 };
 
+export const authRequestsPaused = (): boolean => authPause !== null;
+
 const waitForIdentity = (pause: AuthPause, signal: AbortSignal): Promise<void> => new Promise((resolve, reject) => {
   const cleanup = () => { pause.waiters.delete(resume); signal.removeEventListener("abort", abort); };
   const resume = () => { cleanup(); resolve(); };
@@ -78,6 +82,28 @@ const waitForIdentity = (pause: AuthPause, signal: AbortSignal): Promise<void> =
 export const subscribeUnauthorized = (listener: () => void): (() => void) => {
   unauthorizedListeners.add(listener);
   return () => { unauthorizedListeners.delete(listener); };
+};
+
+export const waitForAuthRequests = async (signal: AbortSignal): Promise<void> => {
+  signal.throwIfAborted();
+  const generation = authGeneration;
+  while (authPause !== null) {
+    await waitForIdentity(authPause, signal);
+    signal.throwIfAborted();
+    if (generation !== authGeneration) throw new DOMException("The authenticated account changed.", "AbortError");
+  }
+};
+
+export const assertResponsePrincipal = (response: Response, expectedUserId: string, onMismatch?: () => void): void => {
+  const expected = requestId(expectedUserId);
+  // Unauthenticated responses use the existing session-expiry lifecycle.
+  if (response.status === 401) return;
+  const principal = response.headers.get("Daynight-User-ID");
+  if (principal === null || canonicalId(principal) === null) throw new ApiError("protocol", response.status);
+  if (canonicalId(principal) !== expected) {
+    onMismatch?.();
+    throw new ApiError("protocol", response.status, "principal_mismatch");
+  }
 };
 
 export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}): Promise<Response> => {
@@ -153,6 +179,25 @@ export const listProjects = (query: { readonly limit?: number; readonly cursor?:
 export const getTaskGraph = (projectId: string, signal: AbortSignal): Promise<TaskGraph> => {
   const project = requestId(projectId);
   return read(`/api/v1/projects/${project}/task-graph`, signal, (data) => parseTaskGraph(data, project), decodeTaskGraphJson);
+};
+
+export const getTaskSync = async (
+  projectId: string, query: { readonly epoch?: string; readonly since?: string },
+  expectedUserId: string, signal: AbortSignal, onPrincipalMismatch?: () => void,
+): Promise<TaskSync> => {
+  const project = requestId(projectId);
+  requestId(expectedUserId);
+  const parameters = new URLSearchParams();
+  if (query.epoch !== undefined) parameters.set("epoch", requestId(query.epoch));
+  if (query.since !== undefined) {
+    if (query.epoch === undefined) throw new ApiError("protocol");
+    try { parameters.set("since", timestamp(query.since)); }
+    catch (error) { throw new ApiError("protocol", null, "protocol", null, undefined, error); }
+  }
+  const suffix = parameters.size === 0 ? "" : `?${parameters}`;
+  const response = await request(`/api/v1/projects/${project}/task-sync${suffix}`, signal, { headers: { Accept: "application/json" } });
+  assertResponsePrincipal(response, expectedUserId, onPrincipalMismatch);
+  return json(response, signal, (value) => parseTaskSync(value, project), decodeTaskGraphJson);
 };
 
 export const getTask = (projectId: string, taskId: string, signal: AbortSignal): Promise<TaskDetail> => {

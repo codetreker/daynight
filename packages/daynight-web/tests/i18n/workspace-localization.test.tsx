@@ -1,7 +1,8 @@
+import { createGraphSyncFixture } from "../helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getTaskGraph, listProjects } from "../../src/api/client";
+import { ApiError, getTaskSync, listProjects } from "../../src/api/client";
 import type { GraphTask, ProjectPage, TaskGraph } from "../../src/api/types";
 import { App } from "../../src/app/App";
 import { getFormats } from "../../src/i18n/formats";
@@ -10,7 +11,7 @@ import { zhCN } from "../../src/i18n/messages/zh-CN";
 import { renderWithLocale } from "../helpers/renderWithLocale";
 
 vi.mock("../../src/api/client", async (original) => ({
-  ...await original<typeof import("../../src/api/client")>(), getTaskGraph: vi.fn(), listProjects: vi.fn(),
+  ...await original<typeof import("../../src/api/client")>(), getTaskSync: vi.fn(), listProjects: vi.fn(),
 }));
 vi.mock("../../src/features/task-graph/ChainList", () => ({ ChainList: () => null }));
 vi.mock("../../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialog: ({ taskId, onRefreshGraph }: {
@@ -34,8 +35,19 @@ const deferred = <T,>() => {
   const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; });
   return { promise, resolve, reject };
 };
-const graphRequest = vi.mocked(getTaskGraph);
+const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const projectRequest = vi.mocked(listProjects);
+
+const replacementEpochs = new WeakMap<TaskGraph, string>();
+const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
+const syncFixture = createGraphSyncFixture();
+beforeEach(() => {
+  syncFixture.reset();
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
+    const value = await graphRequest(projectId, signal);
+    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+  });
+});
 
 beforeEach(() => {
   graphRequest.mockReset();
@@ -48,7 +60,7 @@ describe("workspace localization", () => {
   it("retranslates waiting statistics and standalone rows without changing their identity or refetching", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
     const user = userEvent.setup();
-    renderWithLocale(<App />, { locale: "en" });
+    renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
     const statistics = screen.getByRole("region", { name: "Project task statistics" });
     expect(statistics.querySelectorAll(".stat")).toHaveLength(6);
@@ -71,7 +83,7 @@ describe("workspace localization", () => {
     const pending = deferred<ProjectPage>();
     projectRequest.mockReturnValueOnce(pending.promise);
     const user = userEvent.setup();
-    renderWithLocale(<App />, { locale: "en" });
+    renderWithLocale(<App />, { taskCache: true, locale: "en" });
     expect(document.documentElement.lang).toBe("en");
     expect(document.title).toBe("Projects · Daynight");
     expect(screen.getByRole("status", { name: "Loading projects" })).toBeVisible();
@@ -111,7 +123,7 @@ describe("workspace localization", () => {
     graphRequest.mockRejectedValueOnce(error);
     window.history.replaceState(null, "", `/projects/${projectId}`);
     const user = userEvent.setup();
-    renderWithLocale(<App />, { locale: "en" });
+    renderWithLocale(<App />, { taskCache: true, locale: "en" });
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByRole("heading", { name: title })).toBeVisible();
     const requestId = screen.getByText(error.requestId!);
@@ -125,9 +137,9 @@ describe("workspace localization", () => {
 
   it("retains task tabs, filters, rows and scroll state, and retranslates a semantic removed-task notice", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([]));
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     const user = userEvent.setup();
-    renderWithLocale(<App />, { locale: "en" });
+    renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
     await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
     const standaloneTab = screen.getByRole("tab", { name: "Standalone tasks" });
@@ -151,7 +163,7 @@ describe("workspace localization", () => {
     expect(screen.getByRole("complementary", { name: "Task test shell" })).toBeVisible();
     await user.click(screen.getByRole("button", { name: "Refresh test graph" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Task test shell" })).toBeNull());
-    const notice = screen.getByText(zhCN.workspace.project.selectedTaskRemoved);
+    const notice = await screen.findByText(zhCN.workspace.project.selectedTaskRemoved);
     expect(notice).toHaveAttribute("role", "status");
     await user.selectOptions(selector, "en");
     expect(screen.getByText(en.workspace.project.selectedTaskRemoved)).toBe(notice);
@@ -164,7 +176,7 @@ describe("workspace localization", () => {
     const key = `daynight:task-view:${projectId}`;
     window.localStorage.setItem(key, '"unknown"');
     const user = userEvent.setup();
-    renderWithLocale(<App />, { locale: "en" });
+    renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
     const notice = screen.getByText(en.workspace.preferences.tab.invalid);
     await user.selectOptions(screen.getByRole("combobox"), "zh-CN");
@@ -175,7 +187,7 @@ describe("workspace localization", () => {
 
   it("updates 404 navigation and title in place with no resource request", async () => {
     window.history.replaceState(null, "", "/missing");
-    renderWithLocale(<App />, { locale: "en" });
+    renderWithLocale(<App />, { taskCache: true, locale: "en" });
     expect(screen.getByRole("heading", { name: "Page not found" })).toBeVisible();
     const selector = screen.getByRole("combobox");
     selector.focus();

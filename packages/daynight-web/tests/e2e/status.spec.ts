@@ -32,14 +32,17 @@ const pauseAutomaticRefresh = async (page: Page): Promise<void> => {
   const now = new Date('2030-01-01T00:00:00Z'); await page.clock.install({ time: now }); await page.clock.pauseAt(now);
 };
 const open = async (page: Page, project: string, task: string): Promise<void> => {
-  const graphPath = `/api/v1/projects/${project}/task-graph`;
-  const response = page.waitForResponse((response) => new URL(response.url()).pathname === graphPath && response.status() === 200);
+  const syncPath = `/api/v1/projects/${project}/task-sync`;
+  const response = page.waitForResponse((response) => new URL(response.url()).pathname === syncPath && response.status() === 200);
   if (new URL(page.url()).pathname !== `/projects/${project}`) await page.goto(`/projects/${project}`);
   else {
     if (await detail(page).count() > 0) await detail(page).getByRole('button', { name: /^(关闭任务详情|Close task details)$/, exact: true }).click();
     await page.getByRole('button', { name: /^(刷新|Refresh)$/, exact: true }).click();
   }
-  const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await (await response).text())), project);
+  await (await response).finished();
+  const graphResponse = await authenticatedAPI(page.context().request).get(`/api/v1/projects/${project}/task-graph`);
+  expect(graphResponse.status()).toBe(200);
+  const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await graphResponse.text())), project);
   const index = buildGraphIndex(graph); const representative = index.componentByTask.get(task)!;
   const standalone = index.components.get(representative)!.memberIds.size === 1;
   await page.getByRole('tab', { name: standalone ? /^(独立任务|Standalone tasks)$/ : /^(任务链|Task chains)$/, exact: true }).click();

@@ -1,8 +1,9 @@
+import { createGraphSyncFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getAuthConfig, listMembers, logout, me } from '../src/api/auth';
 import type { CurrentUser } from '../src/api/auth-types';
-import { ApiError, setTaskStatus, getTask, getTaskGraph } from '../src/api/client';
+import { ApiError, setTaskStatus, getTask, getTaskSync } from '../src/api/client';
 import type { TaskDetail, TaskGraph } from '../src/api/types';
 import { AuthenticatedApp } from '../src/app/AuthenticatedApp';
 import { renderWithLocale } from './helpers/renderWithLocale';
@@ -11,8 +12,10 @@ vi.mock('../src/api/auth', async (original) => ({ ...await original<typeof impor
   getAuthConfig: vi.fn(), listMembers: vi.fn(), logout: vi.fn(), me: vi.fn(),
 }));
 vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(),
-  getTask: vi.fn(), getTaskGraph: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
+  getTask: vi.fn(), getTaskSync: vi.fn(), setTaskStatus: vi.fn(), listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
 }));
+const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
+
 const confirmStatus = (button: HTMLElement) => {
   fireEvent.click(button);
   fireEvent.click(screen.getByRole('menuitemradio', { name: 'In progress' }));
@@ -44,6 +47,12 @@ const deferred = <T,>() => {
   const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject };
 };
 let root: HTMLDivElement;
+const syncFixture = createGraphSyncFixture();
+beforeEach(() => {
+  syncFixture.reset();
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));
+});
+
 beforeEach(() => {
   currentUser = alice; topLevelFocused = true;
   vi.spyOn(document, 'hasFocus').mockImplementation(() => topLevelFocused);
@@ -56,7 +65,7 @@ beforeEach(() => {
   vi.mocked(logout).mockReset().mockResolvedValue(undefined);
   vi.mocked(listMembers).mockReset().mockImplementation(async (projectId) => [{ projectId, userId: currentUser.id, role: 'member', version: 1n,
     name: currentUser.name, email: currentUser.email, avatarUrl: null, createdAt: stamp, updatedAt: stamp }]);
-  vi.mocked(getTaskGraph).mockReset().mockImplementation(async (projectId) => graph(projectId));
+  graphRequest.mockReset().mockImplementation(async (projectId) => graph(projectId));
   vi.mocked(getTask).mockReset().mockImplementation(async (projectId) => initial(projectId));
   vi.mocked(setTaskStatus).mockReset();
 });
@@ -116,12 +125,12 @@ describe('authenticated status ownership', () => {
     dialog = await open('Bob task P');
     expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled();
     expect(within(dialog).queryByText('Alice reviewed content')).toBeNull();
-    const graphCalls = vi.mocked(getTaskGraph).mock.calls.length;
+    const graphCalls = graphRequest.mock.calls.length;
     await act(async () => { mutation.resolve({ ...original, status: 'in_progress', ready: false, startedAt: '2026-10-22T00:01:00Z', version: original.version + 1n }); });
     expect(within(dialog).getByRole('heading', { name: 'Bob task P' })).toBeVisible();
     expect(within(dialog).getByRole('button', { name: 'To do' })).toBeVisible();
     expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled();
-    expect(getTaskGraph).toHaveBeenCalledTimes(graphCalls);
+    expect(graphRequest).toHaveBeenCalledTimes(graphCalls);
     expect(setTaskStatus).toHaveBeenCalledTimes(1);
   });
 

@@ -1,3 +1,5 @@
+import { flushSync } from "react-dom";
+import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from "../features/task-cache/TaskCacheProvider";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { listMembers, logout, me } from "../api/auth";
 import type { AuthProvider, CurrentUser, ProjectRole } from "../api/auth-types";
@@ -120,6 +122,8 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const active = useRef<AbortController | null>(null);
   const resumeAuthRequests = useRef<(() => void) | null>(null);
   const mounted = useRef(true);
+  const cacheScope = useRef<TaskCacheScope | null>(null);
+  const identityRecheck = useRef<() => void>(() => {});
   const route = parseAuthRoute(pathname, search);
   useLayoutEffect(() => {
     document.documentElement.lang = locale;
@@ -133,13 +137,14 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     return failed;
   });
   const clearSession = useCallback((notice?: SessionNotice) => {
+    void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests(); ++generation.current; active.current?.abort(); active.current = null;
     setCreating(false); setProjectName(null); setRevalidation("idle"); setSession({ status: "anonymous", ...(notice === undefined ? {} : { notice }) });
   }, []);
   useEffect(() => subscribeUnauthorized(() => clearSession(sessionRef.current.status === "authenticated" ? "expired" : undefined)), [clearSession]);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; active.current?.abort(); invalidateAuthRequests(); };
+    return () => { mounted.current = false; active.current?.abort(); cacheScope.current?.dispose(); invalidateAuthRequests(); };
   }, []);
   useEffect(() => {
     const onNavigate = () => {
@@ -163,9 +168,11 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     void me(controller.signal).then((user) => {
       if (controller.signal.aborted || current !== generation.current) return;
       const previous = sessionRef.current;
-      if (previous.status === "authenticated" && previous.user.id === user.id) {
+      if (previous.status === "authenticated" && previous.user.id === user.id && !cacheScope.current?.isInvalidated) {
         setSession({ ...previous, user });
       } else {
+        void cacheScope.current?.invalidateScope();
+        cacheScope.current = createTaskCacheScope({ userId: user.id, onIdentityMismatch: () => identityRecheck.current() });
         invalidateAuthRequests(); setCreating(false); setProjectName(null);
         setSession({ status: "authenticated", user, generation: current });
       }
@@ -202,6 +209,17 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     setRevalidation((previous) => previous === "error" || previous === "retrying" ? "retrying" : "checking");
     setAttempt((value) => value + 1);
   }, [pauseIdentity]);
+  const invalidateIdentity = useCallback(() => {
+    void cacheScope.current?.invalidateScope(); cacheScope.current = null;
+    invalidateAuthRequests();
+    pauseIdentity();
+    // A proven principal change revokes the rendered identity before another private response can publish.
+    flushSync(() => {
+      setCreating(false); setProjectName(null); setRevalidation("idle"); setSession({ status: "loading" });
+    });
+    setAttempt((value) => value + 1);
+  }, [pauseIdentity]);
+  identityRecheck.current = invalidateIdentity;
   const blocked = revalidation === "error" || revalidation === "retrying";
   useLayoutEffect(() => {
     document.body.classList.toggle("auth-session-checking", blocked);
@@ -251,12 +269,12 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   if (session.status === "anonymous") return <>{cleanupWarning}{route.kind === "invitations" && invitation.storageUnavailable && <div className="notice warning" role="alert">{m.invitationStorageError}</div>}<LoginPage invitation={route.kind === "invitations"} {...(session.notice !== undefined ? { notice: m.notice[session.notice] } : loginError ? { notice: m.notice.loginFailed } : {})} onLogin={startLogin} />{logoutFailed && <button className="button" type="button" onClick={signOut}>{m.retryLogout}</button>}</>;
   const identity = `${session.user.id}:${session.generation}`;
   const revalidationOverlay = blocked ? <RevalidationOverlay failed={revalidation === "error"} onRetry={recheckIdentity} /> : null;
-  if (route.kind === "attachment" || route.kind === "task") return <TaskDetailSessionProvider key={identity}>{revalidationOverlay}{cleanupWarning}<div className="auth-shell" key={identity} aria-hidden={blocked} inert={blocked}>
+  if (route.kind === "attachment" || route.kind === "task") return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}{cleanupWarning}<div className="auth-shell" key={identity} aria-hidden={blocked} inert={blocked}>
     <TaskDetailPage key={route.projectId} projectId={route.projectId} taskId={route.taskId} navigation={{ tab: route.tab, path: route.path }} />
-  </div></TaskDetailSessionProvider>;
+  </div></TaskDetailSessionProvider></TaskCacheProvider>;
   if (route.kind === "invitations") return <TaskDetailSessionProvider key={identity}>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={signOut} onUnavailable={unavailableInvitation} /></div></TaskDetailSessionProvider>;
-  return <TaskDetailSessionProvider key={identity}>{revalidationOverlay}<Workspace key={identity} user={session.user} route={route} onSignOut={signOut} blocked={blocked}>
+  return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}<Workspace key={identity} user={session.user} route={route} onSignOut={signOut} blocked={blocked}>
     {cleanupWarning}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <AuthorizedProject key={route.projectId} projectId={route.projectId} user={session.user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={session.user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={session.user} onRemoved={() => navigate("/")} /></> : route.kind === "account" ? <AccountPage user={session.user} onSignOut={signOut} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/" onClick={followLink}>{app.returnToProjects}</a></section>}
     {creating && <CreateProjectDialog onClose={() => setCreating(false)} onCreated={(project) => { setCreating(false); navigate(`/projects/${project.id}`); }} />}
-  </Workspace></TaskDetailSessionProvider>;
+  </Workspace></TaskDetailSessionProvider></TaskCacheProvider>;
 };

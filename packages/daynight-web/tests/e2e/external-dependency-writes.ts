@@ -37,7 +37,8 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
     commands: [] as { argv: readonly string[]; exitCode: number; stdout: string; stderr: string }[],
     mutations: [] as { path: string; body: string; status: number; response: string; requestId: string | null }[],
     tasks: [] as { label: string; task: TaskDetail }[],
-    webGraphs: [] as { origin: string; body: string }[],
+    webSyncs: [] as { url: string; body: string }[],
+    graphOracles: [] as { origin: string; body: string }[],
     steps: [] as string[], failures: [] as string[],
   };
   let failure: unknown;
@@ -82,10 +83,13 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
       const after = parseTaskDetail(parseApiJson(raw), project.id, task.id);
       relationOnly(task, after, task.dependsOn, external); expect(after).toEqual(await read(task.id, 'flags-only-patch')); return after;
     };
-    const graphURL = new URL(`/api/v1/projects/${project.id}/task-graph`, baseURL).href;
+    const syncPath = `/api/v1/projects/${project.id}/task-sync`;
     const readWeb = async (navigate = false) => {
       const requests = new Set<Request>();
-      const capture = (request: Request) => { if (request.url() === graphURL && request.method() === 'GET') requests.add(request); };
+      const capture = (request: Request) => {
+        const url = new URL(request.url());
+        if (url.origin === baseURL && url.pathname === syncPath && request.method() === 'GET') requests.add(request);
+      };
       page.on('request', capture);
       try {
         const [response] = await Promise.all([
@@ -93,8 +97,20 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
           navigate ? page.goto(`/projects/${project.id}`) : page.getByRole('button', { name: '刷新', exact: true }).click(),
         ]);
         expect(response.status()).toBe(200); expect(new URL(response.url()).origin).toBe(baseURL);
-        const body = await response.text(); evidence.webGraphs.push({ origin: new URL(response.url()).origin, body });
-        return parseTaskGraph(await decodeTaskGraphJson(new Response(body)), project.id);
+        const body = await response.text(); evidence.webSyncs.push({ url: response.url(), body });
+        const graphResponse = await api.get(`/api/v1/projects/${project.id}/task-graph`);
+        expect(graphResponse.status()).toBe(200);
+        const graphBody = await graphResponse.text();
+        evidence.graphOracles.push({ origin: baseURL, body: graphBody });
+        const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(graphBody)), project.id);
+        const count = new Intl.NumberFormat('zh-CN');
+        for (const [label, value] of [
+          ['任务总数', graph.summary.total], ['待处理', graph.summary.todo], ['进行中', graph.summary.inProgress],
+          ['已完成', graph.summary.done], ['可开始', graph.summary.ready], ['被阻塞', graph.summary.blocked],
+        ] as const) {
+          await expect(page.locator('.stat').filter({ has: page.locator('.stat-label', { hasText: new RegExp(`^${label}$`) }) }).locator('.stat-number')).toHaveText(count.format(value));
+        }
+        return graph;
       } finally { page.off('request', capture); }
     };
     const openChain = async (representative: string) => {

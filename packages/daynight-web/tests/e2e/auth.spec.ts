@@ -177,7 +177,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
         identityRequests.push(request.method());
         identityRequestNumbers.set(request, identityRequests.length);
         requestOrder.push(`identity-request:${identityRequests.length}`);
-      } else if (pathname === `/api/v1/projects/${own.id}/task-graph`) {
+      } else if (pathname === `/api/v1/projects/${own.id}/task-sync`) {
         graphRequests.push(request.method());
         graphRequestNumbers.set(request, graphRequests.length);
         requestOrder.push(`graph-request:${graphRequests.length}`);
@@ -250,7 +250,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(graphRequests).toHaveLength(sameUserGraphBaseline);
     pendingGraphWindows.push({ identity: 'same-user', baseline: sameUserGraphBaseline, beforeRelease: graphRequests.length });
     const sameUserResponse = page.waitForResponse(`${baseURL}/api/v1/me`);
-    const sameUserGraph = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/projects/${own.id}/task-graph`
+    const sameUserGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${own.id}/task-sync`
       && graphRequestNumbers.get(response.request())! > sameUserGraphBaseline);
     heldChecks[0]!.release();
     await heldChecks[0]!.completed;

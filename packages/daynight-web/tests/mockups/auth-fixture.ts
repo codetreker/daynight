@@ -1,4 +1,5 @@
 import { wireResponse } from "../helpers/wireJson";
+import { taskSyncQuery, taskSyncResponse } from "../helpers/taskSync";
 import type { PersonalAccessToken, ProjectInvitation, ProjectMember, User } from '../../src/api/auth-types';
 import type { Attachment, Project, TaskDetail, TaskGraph } from '../../src/api/types';
 import { stringifyApiJson } from '../../src/api/json';
@@ -44,7 +45,7 @@ const future = '2026-11-21T09:00:00Z';
 const secret = 'auth_fixture_invitation_7kP3m9';
 const currentUser: User = { id: authUserId, name: 'Jianjun', email: 'jianjun@example.com', emailVerified: true, avatarUrl: null };
 type WireMember = Omit<ProjectMember, 'version'> & { version: number };
-type StoredProject = { project: Project; graph: TaskGraph; members: WireMember[]; invitations: ProjectInvitation[] };
+type StoredProject = { project: Project; graph: TaskGraph; epoch: string; members: WireMember[]; invitations: ProjectInvitation[] };
 const member = (userId: string, name: string, email: string, role: WireMember['role'], projectId = authProjectId): WireMember => ({ projectId, userId, name, email, avatarUrl: null, role, version: 1, createdAt: stamp, updatedAt: stamp });
 const emptySummary = { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 };
 const initialInvitation = (projectId: string, number: number): ProjectInvitation => ({ id: uuid(number), projectId, createdBy: authUserId, createdAt: stamp, expiresAt: '2026-10-29T09:00:00Z', consumedBy: null, consumedAt: null, revokedAt: null });
@@ -91,7 +92,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
     projects = new Map([browsingProjects.mixed, browsingProjects.external, browsingProjects.complete].map((source, index) => {
       const project: Project = { ...source.project, name: index === 0 ? next === 'long-names' ? '跨团队协作与自动化研发基础设施 · 国际化平台迁移及可观测性建设' : 'Daynight' : index === 1 ? 'Syntrix' : 'UniAuth' };
       const members = [member(authUserId, 'Jianjun', 'jianjun@example.com', next === 'members-member' ? 'member' : 'admin', project.id), member(uuid(202), 'Alice Chen', 'alice.chen@example.com', next === 'members-last-admin' ? 'member' : 'admin', project.id), member(uuid(203), 'Bob Wang', 'bob.wang@example.com', 'member', project.id)];
-      return [project.id, { project, graph: { ...source, project }, members, invitations: next === 'invitations-empty' ? [] : [initialInvitation(project.id, 401 + index)] }];
+      return [project.id, { project, graph: { ...source, project }, epoch: crypto.randomUUID(), members, invitations: next === 'invitations-empty' ? [] : [initialInvitation(project.id, 401 + index)] }];
     }));
     if (next === 'projects-empty' || next === 'invite' || next === 'invite-signed-out') projects = new Map();
     Object.defineProperty(navigator, 'clipboard', { configurable: true, value: next === 'clipboard-failure' ? { writeText: async () => { throw new DOMException('Controlled clipboard denial.', 'NotAllowedError'); } } : originalClipboard });
@@ -105,7 +106,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
     history.replaceState(null, '', `${route}${next === 'login-error' ? '?authError=login_failed' : ''}${fragment}`);
   };
 
-  const fetchFixture: typeof fetch = async (input, init) => {
+  const routeFixture: typeof fetch = async (input, init) => {
     const request = input instanceof Request ? input : null;
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin);
     if (url.origin !== location.origin || !url.pathname.startsWith('/api/')) return originalFetch(input, init);
@@ -165,7 +166,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
         const data = await body();
         if (typeof data.name !== 'string' || data.name.trim() === '' || typeof data.repoUrl !== 'string' || data.repoUrl.trim() === '') return error(400, 'invalid_input');
         const project: Project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: uuid(++sequence), name: data.name, repoUrl: data.repoUrl, createdAt: stamp, updatedAt: stamp };
-        projects.set(project.id, { project, graph: { observedAt: "2026-10-20T12:00:00Z", project, summary: emptySummary, tasks: [] }, members: [member(authUserId, currentUser.name!, currentUser.email!, 'admin', project.id)], invitations: [] });
+        projects.set(project.id, { project, graph: { observedAt: "2026-10-20T12:00:00Z", project, summary: emptySummary, tasks: [] }, epoch: crypto.randomUUID(), members: [member(authUserId, currentUser.name!, currentUser.email!, 'admin', project.id)], invitations: [] });
         return wireResponse(project, { status: 201 });
       }
     }
@@ -179,7 +180,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
       }
       const joined = member(authUserId, currentUser.name!, currentUser.email!, 'member');
       const graph = browsingProjects.mixed;
-      projects.set(authProjectId, { project: { ...graph.project, name: 'Daynight' }, graph: { ...graph, project: { ...graph.project, name: 'Daynight' } }, members: [joined, member(uuid(202), 'Alice Chen', 'alice.chen@example.com', 'admin')], invitations: [] });
+      projects.set(authProjectId, { project: { ...graph.project, name: 'Daynight' }, graph: { ...graph, project: { ...graph.project, name: 'Daynight' } }, epoch: crypto.randomUUID(), members: [joined, member(uuid(202), 'Alice Chen', 'alice.chen@example.com', 'admin')], invitations: [] });
       return Response.json(joined);
     }
     const scoped = /^\/api\/v1\/projects\/([^/]+)(?:\/(.*))?$/.exec(url.pathname);
@@ -191,6 +192,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
       if (current === undefined) return error(404, 'not_found');
       if (suffix === '' && method === 'GET') return wireResponse(entry.project);
       if (suffix === 'task-graph' && method === 'GET') return wireResponse(entry.graph);
+      if (suffix === 'task-sync' && method === 'GET') return taskSyncResponse(entry.graph, { query: taskSyncQuery(url), epoch: entry.epoch, versionForTask: () => 1n, viewerId: activeUser.id });
       if (suffix === 'members' && method === 'GET') {
         if (scenario === 'members-error') return error(500, 'internal_error');
         return Response.json({ items: entry.members });
@@ -250,6 +252,12 @@ export const installAuthFixture = (initial: AuthScenario) => {
     }
     if (scoped !== null) return error(404, 'not_found');
     throw new Error(`Unhandled authentication fixture request: ${method} ${url.pathname}`);
+  };
+  const fetchFixture: typeof fetch = async (input, init) => {
+    const response = await routeFixture(input, init);
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin);
+    if (authenticated && response.status !== 401 && url.origin === location.origin && url.pathname.startsWith('/api/v1/') && !url.pathname.startsWith('/api/v1/auth/')) response.headers.set('Daynight-User-ID', activeUser.id);
+    return response;
   };
   const keepFixtureHome = (event: MouseEvent): void => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !(event.target instanceof Element)) return;
