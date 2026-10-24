@@ -85,35 +85,38 @@ without shards. `scripts/acceptance/runner.mts` exports `runAcceptance`,
 `runContainerCallback` and `recoverAcceptance` without starting work or registering
 signal handlers on import. The thin `scripts/acceptance.mts` CLI and `scripts/ci.mts`
 pass explicit cancellation controllers to that runner. CI supplies callbacks for
-pinned Chromium installation and the unchanged `pnpm web:test` command; only the
-coverage child receives `VITEST_MAX_WORKERS=2`, retaining its `forks` pool and
-per-file isolation. The callback passes a copied environment to that child rather
-than changing `process.env`; browser installation, native preparation and the
-dev-ci callback do not inherit the coverage-only worker limit. Browser
-installation, including Playwright's Linux dependency
-installation, has a 600-second deadline; coverage remains bounded at 180 seconds.
-Both commands remain required: a nonzero exit or timeout fails acceptance. The
-web job retains its 20-minute overall timeout. Controlled deployment fixtures run
-before the unified CI entry. This partially replaces the cache-only preparation and target
+pinned Chromium installation and test preparation through the runner's coverage
+callback. Package `test:harness` owns all Node acceptance/tooling harness tests; `test:coverage` owns the complete
+Vitest/V8 suite and strict statement checker. Package `test` and root `web:test`
+compose both serially. CI uses the same two canonical commands serially, each
+bounded at 180 seconds, so the harness cannot consume the Vitest/coverage budget.
+Neither phase may be skipped, and a failure or timeout prevents acceptance.
+Only the `test:coverage` child receives `VITEST_MAX_WORKERS=2`, retaining its `forks`
+pool and per-file isolation. The callback passes a copied environment to that
+child rather than changing `process.env`; the harness, browser installation,
+native preparation and dev-ci callback do not inherit the coverage-only worker
+limit. Browser installation, including Playwright's Linux dependency installation,
+has a 600-second deadline. The web job retains its 20-minute overall timeout.
+Controlled deployment fixtures run before the unified CI entry. This partially replaces the cache-only preparation and target
 sequencing of the [CI efficiency decision](2026-10-21-ci-validation-efficiency.md)
 and the original schedule of the
 [dashboard acceptance decision](2026-10-20-dashboard-production-acceptance.md).
 Their real targets, complete scenarios, coverage, performance and cleanup
 requirements continue to apply.
 
-The runner starts coverage, native production UI/Go/PostgreSQL preparation,
-container callback and normal dev-ci source build/start concurrently. Browser and
-Linux dependency installation starts only after coverage passes, removing apt and
-browser downloads from the 5-second UI-test deadline. Browser installation still
+The runner starts the serialized test preparation, native production
+UI/Go/PostgreSQL preparation, container callback and normal dev-ci source
+build/start concurrently. Browser and Linux dependency installation starts only
+after both test phases pass, removing apt and browser downloads from the 5-second UI-test deadline. Browser installation still
 overlaps native and dev-ci preparation. The existing shell runner remains
 authoritative for the unique image, running-image check and full stack cleanup.
 Native functional browser work waits only for the native process, shared installed
-CLI and browser preparation. Its twenty-four scenarios and immediate browser
+CLI and browser preparation. Its twenty-nine scenarios and immediate browser
 recovery must pass before the runner releases the container browser.
 
-If coverage or another active phase fails while browser preparation is waiting,
-the pipeline marks cancellation and the browser callback checks it as soon as
-coverage drains; it never starts the installer. The
+If either test command or another active phase fails while browser preparation
+is waiting, the pipeline marks cancellation and the browser callback checks it as
+soon as test preparation drains; it never starts the installer. The
 [pipeline regressions](../../../../packages/daynight-web/scripts/acceptance/pipeline.test.mts)
 verify coverage-before-browser ordering, cancellation while waiting, continued
 native/container overlap, browser-install failure handling, and capacity after
@@ -274,10 +277,18 @@ the Linux libraries and fonts that Playwright prepares for Chromium. Browser
 acceptance would depend on incidental runner-image contents rather than an
 explicit environment requirement.
 
+**Keep the Node harness and Vitest/coverage under one command deadline.** Their
+combined duration lets successful harness work exhaust the budget available to
+otherwise progressing Vitest suites and the strict checker as tests accumulate.
+The phases have independent tools and completion conditions, so separate bounded
+commands preserve the complete workload and expose the failing phase without
+expanding the overall job or individual UI-test deadlines.
+
 **Increase the whole job timeout.** That expands the deadline for every CI phase
 and does not remove shared-runner contention during coverage. The existing
-20-minute cap is retained; browser preparation is bounded at 600 seconds and
-coverage at 180 seconds.
+20-minute cap is retained; browser preparation is bounded at 600 seconds, and
+the serialized harness and Vitest/strict-checker phases each have a 180-second
+command bound.
 
 **Keep cache-only preparation followed by a later normal build.** This allowed
 preparation overlap without changing deployment ownership, but scheduled a second
@@ -306,14 +317,14 @@ which builds fresh native artifacts and owns their exact identity and lifetime.
 
 ## Consequences
 
-Coverage completes before the network-dependent browser preparation begins, while
-both continue to overlap native service and dev-ci preparation. The official
-Ubuntu archives selected by PR #148 replace the slow Azure mirror, though run
+Both test phases complete before the network-dependent browser preparation
+begins, while test and browser preparation continue to overlap native service and
+dev-ci preparation. The official Ubuntu archives selected by PR #148 replace the slow Azure mirror, though run
 39801658628 shows that transfers from the official archive can still take several
 minutes. The 600-second browser-install bound accommodates the measured 4-minute-
-42-second apt phase; coverage remains bounded at 180 seconds and the complete web
-job at 20 minutes. A slower install that exceeds its command bound fails
-acceptance rather than extending CI without limit.
+42-second apt phase. Harness and Vitest/strict-checker commands are separately
+bounded at 180 seconds, and the complete web job remains bounded at 20 minutes.
+A slower install that exceeds its command bound fails acceptance rather than extending CI without limit.
 
 The normal dev-ci runner keeps its existing public interface, production image
 checks and targeted cleanup. The native service lives longer because both native

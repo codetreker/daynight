@@ -1857,15 +1857,17 @@ fails explicitly. The [mirror decision](.agents/notes/implemented/testing/2026-1
 records the provisioning failure and the retained acceptance limits.
 Native CLI jobs typecheck and build once before
 running ordinary and installed tests against the same output. After deployment
-fixture checks, the web job uses one acceptance pipeline. Unit/coverage checks,
+fixture checks, the web job uses one acceptance pipeline. Test preparation,
 native UI/Go/PostgreSQL preparation and the normal dev-ci source build start
-concurrently. Installation of pinned Chromium and Linux dependencies starts only
-after coverage passes, then overlaps the remaining native/dev-ci preparation.
-Browser installation has a 600-second deadline, coverage 180 seconds, and the web
-job 20 minutes; a nonzero exit or timeout fails acceptance. Only the coverage
-subprocess uses two Vitest workers through its copied child environment,
-retaining its `forks` pool and file isolation. Native functional checks and their
-browser cleanup precede the container browser checks; full container cleanup
+concurrently. Test preparation runs the Web Node harness and then the complete
+Vitest/V8 suite with its strict statement checker as separate required commands,
+each with a 180-second deadline. Installation of pinned Chromium and Linux
+dependencies starts only after both test phases pass, then overlaps the remaining
+native/dev-ci preparation. Browser installation has a 600-second deadline and the
+web job 20 minutes; a nonzero exit or timeout in either test phase fails acceptance.
+Only the Vitest/coverage subprocess uses two workers through its copied child
+environment, retaining its `forks` pool and file isolation. Native functional checks
+and their browser cleanup precede the container browser checks; full container cleanup
 and all preparation/check commands finish before the native capacity phase.
 Both Go-consuming jobs restore module and compiler caches keyed by the server
 `go.sum`, while the server check expires test results before database/race/

@@ -540,7 +540,7 @@ pnpm web:acceptance
 DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
 ```
 
-`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 执行覆盖率检查器、文件系统发布测试、单元/组件测试与严格覆盖率检查。`web:acceptance` 自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；浏览器按原生功能、容器功能、原生容量的顺序完成验证，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
+`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行完整 Vitest/V8 单元及组件测试与严格覆盖率检查；任何一段失败都使完整命令失败。`web:acceptance` 自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；浏览器按原生功能、容器功能、原生容量的顺序完成验证，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
 
 开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。运行机器只需要服务二进制与 PostgreSQL；源码构建固定使用 Node 24 与 pnpm 11.28.6。根目录现有 CLI build/test/acceptance 命令的含义保持独立，新增 web 命令显式选择 `@codetreker/daynight-web`。
 
@@ -612,12 +612,7 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 web job 在统一验收前执行 dev-ci 生命周期 fixture，随后仅调用 `scripts/ci.mts`。
 workflow 先选择官方 Ubuntu package archives，再启动统一验收；该镜像源变更由
 [PR #148](https://github.com/codetreker/daynight/pull/148) 交付。
-入口把固定 Chromium 的 `install --with-deps chromium` 和既有 `pnpm web:test`
-作为准备 callback 交给共享 runner；仅覆盖率子进程设置 `VITEST_MAX_WORKERS=2`，
-保留 `forks` pool 和文件隔离。runner 同时启动覆盖率、原生 UI/Go/PostgreSQL 准备、
-容器 callback 与正常 dev-ci 源码构建/启动；仅在覆盖率通过后启动浏览器安装，
-避免 apt 与 Chromium 下载争用 5 秒 UI 测试时限。浏览器安装（含 Linux 依赖）限时
-600 秒，覆盖率命令限时 180 秒，任一失败都使验收失败。官方包源下载时间仍会波动，
+入口把固定 Chromium 的 `install --with-deps chromium` 与测试准备 callback 交给共享 runner。测试准备先执行包内 `test:harness`，再执行 `test:coverage`，每段分别限时 180 秒；前者的运行时长不占用后者的预算，全部 Node harness、Vitest 文件和严格覆盖率检查仍必需。仅 `test:coverage` 子进程设置 `VITEST_MAX_WORKERS=2`，保留 `forks` pool 和文件隔离。runner 同时启动测试准备、原生 UI/Go/PostgreSQL 准备、容器 callback 与正常 dev-ci 源码构建/启动；仅在两段测试都通过后启动浏览器安装，避免 apt 与 Chromium 下载争用 5 秒 UI 测试时限。浏览器安装（含 Linux 依赖）限时 600 秒，任一命令失败或超时都使验收失败。官方包源下载时间仍会波动，
 600 秒只容纳已观测的慢速安装；web job 20 分钟总上限继续约束完整验收。浏览器准备
 仍与原生及 dev-ci 准备并行。dev-ci 继续拥有本次唯一镜像及运行镜像身份校验和完整
 shell 清理。
