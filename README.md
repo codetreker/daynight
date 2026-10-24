@@ -237,9 +237,13 @@ Each task-specific primary Markdown owns its detailed Solution, full Acceptance
 criteria and evidence. Use relative references such as
 `[Solution and acceptance](plan.md)` only after confirming that the referenced
 file belongs to that task and its uploaded contents are readable.
-Shared Goal and design inputs stay at their source task ID and attachment path,
-or a verified immutable repository URL; attachments follow actual need. Frontend
-implementation tasks read the completed final-style interactive prototype and
+Shared Goal and design inputs stay with their owners; attachments follow actual
+need. Every Goal delivery description directly names its architecture task ID and
+the relevant architecture document attachment paths, including delivery tasks
+that depend on another implementation task. Repository documents use verified
+immutable references with their owning architecture task identified. Executors
+read the listed inputs before implementation; registration verifies these
+references in every delivery description. Frontend implementation tasks read the completed final-style interactive prototype and
 its representative states. Dependencies use dependsOn, PR references use properties,
 and execution progress uses an existing checkpoint. Discussion completion requires
 the user's confirmation and stage acceptance, not an automatic design-PR merge

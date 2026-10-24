@@ -216,6 +216,17 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     ],
   },
   {
+    id: "goal-indirect-architecture-inputs",
+    input: "A new agent receives delivery task B in architecture -> A -> B, with no discussion history; A is complete and the architecture documents belong to the solution task.",
+    obligation: "B's description directly identifies the architecture task and every required document; registration verifies those inputs and execution reads them before implementation, without duplicating documents or adding dependency edges.",
+    propositions: [
+      { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/Every delivery task's description must directly list the architecture task ID and every architecture document required for that task/, /full attachment path under the source task/, /retain the architecture task ID and use a verified immutable repository reference/, /This applies to indirect successors as well as delivery roots/, /a reference only in another task or the delivery task's own primary Markdown is insufficient/, /These input references do not add execution dependencies or duplicate shared documents/, /Check each delivery task's description, including indirect successors/, /confirm that each reference resolves to the intended readable content/] },
+      { resource: "references/create-task.md", section: "## Write task-specific content", requires: [/For every Goal delivery task, list the architecture task ID and all required architecture document references directly in its description, including indirect successors/] },
+      { resource: "references/create-task.md", section: "## Register and verify", requires: [/check every task's description, including indirect successors, for its architecture task ID and required document references/, /read the referenced contents under the Goal protocol/] },
+      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/Before implementation, read every required architecture document listed in the delivery task's description/, /architecture task is only an indirect prerequisite/, /missing or unreadable required architecture reference or input leaves execution unready/] },
+    ],
+  },
+  {
     id: "markdown-resource-ownership",
     input: "A Markdown brief links its own plan and references a prototype owned by another task.",
     obligation: "Keep a self-contained brief and one detailed owner; resolve real resources from the proper task or document base.",
