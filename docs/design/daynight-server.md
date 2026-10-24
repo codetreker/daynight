@@ -50,6 +50,19 @@ query，返回 no-store，并沿用既有 requestId 和结构化错误机制。�
 要求由[服务端需求](../spec/daynight-server.md#完整任务图)拥有；浏览器图投影由
 [看板设计](daynight-web.md#图投影与统计)拥有，不进入 store 或服务端领域状态。
 
+## 时间窗口摘要读取
+
+`NewTaskSync(store, overlap)` 接收已验证的配置，独立的 `taskSyncRoutes` 与原任务/图路由共同注册。
+服务复用具体 store、项目读授权及 `ReadSnapshot`，在同一快照中取得 Project、
+`task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。域拒绝在事务成功结束后返回，
+操作和清理失败优先，与完整图相同。
+
+store 只投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、时间和两类依赖；
+不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
+保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
+索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
+[时间窗口架构](daynight-task-sync.md)；当前 Web 仍使用完整图。Worker 归属修改沿用已有 version/updatedAt 事务，因此摘要可见其版本变化；摘要不包含 properties，身份核对仍 GET 已知任务，不增加 worker 查询投影。
+
 ## 目录与调用方向
 
 服务位于 `packages/daynight-server/`，使用独立 `go.mod` 和可执行程序：

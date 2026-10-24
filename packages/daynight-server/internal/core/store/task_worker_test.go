@@ -44,7 +44,7 @@ func workerMigrationRelatedFacts(t *testing.T, database *Store) map[string]strin
 		"projects":     `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id),'[]'::jsonb)::text FROM projects t`,
 		"attachments":  `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY task_id,path),'[]'::jsonb)::text FROM task_attachments t`,
 		"dependencies": `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY project_id,task_id,depends_on_task_id),'[]'::jsonb)::text FROM task_dependencies t`,
-		"ledger":       `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY version),'[]'::jsonb)::text FROM schema_migrations t WHERE version<=14`,
+		"ledger":       `SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY version),'[]'::jsonb)::text FROM schema_migrations t WHERE version<=15`,
 	} {
 		var value string
 		if err := database.Pool.QueryRow(context.Background(), query).Scan(&value); err != nil {
@@ -58,7 +58,7 @@ func workerMigrationRelatedFacts(t *testing.T, database *Store) map[string]strin
 func TestWorkerMigrationPreservesOpaquePropertiesAndExecutionFacts(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:14]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:15]); err != nil {
 		t.Fatal(err)
 	}
 	database := &Store{Pool: pool}
@@ -93,13 +93,13 @@ func TestWorkerMigrationPreservesOpaquePropertiesAndExecutionFacts(t *testing.T)
 		}
 	}
 	var applied, repeated time.Time
-	if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version=15`).Scan(&applied); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version=16`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate(ctx, pool, schemaMigrations); err != nil {
 		t.Fatal(err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version=15`).Scan(&repeated); err != nil || !applied.Equal(repeated) || !reflect.DeepEqual(workerMigrationRows(t, database), after) {
+	if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version=16`).Scan(&repeated); err != nil || !applied.Equal(repeated) || !reflect.DeepEqual(workerMigrationRows(t, database), after) {
 		t.Fatalf("repeated worker migration changed rows or ledger: %v", err)
 	}
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'New task')`, queryID(30), project.ID)
@@ -116,26 +116,26 @@ func TestWorkerMigrationPreservesOpaquePropertiesAndExecutionFacts(t *testing.T)
 func TestWorkerMigrationRollsBackPropertiesDefaultAndLedger(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:14]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:15]); err != nil {
 		t.Fatal(err)
 	}
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 1)
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,properties) VALUES($1,$2,'Preserved','{"pullRequests":[{"url":"\u0000","title":"\ud800"}]}')`, queryID(10), project.ID)
 	mustQueryExec(t, database, `CREATE FUNCTION reject_worker_ledger() RETURNS trigger LANGUAGE plpgsql AS $$
-		BEGIN IF NEW.version=15 THEN RAISE EXCEPTION USING ERRCODE='P1015', MESSAGE='worker ledger rejection'; END IF; RETURN NEW; END $$;
+		BEGIN IF NEW.version=16 THEN RAISE EXCEPTION USING ERRCODE='P1016', MESSAGE='worker ledger rejection'; END IF; RETURN NEW; END $$;
 		CREATE TRIGGER reject_worker_ledger BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION reject_worker_ledger()`)
 	before, facts := workerMigrationRows(t, database), workerMigrationRelatedFacts(t, database)
 	err := migrate(ctx, pool, schemaMigrations)
 	var cause *pgconn.PgError
-	if !errors.As(err, &cause) || cause.Code != "P1015" {
+	if !errors.As(err, &cause) || cause.Code != "P1016" {
 		t.Fatalf("worker migration lost the ledger failure: %v", err)
 	}
 	if !reflect.DeepEqual(workerMigrationRows(t, database), before) || !reflect.DeepEqual(workerMigrationRelatedFacts(t, database), facts) {
 		t.Fatal("failed worker migration partially changed rows or related resources")
 	}
 	var count int
-	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=15`).Scan(&count); err != nil || count != 0 {
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM schema_migrations WHERE version=16`).Scan(&count); err != nil || count != 0 {
 		t.Fatalf("failed worker migration retained its ledger: %d %v", count, err)
 	}
 	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title) VALUES($1,$2,'Old default')`, queryID(11), project.ID)

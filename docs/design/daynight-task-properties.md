@@ -80,7 +80,7 @@ ALTER TABLE tasks ADD COLUMN properties text NOT NULL
     DEFAULT '{"pullRequests":[]}';
 ```
 
-这是属性列最初的默认值，表达已有任务没有关联 PR。015_task_worker.sql 在规范文本的末尾插入 worker:null，并把当前默认值改为同时包含两字段；不调用 JSON/JSONB cast 或重新解释 PR 字符串，NUL 转义与既有 Unicode 内容保持原值。迁移由既有启动迁移事务执行，
+这是属性列最初的默认值，表达已有任务没有关联 PR。016_task_worker.sql 在规范文本的末尾插入 worker:null，并把当前默认值改为同时包含两字段；不调用 JSON/JSONB cast 或重新解释 PR 字符串，NUL 转义与既有 Unicode 内容保持原值。迁移由既有启动迁移事务执行，
 不改变 task 的 `version`、`created_at` 或 `updated_at`。应用创建与更新仍显式写入
 完整属性值，默认值只负责迁移与缺省空属性语义。
 

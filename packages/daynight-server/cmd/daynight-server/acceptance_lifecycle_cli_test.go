@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
+	"github.com/google/uuid"
 )
 
 type acceptanceLifecycleEvidence struct {
@@ -53,6 +54,8 @@ type acceptanceLifecycleMigration struct {
 	BeforeAttachments  string                     `json:"beforeAttachments"`
 	AfterAttachments   string                     `json:"afterAttachments"`
 	RestartAttachments string                     `json:"restartAttachments"`
+	TaskCacheEpoch     string                     `json:"taskCacheEpoch"`
+	RestartCacheEpoch  string                     `json:"restartCacheEpoch"`
 }
 
 type acceptanceLifecycleAction struct {
@@ -384,14 +387,23 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		cli.configure(t, process)
 		afterLedger, afterRows := acceptanceMigrationLedger(t, fixture), acceptanceHistoricalRows(t, fixture, ids)
 		afterEdges, afterAttachments := acceptanceMigrationMaterials(t, fixture, projectID, ids)
+		var epoch string
+		if err := fixture.admin.QueryRow(context.Background(), "SELECT task_cache_epoch::text FROM projects WHERE id=$1", projectID).Scan(&epoch); err != nil {
+			t.Fatal("startup did not initialize the historical project's task cache epoch")
+		}
+		parsedEpoch, err := uuid.Parse(epoch)
+		if err != nil || parsedEpoch == uuid.Nil || parsedEpoch.String() != epoch {
+			t.Fatal("migrated task cache epoch is not a canonical nonzero UUID")
+		}
 		if err := binaryAcceptance.update(func() {
 			migration.AfterLedger, migration.AfterRows = afterLedger, afterRows
 			migration.AfterEdges, migration.AfterAttachments = afterEdges, afterAttachments
+			migration.TaskCacheEpoch = epoch
 		}); err != nil {
 			t.Fatal("cannot persist migrated schema and resource snapshots")
 		}
-		if len(migration.AfterLedger) != 15 || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || migration.AfterLedger[12].Version != 13 || migration.AfterLedger[13].Version != 14 || migration.AfterLedger[14].Version != 15 || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
-			t.Fatal("startup did not append the platform, status and worker migrations while preserving prior ledger, dependencies and attachments")
+		if len(migration.AfterLedger) != 16 || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || migration.AfterLedger[12].Version != 13 || migration.AfterLedger[13].Version != 14 || migration.AfterLedger[14].Version != 15 || migration.AfterLedger[15].Version != 16 || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
+			t.Fatal("startup did not append the platform, status, task sync and worker migrations while preserving prior ledger, dependencies and attachments")
 		}
 		acceptanceStatusMigrationRows(t, migration.StatusBeforeRows, migration.AfterRows)
 		user := acceptanceDecode[api.User](t, process.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK)
@@ -474,13 +486,18 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		acceptanceLifecycleAttachmentUnchanged(t, cli, dependent, metadata, content)
 		restartRows := acceptanceHistoricalRows(t, fixture, ids)
 		restartEdges, restartAttachments := acceptanceMigrationMaterials(t, fixture, projectID, ids)
+		var restartEpoch string
+		if err := fixture.admin.QueryRow(context.Background(), "SELECT task_cache_epoch::text FROM projects WHERE id=$1", projectID).Scan(&restartEpoch); err != nil {
+			t.Fatal("cannot read the task cache epoch after actual restart")
+		}
 		if err := binaryAcceptance.update(func() {
 			migration.RestartRows, migration.RestartEdges, migration.RestartAttachments = restartRows, restartEdges, restartAttachments
+			migration.RestartCacheEpoch = restartEpoch
 		}); err != nil {
 			t.Fatal("cannot persist restarted historical resource snapshots")
 		}
-		if !reflect.DeepEqual(migration.RestartRows, migration.AfterRows) || migration.RestartEdges != migration.AfterEdges || migration.RestartAttachments != migration.AfterAttachments || !reflect.DeepEqual(acceptanceMigrationLedger(t, fixture), migration.AfterLedger) {
-			t.Fatal("restart repeated the status conversion or changed the migration ledger")
+		if !reflect.DeepEqual(migration.RestartRows, migration.AfterRows) || migration.RestartEdges != migration.AfterEdges || migration.RestartAttachments != migration.AfterAttachments || !reflect.DeepEqual(acceptanceMigrationLedger(t, fixture), migration.AfterLedger) || migration.RestartCacheEpoch != migration.TaskCacheEpoch {
+			t.Fatal("restart repeated the status conversion or changed the migration ledger or task cache epoch")
 		}
 		if err := binaryAcceptance.update(func() {
 			scenario.AttachmentFiles = append(scenario.AttachmentFiles, acceptanceAttachmentEvidence{Path: "plans/legacy.md", SizeBytes: len(legacyBytes), SHA256: fmt.Sprintf("%x", sha256.Sum256(legacyBytes))})

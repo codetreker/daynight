@@ -654,13 +654,21 @@ func acceptanceConcurrentStartup(t *testing.T, scenario *acceptanceScenario) {
 	first = first.started(t)
 	second = second.started(t)
 	var versions []int64
-	if err := fixture.admin.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}) {
+	if err := fixture.admin.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}) {
 		t.Fatal("concurrent processes did not share exactly one migration ledger")
 	}
 	project := first.project(t, "Shared process state")
 	read := acceptanceDecode[api.Project](t, second.request(context.Background(), http.MethodGet, "/api/v1/projects/"+project.ID, nil, ""), http.StatusOK)
 	if !reflect.DeepEqual(project, read) {
 		t.Fatal("concurrently initialized processes do not share persisted resources")
+	}
+	path := "/api/v1/projects/" + project.ID + "/task-sync"
+	syncContext, finishSync := context.WithTimeout(context.Background(), 8*time.Second)
+	defer finishSync()
+	firstSync := acceptanceDecode[api.TaskSync](t, first.request(syncContext, http.MethodGet, path, nil, ""), http.StatusOK)
+	secondSync := acceptanceDecode[api.TaskSync](t, second.request(syncContext, http.MethodGet, path, nil, ""), http.StatusOK)
+	if firstSync.Epoch == "" || firstSync.Epoch != secondSync.Epoch || firstSync.Mode != "snapshot" || secondSync.Mode != "snapshot" || firstSync.Project != project || secondSync.Project != project || firstSync.Tasks == nil || secondSync.Tasks == nil || len(firstSync.Tasks) != 0 || len(secondSync.Tasks) != 0 {
+		t.Fatal("concurrently initialized processes do not share the persisted task cache epoch")
 	}
 	first.signal(t)
 	second.signal(t)

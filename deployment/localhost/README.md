@@ -40,6 +40,15 @@ only when the UniAuth gateway itself uses HTTP on a literal loopback address.
 It defaults to `0` in the template because the example gateway uses HTTPS.
 Neither setting disables authentication or project authorization.
 
+`DAYNIGHT_TASK_SYNC_OVERLAP` defaults to `10s` in the template and Compose
+configuration. It sets the server's task-sync lookback window and must be a
+positive Go duration, for example `250ms`, `30s` or `1m30s`; invalid, zero and
+negative values stop server startup. Keep the same value on all server instances.
+The server applies the current window to subsequent task-sync requests; clients
+cannot override it and keep their original task timestamp watermarks when it
+changes. The authenticated task-sync API and project cache epoch are described
+by the [task-sync design](../../docs/design/daynight-task-sync.md).
+
 Start the stack:
 
 ```bash
@@ -193,9 +202,9 @@ Use Compose to restart the stack:
 docker compose restart
 ```
 
-After updating frontend or server source, authentication settings, the gateway
-configuration or image, the published port, or network configuration, run the
-startup command again to rebuild and recreate the stack together:
+After updating frontend or server source, authentication or task-sync settings,
+the gateway configuration or image, the published port, or network configuration,
+run the startup command again to rebuild and recreate the stack together:
 
 ```bash
 docker compose up --build --force-recreate --detach --wait --wait-timeout 120
@@ -223,8 +232,9 @@ Two Compose-managed named volumes hold application data:
 | `attachment-data` | `/var/lib/daynight/storage` | Attachment bytes under `task-attachments/<taskId>/<relativePath>` |
 
 Names are scoped to the Compose project. Server startup applies its embedded
-migrations. Normal stop, restart, `up --build --force-recreate`, and `down`
-preserve both volumes. Retain the private deployment configuration and the
+migrations. Migration 015 gives each project a persistent `task_cache_epoch` UUID.
+Normal task writes, stop, restart, `up --build --force-recreate`, and `down` preserve
+the epoch and both volumes. Retain the private deployment configuration and the
 corresponding UniAuth application registration separately from the application
 data. Stop the stack and retain all application data:
 
@@ -239,9 +249,11 @@ metadata and attachment files, remove both volumes:
 docker compose down --volumes
 ```
 
-The database and attachment directory form one backup pair. Stop the server and
-any direct database or file writers before capturing both; keep writes stopped
-until both artifacts are complete. This makes a normal backup stable but does
+The database and attachment directory form one backup pair. Retain the affected
+projects' current epoch values from authenticated task-sync snapshots for restore
+validation. Stop all server instances and direct database or file writers before
+capturing both; keep writes stopped until both artifacts are complete. This makes
+a normal backup stable but does
 not repair a mismatch that already existed: file operations and PostgreSQL
 metadata changes are not atomic. A database-only or directory-only restore does
 not restore task attachments completely.
@@ -268,10 +280,14 @@ leaves the server stopped so the failure can be diagnosed before writes resume.
 Restore a matching pair into fresh volumes using the corresponding application
 image and the configured UniAuth application. The commands below deliberately
 discard the current stack's application data. Set `BACKUP_DIR` to the retained
-pair first; the files must be outside the volumes being removed. PostgreSQL and
-the gateway start before restoration, but the server starts only after SQL and
-files are restored. Archive extraction uses the normal UID/GID `10001:10001`,
-preserving the service's ability to write.
+pair first; the files must be outside the volumes being removed. Stop all server
+instances and direct database or file writers before restoration and keep them
+stopped through epoch rotation. PostgreSQL and the gateway start before
+restoration. After both SQL and files are restored, rotate `task_cache_epoch`
+for every affected project before any server resumes. A dump restores saved
+UUIDs, so restoring the old epoch does not identify a history replacement.
+Archive extraction uses the normal UID/GID `10001:10001`, preserving the service's
+ability to write.
 
 ```bash
 (
@@ -286,14 +302,26 @@ preserving the service's ability to write.
     -U daynight -d daynight < "$BACKUP_DIR/postgres.sql"
   docker compose run --rm --no-deps -T --entrypoint tar server \
     -C /var/lib/daynight/storage -xpf - < "$BACKUP_DIR/attachments.tar"
+  docker compose exec -T postgres psql --set ON_ERROR_STOP=1 \
+    -U daynight -d daynight \
+    --command 'UPDATE projects SET task_cache_epoch = gen_random_uuid()'
   docker compose up --no-build --detach --wait --wait-timeout 120
 )
 ```
 
-After restore, sign in, check project membership, attachment lists, downloads and
-relative preview resources, and upload a new file. This is a manual paired
-backup/restore procedure; it adds no backup service or cross-store recovery
-mechanism. The
+The full-volume restore rotates all projects. For a supported selective import or
+other history replacement, use the same stop/restore/rotate/start ordering and
+restrict the `UPDATE` to the affected project IDs. Rotation changes only the UUID;
+it does not edit task versions or timestamps. Keep database time valid and verify
+imported task timestamps before resuming writes: an imported future timestamp can
+keep a client's later watermark ahead of new task changes even after a full
+snapshot, so UUID rotation alone does not correct that data.
+
+After restore, sign in, confirm the affected project's epoch changed and a
+request with its saved old epoch returns a complete task snapshot. Check project
+membership, attachment lists, downloads and relative preview resources, and
+upload a new file. This is a manual paired backup/restore procedure; it adds no
+backup service or cross-store recovery mechanism. The
 [deployment decision](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-persistence.md)
 owns the volume and validation rationale. The
 [dev-ci attachment check](../dev-ci/README.md#attachment-persistence-check)

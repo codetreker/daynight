@@ -221,6 +221,65 @@ func TestIdentityHTTPOriginAndBearerPrecedence(t *testing.T) {
 	assertProjectError(t, h.request("GET", "/api/v1/me", "", cookies, nil, ""), 401, "unauthenticated")
 }
 
+func TestIdentityHTTPResponsePrincipalProvenance(t *testing.T) {
+	h := authTestHarness(t)
+	aliceCookie := h.login(t, "principal-alice")
+	aliceCookies := []*http.Cookie{aliceCookie}
+	aliceResponse := h.request("GET", "/api/v1/me", "", aliceCookies, nil, "")
+	alice := decodeResponse[api.User](t, aliceResponse, http.StatusOK)
+	if aliceResponse.Header().Get("Daynight-User-ID") != alice.ID {
+		t.Fatal("session response does not identify its authenticated principal")
+	}
+
+	bobCookie := h.login(t, "principal-bob")
+	bobCookies := []*http.Cookie{bobCookie}
+	bobResponse := h.request("GET", "/api/v1/me", "", bobCookies, nil, "")
+	bob := decodeResponse[api.User](t, bobResponse, http.StatusOK)
+	if bob.ID == alice.ID || bobResponse.Header().Get("Daynight-User-ID") != bob.ID {
+		t.Fatal("account replacement reused the previous response principal")
+	}
+
+	minted := decodeResponse[api.CreatedPersonalAccessToken](t,
+		h.request("POST", "/api/v1/me/tokens", `{"name":"principal-test"}`, aliceCookies, nil, h.auth.origin), http.StatusCreated)
+	bearer := []string{"Bearer " + minted.Token}
+	patResponse := h.request("GET", "/api/v1/me", "", bobCookies, bearer, "")
+	if user := decodeResponse[api.User](t, patResponse, http.StatusOK); user.ID != alice.ID || patResponse.Header().Get("Daynight-User-ID") != alice.ID {
+		t.Fatal("response principal followed the cookie instead of the admitted bearer")
+	}
+
+	spoofed := httptest.NewRequest("GET", "/api/v1/me", nil)
+	spoofed.AddCookie(aliceCookie)
+	spoofed.Header.Set("Daynight-User-ID", bob.ID)
+	spoofedResponse := httptest.NewRecorder()
+	h.handler.ServeHTTP(spoofedResponse, spoofed)
+	if user := decodeResponse[api.User](t, spoofedResponse, http.StatusOK); user.ID != alice.ID || spoofedResponse.Header().Get("Daynight-User-ID") != alice.ID {
+		t.Fatal("request-supplied principal was echoed into the response")
+	}
+
+	mutation := h.request("POST", "/mutation", "", aliceCookies, nil, h.auth.origin)
+	if mutation.Code != http.StatusNoContent || mutation.Header().Get("Daynight-User-ID") != alice.ID {
+		t.Fatal("successful empty mutation response lost its principal")
+	}
+	invalid := h.request("POST", "/api/v1/me/tokens", `{}`, aliceCookies, nil, h.auth.origin)
+	assertProjectError(t, invalid, http.StatusBadRequest, "invalid_input")
+	forbidden := h.request("POST", "/api/v1/me/tokens", `{"name":"nested"}`, bobCookies, bearer, h.auth.origin)
+	assertProjectError(t, forbidden, http.StatusForbidden, "forbidden")
+	for _, response := range []*httptest.ResponseRecorder{invalid, forbidden} {
+		if response.Header().Get("Daynight-User-ID") != alice.ID {
+			t.Fatal("authenticated resource error lost the actual principal")
+		}
+	}
+	for _, response := range []*httptest.ResponseRecorder{
+		h.request("GET", "/api/v1/me", "", nil, nil, ""),
+		h.request("GET", "/api/v1/me", "", bobCookies, []string{"Bearer invalid"}, ""),
+		h.request("POST", "/mutation", "", aliceCookies, nil, "https://foreign.test"),
+	} {
+		if response.Header().Get("Daynight-User-ID") != "" {
+			t.Fatal("failed authentication exposed an unadmitted principal")
+		}
+	}
+}
+
 func TestIdentityHTTPCallbackFailures(t *testing.T) {
 	h := authTestHarness(t)
 	for _, mode := range []string{"provider", "protocol-secret", "denied-secret"} {

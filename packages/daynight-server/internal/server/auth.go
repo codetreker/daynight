@@ -107,6 +107,7 @@ func (h *Authentication) Require(next AuthenticatedHandler) http.HandlerFunc {
 			writeError(w, request, h.logger, "auth", "authenticate", err)
 			return
 		}
+		w.Header().Set("Daynight-User-ID", principal.UserID)
 		h.logger.InfoContext(request.Context(), "credential authenticated", "component", "auth", "phase", "authenticate", "user_id", principal.UserID, "credential_id", principal.CredentialID, "request_id", RequestID(request.Context()))
 		next(w, request, principal)
 	}

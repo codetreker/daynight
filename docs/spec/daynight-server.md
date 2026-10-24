@@ -173,6 +173,7 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 返回 task，缺失或不属于该 project 时 `404` |
 | `GET` | `/api/v1/projects/{projectId}/task-graph` | 返回同一完整快照的 project、任务图和统计 |
+| `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta，使用 epoch 与任务最大 updatedAt 水位 |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`，三状态精确版本设置，返回完整任务 |
 
@@ -212,6 +213,22 @@ Task 列表支持单个三状态 status、ready/allowAgents 布尔值及 compati
 Cursor 必须绑定列表类型、所属 project 和筛选条件，格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
 输入错误拒绝；`limit` 的默认值仅用于未提供该参数。
 单次响应中的 task、依赖和派生字段保持一致；多次翻页不承诺跨请求快照。
+
+### 时间窗口任务摘要
+
+`GET /api/v1/projects/{projectId}/task-sync` 已实现，与完整任务图并存。唯一可选参数为
+`epoch`、`since`；since 必须伴随规范 UUID epoch，并为 UTC `Z` 结尾、0–9 位小数的有效时间。
+无 epoch 或 epoch 不同返回完整 snapshot；相同 epoch 返回 delta，带 since 时读取
+`updatedAt >= since - overlap`，无 since 时返回全部摘要供空基线使用。所有状态和依赖性质均参与，
+无当前请求时间上界、筛选或分页。默认 overlap 为 `10s`，环境配置
+`DAYNIGHT_TASK_SYNC_OVERLAP` 必须为正 Go duration。重复尾窗口是正常结果。
+
+Project、缓存 epoch、完整容量检查、匹配任务和 observedAt 来自一次只读快照；
+即使窗口只命中少量任务，项目超过 1,000/5,000 上限也明确拒绝。摘要的业务 version
+使用精确十进制字符串，包含 requiredPlatform，省略 description/properties 及派生 ready/blockedBy。
+纳秒下界向上对齐到 PostgreSQL 微秒精度，避免驱动截断造成边界外记录进入结果。
+身份/权限、HEAD、no-store 和错误优先级服从既有合同。完整行为由
+[任务缓存需求](daynight-task-sync.md)拥有；Web 持久缓存尚未在当前交付中接入。
 
 ### 完整任务图
 

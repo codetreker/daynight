@@ -11,6 +11,10 @@ their existing iframe, relative-resource and keyboard behavior.
 For an npm mirror, export `DAYNIGHT_NPM_REGISTRY` before invoking the runner;
 its build argument and default are shared with the
 [localhost deployment](../localhost/README.md#configure-and-start).
+`DAYNIGHT_TASK_SYNC_OVERLAP` is also passed to the server, defaulting to `10s`.
+Set it to a positive Go duration such as `250ms`, `30s` or `1m30s` when exercising
+a different task-sync lookback window. Invalid, zero and negative values fail
+server startup. The window is server configuration; clients cannot override it.
 
 The runner requires Bash, standard shell utilities, Node.js 24, Docker Engine 28
 or newer, Linux containers and Docker Compose 2.20 or newer. Linux Docker engines
@@ -119,8 +123,16 @@ leaving the server stopped:
 bash deployment/dev-ci/run.sh --reconfigure RUN_ID --bootstrap
 ```
 
-Restore SQL and the attachment archive into their fresh application volumes,
-then run `--reconfigure RUN_ID` to start the server. The private UniAuth fixture
+Keep all server instances and direct database or file writers stopped. Restore
+SQL and the attachment archive into their fresh application volumes, then use the
+project's PostgreSQL service to run
+`UPDATE projects SET task_cache_epoch = gen_random_uuid()` for the affected
+projects before running `--reconfigure RUN_ID` to start the server. Restrict the
+`UPDATE` to the fixture's project IDs when restoring selected fixture data. Saved
+UUIDs are part of the SQL backup, so restoring them does not identify the replaced
+history. Normal writes, restarts and recreation preserve the project's epoch.
+Keep database time valid and check imported task timestamps separately; epoch
+rotation cannot repair future-dated task data. The private UniAuth fixture
 directory survives application volume recreation; there is no third backup
 volume. The
 [attachment persistence check](#attachment-persistence-check) exercises this
@@ -218,17 +230,22 @@ production Dockerfile, embedded Web build, gateway and real UniAuth fixture. Eac
 client logs in before creating its project and task. It verifies fresh-volume
 ownership and UID 10001 writes, nested text/binary and HTML/CSS uploads, exact
 metadata and byte hashes through download and inline preview routes, server
-stop/start and full stack recreation. It reconfigures the fixture and logs in
-again after recreation changes the gateway port. The two projects have separate
-database and attachment volumes; each rejects the other's project/task paths.
+stop/start and full stack recreation. Authenticated task-sync reads capture the
+project's epoch and prove it survives both normal operations. The check
+reconfigures the fixture and logs in again after recreation changes the gateway
+port. The two projects have separate database and attachment volumes; each
+rejects the other's project/task paths.
 Cleaning one deployment leaves the other's existing files and new uploads usable.
 
 For paired restore, the check stops the server, captures `pg_dump` and a `tar`
 archive of its attachment root, removes only that project's stack and application
 volumes, and uses `--reconfigure --bootstrap` before restoring SQL and files into
-fresh volumes. It then activates the server with `--reconfigure` and logs in
-again. The fixture's private directory remains outside those volumes. The
-archive uses a one-off container from the same production image with a `tar`
+fresh volumes. With the server still stopped, it rotates only the restored
+fixture project's `task_cache_epoch` through that project's PostgreSQL service,
+then activates the server with `--reconfigure` and logs in again. It confirms the
+epoch changed and a request using the old epoch and a future `since` returns the
+full snapshot. The fixture's private directory remains outside those volumes.
+The archive uses a one-off container from the same production image with a `tar`
 entrypoint and the ordinary service user. Reads, previews and another nonroot
 upload must succeed after restoration. The
 [localhost backup procedure](../localhost/README.md#persistence-and-backup)
@@ -236,8 +253,9 @@ owns the operator commands and the accepted pre-existing consistency limitation.
 
 Source-bound receipts are written under `.tmp/attachment-deployment-*/` and the
 two normal `.tmp/dev-ci/<run-id>/` directories. They record owned project and
-volume identities, performed phases, metadata and SHA-256 values. SQL dumps and
-file archives are removed after the check; they are test data, not retained
-backups. The runner performs scoped cleanup on success or failure, and the check
+volume identities, performed phases, task-sync epoch observations, metadata and
+SHA-256 values. SQL dumps and file archives are removed after the check; they are
+test data, not retained backups. The runner performs scoped cleanup on success
+or failure, and the check
 requires both final cleanup receipts and absence of project resources and image
 tags. Keep receipts with the corresponding PR or CI run when reporting results.

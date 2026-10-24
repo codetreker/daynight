@@ -53,7 +53,10 @@ var taskRequiredPlatformSQL string
 //go:embed migrations/014_task_status_assignment.sql
 var taskStatusAssignmentSQL string
 
-//go:embed migrations/015_task_worker.sql
+//go:embed migrations/015_task_sync.sql
+var taskSyncSQL string
+
+//go:embed migrations/016_task_worker.sql
 var taskWorkerSQL string
 
 type migration struct {
@@ -76,7 +79,8 @@ var schemaMigrations = []migration{
 	{version: 12, sql: externalDependenciesSQL},
 	{version: 13, sql: taskRequiredPlatformSQL},
 	{version: 14, sql: taskStatusAssignmentSQL},
-	{version: 15, sql: taskWorkerSQL},
+	{version: 15, sql: taskSyncSQL},
+	{version: 16, sql: taskWorkerSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

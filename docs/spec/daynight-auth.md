@@ -65,6 +65,15 @@ CLI 使用可选 `serverToken`。setup 提供隐藏输入与布尔 `--server-tok
 [客户端配置要求](daynight-project-task.md#pt2-服务配置)拥有。401 只提供 setup 指导，
 不自动匿名回退、登录预检或重试写入。
 
+## 认证响应的身份归属
+
+认证成功后，所有经过 Require 的响应包含 `Daynight-User-ID`，值为实际准入的
+`core.Principal.UserID`；成功、空正文写入及之后的资源错误均保留。请求头中的同名值
+不能控制返回身份，Bearer 与 Cookie 并存时仍服从既有 Bearer 优先规则。认证或
+Cookie Origin 准入失败不输出未经准入的用户 ID。该头用于客户端核对内容归属，
+不作为凭据或项目授权，不能代替每请求的成员检查。窗口摘要及未来持久缓存使用
+[任务同步合同](daynight-task-sync.md)的作用域规则。
+
 ## 项目、成员与邀请
 
 | 操作 | member | admin |

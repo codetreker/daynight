@@ -14,6 +14,8 @@ import (
 
 type taskHandler struct {
 	tasks  *service.Tasks
+	sync   *service.TaskSync
+	window time.Duration
 	logger *slog.Logger
 }
 

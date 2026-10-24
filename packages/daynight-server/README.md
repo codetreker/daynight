@@ -5,7 +5,7 @@ foundation is implemented: explicit database and file-storage configuration,
 loopback-only HTTP binding, connection validation, structured request logs, cancellation, and bounded
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
-executable serves project, task and complete task-graph routes together with the
+executable serves project, task, complete task-graph and task-summary synchronization routes together with the
 embedded task dashboard. Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Dependency rows also
 persist an ordinary/external classification and task/graph reads expose the
@@ -35,6 +35,16 @@ HTML retains its application origin, relative resources and keyboard behavior.
 The [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 owns composition and credential-private validation; current delivery results
 require receipts bound to the tested source.
+
+The [task-summary synchronization requirements](../../docs/spec/daynight-task-sync.md)
+and [architecture](../../docs/design/daynight-task-sync.md) define the implemented
+`GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
+snapshot or current records whose `updatedAt` is at least the supplied task
+watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
+exact decimal strings; derived blockers and readiness remain outside these
+intrinsic summaries. A stored project epoch invalidates caches after supported
+history replacement. The Web currently continues its complete-graph polling;
+IndexedDB summary and detail caches are separate delivery work.
 
 ## Layout
 
@@ -133,6 +143,7 @@ diagnostics and cause categories.
 | `DAYNIGHT_LISTEN_ADDR` | Numeric loopback IP and port, including IPv6 syntax | `127.0.0.1:8787` |
 | `DAYNIGHT_STARTUP_TIMEOUT` | Positive Go duration for database connection and listener startup | `10s` |
 | `DAYNIGHT_SHUTDOWN_TIMEOUT` | Positive Go duration for draining HTTP requests | `10s` |
+| `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
 
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes and login return
@@ -157,7 +168,10 @@ Logs use JSON `slog` records with type, component, phase, and request ID. HTTP
 records include method, route template, status, and duration. A supplied
 `X-Request-ID` must contain 1–64 ASCII letters/digits with optional `.`, `_`, or
 `-` after the first character; invalid or absent values receive a generated ID.
-The response returns `X-Request-ID`. An unmatched route has an empty route template.
+The response returns `X-Request-ID`. Successfully authenticated handlers also
+return `Daynight-User-ID` from the admitted principal, including empty mutations
+and later resource errors. Failed authentication does not emit that header;
+caller-supplied values are not echoed. An unmatched route has an empty route template.
 UI and API requests use the same logging wrapper. Exact `/`,
 `/projects/{projectId}`, `/projects/{projectId}/members`,
 `/projects/{projectId}/settings`, `/projects/{projectId}/tasks/{taskId}` and
@@ -275,7 +289,9 @@ server writes without a privileged startup process. Normal restart and rebuild
 retain PostgreSQL metadata and attachment bytes; dev-ci removes both owned data
 volumes on cleanup. The [deployment guide](../../deployment/localhost/README.md#persistence-and-backup)
 owns retention and the stopped-write, paired PostgreSQL/directory backup and
-restore commands. A matching pair preserves the state captured; it does not
+restore commands. Before reopening a restored/imported history, rotate affected
+projects.task_cache_epoch values; a saved UUID is itself part of the backup.
+A matching pair preserves the state captured; it does not
 repair a pre-existing cross-store mismatch. Browser management and CLI commands
 remain separate from the backend file API below.
 
@@ -354,7 +370,7 @@ candidate reachability. The typed property codec in `internal/taskproperties/`
 stores serialized JSON in `tasks.properties` text, allowing JSON-escaped NUL
 without PostgreSQL JSONB restrictions. Migration `003_task_properties.sql` gives
 existing tasks empty PR lists while preserving version and timestamps. Migration
-015_task_worker.sql inserts explicit worker:null into the canonical stored text
+016_task_worker.sql inserts explicit worker:null into the canonical stored text
 and updates the default without JSON/JSONB conversion, preserving opaque PR
 strings and task metadata. The stored/read codec is distinct from public writable
 properties, which reject worker even when null or unchanged. Corrupt stored
