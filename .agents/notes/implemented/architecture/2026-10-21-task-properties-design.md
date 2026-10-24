@@ -19,10 +19,13 @@ read-only web presentation are implemented. The existing
 [server task design](2026-10-19-daynight-server-task-design.md) owns the delivered
 task lifecycle and transaction foundation; this design extends that foundation.
 
-The server owns a concrete TaskProperties type. Its sole predefined property is
-pullRequests, an ordered array of records with caller-provided url and title
-strings. The interface validates structure and known field names, while content
-remains opaque: empty strings, whitespace, control characters, duplicates and
+The server owns a concrete TaskProperties type. Its first predefined property,
+pullRequests, is an ordered array of records with caller-provided url and title
+strings. The [worker claim foundation](2026-10-24-worker-claim-foundation.md) adds
+a protected worker read property and separates full read/stored codecs from
+public writable PR inputs. The interface validates structure and known field
+names, while content remains opaque: empty strings, whitespace, control
+characters, duplicates and
 cross-repository references remain representable. There is no dynamic property
 registration or provider-specific PR identity.
 

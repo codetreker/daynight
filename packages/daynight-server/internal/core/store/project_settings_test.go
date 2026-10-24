@@ -32,7 +32,7 @@ func TestProjectSettingsMigrationPreservesHistoricalMetadataAndTiming(t *testing
 		return value
 	}
 	beforeTask := taskMetadata()
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:10]); err != nil {
 		t.Fatal(err)
 	}
 	var migrated core.Project
@@ -57,7 +57,7 @@ func TestProjectSettingsMigrationPreservesHistoricalMetadataAndTiming(t *testing
 	if err := pool.QueryRow(ctx, "SELECT applied_at FROM schema_migrations WHERE version=10").Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:10]); err != nil {
 		t.Fatal(err)
 	}
 	var repeated time.Time

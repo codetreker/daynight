@@ -10,7 +10,7 @@
 
 CLI 提供 `daynight task set-status <task-id> <status>` 与等价 `dn`，保留项目发现、`--project`、精确 `--if-version` 和补全。旧 approve/unapprove/claim/complete 公开入口删除；普通 task update 保持元数据职责，不接受 status。
 
-任意状态对均可设置，包括退回和直接完成。同状态请求先核验权限与精确版本，再返回当前完整任务；不修改持久化字段、版本、updatedAt 或计时。过期同状态请求仍冲突。实际改变只递增一次任务版本。
+没有 active/released 执行归属的普通任务支持任意状态对，包括退回和直接完成；worker 管理中的任务还受[认领规则](../design/daynight-worker-claims.md)约束。同状态请求先核验权限与精确版本，再返回当前完整任务；不修改持久化字段、版本、updatedAt 或计时。过期同状态请求仍冲突。实际改变只递增一次任务版本。
 
 ## TS2：历史数据迁移
 
@@ -26,7 +26,7 @@ ready 仍为 todo 且全部前置完成。统计满足 `total = todo + inProgres
 
 时间描述当前一次执行区间：进入 in_progress 生成新起点并清空终点；实际退回 todo 清空两端；in_progress→done 保留可空起点并记录真实终点；todo→done 仅记录终点，耗时未知。普通编辑与同状态不改变时间，不从其他时间戳推算历史。
 
-状态、时间、版本与依赖规则在同一项目写事务内完成。权限、版本、依赖、取消或存储失败不能留下部分结果。状态修改保留全部非状态资料和附件。
+状态、时间、版本与依赖规则在同一项目写事务内完成。权限、版本、依赖、取消或存储失败不能留下部分结果。状态修改保留全部其他资料和附件；claim-bound done 同一事务把当前归属置为 completed。
 
 ## TS4：Web 交互
 
@@ -40,6 +40,6 @@ ready 仍为 todo 且全部前置完成。统计满足 `total = todo + inProgres
 
 创建任务只登记工作，不启动执行。在用户已授权的任务或 Goal 范围内，ready todo 满足阶段资料后可设置 in_progress；实际验收和必要授权交付后设置 done。已有明确执行范围可持续覆盖就绪后继，无需逐任务审批，也不以其他字段重建审批机制。
 
-allowAgents 继续只约束自动发现选择；用户明确指定的任务队列可沿用手工执行路径。任务状态不改变 worker 归属、停止进程或代替 release/transfer。PR 审查批准和文档提案生命周期独立于被删除的任务状态。
+allowAgents 继续只约束自动发现选择；用户明确指定的任务队列可沿用手工执行路径。普通 setter 不停止进程或代替 release/transfer。active 执行实际完成须提供匹配 claimId 并由 owner 提交；退回 todo 须显式 release。released 未完成成果不能用普通状态设置开始或完成，原 owner/admin 通过显式人工 resume 确认原工作区连续性；该入口保留人工执行许可/平台例外。当前版本同状态仍是 no-op。completed 历史不阻止普通重开，也不会因重开变为 active。PR 审查批准和文档提案生命周期独立于被删除的任务状态。
 
 验证覆盖九种状态组合、精确大版本与同状态、全部边类型的开始/退回竞争、时间/回滚、旧数据迁移及重复启动、旧状态拒绝、三状态统计和分页、权限、资料保全及 Web 会话。最终使用真实 PostgreSQL、打包安装 CLI 和生产 Web 验证跨端互读及重启持久化；原型检查只证明模拟交互。适用模块门禁与覆盖率要求保持。

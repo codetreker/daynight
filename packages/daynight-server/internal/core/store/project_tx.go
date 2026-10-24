@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"slices"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
@@ -150,4 +151,12 @@ func (tx *ProjectTx) insertDependencies(ctx context.Context, id string, dependen
 		}
 	}
 	return nil
+}
+
+func (tx *ProjectTx) ObservedAt(ctx context.Context) (time.Time, error) {
+	var observed time.Time
+	if err := tx.tx.QueryRow(ctx, "SELECT statement_timestamp()").Scan(&observed); err != nil {
+		return time.Time{}, queryError("read project clock", err)
+	}
+	return observed.UTC(), nil
 }

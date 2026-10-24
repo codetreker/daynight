@@ -7,7 +7,7 @@ import type { ExecutionPlatform } from '../src/api/types';
 const projectId = '10000000-0000-4000-8000-000000000001';
 const taskId = '20000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
-const task = { id: taskId, projectId, title: 'Platform work', description: '', properties: { pullRequests: [] }, status: 'todo',
+const task = { id: taskId, projectId, title: 'Platform work', description: '', properties: { worker: null, pullRequests: [] }, status: 'todo',
   version: 9007199254740993n, allowAgents: false, requiredPlatform: null, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const graph = (requiredPlatform: unknown) => ({ observedAt: time,
   project: { id: projectId, name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },

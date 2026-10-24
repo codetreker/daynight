@@ -33,7 +33,7 @@
 | R2 | 支持创建、列表查询和读取关联一个 repo 地址的 project |
 | R3 | 在 project 内支持创建、列表查询、读取和更新 task |
 | R4 | task 支持同 project 内的依赖关系，任何成功提交都必须保持无环 |
-| R5 | task 默认 todo，专用 PUT status 设置 todo/in_progress/done 九种组合；先精确版本、同状态 +0/实际改变 +1；进入 active/done 检查全部直接前置，重开 done 保护 active/done 直接后继；metadata PATCH 不接受 status |
+| R5 | task 默认 todo，专用 PUT status 设置三状态；普通任务支持九种组合，worker 归属保护完成/释放和原成果接续；先精确版本、同状态 +0/实际改变 +1，保留前置/后继与计时规则；metadata PATCH 不接受 status |
 | R6 | task 更新必须支持版本冲突检测，字段和依赖必须原子提交 |
 | R7 | 通过 HTTP JSON API 提供上述行为，错误和分页具有明确语义 |
 | R8 | 采用 `api / service / server / core` 分层，store 位于 `core` 内 |
@@ -43,6 +43,8 @@
 服务与现有 TypeScript 客户端的 review 命令 分别管理各自的数据和生命周期。创建 project
 只登记 repo 地址，不触发 clone、GitHub 请求、review 启动或 CLI 配置修改。
 客户端的[需求](daynight.md)与 review 的[需求](daynight-review.md)分别由其自身文档定义。
+
+受保护 worker 属性、原子认领/更新/释放/移交和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。服务端不启动执行进程；前台 Worker 与真实资源恢复仍是独立运行时能力。
 
 ## Project
 
@@ -83,8 +85,8 @@ Task 包含以下持久化字段：
 | `projectId` | 所属 project，创建后不可变 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL |
 | `description` | 不含 NUL 的 UTF-8 描述，省略时为空字符串，允许更新为空字符串 |
-| `properties` | server 预定义属性；当前 `pullRequests` 为有序的 `{url, title}` 字符串记录数组，默认空数组 |
-| `status` | `todo / in_progress / done`，创建时为 `todo`，只能通过专用状态资源设置 |
+| `properties` | 必含 pullRequests 有序字符串记录数组与 worker:null/执行归属；PR 默认空数组，worker 为服务端受保护记录 |
+| `status` | `todo / in_progress / done`，创建时为 todo；普通设置使用状态资源，受控 worker 操作原子改变对应状态 |
 | `allowAgents` | 必填布尔自动执行许可，新任务为 `false`；与状态、依赖、实际执行者独立 |
 | `requiredPlatform` | 字段必填，值为 `null`、`windows`、`linux` 或 `macos`；`null` 表示不限制，新旧任务默认均不限制 |
 | `version` | 从 `1` 开始的正整数，每次实际变更增加一次 |
@@ -113,12 +115,12 @@ todo 可有未完成前置，in_progress/done 的前置必须全部完成；状�
 平台运行时值必填，缺失或非法值拒绝，不从服务端操作系统推断执行平台。
 
 
-统一状态入口为 `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status`，请求严格为
-`{"version":123,"status":"in_progress"}`。版本为正 int64 JSON 数字，范围
+统一状态入口为 `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status`，普通请求为
+`{"version":123,"status":"in_progress"}`，done 目标另可提供 claimId 以完成当前 worker 执行。版本为正 int64 JSON 数字，范围
 `1..9223372036854775807`；拒绝缺失、null、字符串、非整数、越界、重复或未知字段及 query。
 只接受 `todo`、`in_progress`、`done`。普通成员与管理员均可设置状态；删除旧动作入口，不保留别名。
 
-所有九种状态对都支持。项目锁后复核成员及精确版本，先判断版本，再判断同状态。
+没有 active/released 执行归属的普通任务支持九种状态对；受控执行另有[认领保护](../design/daynight-worker-claims.md)。项目锁后复核成员及精确版本，先判断版本，再判断同状态。
 同状态返回当前完整资源，不写持久化字段、版本、updatedAt 或计时；过期同状态仍返回
 `409 version_conflict`。实际改变增加一次版本，原子更新状态、时间与 updatedAt。
 实际进入 in_progress/done 要求全部普通和外部直接前置已 done；done 退回 todo/in_progress
@@ -128,7 +130,7 @@ todo 可有未完成前置，in_progress/done 的前置必须全部完成；状�
 执行时间由锁后的数据库 statement 时间产生：进入 in_progress 替换起点并清空终点；
 退回 todo 清空两端；in_progress→done 保留可空起点并写终点；todo→done 的起点为 null，
 仅写真实终点。普通编辑和同状态保留时间，未知历史起点不从其他时间戳推算。
-状态写入保留标题、正文、属性/PR、allowAgents、requiredPlatform、全部依赖及外部分类和附件。
+状态写入保留标题、正文、PR、allowAgents、requiredPlatform、全部依赖及外部分类和附件；claim-bound done 同时把当前 worker 记录置为 completed。普通状态写入不能替代 active 释放或 released 接续，具体授权由[认领架构](../design/daynight-worker-claims.md)拥有。
 
 新增迁移将全部历史 proposed 改为 todo，只对转换行增加一次 version 并更新 updatedAt，
 保留其他字段及历史起止时间。归类迁移不调用运行时 todo 清空规则；其他状态行保持不变。

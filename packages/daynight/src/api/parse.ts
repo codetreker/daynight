@@ -1,5 +1,5 @@
 import { isNonemptyText, isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
 
 export class ProtocolError extends Error {
   constructor(message = "The server returned an invalid response.") { super(message); this.name = "ProtocolError"; }
@@ -82,12 +82,36 @@ const dependencyState = (data: Record<string, unknown>) => {
 };
 
 const rawString = (value: unknown): string => typeof value === "string" ? value : malformed();
+const fields = (value: unknown, names: readonly string[]): Record<string, unknown> => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => !names.includes(key))) return malformed();
+  return data;
+};
+const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
+const workerHerdr = (value: unknown): WorkerHerdr | null => {
+  if (value === null) return null;
+  const data = fields(value, ["session", "workspaceId", "paneId"]);
+  return { session: text(data.session, true), workspaceId: text(data.workspaceId, true), paneId: text(data.paneId, true) };
+};
+const parseWorkerClaim = (value: unknown): WorkerClaim | null => {
+  if (value === null) return null;
+  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
+  const machine = fields(data.machine, ["id", "name"]);
+  const platform = requiredPlatform(data.platform);
+  if (platform === null) return malformed();
+  return {
+    claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
+    userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: text(machine.name, true) }, platform,
+    agent: data.agent === "codex" || data.agent === "copilot" ? data.agent : malformed(), worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
+    herdr: workerHerdr(data.herdr), nativeSessionId: data.nativeSessionId === null ? null : text(data.nativeSessionId, true), claimedAt: timestamp(data.claimedAt),
+  };
+};
 const properties = (value: unknown): TaskProperties => {
   const data = record(value);
   return { pullRequests: array(data.pullRequests, (item) => {
     const pullRequest = record(item);
     return { url: rawString(pullRequest.url), title: rawString(pullRequest.title) };
-  }) };
+  }), worker: parseWorkerClaim(data.worker) };
 };
 
 export const parseTask = (value: unknown, projectId: string, taskId?: string): Task => {
@@ -95,6 +119,8 @@ export const parseTask = (value: unknown, projectId: string, taskId?: string): T
   const version = resourceVersion(data.version);
   const parsed = { ...dependencyState(data), projectId: id(data.projectId), title: text(data.title, true), description: text(data.description), properties: properties(data.properties), version };
   if (parsed.projectId !== projectId || (taskId !== undefined && parsed.id !== taskId)) return malformed();
+  if (parsed.properties.worker?.state === "active" && parsed.status !== "in_progress") return malformed();
+  if (parsed.properties.worker?.state === "released" && parsed.status !== "todo") return malformed();
   return parsed;
 };
 

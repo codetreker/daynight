@@ -218,9 +218,14 @@ type acceptanceCLIResult struct {
 
 func (c *acceptanceCLI) start(t *testing.T, cwd string, arguments ...string) <-chan acceptanceCLIResult {
 	t.Helper()
+	return c.startProgram(t, cwd, c.receipt.EntryPath, nil, arguments...)
+}
+
+func (c *acceptanceCLI) startProgram(t *testing.T, cwd, program string, input io.Reader, arguments ...string) <-chan acceptanceCLIResult {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	command := exec.CommandContext(ctx, c.receipt.NodePath, append([]string{c.receipt.EntryPath}, arguments...)...)
-	command.Dir, command.Env, command.WaitDelay = cwd, c.environment(), time.Second
+	command := exec.CommandContext(ctx, c.receipt.NodePath, append([]string{program}, arguments...)...)
+	command.Dir, command.Env, command.WaitDelay, command.Stdin = cwd, c.environment(), time.Second, input
 	command.Cancel = func() error { return command.Process.Signal(os.Interrupt) }
 	stdout, stderr := &acceptanceCLIOutput{}, &acceptanceCLIOutput{}
 	command.Stdout, command.Stderr = stdout, stderr
@@ -733,7 +738,7 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 			t.Fatal("installed lifecycle actions discarded the created PR list")
 		}
 		references.PullRequests = append(references.PullRequests, api.PullRequestProperty{URL: "\x00 arbitrary\tURL", Title: "标题\x00\n"})
-		firstWithPR = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(firstWithPR), map[string]any{"version": firstWithPR.Version, "properties": references}, "installed-raw-pr-readback"), http.StatusOK)
+		firstWithPR = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(firstWithPR), map[string]any{"version": firstWithPR.Version, "properties": api.TaskWritableProperties{PullRequests: references.PullRequests}}, "installed-raw-pr-readback"), http.StatusOK)
 		if task := cli.task(t, first); !reflect.DeepEqual(task, firstWithPR) {
 			t.Fatal("installed CLI JSON did not preserve HTTP-supplied NUL PR strings")
 		}

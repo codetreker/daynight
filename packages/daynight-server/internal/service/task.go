@@ -66,6 +66,9 @@ func (s *Tasks) Create(ctx context.Context, principal core.Principal, projectID 
 	if err := requirePrincipal(principal); err != nil {
 		return core.Task{}, err
 	}
+	if input.Properties.Worker != nil {
+		return core.Task{}, invalidInput("Worker properties are managed by execution operations.")
+	}
 	projectID, err := CanonicalID(projectID)
 	if err != nil {
 		return core.Task{}, err

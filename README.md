@@ -142,9 +142,15 @@ of the Web switch. The service, CLI and Web implement this permission; the
 service, CLI and Web also implement optional execution-platform requirements,
 explicit clearing and compatibility filtering under the
 [platform decision](.agents/notes/implemented/feature/2026-10-24-task-required-platform.md).
-The worker runtime and unique worker-claim integration remain implementation work. Authentication and three-state status setting are
-delivered prerequisites; worker integration preserves the current task execution
-timestamp contract.
+The [claim foundation](docs/design/daynight-worker-claims.md) implements protected
+worker properties, atomic acquisition, claim-bound completion, release, transfer
+and explicit manual resume through the existing task transaction and in-process
+typed API client. Recovery uses known task IDs from local execution records; it
+does not require an owner inventory or claim table. The worker runtime, SQLite
+execution storage, Herdr integration and management commands remain implementation
+work. These service/client operations do not establish runtime recovery or
+cross-platform delivery. The [claim decision](.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)
+records identity, migration and continuity choices.
 
 The `@codetreker/daynight` package provides the `daynight` client and its `dn`
 short command. Both names use the same entry, commands and configuration. Its
@@ -275,7 +281,8 @@ owns this evidence boundary.
 The [task property requirements](docs/spec/daynight-task-properties.md),
 [design](docs/design/daynight-task-properties.md) and
 [interactive preview](docs/design/mockups/task-properties.html) define
-server-predefined task properties, starting with ordered PR references containing
+server-predefined PR properties; the [claim foundation](docs/design/daynight-worker-claims.md)
+owns the read-only worker property. Ordered PR references contain
 caller-provided URLs and titles. Server persistence, migration, HTTP operations,
 CLI editing/output and read-only web presentation are implemented.
 
@@ -1113,8 +1120,10 @@ use and remains stable if another project later shares that repository.
 Creation starts in `todo` with `allowAgents=false` and unrestricted
 `requiredPlatform=null` unless explicitly set. `task set-status <id> <status>`
 sets `todo`, `in_progress` or `done`, including reopening and direct completion.
-Every project member may use it. Status does not grant execution or delivery
-authority. Generic updates cannot write status; old lifecycle commands and routes
+Every project member may use ordinary status setting. Active worker completion
+requires the current owner and matching claim ID through the typed completion
+operation; release and continuation of released work use their protected
+operations. Status does not grant execution or delivery authority. Generic updates cannot write status; old lifecycle commands and routes
 are removed without aliases. `--if-version` uses the exact reviewed int64 value;
 without it, the CLI reads once immediately before submitting. No write retries
 occur. Version is checked before same-state handling: current same-state keeps
@@ -1202,8 +1211,10 @@ records its allocation and focus behavior.
 The permission switch has confirmation in both directions, remains false by
 default and is locked against actual changes while in_progress. It governs
 automatic discovery; explicit task execution may use either value. Rows and graph
-nodes display each task's own permission. Neither status nor permission controls
-worker ownership, stops a process or replaces PR review and delivery authority.
+nodes display each task's own permission. Permission does not control worker
+ownership; ordinary status setting cannot release active execution or resume
+released resources. Claim-bound done validates ownership. None of these
+operations stops a remote process or replaces PR review and delivery authority.
 The [status decision](.agents/notes/implemented/architecture/2026-10-24-task-status-assignment.md)
 records migration and shared-session trade-offs.
 

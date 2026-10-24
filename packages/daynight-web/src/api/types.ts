@@ -59,8 +59,29 @@ export type PullRequestProperty = {
   readonly title: string;
 };
 
+export type WorkerState = "active" | "released" | "completed";
+export type WorkerAgent = "codex" | "copilot";
+export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
+export type WorkerClaim = {
+  readonly claimId: string;
+  readonly state: WorkerState;
+  readonly userId: string;
+  readonly workerId: string;
+  readonly machine: { readonly id: string; readonly name: string };
+  readonly platform: ExecutionPlatform;
+  readonly agent: WorkerAgent;
+  readonly worktreeId: string;
+  readonly phase: WorkerPhase;
+  readonly herdr: { readonly session: string; readonly workspaceId: string; readonly paneId: string } | null;
+  readonly nativeSessionId: string | null;
+  readonly claimedAt: string;
+};
+
+export type WritableTaskProperties = { readonly pullRequests: readonly PullRequestProperty[]; readonly worker?: never };
+
 export type TaskProperties = {
   readonly pullRequests: readonly PullRequestProperty[];
+  readonly worker: WorkerClaim | null;
 };
 
 export type TaskDetail = {

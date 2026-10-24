@@ -369,8 +369,12 @@ storage and service. Store queries report prerequisite/dependent records and
 candidate reachability. The typed property codec in `internal/taskproperties/`
 stores serialized JSON in `tasks.properties` text, allowing JSON-escaped NUL
 without PostgreSQL JSONB restrictions. Migration `003_task_properties.sql` gives
-existing tasks empty PR lists while preserving version and timestamps. Corrupt
-stored structures fail reads; there is no read-time default. The HTTP boundary
+existing tasks empty PR lists while preserving version and timestamps. Migration
+016_task_worker.sql inserts explicit worker:null into the canonical stored text
+and updates the default without JSON/JSONB conversion, preserving opaque PR
+strings and task metadata. The stored/read codec is distinct from public writable
+properties, which reject worker even when null or unchanged. Corrupt stored
+structures fail reads; there is no read-time default. The HTTP boundary
 and property codec share the strict object decoder in `internal/jsonobject/`.
 The service owns reference validation, DAG/state rules, optimistic version
 comparison and semantic no-ops. There are no foreign keys or
@@ -466,14 +470,19 @@ Dependencies are canonical sorted UUIDs, checked for duplicate identity,
 self-reference, missing/cross-project tasks and cycles. Active/done metadata
 candidates require all predecessors done; todo may have unfinished predecessors.
 
-Status accepts all nine pairs across todo/in_progress/done. The project write
+Ordinary tasks without active/released worker ownership accept all nine pairs
+across todo/in_progress/done. The project write
 transaction acquires the project lock, rechecks membership, compares the exact
 version and only then handles same-state. A current same-state request returns
 the full current Task without a stored write; stale same-state conflicts. Actual
 change increments once. Entering active/done requires all direct predecessors
 done, including external edges; reopening done refuses sorted direct active/done
-dependent IDs. No dependent is changed. Status preserves requiredPlatform and all other fields,
-properties, dependency classifications and attachments. The old four routes are removed.
+dependent IDs. No dependent is changed. Status preserves requiredPlatform, PRs,
+other task fields, dependency classifications and attachments. Claim-bound done atomically marks
+the current worker completed; its owner and claim ID must match. Active execution
+returns to todo only through release. Released unfinished work requires original
+resource continuity through automatic acquisition or explicit manual resume. The
+old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
 uses statement_timestamp() after the lock and clears the end; return to todo
@@ -500,8 +509,8 @@ remains available regardless of automatic eligibility.
 Permission PATCH distinguishes omission from false, rejects null/nonboolean,
 checks version before same-value handling and rejects actual changes while
 in_progress as invalid_transition. Explicit task execution accepts either value;
-automatic discovery requires true. Future worker claims remain a separate
-[planned design](../../docs/design/daynight-worker.md). PR order and duplicates
+automatic discovery requires true. The [claim foundation](../../docs/design/daynight-worker-claims.md)
+rechecks eligibility and ownership in the same transaction. PR order and duplicates
 remain significant. Readiness changes do not advance dependent task revisions.
 
 Expected refusals are returned only after the lock-only transaction succeeds;
@@ -560,13 +569,29 @@ receipts and fixed-capacity gates are in the
 
 ## Task HTTP API
 
+Worker operations return complete Task resources with 200 and no-store, preserving
+existing authentication, exact int64 versions and strict JSON/error handling.
+They do not start processes. Claims use fresh caller-persisted UUIDs; the latest
+ID cannot be reused, and current-owner writes must match the claim. Transfer
+checks source authorization separately from target membership and platform.
+Release preserves original resources; manual resume requires source owner/admin
+and continuity while retaining the explicit manual eligibility exception. The
+[claim architecture](../../docs/design/daynight-worker-claims.md) owns exact fields
+and refusals. Callers of the in-process typed client reconcile unknown results by GET of
+known task IDs; no reverse owner query or claim table is introduced.
+
 | Method | Path | Result |
 |---|---|---|
 | `POST` | `/api/v1/projects/{projectId}/tasks` | `201`, task and `Location` |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | `200`, task page |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | `200`, task |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | `200`, updated metadata/dependencies |
-| `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`, exact-version three-state assignment; full Task response |
+| `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`, exact-version status; done may include current claimId |
+| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, atomic automatic acquisition |
+| `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, current owner updates execution summary |
+| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/release` | `200`, source owner/admin confirms stopping and returns todo |
+| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/transfer` | `200`, source owner/admin installs validated target ownership |
+| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/resume` | `200`, explicit manual continuation of released original work |
 
 Creation accepts required `title`, optional `description`, `dependsOn`,
 `externalDependsOn`, `requiredPlatform` and `properties`; omitted optional values
@@ -589,7 +614,10 @@ Empty description, `dependsOn: []` or `properties: {"pullRequests": []}` clears
 that value. `properties: {}` has no mutation intent and is accepted only with
 another mutable field. Fractions, exponents, strings and out-of-range versions fail.
 
-`properties` contains the server-defined `pullRequests` ordered array. Each item
+Full read `properties` contains the server-defined `pullRequests` ordered array
+and required `worker:null` or a typed active/released/completed execution record.
+Public create/PATCH accepts only writable PR properties; providing worker, even
+null or unchanged, is invalid_input. PR edits preserve worker. Each PR item
 requires exactly string fields `url` and `title`. Strings preserve their decoded
 JSON content, including empty text, whitespace, controls and NUL; order and
 duplicate items are data. The server performs no URL, PR, provider, repository
@@ -604,7 +632,7 @@ Task responses contain identity, project, title, description, status, required
 boolean `allowAgents`, nullable enum `requiredPlatform`, version,
 UTC creation/update timestamps, explicit nullable execution timestamps
 `startedAt`/`completedAt`, sorted `dependsOn`/`externalDependsOn`/`blockedBy` arrays, `ready` and complete
-`properties` with an initialized `pullRequests` array. A missing
+`properties` with an initialized `pullRequests` array and explicit worker. A missing
 project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 

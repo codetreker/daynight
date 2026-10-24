@@ -75,10 +75,10 @@ intentional operation, without extra endpoints or sentinel strings.
 **Coupling platform delivery to worker startup.** Requiring a worker-specific
 claim endpoint or agent startup to deliver the task field would reverse the
 worker design's prerequisite order. The delivered domain predicate and candidate
-query are reusable by the later claim transaction. The bundled workflow already
-uses its actual execution platform; daemon-specific environment integration,
-exclusive worker claim, resource startup and execution history remain
-with the [worker architecture](../../../../docs/design/daynight-worker.md).
+query are reused by the [claim foundation](../architecture/2026-10-24-worker-claim-foundation.md).
+The bundled workflow already uses its actual execution platform; daemon-specific
+environment integration, resource startup and execution history remain with the
+[worker architecture](../../../../docs/design/daynight-worker.md).
 
 ## Consequences
 

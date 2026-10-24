@@ -22,7 +22,7 @@ const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(
 const project = id(100); const parent = id(1); const child = id(2); const standalone = id(3);
 const time = '2026-10-22T00:00:00Z';
 const seed = (number: number, dependsOn: readonly string[] = []): TaskDetail => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: id(number), projectId: project,
-  version: 9007199254740993n, title: `Task ${number}`, description: `Complete description ${number}`, properties: { pullRequests: [] },
+  version: 9007199254740993n, title: `Task ${number}`, description: `Complete description ${number}`, properties: { worker: null, pullRequests: [] },
   status: 'todo', dependsOn, blockedBy: [], ready: true, createdAt: time, updatedAt: time });
 let records: Map<string, TaskDetail>;
 const graph = (): TaskGraph => {

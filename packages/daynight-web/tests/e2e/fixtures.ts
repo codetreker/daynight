@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { test as base, expect } from '@playwright/test';
 import { command } from '../../scripts/acceptance/process.mts';
 import { recordBrowserOwnership } from '../../scripts/acceptance/browser.mts';
-import type { ExecutionPlatform, TaskProperties } from '../../src/api/types';
+import type { ExecutionPlatform, TaskProperties, WritableTaskProperties } from '../../src/api/types';
 import { attachmentDownloadUrl } from '../../src/api/client';
 import { bearerContext, browserAuthentication, type AuthenticatedAPI } from './authentication';
 
@@ -142,7 +142,7 @@ export const createProject = async (request: AuthenticatedAPI, input: { name?: s
 };
 
 export const createTask = async (request: AuthenticatedAPI, projectId: string, input: {
-  title: string; description?: string; dependsOn?: string[]; properties?: TaskProperties; requiredPlatform?: ExecutionPlatform | null;
+  title: string; description?: string; dependsOn?: string[]; properties?: WritableTaskProperties; requiredPlatform?: ExecutionPlatform | null;
 }): Promise<Task> => {
   const response = await request.post(`/api/v1/projects/${projectId}/tasks`, {
     data: { title: input.title, description: input.description ?? '', dependsOn: input.dependsOn ?? [], properties: input.properties, requiredPlatform: input.requiredPlatform },
@@ -170,7 +170,7 @@ export const executeTask = async (request: AuthenticatedAPI, projectId: string, 
   finishTask(request, projectId, await startTask(request, projectId, task));
 
 export const updateTask = async (request: AuthenticatedAPI, projectId: string, taskId: string, input: {
-  version: number; title?: string; description?: string; dependsOn?: string[]; properties?: TaskProperties; requiredPlatform?: ExecutionPlatform | null;
+  version: number; title?: string; description?: string; dependsOn?: string[]; properties?: WritableTaskProperties; requiredPlatform?: ExecutionPlatform | null;
 }): Promise<Task> => {
   const response = await request.patch(`/api/v1/projects/${projectId}/tasks/${taskId}`, { data: input });
   expect(response.status(), 'Task fixture update succeeds').toBe(200);

@@ -10,7 +10,7 @@ const task = (id: string, title: string, status: TaskDetail['status']): TaskDeta
   id, projectId: detailProjectId, title, description: '# 任务交付\n\n使用同一套完整任务详情查看资料与操作。\n\n- [方案与验收](docs/guide.md)\n- [交互原型](site/index.html)\n- [长文档](docs/tall.md)',
   status, version: 1n, allowAgents: false, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [],
   ready: status === 'todo', startedAt: null, completedAt: status === 'done' ? timestamp : null,
-  properties: { pullRequests: [{ title: 'Share complete task details between dialog and page', url: 'https://github.com/example/project/pull/42' }] },
+  properties: { worker: null, pullRequests: [{ title: 'Share complete task details between dialog and page', url: 'https://github.com/example/project/pull/42' }] },
   createdAt: timestamp, updatedAt: timestamp,
 });
 

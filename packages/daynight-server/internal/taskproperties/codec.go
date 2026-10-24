@@ -16,10 +16,11 @@ type pullRequestDocument struct {
 
 type document struct {
 	PullRequests []pullRequestDocument `json:"pullRequests"`
+	Worker       *workerDocument       `json:"worker"`
 }
 
 func Encode(properties core.TaskProperties) string {
-	value := document{PullRequests: make([]pullRequestDocument, len(properties.PullRequests))}
+	value := document{PullRequests: make([]pullRequestDocument, len(properties.PullRequests)), Worker: encodeWorker(properties.Worker)}
 	for index, item := range properties.PullRequests {
 		value.PullRequests[index] = pullRequestDocument{URL: item.URL, Title: item.Title}
 	}
@@ -29,14 +30,23 @@ func Encode(properties core.TaskProperties) string {
 }
 
 func Decode(data []byte) (core.TaskProperties, error) {
-	patch, err := DecodePatch(data)
+	fields, err := jsonobject.Decode(data, "properties", "pullRequests", "worker")
 	if err != nil {
 		return core.TaskProperties{}, err
 	}
-	if patch.PullRequests == nil {
-		return core.TaskProperties{}, fmt.Errorf("properties.pullRequests is required")
+	items, err := decodePullRequests(fields["pullRequests"])
+	if err != nil {
+		return core.TaskProperties{}, err
 	}
-	return core.TaskProperties{PullRequests: *patch.PullRequests}, nil
+	raw, exists := fields["worker"]
+	if !exists {
+		return core.TaskProperties{}, fmt.Errorf("properties.worker is required")
+	}
+	worker, err := decodeWorker(raw)
+	if err != nil {
+		return core.TaskProperties{}, err
+	}
+	return core.TaskProperties{PullRequests: items, Worker: worker}, nil
 }
 
 func DecodePatch(data []byte) (core.TaskPropertiesPatch, error) {
@@ -48,31 +58,39 @@ func DecodePatch(data []byte) (core.TaskPropertiesPatch, error) {
 	if !exists {
 		return core.TaskPropertiesPatch{}, nil
 	}
+	values, err := decodePullRequests(raw)
+	if err != nil {
+		return core.TaskPropertiesPatch{}, err
+	}
+	return core.TaskPropertiesPatch{PullRequests: &values}, nil
+}
+
+func decodePullRequests(raw []byte) ([]core.PullRequestProperty, error) {
 	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
-		return core.TaskPropertiesPatch{}, fmt.Errorf("properties.pullRequests must be an array")
+		return nil, fmt.Errorf("properties.pullRequests must be an array")
 	}
 	var items []json.RawMessage
 	if err := json.Unmarshal(raw, &items); err != nil {
-		return core.TaskPropertiesPatch{}, fmt.Errorf("properties.pullRequests must be an array")
+		return nil, fmt.Errorf("properties.pullRequests must be an array")
 	}
 	values := make([]core.PullRequestProperty, 0, len(items))
 	for index, item := range items {
 		path := fmt.Sprintf("properties.pullRequests[%d]", index)
 		fields, err := jsonobject.Decode(item, path, "url", "title")
 		if err != nil {
-			return core.TaskPropertiesPatch{}, err
+			return nil, err
 		}
 		url, err := stringField(fields, "url", path)
 		if err != nil {
-			return core.TaskPropertiesPatch{}, err
+			return nil, err
 		}
 		title, err := stringField(fields, "title", path)
 		if err != nil {
-			return core.TaskPropertiesPatch{}, err
+			return nil, err
 		}
 		values = append(values, core.PullRequestProperty{URL: url, Title: title})
 	}
-	return core.TaskPropertiesPatch{PullRequests: &values}, nil
+	return values, nil
 }
 
 func stringField(fields map[string]json.RawMessage, key, path string) (string, error) {

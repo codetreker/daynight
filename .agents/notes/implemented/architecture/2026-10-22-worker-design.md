@@ -19,7 +19,9 @@ worker with four responsibilities: the service owns eligibility and
 exclusive claims; the worker owns scheduling, resources, recovery and completion
 verification; Herdr owns agent terminals and sessions; the agent owns the task's
 delivery loop. This note records the delivered design decision. The worker
-runtime and unique worker-claim integration remain implementation work.
+runtime remains implementation work. The [claim foundation decision](2026-10-24-worker-claim-foundation.md)
+owns implemented service/client ownership, status fencing and protected-property
+operations; it does not establish resource startup or recovery.
 Automatic-execution permission and optional platform persistence, filtering and
 service/CLI/Web controls are implemented under their decisions below.
 
@@ -35,8 +37,10 @@ could remain ready without being selected automatically. That role decision is
 superseded by the boolean permission; the responsibility and recovery decisions
 in this note remain in force. Protected task properties expose execution
 ownership without allowing ordinary property updates to replace it. The
-existing authentication and approval lifecycle remain prerequisites rather than
-new worker-specific identity or task-state systems.
+existing authentication and [three-state setting](2026-10-24-task-status-assignment.md)
+remain prerequisites rather than new worker-specific identity or task-state
+systems. The initial design used the then-current approval lifecycle; the
+three-state decision owns its replacement.
 
 The worker retains one worktree for each unfinished task, starts a dedicated
 Herdr instance and keeps only current execution state and necessary recovery
@@ -47,7 +51,24 @@ against existing task PR properties, remote results and acceptance attachments.
 Uncertain external results are reconciled before actions are repeated. Waiting
 and paused tasks retain their claims, worktrees and global concurrency slots.
 
+Acquisition discovers eligible unclaimed tasks and lets the service atomically
+select one winner. Recovery uses task IDs already persisted in SQLite or imported
+through an explicit transfer. Before sending a claim, the worker persists its
+server origin, project/task identity, proposed claim and pending action. Restart
+and unknown-result reconciliation read each known task directly through the
+in-process API client. This does not require an owner-based reverse inventory or
+dedicated database projection columns, indexes or a claim table for that query.
+Missing SQLite or original execution resources remains a visible recovery issue
+requiring human handling.
+
 ## Alternatives
+
+**Discover owned tasks through a server inventory.** Listing tasks by user or
+worker could rediscover ownership after losing local state, but it cannot restore
+the original worktree, frozen configuration or sessions. SQLite already retains
+the task IDs needed for normal recovery and uncertain-write reconciliation.
+Direct reads of those known tasks avoid another discovery API and its storage
+projections without treating missing local resources as recovered work.
 
 **A worker-owned delivery engine.** Moving implementation, PR creation,
 CI/review handling and merge orchestration into the coordinator would duplicate
