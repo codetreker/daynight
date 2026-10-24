@@ -385,15 +385,17 @@ Enter/空格继续有效。`TaskAttachmentsPanel`、表单及目录控件保留�
 
 | 类型 | 预览机制 |
 |---|---|
-| Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；原始 HTML 保持转义 |
+| Markdown | `react-markdown` 10.1.0 与 `remark-gfm` 4.0.1 渲染 CommonMark/GFM，含表格；共享 Mermaid 流程图组件渲染静态图形及局部错误/源码，原始 HTML 保持转义 |
 | 图片 | 原生 img 的加载、错误和重试状态 |
 | PDF | HEAD 检查后交给浏览器原生 iframe |
 | 文本、JSON、源码 | 原始文本节点与 pre，保留换行 |
 | HTML | HEAD 检查后在普通同源 iframe 中加载执行 |
 | 其他格式 | 元数据及下载链接 |
 
-`MarkdownContent` 只负责 CommonMark/GFM 渲染及样式，URL 转换与链接激活由
-调用方提供。`MarkdownAttachmentBase` 区分 `document` 与 `root`：附件调用方使用
+`MarkdownContent` 负责 CommonMark/GFM、Mermaid 流程图及样式，URL 转换与链接激活由
+调用方提供。流程图的延迟加载、串行配置/语义预检/渲染、图片节点绘制前拒绝、
+隐藏页签测量、静态图片安全与异步资源生命周期统一遵守[流程图设计](daynight-task-inspection.md#mermaid-流程图)，
+内嵌及独立完整详情不建立第二套渲染机制。`MarkdownAttachmentBase` 区分 `document` 与 `root`：附件调用方使用
 当前文件的目录作为资源基准，描述调用方使用任务附件根；不虚构描述文件名。路径解析逐段处理 URL 编码和 parent 段，拒绝
 越过任务根，保留 query/hash。独立 `#fragment` 保持原值，不改成文件请求。绝对、
 协议和根相对 URL 保持正常 URL 语义，并经过渲染库的默认安全规则；原始 HTML

@@ -103,8 +103,10 @@ Go UI mux 精确登记基础任务页 GET/HEAD；附件入口继续使用既有�
 
 ## Markdown 与附件链接
 
-`MarkdownContent` 复用 `react-markdown` 与 `remark-gfm`，只拥有 CommonMark/GFM
-渲染及共享样式，覆盖标题、段落、列表、引用、代码、表格、链接和图片。原始 HTML
+`MarkdownContent` 复用 `react-markdown` 与 `remark-gfm`，拥有 CommonMark/GFM、
+Mermaid 流程图及共享样式，覆盖标题、段落、列表、引用、代码、表格、链接和图片。
+模块级稳定的 `pre` renderer 只将 `mermaid` fenced code block 交给流程图组件，
+其他代码块保留原生 `pre/code` 结构。URL 转换与链接激活继续由调用方提供。原始 HTML
 作为文本，URL 协议沿用已有规则。空描述使用双语目录中的空态消息；用户 Markdown
 字节不随语言切换变化。概览继续拥有纵向阅读滚动，代码和表格只在局部横向滚动，
 宽内容不能撑破 320px 的尺寸链。
@@ -142,6 +144,52 @@ Goal 阶段、创建/实现/合并权限继续独立。创建默认 todo，登�
 交付验证检查实际 npm bundle 及隔离安装夹具，
 安装目录通过正常重新安装更新。机制取舍见
 [Markdown 描述决策](../../.agents/notes/implemented/architecture/2026-10-22-task-description-markdown.md)。
+
+## Mermaid 流程图
+
+三个 Markdown 阅读入口共用 `MarkdownContent`，图形转换不改变存储格式、描述的
+任务根目录基准或附件的文档目录基准。Mermaid 12.2.0 只在遇到 `mermaid` fenced
+code block 后动态加载。应用接纳 `flowchart` 与 `graph` 流程图，其他图类型以局部
+错误和源码呈现；普通 Markdown 无需等待图形模块。
+
+渲染服务将 Mermaid 全局配置初始化、语义预检与单图渲染纳入同一串行队列，防止
+并发图块互相改写主题及安全设置。配置固定使用 `strict`、关闭 HTML labels，
+并显式选择 `dagre`；Mermaid 12 的默认 ELK 不作为隐式布局依赖。来源中的 Mermaid
+配置指令和 frontmatter 被拒绝，图块不能改变应用设置。来源最多 50,000 个 UTF-16
+代码单元，渲染器限制 500 条连线；越限沿用单图错误与源码展示。
+
+绘制前，`mermaid.mermaidAPI.getDiagramFromText` 使用实际 Mermaid parser 建立
+流程图，随后读取 `FlowDB.getVertices()`。顶点含有图片资源或类型为 `imageSquare`
+时，以明确的图片节点错误和源码拒绝整个图块。Mermaid 图片绘制等待的
+`Image.decode()` 不能通过阅读组件的 abort 中断；在调用 render 前拒绝该路径，
+保证一个图片节点不会占住共享队列并阻塞后续图块。语义检查保留普通形状 metadata、
+标签中的字面量 `@{` 以及 parser 识别的转义 YAML key，不以宽泛文本匹配删减语法。
+该调用使用 Mermaid 导出的 `@internal` API，不进行深层运行时导入；固定版本与
+真实 parser 测试共同约束升级，升级时必须重新确认顶点结构与绘制前拒绝行为。
+
+每次绘制使用唯一 ID 和独立临时容器；容器保持可测量，避免预先挂载但隐藏的
+附件页签给出零尺寸。完成或失败后清理临时容器，错误只由所属图块显示。返回的
+SVG 转为图片资源，通过原生 `img` 展示；应用不将生成 SVG 插入阅读 DOM，也不
+调用 Mermaid 的 `bindFunctions`，结果中的脚本和图形点击处理器不参与应用交互。
+Mermaid 仍建立临时绘图 DOM，自定义样式资源及普通 Markdown 外部图片仍可能
+产生网络请求，该机制不提供网络隔离。
+
+图片节点支持需要可中断的隔离渲染上下文，并重新设计构建入口、消息通信、CSP
+及资源生命周期；当前明确拒绝该能力，保留普通流程图与跨图块可用性保证。裸
+`Promise.race` 超时不会终止 Mermaid 内部工作或释放其共享状态，不能作为中断
+机制。
+
+图块显示当前语言的加载状态、错误和源码入口。每个异步结果绑定其源内容与挂载
+生命周期；内容变化立即停止呈现旧结果，晚到成功或失败不能改写当前图块。图片
+资源在替换和卸载时释放。模块级 renderer 身份稳定，同文档多图和普通父组件更新
+不会因 renderer 定义变化重建整个阅读树。
+
+图形采用现有浅色 Markdown 配色和可阅读的自然尺寸。图块限制在阅读列宽内，
+通过可聚焦、具备可访问名称的局部区域横向滚动；320px 下图像不撑宽整体页面，
+原有概览和附件正文继续拥有纵向滚动，标题与操作保持可用。节点文字、箭头、
+条件分支和中文标签的最终绘制由真实浏览器验证。机制取舍由
+[流程图决策](../../.agents/notes/implemented/feature/2026-10-24-markdown-flowcharts.md)
+拥有。
 
 ## 验证与交付
 

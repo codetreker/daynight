@@ -3,6 +3,7 @@ import { ApiError, attachmentContentType } from '../../src/api/client';
 import type { AttachmentUrls } from '../../src/features/task-detail/attachments/TaskAttachments';
 import type { AttachmentApi } from '../../src/features/task-detail/attachments/useAttachments';
 import guide from './files/docs/guide.md?raw';
+import flowcharts from './files/docs/flowcharts.md?raw';
 import json from './files/data/example.json?raw';
 import style from './files/site/style.css?raw';
 import script from './files/site/app.js?raw';
@@ -15,6 +16,7 @@ export const mockupLongPath = `docs/${'long-file-name-'.repeat(12)}.txt`;
 const timestamp = '2026-10-21T10:00:00Z';
 const sources = [
   ['docs/guide.md', 'text/markdown', guide],
+  ['docs/flowcharts.md', 'text/markdown', flowcharts],
   ['examples/guide.md', 'text/markdown', guide],
   ['images/workflow.svg', 'image/svg+xml', ''],
   ['site/index.html', 'text/html', ''],

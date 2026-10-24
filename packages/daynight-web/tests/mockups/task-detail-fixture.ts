@@ -2,6 +2,7 @@ import type { TaskDetail, TaskGraph } from '../../src/api/types';
 import { stringifyApiJson } from '../../src/api/json';
 import type { GraphSnapshot } from '../../src/features/projects/useTaskGraph';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
+import flowcharts from './files/docs/flowcharts.md?raw';
 
 export const detailProjectId = '00000000-0000-4000-8000-000000000100';
 export const detailTaskId = '00000000-0000-4000-8000-000000000001';
@@ -17,7 +18,8 @@ const task = (id: string, title: string, status: TaskDetail['status']): TaskDeta
 export const createTaskDetailFixture = () => {
   const priorId = '00000000-0000-4000-8000-000000000002';
   const nextId = '00000000-0000-4000-8000-000000000003';
-  const first = task(detailTaskId, '在新标签页阅读完整任务详情', 'todo');
+  const first = { ...task(detailTaskId, 'Markdown 流程图与完整任务详情', 'todo'),
+    description: `${flowcharts.replaceAll('(../', '(').replace('(guide.md)', '(docs/guide.md)')}\n\n[在附件页阅读相同内容](docs/flowcharts.md)` };
   const prior = task(priorId, '完成资料准备与需求确认', 'done');
   const next = task(nextId, '验证任务详情与附件交互', 'todo');
   const tasks = new Map([[first.id, { ...first, dependsOn: [priorId] }], [prior.id, prior], [next.id, { ...next, dependsOn: [first.id], blockedBy: [first.id], ready: false }]]);

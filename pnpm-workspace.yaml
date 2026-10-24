@@ -5,6 +5,10 @@ storeDir: .tmp/pnpm-store
 allowBuilds:
   better-sqlite3: false
   node-pty@1.1.0: true
+packageExtensions:
+  mermaid@12.2.0:
+    dependencies:
+      type-fest: 4.41.0
 patchedDependencies:
   '@dagrejs/dagre@3.1.1': patches/@dagrejs__dagre@3.1.1.patch
   '@xyflow/system@0.0.83': patches/@xyflow__system@0.0.83.patch

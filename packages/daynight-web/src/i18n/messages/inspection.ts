@@ -1,4 +1,14 @@
 export type InspectionMessages = {
+  readonly mermaid: {
+    readonly loading: string;
+    readonly diagram: string;
+    readonly source: string;
+    readonly failed: string;
+    readonly configuration: string;
+    readonly unsupported: string;
+    readonly tooLarge: string;
+    readonly image: string;
+  };
   readonly status: {
     readonly title: string;
     readonly menu: string;

@@ -14,8 +14,12 @@ agreement with the existing attachment panel.
 ## Decision
 
 `MarkdownContent` shares CommonMark/GFM rendering and styles between task
-descriptions and Markdown attachments. It preserves raw HTML as text and the
-existing URL/protocol policy. The caller supplies URL conversion and activation.
+descriptions and Markdown attachments. It also delegates Mermaid fences to the
+shared static flowchart renderer; the
+[flowchart decision](../feature/2026-10-24-markdown-flowcharts.md) owns diagram
+security, rendering lifetime and local failure handling. Raw HTML remains text
+and the existing URL/protocol policy is preserved. The caller supplies URL
+conversion and activation.
 `MarkdownAttachmentBase` explicitly distinguishes the task attachment `root`
 from an actual `document` path. Descriptions use the root; attachment documents
 use their containing directory. Path decoding and validation reject escape from

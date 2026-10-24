@@ -167,7 +167,7 @@ HTML 或脚本执行。页面展示不改变 server 对字符串的接受规则�
 ## 描述与附件引用
 
 `description` 按 CommonMark/GFM 展示标题、段落、列表、引用、代码块、表格、链接和
-图片；原始 HTML 作为文本显示，URL 协议处理沿用附件 Markdown 的规则。空字符串
+图片；`mermaid` fenced code block 共享[流程图要求](daynight-task-inspection.md#markdown-流程图)，支持静态流程图、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块。原始 HTML 作为文本显示，URL 协议处理沿用附件 Markdown 的规则。空字符串
 显示当前语言的“暂无描述”。标题和仓库地址继续作为文本显示。Markdown 表格与
 代码块在各自区域横向滚动，长描述在 320px 下换行，页面不产生整体横向溢出。
 API 存储与 CLI/Agent 读取保留原始字符串字节，不增加格式标记或改写已有描述。
@@ -182,7 +182,7 @@ query/hash 链接保留现有 URL 策略与原生导航。本文不要求生成 
 失败分别显示；适用时提供重试。描述导航不能建立第二个清单或预览所有者。切换
 任务、关闭详情及鉴权/资源失效取消旧请求，晚到响应不能改变当前身份；同路径覆盖
 继续遵守附件 revision 与刷新规则。详细要求由[任务阅读要求](daynight-task-inspection.md)
-TI8–TI11 拥有。
+TI8–TI11 与 TI15 拥有。
 
 ## 附件区域
 
@@ -198,7 +198,8 @@ TI8–TI11 拥有。
 当前选择。覆盖成功及刷新发现同路径 `updatedAt` 变化时重新读取所选内容；删除
 当前文件清空预览，删除其他文件保留正在阅读的文档与位置。
 
-Markdown 按 CommonMark 和 GFM（包括表格）渲染，原始 HTML 作为文本显示；相对
+Markdown 按 CommonMark 和 GFM（包括表格）渲染，`mermaid` 图块与描述共享静态
+流程图、错误隔离、源码、安全及局部滚动规则；原始 HTML 作为文本显示。相对
 图片与链接按文档目录指向 task 预览路径，独立 `#fragment` 保留。图片、PDF、文本、
 HTML 和其他格式的展示及可信同源执行约定由[附件需求](daynight-task-attachments.md#web-管理与预览)
 拥有。Markdown、文本/JSON/源码和大图仅由预览正文纵向滚动；HTML/PDF 仅由
@@ -251,7 +252,7 @@ JSON 404，缺失资源、资源目录与未知页面形状不得回退到 SPA H
 原始二进制按字节比较；PDF 必须由实际 compositor 截图验证预期页面色块已绘制，
 HTML 相对资源通过可见交互验证。新增附件场景仅允许精确 task/file PUT/DELETE，
 `refresh-staleness` 另仅允许一次已登记 fixture task/file PUT，将真实上传响应挂起并跨自动读取验证状态保留；其他图功能场景继续只读。每次完整运行复用一次 CLI 安装并核对源码与产物回执，
-`project-view-tabs` 在两个目标上验证页签、分类、详情、独立筛选及浏览偏好。当前严格 inventory 为原生 34 个、容器 29 个唯一场景，共 63 个；两个目标各有 29 个功能场景，原生另有五个容量/超限检查。三个双语场景保持，`task-status`、`task-status-conflicts`、`task-status-recovery` 与 `task-status-transitions` 覆盖 W13 的三状态设置、状态确认、取消、冲突与结果核对。task-status-transitions 还验证三状态组合、直接完成、重开、同状态及资料/附件保全。状态场景只允许已登记 project/task 的 PUT status 与精确请求次数，六个鉴权场景仅允许各自登记的精确管理请求。`task-description-markdown` 覆盖 CommonMark/GFM 展示与同一附件控制器导航；该场景浏览器只执行 GET/HEAD，资料通过已安装 CLI 或已认证 API request context 准备。`project-settings` 在两目标覆盖直接入口/重载、管理员保存和另一成员读取、项目隔离、精确大版本、冲突、降权、成员只读、真实提交后的响应丢失与读取重试，以及双语 320px/390px 表单；只允许四次已登记的设置 PATCH，不重放未知结果。`task-agent-permission` 在两个目标验证普通成员双向确认、取消/Escape、锁定、版本冲突、已提交响应丢失与读取核对、详情关闭/切换后操作归属、严格布尔和精确版本、列表/节点及双语窄屏布局；只允许登记任务的许可 PATCH 和固定次数，不重放未知写入。`task-platform` 在两个目标验证状态行选择后确认、当前值无操作、各取消路径零写入及下拉框焦点恢复、确认后设置/清除、共享状态/许可写入锁、冲突/未知结果 GET 核对、跨任务归属、人工开始后锁定、平台传播及双语 320px/390px 布局，仅允许登记平台 PATCH 和精确次数。`task-detail-page` 在 source/popup 共用的浏览器 context 上仅允许登记任务的五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件的一次 PUT 与一次 DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，取消不增加写入，未知写结果只 GET 核查。它覆盖完整内容/操作、任务/页签/文件历史、弹窗本地状态、查询参数保留的真实登录返回及双语三个尺寸。`task-execution-time` 只允许浏览器 GET/HEAD，以真实 PostgreSQL、鉴权 API 和安装 CLI 验证持续计时、冻结、阈值跨越/修改与未知历史；图响应挂起和错误本机墙钟仍保持局部 tick、焦点与几何，两语言检查 320px/390px 图卡和独立行。
+`project-view-tabs` 在两个目标上验证页签、分类、详情、独立筛选及浏览偏好。当前严格 inventory 为原生 34 个、容器 29 个唯一场景，共 63 个；两个目标各有 29 个功能场景，原生另有五个容量/超限检查。三个双语场景保持，`task-status`、`task-status-conflicts`、`task-status-recovery` 与 `task-status-transitions` 覆盖 W13 的三状态设置、状态确认、取消、冲突与结果核对。task-status-transitions 还验证三状态组合、直接完成、重开、同状态及资料/附件保全。状态场景只允许已登记 project/task 的 PUT status 与精确请求次数，六个鉴权场景仅允许各自登记的精确管理请求。`task-description-markdown` 覆盖 CommonMark/GFM 展示、三个入口的 Mermaid 流程图及错误/源码/内容切换/窄屏行为与同一附件控制器导航；该场景浏览器只执行 GET/HEAD，资料通过已安装 CLI 或已认证 API request context 准备。`project-settings` 在两目标覆盖直接入口/重载、管理员保存和另一成员读取、项目隔离、精确大版本、冲突、降权、成员只读、真实提交后的响应丢失与读取重试，以及双语 320px/390px 表单；只允许四次已登记的设置 PATCH，不重放未知结果。`task-agent-permission` 在两个目标验证普通成员双向确认、取消/Escape、锁定、版本冲突、已提交响应丢失与读取核对、详情关闭/切换后操作归属、严格布尔和精确版本、列表/节点及双语窄屏布局；只允许登记任务的许可 PATCH 和固定次数，不重放未知写入。`task-platform` 在两个目标验证状态行选择后确认、当前值无操作、各取消路径零写入及下拉框焦点恢复、确认后设置/清除、共享状态/许可写入锁、冲突/未知结果 GET 核对、跨任务归属、人工开始后锁定、平台传播及双语 320px/390px 布局，仅允许登记平台 PATCH 和精确次数。`task-detail-page` 在 source/popup 共用的浏览器 context 上仅允许登记任务的五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件的一次 PUT 与一次 DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，取消不增加写入，未知写结果只 GET 核查。它覆盖完整内容/操作、任务/页签/文件历史、弹窗本地状态、查询参数保留的真实登录返回及双语三个尺寸。`task-execution-time` 只允许浏览器 GET/HEAD，以真实 PostgreSQL、鉴权 API 和安装 CLI 验证持续计时、冻结、阈值跨越/修改与未知历史；图响应挂起和错误本机墙钟仍保持局部 tick、焦点与几何，两语言检查 320px/390px 图卡和独立行。
 
 四个完整输入各 1,000 任务，单链 999 边，其他各 5,000 边，external 为 2 main/998 external。完整 API 逐 ID/边比较；浏览器验证有界概览、全部可见诱导边、显式展开/reset 及精确计数，不要求全输入同时渲染。每图五次，openMs≤3,000，select/detail/zoom/pan≤300；普通详情关闭后立即缩放/平移、可信选择，再执行高亮态同序列，每项取两态较慢值，网络分开计时，关闭与缩放间不插入 reset、fit 或等待。独立判断完整 H、隐藏祖先、平滑曲线、实际 paint/marker 和几何/视口稳定。63 项场景、超限拒绝、coverage、timeout、零 retry 和清理保持。真实原生/生产容器和锁定 CI 浏览器证据必需，结果按被测源码归属；PR #143 已交付依赖检查，鉴权和生命周期合并后的源码仍需完整运行回执。
 
