@@ -19,7 +19,7 @@ export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
   return {
     observedAt: timestamp,
     project: { id: projectId, name: '任务项目', repoUrl: 'https://github.com/example/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: timestamp, updatedAt: timestamp },
-    tasks: current.map((task) => ({ id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status,
+    tasks: current.map((task) => ({ id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160, status: task.status,
       allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
       blockedBy: task.blockedBy, ready: task.ready, startedAt: task.startedAt, completedAt: task.completedAt, createdAt: task.createdAt, updatedAt: task.updatedAt })),
     summary: { total: details.length, todo: current.filter((task) => task.status === 'todo').length, inProgress: current.filter((task) => task.status === 'in_progress').length,
@@ -38,6 +38,6 @@ export const withDetailResources = (projectId: string, taskId: string, fallback:
     const parsed = new URL(url, location.origin);
     if (parsed.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(parsed), versionForTask: () => task.version, viewerId: typeof viewer === 'string' ? viewer : viewer() });
     if (url === `/api/v1/projects/${projectId}/task-graph`) return resourceResponse(graphFixture([task]));
-    if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return resourceResponse(task);
+    if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return resourceResponse(task, typeof viewer === 'string' ? viewer : viewer());
     return fallback(url, options);
   };

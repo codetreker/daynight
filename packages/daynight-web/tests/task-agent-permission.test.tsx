@@ -1,3 +1,5 @@
+import { createTaskSessionWorld } from './helpers/taskSessions';
+import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,22 +21,27 @@ const detail: TaskDetail = { requiredPlatform: null, id: taskId, projectId, titl
 const graphTask = (value: TaskDetail): GraphTask => ({ id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
   requiredPlatform: value.requiredPlatform, allowAgents: value.allowAgents, dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
   startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt });
+let world: ReturnType<typeof createTaskSessionWorld>;
+const snapshotDetails = new WeakMap<object, readonly TaskDetail[]>();
 const snapshot = (value: TaskDetail, revision = 1) => {
   const graph: TaskGraph = { observedAt: time, project, tasks: [graphTask(value)], summary: { total: 1,
     todo: value.status === 'todo' ? 1 : 0, inProgress: value.status === 'in_progress' ? 1 : 0, done: value.status === 'done' ? 1 : 0, ready: value.ready ? 1 : 0, blocked: value.status === 'todo' && !value.ready ? 1 : 0 } };
-  return { observedAt: time, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+  const result = { observedAt: time, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+  snapshotDetails.set(result, [value]);
+  return result;
 };
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 const writes = vi.mocked(setTaskAgentPermission);
 let root: HTMLDivElement;
-beforeEach(() => { root = document.createElement('div'); root.id = 'root'; document.body.append(root); vi.mocked(getTask).mockReset(); writes.mockReset(); vi.mocked(setTaskStatus).mockReset(); });
-afterEach(() => { cleanup(); root.remove(); });
+beforeEach(() => { world = createTaskSessionWorld(); root = document.createElement('div'); root.id = 'root'; document.body.append(root); vi.mocked(getTask).mockReset(); writes.mockReset(); vi.mocked(setTaskStatus).mockReset(); });
+afterEach(() => { cleanup(); world.dispose(); root.remove(); });
 const open = async (value = detail, locale: 'en' | 'zh-CN' = 'en') => {
   vi.mocked(getTask).mockResolvedValue(value);
   const props: TaskDetailDialogProps = { projectId, taskId: value.id, snapshot: snapshot(value), onClose: vi.fn(), onSelectTask: vi.fn(), onRestoreFocus: vi.fn(), onRefreshGraph: vi.fn() };
-  const view = renderWithLocale(<TaskDetailDialog {...props} />, { locale, container: root });
+  await world.sync(snapshotDetails.get(props.snapshot)!);
+  const view = renderWithLocale(<TaskDetailDialog {...props} />, { locale, container: root, taskCache: { scope: world.scope } });
   await screen.findByRole('heading', { name: value.title });
-  return { ...view, props };
+  return { ...view, props, sync: async (value: TaskDetail) => { vi.mocked(getTask).mockResolvedValue(value); await world.sync([value]); view.rerender(<TaskDetailDialog {...props} snapshot={snapshot(value, 2)} />); }, rerender: async (ui: React.ReactElement<TaskDetailDialogProps>) => { await world.sync(snapshotDetails.get(ui.props.snapshot)!); view.rerender(ui); } };
 };
 
 describe('confirmed automatic execution header control', () => {
@@ -85,7 +92,7 @@ describe('confirmed automatic execution header control', () => {
     fireEvent.click(screen.getByRole('tab', { name: 'Attachments' })); const draft = screen.getByRole('textbox', { name: 'Attachment draft' });
     fireEvent.change(draft, { target: { value: 'Retained' } });
     fireEvent.click(screen.getByRole('switch')); fireEvent.click(screen.getByRole('button', { name: 'Enable automatic execution' }));
-    expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, true, detail.version, expect.any(AbortSignal));
+    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(projectId, taskId, true, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
     expect(screen.getByRole('switch')).toBeDisabled(); expect(screen.getByRole('switch')).not.toBeChecked();
     expect(screen.getByRole('button', { name: 'To do' })).toBeDisabled();
     await act(async () => pending.resolve({ ...detail, allowAgents: true, version: detail.version + 1n }));
@@ -101,7 +108,7 @@ describe('confirmed automatic execution header control', () => {
     expect(screen.getByRole('alertdialog')).toBeVisible();
     const changed = { ...detail, allowAgents: true, version: detail.version + 1n, updatedAt: '2026-10-24T00:01:00Z' };
     vi.mocked(getTask).mockResolvedValueOnce(changed);
-    rerender(<TaskDetailDialog {...props} snapshot={snapshot(changed, 2)} />);
+    await rerender(<TaskDetailDialog {...props} snapshot={snapshot(changed, 2)} />);
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
     expect(writes).not.toHaveBeenCalled();
   });

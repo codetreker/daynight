@@ -25,7 +25,7 @@ vi.mock("../src/features/task-detail/TaskDetailDialog", () => ({ TaskDetailDialo
 }) => {
   const state = useTaskDetail(projectId, taskId, snapshot.revision, snapshot.index.nodes.get(taskId));
   useEffect(() => () => onRestoreFocus(), [onRestoreFocus]);
-  return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="detail-state">{state.status}</p><p>{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
+  return <aside aria-label="详情测试外壳"><p data-testid="selected-task">{taskId}</p><p data-testid="detail-state">{state.status}</p><p data-testid="detail-title">{state.detail?.title}</p><p data-testid="detail-business-status">{state.detail?.status}</p>
     <button onClick={() => onSelectTask(C)}>关系跳转</button><button onClick={() => onSelectTask(X)}>未知关系</button>
     <button onClick={onRefreshGraph}>刷新全图</button><button onClick={onClose}>关闭详情</button></aside>;
 } }));
@@ -74,19 +74,28 @@ const rememberRoot = (root: string | null, id = projectId) => window.localStorag
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
 const syncFixture = createGraphSyncFixture();
+const servedGraphs = new Map<string, TaskGraph>();
+const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
   syncFixture.reset();
+  servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
-    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+    const sync = syncFixture.toSync(value, query, replacementEpochs.get(value));
+    servedGraphs.set(projectId, value);
+    for (const task of sync.tasks) servedVersions.set(`${projectId}/${task.id}`, task.version);
+    return sync;
   });
 });
 
 beforeEach(() => {
   graphRequest.mockReset(); detailRequest.mockReset();
-  detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
-    id, projectId: project, title: `详情 ${id}`, description: "文本", properties: { worker: null, pullRequests: [] }, status: "todo", version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
-  }));
+  detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
+    const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
+    if (id === X) return { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
+      id, projectId: project, title: 'New task', description: '文本', properties: { worker: null, pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
+    return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { worker: null, pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
+  });
 });
 
 describe("project dashboard", () => {
@@ -143,7 +152,7 @@ describe("project dashboard", () => {
     render(<ProjectPage projectId={projectId} />);
     const trigger = await screen.findByRole("button", { name: "节点 后续任务" });
     trigger.focus(); fireEvent.click(trigger);
-    await screen.findByText(`详情 ${B}`);
+    await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
     await waitFor(() => expect(screen.queryByRole("complementary")).toBeNull());
     expect(await screen.findByText("所选任务已不在新的任务图中，详情已关闭。")).toBeTruthy();
@@ -152,17 +161,17 @@ describe("project dashboard", () => {
     expect(number("任务总数")).toBe("2");
   });
 
-  it("re-reads a retained detail after a new graph revision without using detail responses to patch graph statistics", async () => {
+  it("reuses a retained detail after an unchanged graph receipt without patching graph statistics", async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph());
-    detailRequest.mockResolvedValue({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: B, projectId, title: `详情 ${B}`, description: "更新后的详情", properties: { worker: null, pullRequests: [] }, status: "done", version: 1n, dependsOn: [A], blockedBy: [], ready: false, createdAt: time, updatedAt: time });
     render(<ProjectPage projectId={projectId} />);
     fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
-    await screen.findByText(`详情 ${B}`);
+    await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     expect(detailRequest).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId("detail-business-status").textContent).toBe("done");
+    expect(screen.getByTestId("detail-business-status").textContent).toBe("todo");
     expect(number("已完成")).toBe("1");
     fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
-    await waitFor(() => expect(detailRequest).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    expect(detailRequest).toHaveBeenCalledOnce();
     expect(screen.getByTestId("selected-task").textContent).toBe(B);
     expect(number("已完成")).toBe("1");
   });
@@ -172,13 +181,13 @@ describe("project dashboard", () => {
     render(<ProjectPage projectId={projectId} />);
     const trigger = await screen.findByRole("button", { name: "节点 后续任务" });
     trigger.focus(); fireEvent.click(trigger);
-    await screen.findByText(`详情 ${B}`);
+    await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     fireEvent.click(screen.getByRole("button", { name: "关系跳转" }));
-    await screen.findByText(`详情 ${C}`);
+    await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("另一任务链"));
     expect(screen.getByTestId("selected-task").textContent).toBe(C);
     fireEvent.click(screen.getByRole("button", { name: "未知关系" }));
-    await screen.findByText(`详情 ${X}`);
-    expect(detailRequest.mock.calls.at(-1)?.[1]).toBe(X);
+    await waitFor(() => expect(detailRequest.mock.calls.at(-1)?.[1]).toBe(X));
+    expect(screen.getByTestId("detail-title")).toBeEmptyDOMElement();
     fireEvent.click(screen.getByRole("button", { name: "关闭详情" }));
     expect(document.activeElement).toBe(trigger);
   });
@@ -187,7 +196,7 @@ describe("project dashboard", () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     render(<ProjectPage projectId={projectId} />);
     fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
-    await screen.findByText(`详情 ${B}`);
+    await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
     await screen.findByRole("heading", { name: "还没有任务" });
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "核心项目" })));

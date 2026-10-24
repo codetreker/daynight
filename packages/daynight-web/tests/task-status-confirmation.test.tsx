@@ -1,3 +1,5 @@
+import { createTaskSessionWorld } from './helpers/taskSessions';
+import { TEST_VIEWER_ID } from './helpers/taskSync';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -17,20 +19,25 @@ const source = (status: TaskStatus = 'todo'): TaskDetail => ({ requiredPlatform:
   status, version: 9007199254740993n, properties: { worker: null, pullRequests: [] }, dependsOn: [dependencyId], blockedBy: [], ready: status === 'todo', createdAt: time, updatedAt: time });
 const result = (detail: TaskDetail, status: TaskStatus): TaskDetail => detail.status === status ? detail : ({ ...detail, status, version: detail.version + 1n, ready: status === 'todo', updatedAt: later,
   startedAt: status === 'in_progress' ? later : status === 'todo' || detail.status === 'todo' ? null : detail.startedAt, completedAt: status === 'done' ? later : null });
+let world: ReturnType<typeof createTaskSessionWorld>;
+const snapshotDetails = new WeakMap<object, readonly TaskDetail[]>();
 const snapshot = (detail: TaskDetail, revision = 1): GraphSnapshot => {
   const tasks = [detail, { ...source('done'), id: dependencyId, title: 'Prerequisite', dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false }];
   const graph: TaskGraph = { observedAt: time, project, tasks: tasks.map(({ version: _version, projectId: _project, title, description: _description, properties: _properties, ...task }) => ({ ...task, titlePreview: title, titleTruncated: false })),
     summary: { total: 2, todo: tasks.filter((task) => task.status === 'todo').length, inProgress: tasks.filter((task) => task.status === 'in_progress').length, done: tasks.filter((task) => task.status === 'done').length, ready: detail.ready ? 1 : 0, blocked: 0 } };
-  return { observedAt: time, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+  const result = { observedAt: time, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: 1, revision };
+  snapshotDetails.set(result, tasks);
+  return result;
 };
 const labels = { todo: 'To do', in_progress: 'In progress', done: 'Done' };
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };
 let root: HTMLDivElement;
-beforeEach(() => { root = document.createElement('div'); root.id = 'root'; document.body.append(root); vi.mocked(getTask).mockReset(); vi.mocked(setTaskStatus).mockReset(); });
-afterEach(() => { cleanup(); root.remove(); });
+beforeEach(() => { world = createTaskSessionWorld(); root = document.createElement('div'); root.id = 'root'; document.body.append(root); vi.mocked(getTask).mockReset(); vi.mocked(setTaskStatus).mockReset(); });
+afterEach(() => { cleanup(); world.dispose(); root.remove(); });
 const open = async (detail = source()) => {
   vi.mocked(getTask).mockResolvedValue(detail); const props: TaskDetailDialogProps = { projectId, taskId, snapshot: snapshot(detail), onClose: vi.fn(), onRestoreFocus: vi.fn(), onRefreshGraph: vi.fn(), onSelectTask: vi.fn() };
-  const view = renderWithLocale(<TaskDetailDialog {...props} />, { locale: 'en', container: root }); await screen.findByRole('heading', { name: detail.title }); return { ...view, props, dialog: screen.getByRole('dialog') };
+  await world.sync(snapshotDetails.get(props.snapshot)!);
+  const view = renderWithLocale(<TaskDetailDialog {...props} />, { locale: 'en', container: root, taskCache: { scope: world.scope } }); await screen.findByRole('heading', { name: detail.title }); return { ...view, props, sync: async (value: TaskDetail) => { vi.mocked(getTask).mockResolvedValue(value); await world.sync([value]); view.rerender(<TaskDetailDialog {...props} snapshot={snapshot(value, 2)} />); }, dialog: screen.getByRole('dialog'), rerender: async (ui: React.ReactElement<TaskDetailDialogProps>) => { await world.sync(snapshotDetails.get(ui.props.snapshot)!); view.rerender(ui); } };
 };
 const select = (dialog: HTMLElement, current: TaskStatus, target: TaskStatus) => { fireEvent.click(within(dialog).getByRole('button', { name: labels[current] })); fireEvent.click(within(dialog).getByRole('menuitemradio', { name: labels[target] })); return screen.getByRole('alertdialog', { name: 'Set task status' }); };
 describe('status menu and reviewed confirmation', () => {
@@ -57,15 +64,15 @@ describe('status menu and reviewed confirmation', () => {
     expect(setTaskStatus).not.toHaveBeenCalled();
   });
   it.each((['todo', 'in_progress', 'done'] as const).flatMap((from) => (['todo', 'in_progress', 'done'] as const).map((to) => ({ from, to }))))('submits captured $from → $to once and preserves the exact result', async ({ from, to }) => {
-    const detail = source(from); const saved = result(detail, to); const pending = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(pending.promise); const { dialog } = await open(detail);
+    const detail = source(from); const saved = result(detail, to); const pending = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(pending.promise); const { dialog, sync } = await open(detail);
     const confirmation = select(dialog, from, to); expect(confirmation.querySelector('.task-status-route')).toHaveTextContent(`${labels[from]}→${labels[to]}`); const confirm = within(confirmation).getByRole('button', { name: 'Confirm status' }); fireEvent.click(confirm); fireEvent.click(confirm);
-    expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(projectId, taskId, to, detail.version, expect.any(AbortSignal)); expect(screen.queryByRole('alertdialog')).toBeNull(); expect(within(dialog).getByRole('button', { name: labels[from] })).toBeDisabled();
-    await act(async () => pending.resolve(saved)); await within(dialog).findByText('Task status confirmed.'); expect(within(dialog).getByRole('button', { name: labels[to] })).toBeEnabled();
+    await waitFor(() => expect(setTaskStatus).toHaveBeenCalledExactlyOnceWith(projectId, taskId, to, detail.version, expect.any(AbortSignal), { userId: TEST_VIEWER_ID, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) })); expect(screen.queryByRole('alertdialog')).toBeNull(); expect(within(dialog).getByRole('button', { name: labels[from] })).toBeDisabled();
+    await act(async () => pending.resolve(saved)); await within(dialog).findByText('Task status confirmed.'); await sync(saved); await waitFor(() => expect(within(dialog).getByRole('button', { name: labels[to] })).toBeEnabled());
   });
   it.each(['version', 'external classification', 'execution platform'] as const)('invalidates a confirmation after a fresh read changes %s', async (change) => {
-    const detail = source(); const fresh = change === 'version' ? { ...detail, title: 'Revised task', version: detail.version + 1n, updatedAt: later } : change === 'execution platform' ? { ...detail, requiredPlatform: 'linux' as const } : { ...detail, externalDependsOn: [dependencyId] };
+    const detail = source(); const fresh = change === 'version' ? { ...detail, title: 'Revised task', version: detail.version + 1n, updatedAt: later } : change === 'execution platform' ? { ...detail, requiredPlatform: 'linux' as const, version: detail.version + 1n } : { ...detail, externalDependsOn: [dependencyId], version: detail.version + 1n };
     const { dialog, props, rerender } = await open(detail); const confirmation = select(dialog, 'todo', 'in_progress'); const oldConfirm = within(confirmation).getByRole('button', { name: 'Confirm status' });
-    vi.mocked(getTask).mockResolvedValueOnce(fresh); rerender(<TaskDetailDialog {...props} snapshot={snapshot(fresh, 2)} />); await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull()); fireEvent.click(oldConfirm); expect(setTaskStatus).not.toHaveBeenCalled();
+    vi.mocked(getTask).mockResolvedValueOnce(fresh); await rerender(<TaskDetailDialog {...props} snapshot={snapshot(fresh, 2)} />); await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull()); fireEvent.click(oldConfirm); expect(setTaskStatus).not.toHaveBeenCalled();
     await waitFor(() => expect(within(dialog).getByRole('button', { name: 'To do' })).toBeEnabled()); select(dialog, 'todo', 'in_progress'); expect(screen.getByText(fresh.title, { selector: '.task-confirmation-task' })).toBeVisible();
   });
 });

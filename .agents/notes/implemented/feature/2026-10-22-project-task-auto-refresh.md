@@ -30,8 +30,11 @@ retaining the [dashboard's](2026-10-20-project-task-dashboard.md) complete-snaps
 ownership. Changed graph data replaces statistics, indexes and both task-category
 lists together. Equivalent graph data reuses the graph and index, preserving
 projection and layout references. Every successful read advances the receipt
-revision and time, including equivalent responses, so the selected task is read
-again and can recover from a failed detail read.
+revision and time, including equivalent responses. The
+[detail-cache decision](../architecture/2026-10-24-task-view-timestamp-window.md)
+uses summary business versions and project generations for content reads;
+ordinary duplicate receipts do not reread unchanged details. Openings, failed
+reads, raw graph disagreements and operation reconciliation retain live GETs.
 
 Same-task detail reads serialize and coalesce pending refreshes into one
 follow-up. Automatic detail starts and queued follow-ups wait while hidden;
@@ -99,11 +102,11 @@ five-second interval. Hidden pages may apply an already active read and obtain
 fresh data again on return. Automatic cycles update successful receipt time
 without repeatedly showing the manual-refresh busy state.
 
-Polling can repeatedly transfer the final timestamp-overlap window and still
-starts selected-detail reads under the current detail-session receipt policy.
-Reference reuse avoids unnecessary layout work; duplicate summaries also avoid
-persistent writes and broadcast. Intrinsic detail reuse and change-driven GETs
-remain part of the [detail-cache proposal](../../proposed/architecture/2026-10-24-task-view-timestamp-window.md). Push transport should be reconsidered if this load
+Polling can repeatedly transfer the final timestamp-overlap window. Reference
+reuse avoids unnecessary layout work; duplicate summaries also avoid persistent
+writes, broadcast and unchanged-detail GETs. Intrinsic detail reuse and its live
+admission policy belong to the
+[detail-cache decision](../architecture/2026-10-24-task-view-timestamp-window.md). Push transport should be reconsidered if this load
 or the five-second visibility delay becomes material. A live detail and project sync
 remain independent reads; stale-data detection still offers a full graph refresh.
 The [approval lifecycle](2026-10-22-task-approval-lifecycle.md) separately supplies

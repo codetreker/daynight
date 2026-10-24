@@ -149,7 +149,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
 
   const snapshotNode = snapshot.index.nodes.get(taskId);
   const retainedDetail = detail !== null && (error !== null || task.requiresFreshRead);
-  const stale = detail !== null && !task.refreshing && !retainedDetail && isTaskStale(snapshotNode, detail);
+  const stale = task.graphMismatch || detail !== null && !task.refreshing && !retainedDetail && isTaskStale(snapshotNode, detail);
   const readNoticeEvent = useMemo(() => ({}), [error, retainedDetail]);
   const staleNoticeEvent = useMemo(() => ({}), [stale]);
   const successors = snapshot.index.successors.get(taskId);

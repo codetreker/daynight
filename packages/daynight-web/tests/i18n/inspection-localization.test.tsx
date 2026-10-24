@@ -2,15 +2,17 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../../src/api/client';
-import type { Attachment, TaskGraph } from '../../src/api/types';
+import type { Attachment } from '../../src/api/types';
 import { TaskDetailDialog } from '../../src/features/task-detail/TaskDetailDialog';
 import { TaskPullRequests } from '../../src/features/task-detail/TaskPullRequests';
 import { AttachmentPreview } from '../../src/features/task-detail/attachments/AttachmentPreview';
 import { TaskAttachments } from '../../src/features/task-detail/attachments/TaskAttachments';
 import type { AttachmentApi } from '../../src/features/task-detail/attachments/useAttachments';
-import { buildGraphIndex } from '../../src/features/task-graph/model';
 import { LanguageSelector } from '../../src/i18n/LanguageSelector';
 import { renderWithLocale } from '../helpers/renderWithLocale';
+import { createTaskSessionWorld } from '../helpers/taskSessions';
+import { detailFixture } from '../helpers/taskDetail';
+import { viewerHeaders } from '../helpers/taskSync';
 
 const timestamp = '2026-10-21T00:00:00Z';
 const projectId = '00000000-0000-4000-8000-000000000100';
@@ -177,17 +179,16 @@ describe('inspection language changes', () => {
     const root = document.createElement('div');
     root.id = 'root';
     document.body.append(root);
-    const graph: TaskGraph = { observedAt: "2026-10-20T12:00:00Z",
-      project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '项目 raw', repoUrl: '', createdAt: timestamp, updatedAt: timestamp },
-      tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 },
-    };
+    const world = createTaskSessionWorld();
+    await world.sync([detailFixture(projectId, taskId)]);
+    const graph = world.scope.getAuthorizedProject(projectId)!.graph;
     const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: {
       code: 'not_found', message: 'private raw server error', requestId: 'detail-request-raw',
-    } }), { status: 404, headers: { 'Content-Type': 'application/json' } }));
+    } }), { status: 404, headers: viewerHeaders(world.scope.userId, { 'Content-Type': 'application/json' }) }));
     vi.stubGlobal('fetch', fetch);
     const view = renderWithLocale(<TaskDetailDialog projectId={projectId} taskId={taskId}
-      snapshot={{ observedAt: graph.observedAt, graph, index: buildGraphIndex(graph), receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 }}
-      onSelectTask={vi.fn()} onClose={vi.fn()} onRestoreFocus={vi.fn()} onRefreshGraph={vi.fn()} />, { locale: 'zh-CN' });
+      snapshot={{ observedAt: graph.observedAt, graph, index: world.scope.getAuthorizedProject(projectId)!.index, receivedMonotonic: performance.now(), receivedAt: Date.now(), revision: 1 }}
+      onSelectTask={vi.fn()} onClose={vi.fn()} onRestoreFocus={vi.fn()} onRefreshGraph={vi.fn()} />, { locale: 'zh-CN', taskCache: { scope: world.scope } });
     try {
       expect(await screen.findByRole('alert')).toHaveTextContent('这个任务已无法读取，请刷新任务图。');
       const close = screen.getByRole('button', { name: '关闭任务详情' });
@@ -205,6 +206,7 @@ describe('inspection language changes', () => {
       expect(fetch).toHaveBeenCalledTimes(1);
     } finally {
       view.unmount();
+      world.dispose();
       expect(root).not.toHaveAttribute('inert');
       root.remove();
     }

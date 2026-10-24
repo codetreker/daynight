@@ -86,7 +86,7 @@ Provider 使用一份当前 issue 状态，初始值来自 `initial.issue`。选
 
 导航、全屏工具栏和独立 `TaskDetailPage` 共用 `LanguageSelector`。居中 `TaskDetailDialog` 通过同一个 `LocaleProvider` 订阅应用当前语言，其顶栏保留任务标题、当前状态菜单、新标签链接和关闭入口。详情打开时底层页面继续处于 `inert`，模态入口使用既有焦点圈定、Escape 分层和关闭后恢复机制；独立完整详情页保留普通浏览器键盘行为，内部确认窗仍各自拥有模态交互。语言变化本身不移动焦点。
 
-项目、图、详情与附件请求仍由资源 ID、revision 和原有操作触发。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。
+项目摘要与附件请求继续由资源 ID、调度和原有操作触发，详情按摘要业务版本、打开及恢复需要读取；时钟 receipt 不单独重读未变化正文。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。
 
 图结构与几何继续只依赖 `index/rootId` 和原有布局输入。memoized 的 `TaskNode`、`ChainRow` 和 `DependencyEdges` 在内部订阅展示 Context，更新文案与 ARIA，同时保留节点数据、边路径、视口和初始定位机制。依赖边的昂贵绘制分解以 geometry 为 memo 依赖，语言变化更新可访问文本，同时保留 canonical 路线坐标与绘制片段。React Flow 的无障碍配置由当前消息生成；英文文案必须适配现有节点尺寸。
 

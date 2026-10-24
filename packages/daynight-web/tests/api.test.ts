@@ -1,3 +1,4 @@
+import { TEST_VIEWER_ID, viewerHeaders } from "./helpers/taskSync";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, getTask, getTaskGraph, isAbortError, listProjects } from "../src/api/client";
 import { canonicalId, parseProjectPage, parseServerError, parseTaskDetail, parseTaskGraph } from "../src/api/parse";
@@ -6,6 +7,7 @@ import { createProject } from "../src/api/auth";
 import { decodeProjectJson, decodeProjectPageJson, decodeTaskGraphJson } from "../src/api/project-json";
 import { project as parseProject } from "../src/api/parse";
 
+const admission = { userId: TEST_VIEWER_ID, onPrincipalMismatch: vi.fn() };
 const projectId = "10000000-0000-0000-0000-00000000000a";
 const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
@@ -25,7 +27,7 @@ const rawProject = (version: string): string => `${JSON.stringify({ ...project, 
 const rawGraph = (projectSource: string): string => `${JSON.stringify({ ...graph, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
 const signal = (): AbortSignal => new AbortController().signal;
 const response = (value: unknown, status = 200): Response => new Response(stringifyWireJson(value), {
-  status, headers: { "Content-Type": "application/json; charset=utf-8" },
+  status, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json; charset=utf-8" }),
 });
 const mockResponse = (value: unknown, status = 200) => {
   const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(response(value, status)));
@@ -293,12 +295,12 @@ describe("API requests", () => {
   it("uses targeted decoders for project creation, project pages and task graphs", async () => {
     const version = 9_007_199_254_740_993n;
     const source = rawProject(version.toString());
-    const fetcher = vi.fn().mockResolvedValue(new Response(source, { status: 201, headers: { "Content-Type": "application/json" } }));
+    const fetcher = vi.fn().mockResolvedValue(new Response(source, { status: 201, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     vi.stubGlobal("fetch", fetcher);
     expect((await createProject({ name: project.name, repoUrl: project.repoUrl }, signal())).settings.version).toBe(version);
-    fetcher.mockResolvedValue(new Response(`{"items":[${source}],"nextCursor":null}`, { headers: { "Content-Type": "application/json" } }));
+    fetcher.mockResolvedValue(new Response(`{"items":[${source}],"nextCursor":null}`, { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await listProjects({}, signal())).items[0]?.settings.version).toBe(version);
-    fetcher.mockResolvedValue(new Response(rawGraph(source), { headers: { "Content-Type": "application/json" } }));
+    fetcher.mockResolvedValue(new Response(rawGraph(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await getTaskGraph(projectId, signal())).project.settings.version).toBe(version);
   });
   it("uses relative URLs, explicit signal, no-store, and safely encoded opaque cursor", async () => {
@@ -317,21 +319,21 @@ describe("API requests", () => {
     await expect(getTaskGraph(projectId.toUpperCase(), signal())).resolves.toEqual(graph);
     expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/task-graph`);
     fetchMock.mockResolvedValue(response(task));
-    await expect(getTask(projectId.toUpperCase(), taskId.toUpperCase(), signal())).resolves.toMatchObject({ id: taskId, projectId });
+    await expect(getTask(projectId.toUpperCase(), taskId.toUpperCase(), signal(), admission)).resolves.toMatchObject({ id: taskId, projectId });
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}`);
     fetchMock.mockResolvedValue(response({ ...graph, project: { ...project, id: otherId } }));
     await expect(getTaskGraph(projectId, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
     fetchMock.mockResolvedValue(response({ ...task, id: otherId }));
-    await expect(getTask(projectId, taskId, signal())).rejects.toMatchObject({ kind: "protocol" });
+    await expect(getTask(projectId, taskId, signal(), admission)).rejects.toMatchObject({ kind: "protocol" });
   });
 
-  it("rejects invalid request arguments before sending a request", () => {
+  it("rejects invalid request arguments before sending a request", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     for (const limit of [0, 101, 1.5, Number.NaN]) expect(() => listProjects({ limit }, signal())).toThrow(ApiError);
     expect(() => listProjects({ cursor: "" }, signal())).toThrow(ApiError);
     expect(() => getTaskGraph("not-a-uuid", signal())).toThrow(ApiError);
-    expect(() => getTask(projectId, "../../secret", signal())).toThrow(ApiError);
+    await expect(getTask(projectId, "../../secret", signal(), admission)).rejects.toBeInstanceOf(ApiError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -344,7 +346,7 @@ describe("API requests", () => {
   it.each([
     new Response("<html>credentials</html>", { headers: { "Content-Type": "text/html" } }),
     new Response("{}"),
-    new Response("not-json", { headers: { "Content-Type": "application/json" } }),
+    new Response("not-json", { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }),
     response({ items: null, nextCursor: null }),
     response({ error: { code: "internal_error", message: "secret", requestId: null } }, 500),
   ])("reports safe protocol failures %#", async (raw) => {

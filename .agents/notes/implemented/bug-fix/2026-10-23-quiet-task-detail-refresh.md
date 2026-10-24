@@ -13,7 +13,7 @@ layout stability while a request is pending.
 
 ## Decision
 
-Routine same-task detail reads retain the mounted content without adding a
+Routine same-task, same-cache-generation detail reads retain the mounted content without adding a
 progress paragraph to the heading. Required freshness and read errors expose the retained-detail explanation,
 while stale-snapshot warnings and status reconciliation keep their own feedback
 through the layout-independent layer owned by the
@@ -22,9 +22,13 @@ network activity from those actionable states. It still suppresses a stale
 comparison while a read is pending, since the response can reconcile it.
 
 The [automatic-refresh decision](../feature/2026-10-22-project-task-auto-refresh.md)
-continues to own scheduling, request coalescing and full-detail reads after
-every successful graph receipt. Equal graph data does not prove equal
-description or PR properties. The
+continues to own project scheduling and request priority. Complete graph data
+originally lacked a task business-version signal, so equal graph fields could
+not prove equal descriptions or PR properties. The
+[detail-cache decision](../architecture/2026-10-24-task-view-timestamp-window.md)
+now uses intrinsic summary versions for content reads; normal duplicate receipts
+do not cause GETs. Openings, failed reads and raw graph disagreements retain live
+recovery, request coalescing and the same quiet presentation. The
 [status assignment decision](../architecture/2026-10-24-task-status-assignment.md) continues to
 own precise-version status setting and required freshness; ordinary optional reads do
 not change status-write eligibility. This decision narrows the presentation of

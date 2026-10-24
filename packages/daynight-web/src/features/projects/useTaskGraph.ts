@@ -4,7 +4,7 @@ import type { TaskGraph } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
-import type { CachedProject } from "../task-cache/project-cache";
+import type { CachedProject, SyncTicket } from "../task-cache/project-cache";
 
 export type GraphSnapshot = {
   readonly graph: TaskGraph;
@@ -49,8 +49,9 @@ export const useTaskGraph = (projectId: string) => {
       const error = previous.projectId === projectId && (automatic || snapshot !== null) ? previous.error : null;
       return { projectId, snapshot, status: snapshot !== null ? "ready" : error === null ? "loading" : "error", refreshing: snapshot !== null && !automatic, error };
     });
+    let ticket: SyncTicket | null = null;
     try {
-      const ticket = await scope.beginSync(projectId, signal);
+      ticket = await scope.beginSync(projectId, signal);
       const query = ticket.epoch === null ? {} : ticket.maxUpdatedAt === null ? { epoch: ticket.epoch } : { epoch: ticket.epoch, since: ticket.maxUpdatedAt };
       const response = await getTaskSync(projectId, query, scope.userId, signal, scope.principalMismatch);
       // The monotonic anchor belongs to this response and cannot come from disk or another tab.
@@ -71,10 +72,10 @@ export const useTaskGraph = (projectId: string) => {
       console.warn("Task sync failed", { cycle_id: cycleId, project_id: projectId, ...taskCacheFailureDiagnostic(error) });
       const missing = error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
       if (missing) {
+        try { if (ticket !== null && !await scope.revokeProject(ticket, signal, true, error as ApiError)) return; }
+        catch (storageError) { if (!isAbortError(storageError)) error = storageError; }
         liveAccess.current = false; receipt.current = null;
         setState({ projectId, snapshot: null, status: "error", refreshing: false, error });
-        try { await scope.invalidateProject(projectId, signal); }
-        catch (storageError) { if (!isAbortError(storageError)) error = storageError; }
       }
       if (signal.aborted || revision !== generation.current) return;
       setState((previous) => {
@@ -89,7 +90,13 @@ export const useTaskGraph = (projectId: string) => {
     void request();
     const lifetime = new AbortController();
     const unsubscribe = scope.subscribe((event) => {
-      if (event.projectId !== projectId || !liveAccess.current) return;
+      if (event.projectId !== projectId) return;
+      if (event.accessRevoked === true) {
+        liveAccess.current = false; receipt.current = null;
+        setState({ projectId, snapshot: null, status: "error", refreshing: false, error: event.error });
+        return;
+      }
+      if (!liveAccess.current) return;
       if (event.error !== undefined) {
         setState((previous) => ({ ...previous, error: event.error, refreshing: false }));
         return;

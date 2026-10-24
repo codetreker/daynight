@@ -18,8 +18,8 @@ export type CachedProject = TaskProjection & {
   readonly summaries: ReadonlyMap<string, TaskSummary>;
 };
 export type DetailStore = IDBPObjectStore<TaskCacheSchema, ["userScopes", "projects", "summaries", "details"], "details", "readwrite">;
-export type CacheEvent = { readonly projectId: string; readonly error?: unknown };
-type Hint = { readonly userId: string; readonly projectId: string | null };
+export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true };
+type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string };
 class TaskCacheLifecycleChanged extends DOMException {
   constructor() { super("The task cache lifecycle changed.", "AbortError"); }
 }
@@ -48,6 +48,10 @@ export class TaskCacheScope {
   private readonly projections = new Map<string, CachedProject>();
   private readonly authorizedProjects = new Set<string>();
   private readonly pending = new Set<Transaction>();
+  // Retired generations also fence results whose transactions committed before access withdrawal.
+  private readonly revokedGenerations = new Map<string, Set<string>>();
+  private readonly deniedProjects = new Map<string, SyncTicket>();
+  private readonly projectPurges = new Map<string, Promise<void>>();
   private invalidated = false;
   private disposed = false;
   private purge: Promise<void> | null = null;
@@ -65,6 +69,18 @@ export class TaskCacheScope {
       const hint = event.data;
       if (typeof hint !== "object" || hint === null || !("userId" in hint) || hint.userId !== this.userId || !("projectId" in hint)) return;
       if (hint.projectId !== null && typeof hint.projectId !== "string") return;
+      if ("revokedGeneration" in hint) {
+        if (typeof hint.projectId !== "string" || canonicalId(hint.projectId) !== hint.projectId || typeof hint.revokedGeneration !== "string" || canonicalId(hint.revokedGeneration) !== hint.revokedGeneration ||
+          !("userFence" in hint) || typeof hint.userFence !== "string" || canonicalId(hint.userFence) !== hint.userFence) return;
+        const current = this.projections.get(hint.projectId)?.manifest;
+        if (this.userFence !== hint.userFence || current !== undefined && (current.cacheGeneration !== hint.revokedGeneration || current.userFence !== hint.userFence)) return;
+        const ticket = { userId: this.userId, projectId: hint.projectId, userFence: hint.userFence, cacheGeneration: hint.revokedGeneration,
+          epoch: current === undefined ? null : current.epoch, maxUpdatedAt: current === undefined ? null : current.maxUpdatedAt };
+        void this.revokeProject(ticket, this.signal, false).catch((error: unknown) => {
+          if (!isAbortError(error)) console.warn("Task cache access cleanup failed", { projectId: ticket.projectId, error_category: error instanceof TaskCacheError ? error.category : "protocol" });
+        });
+        return;
+      }
       void this.receiveHint({ userId: this.userId, projectId: hint.projectId }).catch((error: unknown) => {
         if (!isAbortError(error)) for (const projectId of this.authorizedProjects) this.emit({ projectId, error });
       });
@@ -89,7 +105,7 @@ export class TaskCacheScope {
     return () => { this.listeners.delete(listener); };
   };
   private emit(event: CacheEvent): void {
-    if (this.invalidated || this.disposed || authRequestsPaused()) return;
+    if (this.invalidated || this.disposed || authRequestsPaused() && event.accessRevoked !== true) return;
     for (const listener of this.listeners) listener(event);
   }
   private hint(projectId: string | null): void {
@@ -207,9 +223,57 @@ export class TaskCacheScope {
     this.projections.set(manifest.projectId, result);
     return result;
   }
+  private assertProjectGeneration(projectId: string, cacheGeneration: string, signal?: AbortSignal): void {
+    this.assertLive(signal);
+    if (this.revokedGenerations.get(projectId)?.has(cacheGeneration) === true) released();
+  }
+  private clearDeniedProject(projectId: string): Promise<void> {
+    const active = this.projectPurges.get(projectId);
+    if (active !== undefined) return active;
+    const ticket = this.deniedProjects.get(projectId);
+    if (ticket === undefined) return Promise.resolve();
+    // Cleanup belongs to the scope; the observing dialog can unmount as soon as access is withdrawn.
+    const work = this.ready(this.signal).then(() => this.userTransaction(async (transaction, userFence) => {
+      const manifest = await this.manifest(transaction, projectId, userFence);
+      if (userFence !== ticket.userFence || manifest?.cacheGeneration !== ticket.cacheGeneration) return;
+      await this.clearProjectRows(transaction, projectId);
+      await transaction.objectStore("projects").put(invalidated(this.userId, projectId, userFence));
+    }, this.signal)).then(() => {
+      if (this.deniedProjects.get(projectId) === ticket) this.deniedProjects.delete(projectId);
+      this.hint(projectId);
+    }).catch((error: unknown) => {
+      this.emit({ projectId, accessRevoked: true, error });
+      throw error;
+    }).finally(() => { if (this.projectPurges.get(projectId) === work) this.projectPurges.delete(projectId); });
+    this.projectPurges.set(projectId, work);
+    return work;
+  }
+  canRevokeProject(ticket: SyncTicket): boolean {
+    if (this.isInvalidated || ticket.userId !== this.userId || ticket.userFence !== this.userFence) return false;
+    const denied = this.deniedProjects.get(ticket.projectId);
+    if (denied !== undefined && (denied.userFence !== ticket.userFence || denied.cacheGeneration !== ticket.cacheGeneration)) return false;
+    const current = this.projections.get(ticket.projectId);
+    return current === undefined || current.manifest.userFence === ticket.userFence && current.manifest.cacheGeneration === ticket.cacheGeneration;
+  }
+  revokeProject(ticket: SyncTicket, signal: AbortSignal, broadcast = true, reason: ApiError = new ApiError("server", 404, "not_found")): Promise<boolean> {
+    if (signal.aborted) return Promise.reject(signal.reason);
+    if (this.isInvalidated) return Promise.reject(new TaskCacheLifecycleChanged());
+    if (ticket.userId !== this.userId || ticket.userFence !== this.userFence) return Promise.reject(new ApiError("protocol"));
+    if (!this.canRevokeProject(ticket)) return Promise.resolve(false);
+    const denied = this.deniedProjects.get(ticket.projectId);
+    let revoked = this.revokedGenerations.get(ticket.projectId);
+    if (revoked === undefined) { revoked = new Set(); this.revokedGenerations.set(ticket.projectId, revoked); }
+    revoked.add(ticket.cacheGeneration);
+    if (denied === undefined) this.deniedProjects.set(ticket.projectId, ticket);
+    this.projections.delete(ticket.projectId); this.authorizedProjects.delete(ticket.projectId);
+    if (broadcast) this.channel?.postMessage({ userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence, revokedGeneration: ticket.cacheGeneration } satisfies Hint);
+    this.emit({ projectId: ticket.projectId, accessRevoked: true, error: reason });
+    return this.clearDeniedProject(ticket.projectId).then(() => true);
+  }
   async beginSync(projectId: string, signal: AbortSignal): Promise<SyncTicket> {
     projectId = requestId(projectId);
     await this.ready(signal);
+    await this.clearDeniedProject(projectId);
     try {
       return await this.userTransaction(async (transaction, userFence) => {
         let manifest = await this.manifest(transaction, projectId, userFence);
@@ -230,10 +294,12 @@ export class TaskCacheScope {
   async applySync(ticket: SyncTicket, response: TaskSync, signal: AbortSignal): Promise<{ readonly project: CachedProject; readonly changed: boolean; readonly changedTaskIds: readonly string[] }> {
     await this.ready(signal);
     if (response.project.id !== ticket.projectId || ticket.userId !== this.userId) return protocol();
+    this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
     let result: { manifest: ProjectRecord; tasks: readonly TaskSummary[]; changed: boolean; changedTaskIds: readonly string[] };
     try {
       result = await this.userTransaction(async (transaction, userFence) => {
         const current = await this.manifest(transaction, ticket.projectId, userFence);
+        this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
         if (userFence !== ticket.userFence || current === undefined || current.cacheGeneration !== ticket.cacheGeneration) return released();
         const previous = current.state === "active" ? await this.stored(transaction, current) : [];
         if (response.mode === "delta" && (current.state !== "active" || response.epoch !== current.epoch || response.epoch !== ticket.epoch)) return protocol();
@@ -260,6 +326,7 @@ export class TaskCacheScope {
           state: "active", invalidatedBy: null, epoch: response.epoch, project,
           maxUpdatedAt: maxUpdatedAt(tasks), taskCount: tasks.length, edgeCount: edgeCount(tasks),
         };
+        this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
         const changed = replacing || changedTaskIds.length !== 0 || current.project === null || !sameProject(current.project, project);
         if (replacing) await this.clearProjectRows(transaction, ticket.projectId);
         for (const taskId of changedTaskIds) {
@@ -274,7 +341,8 @@ export class TaskCacheScope {
       if (error instanceof TaskCacheError && error.category === "corrupt") await this.invalidateProject(ticket.projectId, signal, "corrupt");
       throw error;
     }
-    this.assertLive(signal);
+    this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
+    this.assertProjectGeneration(ticket.projectId, result.manifest.cacheGeneration, signal);
     this.authorizedProjects.add(ticket.projectId);
     const project = this.materialize(result.manifest, result.tasks);
     if (result.changed) { this.hint(ticket.projectId); this.emit({ projectId: ticket.projectId }); }
@@ -291,6 +359,7 @@ export class TaskCacheScope {
     }, signal);
     this.assertLive(signal);
     if (stored === null) { this.projections.delete(projectId); return null; }
+    this.assertProjectGeneration(projectId, stored.manifest.cacheGeneration, signal);
     return this.materialize(stored.manifest, stored.tasks);
   }
   async detailTransaction<T>(
@@ -299,13 +368,17 @@ export class TaskCacheScope {
   ): Promise<T> {
     await this.ready(signal);
     if (ticket.userId !== this.userId) return released();
-    return this.userTransaction(async (transaction, userFence) => {
+    this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
+    const result = await this.userTransaction(async (transaction, userFence) => {
       const manifest = await this.manifest(transaction, ticket.projectId, userFence);
       if (manifest === undefined || manifest.state !== "active" || userFence !== ticket.userFence ||
         manifest.cacheGeneration !== ticket.cacheGeneration) return released();
+      this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
       const summaries = await this.stored(transaction, manifest);
       return work(transaction.objectStore("details"), manifest, new Map(summaries.map((summary) => [summary.id, summary])));
     }, signal);
+    this.assertProjectGeneration(ticket.projectId, ticket.cacheGeneration, signal);
+    return result;
   }
   getSummaryVersion(projectId: string, taskId: string): bigint | null {
     return this.getAuthorizedProject(projectId)?.versions.get(taskId) ?? null;

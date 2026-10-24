@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import { createRoot } from 'react-dom/client';
 import { navigate, type TaskDetailNavigation } from '../../src/app/router';
 import { TaskDetailSurface } from '../../src/features/task-detail/TaskDetailSurface';
-import { TaskDetailSessionBoundary } from '../../src/features/task-detail/TaskDetailSession';
+import { TaskDetailFixtureBoundary } from './TaskDetailFixtureBoundary';
 import { LocaleProvider, useI18n } from '../../src/i18n/LocaleProvider';
 import { LanguageSelector } from '../../src/i18n/LanguageSelector';
 import { resolveInitialLocale } from '../../src/i18n/locale';
@@ -22,6 +22,7 @@ const readLocation = () => {
   };
 };
 const fixture = createTaskDetailFixture();
+await fixture.ready;
 const query = new URLSearchParams(window.location.search);
 const scenario = (query.get('scenario') ?? 'files') as MockupScenario;
 const pageUrl = (taskId: string, selection: TaskDetailNavigation) => {
@@ -55,12 +56,14 @@ const DetailMockup = () => {
     navigation: location.navigation, onNavigate: (selection: TaskDetailNavigation) => select(location.taskId, selection), onSelectTask: (id: string) => select(id, { tab: 'overview', path: null }),
     onRefreshGraph: fixture.refresh, attachmentApi: attachments.api, attachmentUrls: { ...attachments.urls, page: (path: string) => pageUrl(location.taskId, { tab: 'attachments', path }) }, detailUrl: pageUrl };
   const surface = location.page ? <TaskDetailSurface {...shared} presentation="page" /> : <TaskDetailSurface {...shared} presentation="dialog" onClose={() => setOpen(false)} onRestoreFocus={() => document.getElementById('open-detail')?.focus()} />;
-  return <TaskDetailSessionBoundary>{location.page ? surface : <>
+  return <TaskDetailFixtureBoundary fixture={fixture}>{location.page ? surface : <>
     <main className="content"><LanguageSelector /><p className="eyebrow">DAYNIGHT</p><h1>完整任务详情交互预览</h1><p className="subtitle">生产详情组件与前端内存数据。</p><button id="open-detail" className="button primary" type="button" onClick={() => setOpen(true)}>打开任务详情</button></main>
     {open && createPortal(surface, document.body)}
-  </>}</TaskDetailSessionBoundary>;
+  </>}</TaskDetailFixtureBoundary>;
 };
 
 const root = document.getElementById('root');
 if (root === null) throw new Error('The mockup root is required.');
-createRoot(root).render(<LocaleProvider initial={resolveInitialLocale()}><DetailMockup /></LocaleProvider>);
+const reactRoot = createRoot(root);
+reactRoot.render(<LocaleProvider initial={resolveInitialLocale()}><DetailMockup /></LocaleProvider>);
+import.meta.hot?.dispose(() => { reactRoot.unmount(); fixture.dispose(); });

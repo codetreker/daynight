@@ -57,11 +57,17 @@ let previousOverflow: string;
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
 const syncFixture = createGraphSyncFixture();
+const servedGraphs = new Map<string, TaskGraph>();
+const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
   syncFixture.reset();
+  servedGraphs.clear(); servedVersions.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
     const value = await graphRequest(projectId, signal);
-    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+    const sync = syncFixture.toSync(value, query, replacementEpochs.get(value));
+    servedGraphs.set(projectId, value);
+    for (const task of sync.tasks) servedVersions.set(`${projectId}/${task.id}`, task.version);
+    return sync;
   });
 });
 
@@ -73,10 +79,12 @@ beforeEach(() => {
   document.body.style.overflow = 'scroll';
   graphRequest.mockReset();
   detailRequest.mockReset();
-  detailRequest.mockImplementation(async (project, id) => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
-    id, projectId: project, title: '所选任务详情', description: '', properties: { worker: null, pullRequests: [] }, status: 'done', version: 1n,
-    dependsOn: [rootId], blockedBy: [], ready: false, createdAt: timestamp, updatedAt: timestamp,
-  }));
+  detailRequest.mockImplementation(async (project, id) => {
+    const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id)!;
+    const blockedBy = task.blockedBy.length === 0 ? task.dependsOn : [];
+    return { ...task, id, projectId: project, title: task.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)!,
+      blockedBy, ready: task.status === 'todo' && blockedBy.length === 0 };
+  });
 });
 
 afterEach(() => {
@@ -97,7 +105,7 @@ const openDialog = async (fullscreen = false) => {
   expect(root).toHaveAttribute('inert');
   expect(document.body.style.overflow).toBe('hidden');
   expect(within(dialog).getByRole('button', { name: '关闭任务详情' })).toHaveFocus();
-  await within(dialog).findByRole('heading', { name: '所选任务详情' });
+  await within(dialog).findByRole('heading', { name: '所选任务' });
   return { trigger, dialog };
 };
 

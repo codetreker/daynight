@@ -60,13 +60,17 @@ history state clears that feedback so it cannot obscure the restored preview.
 the real snapshot to the shared detail session. Graph loading, initial failure
 and retained-snapshot refresh failure stay explicit; retained graph errors use
 the shared surface notification layer without reducing reading space. Errors
-do not become empty relationships. Successful graph revisions continue to reread complete task
-details even when graph projection fields are unchanged. Unchanged detail reads
+do not become empty relationships. After this mount's successful project sync,
+matching intrinsic cached content can accelerate opening, while live GET remains
+required before writes. Summary business versions, project generations and
+recovery needs drive later detail reads; clock-only receipts do not reread
+unchanged content. Unchanged detail reads
 preserve DOM, focus, inputs and heading/panel geometry. Existing foreground
 identity checks retain the visible page and interaction while the same identity
 is revalidated; identity replacement and 401 retain their existing boundaries.
 
-Each window reads current data independently. No task object, graph snapshot,
+Each window performs its own online admission and live reads while sharing the
+origin-local intrinsic cache. No opener-owned task object, graph snapshot,
 confirmation or mutation state is transferred from the opener. `TaskDetailSession`
 continues to own precise versions, cancellation, shared mutation locking,
 conflicts and uncertain-outcome readback without replaying a write. Go registers
@@ -110,9 +114,11 @@ position and mutation ownership remain within the current page's lifecycle.
 Independent windows can observe different versions; the existing exact-version
 and reconciliation rules handle that race rather than coordinating windows.
 
-Each standalone page reads a project graph as well as complete task details.
-This is the existing source for relationship context and freshness, with its
-existing limits and error behavior. It avoids a new relationship API while
+Each standalone page synchronizes a complete project summary base and reads
+needed full details through the shared cache/session. This provides relationship
+context and version-aware freshness with the existing limits and error behavior.
+The [detail-cache decision](2026-10-24-task-view-timestamp-window.md) owns matching
+content, live-read admission and bounded persistence. It avoids a new relationship API while
 requiring real graph/detail refresh validation, including unchanged projections
 and silent foreground identity checks.
 

@@ -2,6 +2,9 @@ import type { TaskDetail, TaskGraph } from '../../src/api/types';
 import { stringifyApiJson } from '../../src/api/json';
 import type { GraphSnapshot } from '../../src/features/projects/useTaskGraph';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
+import { admitTaskGraph } from '../helpers/taskSessions';
+import { createTaskCacheScope } from '../../src/features/task-cache/TaskCacheProvider';
+import { TEST_VIEWER_ID, viewerHeaders } from '../helpers/taskSync';
 import flowcharts from './files/docs/flowcharts.md?raw';
 
 export const detailProjectId = '00000000-0000-4000-8000-000000000100';
@@ -46,14 +49,29 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
     };
     return { graph, index: buildGraphIndex(graph), revision: ++revision, receivedAt: Date.now(), receivedMonotonic: performance.now(), observedAt: graph.observedAt };
   };
+  const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: () => { throw new Error('The detail fixture returned another principal.'); } });
+  const epoch = crypto.randomUUID();
   let snapshot = build();
-  const refresh = () => { if (!holdGraph) snapshot = build(); listeners.forEach((listener) => listener()); };
+  const admit = async (next: GraphSnapshot) => {
+    const current = await admitTaskGraph(scope, next.graph, { epoch, versionForTask: (task) => tasks.get(task.id)!.version });
+    return { ...next, graph: current.graph, index: current.index };
+  };
+  const ready = admit(snapshot).then((current) => { snapshot = current; });
+  let syncing = ready;
+  const refresh = (): Promise<void> => {
+    syncing = syncing.then(async () => {
+      if (!holdGraph) snapshot = await admit(build());
+      listeners.forEach((listener) => listener());
+    });
+    return syncing;
+  };
   const originalFetch = window.fetch;
-  const json = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: { 'Content-Type': 'application/json' } });
+  const json = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });
   const fetcher: typeof window.fetch = async (input, options) => {
-    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-    if (!url.startsWith('/api/v1/')) return originalFetch(input, options);
-    const match = /^\/api\/v1\/projects\/[^/]+\/tasks\/([^/]+)(?:\/(status))?$/.exec(url);
+    const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin);
+    if (url.origin !== location.origin || !url.pathname.startsWith('/api/v1/')) return originalFetch(input, options);
+    await ready;
+    const match = /^\/api\/v1\/projects\/[^/]+\/tasks\/([^/]+)(?:\/(status))?$/.exec(url.pathname);
     const current = match === null ? undefined : tasks.get(match[1]!);
     if (current === undefined) return json({ error: { code: 'not_found', message: 'Fixture task unavailable.', requestId: 'fixture-task' } }, 404);
     if (options?.method === 'PUT' || options?.method === 'PATCH') {
@@ -65,17 +83,23 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
       if (changedStatus && (status !== 'todo' && current.dependsOn.some((id) => tasks.get(id)!.status !== 'done') || current.status === 'done' && [...tasks.values()].some((item) => item.dependsOn.includes(current.id) && item.status !== 'todo'))) return json({ error: { code: 'dependency_unsatisfied', message: 'Fixture dependencies prevent this status.', requestId: 'fixture-dependencies' } }, 409);
       const timing = status === 'todo' ? { startedAt: null, completedAt: null } : status === 'in_progress' ? { startedAt: new Date().toISOString(), completedAt: null } : { startedAt: current.status === 'in_progress' ? current.startedAt : null, completedAt: new Date().toISOString() };
       const updated = { ...current, ...(match![2] === 'status' ? changedStatus ? { status, ready: status === 'todo' && current.blockedBy.length === 0, ...timing } : {} : Object.hasOwn(patch, 'allowAgents') ? { allowAgents: patch.allowAgents as boolean } : { requiredPlatform: patch.requiredPlatform as TaskDetail['requiredPlatform'] }), version: current.version + (match![2] === 'status' && !changedStatus ? 0n : 1n), updatedAt: match![2] === 'status' && !changedStatus ? current.updatedAt : new Date().toISOString() };
-      tasks.set(updated.id, updated); refresh();
-      return json(updated);
+      tasks.set(updated.id, updated); await refresh();
+      return json(tasks.get(updated.id)!);
     }
     if (readFailures > 0) { readFailures--; return json({ error: { code: 'unavailable', message: 'Fixture detail refresh unavailable.', requestId: 'fixture-detail-refresh' } }, 503); }
     return json(current);
   };
   window.fetch = fetcher;
   return {
-    failRefresh: () => { readFailures = 1; refresh(); },
+    scope, ready,
+    failRefresh: () => {
+      readFailures = 1;
+      const current = tasks.get(detailTaskId)!;
+      tasks.set(current.id, { ...current, version: current.version + 1n, description: `${current.description}\n`, updatedAt: new Date().toISOString() });
+      void refresh();
+    },
     failNextMutation: () => { failWrite = true; },
     holdGraph: () => { holdGraph = true; },
     refreshGraph: () => { holdGraph = false; refresh(); },
-    refresh, snapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, dispose: () => { if (window.fetch === fetcher) window.fetch = originalFetch; } };
+    refresh, snapshot: () => snapshot, subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }, dispose: () => { scope.dispose(); if (window.fetch === fetcher) window.fetch = originalFetch; } };
 };
