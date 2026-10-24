@@ -40,9 +40,10 @@ provides both the confirmed state and its operation; the detail has no separate
 automation badge or lower Overview switch. List status badges retain their
 own purpose. Long titles remain above this row, and narrow layouts may wrap
 the compact platform control only within the left group. The control stays right
-aligned with the first status line at its top. Error, unknown-result, locked
-and human-waiting feedback stays near the control without overlapping content
-or causing horizontal overflow. A newly observed successful submission uses a
+aligned with the first status line at its top. Locked controls explain their reason through hover/focus tooltips; error,
+unknown-result and human-waiting feedback uses the shared floating layer owned
+by the [notification decision](../bug-fix/2026-10-24-task-detail-notifications.md),
+without allocating reading height or causing horizontal overflow. A newly observed successful submission uses a
 three-second floating status bubble without consuming reading height. The
 [compact-header decision](../simplification/2026-10-24-compact-task-detail-header.md)
 owns its presentation lifetime and the task title in the common header; the

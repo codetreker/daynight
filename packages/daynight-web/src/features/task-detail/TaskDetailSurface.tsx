@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
 import { taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
 import { LanguageSelector } from '../../i18n/LanguageSelector';
@@ -17,6 +17,8 @@ import { TaskDetailReading } from './TaskDetailReading';
 import { matchesPlatformReview, TaskPlatformConfirmation, TaskPlatformFeedback, TaskPlatformSelect, type PlatformConfirmation } from './TaskPlatform';
 import { TaskId } from './TaskId';
 import { TaskPullRequests } from './TaskPullRequests';
+import { TaskDetailNotice, TaskDetailNotifications } from './TaskDetailNotice';
+import { ProjectGraphErrorDetail } from '../projects/ProjectGraphError';
 import '../../styles/task-detail.css';
 
 type TaskDetailCommonProps = {
@@ -26,6 +28,7 @@ type TaskDetailCommonProps = {
   readonly projectId: string;
   readonly taskId: string;
   readonly snapshot: GraphSnapshot;
+  readonly graphError?: unknown;
   readonly onSelectTask: (id: string) => void;
   readonly onRefreshGraph: () => void;
 };
@@ -45,7 +48,7 @@ export type TaskDetailSurfaceProps = TaskDetailCommonProps & ({
 
 export const TaskDetailPageBar = ({ projectId }: { readonly projectId: string }) => {
   const { messages } = useI18n();
-  return <div className="task-detail-page-topbar"><a className="task-detail-page-back" href={`/projects/${encodeURIComponent(projectId)}`}>{messages.inspection.detail.returnToProject}</a><LanguageSelector /></div>;
+  return <div className="task-detail-page-topbar"><a className="task-detail-page-back" href={`/projects/${encodeURIComponent(projectId)}`}>{messages.inspection.detail.returnToProject}</a><LanguageSelector renderNotice={(notice, issue) => <TaskDetailNotice event={issue} tone="warning" recoverable>{notice}</TaskDetailNotice>} /></div>;
 };
 
 const TaskDetailError = ({ error }: { readonly error: unknown }) => {
@@ -61,7 +64,7 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
   </>;
 };
 
-export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl }: TaskDetailSurfaceProps) => {
+export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null }: TaskDetailSurfaceProps) => {
   const modal = presentation === 'dialog';
   const scope = `${projectId}/${taskId}`;
   const [localNavigation, setLocalNavigation] = useState<{ readonly scope: string; readonly value: TaskDetailNavigation }>({ scope, value: { tab: 'overview', path: null } });
@@ -147,6 +150,8 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const snapshotNode = snapshot.index.nodes.get(taskId);
   const retainedDetail = detail !== null && (error !== null || task.requiresFreshRead);
   const stale = detail !== null && !task.refreshing && !retainedDetail && isTaskStale(snapshotNode, detail);
+  const readNoticeEvent = useMemo(() => ({}), [error, retainedDetail]);
+  const staleNoticeEvent = useMemo(() => ({}), [stale]);
   const successors = snapshot.index.successors.get(taskId);
   const relation = (id: string, external: boolean) => {
     const node = snapshot.index.nodes.get(id);
@@ -166,6 +171,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
 
   const content = <>
       <Surface className={modal ? 'task-detail-dialog' : 'task-detail-page'} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
+        <TaskDetailNotifications fallbackFocus={titleRef}>
         {!modal && <TaskDetailPageBar projectId={projectId} />}
         <header className="task-detail-header">
           <div className="task-detail-title-row">
@@ -189,18 +195,6 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
               <button className="button primary" type="button" onClick={retry}>{m.retry}</button>
             </div>
           )}
-          {detail !== null && error !== null && (
-            <div className="task-detail-read-error" role="alert" tabIndex={0}>
-              <h3>{m.refreshFailed}</h3>
-              <TaskDetailError error={error} />
-              <p>{m.retainedData}</p>
-              <button className="button" type="button" onClick={retry}>{m.retry}</button>
-            </div>
-          )}
-          {detail === null && task.mutation.phase !== 'idle' && <div className="task-detail-status-feedback">
-            <TaskStatusFeedback detail={null} mutation={task.mutation} onReconcile={task.reconcile} />
-            <TaskPlatformFeedback detail={null} mutation={task.mutation} onReconcile={task.reconcile} />
-          </div>}
           {detail !== null && (
             <>
               <div className="task-detail-heading">
@@ -213,16 +207,6 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                   <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />
                 </div>
-                <TaskStatusFeedback detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
-                <TaskAgentPermissionFeedback key={`${projectId}/${taskId}`} id={automationFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
-                <TaskPlatformFeedback id={platformFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
-                {retainedDetail && <p className="task-detail-retained" role="status">{m.retainedDetail}</p>}
-                {stale && (
-                  <div className="task-detail-stale" role="status">
-                    <p>{task.mutation.phase === 'confirmed' && task.mutation.operation?.action === 'status' ? messages.inspection.status.confirmedSnapshot : m.stale}</p>
-                    <button className="button" type="button" onClick={onRefreshGraph}>{m.refreshGraph}</button>
-                  </div>
-                )}
               </div>
               <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(onClose === undefined ? {} : { onClose })} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
                 <div className="task-detail-columns">
@@ -259,6 +243,26 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
           )}
         </div>
         <footer className="task-detail-footer">{m.footer}</footer>
+        <TaskStatusFeedback key={`${scope}/status`} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
+        <TaskAgentPermissionFeedback key={`${scope}/permission`} id={automationFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
+        <TaskPlatformFeedback key={`${scope}/platform`} id={platformFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
+        <TaskDetailNotice key={`${scope}/read`} active={retainedDetail} event={readNoticeEvent} tone={error === null ? 'info' : 'error'} recoverable>
+          <div className="task-detail-read-error" role={error === null ? 'status' : 'alert'}>
+            {error !== null && <><h3>{m.refreshFailed}</h3><TaskDetailError error={error} /><p>{m.retainedData}</p></>}
+            <p className="task-detail-retained">{m.retainedDetail}</p>
+            <button className="button" type="button" onClick={retry}>{m.retry}</button>
+          </div>
+        </TaskDetailNotice>
+        <TaskDetailNotice key={`${scope}/stale`} active={stale} event={staleNoticeEvent} tone="warning" recoverable>
+          <div className="task-detail-stale" role="status">
+            <p>{task.mutation.phase === 'confirmed' && task.mutation.operation?.action === 'status' ? messages.inspection.status.confirmedSnapshot : m.stale}</p>
+            <button className="button" type="button" onClick={onRefreshGraph}>{m.refreshGraph}</button>
+          </div>
+        </TaskDetailNotice>
+        <TaskDetailNotice key={`${scope}/graph`} active={graphError !== null} event={graphError} tone="error" recoverable>
+          <div className="task-detail-graph-error" role="alert"><h2>{messages.workspace.project.refreshFailed}</h2><p>{messages.workspace.project.showingSnapshot}</p><ProjectGraphErrorDetail error={graphError} /><button className="button" type="button" onClick={onRefreshGraph}>{messages.workspace.project.retryRefresh}</button></div>
+        </TaskDetailNotice>
+        </TaskDetailNotifications>
       </Surface>
       {confirmation !== null && confirmationValid && (confirmation.kind === 'status'
         ? <TaskStatusConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />

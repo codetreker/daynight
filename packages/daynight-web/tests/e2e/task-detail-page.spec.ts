@@ -263,6 +263,10 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     const reconcile = surface(reader).getByRole('button', { name: '核对实际任务', exact: true });
     await expect(reconcile).toBeEnabled(); await expect(platform).toBeDisabled(); await expect(automatic).toBeDisabled();
     expect((await (await api.get(taskPath(project.id, task.id))).json() as Task).requiredPlatform).toBe('macos');
+    await surface(reader).locator('.task-detail-toast').filter({ has: reconcile }).getByRole('button', { name: '关闭提示', exact: true }).click();
+    await expect(reconcile).toHaveCount(0); await expect(platform).toBeDisabled();
+    await surface(reader).getByRole('button', { name: '查看任务提示', exact: true }).first().click();
+    await expect(reconcile).toBeEnabled();
     blockReconciliation = false; await reconcile.click(); await expect(platform).toHaveValue('macos'); await expect(platform).toBeEnabled();
     expect(platformWrites.map(write => write.status)).toEqual([200, 409, 200, 200]);
     await selectStatus(reader, 'in_progress');

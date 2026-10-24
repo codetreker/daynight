@@ -21,18 +21,21 @@ Task details consume the current application locale through the shared
 `LocaleProvider`; the modal header contains the title, current status menu,
 current-state new-tab link and close control. The
 [standalone-detail decision](../architecture/2026-10-24-standalone-task-detail.md)
-owns that link and shares the same complete content with its page container. The body heading retains status, automation controls and actionable
-notices. Overview metadata retains the full selectable ID and a localized Copy
-button that directly writes its exact value with the browser Clipboard API. Copy success and failure belong to the displayed task; failure
-keeps both the ID and a retry available.
+owns that link and shares the same complete content with its page container. The body heading retains status and automation controls. The
+[notification decision](../bug-fix/2026-10-24-task-detail-notifications.md) owns
+actionable floating notices and lock tooltips. Overview metadata retains the full selectable ID and a localized Copy
+button that directly writes its exact value with the browser Clipboard API. Copy success and failure belong to the displayed task and use timed bubbles;
+failure keeps both the ID and a retry available.
 
 A successful automatic-execution setting submission observed by the open detail
 produces a floating status bubble for three seconds. The bubble does not consume
 layout height, move the tabs or change the reading area's available space. Its
 lifetime is presentation state, independent of the task session's confirmed
 mutation. Existing confirmed state on mount, background reads, language changes
-and reopening do not replay success. Pending, refusal, conflict, unknown-result,
-reconciliation and locked feedback retain their existing visible behavior.
+and reopening do not replay success. Pending, refusal, conflict, unknown-result and reconciliation feedback now use
+the common notification layer; locked controls use hover/focus tooltips. The
+notification decision extends this original success-only overlay allocation
+without changing operation state.
 
 This partially supersedes the title/context allocation described by the
 [withdrawal decision](../feature/2026-10-23-task-unapprove.md) while preserving its

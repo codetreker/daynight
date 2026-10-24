@@ -115,7 +115,13 @@ test('task-agent-permission', scenario, async ({ page, api, allowBrowserWrites }
     await detail(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     await page.reload(); await open(page, task.id);
     await expect(automatic(page)).toBeDisabled(); await expect(automatic(page)).not.toBeChecked();
-    await expect(detail(page).locator('.task-automation-feedback').getByText(/任务正在进行中/)).toBeVisible();
+    const lockedAutomatic = detail(page).getByRole('group', { name: '自动执行', exact: true });
+    await lockedAutomatic.focus();
+    await expect(lockedAutomatic.getByRole('tooltip')).toHaveClass('task-control-tip-bubble');
+    await expect(automatic(page)).toHaveAccessibleDescription('任务正在进行中，保持此状态时无法修改自动执行设置。');
+    await page.keyboard.press('Escape');
+    await expect(lockedAutomatic.locator('.task-control-tip-bubble')).toHaveCount(0);
+    await expect(detail(page)).toBeVisible();
     await page.setViewportSize({ width: 390, height: 844 }); await geometry(page);
     await detail(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('en');

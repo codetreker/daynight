@@ -34,6 +34,7 @@ export const inspection: InspectionMessages = {
     requestFailed: "The status request failed.",
   },
   detail: {
+    dismissNotice: "Dismiss notification", showNotice: "Show task notification",
     openInNewTab: "Open in new tab", returnToProject: "Return to task project",
     overview: "Overview",
     title: "Task details", close: "Close task details", loading: "Loading task details", failed: "Task details could not be loaded",

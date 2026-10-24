@@ -1,3 +1,5 @@
 .locale-preference{min-width:0}.locale-control{display:flex;align-items:center;gap:8px;font-size:10px;color:#737d8e;white-space:nowrap}.locale-control select{font:inherit;border:1px solid #dce0e8;border-radius:6px;background:#fff;font-size:11px;color:#344258;padding:7px 9px;min-width:0;max-width:125px}.locale-control select:focus-visible{outline:3px solid #8c8cf0;outline-offset:2px}.locale-notice{margin-top:10px;padding:10px 12px;border:1px solid #e8d8bb;border-radius:7px;background:#fffaf1;color:#79623d;font-size:11px;overflow-wrap:anywhere}.locale-notice p{margin:0 0 8px}.graph-toolbar .locale-control select{font-size:10px;padding:5px}.graph-toolbar .locale-control span{font-size:9px}
 @media(max-width:800px){.locale-control{gap:6px}.locale-control select{padding:6px 7px}}
 @media(max-width:600px){.graph-toolbar .locale-control{flex-wrap:wrap;white-space:normal}}
+
+.locale-notice-description{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}

@@ -26,7 +26,10 @@ The dialog wrapper retains portal, background inertness, counted scroll lock,
 focus containment, Escape close and focus restoration. The standalone page uses
 ordinary browser focus and keys, with its own return and language controls. It
 does not install the outer modal iframe bridge. Platform selection belongs in
-the status row, with live feedback below it and no separate Overview form.
+the status row, with a lock tooltip and live floating feedback. Overview shares
+that same control. The
+[notification decision](../bug-fix/2026-10-24-task-detail-notifications.md) owns
+that layout-independent presentation.
 Status, permission and platform requests share the existing confirmation union,
 review key and exact-version mutation owner; platform selection retains the
 confirmed value until success. File deletion keeps its own confirmation layer.
@@ -55,8 +58,9 @@ history state clears that feedback so it cannot obscure the restored preview.
 
 `TaskDetailPage` reads its own project graph through `useTaskGraph` and supplies
 the real snapshot to the shared detail session. Graph loading, initial failure
-and retained-snapshot refresh failure stay explicit; errors do not become empty
-relationships. Successful graph revisions continue to reread complete task
+and retained-snapshot refresh failure stay explicit; retained graph errors use
+the shared surface notification layer without reducing reading space. Errors
+do not become empty relationships. Successful graph revisions continue to reread complete task
 details even when graph projection fields are unchanged. Unchanged detail reads
 preserve DOM, focus, inputs and heading/panel geometry. Existing foreground
 identity checks retain the visible page and interaction while the same identity
