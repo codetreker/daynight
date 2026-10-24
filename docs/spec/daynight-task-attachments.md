@@ -156,7 +156,7 @@ Esc、Tab 操作
 
 | 类型 | 展示方式 |
 |---|---|
-| Markdown | CommonMark 与 GFM（含表格）渲染，原始 HTML 作为文本；按文档目录解析相对图片和链接，独立 `#fragment` 保留。 |
+| Markdown | CommonMark 与 GFM（含表格）渲染，原始 HTML 作为文本；`mermaid` 图块按[流程图要求](daynight-task-inspection.md#markdown-流程图)展示静态流程图、局部错误和源码，图片节点在绘制前明确拒绝且不阻塞后续图块；按文档目录解析相对图片和链接，独立 `#fragment` 保留。 |
 | 图片 | 图片展示。 |
 | PDF | 浏览器 PDF 展示。 |
 | 文本、JSON、源码 | 保留换行的文本展示。 |
@@ -207,8 +207,9 @@ ID 沿用规范 UUID 解析，附件路径按段编码并仅解码一次，遵�
 单文件请求、错误可见性及 K1 边界，不改变 task 版本或图。
 
 Markdown、文本/JSON/源码、图片、HTML、PDF 与不支持格式继续使用既有展示规则。
-Markdown 保留 CommonMark/GFM、转义原始 HTML 与文档目录相对资源；可信同源 HTML
-保持脚本交互、相对 CSS/JS/图片和 fetch。第一方文案、HTML lang 与页面标题跟随
+Markdown 保留 CommonMark/GFM、转义原始 HTML、文档目录相对资源及同一 Mermaid
+流程图行为；独立入口的图块错误、源码、异步切换和窄屏局部滚动与内嵌预览一致。
+可信同源 HTML 保持脚本交互、相对 CSS/JS/图片和 fetch。第一方文案、HTML lang 与页面标题跟随
 同一语言状态，附件内容按原文显示。独立详情使用普通浏览器键盘行为，不安装详情
 弹窗的 frame 键盘桥；内部删除等确认窗仍承担自己的原生模态交互。
 

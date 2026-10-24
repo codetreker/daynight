@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Locator, Page, TestInfo } from '@playwright/test';
-import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
+import { attachmentDownloadUrl, attachmentPageUrl, attachmentPreviewUrl } from '../../src/api/client';
 import { parseTaskGraph } from '../../src/api/parse';
 import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
 import { createProject, createTask, expect, test, updateTask } from './fixtures';
@@ -41,13 +41,81 @@ const columns = Array.from({ length: 12 }, (_, index) => `Column ${index + 1}`);
 const wideTable = `| ${columns.join(' | ')} |\r\n| ${columns.map(() => '---').join(' | ')} |\r\n| ${columns.map(() => 'Long unbroken table content').join(' | ')} |`;
 const longCode = `const taskDescription = '${'markdown-reference-'.repeat(60)}';`;
 const namedPath = 'docs/设计 #?%.md';
+const flowchartTD = [
+  'flowchart TD',
+  '    A["<b>开始</b>"] --> B{是否通过？}',
+  '    B -->|是| C[完成]',
+  '    B -->|否| D[修改]',
+  '    D --> B',
+  '    click A "javascript:window.flowchartLeak=true"',
+].join('\n');
+const flowchartLR = [
+  'flowchart LR',
+  '    A@{ shape: rect, label: "提交包含中文与 English 的完整方案和详细验收条件" } --> B[核对任务描述和附件中的流程图]',
+  '    B --> C[在窄屏中水平滚动阅读全部节点与箭头]',
+  '    C --> D["验证通过后完成交付，保留 @{ 字面标签"]',
+].join('\n');
+const invalidFlowchart = 'flowchart TD\n    A[未闭合节点 --> B';
+const unsafeFlowchart = '%%{init: {"securityLevel": "loose", "flowchart": {"htmlLabels": true}}}%%\nflowchart TD\n    A[Unsafe override] --> B[Refused]';
+const heldImageUrl = 'https://flowchart-resource.invalid/held.svg';
+const imageFlowchart = `flowchart TD\n    A@{ img: "${heldImageUrl}", label: "Image" } --> B`;
+const escapedImageFlowchart = String.raw`flowchart TD
+    A@{ "im\u0067": "${heldImageUrl}", label: "Escaped image" } --> B`;
+const imageShapeFlowchart = 'flowchart TD\n    A@{ shape: imageSquare } --> B';
+const failedFlowcharts = [imageFlowchart, escapedImageFlowchart, imageShapeFlowchart, invalidFlowchart, unsafeFlowchart];
+const fenced = (source: string): string => `\`\`\`mermaid\n${source}\n\`\`\``;
+const flowchartMarkdown = [
+  '## 流程图 Flowcharts', '', fenced(imageFlowchart), '', fenced(escapedImageFlowchart), '', fenced(imageShapeFlowchart), '',
+  fenced(flowchartTD), '', fenced(flowchartLR), '',
+  '无效图块保持局部失败，正文与其余图形继续可读。', '', fenced(invalidFlowchart), '', fenced(unsafeFlowchart), '',
+].join('\n');
+
+const expectFlowcharts = async (container: Locator): Promise<void> => {
+  const diagrams = container.locator('.mermaid-diagram');
+  await expect(container.locator('.mermaid-flowchart')).toHaveCount(7);
+  await expect(diagrams).toHaveCount(2);
+  for (const diagram of await diagrams.all()) {
+    const image = diagram.getByRole('img');
+    await expect(image).toHaveAttribute('src', /^blob:/);
+    await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth > 0)).toBe(true);
+  }
+  const drawings = await diagrams.locator('img').evaluateAll(async (images) => Promise.all(images.map(async (image) => {
+    const text = await (await fetch((image as HTMLImageElement).src)).text();
+    const svg = new DOMParser().parseFromString(text, 'image/svg+xml');
+    const attributes = [...svg.querySelectorAll('*')].flatMap((element) => [...element.attributes]);
+    return { text: svg.documentElement.textContent, paths: svg.querySelectorAll('path').length,
+      scripts: svg.querySelectorAll('script, foreignObject').length,
+      events: attributes.filter((attribute) => /^on/i.test(attribute.name)).map((attribute) => attribute.name),
+      references: attributes.filter((attribute) => attribute.localName === 'href').map((attribute) => attribute.value.replace(/[\u0000-\u0020\u007f]/g, '').toLowerCase()) };
+  })));
+  expect(drawings[0]!.text).toContain('开始');
+  expect(drawings[0]!.text).toContain('是否通过？');
+  expect(drawings[0]!.text).toContain('完成');
+  expect(drawings[0]!.paths).toBeGreaterThanOrEqual(5);
+  const horizontalLabels = drawings[1]!.text!.replace(/\s+/g, '');
+  expect(horizontalLabels).toContain('包含中文与English');
+  expect(horizontalLabels).toContain('@{字面标签');
+  for (const drawing of drawings) {
+    expect(drawing.scripts).toBe(0);
+    expect(drawing.events).toEqual([]);
+    expect(drawing.references.filter((reference) => /^(?:javascript|vbscript):|^data:(?:text\/html|image\/svg\+xml)/.test(reference))).toEqual([]);
+  }
+  await diagrams.first().getByRole('img').click();
+  const failures = container.locator('.mermaid-flowchart').filter({ has: container.page().getByRole('alert') });
+  await expect(failures).toHaveCount(failedFlowcharts.length);
+  for (const [index, source] of failedFlowcharts.entries()) await expect(failures.nth(index).locator('pre code')).toHaveText(source);
+  for (const failure of (await failures.all()).slice(0, 2)) {
+    await expect(failure.getByRole('alert')).toContainText(/Image nodes are not supported|不支持图片节点/);
+  }
+  expect(await container.page().evaluate(() => Object.hasOwn(window, 'flowchartLeak'))).toBe(false);
+};
 const markdown = [
   '# 交付说明 Delivery', '',
   '任务描述保存 **原始 Markdown**，并直接访问任务附件。', '',
   '## Scope 范围', '',
   '- 阅读中文和 English', '- [x] 保留完整描述', '',
   '> 可见结果：在当前任务详情中打开附件。', '',
-  wideTable, '', '```typescript', longCode, '```', '',
+  flowchartMarkdown, '', wideTable, '', '```typescript', longCode, '```', '',
   '![流程图](images/workflow.svg)', '',
   '[方案与验收](plan.md)', '', '[交互原型](site/index.html)', '',
   `[编码文件](docs/${encodeURIComponent('设计 #?%.md')})`, '',
@@ -65,6 +133,14 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
   const baseURL = info.project.use.baseURL;
   if (typeof baseURL !== 'string') throw new Error('Markdown acceptance requires the actual service base URL.');
   const cli = await createAcceptanceCli(baseURL, info.outputPath('installed-cli'));
+  const resourceRequests: string[] = [];
+  let releaseResource!: () => void;
+  const heldResource = new Promise<void>((resolve) => { releaseResource = resolve; });
+  await page.context().route(heldImageUrl, async (route) => {
+    resourceRequests.push(route.request().url());
+    await heldResource;
+    await route.abort();
+  });
   try {
     const update = await cli.run(['task', 'update', task.id, '--project', project.id, '--if-version', String(task.version), '--description', markdown]);
     expect(update.exitCode, 'Installed CLI writes Markdown without normalization').toBe(0);
@@ -93,8 +169,8 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     };
     // The linked plan sorts onto page two, so navigation must wait for a complete inventory.
     for (let index = 0; index < 101; index++) await put(`aa-fixture/${String(index).padStart(3, '0')}.txt`, `Pagination fixture ${index}`, 'text/plain');
-    await put('plan.md', '# 方案与验收\n\n[嵌套资料](docs/child.md)\n\n![附件相对图片](images/workflow.svg)\n', 'text/markdown');
-    await put('docs/child.md', '# Nested child\n\nTask-root plan attachment.\n', 'text/markdown');
+    await put('plan.md', `# 方案与验收\n\n[嵌套资料](docs/child.md)\n\n![附件相对图片](images/workflow.svg)\n\n${flowchartMarkdown}`, 'text/markdown');
+    await put('docs/child.md', `# Nested child\n\nTask-root plan attachment.\n\n${fenced('flowchart TD\n    Fresh[当前附件] --> Only[仅一张图]')}`, 'text/markdown');
     await put(namedPath, '# 编码文件内容\n\n中文、空格和保留字符保持路径身份。\n', 'text/markdown');
     await put('images/workflow.svg', '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="64"><rect width="160" height="64" fill="#2255aa"/><text x="8" y="36" fill="white">Markdown image</text></svg>', 'image/svg+xml');
     await put('site/index.html', '<!doctype html><html lang="en"><head><title>Description attachment</title></head><body><button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button></body></html>', 'text/html');
@@ -122,7 +198,14 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     await expect(description.getByRole('heading', { name: '交付说明 Delivery', exact: true })).toBeVisible();
     await expect(description.getByRole('table')).toHaveCount(1);
     await expect(description.locator('blockquote')).toContainText('可见结果');
-    await expect(description.locator('pre')).toHaveText(longCode);
+    const ordinaryCode = description.locator('pre:has(code.language-typescript)');
+    await expect(ordinaryCode).toHaveText(longCode);
+    await expectFlowcharts(description);
+    const firstSource = description.locator('.mermaid-flowchart').nth(3);
+    await firstSource.locator('summary').click();
+    await expect(firstSource.locator('pre code')).toBeVisible();
+    await expect(firstSource.locator('pre code')).toHaveText(flowchartTD);
+    await firstSource.locator('summary').click();
     await expect(description.locator('input[type="checkbox"]')).toBeChecked();
     await expect(description.locator('script')).toHaveCount(0);
     await expect(description.getByText('<script>window.descriptionLeak = true</script>')).toBeVisible();
@@ -132,7 +215,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     await expect(description.getByRole('link', { name: '外部资料', exact: true })).toHaveAttribute('href', 'https://example.com/reference');
     await expect(description.getByRole('link', { name: '根路径', exact: true })).toHaveAttribute('href', '/');
     await expect(description.getByRole('link', { name: '普通查询', exact: true })).toHaveAttribute('href', `${attachmentPreviewUrl(project.id, task.id, 'plan.md')}?raw=1#section`);
-    const image = description.getByRole('img', { name: '流程图' });
+    const image = description.locator('p > img[alt="流程图"]');
     await expect(image).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, 'images/workflow.svg'));
     await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).complete && (element as HTMLImageElement).naturalWidth > 0)).toBe(true);
     await expect(dialog.locator('.task-attachments').getByRole('heading', { name: '附件 · 106', exact: true })).toBeHidden();
@@ -164,6 +247,33 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     await previewPane.getByRole('button', { name: '重试附件', exact: true }).click();
     await expect(attachments.getByRole('heading', { name: 'plan.md', exact: true })).toBeVisible();
     expect(listRequests.length, 'Retry reads every real inventory page').toBe(4);
+    await expectFlowcharts(previewPane);
+    await capture(page, info, 'flowchart-attachment-preview');
+    const flowchartReader = await page.context().newPage();
+    const readerErrors: string[] = [];
+    flowchartReader.on('pageerror', (error) => readerErrors.push(error.message));
+    try {
+      await flowchartReader.goto(attachmentPageUrl(project.id, task.id, 'plan.md'));
+      await expectFlowcharts(flowchartReader.locator('.attachment-preview-body'));
+      await flowchartReader.reload();
+      await expectFlowcharts(flowchartReader.locator('.attachment-preview-body'));
+      await flowchartReader.setViewportSize({ width: 320, height: 800 });
+      const readerContent = flowchartReader.locator('.attachment-preview-body');
+      expect(await flowchartReader.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await readerContent.locator('.mermaid-diagram').nth(1).scrollIntoViewIfNeeded();
+      await capture(flowchartReader, info, 'flowchart-standalone-reader-320');
+      const docsDirectory = flowchartReader.locator('.attachment-sidebar summary').filter({ hasText: /^▱ docs$/ }).locator('..');
+      await expect(docsDirectory).toHaveCount(1);
+      if (await docsDirectory.getAttribute('open') === null) await docsDirectory.locator(':scope > summary').click();
+      await docsDirectory.locator('.attachment-file-name').filter({ hasText: /^child\.md$/ }).locator('..').click();
+      await expect(flowchartReader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, 'docs/child.md'), baseURL).href);
+      await expect(flowchartReader.locator('.attachment-preview-body .mermaid-flowchart')).toHaveCount(1);
+      await expect.poll(() => flowchartReader.locator('.attachment-preview-body .mermaid-diagram img').evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+      expect(await flowchartReader.locator('.attachment-preview-body .mermaid-flowchart').textContent()).not.toContain('未闭合节点');
+      await flowchartReader.goBack();
+      await expectFlowcharts(flowchartReader.locator('.attachment-preview-body'));
+      expect(readerErrors).toEqual([]);
+    } finally { await flowchartReader.close(); }
     const readsBeforeNavigation = listRequests.length;
     await expect(attachments.getByRole('link', { name: '嵌套资料', exact: true })).toHaveAttribute('href', attachmentPreviewUrl(project.id, task.id, 'docs/child.md'));
     expect(listRequests.length, 'Description navigation reuses the complete attachment inventory').toBe(readsBeforeNavigation);
@@ -181,10 +291,13 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     await previewPane.getByRole('button', { name: '重试预览', exact: true }).click();
     await expect(attachments.getByRole('heading', { name: '编码文件内容', exact: true })).toBeVisible();
     expect(listRequests.length, 'Missing, invalid and encoded references share one inventory').toBe(readsBeforeNavigation);
-    const overwrite = await request.put(attachmentDownloadUrl(project.id, task.id, namedPath), { data: '# 已覆盖内容\n\n当前路径的新修订。\n', headers: { 'content-type': 'text/markdown' } });
+    const overwrite = await request.put(attachmentDownloadUrl(project.id, task.id, namedPath), { data: `# 已覆盖内容\n\n当前路径的新修订。\n\n${fenced('flowchart TD\n    Updated[更新内容] --> Current[新修订]')}`, headers: { 'content-type': 'text/markdown' } });
     expect(overwrite.status()).toBe(200);
     await attachments.getByRole('button', { name: '刷新附件', exact: true }).click();
     await expect(attachments.getByRole('heading', { name: '已覆盖内容', exact: true })).toBeVisible();
+    await expect(previewPane.locator('.mermaid-flowchart')).toHaveCount(1);
+    await expect.poll(() => previewPane.locator('.mermaid-diagram img').evaluate((image) => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+    expect(await previewPane.locator('.mermaid-diagram img').evaluate(async (image) => (await (await fetch((image as HTMLImageElement).src)).text()))).toContain('更新内容');
     expect(listRequests.length, 'An explicit refresh reads each inventory page once').toBe(6);
     for (const locale of ['en', 'zh-CN']) {
       await page.keyboard.press('Escape');
@@ -199,7 +312,17 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
         await expectCenteredTaskDetail(page, dialog);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         expect(await description.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-        expect(await description.locator('pre').evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+        expect(await ordinaryCode.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+        await expectFlowcharts(description);
+        if (width === 320) {
+          const wideDiagram = description.locator('.mermaid-diagram').nth(1);
+          expect(await wideDiagram.evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
+          await wideDiagram.focus();
+          await wideDiagram.press('ArrowRight');
+          await expect.poll(() => wideDiagram.evaluate((element) => element.scrollLeft)).toBeGreaterThan(0);
+          await wideDiagram.scrollIntoViewIfNeeded();
+          await capture(page, info, `flowchart-description-${locale}-${width}`);
+        }
         if (width === 320) expect(await description.locator('.markdown-table').evaluate((element) => element.scrollWidth > element.clientWidth)).toBe(true);
         await capture(page, info, `task-description-${locale}-${width}`);
       }
@@ -285,10 +408,11 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
       expect(await checkDependencyGeometry(page, expected, info)).toEqual({ total: 0, examples: [] });
       await capture(page, info, 'task-description-graph-inspection');
     });
+    expect(resourceRequests, 'Image nodes are refused before rendering can start any held resource request').toEqual([]);
     const directory = info.outputPath('markdown-evidence');
     await mkdir(directory, { recursive: true });
     const receipt = join(directory, 'source.json');
-    await writeFile(receipt, `${JSON.stringify({ scenario: 'task-description-markdown', taskId: task.id, descriptionBytes: Buffer.byteLength(replacement), attachments: 106, listRequests: listRequests.length, source: 'tests/e2e/markdown.spec.ts' }, null, 2)}\n`);
+    await writeFile(receipt, `${JSON.stringify({ scenario: 'task-description-markdown', taskId: task.id, descriptionBytes: Buffer.byteLength(replacement), attachments: 106, flowcharts: { validPerDocument: 2, isolatedErrorsPerDocument: failedFlowcharts.length, imageResourceRequests: resourceRequests, entries: ['description', 'attachment-preview', 'standalone-reader'], inertSvgImages: true }, listRequests: listRequests.length, source: 'tests/e2e/markdown.spec.ts' }, null, 2)}\n`);
     await info.attach('task-description-markdown-source', { path: receipt, contentType: 'application/json' });
-  } finally { await cli.close(); }
+  } finally { releaseResource(); await cli.close(); }
 });

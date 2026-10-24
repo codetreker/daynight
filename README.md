@@ -20,8 +20,12 @@ expansion and global reset; complete data, statistics and progress remain intact
 Smooth routes retain direction, card clearance and external dashes. Cards use
 220×96 compact or 220×136 expandable geometry. A shared complete detail surface
 provides Overview/Attachments in the centered dialog and an independent page,
-preserving attachment state and each container's focus lifecycle. Descriptions render CommonMark/GFM through the
-shared renderer. Relative links/images resolve from the task attachment root;
+preserving attachment state and each container's focus lifecycle. Descriptions and
+Markdown attachments share CommonMark/GFM and Mermaid flowchart rendering, with
+local errors and inspectable source for each diagram. Diagram image nodes receive
+an explicit refusal before drawing, preserving later diagrams' availability.
+Relative links/images
+resolve from the task attachment root;
 ordinary relative file links select the existing Attachments preview through one
 controller, while real hrefs retain native browser navigation. The
 [Markdown reading decision](.agents/notes/implemented/architecture/2026-10-22-task-description-markdown.md)

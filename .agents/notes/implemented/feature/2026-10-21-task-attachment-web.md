@@ -58,7 +58,10 @@ changed text, while successful overwrites also advance preview revision. Deletin
 Path/timestamp identity remounts native previews after overwrite.
 
 `MarkdownContent` shares `react-markdown` 10.1.0 and `remark-gfm` 4.0.1 for
-CommonMark and GFM tables. Raw HTML remains escaped. Attachment Markdown images
+CommonMark and GFM tables. The
+[flowchart decision](2026-10-24-markdown-flowcharts.md) extends that same renderer
+with static Mermaid flowcharts and independent diagram errors/source across
+embedded and standalone readers. Raw HTML remains escaped. Attachment Markdown images
 and links resolve from the actual document directory within the task preview
 tree; descriptions explicitly use the task root. Standalone fragments remain
 fragments. The Markdown description decision owns ordinary in-dialog attachment
