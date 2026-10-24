@@ -1,4 +1,6 @@
 import { wireResponse } from "../helpers/wireJson";
+import { taskSyncEpoch, taskSyncQuery, taskSyncResponse, TEST_VIEWER_ID } from "../helpers/taskSync";
+import { TestTaskCacheBoundary } from "../helpers/taskCache";
 import { useEffect, useState, type MouseEvent } from 'react';
 import { createRoot } from 'react-dom/client';
 import { stringifyApiJson } from '../../src/api/json';
@@ -13,24 +15,27 @@ import '../../src/styles/app.css';
 type ResponseMode = 'ready' | 'loading' | 'error';
 type ContentMode = 'mixed' | 'empty' | 'long';
 const base = browsingProjects.mixed;
+const fixtureEpoch = crypto.randomUUID();
 const fixture = {
   response: 'ready' as ResponseMode,
   content: 'mixed' as ContentMode,
   revision: 1,
+  contentRevision: 1,
   graphReads: 0,
   detailReads: 0,
   status: 'in_progress' as TaskStatus,
 };
 const notify = () => window.dispatchEvent(new Event('auto-refresh-fixture'));
 const fullTitle = (task: GraphTask) => fixture.content === 'long' ? `${task.titlePreview}：完整验证任务状态、依赖关系、键盘操作及 320px 视口下的自然换行与内容访问能力` : task.titlePreview;
-const updatedAt = () => new Date(Date.UTC(2026, 9, 22, 10, fixture.revision)).toISOString();
+const updatedAt = (revision = fixture.revision) => new Date(Date.UTC(2026, 9, 22, 10, revision)).toISOString();
+const taskRevision = (task: GraphTask) => base.tasks[7]!.id === task.id ? fixture.revision : fixture.contentRevision;
 const graph = (): TaskGraph => {
   const seeds = fixture.content === 'empty' ? [] : base.tasks.map((task, index) => ({
     ...task,
     status: index === 7 ? fixture.status : task.status,
     titlePreview: Array.from(fullTitle(task)).slice(0, 160).join(''),
     titleTruncated: Array.from(fullTitle(task)).length > 160,
-    updatedAt: index === 7 ? updatedAt() : task.updatedAt,
+    updatedAt: updatedAt(taskRevision(task)),
   }));
   const statuses = new Map(seeds.map((task) => [task.id, task.status]));
   const tasks: readonly GraphTask[] = seeds.map((task) => {
@@ -52,16 +57,16 @@ const graph = (): TaskGraph => {
 };
 const detail = (task: GraphTask): TaskDetail => ({
   ...task,
-  version: BigInt(fixture.revision),
+  version: BigInt(taskRevision(task)),
   projectId: base.project.id,
   title: fullTitle(base.tasks.find((candidate) => candidate.id === task.id)!),
   description: fixture.content === 'long'
-    ? Array.from({ length: 24 }, (_, index) => `验收记录 ${index + 1}：任务状态与服务器快照同步，当前服务器版本 ${fixture.revision}。浏览中的任务链、缩放、滚动位置和详情焦点继续保留。附件页签内可以选择文件、编辑上传路径并预览内容。`).join('\n\n')
-    : `当前服务器版本 ${fixture.revision}。\n\n页面每 5 秒获取完整任务快照。切换到其他浏览器页签后暂停，返回页面时立即检查最新状态。\n\n使用上方“推进服务端状态”修改模拟服务端数据，然后观察统计、任务链和已打开详情自动更新。附件表单和预览保持可操作。`,
+    ? Array.from({ length: 24 }, (_, index) => `验收记录 ${index + 1}：任务状态与服务器快照同步，当前任务版本 ${taskRevision(task)}。浏览中的任务链、缩放、滚动位置和详情焦点继续保留。附件页签内可以选择文件、编辑上传路径并预览内容。`).join('\n\n')
+    : `当前任务版本 ${taskRevision(task)}。\n\n页面每 5 秒同步任务摘要。切换到其他浏览器页签后暂停，返回页面时立即检查最新状态。\n\n使用上方“推进服务端状态”修改模拟服务端数据，然后观察统计、任务链和已打开详情自动更新。附件表单和预览保持可操作。`,
   properties: { worker: null, pullRequests: [] },
 });
 const attachmentFiles = new Map<string, { readonly body: string; readonly contentType: string }>([
-  ['acceptance/status.md', { body: '# 自动更新验收\n\n- 每 5 秒拉取完整任务状态\n- 隐藏页面暂停，返回立即刷新\n- 保留任务浏览和附件表单\n\n本文件仅保存在预览页面内存中。', contentType: 'text/markdown' }],
+  ['acceptance/status.md', { body: '# 自动更新验收\n\n- 每 5 秒同步任务摘要\n- 隐藏页面暂停，返回立即刷新\n- 保留任务浏览和附件表单\n\n本文件仅保存在预览页面内存中。', contentType: 'text/markdown' }],
 ]);
 const attachment = (path: string, file: { readonly body: string; readonly contentType: string }): Attachment => ({
   path, contentType: file.contentType, sizeBytes: new TextEncoder().encode(file.body).length,
@@ -75,7 +80,7 @@ const delay = (ms: number, signal: AbortSignal | null | undefined) => new Promis
 });
 const installFixture = () => {
   const original = window.fetch;
-  const replacement: typeof fetch = async (input, init) => {
+  const routeFixture: typeof fetch = async (input, init) => {
     const request = input instanceof Request ? input : null;
     const method = init?.method ?? request?.method ?? 'GET';
     const signal = init?.signal ?? request?.signal;
@@ -83,7 +88,7 @@ const installFixture = () => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
     const prefix = `/api/v1/projects/${base.project.id}`;
     if (url.origin !== location.origin || !url.pathname.startsWith(prefix)) throw new Error(`Unknown auto-refresh preview request: ${url.pathname}`);
-    const graphRequest = url.pathname === `${prefix}/task-graph`;
+    const graphRequest = url.pathname === `${prefix}/task-graph` || url.pathname === `${prefix}/task-sync`;
     const taskRequest = new RegExp(`^${prefix}/tasks/([^/]+)(?:/attachments(?:/(.*))?)?$`).exec(url.pathname);
     if (method === 'GET' && (graphRequest || taskRequest !== null && taskRequest[2] === undefined && !url.pathname.endsWith('/attachments'))) {
       if (graphRequest) fixture.graphReads++;
@@ -93,7 +98,7 @@ const installFixture = () => {
       while (fixture.response === 'loading') await delay(100, signal);
       if (fixture.response === 'error') return Response.json({ error: { code: 'internal_error', message: 'Preview service is temporarily unavailable.', requestId: 'preview-auto-refresh' } }, { status: 500 });
       const snapshot = graph();
-      if (graphRequest) return wireResponse(snapshot);
+      if (graphRequest) return url.pathname.endsWith('/task-sync') ? taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: taskSyncEpoch(`${fixtureEpoch}:${fixture.content}`), versionForTask: (task) => BigInt(taskRevision(task)), viewerId: TEST_VIEWER_ID }) : wireResponse(snapshot);
       const task = snapshot.tasks.find((candidate) => candidate.id === taskRequest![1]);
       return task === undefined ? Response.json({ error: { code: 'not_found', message: 'Task no longer exists.', requestId: 'preview-task-missing' } }, { status: 404 }) : new Response(stringifyApiJson(detail(task)), { headers: { 'Content-Type': 'application/json' } });
     }
@@ -114,6 +119,11 @@ const installFixture = () => {
       if (file !== undefined && (method === 'GET' || method === 'HEAD')) return new Response(method === 'HEAD' ? null : file.body, { headers: { 'Content-Type': file.contentType } });
     }
     throw new Error(`Unsupported auto-refresh preview request: ${method} ${url.pathname}`);
+  };
+  const replacement: typeof fetch = async (input, init) => {
+    const response = await routeFixture(input, init);
+    response.headers.set('Daynight-User-ID', TEST_VIEWER_ID);
+    return response;
   };
   window.fetch = replacement;
   return () => { if (window.fetch === replacement) window.fetch = original; };
@@ -173,7 +183,7 @@ const AutoRefreshMockup = () => {
             <label htmlFor="mock-response">服务响应 <select id="mock-response" value={fixture.response} onChange={(event) => change(() => { fixture.response = event.currentTarget.value as ResponseMode; })}>
               <option value="ready">正常 / 恢复</option><option value="loading">持续加载</option><option value="error">请求失败</option>
             </select></label>
-            <label htmlFor="mock-content">服务端内容 <select id="mock-content" value={fixture.content} onChange={(event) => change(() => { fixture.content = event.currentTarget.value as ContentMode; fixture.revision++; })}>
+            <label htmlFor="mock-content">服务端内容 <select id="mock-content" value={fixture.content} onChange={(event) => change(() => { fixture.content = event.currentTarget.value as ContentMode; fixture.revision++; fixture.contentRevision = fixture.revision; })}>
               <option value="mixed">混合任务与依赖</option><option value="empty">空项目</option><option value="long">长标题与长描述</option>
             </select></label>
             <button className="button" type="button" onClick={() => setPageKey((value) => value + 1)}>重新进入项目</button>
@@ -191,5 +201,5 @@ const container = document.getElementById('root');
 if (container === null) throw new Error('The auto-refresh mockup root is required.');
 const disposeFixture = installFixture();
 const root = createRoot(container);
-root.render(<LocaleProvider initial={resolveInitialLocale()}><AutoRefreshMockup /></LocaleProvider>);
+root.render(<LocaleProvider initial={resolveInitialLocale()}><TestTaskCacheBoundary><AutoRefreshMockup /></TestTaskCacheBoundary></LocaleProvider>);
 import.meta.hot?.dispose(() => { root.unmount(); disposeFixture(); });

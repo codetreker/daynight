@@ -285,7 +285,7 @@ test.describe('Web language journeys', () => {
     const listed = await request.get(`/api/v1/projects/${project.id}/tasks/${task.id}/attachments`);
     expect(listed.status()).toBe(200);
     expect((await listed.json() as { items: { path: string }[] }).items.map(({ path }) => path)).toEqual([htmlPath]);
-    expect(reads.filter((value) => new URL(value.slice(value.indexOf(' ') + 1)).pathname === `/api/v1/projects/${project.id}/task-graph`)).toHaveLength(1);
+    expect(reads.filter((value) => new URL(value.slice(value.indexOf(' ') + 1)).pathname === `/api/v1/projects/${project.id}/task-sync`)).toHaveLength(1);
     expect(reads.filter((value) => new URL(value.slice(value.indexOf(' ') + 1)).pathname === `/api/v1/projects/${project.id}/tasks/${task.id}`)).toHaveLength(1);
     await screenshot(page, info, 'language-state-preservation');
     await page.keyboard.press('Escape');
@@ -351,7 +351,7 @@ test.describe('Web language journeys', () => {
     await page.clock.pauseAt(new Date('2030-01-01T00:00:00Z'));
     await expect(page.locator('.snapshot-time time')).toHaveAttribute('datetime', /^2030-/);
     await withDependencyFailure(async () => {
-      const failed = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-graph`);
+      const failed = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);
       await page.getByRole('button', { name: 'Refresh', exact: true }).click();
       const response = await failed;
       expect(response.status()).toBe(500);

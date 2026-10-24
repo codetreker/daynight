@@ -1,3 +1,4 @@
+import { TEST_VIEWER_ID, taskSyncResponse, taskSyncQuery } from "./helpers/taskSync";
 import { withDetailResources } from './helpers/taskDetail';
 import { stringifyWireJson } from "./helpers/wireJson";
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
@@ -5,7 +6,8 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '../src/app/App';
 
-const render = createLocaleRender('zh-CN');
+const localeRender = createLocaleRender('zh-CN');
+const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
 const projectId = '00000000-0000-4000-8000-000000000001';
 const projectPage = () => new Response(stringifyWireJson({ items: [{ settings: { version: 1n, executionWarningMinutes: 60 },
@@ -13,16 +15,16 @@ const projectPage = () => new Response(stringifyWireJson({ items: [{ settings: {
   createdAt: '2026-10-20T09:00:00Z', updatedAt: '2026-10-20T09:00:00Z',
 }], nextCursor: null }), { headers: { 'Content-Type': 'application/json' } });
 
-const taskGraph = () => new Response(stringifyWireJson({ observedAt: "2026-10-20T12:00:00Z",
+const taskGraph = (url: string) => taskSyncResponse({ observedAt: "2026-10-20T12:00:00Z",
   project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '项目任务页面', repoUrl: 'https://github.com/example/repo',
     createdAt: '2026-10-20T09:00:00Z', updatedAt: '2026-10-20T09:00:00Z' },
   tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 },
-}), { headers: { 'Content-Type': 'application/json' } });
+}, { viewerId: TEST_VIEWER_ID, versionForTask: () => 1n, query: taskSyncQuery(new URL(url, location.origin)) });
 
 describe('application navigation', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', '/');
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => url.endsWith('/task-graph') ? taskGraph() : projectPage()));
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => new URL(url, location.origin).pathname.endsWith('/task-sync') ? taskGraph(url) : projectPage()));
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
@@ -55,11 +57,11 @@ describe('application navigation', () => {
     expect(window.location.pathname).toBe('/');
   });
 
-  it('loads a valid project deep link through the graph API', async () => {
+  it('loads a valid project deep link through the summary sync API', async () => {
     window.history.replaceState(null, '', `/projects/${projectId}`);
     render(<App />);
     await screen.findByRole('heading', { name: '项目任务页面' });
-    expect(fetch).toHaveBeenCalledWith(`/api/v1/projects/${projectId}/task-graph`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    expect(fetch).toHaveBeenCalledWith(`/api/v1/projects/${projectId}/task-sync`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(screen.getByRole('heading', { name: '还没有任务' })).toBeTruthy();
     expect(screen.getByRole('link', { name: '项目' }).getAttribute('aria-current')).toBe('page');
     fireEvent.click(screen.getByRole('link', { name: '← 项目' }));
@@ -139,6 +141,7 @@ describe('application navigation', () => {
     const fetchMock = vi.fn().mockReturnValue(pending);
     vi.stubGlobal('fetch', fetchMock);
     render(<App />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     const signal = fetchMock.mock.calls[0]?.[1].signal as AbortSignal;
     window.history.pushState(null, '', '/unknown');
     fireEvent.popState(window);

@@ -32,14 +32,17 @@ const pauseAutomaticRefresh = async (page: Page): Promise<void> => {
   const now = new Date('2030-01-01T00:00:00Z'); await page.clock.install({ time: now }); await page.clock.pauseAt(now);
 };
 const open = async (page: Page, project: string, task: string): Promise<void> => {
-  const graphPath = `/api/v1/projects/${project}/task-graph`;
-  const response = page.waitForResponse((response) => new URL(response.url()).pathname === graphPath && response.status() === 200);
+  const syncPath = `/api/v1/projects/${project}/task-sync`;
+  const response = page.waitForResponse((response) => new URL(response.url()).pathname === syncPath && response.status() === 200);
   if (new URL(page.url()).pathname !== `/projects/${project}`) await page.goto(`/projects/${project}`);
   else {
     if (await detail(page).count() > 0) await detail(page).getByRole('button', { name: /^(关闭任务详情|Close task details)$/, exact: true }).click();
     await page.getByRole('button', { name: /^(刷新|Refresh)$/, exact: true }).click();
   }
-  const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await (await response).text())), project);
+  await (await response).finished();
+  const graphResponse = await authenticatedAPI(page.context().request).get(`/api/v1/projects/${project}/task-graph`);
+  expect(graphResponse.status()).toBe(200);
+  const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await graphResponse.text())), project);
   const index = buildGraphIndex(graph); const representative = index.componentByTask.get(task)!;
   const standalone = index.components.get(representative)!.memberIds.size === 1;
   await page.getByRole('tab', { name: standalone ? /^(独立任务|Standalone tasks)$/ : /^(任务链|Task chains)$/, exact: true }).click();
@@ -250,11 +253,11 @@ test('task-status-recovery', { annotation: { type: 'scenario', description: 'tas
     await detail(page).getByRole('button', { name: '关闭任务详情', exact: true }).click();
     await open(page, project.id, other.id); await expect(trigger(page)).toHaveText(/待处理/);
     const committedResponse = page.waitForResponse((response) => response.url() === endpoint && response.request().method() === 'PUT');
-    // The session refreshes the graph only after publishing its confirmed write.
-    const confirmedGraph = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-graph` && response.status() === 200);
+    // The session synchronizes task summaries only after publishing its confirmed write.
+    const confirmedSync = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync` && response.status() === 200);
     release.resolve();
     const delivered = await committedResponse; expect(delivered.status()).toBe(200); expect(await delivered.finished()).toBeNull();
-    expect(await (await confirmedGraph).finished()).toBeNull();
+    expect(await (await confirmedSync).finished()).toBeNull();
     await page.clock.runFor(32);
     expect(await lifecycle.show(project.id, task.id, 'pending-original-task')).toMatchObject({ status: 'done' });
     await expect(trigger(page)).toHaveText(/待处理/);

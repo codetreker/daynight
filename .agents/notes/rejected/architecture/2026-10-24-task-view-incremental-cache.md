@@ -21,9 +21,9 @@ projection. Preserve five-second visible-page polling and online authority.
 
 The [requirements](../../../../docs/spec/daynight-task-sync.md) own behavior and
 the [architecture](../../../../docs/design/daynight-task-sync.md) owns protocol,
-identity provenance, durable scope fences, detail caching and recovery. The transactional-revision option was considered for the proposed runtime;
-the delivered application still uses the existing complete-graph refresh
-contract. The [timestamp-window decision](../../proposed/architecture/2026-10-24-task-view-timestamp-window.md)
+identity provenance, durable scope fences, detail caching and recovery. The transactional-revision option was considered for the proposed runtime. The
+[persistent summary cache](../../implemented/architecture/2026-10-24-persistent-task-summary-cache.md)
+now consumes the timestamp-window API and derives complete views locally. The [timestamp-window decision](../../proposed/architecture/2026-10-24-task-view-timestamp-window.md)
 selects an overlapping task-time query for this scope and accepts repeated rows.
 
 ## Alternatives

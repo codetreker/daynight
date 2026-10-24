@@ -48,9 +48,9 @@ PATCH responses expose the same complete Project resource.
 CLI preserves nested settings versions through its existing raw-number decoding.
 Web targets known Project envelopes using shared JSON source spans, preserving
 versions above 2^53 without changing generic unknown-nested-field semantics or
-requiring browser reviver source context. Graph caching uses a bigint-safe
-Project metadata fingerprint independently from task/summary identity, so a
-settings-only change retains task references and GraphIndex.
+requiring browser reviver source context. The persistent summary cache merges
+Project settings by their exact version independently from task business versions,
+so a settings-only change retains task references and the published GraphIndex.
 
 The member-readable settings route exposes administrator save/cancel actions
 with user/project-owned state and the shared foreground identity guard. Drafts
@@ -60,8 +60,8 @@ mutation. Failed reconciliation keeps Save blocked and offers a read retry;
 neither abort nor navigation proves rollback, and PATCH is never replayed
 automatically. Role or resource loss clears private project state.
 
-Each successful graph read records observedAt and a monotonic receipt captured
-before fingerprint/index work. The project-owned clock advances that sample
+Each successful task-sync records observedAt and a monotonic receipt captured
+before IDB application and index work. The project-owned clock advances that sample
 through render commit delay with one visible-page ticker only while mounted
 known-start running tasks subscribe. Completed durations use persisted endpoints
 and subscribe only to settings metadata; unknown timing has no active subscription.

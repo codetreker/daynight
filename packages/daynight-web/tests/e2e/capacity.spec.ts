@@ -21,7 +21,7 @@ type VisibilityMeasurement = { repetition: number; selectedId: string; overviewN
 type Dataset = {
   scenario: string; nodes: 1000; edges: number; result: 'running' | 'passed' | 'failed';
   networkMs?: number; coldOpenMs?: number; measurements: Measurement[]; visibility: VisibilityMeasurement[]; feedbackDiagnostics: FeedbackDiagnostic[]; error?: string;
-  graphReads?: { initial: number; periodic: number; network: number };
+  syncReads?: { initial: number; periodic: number; network: number };
   controllerDurations: { fixtureMs?: number; snapshotMs?: number; repetitions: { interactionMs: number; totalMs: number }[] };
 };
 type Limit = { status: number; nodeCount: number; edgeCount: number; maxNodes: number; maxEdges: number };
@@ -81,31 +81,33 @@ type FeedbackDiagnostic = {
   phases: { inputQueueMs: number | null; conditionMs: number | null; firstFrameMs: number | null; secondFrameMs: number | null };
 };
 type TimingWindow = Window & { __daynightCapacityTiming?: Record<string, BrowserTiming> };
-type GraphFetchWindow = Window & { __daynightCapacityGraphFetches: { periodic: boolean; start: number }[] };
+type SyncFetchWindow = Window & { __daynightCapacitySyncFetches: { pollingCallback: number | null; start: number }[] };
 let timingSequence = 0;
 
-const observeGraphFetches = async (page: Page, projectId: string): Promise<void> => {
+const observeSyncFetches = async (page: Page, projectId: string): Promise<void> => {
   await page.addInitScript(({ projectId }) => {
-    const host = window as unknown as GraphFetchWindow;
-    host.__daynightCapacityGraphFetches = [];
-    let periodic = false;
+    const host = window as unknown as SyncFetchWindow;
+    host.__daynightCapacitySyncFetches = [];
+    let pollingCallback = 0;
+    let consumedCallback = 0;
     const nativeInterval = window.setInterval.bind(window);
     const nativeFetch = window.fetch.bind(window);
-    // Preserve native timing while distinguishing polling from interaction-triggered reads.
+    // Cache reads can cross IndexedDB tasks before fetch; retain the real polling
+    // callback's provenance until its network read consumes it.
     window.setInterval = ((handler: TimerHandler, timeout?: number, ...args: unknown[]) => {
       if (typeof handler !== 'function' || timeout !== 5_000) return nativeInterval(handler, timeout, ...args);
       return nativeInterval(function (this: Window, ...parameters: unknown[]) {
-        const previous = periodic;
-        periodic = true;
-        try { return Reflect.apply(handler, this, parameters); }
-        finally { periodic = previous; }
+        pollingCallback += 1;
+        return Reflect.apply(handler, this, parameters);
       }, timeout, ...args);
     }) as typeof window.setInterval;
     window.fetch = (input, init) => {
       const url = new URL(input instanceof Request ? input.url : String(input), window.location.href);
       const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
-      if (url.href === new URL(`/api/v1/projects/${projectId}/task-graph`, window.location.origin).href && method.toUpperCase() === 'GET') {
-        host.__daynightCapacityGraphFetches.push({ periodic, start: performance.now() });
+      if (url.origin === window.location.origin && url.pathname === `/api/v1/projects/${projectId}/task-sync` && method.toUpperCase() === 'GET') {
+        const callback = pollingCallback > consumedCallback ? pollingCallback : null;
+        host.__daynightCapacitySyncFetches.push({ pollingCallback: callback, start: performance.now() });
+        if (callback !== null) consumedCallback = callback;
       }
       return nativeFetch(input, init);
     };
@@ -546,10 +548,10 @@ test.describe('fixed capacity and performance @capacity', () => {
           const full = expectedDependencyTopology(graph.tasks, fixture.root.id); const overview = expectedOverview(full, fixture.root.id, snapshotOrder);
           expect(full.memberIds).toHaveLength(kind === 'external' ? 2 : 1000);
           let graphRequests = 0;
-          const trackGraph = (request: { url: () => string }) => { if (request.url().endsWith(`/api/v1/projects/${fixture.project.id}/task-graph`)) graphRequests++; };
+          const trackGraph = (request: { url: () => string }) => { if (new URL(request.url()).pathname === `/api/v1/projects/${fixture.project.id}/task-sync`) graphRequests++; };
           page.on('request', trackGraph);
-          await observeGraphFetches(page, fixture.project.id);
-          const graphResponse = page.waitForResponse((response) => response.url().endsWith(`/api/v1/projects/${fixture.project.id}/task-graph`));
+          await observeSyncFetches(page, fixture.project.id);
+          const graphResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${fixture.project.id}/task-sync`);
           const coldStart = performance.now();
           await page.goto(`/projects/${fixture.project.id}`, { waitUntil: 'domcontentloaded' });
           if (await page.locator(`#task-root-${fixture.root.id}`).getAttribute('aria-expanded') !== 'true') await page.locator(`#task-root-${fixture.root.id}`).click();
@@ -570,7 +572,7 @@ test.describe('fixed capacity and performance @capacity', () => {
           dataset.networkMs = await page.evaluate((url) => {
             const entries = performance.getEntriesByName(url, 'resource') as PerformanceResourceTiming[];
             const initial = entries[0];
-            if (initial === undefined || initial.initiatorType !== 'fetch') throw new Error('Initial task graph network resource timing is missing.');
+            if (initial === undefined || initial.initiatorType !== 'fetch') throw new Error('Initial task synchronization network resource timing is missing.');
             return initial.duration;
           }, initialResponse.url());
           expect(Number.isFinite(dataset.networkMs)).toBe(true);
@@ -607,19 +609,20 @@ test.describe('fixed capacity and performance @capacity', () => {
             dataset.controllerDurations.repetitions.push({ interactionMs, totalMs: performance.now() - repetitionStart });
             await persist();
           }
-          let reads!: GraphFetchWindow['__daynightCapacityGraphFetches'];
+          let reads!: SyncFetchWindow['__daynightCapacitySyncFetches'];
           let network!: number;
           await expect.poll(async () => {
-            reads = await page.evaluate(() => (window as unknown as GraphFetchWindow).__daynightCapacityGraphFetches);
+            reads = await page.evaluate(() => (window as unknown as SyncFetchWindow).__daynightCapacitySyncFetches);
             network = graphRequests;
             return reads.length === network;
-          }, { message: 'Every observed graph fetch reaches the real network' }).toBe(true);
-          const initial = reads.filter((read) => !read.periodic).length;
-          const periodic = reads.filter((read) => read.periodic).length;
+          }, { message: 'Every observed task synchronization fetch reaches the real network' }).toBe(true);
+          const initial = reads.filter((read) => read.pollingCallback === null).length;
+          const periodic = reads.filter((read) => read.pollingCallback !== null).length;
           expect(initial, 'Collapse and reopen reuse the snapshot; only initial load reads outside the polling callback').toBe(1);
-          expect(reads[0]!.periodic).toBe(false);
-          expect(network, 'Only initial load and actual periodic callbacks read the graph').toBe(initial + periodic);
-          dataset.graphReads = { initial, periodic, network };
+          expect(reads[0]!.pollingCallback).toBeNull();
+          expect(new Set(reads.flatMap((read) => read.pollingCallback === null ? [] : [read.pollingCallback])).size).toBe(periodic);
+          expect(network, 'Only initial load and actual periodic callbacks read task summaries').toBe(initial + periodic);
+          dataset.syncReads = { initial, periodic, network };
           await persist();
           page.off('request', trackGraph);
         });
@@ -642,7 +645,7 @@ test.describe('fixed capacity and performance @capacity', () => {
       expect(body.error.code).toBe('graph_limit_exceeded');
       const observed = { status: response.status(), ...body.error.details };
       expect(observed).toEqual({ status: 409, nodeCount: nodes, edgeCount: edges, maxNodes: 1000, maxEdges: 5000 });
-      const browserResponse = page.waitForResponse((candidate) => candidate.url().endsWith(`/api/v1/projects/${projectId}/task-graph`));
+      const browserResponse = page.waitForResponse((candidate) => new URL(candidate.url()).pathname === `/api/v1/projects/${projectId}/task-sync`);
       await page.goto(`/projects/${projectId}`, { waitUntil: 'domcontentloaded' });
       expect((await browserResponse).status()).toBe(409);
       await expect(page.getByRole('alert')).toContainText('任务图超过展示上限');

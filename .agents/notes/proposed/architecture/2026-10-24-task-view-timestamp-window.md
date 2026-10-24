@@ -4,12 +4,31 @@ Status: proposed
 
 ## Problem
 
-The browser repeatedly downloads complete project task graphs and loses its
-component cache on navigation. A persistent summary cache needs a way to read
-updates while preserving existing task versions, identity boundaries and graph
-semantics. The selected scope accepts overlapping responses and client deduplication.
+The timestamp-window proposal addressed repeated complete-graph transfers and
+navigation-local component caches while preserving business versions, identity
+boundaries and graph semantics. The server feed and persistent summary cache now
+provide those mechanisms. Complete details still follow successful project-sync
+receipts even when the task version is unchanged, and their successful bodies do
+not yet survive navigation as a bounded intrinsic-detail cache.
 
 ## Proposal
+
+Complete the remaining intrinsic-detail integration using the existing summary
+cache scope, details store and guarded detailTransaction. Persist only intrinsic
+content and materialize ready/blockedBy from the current complete projection.
+Opening a detail may display a matching cached version after online project
+admission, but a live GET is still required before mutation authority. Repeated
+unchanged summaries should not trigger periodic detail GETs. A newer detail or
+mutation response triggers project synchronization without advancing its watermark.
+Confirmed remote mutation outcomes remain distinct from persistence success, so
+cache errors cannot cause an operation to be replayed.
+
+Use the confirmed per-project budgets of 32 details and 8 MiB, with a 2 MiB
+single-record limit and UTF-8 byte accounting. Large successful details remain
+visible in the active session without persistence; actual storage failures remain
+visible errors. Attachments retain their independent reads and mutations.
+
+The adopted summary and server portions remain the basis for this integration:
 
 Use the greatest exact updatedAt among accepted project-sync summaries as the
 next request's since value. The server queries updated_at >= since - overlap,
@@ -36,9 +55,11 @@ The [rejected revision proposal](../../rejected/architecture/2026-10-24-task-vie
 preserves why transactional counters were considered.
 
 The [server summary API](../../implemented/architecture/2026-10-24-task-summary-window-api.md)
-implements the window/epoch and response-provenance portion. Browser persistence,
-local projection and intrinsic detail integration remain proposed; server API
-availability does not establish their runtime delivery.
+implements selection, epochs and response provenance. The
+[persistent summary cache](../../implemented/architecture/2026-10-24-persistent-task-summary-cache.md)
+implements browser storage, local projection, exact versions and shared lifecycle
+boundaries. Only detail content reuse, freshness and eviction remain proposed;
+their runtime delivery must include their own behavior and failure evidence.
 
 ## Alternatives
 
@@ -61,12 +82,14 @@ ownership beyond the current latest-state, five-second polling requirements.
 
 ## Acceptance Criteria
 
-The server subtracts the configured positive duration from the unadjusted
-client task watermark. Ties and duplicate rows merge by existing business
-version without duplicate persistence or layout work. Native tests cover
-current-durable-set merging, delayed same-timestamp responses, interval bounds,
-empty project baselines, identity fences, restore epochs and actual window
-transfer volume. Existing graph and interaction budgets remain.
+Matching detail bodies survive close/reopen under the same authorized scope,
+while opening still performs a live GET before enabling writes. Unchanged summary
+versions do not schedule repeated detail GETs; prerequisite-only changes update
+derived state without downloading all successors. Exact-version conflicts,
+unknown mutation results, stale responses and persistence failures retain the
+existing write/reconciliation guarantees. Native tests prove reload, eviction,
+failure and identity behavior. Project-sync watermarks remain independent, and
+existing graph and interaction budgets remain.
 
 ## Risks
 

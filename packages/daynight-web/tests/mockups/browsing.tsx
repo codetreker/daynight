@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type MouseEvent } from 'react';
 import { createRoot } from 'react-dom/client';
+import { TestTaskCacheBoundary } from '../helpers/taskCache';
 import { ProjectPage } from '../../src/features/projects/ProjectPage';
 import { LocaleProvider, useI18n } from '../../src/i18n/LocaleProvider';
 import { LanguageSelector } from '../../src/i18n/LanguageSelector';
@@ -113,5 +114,5 @@ if (container === null) throw new Error('The browsing mockup root is required.')
 const fixture = installBrowsingFixture();
 const initial = resolveInitialLocale();
 const root = createRoot(container);
-root.render(<LocaleProvider initial={initial}><BrowsingMockup fixture={fixture} /></LocaleProvider>);
+root.render(<LocaleProvider initial={initial}><TestTaskCacheBoundary><BrowsingMockup fixture={fixture} /></TestTaskCacheBoundary></LocaleProvider>);
 import.meta.hot?.dispose(() => { root.unmount(); fixture(); });

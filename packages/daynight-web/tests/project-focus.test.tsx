@@ -1,15 +1,17 @@
+import { createGraphSyncFixture } from "./helpers/taskSync";
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getTask, getTaskGraph } from '../src/api/client';
+import { getTask, getTaskSync } from '../src/api/client';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { projectChain, type GraphIndex } from '../src/features/task-graph/model';
 
-const render = createLocaleRender('zh-CN');
+const localeRender = createLocaleRender('zh-CN');
+const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
 vi.mock('../src/api/client', async (original) => ({
-  ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), getTaskGraph: vi.fn(),
+  ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), getTaskSync: vi.fn(),
   listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
 }));
 vi.mock('../src/features/task-graph/TaskGraph', async () => {
@@ -38,19 +40,30 @@ const task = (id: string, titlePreview: string, dependsOn: readonly string[] = [
   ready: dependsOn.length === 0, createdAt: timestamp, updatedAt: timestamp,
 });
 const remaining = task(remainingId, '保留任务链');
-const remainingChain = [remaining, task('remaining-child', '保留后续任务', [remainingId])];
+const remainingChain = [remaining, task('20000000-0000-0000-0000-000000000004', '保留后续任务', [remainingId])];
 const graph = (tasks = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId]), ...remainingChain]): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z",
-  project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '核心项目', repoUrl: '', createdAt: timestamp, updatedAt: timestamp },
+  project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '核心项目', repoUrl: 'https://github.com/example/repo', createdAt: timestamp, updatedAt: timestamp },
   tasks,
   summary: {
     total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length, done: tasks.filter((item) => item.status === 'done').length, inProgress: tasks.filter((item) => item.status === 'in_progress').length,
     ready: tasks.filter((item) => item.ready).length, blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length,
   },
 });
-const graphRequest = vi.mocked(getTaskGraph);
+const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const detailRequest = vi.mocked(getTask);
 let root: HTMLDivElement;
 let previousOverflow: string;
+
+const replacementEpochs = new WeakMap<TaskGraph, string>();
+const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
+const syncFixture = createGraphSyncFixture();
+beforeEach(() => {
+  syncFixture.reset();
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
+    const value = await graphRequest(projectId, signal);
+    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+  });
+});
 
 beforeEach(() => {
   root = document.createElement('div');
@@ -97,7 +110,7 @@ const expectModalReleased = () => {
 describe('project dialog focus restoration', () => {
   it('keeps active details focused when a merge replaces their expanded representative row', async () => {
     window.localStorage.setItem(`daynight:project-view:${projectId}`, JSON.stringify({ expandedRootId: remainingId }));
-    const before = [...remainingChain, task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])];
+    const before = [...remainingChain, task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])].map((item, position) => ({ ...item, createdAt: `2026-10-20T11:59:0${position}Z` }));
     const after = before.map((item) => item.id === selectedId ? { ...item, dependsOn: [rootId, remainingId], blockedBy: [rootId, remainingId] } : item);
     graphRequest.mockResolvedValueOnce(graph(before)).mockResolvedValueOnce(graph(after));
     const { trigger, dialog } = await openDialog();
@@ -116,7 +129,7 @@ describe('project dialog focus restoration', () => {
   });
 
   it('returns focus to fullscreen exit when refresh removes the selected node but retains its graph', async () => {
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([task(rootId, '原任务链'), task('surviving-child', '保留图节点', [rootId]), ...remainingChain]));
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([task(rootId, '原任务链'), task('20000000-0000-0000-0000-000000000005', '保留图节点', [rootId]), ...remainingChain])));
     const { trigger, dialog } = await openDialog(true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     const fullscreen = await screen.findByRole('dialog', { name: '任务依赖图全屏查看' });
@@ -150,7 +163,7 @@ describe('project dialog focus restoration', () => {
     const completed = [task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])].map((item) => ({
       ...item, status: 'done' as const, ready: false, blockedBy: [],
     }));
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(keepRemaining ? [...completed, ...remainingChain] : completed));
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(keepRemaining ? graph([...completed, ...remainingChain]) : resetSnapshot(graph(completed)));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(trigger.isConnected).toBe(false));
@@ -168,7 +181,7 @@ describe('project dialog focus restoration', () => {
   });
 
   it('focuses the page heading after refresh removes the selected chain and every task', async () => {
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([]));
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await screen.findByRole('heading', { name: '还没有任务' });
@@ -181,7 +194,7 @@ describe('project dialog focus restoration', () => {
   });
 
   it('focuses the newly expanded root after refresh removes the selected chain', async () => {
-    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(remainingChain));
+    graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph(remainingChain)));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     const remainingRoot = await screen.findByRole('button', { name: /^保留任务链/ });

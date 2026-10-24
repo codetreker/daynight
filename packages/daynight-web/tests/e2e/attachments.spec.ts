@@ -172,7 +172,7 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     let detailReads = 0;
     page.on('request', (request) => {
       const path = new URL(request.url()).pathname;
-      if (path === `/api/v1/projects/${project.id}/task-graph`) graphReads += 1;
+      if (path === `/api/v1/projects/${project.id}/task-sync`) graphReads += 1;
       if (path === `/api/v1/projects/${project.id}/tasks/${task.id}`) detailReads += 1;
     });
     // Isolate attachment-triggered reads from the independently tested task polling timer.

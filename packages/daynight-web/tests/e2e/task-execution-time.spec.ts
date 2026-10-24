@@ -6,7 +6,7 @@ import { parseApiJson, stringifyApiJson } from '../../src/api/json';
 import { parseTaskDetail, parseTaskGraph, project as parseProject } from '../../src/api/parse';
 import { decodeProjectJson, decodeTaskGraphJson } from '../../src/api/project-json';
 import type { TaskDetail } from '../../src/api/types';
-import { createProject, createTask, startTask, executeTask, finishTask, expect, seedRunningTaskStart, seedExternalDependencies, test, type Task } from './fixtures';
+import { createProject, createTask, startTask, executeTask, expect, seedRunningTaskStart, seedExternalDependencies, test, type Task } from './fixtures';
 import type { AuthenticatedAPI } from './authentication';
 import { expectedChainMembers } from './visible-topology';
 
@@ -68,7 +68,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     tasks: [] as { label: string; value: TaskDetail }[], graphReads: [] as string[],
     progress: [] as string[], failures: [] as { phase: string; name: string; message: string }[],
     timing: {} as Record<string, unknown>, layouts: [] as { locale: string; width: number; kind: string }[],
-    controlledConditions: ['Browser Date.now is fixed in 2055 while timers/performance.now and PostgreSQL time advance normally.', 'Only owned running-task start timestamps are seeded; subsequent graph GET deliveries are held during the actual one-second clock threshold crossing.', 'The blocked merge edge to the running prerequisite is explicitly external in the owned database; all dependencies and task timing remain intact.'],
+    controlledConditions: ['Browser Date.now is fixed in 2055 while timers/performance.now and PostgreSQL time advance normally.', 'Owned running-task start timestamps are seeded with a new business version and updatedAt; subsequent task-sync GET deliveries are held during the actual one-second clock threshold crossing.', 'The blocked merge edge to the running prerequisite is explicitly external in the owned database; all dependencies and task timing remain intact.'],
   };
   const success = async (argv: readonly string[]): Promise<string> => {
     const result = await cli.run(argv); evidence.commands.push({ argv, ...result }); expect(result.exitCode).toBe(0); expect(result.stderr).toBe(''); return result.stdout;
@@ -147,7 +147,8 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     const legacyBefore = await record(project.id, legacy.id, 'legacy-before-seed');
     await seedRunningTaskStart(project.id, legacy.id, null);
     const legacyUnknown = await record(project.id, legacy.id, 'legacy-unknown-start');
-    expect(legacyUnknown).toEqual({ ...legacyBefore, startedAt: null });
+    expect(legacyUnknown).toEqual({ ...legacyBefore, startedAt: null, version: legacyBefore.version + 1n, updatedAt: legacyUnknown.updatedAt });
+    expect(legacyUnknown.updatedAt).not.toBe(legacyBefore.updatedAt);
     const settings = async (minutes: number) => {
       const currentResponse = await api.get(`/api/v1/projects/${project.id}`); expect(currentResponse.status()).toBe(200);
       const current = parseProject(await decodeProjectJson(new Response(await currentResponse.text())));
@@ -157,8 +158,8 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
       expect(saved.settings.executionWarningMinutes).toBe(minutes); return saved;
     };
     await page.clock.setFixedTime(new Date('2055-01-01T00:00:00Z'));
-    const graphPath = `/api/v1/projects/${project.id}/task-graph`;
-    page.on('response', (response) => { if (new URL(response.url()).pathname === graphPath) delivered += 1; });
+    const syncPath = `/api/v1/projects/${project.id}/task-sync`;
+    page.on('response', (response) => { if (new URL(response.url()).pathname === syncPath) delivered += 1; });
     await page.goto(`/projects/${project.id}`);
     const openTimingChain = async () => {
       const toggle = page.locator(`#task-root-${roots[0]!.id}`);
@@ -171,6 +172,9 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await openTimingChain();
     const claimed = await record(project.id, crossing.id, 'crossing-before-seed');
     await seedRunningTaskStart(project.id, crossing.id, 3_585_000);
+    const seeded = await record(project.id, crossing.id, 'crossing-seeded-business-transition');
+    expect(seeded).toEqual({ ...claimed, startedAt: seeded.startedAt, version: claimed.version + 1n, updatedAt: seeded.updatedAt });
+    expect(seeded.startedAt).not.toBe(claimed.startedAt); expect(seeded.updatedAt).not.toBe(claimed.updatedAt);
     await page.reload();
     const ticking = card(page, crossing.id);
     await expect(duration(ticking)).toBeVisible();
@@ -178,7 +182,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     const initial = await elapsed(ticking); expect(initial).toBeLessThan(3_600_000); expect(initial).toBeGreaterThan(3_580_000);
     expect(await page.evaluate(() => Date.now())).toBe(new Date('2055-01-01T00:00:00Z').getTime());
     evidence.progress.push('fresh-below-threshold-snapshot');
-    await page.route(`**${graphPath}`, holdGraph); routeRegistered = true;
+    await page.route((url) => url.pathname === syncPath, holdGraph); routeRegistered = true;
     const deliveredBefore = delivered;
     const inspection = ticking.locator('.task-node-body'); const details = ticking.locator('.task-node-details');
     await inspection.click(); await details.focus();
@@ -198,7 +202,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await drainGraph(); evidence.progress.push('held-graph-routes-drained');
     await expect.poll(() => delivered, { timeout: 10_000 }).toBeGreaterThan(deliveredBefore);
     const running = await record(project.id, crossing.id, 'running-after-crossing');
-    expect(running.version).toBe(claimed.version); expect(running.updatedAt).toBe(claimed.updatedAt); expect(running.completedAt).toBeNull();
+    expect(running).toEqual(seeded);
     const cliTask = parseTaskDetail(parseApiJson(await success(['task', 'show', crossing.id, '--project', project.id, '--json'])), project.id, crossing.id);
     expect(cliTask).toEqual(running);
     const rawGraph = await success(['task', 'graph', '--project', project.id, '--json']); evidence.graphReads.push(rawGraph);
@@ -229,11 +233,14 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
     const frozen = await duration(ticking).getAttribute('datetime');
     expect(await elapsed(ticking)).toBe(Date.parse(completed.completedAt!) - Date.parse(completed.startedAt!));
-    const freezeResponse = page.waitForResponse((response) => new URL(response.url()).pathname === graphPath);
+    const freezeResponse = page.waitForResponse((response) => new URL(response.url()).pathname === syncPath);
     await freezeResponse; expect(await duration(ticking).getAttribute('datetime')).toBe(frozen);
     evidence.timing.completedDuration = frozen; evidence.progress.push('completed-duration-frozen-across-poll');
-    await finishTask(api, project.id, legacy);
+    const unknownBeforeCompletion = await record(project.id, legacy.id, 'legacy-before-completion');
+    expect(unknownBeforeCompletion).toEqual(legacyUnknown);
+    await success(['task', 'set-status', legacy.id, 'done', '--project', project.id, '--if-version', String(unknownBeforeCompletion.version)]);
     const completedLegacy = await record(project.id, legacy.id, 'completed-legacy-remains-unknown');
+    expect(completedLegacy.version).toBe(unknownBeforeCompletion.version + 1n);
     expect(completedLegacy.startedAt).toBeNull(); expect(completedLegacy.completedAt).not.toBeNull();
     await retained.dispose();
     await openTimingChain();

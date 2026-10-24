@@ -1,14 +1,16 @@
+import { createGraphSyncFixture } from "./helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ApiError, getTaskGraph } from '../src/api/client';
+import { ApiError, getTaskSync } from '../src/api/client';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { projectChain, type GraphIndex } from '../src/features/task-graph/model';
 
-const render = createLocaleRender('zh-CN');
+const localeRender = createLocaleRender('zh-CN');
+const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
 
-vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTaskGraph: vi.fn() }));
+vi.mock('../src/api/client', async (original) => ({ ...await original<typeof import('../src/api/client')>(), getTaskSync: vi.fn() }));
 vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, rootId, onOpenTask }: {
   index: GraphIndex; rootId: string; onOpenTask: (id: string, trigger: HTMLElement) => void;
 }) => {
@@ -25,13 +27,13 @@ const time = '2026-10-20T12:00:00Z';
 const task = (id: string, status: GraphTask['status'], dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
   id, titlePreview: `任务 ${id}`, titleTruncated: false, status, dependsOn, blockedBy: [], ready: false, createdAt: time, updatedAt: time,
 });
-const seeds = [task('A', 'done'), task('B', 'todo', ['A']), task('C', 'done'), task('D', 'done', ['C']), task('E', 'done'), task('F', 'todo'), task('G', 'todo', ['B', 'F'], ['B']), task('H', 'done', ['E'])];
+const seeds = [task('00000000-0000-4000-8000-000000000001', 'done'), task('00000000-0000-4000-8000-000000000002', 'todo', ['00000000-0000-4000-8000-000000000001']), task('00000000-0000-4000-8000-000000000003', 'done'), task('00000000-0000-4000-8000-000000000004', 'done', ['00000000-0000-4000-8000-000000000003']), task('00000000-0000-4000-8000-000000000005', 'done'), task('00000000-0000-4000-8000-000000000006', 'todo'), task('00000000-0000-4000-8000-000000000007', 'todo', ['00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000006'], ['00000000-0000-4000-8000-000000000002']), task('00000000-0000-4000-8000-000000000008', 'done', ['00000000-0000-4000-8000-000000000005'])];
 const graph = (items = seeds, id = projectId): TaskGraph => {
   const tasks = items.map((item) => {
     const blockedBy = item.dependsOn.filter((dependency) => items.find((candidate) => candidate.id === dependency)!.status !== 'done');
     return { ...item, blockedBy, ready: item.status === 'todo' && blockedBy.length === 0 };
   });
-  return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: '', createdAt: time, updatedAt: time }, tasks,
+  return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id, name: `项目 ${id}`, repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time }, tasks,
     summary: { total: tasks.length, todo: tasks.filter((item) => item.status === 'todo').length, done: tasks.filter((item) => item.status === 'done').length,
       inProgress: tasks.filter((item) => item.status === 'in_progress').length, ready: tasks.filter((item) => item.ready).length,
       blocked: tasks.filter((item) => item.status === 'todo' && !item.ready).length } };
@@ -42,9 +44,21 @@ const expansionKey = `daynight:project-view:${projectId}`;
 const checkbox = () => screen.getByRole('checkbox', { name: /^显示已完成任务链/ });
 const root = (id: string) => document.getElementById(`task-root-${id}`)!;
 const roots = () => [...document.querySelectorAll('.root-toggle')].map((item) => item.id);
-const request = vi.mocked(getTaskGraph);
+const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
+const request = graphRequest;
 const count = (label: string) => screen.getByText(label, { selector: '.stat-label' }).parentElement!.querySelector('.stat-number')!.textContent;
 const expansion = () => JSON.parse(window.localStorage.getItem(expansionKey)!);
+
+const replacementEpochs = new WeakMap<TaskGraph, string>();
+const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
+const syncFixture = createGraphSyncFixture();
+beforeEach(() => {
+  syncFixture.reset();
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {
+    const value = await graphRequest(projectId, signal);
+    return syncFixture.toSync(value, query, replacementEpochs.get(value));
+  });
+});
 
 beforeEach(() => { request.mockReset(); request.mockResolvedValue(graph()); });
 
@@ -53,20 +67,20 @@ describe('completed task chain visibility', () => {
     render(<ProjectPage projectId={projectId} />);
     await screen.findByRole('checkbox', { name: '显示已完成任务链（2）' });
     expect(checkbox()).not.toBeChecked();
-    expect(roots()).toEqual(['task-root-F', 'task-root-A']);
+    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000001']);
     expect(screen.getByLabelText('显示 2 条，共 4 条任务链')).toHaveTextContent('2 / 4');
     expect([count('任务总数'), count('已完成'), count('待处理')]).toEqual(['8', '5', '3']);
-    fireEvent.click(root('A'));
-    expect(within(root('A')).getByText('进行中')).toBeVisible();
-    expect(root('A').querySelector('.root-status')).toHaveClass('graph-status-in_progress');
+    fireEvent.click(root('00000000-0000-4000-8000-000000000001'));
+    expect(within(root('00000000-0000-4000-8000-000000000001')).getByText('进行中')).toBeVisible();
+    expect(root('00000000-0000-4000-8000-000000000001').querySelector('.root-status')).toHaveClass('graph-status-in_progress');
     const projection = screen.getByTestId('projection');
-    expect([...projection.querySelectorAll('[data-node-id]')].map((item) => item.getAttribute('data-node-id'))).toEqual(['A', 'B']);
-    expect([...projection.querySelectorAll('[data-edge]')].map((item) => item.getAttribute('data-edge'))).toEqual(['A->B']);
+    expect([...projection.querySelectorAll('[data-node-id]')].map((item) => item.getAttribute('data-node-id'))).toEqual(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']);
+    expect([...projection.querySelectorAll('[data-edge]')].map((item) => item.getAttribute('data-edge'))).toEqual(['00000000-0000-4000-8000-000000000001->00000000-0000-4000-8000-000000000002']);
     checkbox().focus();
     fireEvent.click(checkbox());
     expect(checkbox()).toHaveFocus();
-    expect(roots()).toEqual(['task-root-F', 'task-root-E', 'task-root-C', 'task-root-A']);
-    expect(root('A')).toHaveAttribute('aria-expanded', 'true');
+    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003', 'task-root-00000000-0000-4000-8000-000000000001']);
+    expect(root('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-expanded', 'true');
     expect(request).toHaveBeenCalledTimes(1);
   });
 
@@ -74,13 +88,13 @@ describe('completed task chain visibility', () => {
     window.localStorage.setItem(visibilityKey(), 'true');
     render(<ProjectPage projectId={projectId} />);
     await screen.findByRole('checkbox');
-    fireEvent.click(root('E'));
+    fireEvent.click(root('00000000-0000-4000-8000-000000000005'));
     checkbox().focus(); fireEvent.click(checkbox());
     expect(checkbox()).toHaveFocus();
-    expect(root('F')).toHaveAttribute('aria-expanded', 'true');
-    expect(expansion()).toEqual({ expandedRootId: 'F' });
+    expect(root('00000000-0000-4000-8000-000000000006')).toHaveAttribute('aria-expanded', 'true');
+    expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000006' });
     fireEvent.click(checkbox());
-    expect(root('F')).toHaveAttribute('aria-expanded', 'true');
+    expect(root('00000000-0000-4000-8000-000000000006')).toHaveAttribute('aria-expanded', 'true');
     expect(request).toHaveBeenCalledTimes(1);
   });
 
@@ -88,12 +102,12 @@ describe('completed task chain visibility', () => {
     request.mockImplementation(async (id) => graph(seeds, id));
     let view = render(<ProjectPage projectId={projectId} />);
     await screen.findByRole('checkbox');
-    fireEvent.click(checkbox()); fireEvent.click(root('C'));
+    fireEvent.click(checkbox()); fireEvent.click(root('00000000-0000-4000-8000-000000000003'));
     view.unmount(); view = render(<ProjectPage projectId={projectId} />);
     await screen.findByRole('checkbox');
     expect(checkbox()).toBeChecked();
-    expect(root('C')).toHaveAttribute('aria-expanded', 'true');
-    expect(expansion()).toEqual({ expandedRootId: 'C' });
+    expect(root('00000000-0000-4000-8000-000000000003')).toHaveAttribute('aria-expanded', 'true');
+    expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000003' });
     view.rerender(<ProjectPage projectId={otherProject} />);
     await screen.findByRole('checkbox'); expect(checkbox()).not.toBeChecked();
     fireEvent.click(checkbox()); fireEvent.click(checkbox());
@@ -102,7 +116,7 @@ describe('completed task chain visibility', () => {
     expect(window.localStorage.getItem(visibilityKey(otherProject))).toBe('false');
   });
 
-  it.each(['C', null])('distinguishes all-complete from empty and preserves saved expansion intent (%s)', async (saved) => {
+  it.each(['00000000-0000-4000-8000-000000000003', null])('distinguishes all-complete from empty and preserves saved expansion intent (%s)', async (saved) => {
     window.localStorage.setItem(expansionKey, JSON.stringify({ expandedRootId: saved }));
     request.mockResolvedValue(graph([seeds[2]!, seeds[3]!, seeds[4]!, seeds[7]!]));
     render(<ProjectPage projectId={projectId} />);
@@ -128,17 +142,17 @@ describe('completed task chain visibility', () => {
   });
 
   it('preserves intent through a refresh that completes every chain and falls back after a remembered root disappears', async () => {
-    request.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(allDone())).mockResolvedValueOnce(graph([task('Z', 'todo'), task('Z-child', 'todo', ['Z'])]));
+    request.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(allDone())).mockResolvedValueOnce(resetSnapshot(graph([task('00000000-0000-4000-8000-000000000011', 'todo'), task('00000000-0000-4000-8000-000000000012', 'todo', ['00000000-0000-4000-8000-000000000011'])])));
     render(<ProjectPage projectId={projectId} />); await screen.findByRole('checkbox');
-    fireEvent.click(root('A')); fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    fireEvent.click(root('00000000-0000-4000-8000-000000000001')); fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '所有任务链已完成' });
-    expect(expansion()).toEqual({ expandedRootId: 'A' });
+    expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000001' });
     fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
-    expect(root('A')).toHaveAttribute('aria-expanded', 'true');
+    expect(root('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByRole('checkbox', { name: '显示已完成任务链（0）' });
-    expect(root('Z')).toHaveAttribute('aria-expanded', 'true');
-    expect(expansion()).toEqual({ expandedRootId: 'Z' });
+    expect(root('00000000-0000-4000-8000-000000000011')).toHaveAttribute('aria-expanded', 'true');
+    expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000011' });
   });
 
   it('preserves an explicit collapse while filtering and refreshing', async () => {
@@ -155,6 +169,7 @@ describe('completed task chain visibility', () => {
     const write = vi.spyOn(Storage.prototype, 'setItem');
     render(<ProjectPage projectId={projectId} />);
     expect(write).not.toHaveBeenCalled();
+    await waitFor(() => expect(request).toHaveBeenCalledTimes(1));
     await act(async () => { reject(new ApiError('network')); });
     await screen.findByRole('alert'); expect(write).not.toHaveBeenCalled();
   });

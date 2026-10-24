@@ -2,7 +2,8 @@
 
 The private React/TypeScript workspace implements project browsing, cursor
 pagination, request cancellation, runtime API decoding, native browser routing
-and a pure dependency graph model with horizontal layout.
+and a pure dependency graph model with horizontal layout. Project task views
+use an IndexedDB summary cache and the authenticated task-sync endpoint.
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
 starts the full UI/API/database stack; [dev-ci](../../deployment/dev-ci/README.md)
@@ -162,18 +163,67 @@ unknown nested-field semantics remain intact; no browser reviver source-context
 feature is required. Versions above 2^53 remain exact bigint values and mutation
 encoding sends JSON numbers. Missing contract fields do not acquire defaults.
 
-Graph polling keeps independent fingerprints for Project metadata and
-`{tasks, summary}`. Only the internal Project fingerprint uses the version
-decimal string for bigint-safe comparison. Settings-only responses update the
-Project while retaining task/summary references and GraphIndex; clock-only
-responses retain the graph and index while refreshing the separate latest
-`GraphSnapshot.observedAt` and its paired `receivedMonotonic`. No settings edit
-changes task time or graph geometry.
+Project synchronization merges intrinsic summaries by ID and exact business
+version in the current durable collection, then derives task readiness,
+statistics and GraphIndex. Duplicate summaries retain task and index references;
+settings-only changes replace Project metadata while preserving task projection.
+Clock-only responses retain the graph and index while refreshing the separate
+latest `GraphSnapshot.observedAt` and its paired `receivedMonotonic`. No settings
+edit changes task time or graph geometry.
+
+## Persistent task summaries
+
+`TaskCacheProvider` wraps every authenticated route outside the shared detail
+session. Its scope follows the user and session generation, including standalone
+task and attachment routes. The origin-local `daynight-task-cache` database uses
+schema 1 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
+stores. User fences, project generations and validated manifests guard late
+responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
+fences/generations and bounded counts for both active and invalidated manifests.
+An invalidated manifest has a recognized reason, null epoch/Project/watermark and
+zero task/edge counts; it cannot retain a usable incremental baseline. The details store and guarded transaction
+interface are shared infrastructure; intrinsic detail content, LRU and
+change-driven detail GETs are not connected yet.
+
+`beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
+`applySync` validates the transaction's complete durable set and atomically saves
+changed summaries with that watermark. Only project-sync summaries advance it.
+Details, mutations, request time, Project time and `observedAt` cannot establish
+project coverage. UTC seconds plus nine fractional digits preserve ordering;
+business versions remain bigint. The default ten-second server overlap can
+repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
+invalidate detail records, replace published indexes or broadcast.
+
+The current mount requires its own successful online project sync before private
+cache publication. `Daynight-User-ID` is checked before decoding or acting on a
+sync response. A verified different principal synchronously releases old content
+and starts identity verification. Headerless or malformed-principal errors retain
+valid cached content; only a verified same-user `404 not_found` invalidates the
+project. Scope invalidation aborts current work and releases memory before its
+user-specific persistent purge; ordinary disposal closes resources and preserves
+the durable base. Foreground request gating also covers local reads/publication.
+
+Broadcast hints contain no task content or authority. Authorized receivers read
+committed stores without issuing another network request. Failed IDB opening,
+blocked upgrades, abnormal close, corruption or writes use existing visible
+error/Retry states and retain an allowed current view. Missing or malformed user
+scope records are repaired in one four-store transaction: replace the fence,
+clear only that user's summaries/details and invalidate its project baselines.
+The repair never parses or reuses the damaged fence. Memory binding, scope
+retirement and hints wait for commit; a cold scope can then bind the replacement,
+while an already-bound scope retires and requests identity verification. A failed
+repair rolls back without retiring the detecting scope, exposing a retryable
+storage error. Other users remain intact, and stale tickets fail against the new
+fence before publication. There is no silent network-only fallback. `Task sync` diagnostics report cycle/project IDs,
+received/changed/duplicate counts, cache hit and apply duration; duplicate includes
+ignored old versions. Failure diagnostics expose categories and a depth-limited allowlist of cause
+names/codes, without raw messages, stacks, task bodies or credentials. The [cache architecture](../../docs/design/daynight-task-sync.md)
+owns the algorithm, schema, failure rules and remaining detail integration.
 
 ## Task execution time and possible stalls
 
-`useTaskGraph` captures `receivedMonotonic` immediately after decoding a graph,
-before fingerprint/index work, and pairs it with that response's database
+`useTaskGraph` captures `receivedMonotonic` immediately after decoding task-sync,
+before IDB application or index work, and pairs it with that response's database
 `observedAt`. `receivedAt` remains the local-wall-clock refreshed label. A stable
 `TaskExecutionClockProvider` per loaded project advances the server sample with
 `performance.now()` elapsed time and publishes saved threshold changes in the
@@ -468,15 +518,17 @@ edges use the persisted marker independently of outside-component card context.
 The complete model is specified in the
 [external dependency design](../../docs/design/daynight-external-dependencies.md).
 
-An open project automatically requests its complete graph every five seconds
-while the document is visible. Hidden documents start no periodic reads; returning
-to a visible document requests immediately unless a graph read is already active.
-Automatic ticks skip active graph requests. Manual refresh cancels an active graph
-request and starts immediately. Every successful response updates the last received
-time and rereads the selected task even when graph data is unchanged. Equivalent
+An open project automatically requests task-sync every five seconds while the
+document is visible. Hidden documents start no periodic reads; returning requests
+immediately unless a sync is already active. Automatic ticks skip active syncs.
+Manual refresh cancels the active read and starts immediately. Every successful
+response updates the mount's receipt time and current detail read, including
+duplicate-only responses; this preserves the current detail-session policy until
+persistent detail reuse is connected. `GraphSnapshot.revision` is this successful
+mount-local receipt, not a task version or durable commit counter. Equivalent
 task data retains its index and layout; settings-only changes update Project
-metadata without rebuilding task projections, and changed task/summary data
-replaces statistics and both task-category lists together. The
+metadata without rebuilding task projections, and changed intrinsic data replaces
+statistics and both task-category lists together. The
 [automatic refresh decision](../../.agents/notes/implemented/feature/2026-10-22-project-task-auto-refresh.md)
 owns the scheduling and scope. With `pnpm web:dev`,
 `/tests/mockups/auto-refresh.html` uses the real project page, styles and controlled
@@ -492,7 +544,9 @@ successful response clears them, including a failure before any successful read.
 Project errors stay visible; task-detail bubbles expire while keeping recovery
 reachable from the floating entry.
 Automatic detail reads and queued follow-ups wait while the document is hidden;
-requests already in flight may finish. A 404 clears unavailable graph or detail data;
+requests already in flight may finish. A verified same-user project `404 not_found`
+clears the project snapshot and persistent base; unavailable detail reads clear
+their own data;
 401 follows the authentication lifecycle and releases the workspace. A resource
 change clears previous-resource content immediately. Same-task refresh keeps the
 detail body mounted, preserving the active tab, PR page when its ordered values
@@ -845,9 +899,13 @@ by Git, and clean server builds require this explicit build first. The Go
 `scripts/check.sh` invokes the same command before build/vet/race/go-cov.
 The existing root `build`, `test` and `acceptance` commands retain their CLI scope.
 
-`web:test` runs coverage-checker, asset-publication and acceptance-receipt tool tests,
-the full Vitest suite with V8 coverage,
-then the exact statement gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
+`web:test` serially composes two required package commands. `test:harness` runs
+all Node acceptance/tooling harness tests, including the coverage checker,
+asset publication and acceptance receipts. `test:coverage` runs the full Vitest
+suite with V8 coverage and then the exact statement gate. Either command can be
+run directly with `pnpm --filter @codetreker/daynight-web test:harness` or
+`pnpm --filter @codetreker/daynight-web test:coverage`; `pnpm web:test` remains the
+complete local gate. All `src/**/*.ts` and `src/**/*.tsx` files belong
 to the product manifest, including the browser entry. Tests live outside `src`.
 The checker independently compares that manifest against `statementMap` and `s`
 in `.tmp/coverage/coverage-final.json`; missing runtime files fail even when they
@@ -868,16 +926,20 @@ the gate. Deliberately unselected jobs report `skipped`. When selected,
 builds and production-browser acceptance. The CI entry
 `node packages/daynight-web/scripts/ci.mts` uses the same acceptance runner as
 `pnpm web:acceptance`. CI supplies pinned Chromium installation, including Linux
-dependencies, and the existing `pnpm web:test` command as preparation callbacks.
-The runner completes coverage before starting browser installation, so apt and
-Chromium downloads do not compete with the 5-second UI-test deadline. The CI
+dependencies, and serialized `test:harness` / `test:coverage` commands as
+preparation callbacks. Both test phases must finish successfully before browser
+installation starts, so apt and Chromium downloads do not compete with the
+5-second UI-test deadline. The CI
 workflow selects official Ubuntu package archives before this step, as delivered
-in [PR #148](https://github.com/codetreker/daynight/pull/148). Only the coverage child receives
-`VITEST_MAX_WORKERS=2`, retaining its `forks` pool and per-file isolation. Browser
-installation, including Linux dependencies and Chromium, has a 600-second command
-deadline; coverage retains its 180-second deadline. Both failures remain
-acceptance failures. Browser
-installation still overlaps native production assets, Go/PostgreSQL and one normal
+in [PR #148](https://github.com/codetreker/daynight/pull/148). The Node harness and
+Vitest/strict-checker commands each have a separate 180-second deadline and run
+serially inside test preparation. Separate bounds keep harness duration from
+consuming the Vitest/coverage phase's budget; they do not omit files or checks.
+Only the `test:coverage` child receives `VITEST_MAX_WORKERS=2`, retaining its `forks`
+pool and per-file isolation. Browser installation, including Linux dependencies
+and Chromium, has a 600-second command deadline. A failure or timeout in any of
+these commands fails acceptance. Browser installation still overlaps native
+production assets, Go/PostgreSQL and one normal
 dev-ci source build/start. The dev-ci runner remains the owner of the built/running
 image identity and full cleanup; the job retains its 20-minute overall bound.
 

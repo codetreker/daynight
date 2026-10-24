@@ -55,7 +55,7 @@ core 与 API 使用可空时间字段，JSON 明确输出 `startedAt`、`complet
 不能使用事务开始时间：事务可能等待项目锁，过早时间会把等待阶段错误计入执行。
 完整任务、列表、ready、图投影与 CLI/Web 类型、读取器和夹具共同保留这些时间字段。
 严格解析要求字段存在，已知值为合法 UTC `Z` 时间，秒后允许 1–9 位小数并保留原始字符串；未知事实必须明确为 `null`，不用缺省值兼容旧响应。
-图缓存分别维护 Project 和 `{tasks, summary}` 指纹，排除 `observedAt` 并分离设置元数据与任务索引身份；页面时钟消费独立的最新样本和单调接收时间。
+摘要缓存按任务业务版本与项目设置版本分别合并，排除 `observedAt` 并分离设置元数据与任务索引身份；页面时钟消费独立的最新样本和本页单调接收时间。
 
 ## 项目设置资源
 
@@ -87,8 +87,8 @@ CLI 复用既有嵌套原始数字读取。Web 的 Project、列表与图使用�
 复用 `json-source.ts` 原始片段定位，将已知 settings 子对象交给根版本解码；完整正文仍由原生 JSON 验证，
 未知嵌套值与通用 parseApiJson 的处理语义保持，不依赖较新浏览器的 reviver source context。
 Project、items[] 和 graph.project.settings.version 均保持 bigint，覆盖超过 `2^53` 的值。
-图缓存仅在内部 Project 指纹中将设置版本转为十进制字符串，资源和 JSON 输出不改变类型；
-任务/统计使用另一指纹，设置变化更新 Project 而保留 tasks、summary 引用与 GraphIndex。
+摘要缓存按已有 settings.version 合并 Project，设置版本始终保持 bigint，资源和 JSON 输出不改变类型；
+设置变化更新 Project 而保留相同任务的 tasks、summary 引用与 GraphIndex。
 
 写入顺序是项目行锁、锁后成员身份与管理员权限复核、精确版本检查、同值判定、更新。
 同值且版本正确时返回原项目，不增加版本或修改 updatedAt；过期同值请求仍返回 `version_conflict`。
@@ -102,9 +102,9 @@ Project、items[] 和 graph.project.settings.version 均保持 bigint，覆盖�
 图资源的顶层 `observedAt` 来自同一只读事务中的数据库时钟查询，采样安排在图数据和统计读取之后。
 它与任务起止时间共享时钟来源；不使用 Go HTTP Date 的秒精度时间或客户端墙钟推算执行耗时。
 
-Web 在图响应解析完成后立即捕获 `performance.now()`，在指纹和索引计算之前保存 `GraphSnapshot.receivedMonotonic`。
+Web 在 task-sync 响应解析完成后立即捕获 `performance.now()`，在 IDB 原子应用和索引计算之前保存 `GraphSnapshot.receivedMonotonic`。
 同一 snapshot 保存该响应最新 `observedAt` 和仅用于本机最近刷新标签的 `receivedAt`；服务端样本和单调接收时间必须成对更新。
-缓存使用独立 Project 与任务/统计指纹；仅时钟变化时复用整个 graph/index，仅设置变化时替换 Project 元数据并复用任务索引。
+摘要按任务 ID 和精确业务版本合并，Project 设置独立按版本合并；仅时钟变化时复用整个 graph/index，仅设置变化时替换 Project 元数据并复用任务索引。持久与跨页数据不能恢复本页的单调时钟锚点。
 因此缓存图自身的 `graph.observedAt` 可能仍是旧样本。
 页面时钟消费最新 `snapshot.observedAt` 与 `snapshot.receivedMonotonic`，使用如下独立锚点：
 
@@ -118,7 +118,7 @@ const currentServerTime = (anchor: ClockAnchor) =>
   anchor.serverMilliseconds + performance.now() - anchor.receivedMonotonic;
 ```
 
-这是接收时基于服务端样本推进的显示时钟，不保证消除网络传输延迟；每次既有图轮询会重新对齐。
+这是接收时基于服务端样本推进的显示时钟，不保证消除网络传输延迟；每次既有项目摘要同步会重新对齐。
 `GraphSnapshot.receivedAt` 仍用于“最近刷新”墙钟标签，不复用为计时锚点。
 独立时间样本、项目设置元数据与 `{tasks, summary}` 索引身份已分开，
 仅时钟或设置变化都不重建 `GraphIndex`。
@@ -127,7 +127,7 @@ const currentServerTime = (anchor: ClockAnchor) =>
 `TaskExecutionClockProvider` 按 projectId 组织稳定 store/context，`useTaskExecution` 用 useSyncExternalStore 订阅。
 仅已挂载的已知起点进行中任务订阅时钟；存在这类订阅且页面可见时才有一个一秒定时器。
 完成任务只订阅设置变化以更新说明，不订阅时钟；未知计时无活动订阅。隐藏页暂停 ticker，恢复可见时立即发布单调差值结果，
-既有图轮询随后重建锚点。无运行订阅或卸载时清理 timer/visibility listener；项目和身份切换释放旧页面的 store。
+既有项目摘要同步随后重建锚点。无运行订阅或卸载时清理 timer/visibility listener；项目和身份切换释放旧页面的 store。
 API 读取沿既有前台身份 guard、AbortController 和 generation，旧响应不能更新新项目时钟或阈值。
 单调差值包含接收到提交的 UI 延迟；服务端采样至接收/解析完成的网络与解析延迟仍是估计精度边界，不通过客户端 Date.now 补偿。
 运行同提交暂态的负估计只在显示层限为零，完成态始终使用持久化起止差。

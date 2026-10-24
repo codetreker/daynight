@@ -61,9 +61,10 @@ The approved [task-cache requirements](docs/spec/daynight-task-sync.md) and
 [architecture](docs/design/daynight-task-sync.md) define browser IndexedDB task
 summaries, five-second polling with a configurable ten-second task-timestamp
 overlap, and on-demand detail caching. The server window endpoint, configuration,
-project epoch and authenticated-response identity header are implemented; browser
-IndexedDB integration remains pending, and the running Web still reads complete
-task graphs under the existing refresh contract.
+project epoch and authenticated-response identity header are implemented. Web
+project views now use persistent intrinsic summaries and atomically merge
+timestamp-window responses before deriving complete graphs locally. On-demand
+full-detail persistence and change-driven detail refresh remain pending.
 
 | Component | Location | Implementation status | Requirements and design |
 |---|---|---|---|
@@ -550,8 +551,11 @@ binary identity, scenario results and resource cleanup.
 The private [web workspace](packages/daynight-web/README.md) implements the project
 list, cursor paging, safe API decoding, cancellation, project statistics, task
 graphs, complete task details in centered dialogs or independent pages, and
-single-file attachment management. An open project or standalone detail refreshes its complete task snapshot every five seconds while the page is
-visible, pauses automatic reads while hidden and refreshes immediately on return.
+single-file attachment management. An open project or standalone detail synchronizes
+its IndexedDB summary base every five seconds while visible, pauses automatic
+reads while hidden and synchronizes immediately on return. The current mount must
+complete a user-matched online sync before displaying persisted private data.
+Full details retain their current live-read lifecycle.
 Refresh retains browsing state and the mounted details, including attachment
 inputs and previews. Failed reads keep prior data with an error and recover on a
 later successful read; unavailable resources are cleared. The
@@ -1155,8 +1159,9 @@ Task resources expose required nullable `startedAt` and `completedAt`. Actual en
 into in_progress starts a new interval and clears the end; return to todo clears
 both. In-progress to done preserves a nullable start and records a real end;
 todo to done records only an end, leaving duration unknown. Metadata and same-state
-writes preserve time. The graph supplies a database `observedAt` sample; Web
-polling updates its separate clock without rebuilding unchanged graph/index data.
+writes preserve time. Complete-graph and task-sync responses supply a database
+`observedAt` sample; Web synchronization updates its separate clock without
+rebuilding unchanged graph/index data.
 Read-only timing fields remain in JSON; human CLI output keeps its field choices.
 The [status requirements](docs/spec/daynight-task-status.md) and
 [architecture](docs/design/daynight-task-status.md) own the complete rules.
@@ -1857,15 +1862,17 @@ fails explicitly. The [mirror decision](.agents/notes/implemented/testing/2026-1
 records the provisioning failure and the retained acceptance limits.
 Native CLI jobs typecheck and build once before
 running ordinary and installed tests against the same output. After deployment
-fixture checks, the web job uses one acceptance pipeline. Unit/coverage checks,
+fixture checks, the web job uses one acceptance pipeline. Test preparation,
 native UI/Go/PostgreSQL preparation and the normal dev-ci source build start
-concurrently. Installation of pinned Chromium and Linux dependencies starts only
-after coverage passes, then overlaps the remaining native/dev-ci preparation.
-Browser installation has a 600-second deadline, coverage 180 seconds, and the web
-job 20 minutes; a nonzero exit or timeout fails acceptance. Only the coverage
-subprocess uses two Vitest workers through its copied child environment,
-retaining its `forks` pool and file isolation. Native functional checks and their
-browser cleanup precede the container browser checks; full container cleanup
+concurrently. Test preparation runs the Web Node harness and then the complete
+Vitest/V8 suite with its strict statement checker as separate required commands,
+each with a 180-second deadline. Installation of pinned Chromium and Linux
+dependencies starts only after both test phases pass, then overlaps the remaining
+native/dev-ci preparation. Browser installation has a 600-second deadline and the
+web job 20 minutes; a nonzero exit or timeout in either test phase fails acceptance.
+Only the Vitest/coverage subprocess uses two workers through its copied child
+environment, retaining its `forks` pool and file isolation. Native functional checks
+and their browser cleanup precede the container browser checks; full container cleanup
 and all preparation/check commands finish before the native capacity phase.
 Both Go-consuming jobs restore module and compiler caches keyed by the server
 `go.sum`, while the server check expires test results before database/race/
