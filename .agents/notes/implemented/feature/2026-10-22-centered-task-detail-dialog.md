@@ -30,7 +30,8 @@ task content. The [split-view decision](../architecture/2026-10-22-task-attachme
 partially supersedes that content ownership: Overview scrolls the task reading
 columns, while the separate Attachments tab bounds adjacent file and preview
 panes with one right-side vertical scroll owner. Heading, tabs, close and footer
-remain outside panel scrolling. The
+remain outside panel scrolling; short fullscreen hides the informational footer
+under the fullscreen-reading decision to retain readable content. The
 [compact-header decision](../simplification/2026-10-24-compact-task-detail-header.md)
 places the task title directly in that header, bounds its own keyboard scrolling
 and keeps ID copying in Overview metadata. Overview pairs a reading column with a 265px
@@ -82,9 +83,10 @@ centered shell preserves the lifecycle without retaining the original geometry.
 Task reading gains a wider desktop column while metadata remains nearby.
 Overview retains visible gutters and stacks its columns on narrow screens without
 page-wide horizontal overflow. Attachments retain left/right placement at those
-widths. The persistent heading, tabs and footer reduce available content height;
-the split-view decision owns compact short-viewport spacing and per-pane scroll
-rules while preserving this shell's geometry.
+widths. The normal-mode heading, tabs and footer reduce available content height;
+the split-view decision owns its compact spacing and per-pane scroll rules.
+Fullscreen-reading owns additional compact chrome and informational-footer hiding
+for readable content at short fullscreen heights, preserving normal-mode geometry.
 
 The dialog remains an independent live detail read and never patches the graph
 snapshot. The [Markdown description decision](../architecture/2026-10-22-task-description-markdown.md)

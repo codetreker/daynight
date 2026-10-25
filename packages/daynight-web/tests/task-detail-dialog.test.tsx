@@ -97,6 +97,7 @@ describe('task detail dialog', () => {
     const overview = screen.getByRole('tabpanel', { name: '概览' });
     const reading = shell.querySelector('.task-detail-panels');
     const title = screen.getByRole('heading', { name: '任务 1' });
+    const popout = screen.getByRole('link', { name: '在新标签页打开' });
     overview.scrollTop = 470;
     title.scrollLeft = 19;
     fireEvent.click(screen.getByRole('tab', { name: '附件' }));
@@ -108,6 +109,10 @@ describe('task detail dialog', () => {
     expect(toggle).toHaveAttribute('aria-pressed', 'true');
     expect(screen.getByRole('dialog')).toBe(shell);
     expect(shell.querySelector('.task-detail-panels')).toBe(reading);
+    expect(screen.getByRole('link', { name: '在新标签页打开' })).toBe(popout);
+    expect(popout).toHaveAttribute('title', '在新标签页打开');
+    expect(dialogFocusables(shell)).toContain(popout);
+    expect(dialogFocusables(shell)).toContain(title);
     expect(overview.scrollTop).toBe(470);
     expect(title.scrollLeft).toBe(19);
     expect(screen.getByRole('tab', { name: '附件' })).toHaveAttribute('aria-selected', 'true');

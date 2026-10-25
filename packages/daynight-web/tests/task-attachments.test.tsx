@@ -221,6 +221,11 @@ describe('task attachments', () => {
     fireEvent.click(fileButton(/image.svg/));
     expect(await screen.findByRole('img')).toHaveAttribute('src', '/fixtures/image.svg');
     expect(screen.getByRole('link', { name: '下载' })).toHaveAttribute('href', '/downloads/image.svg');
+    const openPreview = screen.getByRole('link', { name: '在新标签页打开' });
+    expect(openPreview).toHaveAttribute('aria-label', '在新标签页打开');
+    expect(openPreview).toHaveAttribute('title', '在新标签页打开');
+    expect(screen.getByRole('heading', { name: 'image.svg' })).toHaveAttribute('title', 'image.svg');
+    expect(screen.getByText(/image\/svg\+xml/)).toHaveAttribute('title', expect.stringContaining('image/svg+xml'));
   });
 
   it('retries HTML availability failures before mounting its native frame and reloads successful overwrites', async () => {

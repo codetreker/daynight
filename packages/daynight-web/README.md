@@ -675,7 +675,15 @@ URL/identity, drafts and pending mutation session, with no new business requests
 Application scroll containers restore their prior offsets within the new layout
 limits, including positions near the end. Exit focuses the same toggle without
 scrolling. CSS viewport sizing retains the title, actions and internal scroll
-owners at 320px/390px and short heights. The
+owners at 320px/390px and short heights. At heights up to 500px, fullscreen
+uses compact title/action rows, a single metadata-control row and tighter tabs
+and panel padding; the informational footer is hidden. The full title stays in
+a focusable one-line-height scroll region. Popout links keep their accessible
+labels while showing their existing icons. The preview header keeps path/metadata
+context and actions on one row, preserving full strings through DOM/title text.
+These fullscreen-only rules leave readable nonzero Overview and preview bodies
+at 320×240. Verification observes body/frame dimensions, actual content paint
+and scrolling; visible controls alone do not establish reading access. The
 [fullscreen-reading decision](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
 records mode, scroll and keyboard ownership.
 

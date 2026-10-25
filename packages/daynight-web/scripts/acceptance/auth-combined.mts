@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
-import { chromium, expect, request as playwrightRequest, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, expect, request as playwrightRequest, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { authenticatedAPI, browserFetch, tokenContext, type AuthenticatedAPI } from '../../tests/e2e/authentication.ts';
 import { stringifyApiJson } from '../../src/api/json.ts';
 import { login } from './auth-fixture.mts';
@@ -208,6 +208,34 @@ const bilingualToken = async (page: Page, context: BrowserContext, origin: strin
   }
 };
 
+const visibleReadingHeight = async (owner: Locator): Promise<number> => {
+  const geometry = await owner.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    let top = 0;
+    let bottom = innerHeight;
+    let left = 0;
+    let right = innerWidth;
+    for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      const bounds = ancestor.getBoundingClientRect();
+      if (style.overflowY !== 'visible') { top = Math.max(top, bounds.top); bottom = Math.min(bottom, bounds.bottom); }
+      if (style.overflowX !== 'visible') { left = Math.max(left, bounds.left); right = Math.min(right, bounds.right); }
+    }
+    return { clientHeight: element.clientHeight, visibleHeight: Math.max(0, Math.min(bottom, box.bottom) - Math.max(top, box.top)),
+      visibleWidth: Math.max(0, Math.min(right, box.right) - Math.max(left, box.left)) };
+  });
+  check(geometry.clientHeight > 0 && geometry.visibleHeight > 0 && geometry.visibleWidth > 0, 'Fullscreen reading content has no visible area.');
+  return geometry.visibleHeight;
+};
+
+const scrollReading = async (page: Page, owner: Locator): Promise<number> => {
+  check(await owner.evaluate((element) => element.scrollHeight > element.clientHeight), 'The reading fixture does not overflow.');
+  await owner.hover();
+  await page.mouse.wheel(0, 600);
+  await expect.poll(() => owner.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  return await owner.evaluate((element) => element.scrollTop);
+};
+
 const fullscreenPreview = async (page: Page, context: BrowserContext, origin: string, projectId: string, task: Task): Promise<Record<string, unknown>> => {
   const detail = page.getByRole('dialog', { name: task.title, exact: true });
   const toggle = detail.locator('.task-detail-fullscreen-toggle');
@@ -219,6 +247,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
   const path = detail.locator('.attachment-upload-target input');
   await path.fill('draft/retained.txt');
   const resourceRequests: string[] = [];
+  const shortReading: Record<string, number> = {};
   const observe = (request: import('@playwright/test').Request): void => {
     if (request.url().includes(`/tasks/${task.id}/preview/`)) resourceRequests.push(request.url());
   };
@@ -233,9 +262,21 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
         return box !== null && Math.abs(box.x) <= 1 && Math.abs(box.y) <= 1
           && Math.abs(box.width - viewport.width) <= 1 && Math.abs(box.height - viewport.height) <= 1;
       }).toBe(true);
-      for (const control of [toggle, detail.locator('.task-detail-close')]) {
+      for (const control of [detail.locator('.task-detail-delete'), toggle, detail.locator('.task-detail-popout'), detail.locator('.task-detail-close')]) {
         const box = await control.boundingBox();
         check(box !== null && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width + 1 && box.y + box.height <= viewport.height + 1, 'A fullscreen header action is outside the viewport.');
+      }
+      if (viewport.height === 240) {
+        shortReading.htmlHeight = await visibleReadingHeight(detail.locator('.attachment-preview-body-native'));
+        await visibleReadingHeight(detail.locator('iframe'));
+        await frame.locator('#counter').press('End');
+        await expect.poll(() => frame.locator('html').evaluate((element) => element.ownerDocument.scrollingElement!.scrollTop)).toBeGreaterThan(0);
+        shortReading.htmlScroll = await frame.locator('html').evaluate((element) => element.ownerDocument.scrollingElement!.scrollTop);
+        await detail.getByRole('tab', { name: '概览', exact: true }).click();
+        const overview = detail.locator('.task-detail-panel-overview');
+        shortReading.overviewHeight = await visibleReadingHeight(overview);
+        shortReading.overviewScroll = await scrollReading(page, overview);
+        await detail.getByRole('tab', { name: '附件', exact: true }).click();
       }
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
@@ -267,6 +308,21 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
     await expect(detail).toHaveCount(0);
     await expect(page.locator(`#standalone-task-${task.id}`)).toBeFocused();
   } finally { page.off('request', observe); await Promise.all(retained.map((element) => element?.dispose())); }
+
+  await page.locator(`#standalone-task-${task.id}`).click();
+  await detail.getByRole('tab', { name: '附件', exact: true }).click();
+  await detail.locator('button.attachment-file').filter({ hasText: /long\.md/ }).click();
+  await expect(detail.locator('.attachment-markdown h1')).toHaveText('Fullscreen reading');
+  await toggle.click();
+  await page.setViewportSize({ width: 320, height: 240 });
+  const markdown = detail.locator('.attachment-preview-body');
+  shortReading.markdownHeight = await visibleReadingHeight(markdown);
+  shortReading.markdownScroll = await scrollReading(page, markdown);
+  await page.keyboard.press('Escape');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 1000 });
 
   const reader = await context.newPage();
   try {
@@ -305,7 +361,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
     await originalFrame.dispose();
   } finally { await reader.close(); }
   return { modalEscape: 'full-normal-close', standaloneEscape: 'full-normal-native', retainedFrameAndFileInput: true,
-    draftRetained: true, noPreviewReload: true, nestedMenuFirst: true, childWindowEscapeFirst: true, viewports: ['1440x1000', '390x640', '320x240'] };
+    draftRetained: true, noPreviewReload: true, nestedMenuFirst: true, childWindowEscapeFirst: true, shortReading, viewports: ['1440x1000', '390x640', '320x240'] };
 };
 
 export const runAuthCombined = async (options: AuthCombinedOptions): Promise<AuthCombinedReceipt> => {
@@ -431,7 +487,8 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const bobMember = members.items.find((member) => member.userId === bobUser.id);
     check(bobMember?.role === 'member', 'Invitation did not create a normal member.');
     await record('partial-sharing', { aliceId: aliceUser.id, bobId: bobUser.id, sharedProject: shared.id, privateProject: privateProject.id, baselineAlice: a0, baselineBob: b0, pageLimit: 1 });
-    const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: 'Browser and installed CLI share this task.' });
+    const reading = `# Fullscreen reading\n\n${'Browser and installed CLI share this long reading task.\n\n'.repeat(120)}`;
+    const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: reading });
     const privateTask = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${privateProject.id}/tasks`, 201, { title: 'Private authority control' });
     await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, {});
     await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.version, role: 'admin' });
@@ -456,10 +513,11 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const privateResource = fileUrl(privateProject.id, privateTask.id, 'private.bin');
     check((await bob.put(`${origin}${privateResource}`, { headers: { Origin: origin, 'Content-Type': 'application/octet-stream' }, data: binary })).status() === 201, 'Private control attachment creation failed.');
     const assets = [
-      ['site/index.html', 'text/html', '<!doctype html><link rel="stylesheet" href="style.css"><button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button><script type="module" src="app.js"></script>'],
-      ['site/style.css', 'text/css', 'button{color:rgb(17,99,155)}'],
+      ['site/index.html', 'text/html', '<!doctype html><link rel="stylesheet" href="style.css"><button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button><main id="reading-space">Long embedded document</main><script type="module" src="app.js"></script>'],
+      ['site/style.css', 'text/css', 'button{color:rgb(17,99,155)}#reading-space{height:1800px}'],
       ['site/app.js', 'text/javascript', 'const response=await fetch("data.json");document.body.dataset.value=(await response.json()).value;'],
       ['site/data.json', 'application/json', '{"value":"combined-cookie-module"}'],
+      ['docs/long.md', 'text/markdown', reading],
     ] as const;
     for (const [path, type, body] of assets) check((await bob.put(`${origin}${fileUrl(shared.id, task.id, path)}`, {
       headers: { Origin: origin, 'Content-Type': type }, data: body })).status() === 201, 'Shared preview resource creation failed.');

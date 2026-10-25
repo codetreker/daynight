@@ -24,7 +24,21 @@ Before a mode change, application-owned descendant scrollers retain both offsets
 a layout effect restores them on the same elements within the browser's resulting
 legal ranges. This includes title, overview, inventory and preview scroll owners.
 Native HTML/PDF retain their frame identity and URL, leaving internal scrolling
-to the document or browser reader. Controllers, file inputs, drafts and
+to the document or browser reader.
+
+At viewport heights up to 500px, fullscreen allocates space through compact
+chrome: narrow headers use title/status and action rows; the complete focusable
+title has a one-line-height scrolling window; existing popout icons retain
+accessible names. The body metadata controls share one row with a shrinkable
+platform select, tabs/panels use tighter spacing, and the informational footer is
+hidden. The attachment preview header keeps path/metadata context and actions in
+one row; context may ellipsize with its full DOM/title strings preserved, Download
+retains text, and Open in new tab retains its icon and accessible name. These
+fullscreen-only rules preserve nonzero readable Overview and native-preview
+bodies at 320×240 with the original scroll owners. No outer body scroller or
+arbitrary reader minimum height takes space from those owners.
+
+Controllers, file inputs, drafts and
 `TaskDetailSession` retain their existing lifetimes, including pending writes.
 Mode changes add no business requests or independent mutation state.
 
@@ -88,8 +102,11 @@ An explicit owner and document lifecycle allow mode changes without a reload.
 ## Consequences
 
 Task reading gains the available viewport while preserving existing state and
-request semantics. Flexible zero-minimum sizing and internal scroll owners keep
-exit and close controls available at narrow widths and short heights. The
+request semantics. Flexible zero-minimum sizing, compact fullscreen chrome and
+internal scroll owners keep content and controls available at narrow widths and
+short heights. Geometry validation must measure actual body/frame height and
+observe content painting and scrolling; checking only control visibility can miss
+a reading area collapsed to zero height. The
 standalone page remains an ordinary page after exit, with no guessed history
 target or window-close behavior.
 
