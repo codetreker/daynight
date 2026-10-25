@@ -96,6 +96,14 @@ including native HTML/PDF documents. A link beside Download opens the same compl
 Task Detail outside the workspace and dialog, locating the selected attachment
 while retaining Overview, status, relationships and all existing task/file actions.
 The dialog title also opens its current task, tab and attachment in a new tab.
+Both entries offer transient title-bar fullscreen reading with the same mounted
+detail, attachment/frame/input and mutation owners. Mode changes preserve selected
+content, drafts and application scroll offsets within the resulting layout;
+layered Escape leaves detail fullscreen before closing the modal. Standalone
+fullscreen retains an explicit return-to-project link and ordinary page Escape
+keeps its native behavior. The
+[fullscreen-reading design](docs/design/daynight-task-inspection.md#全屏阅读工作区)
+owns viewport, state and dynamic iframe keyboard ownership.
 Standalone task/tab/file navigation synchronizes the address and browser history;
 modal navigation stays local. Direct links and reloads restore that navigation. Independent runtime acceptance of the original
 reading group is complete against real embedded assets and service files,

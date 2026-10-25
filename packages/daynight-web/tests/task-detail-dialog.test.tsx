@@ -87,6 +87,88 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('resizes the same reading workspace, preserves drafts and offsets, and dismisses one layer per Escape', async () => {
+    const fetch = vi.fn().mockResolvedValue(response(detail()));
+    vi.stubGlobal('fetch', fetch);
+    const options = props();
+    const view = await open(options);
+    await screen.findByRole('heading', { name: '任务 1' });
+    const shell = screen.getByRole('dialog');
+    const overview = screen.getByRole('tabpanel', { name: '概览' });
+    const reading = shell.querySelector('.task-detail-panels');
+    const title = screen.getByRole('heading', { name: '任务 1' });
+    const popout = screen.getByRole('link', { name: '在新标签页打开' });
+    overview.scrollTop = 470;
+    title.scrollLeft = 19;
+    fireEvent.click(screen.getByRole('tab', { name: '附件' }));
+    const draft = screen.getByLabelText('附件草稿');
+    fireEvent.change(draft, { target: { value: 'retained upload path' } });
+    const toggle = screen.getByRole('button', { name: '进入全屏' });
+    fireEvent.click(toggle);
+    expect(shell).toHaveClass('task-detail-fullscreen');
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('dialog')).toBe(shell);
+    expect(shell.querySelector('.task-detail-panels')).toBe(reading);
+    expect(screen.getByRole('link', { name: '在新标签页打开' })).toBe(popout);
+    expect(popout).toHaveAttribute('title', '在新标签页打开');
+    expect(dialogFocusables(shell)).toContain(popout);
+    expect(dialogFocusables(shell)).toContain(title);
+    expect(overview.scrollTop).toBe(470);
+    expect(title.scrollLeft).toBe(19);
+    expect(screen.getByRole('tab', { name: '附件' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByLabelText('附件草稿')).toBe(draft);
+    expect(draft).toHaveValue('retained upload path');
+    expect(fetch).toHaveBeenCalledOnce();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(shell).not.toHaveClass('task-detail-fullscreen');
+    expect(toggle).toHaveFocus();
+    expect(options.onClose).not.toHaveBeenCalled();
+    expect(root).toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(options.onClose).toHaveBeenCalledOnce();
+    view.unmount();
+    expect(trigger).toHaveFocus();
+    cleanup();
+    await open(options);
+    expect(screen.getByRole('dialog')).not.toHaveClass('task-detail-fullscreen');
+    expect(screen.getByRole('button', { name: '进入全屏' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('lets menus, status and deletion confirmations consume Escape before leaving fullscreen', async () => {
+    const fetch = vi.fn().mockResolvedValue(response(detail()));
+    vi.stubGlobal('fetch', fetch);
+    const options = props();
+    await open(options);
+    await screen.findByRole('heading', { name: '任务 1' });
+    const shell = screen.getByRole('dialog');
+    fireEvent.click(screen.getByRole('button', { name: '进入全屏' }));
+    fireEvent.click(screen.getByRole('button', { name: '待处理' }));
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect(shell).toHaveClass('task-detail-fullscreen');
+    fireEvent.click(screen.getByRole('button', { name: '待处理' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '进行中' }));
+    expect(screen.getByRole('alertdialog')).toBeVisible();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(shell).toHaveClass('task-detail-fullscreen');
+    const deletion = screen.getByRole('button', { name: '删除任务' });
+    deletion.focus();
+    fireEvent.click(deletion);
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('删除任务');
+    expect(shell).toHaveAttribute('inert');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(shell).not.toHaveAttribute('inert');
+    expect(shell).toHaveClass('task-detail-fullscreen');
+    expect(deletion).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(shell).not.toHaveClass('task-detail-fullscreen');
+    expect(options.onClose).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it('retranslates a to-do task and its unfinished to-do prerequisite without a ready badge or refetch', async () => {
     const prerequisite = detail(2, { status: 'todo', ready: true });
     const reviewed = detail(1, { status: 'todo', dependsOn: [id(2)], blockedBy: [id(2)], ready: false });
@@ -101,6 +183,7 @@ describe('task detail dialog', () => {
     expect(original.querySelector('.task-detail-heading .task-detail-title')).toBeNull();
     expect(within(original).getAllByText(reviewed.id)).toHaveLength(1);
     expect(within(original).getByRole('button', { name: 'Copy task ID' })).toBeVisible();
+    expect(within(original).getByRole('button', { name: 'Enter fullscreen' })).toBeVisible();
     expect(within(original).getByRole('button', { name: 'To do' })).toHaveClass('task-status-trigger');
     expect(within(original).queryByText('Ready')).toBeNull();
     expect(within(original).queryByRole('combobox', { name: '语言 / Language' })).toBeNull();
@@ -264,11 +347,15 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('button', { name: '删除任务' })).toHaveFocus();
     await user.tab();
+    expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
+    await user.tab();
     expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
     await user.tab();
     expect(close).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('button', { name: '删除任务' })).toHaveFocus();
     await user.tab({ shift: true });
@@ -545,7 +632,7 @@ describe('task detail dialog', () => {
     const close = screen.getByRole('button', { name: '关闭任务详情' });
     const user = userEvent.setup();
     await user.tab();
-    expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(close).toHaveFocus();
     await act(async () => { loading.resolve(failure()); });
@@ -553,7 +640,11 @@ describe('task detail dialog', () => {
     await user.tab({ shift: true });
     expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
     await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
+    await user.tab({ shift: true });
     expect(retryButton).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
     await user.tab();
@@ -564,7 +655,7 @@ describe('task detail dialog', () => {
     expect(close).toHaveFocus();
     trigger.focus();
     fireEvent.keyDown(document, { key: 'Tab' });
-    expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
     await act(async () => { retry.resolve(response(detail())); });
     await screen.findByRole('heading', { name: '任务 1' });
     fireEvent.click(screen.getByRole('heading', { name: '任务 1' }));
@@ -587,6 +678,7 @@ describe('task detail dialog', () => {
     const options = props({ snapshot: snapshot([first, second]), onSelectTask: selected, onRestoreFocus: restored });
     const view = await open(options);
     const successor = await screen.findByRole('button', { name: /^任务 2，普通依赖$/ });
+    fireEvent.click(screen.getByRole('button', { name: '进入全屏' }));
     const shell = screen.getByRole('dialog');
     const close = screen.getByRole('button', { name: '关闭任务详情' });
     const user = userEvent.setup();
@@ -601,6 +693,7 @@ describe('task detail dialog', () => {
     expect(restored).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: '关闭任务详情' })).toHaveFocus();
     await screen.findByRole('heading', { name: '任务 2' });
+    expect(shell).toHaveClass('task-detail-fullscreen');
     const predecessor = screen.getAllByRole('button', { name: /^任务 1，普通依赖$/ })[0]!;
     predecessor.focus();
     await user.keyboard(' ');

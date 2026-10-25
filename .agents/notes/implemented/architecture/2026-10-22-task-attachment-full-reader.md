@@ -51,10 +51,13 @@ preview body as their vertical scroll owner; HTML/PDF use a fitted iframe whose
 document or native reader owns scrolling. Header height is never subtracted as
 a fixed constant.
 
-`TrustedFrame` installs the existing Escape/Tab bridge only with an actual dialog
-ancestor and a provided close callback. A standalone frame receives neither the
-bridge nor modal focus, inertness or scroll locking. The original inline
-preview retains its dialog keyboard and cleanup behavior.
+The original standalone reader omitted the dialog-only Escape/Tab bridge to
+preserve native page keys and avoid modal focus, inertness or scroll locking. The
+[fullscreen-reading decision](../feature/2026-10-25-task-detail-fullscreen.md)
+partially supersedes that bridge condition: `TrustedFrame` accepts an explicit
+reading root/onEscape owner in dialogs and standalone fullscreen. Normal
+standalone mode retains native keys; entering or leaving fullscreen updates the
+loaded document listeners without reloading the frame.
 
 The [attachment requirements](../../../../docs/spec/daynight-task-attachments.md#独立页面完整阅读)
 own visible behavior and the [design](../../../../docs/design/daynight-task-attachments.md#独立附件阅读页)

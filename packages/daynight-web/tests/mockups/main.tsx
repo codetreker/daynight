@@ -35,6 +35,7 @@ const DetailMockup = () => {
   const { locale, messages } = useI18n();
   const [location, setLocation] = useState(readLocation);
   const [open, setOpen] = useState(true);
+  const [fullscreen, setFullscreen] = useState(false);
   const snapshot = useSyncExternalStore(fixture.subscribe, fixture.snapshot);
   const inventories = useMemo(() => new Map<string, ReturnType<typeof createAttachmentFixture>>(), []);
   if (!inventories.has(location.taskId)) inventories.set(location.taskId, createAttachmentFixture(scenario, { files: new URL('./files/', window.location.href).pathname, page: window.location.pathname }));
@@ -52,10 +53,10 @@ const DetailMockup = () => {
       if (current.taskId !== taskId || current.navigation.tab !== selection.tab || current.navigation.path !== selection.path) navigate(pageUrl(taskId, selection));
     } else setLocation({ ...location, taskId, navigation: selection });
   };
-  const shared = { projectId: detailProjectId, taskId: location.taskId, snapshot,
+  const shared = { fullscreen: { active: fullscreen, onChange: setFullscreen }, projectId: detailProjectId, taskId: location.taskId, snapshot,
     navigation: location.navigation, onNavigate: (selection: TaskDetailNavigation) => select(location.taskId, selection), onSelectTask: (id: string) => select(id, { tab: 'overview', path: null }),
     onRefreshGraph: fixture.refresh, attachmentApi: attachments.api, attachmentUrls: { ...attachments.urls, page: (path: string) => pageUrl(location.taskId, { tab: 'attachments', path }) }, detailUrl: pageUrl };
-  const surface = location.page ? <TaskDetailSurface {...shared} presentation="page" /> : <TaskDetailSurface {...shared} presentation="dialog" onClose={() => setOpen(false)} onRestoreFocus={() => document.getElementById('open-detail')?.focus()} />;
+  const surface = location.page ? <TaskDetailSurface {...shared} presentation="page" /> : <TaskDetailSurface {...shared} presentation="dialog" onClose={() => { setFullscreen(false); setOpen(false); }} onRestoreFocus={() => document.getElementById('open-detail')?.focus()} />;
   return <TaskDetailFixtureBoundary fixture={fixture}>{location.page ? surface : <>
     <main className="content"><LanguageSelector /><p className="eyebrow">DAYNIGHT</p><h1>完整任务详情交互预览</h1><p className="subtitle">生产详情组件与前端内存数据。</p><button id="open-detail" className="button primary" type="button" onClick={() => setOpen(true)}>打开任务详情</button></main>
     {open && createPortal(surface, document.body)}

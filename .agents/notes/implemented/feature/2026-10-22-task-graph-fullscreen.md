@@ -20,8 +20,11 @@ React Flow viewport survive the switch. The mode belongs to the mounted graph
 and is not persisted.
 
 The centered task detail dialog retains its body portal and appears above the fullscreen
-graph. Its keyboard events do not reach the graph container, so Escape closes
-only the active detail view. When a refresh removes the original node but keeps
+graph. Its keyboard events do not reach the graph container. The
+[fullscreen-reading decision](2026-10-25-task-detail-fullscreen.md) extends the
+detail view with its own viewport mode: after nested children handle their layer,
+Escape leaves detail fullscreen, closes the detail dialog, then exits the graph.
+No mode switch acquires a second detail scroll lock. When a refresh removes the original node but keeps
 the fullscreen graph, detail focus returns to its exit control before the
 ordinary root/page fallback. Both views acquire the same counted body scroll
 lock: the final release restores the original overflow value even when a graph
