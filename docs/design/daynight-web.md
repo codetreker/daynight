@@ -107,7 +107,8 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 - `ProjectView` 持有唯一项目快照、`useTaskGraph` 同步、详情选择、项目订阅与浏览偏好。公共标题、刷新、错误和详情不属于任何可隐藏内容区。概览展示同一快照的六项统计；任务列表使用同一完整索引和分类。停留概览仍需要当前统计，因此原有五秒同步按页面可见性运行，不按外层选择创建第二套请求或缓存。
 - `ProjectSectionTabs` 拥有外层导航的呈现与键盘方向，`ProjectOverview` 呈现统计，`ProjectTaskWorkspace` 组合既有内层列表与任务时钟。两个面板复用 `.project-section-heading`，标题与说明以 flex 单行、基线对齐，间隔 12px；标题不收缩且无下边距，说明允许收缩并在溢出时显示省略号，完整文案保留在文本节点及原生 `title` 提示中。标题/说明的桌面字号为 16px/12px，740px 及以下为 15px/11px，字重、颜色和标题区下方间距沿用各自规则。桌面导航列宽 150px、间距 28px，1000px 及以下为 130px/20px；740px 及以下改为上方横排。统计默认三列，1500px 起六列，740px 及以下两列。
-- 外层本地状态为 `overview | tasks`，首次概览，不写 URL、history 或存储；项目 identity 改变时重新开始。桌面左侧竖向导航，窄屏改为内容上方横排；`tablist` 的 `aria-orientation`、方向键、稳定的 tab/panel ID 和实际方向一致。空项目、首屏加载、失败及保留旧快照的刷新错误继续由同一项目 owner 管理，外层导航不依赖任务总数。
+- `useProjectSection(projectId)` 复用 `useProjectViewPreferences.ts` 的 `useNamedPreference`，同步读取独立的 `daynight:project-section:${projectId}` 记录，严格接受 JSON 字符串 `"overview" | "tasks"`；没有记录时默认概览，刷新或返回项目的首次渲染即使用该项目保存的选择，不写 URL 或 history。`ProjectSection` 类型与内层 `TaskView` 同属偏好模块，项目 identity 改变时读取对应项目记录。读取或格式失败使用概览并显示外层专用偏好提示；写入失败保留本次内存选择并报告未保存。持久化选择由[外层视图恢复决策](../../.agents/notes/implemented/bug-fix/2026-10-25-project-section-restoration.md)拥有。
+- 桌面左侧竖向导航，窄屏改为内容上方横排；`tablist` 的 `aria-orientation`、方向键、稳定的 tab/panel ID 和实际方向一致。空项目、首屏加载、失败及保留旧快照的刷新错误继续由同一项目 owner 管理，外层导航不依赖任务总数。
 - 任务区首次选择后才挂载，后续以 `hidden` / `inert` 隐藏而不卸载；外层切换保留图 DOM、pan/zoom、检查及展开状态。详情对话框位于两个内容面板之外，切换不会建立新的详情会话。已有内层“独立任务 / 任务链”容器继续保留稳定关联 ID，只有活动类别挂载列表内容，返回任务链仍按原约定初始化画布。该层次区分由[项目分区决策](../../.agents/notes/implemented/feature/2026-10-25-project-overview-task-sections.md)拥有。
 - 内层默认任务链，之后恢复该项目的选择；两个内层页签数字均表示完整快照中的未完成任务数，包含待处理和进行中。独立任务只计普通度数为零的单成员，任务链只计多成员普通分量。遍历完整索引中的唯一 task，按普通分量归类后仅计入状态非 `done` 的任务，每个成员恰好属于一个分量。数字不依赖外层/内层选择、展开根或完成筛选，全部完成显示 0；两者之和等于项目 `todo + inProgress`。列表工具栏继续以独立任务或普通分量条目显示可见/全部数量。新快照同时更新分类和数字，刷新失败保留上次成功值；机制与取舍见[页签计数决策](../../.agents/notes/implemented/feature/2026-10-22-unfinished-task-tab-counts.md)。
 
@@ -1042,7 +1043,7 @@ CI 无论验收成功、失败或取消都执行恢复与归档；恢复成功�
 任务浏览的前端 mockup 通过 `pnpm web:dev` 下的 `/tests/mockups/browsing.html` 打开，
 挂载实际 `ProjectPage`、生产 CSS 和内存图/详情/空附件列表 fixture。场景以 URL hash
 保留读取与状态场景；覆盖混合图、全部完成、空项目、项目隔离、三状态转换、直接完成、重开、
-同状态、状态/许可确认与平台显式保存、pending、版本冲突、并发修改、结果未知、图刷新失败与任务切换；首次显示概览，进入任务列表后展示两个内层页签、
+同状态、状态/许可确认与平台显式保存、pending、版本冲突、并发修改、结果未知、图刷新失败与任务切换；无保存记录时显示概览，刷新及返回项目恢复已选外层视图，进入任务列表后展示两个内层页签、
 拓扑分类、独立行详情、倒序条目、展开/全部折叠、两类完成显示及浏览位置偏好、
 紧凑条目与长标题换行，并区分类别为空、全部完成和没有任务；外层切换保留已挂载任务区并隔离滚动位置。[自包含任务视图预览](mockups/task-views.html)
 保留早期内层分类的中文视觉基线，不代表当前项目入口与状态操作；实际组件入口与生产共享英语和简体中文目录。该开发入口不进入生产构建，真实服务验收仍由既有

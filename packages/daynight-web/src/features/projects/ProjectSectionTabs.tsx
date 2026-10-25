@@ -1,7 +1,7 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
+import type { ProjectSection } from "./useProjectViewPreferences";
 
-export type ProjectSection = "overview" | "tasks";
 const sections = ["overview", "tasks"] as const;
 
 export const ProjectSectionTabs = ({ section, onChange }: {

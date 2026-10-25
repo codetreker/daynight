@@ -125,12 +125,12 @@ func (h *Authentication) deviceCode(w http.ResponseWriter, r *http.Request) {
 
 func (h *Authentication) deviceToken(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	values, err := deviceForm(w, r, "client_id", "grant_type", "device_code")
+	values, err := deviceForm(w, r, "client_id", "grant_type", "device_code", "device_name")
 	if err != nil {
 		h.deviceError(w, r, 400, "invalid_request")
 		return
 	}
-	result, err := h.identity.RedeemDevice(r.Context(), values.Get("client_id"), values.Get("grant_type"), values.Get("device_code"))
+	result, err := h.identity.RedeemDevice(r.Context(), values.Get("client_id"), values.Get("grant_type"), values.Get("device_code"), values.Get("device_name"))
 	if err != nil {
 		h.writeDeviceFailure(w, r, err)
 		return

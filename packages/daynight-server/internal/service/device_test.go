@@ -28,7 +28,7 @@ func startDevice(t *testing.T, f *identityFixture) DeviceStart {
 	return d
 }
 func redeemDevice(f *identityFixture, d DeviceStart) (MintedPAT, error) {
-	return f.identity.RedeemDevice(context.Background(), DeviceClientID, DeviceGrantType, d.DeviceCode)
+	return f.identity.RedeemDevice(context.Background(), DeviceClientID, DeviceGrantType, d.DeviceCode, "workstation")
 }
 
 func TestDeviceAuthorizationLifecycle(t *testing.T) {
@@ -69,7 +69,7 @@ func TestDeviceAuthorizationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !validSecret(minted.Secret, "dnpat_") || minted.Credential.Name != "Daynight CLI" || minted.Credential.ExpiresAt != nil {
+	if !validSecret(minted.Secret, "dnpat_") || minted.Credential.Name != "Daynight CLI (workstation)" || minted.Credential.ExpiresAt != nil {
 		t.Fatal("invalid CLI credential")
 	}
 	pat, err := f.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
@@ -77,7 +77,7 @@ func TestDeviceAuthorizationLifecycle(t *testing.T) {
 		t.Fatalf("CLI credential: %+v %v", pat, err)
 	}
 	listed, err := f.identity.ListPATs(ctx, alice)
-	if err != nil || len(listed) != 1 || listed[0].Name != "Daynight CLI" {
+	if err != nil || len(listed) != 1 || listed[0].Name != "Daynight CLI (workstation)" {
 		t.Fatalf("account listing: %+v %v", listed, err)
 	}
 	inspected, err = f.identity.InspectDevice(ctx, alice, d.UserCode)
@@ -147,12 +147,77 @@ func TestDeviceRequestValidationAndSecretNormalization(t *testing.T) {
 	for _, input := range []struct{ client, grant, secret, want string }{
 		{"other", DeviceGrantType, "x", "invalid_client"}, {DeviceClientID, "other", "x", "unsupported_grant_type"}, {DeviceClientID, DeviceGrantType, "!", "invalid_grant"}, {DeviceClientID, DeviceGrantType, randomSecret(""), "invalid_grant"},
 	} {
-		_, err = f.identity.RedeemDevice(ctx, input.client, input.grant, input.secret)
+		_, err = f.identity.RedeemDevice(ctx, input.client, input.grant, input.secret, "workstation")
 		requireDeviceError(t, err, input.want)
 	}
 	code, err := normalizeDeviceCode(" bcdfg\t-hjklm ")
 	if err != nil || code != "BCDFGHJKLM" {
 		t.Fatalf("normalize: %s %v", code, err)
+	}
+}
+
+func TestDeviceCredentialNames(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
+	for _, input := range []struct{ hostname, display string }{
+		{"workstation", "workstation"},
+		{"开发工作站", "开发工作站"},
+		{strings.Repeat("a", 85), strings.Repeat("a", 85)},
+		{strings.Repeat("界", 84) + "🖥️", strings.Repeat("界", 84) + "🖥"},
+		{strings.Repeat("界", 255), strings.Repeat("界", 85)},
+	} {
+		d := startDevice(t, f)
+		if err := f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID); err != nil {
+			t.Fatal(err)
+		}
+		f.now = f.now.Add(5 * time.Second)
+		minted, err := f.identity.RedeemDevice(ctx, DeviceClientID, DeviceGrantType, d.DeviceCode, input.hostname)
+		if err != nil || minted.Credential.Name != "Daynight CLI ("+input.display+")" {
+			t.Fatalf("hostname credential name: %q %v", minted.Credential.Name, err)
+		}
+		listed, err := f.identity.ListPATs(ctx, alice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, credential := range listed {
+			if credential.ID == minted.Credential.ID && credential.Name == minted.Credential.Name {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("hostname name not persisted: %+v", listed)
+		}
+	}
+}
+
+func TestDeviceInvalidNameDoesNotConsumeGrant(t *testing.T) {
+	f := newIdentityFixture(t)
+	ctx := context.Background()
+	alice := identityPrincipal(t, f, completeIdentityLogin(t, f, "alice"))
+	d := startDevice(t, f)
+	if err := f.identity.DecideDevice(ctx, alice, d.UserCode, "approve", alice.UserID); err != nil {
+		t.Fatal(err)
+	}
+	f.now = f.now.Add(5 * time.Second)
+	for _, name := range []string{"", " \u2003", "\xff", "host\x00name", "host\nname", "host\u0085name", strings.Repeat("a", 256)} {
+		minted, err := f.identity.RedeemDevice(ctx, DeviceClientID, DeviceGrantType, d.DeviceCode, name)
+		requireDeviceError(t, err, "invalid_request")
+		if minted.Secret != "" {
+			t.Fatal("invalid name exposed a credential")
+		}
+	}
+	listed, err := f.identity.ListPATs(ctx, alice)
+	if err != nil || len(listed) != 0 {
+		t.Fatalf("invalid name created credentials: %+v %v", listed, err)
+	}
+	inspected, err := f.identity.InspectDevice(ctx, alice, d.UserCode)
+	if err != nil || inspected.Status != "approved" {
+		t.Fatalf("invalid name consumed grant: %+v %v", inspected, err)
+	}
+	if _, err = redeemDevice(f, d); err != nil {
+		t.Fatalf("valid name could not redeem rejected grant: %v", err)
 	}
 }
 
@@ -264,7 +329,7 @@ func TestDeviceStoreFailuresAndAtomicMint(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.now = f.now.Add(5 * time.Second)
-	if _, err := f.database.Pool.Exec(ctx, `ALTER TABLE personal_access_tokens ADD CONSTRAINT reject_cli CHECK (name <> 'Daynight CLI')`); err != nil {
+	if _, err := f.database.Pool.Exec(ctx, `ALTER TABLE personal_access_tokens ADD CONSTRAINT reject_cli CHECK (name <> 'Daynight CLI (workstation)')`); err != nil {
 		t.Fatal(err)
 	}
 	result, err := redeemDevice(f, d)

@@ -424,14 +424,14 @@ describe("remembered task chain expansion", () => {
     graphRequest.mockReturnValueOnce(pending.promise).mockRejectedValueOnce(new ApiError("network"));
     render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(read.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(1);
-    expect(write).not.toHaveBeenCalled();
+    expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
     await act(async () => { pending.resolve(graph()); });
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     await screen.findByRole("alert");
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
     expect(read.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(1);
-    expect(write).not.toHaveBeenCalled();
+    expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
   });
 
   it("does not replace saved preferences when an initial graph read fails", async () => {
@@ -440,10 +440,10 @@ describe("remembered task chain expansion", () => {
     graphRequest.mockRejectedValueOnce(new ApiError("network")).mockResolvedValueOnce(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("alert");
-    expect(write).not.toHaveBeenCalled();
+    expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
-    expect(write).not.toHaveBeenCalled();
+    expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
   });
 
   it.each([X, B])("resolves a retained member or falls back for a missing remembered task after a successful nonempty snapshot (%s)", async (remembered) => {
@@ -452,7 +452,7 @@ describe("remembered task chain expansion", () => {
     const write = vi.spyOn(Storage.prototype, "setItem");
     graphRequest.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(resetSnapshot(graph([seeds[0]!, seeds[1]!])));
     render(<ProjectPage projectId={projectId} />); selectTasks();
-    expect(write).not.toHaveBeenCalled();
+    expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
     await act(async () => { pending.resolve(graph()); });
     expect(await screen.findByTestId(`chain-${remembered === B ? A : C}`)).toBeVisible();
     expect(JSON.parse(window.localStorage.getItem(preferenceKey())!)).toEqual({ expandedRootId: remembered === B ? B : C });
@@ -467,11 +467,11 @@ describe("remembered task chain expansion", () => {
     graphRequest.mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(graph());
     const view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "还没有任务" });
-    expect(write).not.toHaveBeenCalled();
+    expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
     view.unmount();
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "还没有任务" });
-    expect(write).not.toHaveBeenCalled();
+    expect(write.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     expect(await screen.findByTestId(`chain-${remembered === A ? A : C}`)).toBeVisible();
   });
@@ -523,7 +523,11 @@ describe("remembered task chain expansion", () => {
   });
 
   it("reports failed saves and clears that notice when a later user choice is saved", async () => {
-    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("Storage is full", "QuotaExceededError"); });
+    const save = Storage.prototype.setItem;
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, name, value) {
+      if (name === preferenceKey()) throw new DOMException("Storage is full", "QuotaExceededError");
+      save.call(this, name, value);
+    });
     graphRequest.mockResolvedValue(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();

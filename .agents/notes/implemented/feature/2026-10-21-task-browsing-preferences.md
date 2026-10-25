@@ -20,8 +20,10 @@ extends this ownership with independent records for the selected tab, standalone
 completion visibility and the two task-category page positions. Within Task
 list, absent category state defaults to chains, both completion filters default
 to hidden, and page positions default to the start. The [project section decision](2026-10-25-project-overview-task-sections.md)
-opens the project on Overview independently of these records and restricts their
-scroll ownership to active Tasks. There is no server preference or task-data change.
+restricts task scroll ownership to active Tasks. The independent outer section
+record follows the [section restoration decision](../bug-fix/2026-10-25-project-section-restoration.md):
+reload and return restore the selected section, with Overview as the default
+without a saved record. There is no server preference or task-data change.
 
 The [presentation decision](2026-10-21-task-chain-presentation.md) supplies
 newest-first ordinary-component representatives. The saved string is an original
@@ -69,11 +71,10 @@ without requiring a record migration or compatibility branch.
 
 ## Consequences
 
-Reload and project navigation reopen Overview while preserving the saved task
-category, each category's
-completed visibility and page scroll position, and chain expansion while graph data
-still comes from a fresh complete snapshot. Storage access is synchronous and
-bounded to small project records. Privacy settings or invalid stored values can
+Reload and project navigation restore the saved outer section, task category,
+each category's completed visibility and page scroll position, and chain expansion
+while graph data still comes from a fresh complete snapshot. Storage access is
+synchronous and bounded to small project records. Privacy settings or invalid stored values can
 prevent persistence; visible notices distinguish that condition from a save.
 Preferences are local to one browser origin with no cross-browser synchronization.
 Current tabs keep their own in-memory choices. A nonempty list may replace a

@@ -11,12 +11,15 @@ positions must also remain independent of scrolling through project statistics.
 
 ## Decision
 
-Each project opens Overview, which presents its six statistics. Task list holds
-the existing Standalone tasks and Task chains categories. Desktop section tabs
-are vertical beside the selected content; narrow layouts use horizontal tabs
-with matching keyboard direction. The outer choice is local to the current
-project mount, has no URL or storage record, and starts at Overview after reload
-or returning to a project. Empty projects retain both section destinations.
+A project without a saved section preference opens Overview, which presents its
+six statistics. Task list holds the existing Standalone tasks and Task chains
+categories. Desktop section tabs are vertical beside the selected content;
+narrow layouts use horizontal tabs with matching keyboard direction. Empty
+projects retain both section destinations. The original section decision kept
+the outer choice local to the project mount, preserving an Overview entry point
+without a new stored format. The [section restoration decision](../bug-fix/2026-10-25-project-section-restoration.md)
+replaces that selection lifetime with per-project restoration after reload or
+return, while retaining the project URL and this section composition.
 
 `ProjectView` remains the single owner of the project snapshot, synchronization,
 preferences, detail selection and project session subscription. Both sections
@@ -64,10 +67,12 @@ rendering before it is requested and introduces hidden-canvas initialization.
 First-use mounting avoids that work while the graph's existing positive-size
 initialization remains authoritative.
 
-**Separate routes or a persisted outer selection.** These give the sections
-independent navigation identity but change the chosen default and require a new
-route or stored format. Local section state keeps the project URL and existing
-task preferences unchanged.
+**Separate routes or a persisted outer selection.** At the original section
+decision, these would change the chosen default and require a new route or
+stored format. Mount-local state preserved the project URL and existing task
+preferences. The later section restoration decision accepts an independent
+stored record because returning to the selected task workspace is required;
+the URL and existing record formats remain unchanged.
 
 ## Consequences
 
@@ -83,5 +88,6 @@ remounting, and prove scroll isolation with real document geometry. Layout tests
 also cover empty projects, recoverable refresh failure, long content, responsive
 orientation and visible focus restoration. Existing production acceptance and
 capacity scenarios retain their gates and measurement boundaries. Explicit
-Task list entry remains part of cold start where measurement already begins
-before project navigation; warm graph operation measurements remain unchanged.
+Task list entry remains part of cold start without a saved section preference
+where measurement already begins before project navigation; warm graph operation
+measurements remain unchanged.

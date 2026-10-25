@@ -1,5 +1,6 @@
 import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { hostname } from "node:os";
 import path from "node:path";
 import crossSpawn from "cross-spawn";
 import { parse } from "yaml";
@@ -64,7 +65,7 @@ it("logs in with a device code, uses its credential for service access, then rev
     expect(login.stderr).not.toContain(token);
     expect(parse(await readFile(configuration, "utf8"))).toEqual({ serverUrl: origin, serverToken: token });
     expect(Object.fromEntries(new URLSearchParams(calls[0]!.body))).toEqual({ client_id: "daynight-cli" });
-    expect(Object.fromEntries(new URLSearchParams(calls[1]!.body))).toEqual({ device_code: "installed-device-secret", client_id: "daynight-cli", grant_type: "urn:ietf:params:oauth:grant-type:device_code" });
+    expect(Object.fromEntries(new URLSearchParams(calls[1]!.body))).toEqual({ device_code: "installed-device-secret", client_id: "daynight-cli", grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_name: hostname() });
     expect(calls[0]!.authorization).toBeUndefined();
     expect(calls[1]!.authorization).toBeUndefined();
     const list = await invoke(["project", "list", "--json"]);

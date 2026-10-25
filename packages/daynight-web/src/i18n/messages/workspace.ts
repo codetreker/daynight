@@ -98,6 +98,7 @@ export type WorkspaceMessages = {
     readonly unfinishedCount: string;
   };
   readonly preferences: {
+    readonly section: PreferenceNotices;
     readonly expanded: PreferenceNotices;
     readonly completedChains: PreferenceNotices;
     readonly tab: PreferenceNotices;

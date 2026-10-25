@@ -334,11 +334,11 @@ Its data and runtime are independent of the client review module. The
 [server design decision](.agents/notes/implemented/architecture/2026-10-19-daynight-server-task-design.md)
 records the adopted scope and concurrency choices. The development and runtime
 CLI commands below apply to the client; server commands have their own module.
-A project opens its Overview section, with six statistics from one complete
-snapshot. The adjacent Task list section contains the existing Standalone tasks
-and Task chains tabs. Section selection stays local to the current project
-visit; the inner task category, independent completed-item filters, chain
-expansion and task browse positions retain their per-project browser records.
+A project without a saved section preference opens Overview, with six statistics
+from one complete snapshot. The adjacent Task list section contains the existing
+Standalone tasks and Task chains tabs. The section, inner task category,
+independent completed-item filters, chain expansion and task browse positions
+retain their per-project browser records across reloads and navigation.
 The task workspace mounts on its first selection and remains mounted while
 Overview is visible, preserving the graph's viewport and inspection state.
 Standalone rows open details directly. Task chains are ordinary-edge weak
@@ -1029,7 +1029,10 @@ secret. `daynight login --no-browser` displays the URL and code for authorizatio
 in another browser. The device authorization expires after ten minutes; rejection, expiry and
 cancellation leave an existing saved credential unchanged.
 
-The CLI credential has the name `Daynight CLI` and never expires by default.
+The CLI credential is named `Daynight CLI (<hostname>)`, using the machine that
+runs `daynight login`, including when another device approves access. Hostnames
+longer than 85 Unicode characters are shortened to their first 85 characters to
+keep the credential name within 100 characters. The credential never expires by default.
 The Web account's token manager can set a future expiration, restore “Never expires”, or
 revoke it. Changing expiration keeps the same credential, so the saved CLI login
 continues without replacing its secret. Expired or revoked credentials cannot be
