@@ -67,5 +67,11 @@ Navigation and selection now have different effects and must remain distinct
 when adding new attachment entry points. Verification must cover delayed
 inventories, repeated links, history restoration, native disclosure controls,
 manual collapse followed by refresh/tab changes, local upload navigation, and
-project/task isolation. Directory state remains scoped to the mounted task and
-is not a browser-persisted preference.
+project/task isolation. Maintained browser journeys identify a file by its full
+relative path and explicitly open its ancestors through the shared
+[attachment-tree helper](../../../../packages/daynight-web/tests/e2e/attachment-tree.ts).
+This applies both to Playwright E2E scenarios and to CLI/browser combined
+acceptance scripts. Unit interactions also open ancestors before activating a
+nested file or its actions: dispatching `fireEvent` to a hidden jsdom descendant
+cannot establish that a reader can reach it. Directory state remains scoped to
+the mounted task and is not a browser-persisted preference.

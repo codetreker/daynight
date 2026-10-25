@@ -130,6 +130,7 @@ describe('standalone full task details', () => {
     expect(document.querySelector('.task-detail-dialog')).toBeNull();
     expect(document.body.style.overflow).toBe('');
     const panel = document.querySelector('.task-attachments');
+    fireEvent.click(await screen.findByText('docs', { selector: 'summary' }));
     fireEvent.click(await screen.findByRole('button', { name: /^guide\.md/ }));
     await screen.findByText('方案正文');
     expect(window.location.pathname).toBe(address('attachments', 'docs/guide.md'));
@@ -335,6 +336,7 @@ describe('standalone full task details', () => {
       expect(popout()).toHaveAttribute('target', '_blank');
       expect(popout()).toHaveAttribute('rel', 'noopener noreferrer');
       fireEvent.click(within(dialog).getByRole('tab', { name: '附件' }));
+      fireEvent.click(await within(dialog).findByText('docs', { selector: 'summary' }));
       fireEvent.click(await within(dialog).findByRole('button', { name: /^guide\.md/ }));
       await within(dialog).findByText('方案正文');
       expect(popout()).toHaveAttribute('href', address('attachments', 'docs/guide.md'));

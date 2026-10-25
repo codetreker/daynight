@@ -1341,6 +1341,13 @@ human login requirement. Implemented checks and source-bound run results remain
 distinct; a focused pass or historical baseline does not establish full current
 acceptance.
 
+Browser attachment selection uses the shared
+[attachment-tree helper](tests/e2e/attachment-tree.ts) to resolve the full relative
+path and explicitly open each ancestor before accessing its file or actions.
+Both E2E scenarios and CLI/browser combined acceptance follow this rule. Unit
+interactions must also open ancestors; a `fireEvent` dispatched to a hidden
+jsdom descendant does not prove visible navigation.
+
 Independent reading acceptance supplements the strict pipeline with real-service
 probes across desktop, tablet, narrow and short viewports in both languages. It
 checks wheel and keyboard access to the document end, fitting-content overflow,

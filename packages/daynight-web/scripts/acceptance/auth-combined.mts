@@ -1,4 +1,5 @@
 import { selectTaskList } from '../../tests/e2e/project-view.ts';
+import { attachmentFileButton, attachmentFileActions } from '../../tests/e2e/attachment-tree.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
@@ -281,7 +282,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
       }
     }
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await detail.locator('.attachment-actions-trigger').first().click();
+    await (await attachmentFileActions(detail, 'docs/long.md')).click();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('menu')).toHaveCount(0);
     await expect(toggle).toHaveAttribute('aria-pressed', 'true');
@@ -312,7 +313,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
 
   await page.locator(`#standalone-task-${task.id}`).click();
   await detail.getByRole('tab', { name: '附件', exact: true }).click();
-  await detail.locator('button.attachment-file').filter({ hasText: /long\.md/ }).click();
+  await (await attachmentFileButton(detail, 'docs/long.md')).click();
   await expect(detail.locator('.attachment-markdown h1')).toHaveText('Fullscreen reading');
   await toggle.click();
   await page.setViewportSize({ width: 320, height: 240 });
@@ -540,7 +541,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await bobPage.locator(`#standalone-task-${task.id}`).click();
     const detail = bobPage.getByRole('dialog', { name: task.title, exact: true });
     await detail.getByRole('tab', { name: '附件', exact: true }).click();
-    await detail.locator('button.attachment-file').filter({ hasText: /index\.html/ }).click();
+    await (await attachmentFileButton(detail, 'site/index.html')).click();
     const frame = detail.frameLocator('iframe');
     await expect(frame.locator('body')).toHaveAttribute('data-value', 'combined-cookie-module');
     await expect(frame.locator('#counter')).toHaveCSS('color', 'rgb(17, 99, 155)');

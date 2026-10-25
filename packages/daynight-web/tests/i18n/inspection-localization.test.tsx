@@ -74,6 +74,7 @@ describe('inspection language changes', () => {
       return updated;
     });
     openAttachments({ ...data.api, put });
+    fireEvent.click(await screen.findByText('site', { selector: 'summary' }));
     fireEvent.click(await screen.findByRole('button', { name: /index.html/, pressed: false }));
     const frame = await screen.findByTitle('HTML 预览：site/index.html');
     fireEvent.load(frame);
@@ -135,6 +136,7 @@ describe('inspection language changes', () => {
       data.setItems([]);
     });
     openAttachments({ ...data.api, remove });
+    fireEvent.click(await screen.findByText('site', { selector: 'summary' }));
     fireEvent.click(await screen.findByRole('button', { name: /index.html/, pressed: false }));
     const frame = await screen.findByTitle('HTML 预览：site/index.html');
     await userEvent.setup().click(screen.getByRole('button', { name: '更多操作：site/index.html' }));
