@@ -10,11 +10,12 @@ const providerMarks: Readonly<Record<AuthProvider, string>> = { microsoft: "⊞"
 
 export type LoginPageProps = {
   readonly invitation?: boolean;
+  readonly device?: boolean;
   readonly notice?: string;
   readonly onLogin: (provider: AuthProvider) => void;
 };
 
-export const LoginPage = ({ invitation = false, notice, onLogin }: LoginPageProps) => {
+export const LoginPage = ({ invitation = false, device = false, notice, onLogin }: LoginPageProps) => {
   const { messages: { auth: { login: m }, workspace: { app, projects } } } = useI18n();
   const [state, setState] = useState<{ status: "loading" | "ready" | "error"; providers: readonly AuthProvider[] }>({ status: "loading", providers: [] });
   const [attempt, setAttempt] = useState(0);
@@ -32,7 +33,7 @@ export const LoginPage = ({ invitation = false, notice, onLogin }: LoginPageProp
   return <div className="auth-page">
     <aside className="auth-aside"><a className="brand" href="/" aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
       <div className="auth-copy"><h2>{m.heroTitleFirst}<br />{m.heroTitleSecond}</h2><p>{m.heroDetail}</p><div className="auth-visual" aria-hidden="true">{m.milestones.map((milestone) => <span key={milestone}>{milestone}</span>)}</div></div><p className="auth-caption">{m.heroCaption}</p></aside>
-    <main className="auth-main"><section className="auth-card"><LanguageSelector /><p className="eyebrow">{m.welcome}</p><h1>{m.title}</h1><p className="subtitle">{invitation ? m.inviteSubtitle : m.subtitle}</p>
+    <main className="auth-main"><section className="auth-card"><LanguageSelector /><p className="eyebrow">{m.welcome}</p><h1>{m.title}</h1><p className="subtitle">{invitation ? m.inviteSubtitle : device ? m.deviceSubtitle : m.subtitle}</p>
       {notice !== undefined && <div className="notice warning" role="status"><p>{notice}</p></div>}
       {state.status === "loading" && <p role="status"><span className="spinner" aria-hidden="true" />{m.providersLoading}</p>}
       {state.status === "error" && <div className="notice error" role="alert"><p>{m.providersError}</p><button className="button" type="button" onClick={() => setAttempt((value) => value + 1)}>{projects.retry}</button></div>}

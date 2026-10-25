@@ -47,3 +47,10 @@ export type ProjectInvitationInspection = {
   readonly member?: ProjectMember;
 };
 export type InvitationInspection = ProjectInvitationInspection;
+
+export type DeviceAuthorizationStatus = "pending" | "approved" | "denied" | "expired" | "consumed";
+export type DeviceAuthorizationInspection = {
+  readonly userCode: string;
+  readonly expiresAt: string;
+  readonly status: DeviceAuthorizationStatus;
+};

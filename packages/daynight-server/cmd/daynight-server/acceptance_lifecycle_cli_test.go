@@ -420,8 +420,8 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		}); err != nil {
 			t.Fatal("cannot persist migrated schema and resource snapshots")
 		}
-		if len(migration.AfterLedger) != 16 || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || migration.AfterLedger[12].Version != 13 || migration.AfterLedger[13].Version != 14 || migration.AfterLedger[14].Version != 15 || migration.AfterLedger[15].Version != 16 || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
-			t.Fatal("startup did not append the platform, status, task sync and worker migrations while preserving prior ledger, dependencies and attachments")
+		if len(migration.AfterLedger) != 17 || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || migration.AfterLedger[12].Version != 13 || migration.AfterLedger[13].Version != 14 || migration.AfterLedger[14].Version != 15 || migration.AfterLedger[15].Version != 16 || migration.AfterLedger[16].Version != 17 || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
+			t.Fatal("startup did not append the platform, status, task sync, worker and device authorization migrations while preserving prior ledger, dependencies and attachments")
 		}
 		acceptanceStatusMigrationRows(t, migration.StatusBeforeRows, migration.AfterRows)
 		user := acceptanceDecode[api.User](t, process.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK)

@@ -215,7 +215,9 @@ ready 默认最多 10 项，必要时使用 1..100 的 `--limit`。服务按创�
 
 在仓库内可省略 `--project`，由 CLI 按 Git origin URL 匹配服务中的项目；显式指定的
 项目优先。handbook 说明项目定位规则，不展开本地绑定文件与忽略规则的内部实现。
-无匹配不自动创建项目，配置缺失保留 setup 指引；网络、配置与歧义错误按真实原因处理。
+无匹配不自动创建项目。服务 origin 缺省使用 `https://daynight.cc`；缺少本地凭据或服务 401
+提示 `daynight login`，不自动启动登录。显式 PAT stdin 配置保留为自动化入口；review 配置缺失
+保留 setup 指引。网络、非法配置与歧义错误按真实原因处理。
 
 handbook 规定基于已读内容的修改必须携带精确 `--if-version`，包括完整 int64 十进制
 精度。update 和 set-status 都绑定该决策版本；默认临时 GET 不能

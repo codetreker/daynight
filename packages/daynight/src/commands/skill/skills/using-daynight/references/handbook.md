@@ -9,7 +9,9 @@ needed to use them correctly.
 
 | Command | Purpose |
 |---|---|
-| `setup` | Configure access to the service origin and optional personal token. |
+| `login` | Authorize CLI access through the browser using a device code. |
+| `logout` | Revoke and remove the current CLI credential. |
+| `setup` | Configure review repositories or explicit test-server/automation overrides. |
 | `project create` | Register a repository as a project or find its existing project. |
 | `project list` | Find projects on the configured service. |
 | `project show` | Inspect a project's details. |
@@ -27,17 +29,29 @@ needed to use them correctly.
 
 ## Operational context
 
-**Service credentials.** Read the installed `daynight setup --help` for credential
-configuration. Use setup's hidden interactive token prompt or its explicit
-stdin option; never put a token in command arguments, chat, task descriptions,
-checkpoints or attachments. A configured token is bound to the normalized service
-origin: changing the origin removes the previous token. Tokens require HTTPS
-except for literal localhost or loopback HTTP addresses. Project discovery and
-explicit project IDs grant no access; the service decides from current membership
-when authorization is enabled. A 401 points to setup and does not permit an
-anonymous retry or a blind repeat of a mutation. Reconcile an unconfirmed write
-before another mutation. Setup saves configuration and performs no login or
-network check.
+**Service credentials.** The CLI defaults to `https://daynight.cc` without a
+configuration file or `serverUrl`. An explicit origin overrides it for a test
+server. Use `daynight login` to display a code and open the browser verification
+page, or `daynight login --no-browser` to authorize in another browser. The user
+must compare the code, check the account and explicitly approve. A saved CLI
+credential lasts thirty days and can be revoked from the Web account's token
+list. `daynight logout` revokes the current credential and clears its saved value
+after confirmation or an already-invalid response; network or unconfirmed
+failures remain visible. Login does not execute any pending business operation.
+
+A service command without a saved credential fails before dispatch and points
+to `daynight login`; a server 401 gives the same guidance. Do not automatically
+start login, retry anonymously, or blindly repeat a mutation. Reconcile an
+unconfirmed write before another mutation. Project discovery and explicit project
+IDs grant no access; current service membership decides authorization.
+
+For noninteractive automation, read `daynight setup --help` and use the explicit
+`--server-token-stdin` option with a token from a secret source. Never put a token
+in command arguments, chat, task descriptions, checkpoints or attachments.
+A token is bound to the normalized origin, and changing the origin removes its
+old local value. Credentials require HTTPS except for literal localhost or
+numeric-loopback HTTP. Setup saves configuration without network or login checks;
+ordinary setup does not prompt for a server address or token.
 
 **Project discovery.** Inside a Git worktree, task commands can omit `--project`:
 the CLI matches the origin repository URL to a project on the configured

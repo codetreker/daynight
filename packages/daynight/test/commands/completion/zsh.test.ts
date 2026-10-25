@@ -5,6 +5,13 @@ import { renderZshCompletion } from "../../../src/commands/completion/zsh.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("native zsh completion", () => {
+  it("offers explicit login and logout with a boolean browser option", () => {
+    const script = renderZshCompletion(commandTree);
+    expect(script).toContain("'login:Sign in through a browser using a device code'");
+    expect(script).toContain("'logout:Revoke the current CLI credential and remove it locally'");
+    expect(script).toContain("(--no-browser)--no-browser[Display the authorization link without opening a browser]");
+  });
+
   it.each(["create", "update", "list", "ready"])("completes public platform values for %s", (name) => {
     const script = renderZshCompletion(taskDefinition.commands!.find((command) => command.name === name)!);
     expect(script).toContain(name === "create" || name === "update" ? "--required-platform=" : "--compatible-platform=");

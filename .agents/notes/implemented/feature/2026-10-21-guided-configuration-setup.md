@@ -4,111 +4,97 @@ Status: implemented
 
 ## Problem
 
-A newly installed CLI cannot execute a server command without its server origin
-or a review command without a registered repository. An absent configuration file
-exposes a filesystem error without helping an interactive operator supply the
-necessary values. Requiring every machine to configure every capability also
-burdens machines that only use project and task management. Configuration changes
-must preserve unrelated settings and must not activate runtime resources.
+When this decision was adopted, a new CLI installation required a service origin
+for project/task calls and a registered repository for review. An absent file
+reported a filesystem error without helping an interactive operator provide the
+required values. Requiring every machine to configure every capability burdens
+machines that only need one. Configuration changes must preserve unrelated
+settings and must not activate runtime resources.
 
 ## Decision
 
-Valid project/task operations guide only an absent configuration file or
-`serverUrl`; valid review run/list operations guide only an absent file or
-`repositories` field. They prompt only with terminal stdin and stderr. Complete
-configuration executes directly. Shared YAML/schema errors, invalid present values
-for the selected capability, empty review repository lists and ordinary read
-failures retain their errors. Business values owned only by the other capability
-remain outside the current projection.
-Noninteractive missing configuration fails with an explicit setup command.
-The [client requirements](../../../../docs/spec/daynight.md#c6-按需配置引导)
-own these observable rules; the [client design](../../../../docs/design/daynight.md#按需配置引导)
-owns composition and persistence.
+Review run/list operations guide an absent file or `repositories` field only when
+stdin and stderr are terminals. Complete configuration executes directly.
+Shared YAML/schema errors, invalid selected values, empty review repository lists
+and ordinary read failures retain their errors; unrelated capability values stay
+outside the current projection. Noninteractive missing review configuration gives
+an explicit setup command. No common initialization-complete marker is stored.
 
-`daynight setup` selects server access, review or both. Explicit `--server-url`,
-`--review-repo` and optional `--review-path` configure the selected capabilities
-without prompts. The path option requires a repository. The
-[credential decision](../architecture/2026-10-22-cli-server-credentials.md) extends
-server setup with optional hidden token input and the explicit boolean
-`--server-token-stdin` path. Missing tokens do not trigger automatic setup. There
-is no common initialization-complete marker and no implicit server origin. A
-server-only machine never needs review configuration.
+The original design also guided a missing service origin and offered a
+server/review/both choice in plain `daynight setup`. The
+[device-login decision](../architecture/2026-10-25-cli-device-login.md) replaces
+that service branch with the production default and explicit login/logout.
+Plain setup now collects review configuration. Explicit `--server-url`,
+`--review-repo`, optional `--review-path`, and `--server-token-stdin` retain
+noninteractive configuration; a path requires its repository. A service-only
+machine needs no review configuration. The
+[client requirements](../../../../docs/spec/daynight.md#c6-按需配置引导) own the
+current behavior and the [client design](../../../../docs/design/daynight.md#按需配置引导)
+owns composition.
 
-Input collection precedes configuration mutation. A single write transaction
-acquires the configuration lock and rereads the latest document. Changes to
-unrelated fields are preserved; a changed selected field fails with an explicit
-conflict rather than overwriting intervening input. Server origin and token are
-observed together; changing the normalized origin atomically removes the old
-token. The merged selected values are validated before atomic replacement. It
-preserves comments, other capabilities and existing repository paths. The
-credential decision requires a resulting token-bearing file to use POSIX mode
-`0600`, including writes by other capability owners; files without a token retain
-the existing permission behavior. The
-[registration decision](2026-10-18-add-repo-configuration.md) continues to own
-remote identity, saved paths, idempotency and configuration-only registration.
-It supplies the shared repository updater rather than a second registration path.
+Input collection precedes mutation. One transaction takes the configuration lock,
+rereads the latest document, checks selected fields against their observed values,
+validates the merged result and replaces the file atomically. A selected-field
+change fails explicitly; completed changes to unrelated fields are preserved.
+Origin and token are observed together, with a changed normalized origin clearing
+the old credential atomically. Comments, other capabilities and existing
+repository paths remain. Credential-bearing results use POSIX `0600` for every
+writer, as required by the
+[credential decision](../architecture/2026-10-22-cli-server-credentials.md).
+Files without a token keep their existing permission behavior. The
+[registration decision](2026-10-18-add-repo-configuration.md) owns repository
+identity, paths, idempotency and its shared updater.
 
-Prompts and save diagnostics use stderr. The shared CLI prompt and cancellation
-lifecycle also serves [skill installation](../../../../docs/design/daynight-agent-skill.md),
-while configuration collection and persistence remain setup-owned. Cancellation
-signals and EOF stop input
-without saving partial values or entering the original operation. Setup does not
-access the network, prepare clones, initialize SQLite or activate a reviewer.
-Automatic setup then executes the original operation once with the original
-arguments. Initial server configuration I/O remains bounded. An actual setup
-releases that deadline, retains cancellation and starts a fresh business budget
-for the post-setup reload; complete configuration keeps the original deadline.
-Human input consumes no business budget. A later service or review failure keeps
-the saved configuration.
+Prompts and save diagnostics use stderr, preserving machine-readable stdout.
+The shared CLI prompt/cancellation lifecycle also serves
+[skill installation](../../../../docs/design/daynight-agent-skill.md).
+Cancellation signals or EOF stop input without partial saves or original business
+execution. Setup does not access the network, prepare clones, initialize SQLite
+or start review. After successful review guidance, the original operation executes
+once with its original arguments. Human input consumes no business budget, and
+a later failure keeps the saved configuration.
 
-This partially supersedes the missing-configuration startup prerequisite in the
-[user-home configuration decision](../architecture/2026-10-16-user-home-review-configuration.md)
+The original guidance partially superseded startup prerequisites in the
+[user-home decision](../architecture/2026-10-16-user-home-review-configuration.md)
 and [project/task decision](../architecture/2026-10-20-project-task-cli-design.md).
-Their original explicit preparation avoided implicit configuration mutations and
-kept configuration errors visible. The replacement retains those error and
-runtime boundaries while adding an explicit interactive collection step. The
-fixed file location, review state format and command-specific field validation
-remain unchanged.
+Explicit preparation had avoided implicit writes and exposed configuration errors;
+guidance retained those error/runtime boundaries while adding interactive
+collection. The file location, review state format and capability projections
+continue unchanged.
 
 ## Alternatives
 
-**Require manual configuration before every first command.** This preserves the
-original explicit preparation model, but a fresh installation reports an absent
-file before an operator has learned how to create it. Scriptable setup remains
-available while interactive commands supply the same operation when needed.
+**Require manual setup before every first command.** It keeps preparation
+explicit but reports an absent file before a new operator learns the available
+configuration command. Scriptable setup remains available; interactive review
+commands collect the same values when needed.
 
-**Configure server access and review together on every machine.** This could
-establish one initialization-complete state, but asks for repository registration
-on machines that do not run review. Independent required fields let each capability
-be introduced only when it is used.
+**Configure service access and review together on every machine.** It could
+establish one initialization state but requires repository registration on machines
+that never review. Independent projections permit separate use, and the default
+production origin removes the service-address initialization requirement.
 
-**Save each answer as it is entered.** This can persist one valid capability
-before another is supplied, but cancellation would leave a partial setup and
-separate saves could overwrite intervening changes. Collection followed by one
-locked reread and replacement preserves one configuration transaction.
+**Save every answer immediately.** Cancellation could leave a partial setup,
+and separate writes could overwrite intervening changes. Collection followed by
+one locked reread/replacement preserves a single configuration transaction.
 
 ## Consequences
 
-Initial interactive use can continue from configuration to the requested result.
-Existing scripted business calls remain noninteractive and receive a concrete
-configuration command when incomplete. Redirecting stdout preserves machine-readable
-results. Only current command requirements are checked; there is no requirement to
-configure optional capabilities.
+Interactive review use can continue from required configuration to the requested
+result, with stdout and runtime ownership preserved. Service use follows explicit
+device login, without an address prompt. Current command requirements are checked
+independently, and invalid configured values remain visible.
 
-Input handling and configuration transactions have separate lifetimes. The prompt
-must finish before taking the write lock, and business startup must occur after
-persistence, keeping human delay outside runtime deadlines and review locks.
-Only the structured configuration-missing result releases the initial server
-operation; ordinary configuration failures and later business errors do not reset
-its deadline.
-Concurrent writers can fail on the existing fail-fast configuration lock. Manual
-editors remain outside that lock protocol; abnormal lock recovery retains its
-existing operator checks.
+Prompt and persistence lifetimes stay separate. Input finishes before acquiring
+the write lock; business startup follows persistence. Concurrent writers can fail
+on the existing fail-fast lock. Manual editors do not participate in that protocol,
+and abnormal lock recovery retains its operator checks.
 
-The original decision left credential input outside setup because only a service
-origin was required. The credential decision adds hidden and stdin input while
-keeping setup independent of network and runtime state. Service deployment,
-connectivity validation and live reviewer reload retain separate owners. The
-requested business operation reports its own connection, authentication and
-runtime errors after configuration is saved; a 401 gives setup guidance without
-an anonymous retry or mutation replay.
+The original service-input path released its initial operation deadline during
+human input and restarted the business budget after saving. Service commands now
+resolve their effective origin and credential within the ordinary business budget;
+device login has its own deadline. The original hidden credential-input extension
+kept setup independent of network state; current stdin setup retains that rule.
+Deployment, connectivity validation and live reviewer reload have their own
+owners. Business errors remain visible, and authentication errors never cause an
+anonymous retry or mutation replay.

@@ -5,12 +5,11 @@ import { parseConfigurationDocument } from "./document.js";
 import { MissingConfigurationFileError, isMissingConfiguration } from "./errors.js";
 import { readConfigurationSource, updateConfigurationFile } from "./files.js";
 import { resolveConfigurationPaths } from "./paths.js";
-import { normalizeServerUrl } from "./server.js";
+import { configuredServerUrl, normalizeServerUrl } from "./server.js";
 import { parseServerTokenInput, validateServerToken, validateTokenTransport } from "./server-token.js";
 import type { AddRepositoryInput } from "../commands/review/repositories.js";
 
 export type SetupInput = { serverUrl?: string; serverTokenStdin?: boolean; reviewRepository?: AddRepositoryInput };
-type Capability = "server" | "review";
 
 const optionalSource = async (context: CliContext, signal: AbortSignal): Promise<string | undefined> => {
   try { return await readConfigurationSource(resolveConfigurationPaths(context.homeDirectory()), signal); }
@@ -20,7 +19,6 @@ const optionalSource = async (context: CliContext, signal: AbortSignal): Promise
 export const configure = async (
   context: CliContext,
   input?: SetupInput,
-  capability?: Capability,
   suppliedSignal?: AbortSignal,
 ): Promise<void> => withCliCancellation(context, async (signal) => {
   if (input?.serverUrl !== undefined) normalizeServerUrl(input.serverUrl);
@@ -28,7 +26,7 @@ export const configure = async (
   const source = await optionalSource(context, signal);
   const baseline = source === undefined ? {} : parseConfigurationDocument(source, paths).mapping;
   const ask = async (question: string): Promise<string> => {
-    if (context.prompt?.isInteractive !== true) throw new Error("Interactive setup requires terminal input and stderr. Use daynight setup --server-url <url> or daynight setup --review-repo <remote>.");
+    if (context.prompt?.isInteractive !== true) throw new Error("Interactive review setup requires terminal input and stderr. Use daynight setup --review-repo <remote>.");
     signal.throwIfAborted();
     const answer = await context.prompt.ask(question, signal);
     signal.throwIfAborted();
@@ -46,49 +44,16 @@ export const configure = async (
     }
   };
   try {
-    let server = input?.serverUrl !== undefined || input?.serverTokenStdin === true || capability === "server";
-    let review = input?.reviewRepository !== undefined || capability === "review";
-    if (input === undefined && capability === undefined) {
-      const selected = await retry("Configure (server/review/both): ", (answer) => {
-        if (!["server", "review", "both"].includes(answer)) throw new Error("Choose server, review, or both.");
-        return answer;
-      });
-      server = selected !== "review";
-      review = selected !== "server";
-    }
-    let serverUrl = input?.serverUrl;
-    if (input?.serverTokenStdin === true && serverUrl === undefined) {
-      if (!Object.hasOwn(baseline, "serverUrl")) throw new Error("--server-token-stdin requires --server-url when no serverUrl is configured.");
-      serverUrl = normalizeServerUrl(baseline.serverUrl);
-    }
-    if (server && serverUrl === undefined) serverUrl = await retry("Server URL (for example http://127.0.0.1:8787): ", normalizeServerUrl);
-    if (serverUrl !== undefined) serverUrl = normalizeServerUrl(serverUrl);
-    const sameOrigin = serverUrl !== undefined && Object.hasOwn(baseline, "serverUrl") && normalizeServerUrl(baseline.serverUrl) === serverUrl;
+    const server = input?.serverUrl !== undefined || input?.serverTokenStdin === true;
+    const review = input === undefined || input.reviewRepository !== undefined;
+    const serverUrl = server ? input?.serverUrl === undefined ? configuredServerUrl(baseline) : normalizeServerUrl(input.serverUrl) : undefined;
+    const sameOrigin = server && serverUrl === configuredServerUrl(baseline);
     let serverToken: string | undefined;
     if (input?.serverTokenStdin === true) {
       validateTokenTransport(serverUrl!);
       if (context.readStdin === undefined) throw new Error("serverToken stdin input is unavailable in this context.");
       serverToken = parseServerTokenInput(await context.readStdin(signal));
       signal.throwIfAborted();
-    } else if (server && input?.serverUrl === undefined) {
-      if (context.prompt?.isInteractive !== true || context.prompt.askSecret === undefined) throw new Error("Hidden terminal input is required to configure serverToken interactively.");
-      const question = sameOrigin && Object.hasOwn(baseline, "serverToken") ? "Server token (hidden; blank to keep current token): " : "Server token (hidden; blank to skip): ";
-      for (;;) {
-        signal.throwIfAborted();
-        const answer = await context.prompt.askSecret(question, signal);
-        signal.throwIfAborted();
-        if (answer === "") break;
-        try {
-          const candidate = validateServerToken(answer);
-          validateTokenTransport(serverUrl!);
-          serverToken = candidate;
-          break;
-        }
-        catch (cause) {
-          if (cause instanceof CliCancelledError) throw cause;
-          context.stderr(`${cause instanceof Error ? cause.message : String(cause)}\n`);
-        }
-      }
     }
     if (server && serverToken === undefined && sameOrigin && Object.hasOwn(baseline, "serverToken")) {
       validateServerToken(baseline.serverToken);
@@ -121,8 +86,8 @@ export const configure = async (
       const current = currentSource === undefined ? undefined : parseConfigurationDocument(currentSource, paths);
       if (fingerprint(current?.mapping ?? {}) !== fingerprint(baseline)) throw new Error("Configuration changed during setup. Run setup again to review the current values.");
       const document = current?.document ?? new Document({});
-      if (serverUrl !== undefined) {
-        document.set("serverUrl", serverUrl);
+      if (server) {
+        if (input?.serverUrl !== undefined) document.set("serverUrl", serverUrl);
         if (serverToken !== undefined) document.set("serverToken", serverToken);
         else if (!sameOrigin) document.delete("serverToken");
       }
@@ -140,20 +105,19 @@ export const configure = async (
   }
 }, suppliedSignal, () => new CliCancelledError("Setup cancelled."));
 
-export const guideMissingConfiguration = async <Result>(
+export const guideReviewConfiguration = async <Result>(
   context: CliContext,
-  capability: Capability,
   load: () => Promise<Result>,
   signal?: AbortSignal,
 ): Promise<Result> => {
   try { return await load(); }
   catch (cause) {
-    if (!isMissingConfiguration(cause, capability === "server" ? "serverUrl" : "repositories")) throw cause;
+    if (!isMissingConfiguration(cause, "repositories")) throw cause;
     if (context.prompt?.isInteractive !== true) {
-      const command = capability === "server" ? "daynight setup --server-url <url>" : "daynight setup --review-repo <remote>";
+      const command = "daynight setup --review-repo <remote>";
       throw new Error(`${cause instanceof Error ? cause.message : String(cause)} Run ${command} to configure it.`, { cause: cause instanceof MissingConfigurationFileError ? cause.cause : cause });
     }
-    await configure(context, undefined, capability, signal);
+    await configure(context, undefined, signal);
     return load();
   }
 };

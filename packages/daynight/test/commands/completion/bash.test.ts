@@ -5,6 +5,12 @@ import type { CommandDefinition } from "../../../src/cli/schema.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("Bash completion rendering", () => {
+  it("offers explicit login and logout with a boolean browser option", () => {
+    const script = renderBashCompletion(commandTree);
+    expect(script).toContain("'login' 'logout'");
+    expect(script).toContain("dn_options=('--no-browser' '-h' '--help')");
+  });
+
   it.each(["create", "update", "list", "ready"])("completes public platform values for %s", (name) => {
     const script = renderBashCompletion(taskDefinition.commands!.find((command) => command.name === name)!);
     expect(script).toContain(name === "create" || name === "update" ? "'--required-platform'" : "'--compatible-platform'");

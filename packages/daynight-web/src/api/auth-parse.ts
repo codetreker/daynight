@@ -1,7 +1,7 @@
 import { array, boolean, id, malformed, nonemptyString, record, string, timestamp } from "./parse";
 import { parseApiJson } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
-import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, User } from "./auth-types";
+import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, User } from "./auth-types";
 
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 const unique = <T>(items: T[], key: (item: T) => string): T[] => {
@@ -96,4 +96,17 @@ export const parseInvitationInspection = (value: unknown): ProjectInvitationInsp
     projectId, projectName: nonemptyString(data.projectName),
     ...(Object.hasOwn(data, "member") ? { member: parseMember(data.member, projectId) } : {}),
   };
+};
+
+export const normalizeDeviceUserCode = (value: string): string | null => {
+  const code = value.trim().toUpperCase().replace(/[- \t]/g, "");
+  return /^[BCDFGHJKLMNPQRSTVWXZ]{10}$/.test(code) ? `${code.slice(0, 5)}-${code.slice(5)}` : null;
+};
+
+export const parseDeviceAuthorization = (value: unknown, userCode: string): DeviceAuthorizationInspection => {
+  const data = record(value);
+  const code = string(data.userCode);
+  const status = data.status;
+  if (code !== userCode || normalizeDeviceUserCode(code) !== code || !["pending", "approved", "denied", "expired", "consumed"].includes(string(status))) return malformed();
+  return { userCode: code, expiresAt: timestamp(data.expiresAt), status: status as DeviceAuthorizationInspection["status"] };
 };

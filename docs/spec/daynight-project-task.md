@@ -32,15 +32,15 @@ JSON 保留真实时间或明确的 `null`；Project JSON 同步保留项目阈�
 [鉴权需求](daynight-auth.md)定义完整的个人访问令牌、项目成员授权和私有项目发现。
 CLI 的令牌配置与 HTTP 传输已实现；[凭据决策](../../.agents/notes/implemented/architecture/2026-10-22-cli-server-credentials.md)
 记录其机制。[架构](../design/daynight-auth.md)拥有服务组合；生产服务对全部项目、任务、图和附件请求强制鉴权。
-使用当前服务前，通过 Web 登录并创建 PAT，再运行 setup 保存令牌。仓库关联只选择
-项目，不授予访问权限，也不保存认证凭据。
+使用 `daynight login` 通过浏览器设备授权后即可访问默认生产服务；自动化仍可显式配置 PAT。
+仓库关联只选择项目，不授予访问权限，也不保存认证凭据。
 
 ## PT1. 范围与命令边界
 
 交付包含 project 创建、列表和详情，以及 project 内 task 的创建、列表、有界 ready
 选择、详情、更新和完整图查询。本文已交付的命令复用现有服务接口，不新增 server API、数据库字段、project 唯一
-约束或任务执行能力。个人令牌复用既有 HTTP 请求；客户端配置允许省略令牌，
-强制鉴权的服务将对应请求拒绝为 401。地址配置不改变服务现有的 loopback 监听边界。
+约束或任务执行能力。凭据复用既有 Bearer 请求通道；配置允许省略令牌，但业务命令在本地无凭据时
+直接提示登录。设备授权接口由[鉴权需求](daynight-auth.md)拥有。地址配置不改变服务现有的 loopback 监听边界。
 
 顶层、命令组和操作帮助必须先于配置加载、Git、文件写入和网络访问执行。裸
 `project`、`task` 显示各自帮助。新增业务依赖不得成为 review、自更新、帮助或版本
@@ -48,31 +48,32 @@ CLI 的令牌配置与 HTTP 传输已实现；[凭据决策](../../.agents/notes
 
 ## PT2. 服务配置
 
-全局配置继续使用既有 `~/.daynight/config.yml`，增加 `serverUrl`：
+全局配置继续使用 `~/.daynight/config.yml`。配置文件或 `serverUrl` 省略时使用
+`https://daynight.cc`，普通生产使用无需设置地址或进入配置引导。`serverUrl` 保留为测试服务器覆盖：
 
 ```yaml
 serverUrl: http://127.0.0.1:8787
 ```
 
-该值是包含协议、主机和可选端口的 HTTP 或 HTTPS 服务根地址；省略端口使用协议的
-默认端口。允许结尾根斜线，拒绝凭据、非根路径、query、fragment、空值及错误类型。
-客户端添加 `/api/v1`。同一配置可有可选 `serverToken`，其值为非空 opaque visible
-ASCII；配置令牌时服务必须是 HTTPS，或 host 为字面量 `localhost`、`127.0.0.0/8` 内的数值 IPv4
-或 `::1` 的 HTTP。未知主机即使解析为 loopback 也不获得 HTTP 例外。令牌缺失不
-触发自动引导。缺少文件或 `serverUrl` 时，按[客户端 C6](daynight.md#c6-按需配置引导)
-仅引导服务连接；保存成功后执行原命令。无效值和读取错误须说明配置文件、字段及原因，
-非交互环境缺配置时给出 `daynight setup --server-url <url>` 指引。
+明确提供的地址包含协议、主机和可选端口，允许结尾根斜线；拒绝凭据、非根路径、query、fragment、
+空值和错误类型。省略端口采用协议默认值，客户端添加 `/api/v1`。非法值与读取错误继续暴露，
+不得回退到默认服务。
 
-使用强制鉴权服务时还须通过 setup 的隐藏输入或显式 stdin 方式保存 Web 创建的
-个人访问令牌；令牌不出现在命令参数、仓库关联文件、任务或附件中。配置保存本身
-不登录，也不验证令牌或成员权限。
+同一配置中的 `serverToken` 为可选的非空 opaque visible ASCII。业务命令没有本地凭据时，在请求前
+报错并提示 `daynight login`；已有凭据被服务拒绝为 401 时同样提示登录。CLI 不自动登录或重试写请求。
+普通用户通过显式 `login` 完成设备授权并自动保存凭据，通过 `logout` 撤销并清除；
+[鉴权需求](daynight-auth.md)拥有完整流程。自动化可通过显式 `setup --server-token-stdin` 保存 PAT，
+可复用配置 origin 或生产默认值。setup 本身不登录、不验证连通性、令牌或成员权限。
 
-仅使用 project/task 时，不要求 `repositories`、review 路径、
-SQLite、GitHub CLI 或 Copilot。共享层读取严格 YAML 并识别已登记的顶层字段；各
-命令只校验和解析自己的配置投影。project/task 不因无关 review 字段的业务校验失败
-而拒绝执行，review 也不要求有效的 `serverUrl`。YAML 语法错误、重复 key 和未知
-顶层字段仍需暴露。既有 review 配置、状态格式和路径保持原有语义。配置引导和显式 setup 仅保存配置，
-不验证服务可达性；人工输入时间不计入业务期限。
+凭据只允许 HTTPS，或 host 为字面量 `localhost`、`127.0.0.0/8` 数值 IPv4、`::1` 的 HTTP。
+未知主机解析到 loopback 也不获得例外。令牌不进入命令参数、仓库关联、任务、附件或诊断。
+origin 变化与清除旧凭据同次原子保存；同 origin 保留。配置锁、并发比较、POSIX `0600`、
+YAML 诊断和显式 stdin 输入的完整要求由[客户端 C6](daynight.md#c6-按需配置引导)拥有。
+
+project/task 不要求 `repositories`、review 路径、SQLite、GitHub CLI 或 Copilot。
+共享层严格读取 YAML 并识别已登记顶层字段，各能力只校验自己的业务投影。
+project/task 不因无关 review 值而失败，review 也不要求服务配置；语法错误、重复键、未知字段和
+读取错误仍须暴露。review 配置、状态格式和路径保持原有语义。
 
 ## PT3. 仓库地址正规化
 
@@ -314,7 +315,7 @@ API 字段的名称、类型和原始字符串，不应用终端显示转义或�
 
 结果写入 stdout，错误及诊断写入 stderr。成功退出 `0`，参数错误退出 `2`，操作
 失败退出 `1`。诊断须标识操作及相关 project/task；服务错误保留 `code`、`message`、
-`requestId` 和有关 details。401 追加 setup 配置令牌的指导，不回退匿名、不执行
+`requestId` 和有关 details。401 追加 `daynight login` 指导，不回退匿名、不执行
 登录预检或重放原请求。403、404、409 继续既有结果及重新发现规则。
 不得输出凭据、请求环境或数据库细节；YAML 诊断仅含安全类别、代码和位置，不
 携带标量或原始解析器错误链。
@@ -343,7 +344,7 @@ API 字段的名称、类型和原始字符串，不应用终端显示转义或�
 
 | 编号 | 必须提供的证据 |
 |---|---|
-| V1 | `serverToken` 可选；配置时验证可见 ASCII 和 HTTPS/字面量 loopback HTTP，全部项目/任务/附件请求附加 Bearer，不跟随重定向；401 给出 setup 指导且不重试；review、帮助、版本及 update 保持配置与依赖隔离 |
+| V1 | 配置文件或 `serverUrl` 省略时默认 `https://daynight.cc`；无本地凭据在业务请求前提示 `daynight login`，401 同样提示且不重试；配置令牌校验可见 ASCII 与 HTTPS/字面量 loopback HTTP，已有请求附加 Bearer且不跟随重定向；review、帮助、版本及 update 保持依赖隔离 |
 | V2 | 从真实 Git 仓库根目录、子目录、linked worktree 和 submodule 正确读取有效 origin；缺少仓库或 origin 时错误可辨 |
 | V3 | HTTPS、SSH、SCP 等价 fixture 得到同一身份；单独 `.git` 路径有可比较身份，路径大小写、自定义端口、特殊用户、alias 和显式相对路径不被误合并 |
 | V4 | 受控 HTTP 验证创建预检与 task discover 跨全部 project 页区分零、唯一、多匹配；创建唯一匹配保留原资源，多匹配列出 ID；后续页失败不保存关联、不输出成功、不发送 project POST 或 task 写入；project 操作不写绑定或 ignore |

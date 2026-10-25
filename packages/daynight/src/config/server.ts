@@ -1,8 +1,10 @@
 import { parseConfigurationDocument } from "./document.js";
 import { readConfigurationSource } from "./files.js";
 import type { ConfigurationPaths } from "./paths.js";
-import { MissingConfigurationFieldError } from "./errors.js";
+import { MissingConfigurationFileError } from "./errors.js";
 import { validateServerToken, validateTokenTransport } from "./server-token.js";
+
+export const DEFAULT_SERVER_URL = "https://daynight.cc";
 
 export type ServerConfiguration = { serverUrl: string; serverToken?: string };
 
@@ -27,10 +29,7 @@ export const normalizeServerUrl = (value: unknown): string => {
 export const parseServerConfiguration = (source: string, paths: ConfigurationPaths): ServerConfiguration => {
   try {
     const { mapping } = parseConfigurationDocument(source, paths);
-    if (!Object.hasOwn(mapping, "serverUrl")) {
-      throw new MissingConfigurationFieldError("serverUrl", "serverUrl is not configured; use daynight setup --server-url <url> to set the daynight-server HTTP(S) origin.");
-    }
-    const serverUrl = normalizeServerUrl(mapping.serverUrl);
+    const serverUrl = configuredServerUrl(mapping);
     if (!Object.hasOwn(mapping, "serverToken")) return { serverUrl };
     const serverToken = validateServerToken(mapping.serverToken);
     validateTokenTransport(serverUrl);
@@ -40,5 +39,15 @@ export const parseServerConfiguration = (source: string, paths: ConfigurationPat
   }
 };
 
-export const loadServerConfiguration = async (paths: ConfigurationPaths, signal?: AbortSignal): Promise<ServerConfiguration> =>
-  parseServerConfiguration(await readConfigurationSource(paths, signal), paths);
+export const configuredServerUrl = (mapping: Record<string, unknown>): string =>
+  Object.hasOwn(mapping, "serverUrl") ? normalizeServerUrl(mapping.serverUrl) : DEFAULT_SERVER_URL;
+
+export const loadServerConfiguration = async (paths: ConfigurationPaths, signal?: AbortSignal): Promise<ServerConfiguration> => {
+  let source: string;
+  try { source = await readConfigurationSource(paths, signal); }
+  catch (cause) {
+    if (cause instanceof MissingConfigurationFileError) return { serverUrl: DEFAULT_SERVER_URL };
+    throw cause;
+  }
+  return parseServerConfiguration(source, paths);
+};

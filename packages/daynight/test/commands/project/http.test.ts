@@ -33,7 +33,7 @@ const fixture = async (serverUrl: string, operationLimits?: { readonly totalMs: 
   const home = await mkdtemp(path.join(temporary, "home 用户 "));
   cleanups.push(() => rm(home, { recursive: true, force: true }));
   await mkdir(path.join(home, ".daynight"));
-  await writeFile(path.join(home, ".daynight/config.yml"), `serverUrl: ${serverUrl}\n`);
+  await writeFile(path.join(home, ".daynight/config.yml"), `serverUrl: ${serverUrl}\nserverToken: fixture-token\n`);
   const signals = new EventEmitter();
   const context = {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: () => home,

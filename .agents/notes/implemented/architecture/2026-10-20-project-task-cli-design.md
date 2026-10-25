@@ -38,15 +38,15 @@ Help, update and review retain their independent execution requirements. The
 the owner of lazy command dispatch. Its original source reorganization preserved
 the existing YAML; this design adopts additional configuration without moving
 those fields or introducing a review-data migration. The original client design
-required global configuration to exist before execution; the
-[guided setup decision](../feature/2026-10-21-guided-configuration-setup.md) partially
-supersedes that prerequisite. Valid service calls guide only an absent file or
-`serverUrl`. Initial configuration I/O remains bounded; an actual setup releases
-that deadline, and the post-setup reload starts a fresh business budget. Invalid
-existing server values remain errors. Server setup now accepts optional hidden
-or explicit stdin token input under the credential decision; origin and token
-share one concurrency observation and an origin change clears the old token
-atomically. Credential-bearing configuration uses POSIX `0600`, while the prior
+required global configuration to exist before execution. The
+[guided setup decision](../feature/2026-10-21-guided-configuration-setup.md) first
+replaced that prerequisite with interactive service/review guidance. The
+[device-login decision](2026-10-25-cli-device-login.md) now defaults an absent
+service origin to `https://daynight.cc` and uses explicit login/logout for ordinary
+access. Service calls without a local credential fail before dispatch with login
+guidance; explicit stdin PAT setup remains for automation. Invalid configured
+values remain errors. Origin and token share one concurrency observation, and
+an origin change clears the old token atomically. Credential-bearing configuration uses POSIX `0600`, while the prior
 file-mode behavior remains for files without a token. Project definitions share
 parameter syntax with help and shell completion. Help and argument validation
 finish before the shared server runtime is loaded. Project creation takes one

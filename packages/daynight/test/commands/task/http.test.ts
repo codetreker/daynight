@@ -39,7 +39,7 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
   await mkdir(temporary, { recursive: true });
   const home = await mkdtemp(path.join(temporary, "home 用户 ")); cleanups.push(() => rm(home, { recursive: true, force: true }));
   await mkdir(path.join(home, ".daynight"));
-  await writeFile(path.join(home, ".daynight/config.yml"), `serverUrl: http://127.0.0.1:${address.port}\n`);
+  await writeFile(path.join(home, ".daynight/config.yml"), `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
   const signals = new EventEmitter();
   const context = { version: "0.0.0", packageDirectory: "unused", homeDirectory: () => home,
     workingDirectory: vi.fn<() => string>(() => { throw new Error("Explicit project must not query cwd"); }), stdout: vi.fn<(value: string) => void>(), stdoutBytes: vi.fn(async () => {}), stderr: vi.fn<(value: string) => void>() };

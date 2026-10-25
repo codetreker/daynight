@@ -1,7 +1,7 @@
-import { ApiError, isAbortError, json, read, request, requestId } from "./client";
-import { decodeAuthJson, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseInvitationInspection, parseInvitations, parseMember, parseMembers, parseMemberVersion, parseRole, parseTokens, parseUser } from "./auth-parse";
+import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId } from "./client";
+import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitations, parseMember, parseMembers, parseMemberVersion, parseRole, parseTokens, parseUser } from "./auth-parse";
 import { project } from "./parse";
-import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, User } from "./auth-types";
+import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, User } from "./auth-types";
 import type { Project } from "./types";
 import { decodeProjectJson } from "./project-json";
 export type * from "./auth-types";
@@ -78,3 +78,27 @@ export const inspectInvitation = (token: string, signal: AbortSignal): Promise<P
   send("/api/v1/invitations/inspect", "POST", 200, secretBody(token), signal, parseInvitationInspection);
 export const acceptInvitation = (token: string, signal: AbortSignal): Promise<ProjectMember> =>
   send("/api/v1/invitations/accept", "POST", 200, secretBody(token), signal, parseMember);
+
+const deviceRequest = (path: string, userCode: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void, decision?: "approve" | "deny"): Promise<Response> => {
+  if (normalizeDeviceUserCode(userCode) !== userCode) throw new ApiError("protocol");
+  const expected = requestId(expectedUserId);
+  return authOperation(signal, async () => {
+    const response = await request(`/api/v1/auth/device/${path}`, signal, { method: "POST", headers: { Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify({ userCode, ...(decision === undefined ? {} : { decision, expectedUserId: expected }) }) });
+    assertResponsePrincipal(response, expected, onIdentityMismatch);
+    return response;
+  });
+};
+
+export const inspectDeviceAuthorization = (userCode: string, expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<DeviceAuthorizationInspection> => authOperation(signal, async () => {
+  const response = await deviceRequest("inspect", userCode, expectedUserId, signal, onIdentityMismatch);
+  return json(response, signal, (data) => {
+    if (response.status !== 200) throw new ApiError("protocol", response.status);
+    return parseDeviceAuthorization(data, userCode);
+  });
+});
+
+export const decideDeviceAuthorization = (userCode: string, decision: "approve" | "deny", expectedUserId: string, signal: AbortSignal, onIdentityMismatch: () => void): Promise<void> => authOperation(signal, async () => {
+  const response = await deviceRequest("decision", userCode, expectedUserId, signal, onIdentityMismatch, decision);
+  if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
+  if (response.status !== 204) throw new ApiError("protocol", response.status);
+});

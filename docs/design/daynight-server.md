@@ -16,7 +16,7 @@
 现有 PostgreSQL task 事务规则不扩展为文件与元数据的原子提交保证。
 
 [鉴权架构](daynight-auth.md)定义已接入运行时的 UniAuth 身份交接、本地用户、会话、
-访问令牌及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
+访问令牌、CLI 设备授权及项目成员授权，行为由[鉴权需求](../spec/daynight-auth.md)拥有。
 [身份基础模块](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
 提供独立的用户/凭据存储和 handler；[项目成员模块](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
 提供事务内授权、私有创建和邀请。`server.New(Dependencies, Config, logger)`
@@ -403,7 +403,8 @@ Compose 网络访问，PostgreSQL 18 数据卷挂到 `/var/lib/postgresql`。
 进程启动时创建 `pgxpool` 并验证数据库连接，然后从 pool 获取并固定一条专用
 `pgxpool.Conn`。该连接取得 PostgreSQL session-level advisory migration lock，
 并在同一物理连接上完成版本读取、校验和全部内嵌 SQL 迁移。当前迁移依次建立 project、
-task/依赖、属性、附件与身份/成员机制，并持久化任务起止和项目设置；应用记录必须是内嵌迁移的有序前缀。锁必须跨越整个迁移
+task/依赖、属性、附件与身份/成员机制，并持久化任务起止、项目设置、设备授权及共享速率窗口；
+应用记录必须是内嵌迁移的有序前缀。锁必须跨越整个迁移
 序列，不能使用会在单个迁移提交时释放的 transaction-level advisory lock，也不能
 通过 pool 的任意连接分别取得和释放锁。
 

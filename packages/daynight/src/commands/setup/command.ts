@@ -5,7 +5,7 @@ import { configure } from "../../config/setup.js";
 import { setupDefinition } from "./definition.js";
 
 export const runSetupCommand = async (args: readonly string[], context: CliContext): Promise<void> => {
-  if (args.some((argument) => /^--server-token(?:=|$)/.test(argument) || argument.startsWith("--server-token-stdin="))) throw new UsageError("Pass tokens through --server-token-stdin or hidden interactive setup; token values are not accepted as command arguments.", "daynight setup --help");
+  if (args.some((argument) => /^--server-token(?:=|$)/.test(argument) || argument.startsWith("--server-token-stdin="))) throw new UsageError("Pass automation tokens through --server-token-stdin; token values are not accepted as command arguments.", "daynight setup --help");
   const tokenFlag = args.indexOf("--server-token-stdin");
   if (tokenFlag !== -1 && args[tokenFlag + 1] !== undefined && !args[tokenFlag + 1]!.startsWith("-")) throw new UsageError("--server-token-stdin is a boolean flag and takes no argument.", "daynight setup --help");
   const command = parseCommand(setupDefinition, args, ["daynight", "setup"], "daynight setup --help");

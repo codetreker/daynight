@@ -28,11 +28,12 @@ task list 的 JSON 仅省略 `description`，其他元数据查询保留各自�
 [CLI 决策](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-cli.md)记录
 流传输及输出辅助进程的选择。
 
-个人访问令牌配置和共享 HTTP Bearer 传输已实现，机制由
-[凭据决策](../../.agents/notes/implemented/architecture/2026-10-22-cli-server-credentials.md)拥有。
+CLI 默认使用 `https://daynight.cc`，显式 `login/logout` 管理通过设备授权自动取得的凭据，
+共享 HTTP Bearer 传输与显式 PAT 配置继续复用；机制由
+[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)拥有。
 [鉴权架构](daynight-auth.md)和[需求](../spec/daynight-auth.md)拥有完整项目授权机制与行为；生产服务对全部
-项目、任务、图和附件业务请求强制鉴权。安装 CLI 的真实服务及预算验收通过 UniAuth
-夹具取得用户 PAT，并复用正常配置与 Bearer 请求通道。仓库关联不保存凭据、
+项目、任务、图和附件业务请求强制鉴权。设备登录复用现有 UniAuth 浏览器会话批准，
+取得的凭据进入正常配置与 Bearer 请求通道；既有真实服务及预算验收的 PAT bootstrap 继续用于其独立验证。仓库关联不保存凭据、
 不授予项目访问权；旧项目由部署者手工补齐成员关系。专用 set-status 与现有资源读写共用当前成员权限；管理员额外管理成员、邀请和项目提醒设置，不另设
 状态专属角色。
 
@@ -102,10 +103,10 @@ project/task 不导入 review runtime、SQLite 或外部审查适配器。`proje
 与仓库状态。共享模块不反向导入命令模块。
 
 配置共享层产出 YAML mapping 和文档上下文，拒绝语法、重复 key、非 mapping 及
-未登记顶层字段。review 投影只解析 review 字段；server 投影要求 `serverUrl`，
-并校验可选 `serverToken`。共享层保留既有 YAML 格式，不迁移 review 数据。缺少文件
-或 `serverUrl` 时复用[客户端配置引导](daynight.md#按需配置引导)，收集地址及可选
-隐藏令牌；令牌缺失不触发引导。已有无效服务值、共享文档错误及读取错误直接暴露。
+未登记顶层字段。review 投影只解析 review 字段；server 投影在文件或 `serverUrl` 缺省时
+使用 `https://daynight.cc`，校验明确提供的地址与可选 `serverToken`。共享层保留 YAML 格式，
+不迁移 review 数据。服务调用不进入配置引导；缺少本地凭据时在网络前提示 `daynight login`。
+已有无效服务值、共享文档错误及读取错误直接暴露。
 review 配置可始终省略，其业务字段不参与服务校验。YAML 错误以安全类别、代码和
 位置表达，原始标量及 parser cause 不进入错误对象。共享写入者在持锁重读的文档上
 保存，含令牌结果使用 POSIX `0600`；无令牌文件继续既有权限行为，普通文件/符号
@@ -124,27 +125,26 @@ Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受�
 与固定 `/api/v1/...` 构造，资源 ID 作为单一路径段编码，分页 cursor 通过 query
 编码。配置值不得允许请求参数改变服务 origin。
 
-`serverToken` 为非空 opaque visible ASCII。配置令牌时只允许 HTTPS，或 host 为
-字面量 `localhost`、`127.0.0.0/8` 内的数值 IPv4、`::1` 的 HTTP。setup 隐藏输入，空回答保留
-同一正规化 origin 的令牌或跳过新 origin 令牌；布尔 `--server-token-stdin` 读取
-不超过 1 MiB 的一行非空值，允许单个 LF/CRLF，拒绝空输入、多行和控制字符。显式
-URL 配置不询问，stdin 可复用已保存地址，无地址时须显式提供。锁内共同比较
-serverUrl/serverToken；origin 变化时同次原子保存清除旧令牌，相同 origin 保留它，
-其他能力的并发完成修改合并保留。
+`serverToken` 为非空 opaque visible ASCII，仅 HTTPS 或 host 为字面量 `localhost`、
+`127.0.0.0/8` 数值 IPv4、`::1` 的 HTTP 允许保存。显式 `setup --server-token-stdin`
+读取不超过 1 MiB 的一行非空值，允许单个 LF/CRLF，拒绝空输入、多行和控制字符；origin 使用
+显式值、配置值或生产默认值。显式 URL 配置不询问，锁内共同比较 origin/token，origin 变化同次
+清除旧令牌，相同 origin 保留。其他能力已完成的并发修改合并保留。
 
-共享 API 请求边界为已有 project/task/graph/property/attachment 请求附加 Bearer，
-包括文件上传、下载、分页与失败路径。继续使用 manual redirect，不向重定向目标
-转发令牌。401 给出 setup 指导，不自动匿名重试、写重试或登录预检；403/404/409、
-精确 int64、分页、二进制输出和既有预算保持。凭据不写入仓库关联，也不新增 CLI
-登录协议、独立 auth 命令组、keychain 或通用鉴权框架。
+`login` 使用独立十分钟期限调用设备授权接口，显示短码并打开同源验证页，`--no-browser`
+仅显示 URL/短码。它按服务要求轮询，批准后在配置锁内重查 origin 与凭据观察值并保存，避免覆盖
+期间的另一次登录或地址变更。`logout` 通过当前 Bearer 撤销自身，确认成功或已失效后同样在锁内
+清除观察到的凭据，保留并发写入的新值。完整设备授权、到期和撤销机制由
+[鉴权架构](daynight-auth.md#cli-设备授权)拥有。
 
-完成参数分派后，`runServerCommand` 在首次配置读取前创建取消控制器及
-`Operation`，总期限为 5 分钟。配置完整时，首次读取及后续业务共享这一期限。
-仅在结构化的文件或 `serverUrl` 缺失时释放该操作，保留取消信号完成引导；保存后
-创建新操作并重新读取配置，人工输入不占用业务期限。业务预算覆盖配置读取、Git
-定位、缓存验证、全部分页、本地锁与文件准备、HTTP 及结果渲染。所有步骤共享剩余
-预算，不能
-因翻页或重新发现重置。每个请求期限为 30 秒与命令剩余期限的较小值，覆盖连接和
+共享 API 请求边界为已有 project/task/graph/property/attachment 请求附加 Bearer，覆盖文件、分页
+和错误路径。继续使用 manual redirect，不向重定向目标转发凭据。无本地令牌的业务调用在请求前失败，
+服务 401 给出 `daynight login` 指导，不自动登录、匿名回退或重放写请求；403/404/409、精确 int64、
+分页、二进制输出与既有预算保持。凭据不写仓库关联，命令定义、登录实现和业务 HTTP 分工独立。
+
+完成参数分派后，`runServerCommand` 在首次配置读取前创建取消控制器及 `Operation`，
+配置与业务共享五分钟总期限。业务预算覆盖配置读取、Git 定位、缓存验证、全部分页、本地锁、
+文件准备、HTTP 和结果渲染。所有步骤共享剩余预算，不能因翻页或重新发现重置。每个请求期限为 30 秒与命令剩余期限的较小值，覆盖连接和
 响应体读取；用户取消沿用同一命令取消源。请求成功、失败或取消后清理单次期限及
 监听器；同步 JSON 解析后也按单次及总期限检查。分页请求串行执行，取消及任一
 失败阻止后续页面、本地保存和写请求。
@@ -516,7 +516,7 @@ stderr 错误包含操作名、已确定的 project/task ID、失败阶段和可
 | 层次 | 关键观察 |
 |---|---|
 | 纯数据与参数 | 正规化表和拒绝 fixture、字段存在性、依赖替换/清空、版本参数、ready limit 默认/边界/拒绝、JSON 格式 |
-| CLI 依赖边界 | 缺失 Git/SQLite/review 工具，或 serverUrl 缺失、业务值无效时，实际编译入口的帮助、版本、update 与 review 仍各自独立；显式 repo 创建、列表和详情不读取工作目录或 Git；服务命令缺少字段时仅引导连接配置，非交互提供 setup 命令，人工输入不消耗业务期限 |
+| CLI 依赖边界 | 缺失 Git/SQLite/review 工具、配置文件或 serverUrl 时，帮助、版本、update 与 review 保持独立；省略地址使用生产默认值，非法显式值失败，无本地凭据在网络前提示登录；显式 repo 创建、列表和详情不读取工作目录或 Git；login/logout 的浏览器和配置生命周期独立验证 |
 | Git 与本地状态 | 真实仓库的 insteadOf、子目录、worktree、submodule、ignore 生效、被跟踪目录、并发锁及原子替换 |
 | 受控 HTTP | 创建及 task discover 的多页零/一/多匹配、唯一匹配创建命令保留原资源、后页失败无 POST、server 或 origin 独立变化、缓存 404/不符、500/无效响应、循环或持续推进 cursor、单次/总期限、字节超限、取消及写响应丢失 |
 | 真实服务 | 隔离 PostgreSQL 与 Go server 的 project/task 全流程、依赖拒绝、版本并发冲突、图快照和图超限；ready 的前 N 项及依赖完成后的候选变化 |

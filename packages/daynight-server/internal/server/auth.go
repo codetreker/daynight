@@ -114,6 +114,7 @@ func (h *Authentication) Require(next AuthenticatedHandler) http.HandlerFunc {
 }
 
 func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
+	h.registerDeviceRoutes(mux)
 	mux.HandleFunc("GET /api/v1/auth/login", h.login)
 	mux.HandleFunc("GET "+h.callbackPath, h.callback)
 	mux.HandleFunc("GET /api/v1/auth/providers", h.providers)

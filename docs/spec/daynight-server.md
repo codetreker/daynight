@@ -17,7 +17,7 @@
 [架构](../design/daynight-task-attachments.md)拥有附件机制。
 
 [鉴权需求](daynight-auth.md)定义已接入主站的 UniAuth 登录、Daynight 会话、个人
-访问令牌和项目成员授权；[架构](../design/daynight-auth.md)拥有机制。全部 project、task、
+访问令牌、CLI 设备授权和项目成员授权；[架构](../design/daynight-auth.md)拥有机制。全部 project、task、
 图和附件业务请求必须通过认证，并按项目成员关系授权。已有项目后续手工补齐成员，
 零成员项目不可访问。[统一启用决策](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 记录运行时接线与验收凭据边界；对应源码的验证结论仍以完整运行回执为准。
