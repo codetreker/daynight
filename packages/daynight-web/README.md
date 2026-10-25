@@ -1274,6 +1274,15 @@ with select-focus restoration, explicit set/clear, shared mutation locks,
 conflicts, unknown-result readback, late-response ownership and bilingual
 320px/390px layouts through the real service.
 
+Platform-review helpers wait for an enabled select, focus it and verify that
+focus before choosing an option. Cached details can appear while the live read
+still disables editing; option selection's later actionability wait does not
+repair a focus attempt on a disabled control. The cancellation assertions still
+require the saved value, restored select focus and zero writes, without forcing
+focus after dismissal or increasing timeouts. The
+[observable-readiness decision](../../.agents/notes/implemented/testing/2026-10-20-observable-acceptance-readiness.md)
+records the synchronization rule.
+
 The `task-detail-page` journey observes source and popup requests at the browser
 context boundary. Only one registered task may receive exactly five PATCHes
 (platform success, permission enable, platform conflict, deliberate platform
