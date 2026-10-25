@@ -41,13 +41,21 @@ describe("Bash completion rendering", () => {
   it("offers unified status command and three-state filtering without metadata status updates", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("complete -F _daynight_completion 'daynight' 'dn'\n");
-    expect(script).toContain("dn_children=('create' 'list' 'ready' 'show' 'update' 'set-status' 'graph' 'attachment')");
+    expect(script).toContain("dn_children=('create' 'list' 'ready' 'show' 'update' 'set-status' 'delete' 'graph' 'attachment')");
     expect(script).toContain("dn_value_choices=('todo' 'in_progress' 'done')");
     const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("'--status'");
     expect(update).toContain("'--if-version'");
     expect(update).toContain("'--depends-on'");
     expect(update).toContain("'--external-depends-on'");
+  });
+
+  it("completes deletion with a task ID and exact-version/project text options", () => {
+    const script = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "delete")!);
+    expect(script).toContain("dn_options=('--if-version' '--project' '-h' '--help')");
+    expect(script).toContain("dn_argument_count=1");
+    expect(script).not.toContain("'--status'");
+    expect(script).not.toContain("'--json'");
   });
 
   it("completes set-status with a task ID, status choices, and version/project text options", () => {

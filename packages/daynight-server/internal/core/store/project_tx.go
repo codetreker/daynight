@@ -59,7 +59,7 @@ func (tx *ProjectTx) TasksByID(ctx context.Context, ids []string) ([]core.Task, 
 
 func (tx *ProjectTx) tasks(ctx context.Context, condition string, value any, phase string) ([]core.Task, error) {
 	rows, err := tx.tx.Query(ctx, `SELECT `+taskProjection+` FROM tasks t
-		WHERE t.project_id = $1 AND `+condition+` ORDER BY t.id`, tx.projectID, value)
+		WHERE t.project_id = $1 AND t.deleted_at IS NULL AND `+condition+` ORDER BY t.id`, tx.projectID, value)
 	if err != nil {
 		return nil, queryError(phase, err)
 	}
@@ -74,7 +74,7 @@ func (tx *ProjectTx) ActiveDependentIDs(ctx context.Context, id string) ([]strin
 	rows, err := tx.tx.Query(ctx, `SELECT t.id::text FROM task_dependencies d
 		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
 		WHERE d.project_id = $1 AND d.depends_on_task_id = $2
-		AND t.status IN ('in_progress', 'done') ORDER BY t.id`, tx.projectID, id)
+		AND t.deleted_at IS NULL AND t.status IN ('in_progress', 'done') ORDER BY t.id`, tx.projectID, id)
 	if err != nil {
 		return nil, queryError("read active dependents", err)
 	}
@@ -89,8 +89,9 @@ func (tx *ProjectTx) ActiveDependentIDs(ctx context.Context, id string) ([]strin
 func (tx *ProjectTx) Reachable(ctx context.Context, from, to string, replacement DependencyReplacement) (bool, error) {
 	var reachable bool
 	err := tx.tx.QueryRow(ctx, `WITH RECURSIVE edges(task_id, depends_on_task_id) AS (
-		SELECT task_id, depends_on_task_id FROM task_dependencies
-		WHERE project_id = $1 AND task_id <> $4::uuid
+		SELECT d.task_id, d.depends_on_task_id FROM task_dependencies d
+		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
+		WHERE d.project_id = $1 AND t.deleted_at IS NULL AND d.task_id <> $4::uuid
 		UNION SELECT $4::uuid, unnest($5::uuid[])
 	), visited(id) AS (
 		SELECT $2::uuid
@@ -159,4 +160,36 @@ func (tx *ProjectTx) ObservedAt(ctx context.Context) (time.Time, error) {
 		return time.Time{}, queryError("read project clock", err)
 	}
 	return observed.UTC(), nil
+}
+
+func (tx *ProjectTx) DependentIDs(ctx context.Context, id string) ([]string, error) {
+	rows, err := tx.tx.Query(ctx, `SELECT t.id::text FROM task_dependencies d
+		JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
+		WHERE d.project_id = $1 AND d.depends_on_task_id = $2
+		AND t.deleted_at IS NULL ORDER BY t.id`, tx.projectID, id)
+	if err != nil {
+		return nil, queryError("read dependents", err)
+	}
+	defer rows.Close()
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, queryError("read dependents", err)
+	}
+	return ids, nil
+}
+
+func (tx *ProjectTx) DeleteTask(ctx context.Context, id string) error {
+	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET deleted_at = statement_timestamp(),
+		updated_at = statement_timestamp(), version = version + 1
+		WHERE project_id = $1 AND id = $2 AND deleted_at IS NULL`, tx.projectID, id)
+	if err != nil {
+		return queryError("delete task", err)
+	}
+	if result.RowsAffected() == 0 {
+		return queryError("delete task", core.ErrNotFound)
+	}
+	if _, err := tx.tx.Exec(ctx, `UPDATE projects SET task_cache_epoch = gen_random_uuid() WHERE id = $1`, tx.projectID); err != nil {
+		return queryError("invalidate deleted task cache", err)
+	}
+	return nil
 }

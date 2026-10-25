@@ -8,6 +8,7 @@ import { decodeProjectPageJson, decodeTaskGraphJson } from "./project-json";
 
 const serverMessages: Readonly<Record<string, string>> = {
   not_found: "The requested resource was not found.",
+  task_deleted: "This task has been deleted.",
   unauthenticated: "Your session has expired. Please sign in again.",
   forbidden: "You do not have permission to perform this action.",
   version_conflict: "The resource changed. Refresh it before trying again.",
@@ -212,6 +213,22 @@ export const getTask = async (projectId: string, taskId: string, signal: AbortSi
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, { headers: { Accept: "application/json" } });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   return json(response, signal, (data) => parseTaskDetail(data, project, task));
+};
+
+export const deleteTask = async (
+  projectId: string, taskId: string, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+): Promise<void> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
+    method: "DELETE", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: stringifyApiJson({ version: exactVersion }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 204) { admission.onWriteConfirmed?.(); return; }
+  if (response.ok) throw new ApiError("protocol", response.status);
+  await json(response, signal, () => { throw new ApiError("protocol", response.status); });
 };
 
 export const setTaskStatus = async (

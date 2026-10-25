@@ -24,6 +24,7 @@ const fixture = (operation = createOperation()) => {
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),
     createTask: vi.fn<ApiClient["createTask"]>().mockResolvedValue(task), getTask: vi.fn<ApiClient["getTask"]>().mockResolvedValue(task),
     listTasks: vi.fn<ApiClient["listTasks"]>().mockResolvedValue([task]), listReadyTasks: vi.fn<ApiClient["listReadyTasks"]>().mockResolvedValue([task]), updateTask: vi.fn<ApiClient["updateTask"]>().mockResolvedValue(task),
+    deleteTask: vi.fn<ApiClient["deleteTask"]>().mockResolvedValue(),
     setTaskStatus: vi.fn<ApiClient["setTaskStatus"]>().mockResolvedValue(task),
     listTaskPage: async () => { throw new Error("Unused worker API method"); },
     claimWorkerTask: async () => { throw new Error("Unused worker API method"); },
@@ -51,7 +52,7 @@ const fixture = (operation = createOperation()) => {
 };
 
 describe("task parameter boundaries", () => {
-  it.each([[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "graph"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
+  it.each([[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
     const f = fixture();
     await runTaskCommand(args, f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenCalledOnce();
@@ -80,6 +81,8 @@ describe("task parameter boundaries", () => {
     ["update", taskId, "--external-depends-on", dependencyId, "--clear-dependencies"],
     ["list", "--status", "blocked"], ["list", "--status", "proposed"], ["set-status", taskId, "proposed"], ["set-status", taskId], ["set-status", "invalid", "todo"],
     ...["0", "1.5", "9223372036854775808"].map((version) => ["set-status", taskId, "todo", "--if-version", version]), ["update", taskId, "--status", "proposed"], ["list", "--project", "invalid"], ["show", "invalid"], ["show", taskId, "--project", "invalid"],
+    ["delete"], ["delete", "invalid"], ["delete", taskId, "--json"],
+    ...["0", "1.5", "9223372036854775808"].map((version) => ["delete", taskId, "--if-version", version]),
     ["update", taskId], ["update", taskId, "--if-version", "1"], ["update", taskId, "--status", "done", "--if-version", "0"],
     ["update", taskId, "--title", "\u2003"], ["update", taskId, "--status", "done", "--if-version", "9223372036854775808"],
     ["update", taskId, "--status", "done", "--if-version", "1.5"], ["update", taskId, "--depends-on", dependencyId, "--clear-dependencies"],
@@ -111,6 +114,25 @@ describe("task parameter boundaries", () => {
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
     await runTaskCommand(["update", "--help"], f.context, f.dependencies);
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Use daynight task set-status to change status.");
+  });
+
+  it("soft-deletes using the observed exact version and reports retained data", async () => {
+    const f = fixture();
+    await runTaskCommand(["delete", taskId.toUpperCase()], f.context, f.dependencies);
+    expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.api.deleteTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: task.version });
+    expect(f.api.getTask.mock.invocationCallOrder[0]!).toBeLessThan(f.api.deleteTask.mock.invocationCallOrder[0]!);
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Task deleted. Stored data and attachments are retained.\nID: ${taskId}\nProject: ${projectId}\n`);
+  });
+
+  it("preserves a deletion refusal without rereading or retrying an explicit version", async () => {
+    const f = fixture();
+    const failure = new Error("Dependent tasks prevent deletion");
+    f.api.deleteTask.mockRejectedValue(failure);
+    await expect(runTaskCommand(["delete", taskId, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
+    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.deleteTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n });
+    expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
   it.each(["todo", "in_progress", "done"] as const)("uses the observed version to set %s and prints the full confirmed result", async (status) => {

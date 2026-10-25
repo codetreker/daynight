@@ -19,6 +19,7 @@ needed to use them correctly.
 | `task show` | Read one task's complete details and exact version. |
 | `task update` | Change metadata, automatic-execution permission, platform requirements, dependencies, or PR references; status is not writable. |
 | `task set-status` | Set todo, in_progress, or done using an observed exact version. |
+| `task delete` | Soft-delete one task using an observed exact version, retaining stored data and attachments. |
 | `task graph` | Inspect the project's dependency graph and summary. |
 | `task attachment put` | Upload or replace one attachment file. |
 | `task attachment list` | Read a task's attachment inventory and metadata. |
@@ -74,6 +75,24 @@ Todo to done records only completion, with unknown duration. Same-status and
 metadata updates preserve timing. State changes provide no process ownership,
 release, transfer, stop, or lease semantics. The Web confirms every status choice,
 including the current status; cancel and Escape submit no request.
+
+**Task deletion.** `task delete <task-id> --if-version <version>` removes a task
+from normal lists, graphs, readiness, and detail access while retaining its stored
+data, dependency records, and attachment files. It is independent of the task's
+status. Deletion is refused while an undeleted task depends on it or an active
+worker claim owns it; remove the dependency or release the stopped worker through
+the authorized workflow before reconsidering deletion. Deleting a task requires
+explicit user authorization for that task; deletion is not a completion action.
+
+Read the full task and preserve the exact version used for the deletion decision.
+Without `--if-version`, the CLI reads the latest version immediately before
+submitting; that read cannot protect an earlier decision. A successful deletion
+returns no task resource. An authorized read of a deleted task returns
+`410 task_deleted`, distinct from a missing task or inaccessible project. On a
+lost response, GET the task to reconcile: `task_deleted` confirms it is deleted;
+a live resource requires a new decision, and a permission or transport failure
+leaves the outcome unconfirmed. Never replay deletion automatically. The Web
+requires a confirmation dialog; the CLI command submits directly.
 
 **Automatic execution permission.** Tasks expose the required boolean
 `allowAgents`, independent of status and dependency readiness. New tasks

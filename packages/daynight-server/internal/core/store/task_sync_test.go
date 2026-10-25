@@ -36,7 +36,7 @@ func TestTaskSyncProjectionAndExactLowerBound(t *testing.T) {
 		BEGIN RAISE EXCEPTION 'private details selected'; END $$;
 		ALTER TABLE tasks RENAME TO task_source;
 		CREATE VIEW tasks AS SELECT id, project_id, title, reject_sync_detail() AS description,
-		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform FROM task_source`)
+		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform, deleted_at FROM task_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		all, err := snapshot.TaskSyncTasks(ctx, project.ID, nil, 160)
 		if err != nil || len(all) != 3 || all[0].Version != 9007199254740993 || all[0].TitlePreview != strings.Repeat("😀", 160) || !all[0].TitleTruncated ||
@@ -204,9 +204,9 @@ func TestTaskSyncIndexCheckStaysInFixtureSchema(t *testing.T) {
 func TestTaskSyncStoreFailuresPreserveCauses(t *testing.T) {
 	for _, test := range []struct{ name, ddl string }{
 		{"query", "DROP TABLE tasks"},
-		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,allow_agents,required_platform FROM task_source`},
+		{"decode", `ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,1::bigint AS created_at,updated_at,started_at,completed_at,allow_agents,required_platform,deleted_at FROM task_source`},
 		{"invalid status", `ALTER TABLE tasks DROP CONSTRAINT tasks_status_check; UPDATE tasks SET status='invalid'`},
-		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,allow_agents,required_platform FROM task_source`},
+		{"iteration", `CREATE FUNCTION fail_sync_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='P1003', MESSAGE='private sync failure'; END $$; ALTER TABLE tasks RENAME TO task_source; CREATE VIEW tasks AS SELECT id,project_id,title,status,version,created_at,fail_sync_stamp() AS updated_at,started_at,completed_at,allow_agents,required_platform,deleted_at FROM task_source`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := isolatedStore(t)

@@ -60,6 +60,7 @@ type taskMutation struct {
 	values  store.TaskWrite
 	create  bool
 	changed bool
+	deleted bool
 }
 
 func (s *Tasks) Create(ctx context.Context, principal core.Principal, projectID string, input CreateTask) (core.Task, error) {
@@ -166,6 +167,9 @@ func (s *Tasks) write(ctx context.Context, principal core.Principal, projectID s
 			result = mutation.current
 			return nil
 		}
+		if mutation.deleted {
+			return tx.DeleteTask(ctx, mutation.id)
+		}
 		if mutation.create {
 			result, err = tx.CreateTask(ctx, mutation.id, mutation.values)
 		} else {
@@ -183,6 +187,36 @@ func (s *Tasks) write(ctx context.Context, principal core.Principal, projectID s
 		return core.Task{}, refusal
 	}
 	return result, nil
+}
+
+func (s *Tasks) versionedWrite(ctx context.Context, principal core.Principal, projectID, id string, version int64, prepare func(*store.ProjectTx, core.Task) (taskMutation, error)) (core.Task, error) {
+	if err := requirePrincipal(principal); err != nil {
+		return core.Task{}, err
+	}
+	projectID, err := CanonicalID(projectID)
+	if err != nil {
+		return core.Task{}, err
+	}
+	id, err = CanonicalID(id)
+	if err != nil {
+		return core.Task{}, err
+	}
+	if version < 1 {
+		return core.Task{}, invalidInput("Version must be a positive integer.")
+	}
+	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
+		current, err := tx.Task(ctx, id)
+		if errors.Is(err, core.ErrNotFound) {
+			return taskMutation{}, taskNotFound(err)
+		}
+		if err != nil {
+			return taskMutation{}, err
+		}
+		if current.Version != version {
+			return taskMutation{}, &Fault{Code: "version_conflict", Message: "Task version does not match."}
+		}
+		return prepare(tx, current)
+	})
 }
 
 func taskCandidate(current core.Task, input UpdateTask) (store.TaskWrite, error) {
@@ -260,6 +294,9 @@ func canonicalDependencies(ids []string, self string) ([]string, error) {
 }
 
 func taskNotFound(cause error) *Fault {
+	if errors.Is(cause, core.ErrTaskDeleted) {
+		return &Fault{Code: "task_deleted", Message: "Task was deleted.", Cause: cause}
+	}
 	return &Fault{Code: "not_found", Message: "Task was not found.", Cause: cause}
 }
 

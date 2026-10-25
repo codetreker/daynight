@@ -40,11 +40,22 @@ describe("native zsh completion", () => {
     expect(script).toContain("compdef _daynight 'daynight' 'dn'\n");
     expect(script).toContain("(--status)--status=[Task status]:status:('\\''todo'\\'' '\\''in_progress'\\'' '\\''done'\\'')");
     expect(script).toContain("'set-status:Set a task to todo, in_progress, or done'");
+    expect(script).toContain("'delete:Soft-delete a task while preserving its stored data and attachments'");
     const update = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("--status");
     expect(update).toContain("--if-version");
     expect(update).toContain("--depends-on");
     expect(update).toContain("*--external-depends-on=[External prerequisite UUID; repeat for the complete external set]:task-id:->text_value");
+  });
+
+  it("completes deletion with one task ID and exact-version/project text options", () => {
+    const script = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "delete")!);
+    expect(script).toContain("(--if-version)--if-version=[Use this expected task version without reading a newer version]:version:->text_value");
+    expect(script).toContain("(--project)--project=[Use this project UUID for this invocation]:project-id:->text_value");
+    expect(script).toContain("specifications+=( '1:Task UUID:->argument_1' )");
+    expect(script).not.toContain("2:Target task status");
+    expect(script).not.toContain("--json");
+    expect(script).not.toContain("_files");
   });
 
   it("completes set-status with a task ID, status choices, and version/project text options", () => {

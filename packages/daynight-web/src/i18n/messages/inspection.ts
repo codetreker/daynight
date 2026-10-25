@@ -9,6 +9,32 @@ export type InspectionMessages = {
     readonly tooLarge: string;
     readonly image: string;
   };
+  readonly deletion: {
+    readonly action: string;
+    readonly title: string;
+    readonly question: string;
+    readonly explanation: string;
+    readonly confirm: string;
+    readonly cancel: string;
+    readonly closeConfirmation: string;
+    readonly pending: string;
+    readonly deleted: string;
+    readonly deletedExplanation: string;
+    readonly conflict: string;
+    readonly unknown: string;
+    readonly reconciled: string;
+    readonly checking: string;
+    readonly checkState: string;
+    readonly checkFailed: string;
+    readonly networkError: string;
+    readonly protocolError: string;
+    readonly versionConflict: string;
+    readonly dependencyUnsatisfied: string;
+    readonly invalidTransition: string;
+    readonly notFound: string;
+    readonly refused: string;
+    readonly requestFailed: string;
+  };
   readonly status: {
     readonly title: string;
     readonly menu: string;

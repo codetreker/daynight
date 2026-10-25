@@ -190,7 +190,7 @@ type TaskConfirmationState =
 
 确认保存 reviewed detail，taskReviewKey 包含身份、版本、status、allowAgents、requiredPlatform、普通/外部边与派生阻塞。实质轮询变化使确认失效并重新审阅，不静默换版本。相同读取不关闭确认。
 
-一个 project/task 一个写入会话，一个 union 一个确认窗。平台保存作为第三种operation共用该写入会话，但选择只维护草稿，明确Save platform才提交，不增加平台确认窗。状态、许可、平台保存不能并发；陈旧、读取失败、pending、unknown、核对中/失败均阻止三类写入。in_progress 中禁止实际切换许可与平台的规则保留。资料/附件 tabs 保持挂载，reading key 仍为 project/task，不用状态或版本重新挂载附件。长标题完整换行，320px 控件换行而不横向溢出。
+一个 project/task 一个写入会话，一个 union 一个确认窗。状态、许可、平台与[软删除](daynight-task-deletion.md)共同参与互斥；陈旧、读取失败、pending、unknown、核对中/失败均阻止任务写入。平台选择不同值后打开当前/目标确认窗，确认才提交，具体控件由[平台确认设计](daynight-web.md#平台要求与确认下拉框)拥有。in_progress 中禁止实际切换许可与平台的规则保留。资料/附件 tabs 保持挂载，reading key 仍为 project/task，不用状态或版本重新挂载附件。长标题完整换行，320px 控件换行而不横向溢出。
 
 | 事件 | 行为 |
 |---|---|
