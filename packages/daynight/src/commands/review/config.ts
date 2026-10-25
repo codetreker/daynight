@@ -221,7 +221,7 @@ const parseReviewConfiguration = (
     if (allowMissingRepositories) {
       return { ...settings, repositories: [] };
     }
-    throw new MissingConfigurationFieldError("repositories", "Review repositories are not configured; use daynight setup --review-repo <remote> or daynight review add-repo.");
+    throw new MissingConfigurationFieldError("repositories", "Review repositories are not configured; use daynight review add-repo <remote>.");
   }
   if (!Array.isArray(mapping.repositories) || mapping.repositories.length === 0) {
     throw new Error("repositories must be a nonempty sequence.");

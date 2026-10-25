@@ -78,7 +78,7 @@ The [deletion design](docs/design/daynight-task-deletion.md) owns these rules.
 
 | Component | Location | Implementation status | Requirements and design |
 |---|---|---|---|
-| `daynight` | `packages/daynight/` | Implemented `review`, npm global `update`, device-code `login/logout`, production-default service access, review `setup`, Bash/zsh `completion` generation and setup, the public task-management skill bundle and interactive Agent installation, shared configuration, server HTTP and repository binding foundations plus project, task and single-file attachment commands; native installed service and resource-budget acceptance implemented | [Client requirements](docs/spec/daynight.md), [client design](docs/design/daynight.md), [completion design](docs/design/daynight-completion.md), [review requirements](docs/spec/daynight-review.md), [review design](docs/design/daynight-review.md), [project/task requirements](docs/spec/daynight-project-task.md), [design](docs/design/daynight-project-task.md) |
+| `daynight` | `packages/daynight/` | Implemented `review`, npm global `update`, device-code `login/logout`, production-default service access, review configuration guidance, Bash/zsh `completion` generation and setup, the public task-management skill bundle and interactive Agent installation, shared configuration, server HTTP and repository binding foundations plus project, task and single-file attachment commands; native installed service and resource-budget acceptance implemented | [Client requirements](docs/spec/daynight.md), [client design](docs/design/daynight.md), [completion design](docs/design/daynight-completion.md), [review requirements](docs/spec/daynight-review.md), [review design](docs/design/daynight-review.md), [project/task requirements](docs/spec/daynight-project-task.md), [design](docs/design/daynight-project-task.md) |
 | `daynight-server` | `packages/daynight-server/` | Project/task/graph and time-window summary APIs, mandatory UniAuth/session/PAT authentication, project memberships, PostgreSQL transactions and embedded browser assets implemented | [Requirements](docs/spec/daynight-server.md), [design](docs/design/daynight-server.md) |
 | `daynight-web` | `packages/daynight-web/` | Project browsing, statistics, read-only task graphs with complete prerequisite context and task details, attachment management/preview, embedded delivery, graph production acceptance and strict coverage delivered; English/Simplified Chinese interface and locale persistence implemented | [Requirements](docs/spec/daynight-web.md), [architecture](docs/design/daynight-web.md), [language requirements](docs/spec/daynight-web-i18n.md), [language design](docs/design/daynight-web-i18n.md), [preview](docs/design/mockups/task-dashboard.html) |
 
@@ -565,9 +565,10 @@ The command requires the five authentication settings in that private file,
 builds the UI and server inside Docker, applies embedded migrations and waits for
 `/readyz`. Open the configured public origin and log in through UniAuth. APIs and
 trusted attachment previews share that origin. For CLI access to this local test
-deployment, set its public origin with `daynight setup --server-url <origin>`,
-then run `daynight login`. Production CLI access defaults to
-`https://daynight.cc`; scripted PAT setup remains available for automation.
+deployment, set `serverUrl` to its public origin in `~/.daynight/config.yml`,
+remove any credential belonging to another origin, then run `daynight login`.
+Production CLI access defaults to `https://daynight.cc`; automation can provision
+an origin and its matching PAT through the same configuration file.
 PostgreSQL data persists across container recreation. The
 [localhost deployment guide](deployment/localhost/README.md) owns port and npm build-registry selection,
 API examples, logs, updates and volume removal.
@@ -852,9 +853,6 @@ daynight --version                   # Also -v
 daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
-daynight setup                       # Configure a review repository
-daynight setup --server-url <url>     # Override the origin for a test server
-daynight setup --review-repo <remote> [--review-path <path>]
 daynight review                     # Show review help
 daynight review run
 daynight review list                 # Also review ls
@@ -1030,7 +1028,7 @@ completion; verify such configuration by starting the shell.
 
 The generated scripts register completion for both `daynight` and `dn`.
 Completion suggests commands, nested operations, aliases, options, shell names
-and local directories for `review add-repo --path` and `setup --review-path`.
+and local directories for `review add-repo --path`.
 zsh also displays descriptions.
 The scripts run in the shell on each Tab without starting Node or reading review
 configuration, SQLite or the network. Directory suggestions preserve quoted and
@@ -1080,69 +1078,76 @@ commands do not start login, follow redirects with credentials, or automatically
 repeat a write. Reconcile an unconfirmed business mutation before another one.
 
 The first `review run`, `review list` or `review ls` asks for a repository when
-the file or `repositories` field is absent. Run `daynight setup` to configure a
-review repository in advance. Interactive setup requires terminal stdin and
-stderr. Prompts and save messages use stderr so stdout retains its normal text or
-JSON format. Noninteractive missing review configuration fails with a scriptable
-setup command. Shared YAML/schema errors, invalid selected values, explicit empty
+the file or `repositories` field is absent. To configure one in advance, run:
+
+```bash
+daynight review add-repo https://github.com/OWNER/REPO.git
+daynight review add-repo git@github.com:OWNER/OTHER.git --path ./review-other
+```
+
+Interactive guidance requires terminal stdin and stderr. Prompts and save
+messages use stderr so stdout retains its normal text or JSON format.
+Noninteractive missing review configuration fails with a `review add-repo`
+command. Shared YAML/schema errors, invalid selected values, explicit empty
 review lists and read failures retain their errors. Unrelated capability values
 remain outside the current command's validation. Help, version, completion,
 update and invalid arguments do not prompt.
 
-Explicit configuration options support test servers and automation without
-prompts:
+Test services and noninteractive automation use the existing
+`~/.daynight/config.yml` fields. For a test service, provision its origin before
+running `daynight login`:
 
-```bash
-daynight setup --server-url http://127.0.0.1:8787
-daynight setup --review-repo https://github.com/OWNER/REPO.git
-daynight setup --review-repo git@github.com:OWNER/OTHER.git --review-path ./review-other
-secret-provider-command | daynight setup --server-token-stdin
+```yaml
+serverUrl: http://127.0.0.1:8787
 ```
 
-`--server-url` overrides the default origin for a test server; omit `serverUrl` to
-use production. It can be combined with review options. `--review-path` requires
-`--review-repo`, with the same remote/path rules as `review add-repo`.
-`secret-provider-command` represents an external secret source. Its output is one
-nonempty line, optionally ending in LF or CRLF; empty input, multiple lines,
-control characters and input larger than 1 MiB are rejected. The boolean
-`--server-token-stdin` option uses the configured origin or the production default,
-and may accompany `--server-url`. PAT provisioning remains available for
-noninteractive automation; normal CLI use requires no manual PAT creation.
+For unattended access, a secret-provisioning process can write `serverToken`
+together with its intended `serverUrl`; omit `serverUrl` only when the credential
+belongs to `https://daynight.cc`. Keep that file private, with mode `0600` on
+POSIX, and never put credentials in command arguments, logs or repository files.
+Provisioners must preserve unrelated settings and pair the origin with its own
+credential. Replacing `serverUrl` manually does not clear an old token; remove
+or replace it before sending another request. External editors and provisioners
+do not participate in the CLI's configuration lock.
 
 Tokens are opaque visible ASCII and require HTTPS except for HTTP origins whose
 host is literal `localhost`, a numeric IPv4 address in `127.0.0.0/8`, or `::1`.
-Changing the normalized origin removes its old token in the same atomic save;
-an equivalent origin preserves it. Credentials stay out of command arguments,
-repository bindings and diagnostics. Invalid explicit origins remain errors.
+Invalid explicit origins and credentials remain errors. Normal CLI use requires
+no manual PAT creation. There is no top-level `daynight setup` command; shell
+startup installation remains available through `daynight completion setup`.
 
-Setup collects selected values before one atomic save under the configuration
+Review guidance collects values before one atomic save under the configuration
 write lock, preserving comments, unrelated settings and completed concurrent
-changes to unrelated fields. Origin and token observations are checked together;
-a selected-field conflict requires a fresh decision. Credential-bearing files use
-POSIX mode `0600`, including review writes; files without a token retain existing
-permissions. Symlink rejection and atomic replacement apply to all writers.
+changes to unrelated fields. A selected review-field conflict requires a fresh
+decision. Login and logout check the observed origin and credential together
+under the same lock. Credential-bearing files use POSIX mode `0600`, including
+review writes; files without a token retain existing permissions. Symlink
+rejection and atomic replacement apply to CLI configuration writers.
 Ctrl+C, termination signals or EOF cancel prompts without partial saves or
-business execution. Human input consumes no business timeout. Setup saves
-configuration without network, login or authentication checks; cloning and review
-state initialization belong to the business operation.
+business execution. Human input consumes no business timeout. Review guidance
+saves configuration without network, login or authentication checks; cloning and
+review state initialization belong to the business operation.
 
 The [configuration decision](.agents/notes/implemented/feature/2026-10-21-guided-configuration-setup.md)
 owns review guidance and persistence; the
 [device-login decision](.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
-owns the default service, explicit login/logout and credential lifecycle.
+owns the default service, explicit login/logout and credential lifecycle. The
+[top-level setup removal decision](.agents/notes/implemented/simplification/2026-10-25-remove-top-level-setup.md)
+records the command removal and configuration-file provisioning boundary.
 
 ## Project management
 
 After `daynight login`, create, list or inspect projects on `https://daynight.cc`.
-To use a test server, explicitly override its origin with setup or
-`serverUrl` in `~/.daynight/config.yml`:
+To use a test server, set `serverUrl` in `~/.daynight/config.yml`:
 
 ```yaml
 serverUrl: http://127.0.0.1:8787
 ```
 
 The origin includes its protocol, host and optional port; the client adds
-`/api/v1`. Log in to that origin after changing it, then use the same commands:
+`/api/v1`. When changing the origin externally, remove the old `serverToken`
+before logging in to the new service; manual edits do not run CLI credential
+cleanup. Then use the same commands:
 
 ```bash
 daynight project create "Example"

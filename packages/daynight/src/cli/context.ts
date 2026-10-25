@@ -2,7 +2,6 @@ import { homedir } from "node:os";
 import { createByteOutput } from "./byte-output.js";
 import { createTerminalPrompt } from "./prompts.js";
 import type { CliPrompt } from "./prompts.js";
-import { readSecretStdin } from "./input.js";
 
 export type CliContext = {
   version: string;
@@ -14,7 +13,6 @@ export type CliContext = {
   closeStdoutBytes?: () => Promise<void>;
   stderr: (text: string) => void;
   prompt?: CliPrompt;
-  readStdin?: (signal: AbortSignal) => Promise<string>;
 };
 
 export type CliCommand = {
@@ -42,6 +40,5 @@ export const createCliContext = (version: string, packageDirectory: string): Cli
     closeStdoutBytes: binaryOutput.close,
     stderr: (text) => { process.stderr.write(text); },
     prompt: createTerminalPrompt(),
-    readStdin: readSecretStdin,
   };
 };

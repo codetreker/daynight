@@ -117,6 +117,25 @@ func newIdentityInstalledCLI(t *testing.T, receipt identityCLIReceipt, secret st
 	return &identityInstalledCLI{receipt: receipt, root: root, home: home, secret: secret}
 }
 
+func (cli *identityInstalledCLI) configure(t *testing.T, origin, token string) {
+	t.Helper()
+	configuration := map[string]string{"serverUrl": origin}
+	if token != "" {
+		configuration["serverToken"] = token
+	}
+	data, err := json.Marshal(configuration)
+	if err != nil {
+		t.Fatal("encode isolated installed CLI configuration failed")
+	}
+	directory := filepath.Join(cli.home, ".daynight")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal("create isolated installed CLI configuration directory failed")
+	}
+	if err := os.WriteFile(filepath.Join(directory, "config.yml"), data, 0o600); err != nil {
+		t.Fatal("write private isolated installed CLI configuration failed")
+	}
+}
+
 func (cli *identityInstalledCLI) environment() []string {
 	values := map[string]string{
 		"HOME": cli.home, "USERPROFILE": cli.home, "XDG_CONFIG_HOME": filepath.Join(cli.home, "config"),
@@ -212,22 +231,19 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 	publishIdentityBudgetPAT(t, receipt, token.Token)
 	integration.secrets = append(integration.secrets, token.Token)
 	cli := newIdentityInstalledCLI(t, receipt, token.Token)
-	stdout, _ := cli.run(t, token.Token+"\n", true, "setup", "--server-url", integration.server.URL, "--server-token-stdin")
-	if stdout != "" {
-		t.Fatal("installed setup must keep stdout empty")
-	}
+	cli.configure(t, integration.server.URL, token.Token)
 	config := filepath.Join(cli.home, ".daynight", "config.yml")
 	info, err := os.Stat(config)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		t.Fatal("installed setup did not preserve its token in a private regular configuration file")
+		t.Fatal("installed CLI fixture did not provide a private regular configuration file")
 	}
 	configuration, err := os.ReadFile(config)
 	if err != nil || !bytes.Contains(configuration, []byte(token.Token)) {
-		t.Fatal("installed setup did not save the token provided through stdin")
+		t.Fatal("installed CLI fixture did not contain its configured token")
 	}
 	before := requests.all.Load()
 	beforePAT := requests.authenticatedPAT.Load()
-	stdout, _ = cli.run(t, "", true, "project", "create", "Installed PAT project", "--repo", repository)
+	stdout, _ := cli.run(t, "", true, "project", "create", "Installed PAT project", "--repo", repository)
 	if !strings.HasPrefix(stdout, "Project created.\n") || !strings.Contains(stdout, "Name: Installed PAT project\n") || !strings.Contains(stdout, "Repository: "+repository+"\n") {
 		t.Fatal("installed project create did not preserve its documented command output")
 	}
@@ -256,7 +272,7 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 		t.Fatal("revoked PAT must cause exactly one HTTP 401 bearer request with no anonymous retry")
 	}
 	unauthenticated := newIdentityInstalledCLI(t, receipt, token.Token)
-	unauthenticated.run(t, "", true, "setup", "--server-url", integration.server.URL)
+	unauthenticated.configure(t, integration.server.URL, "")
 	before, anonymous = requests.all.Load(), requests.anonymous.Load()
 	unauthorized = requests.unauthorized.Load()
 	stdout, stderr = unauthenticated.run(t, "", false, "project", "list", "--json")

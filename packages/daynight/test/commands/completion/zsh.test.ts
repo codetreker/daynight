@@ -27,10 +27,14 @@ describe("native zsh completion", () => {
     expect(create).not.toContain("--allow-agents");
   });
 
-  it("offers the server token stdin option without a token value completion", () => {
+  it("omits the removed top-level setup command and its options", () => {
+    expect(commandTree.commands!.some(({ name }) => name === "setup")).toBe(false);
     const script = renderZshCompletion(commandTree);
-    expect(script).toContain("(--server-token-stdin)--server-token-stdin[Read one personal access token from piped stdin]");
-    expect(script).not.toContain("--server-token-stdin=");
+    expect(script).not.toContain("--server-url");
+    expect(script).not.toContain("--server-token-stdin");
+    expect(script).not.toContain("--review-repo");
+    expect(script).not.toContain("--review-path");
+    expect(script).toContain("'setup:Install completion in shell startup files'");
   });
 
   it("registers attachment operations below the task command", () => {

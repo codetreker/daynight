@@ -30,10 +30,14 @@ describe("Bash completion rendering", () => {
     expect(renderBashCompletion(commandTree)).toContain("complete -F _daynight_completion 'daynight' 'dn'\n");
   });
 
-  it("treats the server token stdin option as a boolean without a secret value completion", () => {
+  it("omits the removed top-level setup command and its options", () => {
+    expect(commandTree.commands!.some(({ name }) => name === "setup")).toBe(false);
     const script = renderBashCompletion(commandTree);
-    expect(script).toContain("dn_options=('--server-url' '--server-token-stdin' '--review-repo' '--review-path' '-h' '--help')");
-    expect(script).toContain("dn_option_values=('text' '' 'text' 'directory' '' '')");
+    expect(script).not.toContain("'--server-url'");
+    expect(script).not.toContain("'--server-token-stdin'");
+    expect(script).not.toContain("'--review-repo'");
+    expect(script).not.toContain("'--review-path'");
+    expect(script).toContain("dn_children=('bash' 'zsh' 'setup')");
   });
 
   it("registers all three attachment command levels and operation options", () => {

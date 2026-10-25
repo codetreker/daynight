@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import pty
+from pathlib import Path
 import selectors
 import signal
 import subprocess
@@ -60,6 +61,8 @@ def main():
                 action = actions[action_index]
                 if action["waitFor"] not in captured["stderr"].decode(errors="replace"):
                     break
+                if "write" in action:
+                    Path(action["write"]["file"]).write_text(action["write"]["contents"])
                 if "input" in action:
                     os.write(master, action["input"].encode())
                 else:

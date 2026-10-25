@@ -189,7 +189,7 @@ describe("review listing reads", () => {
     const { paths } = await diskFixture();
     await writeFile(paths.configFile, "serverUrl: http://localhost:8787\n");
     await writeFile(paths.databaseFile, "invalid database");
-    await expect(listReviews(paths)).rejects.toThrow("Review repositories are not configured; use daynight setup --review-repo <remote>");
+    await expect(listReviews(paths)).rejects.toThrow("Review repositories are not configured; use daynight review add-repo <remote>");
     expect(await readFile(paths.databaseFile, "utf8")).toBe("invalid database");
   });
 
