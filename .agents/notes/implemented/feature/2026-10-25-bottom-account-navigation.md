@@ -12,14 +12,22 @@ entry while reading long pages and using short windows.
 
 The authenticated Workspace separates its sidebar into a scrollable main region
 and a non-shrinking footer. The main region holds the brand and project
-navigation. The footer holds the existing `/account` link and workspace caption.
-The sidebar's sticky viewport height and flex layout keep the footer reachable
-without JavaScript measurement or a separately positioned account control.
-The account link's `aria-current="page"` state provides its selected appearance.
+navigation. The footer holds the existing `/account` link, workspace caption and
+sidebar toggle. The sidebar's sticky viewport height and flex layout keep the
+footer reachable without JavaScript measurement or a separately positioned
+account control. The account link's `aria-current="page"` state provides its
+selected appearance. The topbar account link keeps its accessible name and
+routing behavior.
 
-The topbar account link keeps its accessible name and routing behavior. Narrow
-screens retain the horizontal navigation and use that link while the sidebar
-footer is hidden. This presentation belongs to the existing
+The original bottom-placement delivery retained the existing horizontal
+narrow-screen navigation, hiding its footer and keeping account access in the
+topbar. That choice kept placement independent of a responsive-navigation
+redesign. The [sidebar preference decision](2026-10-25-sidebar-preference.md)
+replaces that narrow-screen presentation with a rail and temporary overlay while
+preserving this footer's account destination. Desktop folding also retains the
+footer as an icon entry.
+
+This presentation belongs to the existing
 [authenticated workspace](2026-10-22-web-auth-workspace.md); identity, request and
 account-management ownership remain there. The [Web requirements](../../../../docs/spec/daynight-web.md#工作空间导航)
 and [design](../../../../docs/design/daynight-web.md#工作空间导航) own the current
@@ -40,6 +48,7 @@ keeps a single sidebar account entry and preserves the topbar shortcut.
 
 Account placement stays stable as page content grows. The main navigation can
 scroll independently in short windows, while the footer does not shrink away.
-The layout adds no persistent state, account API or authentication lifecycle.
-Current narrow-screen access remains in the topbar; a future sidebar shape must
-preserve this account destination and its accessible name.
+Bottom placement itself adds no persistent state, account API or authentication
+lifecycle. Responsive navigation and its local appearance state are owned by the
+sidebar preference decision, with the same account destination and accessible
+name in expanded, folded and narrow-screen layouts.

@@ -1,3 +1,4 @@
+import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
 import * as matchers from "@testing-library/jest-dom/matchers";
 import type { TestingLibraryMatchers } from "@testing-library/jest-dom/matchers";
 import { cleanup } from "@testing-library/react";
@@ -48,6 +49,7 @@ const trackStorageOperation = (target: EventTarget, events: readonly string[]) =
 
 beforeEach(() => {
   cleaningStorage = false;
+  mockSidebarMediaQuery();
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
   if (globalThis.structuredClone === undefined) vi.stubGlobal("structuredClone", runInThisContext("structuredClone"));
   const indexedDB = new IDBFactory();

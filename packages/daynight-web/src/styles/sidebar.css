@@ -1,0 +1,40 @@
+.auth-shell.shell { grid-template-columns: 190px minmax(0, 1fr); }
+.auth-shell.shell.sidebar-collapsed { grid-template-columns: 68px minmax(0, 1fr); }
+.auth-shell > .workspace { grid-column: 2; }
+.auth-shell .sidebar { height: 100vh; height: 100dvh; padding: 26px 14px 18px; overflow-y: auto; }
+.auth-shell .sidebar-main { flex: 1; min-height: 0; overflow-y: auto; }
+.auth-shell .sidebar .brand { padding: 0 12px 32px; white-space: nowrap; }
+.auth-shell .sidebar .brand-name { overflow: hidden; }
+.auth-shell .sidebar .nav-button { width: 100%; font-size: 12px; gap: 10px; }
+.auth-shell .sidebar .nav-icon { flex: none; width: 18px; text-align: center; font-size: 18px; line-height: 1; }
+.auth-shell .sidebar-bottom { display: block; flex: none; padding: 14px 0 0; overflow-wrap: anywhere; }
+.auth-shell .sidebar-bottom .account-nav { margin: 0; }
+.auth-shell .sidebar-workspace { padding: 14px 12px 0; }
+.auth-shell .sidebar-toggle { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; margin-top: 12px; padding: 8px; border: 1px solid #ffffff24; border-radius: 6px; background: transparent; color: #b1bdd0; font-size: 11px; }
+.auth-shell .sidebar-toggle > :first-child { font-size: 23px; line-height: 20px; }
+.auth-shell .sidebar-toggle:hover { background: #ffffff0a; color: #fff; }
+.auth-shell.sidebar-collapsed .sidebar { padding: 26px 10px 18px; }
+.auth-shell.sidebar-collapsed .sidebar .brand { padding: 0 0 32px; justify-content: center; }
+.auth-shell.sidebar-collapsed .sidebar :is(.brand-name, .nav-label, .nav-text, .sidebar-workspace, .collapse-label) { display: none; }
+.auth-shell.sidebar-collapsed .sidebar .nav-button { padding: 12px 8px; justify-content: center; }
+.auth-shell .sidebar-preference-notice { margin-bottom: 22px; }
+.sidebar-backdrop { position: fixed; inset: 0; z-index: 41; background: #141b2c66; border: 0; padding: 0; }
+
+/* Keep this breakpoint identical to SIDEBAR_NARROW_QUERY in WorkspaceSidebar.tsx. */
+@media (max-width: 740px) {
+  .auth-shell.shell, .auth-shell.shell.sidebar-collapsed { display: grid; grid-template-columns: 60px minmax(0, 1fr); }
+  .auth-shell .sidebar, .auth-shell.sidebar-collapsed .sidebar { position: sticky; top: 0; width: 60px; height: 100vh; height: 100dvh; padding: 24px 8px 16px; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; }
+  .auth-shell .sidebar .brand, .auth-shell.sidebar-collapsed .sidebar .brand { padding: 0 0 30px; justify-content: center; }
+  .auth-shell .sidebar .brand-mark { width: 24px; height: 24px; }
+  .auth-shell .sidebar :is(.brand-name, .nav-label, .nav-text, .sidebar-workspace, .collapse-label) { display: none; }
+  .auth-shell .sidebar .nav-button { padding: 12px 8px; justify-content: center; margin: 0; }
+  .auth-shell .sidebar .sidebar-bottom { display: block; margin-top: auto; }
+  .auth-shell .sidebar.sidebar-drawer-open { position: fixed; inset: 0 auto 0 0; width: 220px; z-index: 42; padding: 24px 14px 16px; }
+  .auth-shell .sidebar.sidebar-drawer-open .brand { justify-content: flex-start; padding-left: 12px; }
+  .auth-shell .sidebar.sidebar-drawer-open :is(.brand-name, .nav-label, .nav-text, .sidebar-workspace, .collapse-label) { display: block; }
+  .auth-shell .sidebar.sidebar-drawer-open .nav-button { justify-content: flex-start; padding: 12px 14px; }
+  .auth-shell .topbar { padding: 12px 18px; gap: 10px; }
+  .auth-shell .account-actions { max-width: 100%; }
+  .auth-shell .content { padding-left: 18px; padding-right: 18px; }
+  .auth-shell .sidebar-preference-notice .button { white-space: normal; }
+}

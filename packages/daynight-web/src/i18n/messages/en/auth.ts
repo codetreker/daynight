@@ -3,6 +3,13 @@ import type { AuthMessages } from "../auth";
 export const auth: AuthMessages = {
   roles: { admin: "Administrator", member: "Member" },
   shell: {
+    sidebar: {
+      expand: "Expand sidebar", collapse: "Collapse sidebar", close: "Close navigation",
+      readError: "The sidebar preference could not be read. The expanded layout is in use. You can still switch the sidebar and retry saving.",
+      invalidError: "The saved sidebar preference is invalid. The expanded layout is in use. Choose a layout and save it again.",
+      writeError: "The sidebar preference has not been saved. You can keep using this layout and retry saving.",
+      retrySave: "Retry saving sidebar preference",
+    },
     myProjects: "My projects",
     accountSettings: "Account settings",
     projectSettings: "Project settings",

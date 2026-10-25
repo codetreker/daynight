@@ -700,6 +700,18 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await page.getByRole('button', { name: '放大', exact: true }).click();
     await expect.poll(() => viewport.getAttribute('style')).not.toBe(beforeZoom);
     const chosenViewport = await viewport.getAttribute('style');
+    const beforeSidebarReads = syncReads;
+    const sidebar = page.locator('.sidebar');
+    await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(190);
+    await page.getByRole('button', { name: '折叠侧栏', exact: true }).click();
+    await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(68);
+    await expect(viewport).toHaveAttribute('style', chosenViewport!);
+    expect(await canvas!.evaluate((element) => element === document.querySelector('.task-graph-canvas'))).toBe(true);
+    expect(await viewportElement!.evaluate((element) => element === document.querySelector('.react-flow__viewport'))).toBe(true);
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
+    await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(190);
+    await expect(viewport).toHaveAttribute('style', chosenViewport!);
+    expect(syncReads).toBe(beforeSidebarReads);
     const beforeSwitchReads = syncReads;
     await page.evaluate(() => window.scrollTo(0, 540));
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
@@ -748,6 +760,15 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect(dialog.locator('.task-detail-title')).toHaveText(independent.title);
   await expect(dialog.getByRole('button', { name: '关闭任务详情', exact: true })).toBeFocused();
   await expect(page.locator('#root')).toHaveAttribute('inert', '');
+  const retainedDetail = await dialog.elementHandle();
+  for (const width of [390, 1100]) {
+    await page.setViewportSize({ width, height: 700 });
+    await expect(dialog.locator('.task-detail-title')).toHaveText(independent.title);
+    expect(await retainedDetail!.evaluate((element) => element === document.querySelector('.task-detail-dialog'))).toBe(true);
+    await expect(page.locator('#root')).toHaveAttribute('inert', '');
+    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+  }
+  await retainedDetail!.dispose();
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(trigger).toBeFocused();
@@ -841,6 +862,26 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect(standalone(page, independent.id)).toBeVisible();
   await expect(page.locator('.task-graph-canvas')).toHaveCount(0);
   await screenshot(page, info, 'project-view-tabs');
+  await test.step('restores the desktop sidebar preference after reload, project navigation and reopening', async () => {
+    await page.getByRole('button', { name: '折叠侧栏', exact: true }).click();
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
+    await page.reload();
+    await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
+    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
+    await page.locator('.sidebar a.nav-button[href="/"]').click();
+    await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await loadAllProjects(page);
+    await page.locator(`a.project-card[href="/projects/${other.id}"]`).click();
+    await expect(page.getByRole('heading', { name: other.name, exact: true })).toBeVisible();
+    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
+    const reopened = await page.context().newPage();
+    try {
+      await reopened.setViewportSize({ width: 1440, height: 900 });
+      await reopened.goto(`/projects/${project.id}`);
+      await expect(reopened.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
+      await expect.poll(async () => (await reopened.locator('.sidebar').boundingBox())?.width).toBe(68);
+    } finally { await reopened.close(); }
+  });
 });
 
 test('detail-navigation', scenario('detail-navigation'), async ({ page, api: request }, info) => {
@@ -1585,6 +1626,64 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
   await expect(page.getByRole('button', { name: '刷新', exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await expect(page.locator('.stats .stat')).toHaveCount(6);
+  await test.step('keeps mobile navigation temporary, modal and reachable in short viewports', async () => {
+    const sidebar = page.locator('.sidebar');
+    const workspace = page.locator('.workspace');
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+    for (const viewport of [{ width: 390, height: 700 }, { width: 320, height: 360 }]) {
+      await page.setViewportSize(viewport);
+      await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(60);
+      await expect(sidebar.locator('a.account-nav')).toBeInViewport();
+      const opener = page.getByRole('button', { name: '展开侧栏', exact: true });
+      await expect(opener).toBeInViewport();
+      const background = await workspace.boundingBox();
+      const originalOverflow = await page.locator('body').evaluate((element) => element.style.overflow);
+      const originalScroll = await page.evaluate(() => window.scrollY);
+      await opener.click();
+      const drawer = page.getByRole('dialog', { name: '工作空间导航', exact: true });
+      await expect(drawer).toHaveAttribute('aria-modal', 'true');
+      await expect.poll(async () => (await drawer.boundingBox())?.width).toBe(220);
+      await expect(workspace).toHaveAttribute('inert', '');
+      await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
+      expect(await workspace.boundingBox()).toEqual(background);
+      const firstLink = drawer.locator('a').first();
+      const toggle = drawer.locator('button[aria-expanded="true"]');
+      await toggle.focus();
+      await page.keyboard.press('Tab');
+      await expect(firstLink).toBeFocused();
+      await page.keyboard.press('Shift+Tab');
+      await expect(toggle).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
+      await expect(opener).toBeFocused();
+      await expect(workspace).not.toHaveAttribute('inert', '');
+      expect(await page.locator('body').evaluate((element) => element.style.overflow)).toBe(originalOverflow);
+      expect(await page.evaluate(() => window.scrollY)).toBe(originalScroll);
+      await opener.click();
+      await page.locator('.sidebar-backdrop').click({ position: { x: viewport.width - 12, y: 20 } });
+      await expect(opener).toBeFocused();
+      await expect(workspace).not.toHaveAttribute('inert', '');
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+    }
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
+    await page.setViewportSize({ width: 1440, height: 700 });
+    await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
+    await expect.poll(async () => (await sidebar.boundingBox())?.width).toBe(190);
+    await expect(workspace).not.toHaveAttribute('inert', '');
+    await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+    await page.setViewportSize({ width: 390, height: 700 });
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
+    await sidebar.locator('a.account-nav').click();
+    await expect(page).toHaveURL(/\/account$/);
+    await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
+    await expect(workspace).not.toHaveAttribute('inert', '');
+    await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+    await expect(page.locator('#main-content')).toBeFocused();
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBeNull();
+    await page.setViewportSize({ width: 320, height: 800 });
+    await openTaskProject(page, project.id, project.name);
+  });
   await page.getByRole('button', { name: '全屏查看', exact: true }).click();
   const fullscreen = page.getByRole('dialog', { name: '任务依赖图全屏查看', exact: true });
   for (const width of [320, 768, 1280, 1440, 320]) {
@@ -1630,4 +1729,38 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
   await screenshot(page, info, 'narrow-standalone');
   await page.keyboard.press('Escape');
   await expect(standalone(page, independent.id)).toBeFocused();
+  await test.step('shows startup storage failures and preserves an explicit save retry on narrow screens', async () => {
+    await page.addInitScript(() => {
+      const state = window as unknown as { sidebarStorageBlocked: { read: boolean; write: boolean } };
+      state.sidebarStorageBlocked = { read: true, write: false };
+      const get = Storage.prototype.getItem;
+      const set = Storage.prototype.setItem;
+      Storage.prototype.getItem = function (key) {
+        if (key === 'daynight.web.sidebar.collapsed' && state.sidebarStorageBlocked.read) throw new DOMException('Controlled sidebar read denial.', 'SecurityError');
+        return get.call(this, key);
+      };
+      Storage.prototype.setItem = function (key, value) {
+        if (key === 'daynight.web.sidebar.collapsed' && state.sidebarStorageBlocked.write) throw new DOMException('Controlled sidebar write denial.', 'QuotaExceededError');
+        return set.call(this, key, value);
+      };
+    });
+    await page.setViewportSize({ width: 320, height: 500 });
+    await page.reload();
+    const notice = page.locator('.sidebar-preference-notice');
+    await expect(notice).toContainText('无法读取侧栏偏好');
+    const retry = notice.getByRole('button', { name: '重试保存侧栏偏好', exact: true });
+    await expect(retry).toBeInViewport();
+    await page.evaluate(() => {
+      const state = window as unknown as { sidebarStorageBlocked: { read: boolean; write: boolean } };
+      state.sidebarStorageBlocked = { read: false, write: true };
+    });
+    await retry.click();
+    await expect(notice).toContainText('侧栏偏好尚未保存');
+    await expect(retry).toBeInViewport();
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.evaluate(() => { (window as unknown as { sidebarStorageBlocked: { write: boolean } }).sidebarStorageBlocked.write = false; });
+    await retry.click();
+    await expect(notice).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('false');
+  });
 });

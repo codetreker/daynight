@@ -21,7 +21,8 @@ It provides login, private project creation, account/token pages, member and inv
 and explicit invitation acceptance. It composes the existing project list,
 project task tabs, graph and centered `TaskDetailDialog`. Workspace navigation
 keeps the account entry in its sidebar footer; the [account navigation decision](2026-10-25-bottom-account-navigation.md)
-owns its placement and responsive layout. Production `main.tsx`
+owns its placement, and the [sidebar preference decision](2026-10-25-sidebar-preference.md)
+owns local folding and temporary narrow-screen navigation. Production `main.tsx`
 now renders `AuthenticatedApp` under the same persistent `LocaleProvider`. Both
 catalogs extend their complete `messages.auth` contract to login, project creation, account, members, invitations, tokens and
 management dialogs. Selectors remain available on login, invitation, workspace
@@ -43,7 +44,10 @@ replaces that presentation policy: ordinary checks keep loaded content visible
 and interactive until a changed identity, session loss or verification failure is
 confirmed. New API reads and writes wait for identity confirmation, resuming for
 the same account and cancelling on an account change. Failed checks retain the
-blocking recovery overlay and request wait through recovery.
+blocking recovery overlay and request wait through recovery. A temporary
+narrow-screen navigation drawer closes when checking starts, releasing only its
+own focus, inertness and scroll lock; desktop appearance and mounted content keep
+their existing lifetime.
 TaskDetailSessionProvider lives in that identity domain
 and retains each project/task status/permission operation across dialog close/reopen;
 identity changes discard its pending and unknown-outcome state. The existing
