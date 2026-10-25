@@ -4,7 +4,7 @@ import { layoutGraph, TASK_NODE_COMPACT_HEIGHT, TASK_NODE_EXPANDABLE_HEIGHT, TAS
 import type { ChainProjection } from '../src/features/task-graph/model';
 import { planDependencyRoutes, type RoutingNode } from '../src/features/task-graph/routing';
 import { compileDependencyRoute } from '../src/features/task-graph/routes';
-import { entersRectangle, parseRoute } from './route-geometry';
+import { entersRectangle, parseRoute, tangent } from './route-geometry';
 
 const rectangle = (id: string, left: number, top: number): RoutingNode => ({ id, left, top, right: left + 220, bottom: top + 96 });
 const edge = (source: string, target: string, points: CanvasEdge['points']): CanvasEdge => ({ id: `${source}->${target}`, source, target, external: false, points });
@@ -21,12 +21,13 @@ const verify = (nodes: readonly RoutingNode[], edges: readonly CanvasEdge[]) => 
     const route = parseRoute(compiled.d); pieces += compiled.pieces.length;
     const first = route[0]!; const last = route.at(-1)!;
     if (first.from.x !== source.right || first.from.y !== (source.top + source.bottom) / 2 || last.to.x !== target.left || last.to.y !== (target.top + target.bottom) / 2) failures.push(`${dependency.id}: ports`);
-    if (first.kind !== 'L' || first.to.x <= first.from.x || first.to.y !== first.from.y || last.kind !== 'L' || last.to.x <= last.from.x || last.to.y !== last.from.y) failures.push(`${dependency.id}: horizontal tangents`);
+    const initial = tangent(first, 0); const final = tangent(last, 1);
+    if (initial.x <= 0 || final.x <= 0 || initial.y !== 0 || final.y !== 0) failures.push(`${dependency.id}: horizontal tangents`);
     for (const segment of route) {
-      if (segment.to.x < segment.from.x || segment.control !== undefined && (segment.control.x < segment.from.x || segment.control.x > segment.to.x)) failures.push(`${dependency.id}: backward`);
-      if (segment.kind === 'Q') curves++;
-      const xs = [segment.from.x, segment.to.x, ...(segment.control === undefined ? [] : [segment.control.x])];
-      const ys = [segment.from.y, segment.to.y, ...(segment.control === undefined ? [] : [segment.control.y])];
+      if (segment.to.x < segment.from.x || segment.first !== undefined && (segment.first.x < segment.from.x || segment.second!.x > segment.to.x)) failures.push(`${dependency.id}: backward`);
+      if (segment.kind === 'C') curves++;
+      const xs = [segment.from.x, segment.to.x, ...(segment.first === undefined ? [] : [segment.first.x, segment.second!.x])];
+      const ys = [segment.from.y, segment.to.y, ...(segment.first === undefined ? [] : [segment.first.y, segment.second!.y])];
       const left = Math.min(...xs); const right = Math.max(...xs); const top = Math.min(...ys); const bottom = Math.max(...ys);
       for (const node of nodes) {
         if (node.right <= left || node.left >= right || node.bottom <= top || node.top >= bottom) continue;
@@ -35,10 +36,10 @@ const verify = (nodes: readonly RoutingNode[], edges: readonly CanvasEdge[]) => 
     }
     for (let index = 1; index < dependency.points.length; index++) {
       const from = dependency.points[index - 1]!; const to = dependency.points[index]!;
-      if (from.x !== to.x && from.y !== to.y) failures.push(`${dependency.id}: non-channel span`);
+      if (from.x >= to.x) failures.push(`${dependency.id}: non-forward passage`);
       if (index === dependency.points.length - 1) continue;
       const after = dependency.points[index + 1]!;
-      if ((to.x - from.x) * (after.y - to.y) === (to.y - from.y) * (after.x - to.x)) failures.push(`${dependency.id}: redundant or reversing turn`);
+      if (from.y === to.y && to.y === after.y) failures.push(`${dependency.id}: redundant horizontal passage`);
     }
   }
   expect(failures.slice(0, 10)).toEqual([]);
@@ -92,7 +93,7 @@ describe('uniform node-safe dependency channels', () => {
     const original = structuredClone({ nodes, input });
     expect(entersRectangle(parseRoute('M150,128 L284,900')[0]!, nodes[1]!)).toBe(true);
     const result = planDependencyRoutes(nodes, [input]);
-    expect(result[0]!.points).toEqual([{ x: 252, y: 80 }, { x: 284, y: 80 }, { x: 284, y: 548 }, { x: 316, y: 548 }]);
+    expect(result[0]!.points).toEqual([{ x: 252, y: 80 }, { x: 316, y: 548 }]);
     verify(nodes, result); expect({ nodes, input }).toEqual(original);
   });
   it('routes every intermediate column through a free passage and keeps turns in rank gaps', () => {
@@ -100,7 +101,7 @@ describe('uniform node-safe dependency channels', () => {
     const input = edge('s', 't', [{ x: 252, y: 80 }, { x: 284, y: 80 }, { x: 426, y: 80 }, { x: 568, y: 144 }, { x: 710, y: 144 }, { x: 852, y: 348 }, { x: 884, y: 348 }]);
     expect(entersRectangle(parseRoute('M426,16 L710,144')[0]!, nodes[3]!)).toBe(true);
     const result = planDependencyRoutes(nodes, [input]); verify(nodes, result);
-    expect(result[0]!.points).toEqual([{ x: 252, y: 80 }, { x: 284, y: 80 }, { x: 284, y: 16 }, { x: 568, y: 16 }, { x: 568, y: 144 }, { x: 852, y: 144 }, { x: 852, y: 348 }, { x: 884, y: 348 }]);
+    expect(result[0]!.points).toEqual([{ x: 252, y: 80 }, { x: 316, y: 16 }, { x: 536, y: 16 }, { x: 600, y: 144 }, { x: 820, y: 144 }, { x: 884, y: 348 }]);
   });
   it('coalesces equal passage rows across many columns into one long straight body', () => {
     const nodes = [rectangle('s', 32, 300), rectangle('a', 316, 32), rectangle('b', 600, 32), rectangle('c', 884, 32), rectangle('t', 1168, 300)];
@@ -129,7 +130,7 @@ describe('uniform node-safe dependency channels', () => {
     }
     verify(layoutRectangles(actual), actual.edges);
   });
-  it.each(['chain', 'merge', 'shared', 'external'] as const)('proves all real routes and quadratics avoid cards in the complete %s input', (kind) => {
+  it.each(['chain', 'merge', 'shared', 'external'] as const)('proves all real routes and cubics avoid cards in the complete %s input', (kind) => {
     const actual = layoutGraph(capacity(kind)); expect(actual.nodes).toHaveLength(1000); expect(actual.edges).toHaveLength(kind === 'chain' ? 999 : 5000);
     const cost = verify(layoutRectangles(actual), actual.edges);
     expect(cost.curves).toBeLessThan(kind === 'chain' ? 1 : 30_000); expect(cost.pieces).toBeLessThan(30_000);
@@ -162,7 +163,7 @@ describe('uniform node-safe dependency channels', () => {
     const input = edge('s', 't', [{ x: 252, y: 80 }, { x: 600, y: 80 }]);
     expect(() => planDependencyRoutes([{ ...source, left: NaN }, target], [input])).toThrow(/invalid node bounds/);
     expect(() => planDependencyRoutes([source, { ...source, id: 'other', right: 260 }, target], [input])).toThrow(/nonoverlapping node columns/);
-    expect(() => planDependencyRoutes([source, rectangle('other', 260, 32), target], [input])).toThrow(/rounded rank-gap channels/);
+    expect(() => planDependencyRoutes([source, rectangle('other', 252, 32), target], [input])).toThrow(/positive rank gaps/);
     expect(() => planDependencyRoutes([source, rectangle('s', 316, 160), target], [input])).toThrow(/duplicate node identities/);
     expect(() => planDependencyRoutes([source, target], [edge('s', 'missing', input.points)])).toThrow(/forward endpoints/);
     expect(() => planDependencyRoutes([source, target], [edge('t', 's', input.points)])).toThrow(/forward endpoints/);

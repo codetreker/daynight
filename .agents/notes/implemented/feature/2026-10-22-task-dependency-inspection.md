@@ -31,8 +31,10 @@ viewport fitting and focus reveal consume the same dimensions. Inspection and De
 expand S, relayout, compile routes or move the viewport. Details and relation
 navigation retain independent resource ownership.
 
-The [uniform route decision](../architecture/2026-10-22-uniform-task-dependency-routing.md)
-owns fixed lateral ports, sixteen-unit clearance and bounded Q geometry.
+The [Bézier route decision](../architecture/2026-10-25-bezier-task-dependency-routing.md)
+owns fixed lateral ports, sixteen-unit intermediate clearance and gap-confined
+cubic geometry, retaining the planner ownership established by the
+[uniform route decision](../architecture/2026-10-22-uniform-task-dependency-routing.md).
 `compileDependencyRoute` compiles only geometry changes; actual curved length
 preserves 5/4 phase with cumulative error bounded to 0.025 CSS px at maximum 1.8
 zoom. Declarative native SVG uses three constant direct-RGB markers and local

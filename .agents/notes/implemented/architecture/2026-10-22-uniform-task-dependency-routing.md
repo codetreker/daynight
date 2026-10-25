@@ -12,35 +12,37 @@ multiple per-edge repair strategies make that requirement difficult to verify.
 
 ## Decision
 
-The adopted replacement design keeps current visible-node placement and order,
-and gives every visible dependency the same horizontal/vertical column-channel
-planning rule. Source ports are right-center and target ports left-center.
-Shared placed-card geometry uses each CanvasNode's actual width and height:
-220 by 96 without expansion controls, or 220 by 136 with the footer. It owns
-the available column gaps and free passages;
-route planning retains sixteen units of clearance for bounded quadratic corner
-rounding of at most twelve units. Every visible real induced edge is retained,
-with forward horizontal endpoint direction and no card-interior crossing.
-The planner implements this mechanism and builds columns and sixteen-unit
-expanded occupied-row intervals once, interpolates intended height at each
-intermediate column center, picks the nearest free row and transitions only at
-gap midpoints, coalescing equal rows. There is no conditional collision-repair
-path or raw-port compatibility branch.
+The original uniform planner separated Dagre's visible-node placement from
+product-owned fixed right-center/left-center ports and card avoidance. It used
+each CanvasNode's actual width and height: 220 by 96 without expansion controls,
+or 220 by 136 with the footer. Columns and sixteen-unit expanded occupied-row
+intervals were built once; interpolation at each intermediate column center
+selected the nearest free row. Horizontal/vertical transitions at gap midpoints
+and quadratic corners of at most twelve units made avoidance uniform without
+per-edge collision repair or raw-port compatibility branches.
 
-This replaces the raw-Dagre-point retention target in the
-[inspection design decision](2026-10-22-task-inspection-design.md). That initial
-choice preserved lane intent and long straight spans so local-axis dash painting
-could be reused. The replacement assigns ports and avoidance to one uniform
-planner instead of keeping invalid endpoint shapes through special repairs.
-Dagre continues to own node placement; product routing owns all edge geometry.
+The [Bézier routing decision](2026-10-25-bezier-task-dependency-routing.md)
+replaces that bend geometry with complete cubic curves across column gaps. It
+retains this note's node/route ownership, fixed lateral ports, free-row planning
+and sixteen-unit intermediate clearance. Current routes cross empty gaps with
+horizontal endpoint tangents and cross intermediate columns on horizontal free
+rows. The curve convex hull stays within the empty gap, so avoidance no longer
+depends on bounded corner radii. Equal rows still coalesce into straight spans.
 
-The smooth compiler rounds the planned channels, and its geometry remains tied
-to visible layout changes. Graph-local inspection Context updates only node,
-body and arrow presentation while controlled geometry remains stable. True curve
-arc length preserves the existing 5/4 dash phase and maximum-zoom tolerance;
-long straight spans retain the existing local-axis paint mechanism. Independent
-checks must validate actual rendered routes rather than treating planner output
-as their expected valid geometry.
+This uniform-planning decision replaced the raw-Dagre-point retention target in
+the [inspection design decision](2026-10-22-task-inspection-design.md). That
+initial choice preserved lane intent and long straight spans so local-axis dash
+painting could be reused. Assigning ports and avoidance to one planner removed
+the need to preserve invalid endpoint shapes through special repairs. Dagre
+continues to own node placement; product routing owns all edge geometry.
+
+Route compilation remains tied to visible layout changes. Graph-local inspection
+Context updates only node, body and arrow presentation while controlled geometry
+remains stable. True curve arc length preserves the existing 5/4 dash phase and
+maximum-zoom tolerance; long straight spans retain local-axis paint. The Bézier
+compiler also bounds native cubic paint pieces. Independent checks validate
+actual rendered routes rather than treating planner output as expected valid
+geometry.
 
 The [progressive overview](../feature/2026-10-22-progressive-task-graph.md) remains
 the delivered PR134 baseline: fifty tasks/one hundred induced edges initially,
@@ -54,7 +56,8 @@ not a required integration or current verification artifact. Its runtime results
 do not establish this replacement's geometry or performance. The
 [requirements](../../../../docs/spec/daynight-task-inspection.md) and
 [design](../../../../docs/design/daynight-task-inspection.md) own the new observable
-acceptance and mechanism; [PR #143](https://github.com/codetreker/daynight/pull/143) owns fresh production evidence.
+acceptance and mechanism. [PR #143](https://github.com/codetreker/daynight/pull/143)
+retains source-bound evidence for the original uniform-channel implementation.
 
 ## Alternatives
 

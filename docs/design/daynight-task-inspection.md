@@ -19,7 +19,7 @@ flowchart LR
   Index --> P[完整投影P]
   P --> S[实际可见S]
   S --> Layout[节点布局]
-  Layout --> Channels[统一列间HV通道与圆角]
+  Layout --> Channels[列间三次贝塞尔曲线与水平自由通道]
   Index --> H[完整祖先H]
   H --> Paint[可见高亮和隐藏计数]
   S --> Paint
@@ -42,7 +42,7 @@ ProjectPage保持详情资源和入口/关闭恢复所有权。当前画布拥�
 
 ## 平滑路线
 
-路由采用统一列间水平/垂直通道。保留可见节点布局和顺序，全部边从源右中心到目标左中心，规划器统一拥有边几何和节点避让。`planDependencyRoutes(nodes, edges)`按每个 CanvasNode 的实际 width/height（220×96 或 220×136）一次建立列和16单位扩张的占用行区间，各中间列按Dagre意图插值选择最近自由行，仅在gap中点作HV转接并合并等高段，无条件碰撞修补/旧端口兼容分支；净空为≤12单位Q圆角留出空间。[统一路线决策](../../.agents/notes/implemented/architecture/2026-10-22-uniform-task-dependency-routing.md)保留原始raw-Dagre圆角选择的理由与替代方案。
+路由保留可见节点布局和顺序，全部边从源右中心到目标左中心，规划器统一拥有边几何和节点避让。`planDependencyRoutes(nodes, edges)`按每个 CanvasNode 的实际 width/height（220×96 或 220×136）一次建立列和16单位扩张的占用行区间，各中间列按Dagre意图插值选择最近自由行，在列的右边界和下一列的左边界输出严格向右的通道端点。不同高度的列间端点由完整三次贝塞尔曲线连接，两个控制点分别位于空隙中线与起止高度；曲线凸包完全位于列间空隙，因此不会进入卡片。穿过中间列的段保持水平，等高连续段合并；所有曲线出入和相邻段的切向均水平向右。`compileDependencyRoute`编译统一的M/L/C路线，虚线使用真实弧长和精确三次子曲线，内部切口位于全局5/4周期的第7单位，直线和曲线绘制片段的弧长均不超过8192单位；累计相位误差在最大1.8倍缩放下不超过0.025 CSS px。[贝塞尔路线决策](../../.agents/notes/implemented/architecture/2026-10-25-bezier-task-dependency-routing.md)拥有曲线形状与避让机制，[统一路线决策](../../.agents/notes/implemented/architecture/2026-10-22-uniform-task-dependency-routing.md)保留此前通道与圆角选择的理由。
 
 编译器消费规划路线，产生canonical平滑路径与外部paint pieces。所有可见依赖、方向、实际body和箭头完整；外部高亮仍为5/4虚线。曲线弧长/分片在几何变化时计算，最大支持缩放的累计相位误差满足既有≤0.1CSSpx要求。选中/前置/无关呈现引用同一份几何，不能以删边、降为实线或临时返回折角掩盖失败。
 

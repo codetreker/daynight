@@ -1220,8 +1220,8 @@ visible-task selection and the highlighted sequence; each metric uses the worse
 state with independent network timing, and no close-to-zoom reset/fit/wait.
 Independent API/P/S topology derives compact/expandable heights from hidden direct
 neighbors inside P; unrelated outside-P successors cannot create a footer.
-Actual DOM fixed ports, Q≤12/tangency, card avoidance,
-body/marker coverage and analytic curved dash phase cover every visible edge.
+Actual DOM fixed ports, cubic horizontal tangency, card avoidance,
+body/marker coverage and independently integrated curved dash phase cover every visible edge.
 Stable owner transforms are graph-relative real root/owner CTMs; raw screen,
 page-scroll and canvas diagnostics stay separate from reset equality.
 The `task-agent-permission` journey on both targets covers member-authorized
@@ -1464,20 +1464,27 @@ adapter returns finite left-to-right node positions and routed edge points for
 read-only React Flow canvas consumes these results without changing domain
 objects. React Flow owns task nodes with those exact dimensions, native ResizeObserver measurement,
 keyboard behavior, viewport and controls. One memoized SVG in its public
-ViewportPortal renders every planned smooth M/L/Q path, with stable edge identity,
+ViewportPortal renders every planned M/L/C path, with stable edge identity,
 arrowheads, external-context dashes and accessibility semantics. It shares the viewport's
 transform, so selection/pan/zoom reuse geometry without per-edge reactive state.
-Canonical routes retain native arrow markers and the full planned geometry. Dashed body
-paint uses `routes.ts` to derive locally horizontal rotated lines and short native
-vertex paths, with the original 5/4 pattern and continuous positive arc-length
-phase. Each line is at most 8,192 graph units long; additional cuts fall inside
-the existing dash gaps to bound GPU work without removing route geometry.
-Solid bodies remain native. Pieces are noninteractive and hidden from the
-accessibility tree; canonical edges keep their existing identity/semantics. The
+Canonical routes retain native arrow markers and the full planned geometry.
+Different-height passages use cubic Bézier curves entirely within empty column
+gaps, with both controls on the gap midpoint at the respective endpoint heights.
+Horizontal tangents join these curves to free rows through intermediate columns,
+which retain sixteen units of clearance from cards. The
+[Bézier routing decision](../../.agents/notes/implemented/architecture/2026-10-25-bezier-task-dependency-routing.md)
+owns the shape and avoidance mechanism. Dashed body paint uses `routes.ts` to
+derive locally horizontal rotated lines and exact cubic subcurves, with the
+original 5/4 pattern and continuous positive arc-length phase. Every paint piece
+has at most 8,192 graph units of arc length; internal cuts fall at global dash-gap
+midpoints to bound GPU work without removing route geometry. Cumulative phase
+error stays within 0.025 CSS px at maximum 1.8 zoom. Solid bodies remain native.
+Pieces are noninteractive and hidden from the accessibility tree; canonical edges
+keep their existing identity/semantics. The
 [paint decision](../../.agents/notes/implemented/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
-owns the pinned raster evidence, phase preservation and visual tolerances; the
+owns the pinned raster evidence and local-line rationale; the
 [bounded-line extension](../../.agents/notes/implemented/bug-fix/2026-10-22-bounded-dashed-dependency-lines.md)
-owns the GPU stroke limit and its added DOM cost.
+owns the original GPU stroke bound and its added DOM cost.
 Initial placement uses current visible layout bounds after the viewport and positive
 measured canvas dimensions are ready, fitting within 0.8–1 zoom or anchoring the
 leftmost rank at 0.8 zoom. The root remains vertically centered when already

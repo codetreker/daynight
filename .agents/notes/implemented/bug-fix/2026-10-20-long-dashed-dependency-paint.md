@@ -13,20 +13,20 @@ boundary dash and modal interaction must remain present.
 
 ## Decision
 
-The existing single SVG in React Flow's public ViewportPortal keeps every
-canonical Dagre route, stable identity and native arrow marker. Solid routes
-retain their native body paint. Dashed bodies use immutable paint pieces derived
-from the complete route: locally horizontal lines with world-space rotation and
-translation, plus short native paths around bends. The canonical dashed route
-retains its full points and marker ownership while its separate body pieces own
+The single SVG in React Flow's public ViewportPortal keeps every canonical
+planned route, stable identity and native arrow marker. Solid routes retain
+native body paint. Dashed bodies use immutable paint pieces derived from the
+complete route: locally horizontal lines with world-space rotation and
+translation, plus native paths for curved regions. The canonical dashed route
+retains full geometry and marker ownership while separate body pieces own
 stroke paint. This partially replaces the body-paint mechanism in the
 [dashboard decision](../feature/2026-10-20-project-task-dashboard.md); graph
 projection, ranking, viewport ownership and arrow geometry remain unchanged.
 
-`decomposeDashedRoute` uses the existing 5/4 dash pattern and nine-unit period.
+`compileDependencyRoute` uses the existing 5/4 dash pattern and nine-unit period.
 Cuts fall at gap midpoints, seven units into that period. Each piece uses the
 positive `startDistance % 9` offset, so a gap-midpoint start has two unpainted
-units before its next dash. Native bend paths retain the original vertices and
+units before its next dash. Native curved paths retain canonical geometry and
 joins; cuts inside gaps do not introduce visible stroke caps. Long straight
 pieces use unit-scale rotation/translation rather than changing world geometry,
 stroke width or dash spacing. The
@@ -36,7 +36,10 @@ owns that positive-offset interpretation.
 The [bounded-line extension](2026-10-22-bounded-dashed-dependency-lines.md)
 additionally limits each line to 8,192 graph units for macOS GPU rendering.
 It preserves this local-coordinate mechanism and the historical CPU raster
-evidence below while splitting long bodies at additional global dash gaps.
+evidence below while splitting long bodies at additional global dash gaps. The
+[Bézier routing decision](../architecture/2026-10-25-bezier-task-dependency-routing.md)
+replaces the earlier rounded bend shape with gap-confined cubic routes and
+extends the same bound to exact cubic paint subcurves.
 
 The pinned Chromium implementation explains why local coordinates matter.
 [Chromium's DEPS](https://github.com/chromium/chromium/blob/f842f52ef39fd97b449eb27cff414bf05a98ddce/DEPS#L340)

@@ -1,5 +1,4 @@
 import type { CanvasEdge, CanvasPoint } from './layout';
-import { DEPENDENCY_CORNER_RADIUS } from './routes';
 
 export type RoutingNode = {
   readonly id: string;
@@ -11,7 +10,7 @@ export type RoutingNode = {
 type RowInterval = { start: number; end: number };
 type Column = { readonly left: number; readonly right: number; readonly occupied: readonly RowInterval[] };
 type LocatedNode = { readonly rectangle: RoutingNode; readonly column: number };
-const passageClearance = DEPENDENCY_CORNER_RADIUS + 4;
+const passageClearance = 16;
 const middle = (first: number, last: number): number => first + (last - first) / 2;
 
 const buildIndex = (nodes: readonly RoutingNode[]) => {
@@ -44,8 +43,8 @@ const buildIndex = (nodes: readonly RoutingNode[]) => {
     return { left: first.left, right: first.right, occupied };
   });
   for (let column = 1; column < columns.length; column++) {
-    if (columns[column]!.left - columns[column - 1]!.right < DEPENDENCY_CORNER_RADIUS * 2) {
-      throw new Error('Task dependency routing requires room for rounded rank-gap channels.');
+    if (columns[column]!.left <= columns[column - 1]!.right) {
+      throw new Error('Task dependency routing requires positive rank gaps.');
     }
   }
   return { columns, located };
@@ -62,23 +61,16 @@ const freeRow = (column: Column, intended: number): number => {
 const append = (points: CanvasPoint[], point: CanvasPoint) => {
   const previous = points.at(-1);
   if (previous !== undefined && previous.x === point.x && previous.y === point.y) return;
-  while (points.length > 1) {
-    const before = points.at(-2)!;
-    const previous = points.at(-1)!;
-    if (before.x !== previous.x || previous.x !== point.x) {
-      if (before.y !== previous.y || previous.y !== point.y) break;
-    }
-    points.pop();
-  }
+  while (points.length > 1 && points.at(-2)!.y === point.y && previous!.y === point.y) points.pop();
   points.push(point);
 };
 
 // Dagre determines card placement and intermediate passage intent. Its endpoint
 // clipping does not prevent steep spans from crossing other cards in a column:
 // https://github.com/dagrejs/dagre/blob/c3ed0802cd98de74c21cff1f754689ebbb0f8dae/lib/layout.ts#L584-L601
-// Horizontal side ports and gap-midpoint verticals keep routing forward. Column
-// passages stay 16 units from cards; the 12-unit rounded corners remain in the
-// gaps. Equal passage rows coalesce into long straight spans for native dashing.
+// Each changing row is bounded by the empty rank gap. Cubic control points stay
+// in that gap, so their convex hull cannot enter a card. Horizontal passages
+// cross intermediate columns with sixteen units of clearance.
 export const planDependencyRoutes = (nodes: readonly RoutingNode[], edges: readonly CanvasEdge[]): readonly CanvasEdge[] => {
   const { columns, located } = buildIndex(nodes);
   return edges.map((edge) => {
@@ -98,7 +90,6 @@ export const planDependencyRoutes = (nodes: readonly RoutingNode[], edges: reado
     let waypoint = 0;
     for (let column = source.column; column < target.column; column++) {
       const next = columns[column + 1]!;
-      const channel = middle(columns[column]!.right, next.left);
       let nextRow = to.y;
       if (column + 1 !== target.column) {
         const x = middle(next.left, next.right);
@@ -108,8 +99,8 @@ export const planDependencyRoutes = (nodes: readonly RoutingNode[], edges: reado
         if (first.x > x || last.x < x || first.x === last.x) throw new Error('Task dependency routing lacks an intermediate column passage.');
         nextRow = freeRow(next, first.y + (last.y - first.y) * ((x - first.x) / (last.x - first.x)));
       }
-      append(points, { x: channel, y: row });
-      append(points, { x: channel, y: nextRow });
+      append(points, { x: columns[column]!.right, y: row });
+      append(points, { x: next.left, y: nextRow });
       row = nextRow;
     }
     append(points, to);
