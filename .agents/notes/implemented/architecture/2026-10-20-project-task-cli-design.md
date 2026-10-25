@@ -44,9 +44,12 @@ replaced that prerequisite with interactive service/review guidance. The
 [device-login decision](2026-10-25-cli-device-login.md) now defaults an absent
 service origin to `https://daynight.cc` and uses explicit login/logout for ordinary
 access. Service calls without a local credential fail before dispatch with login
-guidance; explicit stdin PAT setup remains for automation. Invalid configured
-values remain errors. Origin and token share one concurrency observation, and
-an origin change clears the old token atomically. Credential-bearing configuration uses POSIX `0600`, while the prior
+guidance. The later
+[top-level setup removal decision](../simplification/2026-10-25-remove-top-level-setup.md)
+uses existing YAML fields for external test-service and automation provisioning.
+Invalid configured values remain errors. Login/logout share one origin/token
+concurrency observation; external provisioners must pair credentials with the
+intended origin and remove or replace old tokens when changing services. Credential-bearing configuration uses POSIX `0600`, while the prior
 file-mode behavior remains for files without a token. Project definitions share
 parameter syntax with help and shell completion. Help and argument validation
 finish before the shared server runtime is loaded. Project creation takes one

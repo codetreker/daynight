@@ -8,7 +8,7 @@ task 命令、安装产物、真实服务及默认预算验收已完成并通过
 
 Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `daynight` 入口及短命令 `dn`，命令模块
 拥有各自的业务行为、依赖和生命周期。`review` 是 GitHub PR 审查模块；`update` 管理
-整个客户端的 npm 全局安装；`login/logout` 管理 CLI 凭据；`setup` 保存 review 配置及显式测试服务覆盖；`completion` 生成 Bash 和 zsh
+整个客户端的 npm 全局安装；`login/logout` 管理 CLI 凭据；review 自行拥有仓库配置和首次引导；`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`skill` 安装随包分发的公开 `using-daynight` skill。独立的 Go 服务和浏览器应用保留自己的产品需求
 与生命周期。
 
@@ -42,9 +42,6 @@ daynight -v
 daynight update
 daynight login [--no-browser]
 daynight logout
-daynight setup
-daynight setup --server-url <url>
-daynight setup --review-repo <remote> [--review-path <path>]
 daynight review
 daynight review run
 daynight review list
@@ -74,7 +71,7 @@ daynight task attachment read <task-id> <relative-path> [--project <project-id>]
 daynight task attachment remove <task-id> <relative-path> [--project <project-id>]
 ```
 
-无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `review`、`update`、`login`、`logout`、`setup`、
+无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `review`、`update`、`login`、`logout`、
 `completion`、`skill`、`project` 和 `task`。`--version` 与 `-v` 输出当前包版本。裸 `review` 和裸 `completion`
 显示各自帮助；裸 `skill`、`project` 与 `task` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
 该操作。顶层版本选项不继承到子命令。`review ls` 是 `review list` 的别名。
@@ -108,7 +105,7 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 工作目录、获取实例锁、读取审查状态或执行 npm 和网络请求。生成的脚本在按 Tab 时
 遵守 C5 的本地执行要求。
 
-`setup` 与 `review add-repo` 只写配置。按 C6 完成必要的配置引导后，
+`review add-repo` 与 review 首次引导只写配置。按 C6 完成必要的配置引导后，
 `review list` 与 `review ls` 只读取配置及已存数据库，
 `review run` 独立持有审查运行时和信号生命周期，具体保证由 review 需求定义。
 `project list/show` 和显式 `--repo` 的创建只加载 server 配置和 HTTP 能力；省略
@@ -186,7 +183,7 @@ npm 替换失败；该失败必须明确报告。
 保存的脚本文件需要重新生成。
 
 补全覆盖命令、子命令、别名、当前层的选项、`completion` 的 shell 参数和
-`review add-repo --path` 与 `setup --review-path` 的目录候选；zsh 同时展示候选说明。非重复选项使用后不再
+`review add-repo --path` 的目录候选；zsh 同时展示候选说明。非重复选项使用后不再
 提供，已消耗的位置参数不重复提供候选，remote 不提供远端候选或无关文件候选。
 目录建议不约束运行时合法值，操作者仍能输入尚未创建的目标目录。状态的静态
 列表状态候选为 `todo`、`in_progress`、`done`，分离及内联形式使用同一候选；
@@ -219,24 +216,24 @@ review 配置或数据库，不访问网络。候选和输入必须作为数据�
 
 `review run`、`review list` 和 `review ls` 只要求 review 配置。配置文件或 `repositories`
 字段缺失且 stdin/stderr 均为 TTY 时，询问一个 GitHub 远程地址及可选本地路径，复用仓库登记规则。
-无选项 `daynight setup` 同样只收集 review 配置。共享 YAML/schema 错误、当前能力的非法值、
-空仓库列表和读取失败保留原错误；其他能力的业务字段由各自投影校验。配置完整时不询问，
-非交互缺少 review 配置时以状态码 1 失败并给出显式 setup 命令。
+共享 YAML/schema 错误、当前能力的非法值、空仓库列表和读取失败保留原错误；其他能力的业务字段由各自
+投影校验。配置完整时不询问，非交互缺少 review 配置时以状态码 1 失败并给出
+`daynight review add-repo <remote> [--path <path>]` 指引。显式添加与交互引导使用相同远程身份和路径规则。
 
-显式 `--server-url <url>`、`--review-repo <remote>` 可单独或同时使用，仅保存选中字段且不询问；
-`--review-path <path>` 必须与 `--review-repo` 一起使用。远程地址和路径复用 `review add-repo` 语义。
-布尔 `--server-token-stdin` 保留为自动化入口，从 stdin 接收不超过 1 MiB 的一行非空 opaque visible ASCII，
-允许一个 LF/CRLF，拒绝空输入、多行和控制字符；可使用已配置 origin 或生产默认地址，也可配合显式地址。
-仅 HTTPS 或 host 为字面量 `localhost`、`127.0.0.0/8` 数值 IPv4、`::1` 的 HTTP 允许保存令牌。
-正规化 origin 变化时同次原子清除旧凭据，相同 origin 保留。
+顶层不提供 `daynight setup`，不保留旧入口兼容别名；`daynight completion setup` 继续负责 shell 启动配置。
+测试服务和自动化可直接准备现有配置文件的 `serverUrl` 与 `serverToken` 字段，不新增通用配置命令。
+配置准备者必须将目标 origin 与对应凭据共同管理，切换目标时移除或替换旧令牌，并保留其他能力的设置。
+外部文件写入不执行 CLI 的凭据清理或锁协议；POSIX 凭据文件应限制为 `0600`。服务字段仍严格校验，
+令牌仅允许 HTTPS 或 host 为字面量 `localhost`、`127.0.0.0/8` 数值 IPv4、`::1` 的 HTTP。
 
-提示、保存结果和取消诊断写 stderr，业务结果保留 stdout 格式。先收集全部输入，再持配置锁重读、
-合并、校验并原子保存，保留注释、其他字段、既有仓库路径和无关字段的已完成并发修改。服务 origin
-与令牌作为共同观察值，所选字段变化时明确报冲突。配置锁已占用时明确失败。写入拒绝符号链接和非普通文件；
-含令牌结果在 POSIX 上使用 `0600`，其他能力写入同样遵守，无令牌文件沿用既有权限。
+提示、保存结果和取消诊断写 stderr，业务结果保留 stdout 格式。review 引导先收集全部输入，再持配置锁
+重读、合并、校验并原子保存，保留注释、其他字段、既有仓库路径和无关字段的已完成并发修改。
+所选 review 字段变化时明确报冲突。登录与退出在锁内共同核对 origin 与令牌观察值。配置锁已占用时
+明确失败。CLI 写入拒绝符号链接和非普通文件；含令牌结果在 POSIX 上使用 `0600`，其他能力写入同样遵守，
+无令牌文件沿用既有权限。
 
 EOF、Ctrl+C、SIGTERM 或 Windows SIGBREAK 取消输入，不保存部分值也不进入原业务。
-配置引导和 setup 不访问网络、不认证、不 clone、不初始化 SQLite 或审查运行时。YAML 诊断只保留
+review 配置引导不访问网络、不认证、不 clone、不初始化 SQLite 或审查运行时。YAML 诊断只保留
 安全类别、代码和位置，不泄露标量或原始 parser cause；其他有效错误链继续保留。
 review 自动引导保存后以原参数执行原命令一次，后续失败保留配置。人工输入不消耗业务期限；
 帮助、版本、补全、自更新及无效参数不触发引导。
@@ -291,10 +288,10 @@ shell 的内存状态；输出对应的既有 `source <(daynight completion bash
 | 调用裸 `review`、裸 `completion`、组帮助或任何操作帮助。 | 显示对应帮助，退出 0，未进入业务操作或加载审查运行时。 | C2, C3 |
 | 调用未知根命令、旧入口、不完整参数或未知操作选项。 | 输出错误及对应帮助命令，退出 2；未执行配置、审查或更新。 | C2, C3 |
 | 在 remote 前后使用一次 `--path`，或重复、合并赋值、混用帮助及其他参数。 | 合法顺序保持等价；重复 `--path`、`--path=value`、`--` 和非唯一帮助参数退出 2。 | C2 |
-| 首次在 TTY 执行有效 project/task 或 review 业务操作。 | 仅询问当前能力的缺失字段，保存后以原参数执行一次；JSON stdout 不含提示。 | C6 |
-| 仅配置服务地址，或只配置 review 仓库。 | 对应命令直接运行；首次使用另一能力时才补充其配置，保留已有字段和注释。 | C3, C6 |
-| 主动选择 setup 的两种能力，或通过显式选项配置。 | 全部值收集、校验后一次原子保存；显式选项不询问，review 路径必须伴随仓库地址。 | C6 |
-| 非 TTY 缺配置、已有配置损坏、读取失败，或在引导期间取消及 EOF。 | 缺配置给出脚本配置命令；损坏及读取错误保留原因；取消不保存部分值且不执行业务。 | C6 |
+| 首次在 TTY 执行有效 review 操作，或未登录时执行 project/task。 | review 仅询问缺失仓库配置，保存后以原参数执行一次；project/task 提示显式登录，JSON stdout 不含提示。 | C6 |
+| 仅准备服务凭据，或只配置 review 仓库。 | 各能力独立校验；缺少服务凭据时提示登录，缺少 review 仓库时按需引导，保存保留已有字段和注释。 | C3, C6 |
+| 通过 `review add-repo` 或首次交互引导配置仓库，或外部准备测试服务与自动化配置。 | review 复用登记规则与原子保存；外部配置保持 origin/凭据配对，不承诺 CLI 锁或自动凭据清理。顶层 setup 不存在。 | C6 |
+| 非 TTY 缺配置、已有配置损坏、读取失败，或在引导期间取消及 EOF。 | 缺 review 配置给出 `review add-repo` 命令；损坏及读取错误保留原因；取消不保存部分值且不执行业务。 | C6 |
 | 引导期间另一配置命令已写入，或配置锁被占用。 | 保存前重读并保留无关字段修改；所选字段已变更或占锁时明确失败且不执行业务。 | C6 |
 | 执行 review 的配置、列表和运行操作。 | 按操作加载其依赖，复用原有 YAML 和 SQLite；审查保证见 review 的 R1–R15。 | C3 |
 | 执行 `daynight update`，registry 的 `latest` 比当前版本更新。 | 更新当前 npm 全局安装至已查询的确切版本，验证清单、启动器和新进程版本，再同步 User 与当前 worktree 已安装的 skill；全部成功才报告成功，保留配置及审查状态。 | C4 |

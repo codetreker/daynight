@@ -224,8 +224,8 @@ ready 默认最多 10 项，必要时使用 1..100 的 `--limit`。服务按创�
 在仓库内可省略 `--project`，由 CLI 按 Git origin URL 匹配服务中的项目；显式指定的
 项目优先。handbook 说明项目定位规则，不展开本地绑定文件与忽略规则的内部实现。
 无匹配不自动创建项目。服务 origin 缺省使用 `https://daynight.cc`；缺少本地凭据或服务 401
-提示 `daynight login`，不自动启动登录。显式 PAT stdin 配置保留为自动化入口；review 配置缺失
-保留 setup 指引。网络、非法配置与歧义错误按真实原因处理。
+提示 `daynight login`，不自动启动登录。自动化通过受控配置文件提供服务 origin 与匹配的 PAT；
+review 配置缺失指向 `review add-repo`。网络、非法配置与歧义错误按真实原因处理。
 
 handbook 规定基于已读内容的修改必须携带精确 `--if-version`，包括完整 int64 十进制
 精度。update 和 set-status 都绑定该决策版本；默认临时 GET 不能
@@ -269,7 +269,7 @@ launcher、`--version`、认证或模型调用。
 说明它只检查文件。仅展示检测到的选项，初始不勾选，Space 切换、方向键移动、Enter
 提交且至少选一项；再单选 User/Project，默认 User。无可用 Agent 或终端不可用明确失败。
 
-`@inquirer/prompts` 延迟加载 checkbox/select，setup 保留 readline ask。类型化 value
+`@inquirer/prompts` 延迟加载 checkbox/select，review 首次引导使用 readline ask。类型化 value
 不从显示文本反推标识。stdin 提供输入，stderr 负责 UI，stdout 提供结果。共享执行器
 管理 AbortController、SIGINT/SIGTERM、Windows SIGBREAK 和 finally 关闭；readline
 占用 stdin 时进入选择器前暂停、退出恢复。仅已知取消异常转为既有取消错误，其余保留

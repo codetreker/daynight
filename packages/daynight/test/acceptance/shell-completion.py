@@ -290,15 +290,6 @@ def scenarios():
         ("login no browser option", "daynight login --no-b\t", ["login", "--no-browser"]),
         ("root update", "daynight upd\t", ["update"]),
         ("root completion", "daynight comp\t", ["completion"]),
-        ("root setup and local directory collision", "daynight set\t", ["setup"]),
-        ("setup server URL option", "daynight setup --server-u\t", ["setup", "--server-url"]),
-        ("setup server options common prefix", "daynight setup --ser\t", ["setup", "--server-"]),
-        ("setup token stdin option", "daynight setup --server-t\t", ["setup", "--server-token-stdin"]),
-        ("setup server URL after token stdin flag", "daynight setup --server-token-stdin --server-u\t", ["setup", "--server-token-stdin", "--server-url"]),
-        ("setup review repository option", "daynight setup --review-r\t", ["setup", "--review-repo"]),
-        ("setup review path option", "daynight setup --review-p\t", ["setup", "--review-path"]),
-        ("setup review directory", "daynight setup --review-path nor\t", ["setup", "--review-path", "normal-directory/"]),
-        ("setup review after server URL", "daynight setup --server-url https://service.example --review-r\t", ["setup", "--server-url", "https://service.example", "--review-repo"]),
         ("root project and local directory collision", "daynight pro\t", ["project"]),
         ("project create", "daynight project cre\t", ["project", "create"]),
         ("project list", "daynight project li\t", ["project", "list"]),
@@ -413,11 +404,10 @@ def scenarios():
     unchanged = [
         ("short command text has no file fallback", "dn task create --title nor"),
         ("short command invalid status stops completion", "dn task list --status=invalid --rea"),
-        ("setup server URL has no file fallback", "daynight setup --server-url nor"),
-        ("setup review repository has no file fallback", "daynight setup --review-repo nor"),
-        ("used setup server URL is hidden", "daynight setup --server-url https://service.example --server-u"),
-        ("used setup token stdin flag is hidden", "daynight setup --server-token-stdin --server-t"),
-        ("setup token stdin flag has no secret value completion", "daynight setup --server-token-stdin nor"),
+        ("removed root setup has no candidate despite a local directory", "daynight set"),
+        ("removed short root setup has no candidate", "dn set"),
+        ("removed setup has no options", "daynight setup --ser"),
+        ("removed setup has no directory fallback", "daynight setup nor"),
         ("remote has no file fallback", "daynight review add-repo nor"),
         ("project name has no file fallback", "daynight project create nor"),
         ("project repo has no file fallback", "daynight project create --repo nor"),
@@ -538,7 +528,7 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
             actual = shell.execute()
             native_expected = list(expected)
             # ZLE removes an automatically added directory slash when accepting the line.
-            directory_option = next((option for option in ["--path", "--review-path"] if option in expected), None)
+            directory_option = "--path" if "--path" in expected else None
             if kind == "zsh" and directory_option is not None:
                 path_index = expected.index(directory_option) + 1
                 if path_index < len(expected) and path_index < len(actual) and expected[path_index].endswith("/") and actual[path_index] == expected[path_index][:-1]:
@@ -559,9 +549,8 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
                 raise AssertionError(f"{label}: {name}: expected unchanged {line!r}, received {actual!r}, terminal={output!r}")
             print(f"PASS {label}: {name}", flush=True)
         for name, line, candidates in [
-            ("empty root prefix", "daynight ", ["login", "logout", "review", "update", "completion", "project", "task", "setup"]),
-            ("empty short root prefix", "dn ", ["login", "logout", "review", "update", "completion", "project", "task", "setup"]),
-            ("empty setup prefix", "daynight setup ", ["--server-url", "--server-token-stdin", "--review-repo", "--review-path"]),
+            ("empty root prefix", "daynight ", ["login", "logout", "review", "update", "completion", "project", "task"]),
+            ("empty short root prefix", "dn ", ["login", "logout", "review", "update", "completion", "project", "task"]),
             ("empty review prefix", "daynight review ", ["run", "list", "ls", "add-repo"]),
             ("empty project prefix", "daynight project ", ["create", "list", "show"]),
             ("empty project create prefix", "daynight project create ", ["--repo"]),
@@ -579,8 +568,11 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
         ]:
             actual, cursor, output = shell.complete(line + "\t\t")
             missing = [candidate for candidate in candidates if candidate not in output]
-            receipt["scenarios"].append({"name": name, "line": actual, "cursor": cursor, "passed": not missing})
+            removed_setup = name in ["empty root prefix", "empty short root prefix"] and re.search(r"(?<![\w-])setup(?![\w-])", output) is not None
+            receipt["scenarios"].append({"name": name, "line": actual, "cursor": cursor, "passed": not missing and not removed_setup})
             shell.clear()
+            if removed_setup:
+                raise AssertionError(f"{label}: {name}: removed setup command is offered: {output!r}")
             if missing:
                 raise AssertionError(f"{label}: {name}: missing candidates {missing!r}: {output!r}")
             print(f"PASS {label}: {name}", flush=True)

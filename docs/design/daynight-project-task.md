@@ -126,10 +126,10 @@ Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受�
 编码。配置值不得允许请求参数改变服务 origin。
 
 `serverToken` 为非空 opaque visible ASCII，仅 HTTPS 或 host 为字面量 `localhost`、
-`127.0.0.0/8` 数值 IPv4、`::1` 的 HTTP 允许保存。显式 `setup --server-token-stdin`
-读取不超过 1 MiB 的一行非空值，允许单个 LF/CRLF，拒绝空输入、多行和控制字符；origin 使用
-显式值、配置值或生产默认值。显式 URL 配置不询问，锁内共同比较 origin/token，origin 变化同次
-清除旧令牌，相同 origin 保留。其他能力已完成的并发修改合并保留。
+`127.0.0.0/8` 数值 IPv4、`::1` 的 HTTP 允许使用。测试服务和自动化由外部受控配置文件
+提供现有 `serverUrl` 与 `serverToken` 字段；省略 origin 使用生产默认值。准备者必须将凭据和目标
+origin 配对，切换服务时移除或替换旧令牌；外部编辑不执行 CLI 的锁、原子替换或凭据清理协议。
+CLI 登录/退出在锁内共同核对 origin/token，保留其他能力已完成的并发修改。
 
 `login` 使用独立十分钟期限调用设备授权接口，显示短码并打开同源验证页，`--no-browser`
 仅显示 URL/短码。它按服务要求轮询，批准后在配置锁内重查 origin 与凭据观察值并保存，避免覆盖

@@ -10,6 +10,3 @@ export const validateTokenTransport = (serverUrl: string): void => {
   if (url.protocol === "https:" || (url.protocol === "http:" && (url.hostname === "localhost" || url.hostname === "[::1]" || /^127(?:\.\d{1,3}){3}$/.test(url.hostname)))) return;
   throw new Error("serverToken requires an HTTPS server origin or loopback HTTP for development.");
 };
-
-export const parseServerTokenInput = (input: string): string =>
-  validateServerToken(input.replace(/\r?\n$/, ""));

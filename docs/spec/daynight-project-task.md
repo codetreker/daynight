@@ -62,13 +62,13 @@ serverUrl: http://127.0.0.1:8787
 同一配置中的 `serverToken` 为可选的非空 opaque visible ASCII。业务命令没有本地凭据时，在请求前
 报错并提示 `daynight login`；已有凭据被服务拒绝为 401 时同样提示登录。CLI 不自动登录或重试写请求。
 普通用户通过显式 `login` 完成设备授权并自动保存凭据，通过 `logout` 撤销并清除；
-[鉴权需求](daynight-auth.md)拥有完整流程。自动化可通过显式 `setup --server-token-stdin` 保存 PAT，
-可复用配置 origin 或生产默认值。setup 本身不登录、不验证连通性、令牌或成员权限。
+[鉴权需求](daynight-auth.md)拥有完整流程。自动化可通过受控配置文件提供 PAT 及对应服务 origin；
+省略 origin 仅表示凭据属于生产服务。准备文件本身不验证连通性、令牌或成员权限。
 
 凭据只允许 HTTPS，或 host 为字面量 `localhost`、`127.0.0.0/8` 数值 IPv4、`::1` 的 HTTP。
 未知主机解析到 loopback 也不获得例外。令牌不进入命令参数、仓库关联、任务、附件或诊断。
-origin 变化与清除旧凭据同次原子保存；同 origin 保留。配置锁、并发比较、POSIX `0600`、
-YAML 诊断和显式 stdin 输入的完整要求由[客户端 C6](daynight.md#c6-按需配置引导)拥有。
+外部更换 origin 时必须移除或替换旧凭据；手动编辑不执行 CLI 凭据清理。CLI 登录/退出在锁内共同
+核对 origin 与令牌。配置锁、并发比较、POSIX `0600` 和 YAML 诊断的完整要求由[客户端 C6](daynight.md#c6-按需配置引导)拥有。
 
 project/task 不要求 `repositories`、review 路径、SQLite、GitHub CLI 或 Copilot。
 共享层严格读取 YAML 并识别已登记顶层字段，各能力只校验自己的业务投影。
