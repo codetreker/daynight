@@ -894,7 +894,7 @@ provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录�
 PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` 和 `task-status-transitions`
 单独允许已登记 project/task 的 PUT status 和精确请求次数；六个鉴权场景仅放行各自
 登记的精确管理请求；`project-settings` 另只放行四次登记设置 PATCH，覆盖成功、409、真实提交后丢失响应及降权 403，重读失败后只重试读取。该场景还检查真实大版本、项目隔离、成员只读及双语 320px/390px 控件与导航边界及文字不截断。`task-agent-permission` 只允许登记任务的许可 PATCH 和精确请求次数，覆盖普通成员双向确认、取消/Escape、锁定、冲突、已提交响应丢失与读取核对、详情关闭/切换后的请求归属、严格布尔/精确版本及双语窄屏几何；未知写入只核对，不重放。`task-platform` 仅允许登记任务的精确平台 PATCH，覆盖状态行选择后确认、当前值无操作、各取消路径零写入和下拉框焦点恢复、确认后设置/清除、状态/许可共享锁、冲突与真实丢响应后的 GET 核对、跨任务归属、人工开始后锁定、字段传播及双语 320px/390px 窄屏。
-平台确认的浏览器辅助函数先等待下拉框可用，再聚焦并确认焦点，随后才选择选项；缓存详情可见不表示实时读取已允许编辑。取消后的原值、焦点恢复和零写入断言保持独立验证，不在取消后强制聚焦，也不放宽超时或重试规则。[可观测验收就绪决策](../../.agents/notes/implemented/testing/2026-10-20-observable-acceptance-readiness.md)记录这项前置条件。
+平台确认的浏览器辅助函数先等待下拉框可用，再聚焦并确认焦点，随后才选择选项；缓存详情可见不表示实时读取已允许编辑。取消后的原值、焦点恢复和零写入断言保持独立验证，不在取消后强制聚焦，也不放宽超时或重试规则。附件组件测试将删除确认框的 DOM 移除与被动清理中的焦点恢复分开，在附件重载仍挂起时等待预览区域实际获得焦点，随后放行重载并继续验证焦点保持。[可观测验收就绪决策](../../.agents/notes/implemented/testing/2026-10-20-observable-acceptance-readiness.md)记录这项前置条件。
 
 `task-detail-page` 在 browser context 层观测来源页与 popup，精确放行登记任务五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件各一次 PUT/DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，来源页自身不放行写入，取消不增加请求，未知结果只读取核查。另一个匿名 context 通过真实应用/gateway 重定向验证保留导航查询参数的登录返回，仅控制 provider 端点且不允许应用写入。task-execution-time 保持浏览器 GET/HEAD-only，由正常 API/安装 CLI 准备起止、保存阈值和完成任务；挂起图响应与错误本机墙钟隔离本地单调 tick，验证实时/冻结/未知、卡片/独立行、外部虚线及焦点和图几何，其他写请求仍失败。附件场景在两目标上都让安装 CLI 与生产页面操作同一
 组数据，按原始字节交叉验证写入、覆盖、下载与删除；具体机制由
