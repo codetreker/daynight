@@ -332,7 +332,7 @@ describe('task dependency canvas', () => {
   it('paints complete dashed bodies before their canonical native arrow paths without changing solid edges', () => {
     const geometry = layoutModule.layoutGraph(projectChain(index, 'A'));
     const original = geometry.edges.map((edge) => ({
-      ...edge, points: [{ x: 10, y: 20 }, { x: 1010, y: 20 }, { x: 1010, y: 1020 }, { x: 2010, y: 1020 }],
+      ...edge, points: [{ x: 10, y: 20 }, { x: 1010, y: 20 }, { x: 1074, y: 1020 }, { x: 2074, y: 1020 }],
     }));
     vi.spyOn(layoutModule, 'layoutGraph').mockReturnValue({ ...geometry, edges: original });
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
@@ -346,7 +346,7 @@ describe('task dependency canvas', () => {
       const pieces = [...relation.querySelectorAll<SVGElement>('.task-dependency-paint-piece')];
       expect(relation.querySelector('.task-dependency-body')!.lastElementChild).toBe(canonical);
       expect(canonical.getAttribute('d')).toBe(compileDependencyRoute(edge.points, edge.external).d);
-      expect(canonical.getAttribute('d')).toContain('Q');
+      expect(canonical.getAttribute('d')).toContain('C');
       expect(canonical.style.strokeWidth).toBe('1.5');
       expect(canonical.style.stroke).toBe(edge.external ? 'none' : 'inherit');
       expect(canonical.getAttribute('marker-end')).toBe(`url(#${svg.querySelector('marker')!.id})`);

@@ -1,9 +1,9 @@
 export type Point = { x: number; y: number };
-export type Curve = { kind: 'L' | 'Q'; from: Point; to: Point; control?: Point };
+export type Curve = { kind: 'L' | 'C'; from: Point; to: Point; first?: Point; second?: Point };
 export type Rectangle = { left: number; right: number; top: number; bottom: number };
 export const distance = (from: Point, to: Point) => Math.hypot(to.x - from.x, to.y - from.y);
 export const parseRoute = (d: string): Curve[] => {
-  const tokens = d.match(/[MLQ]|[-+]?(?:\d*\.)?\d+(?:e[-+]?\d+)?/gi)!;
+  const tokens = d.match(/[MLC]|[-+]?(?:\d*\.)?\d+(?:e[-+]?\d+)?/gi)!;
   if (tokens.join('').toLowerCase() !== d.replace(/[\s,]/g, '').toLowerCase()) throw new Error('Unexpected route syntax.');
   let cursor = 0;
   const point = (): Point => ({ x: Number(tokens[cursor++]), y: Number(tokens[cursor++]) });
@@ -12,42 +12,55 @@ export const parseRoute = (d: string): Curve[] => {
   const result: Curve[] = [];
   while (cursor < tokens.length) {
     const kind = tokens[cursor++];
-    if (kind !== 'L' && kind !== 'Q') throw new Error('Unexpected route command.');
-    const control = kind === 'Q' ? point() : undefined;
+    if (kind !== 'L' && kind !== 'C') throw new Error('Unexpected route command.');
+    const controls = kind === 'C' ? { first: point(), second: point() } : {};
     const to = point();
-    result.push(control === undefined ? { kind, from, to } : { kind, from, control, to });
-    from = to;
+    result.push({ kind, from, to, ...controls }); from = to;
   }
   return result;
 };
-export const at = (curve: Curve, t: number): Point => curve.kind === 'L'
-  ? { x: curve.from.x + (curve.to.x - curve.from.x) * t, y: curve.from.y + (curve.to.y - curve.from.y) * t }
-  : { x: (1 - t) ** 2 * curve.from.x + 2 * (1 - t) * t * curve.control!.x + t * t * curve.to.x, y: (1 - t) ** 2 * curve.from.y + 2 * (1 - t) * t * curve.control!.y + t * t * curve.to.y };
+export const at = (curve: Curve, t: number): Point => {
+  const u = 1 - t;
+  const value = (axis: 'x' | 'y') => curve.kind === 'L' ? curve.from[axis] + (curve.to[axis] - curve.from[axis]) * t
+    : u ** 3 * curve.from[axis] + 3 * u * u * t * curve.first![axis] + 3 * u * t * t * curve.second![axis] + t ** 3 * curve.to[axis];
+  return { x: value('x'), y: value('y') };
+};
+export const tangent = (curve: Curve, t: number): Point => {
+  const value = (axis: 'x' | 'y') => curve.kind === 'L' ? curve.to[axis] - curve.from[axis]
+    : 3 * ((1 - t) ** 2 * (curve.first![axis] - curve.from[axis]) + 2 * (1 - t) * t * (curve.second![axis] - curve.first![axis]) + t * t * (curve.to[axis] - curve.second![axis]));
+  return { x: value('x'), y: value('y') };
+};
 
-// This derivative-based Simpson reference is independent of the compiler's
-// chord/control-polygon enclosure and the planner's free-row construction.
+// Derivative integration is independent of the compiler's polygon enclosure.
 export const arcLength = (curve: Curve): number => {
   if (curve.kind === 'L') return distance(curve.from, curve.to);
-  const speed = (t: number) => 2 * Math.hypot((1 - t) * (curve.control!.x - curve.from.x) + t * (curve.to.x - curve.control!.x), (1 - t) * (curve.control!.y - curve.from.y) + t * (curve.to.y - curve.control!.y));
-  const steps = 1024;
-  let sum = speed(0) + speed(1);
-  for (let index = 1; index < steps; index++) sum += (index % 2 === 0 ? 2 : 4) * speed(index / steps);
-  return sum / (3 * steps);
+  const speed = (t: number) => { const v = tangent(curve, t); return Math.hypot(v.x, v.y); };
+  const integrate = (a: number, b: number, fa: number, fm: number, fb: number, sum: number, error: number, depth: number): number => {
+    const m = (a + b) / 2; const l = speed((a + m) / 2); const r = speed((m + b) / 2);
+    const left = (m - a) * (fa + 4 * l + fm) / 6; const right = (b - m) * (fm + 4 * r + fb) / 6;
+    if (depth === 0 || Math.abs(left + right - sum) <= 15 * error) return left + right + (left + right - sum) / 15;
+    return integrate(a, m, fa, l, fm, left, error / 2, depth - 1) + integrate(m, b, fm, r, fb, right, error / 2, depth - 1);
+  };
+  const fa = speed(0); const fm = speed(0.5); const fb = speed(1);
+  return integrate(0, 1, fa, fm, fb, (fa + 4 * fm + fb) / 6, 1e-8, 24);
 };
-const roots = (a: number, b: number, c: number): number[] => {
-  if (a === 0) return b === 0 ? [] : [-c / b];
-  const discriminant = b * b - 4 * a * c;
-  return discriminant < 0 ? [] : [(-b - Math.sqrt(discriminant)) / (2 * a), (-b + Math.sqrt(discriminant)) / (2 * a)];
+const levelParameters = (curve: Curve, axis: 'x' | 'y', value: number): number[] => {
+  // Planner cubics are monotonic in both axes, including exact subcurves.
+  const start = curve.from[axis]; const end = curve.to[axis];
+  if (value <= Math.min(start, end) || value >= Math.max(start, end)) return [];
+  let low = 0; let high = 1;
+  for (let iteration = 0; iteration < 64; iteration++) {
+    const t = (low + high) / 2;
+    if ((at(curve, t)[axis] < value) === (end > start)) low = t; else high = t;
+  }
+  return [(low + high) / 2];
 };
 
-// Rectangle-boundary roots partition the parameter interval into regions with
-// constant membership. Midpoint membership therefore proves each entire region.
+// Boundary roots partition each monotonic segment into constant-membership spans.
 export const entersRectangle = (curve: Curve, rectangle: Rectangle): boolean => {
   const breaks = [0, 1];
-  for (const [axis, limits] of [['x', [rectangle.left, rectangle.right]], ['y', [rectangle.top, rectangle.bottom]]] as const) for (const value of limits) {
-    const candidates = curve.kind === 'L' ? [(value - curve.from[axis]) / (curve.to[axis] - curve.from[axis])]
-      : roots(curve.from[axis] - 2 * curve.control![axis] + curve.to[axis], 2 * (curve.control![axis] - curve.from[axis]), curve.from[axis] - value);
-    breaks.push(...candidates.filter((t) => t > 0 && t < 1));
+  for (const [axis, limits] of [['x', [rectangle.left, rectangle.right]], ['y', [rectangle.top, rectangle.bottom]]] as const) {
+    for (const value of limits) breaks.push(...levelParameters(curve, axis, value));
   }
   breaks.sort((first, second) => first - second);
   return breaks.slice(1).some((end, index) => {

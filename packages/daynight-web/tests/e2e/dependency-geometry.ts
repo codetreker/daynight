@@ -2,7 +2,7 @@ import { writeFile } from 'node:fs/promises';
 import type { Page, TestInfo } from '@playwright/test';
 
 type Point = { x: number; y: number };
-type Segment = { kind: 'L' | 'Q'; from: Point; to: Point; control?: Point };
+type Segment = { kind: 'L' | 'Q' | 'C'; from: Point; to: Point; control?: Point; control2?: Point };
 type Rect = { id: string; left: number; top: number; right: number; bottom: number };
 export type GeometryExpectation = import('./visible-topology').DependencyTopology;
 export { expectedDependencyTopology } from './visible-topology';
@@ -18,12 +18,21 @@ export type DependencySnapshot = {
 const epsilon = 0.04;
 const distance = (a: Point, b: Point) => Math.hypot(a.x - b.x, a.y - b.y);
 const point = (a: Point, b: Point, t: number): Point => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-const at = (s: Segment, t: number): Point => s.kind === 'L' ? point(s.from, s.to, t) : point(point(s.from, s.control!, t), point(s.control!, s.to, t), t);
-const tangent = (s: Segment, t: number): Point => s.kind === 'L' ? { x: s.to.x - s.from.x, y: s.to.y - s.from.y }
-  : { x: 2 * ((1 - t) * (s.control!.x - s.from.x) + t * (s.to.x - s.control!.x)), y: 2 * ((1 - t) * (s.control!.y - s.from.y) + t * (s.to.y - s.control!.y)) };
+const at = (s: Segment, t: number): Point => {
+  if (s.kind === 'L') return point(s.from, s.to, t);
+  if (s.kind === 'Q') return point(point(s.from, s.control!, t), point(s.control!, s.to, t), t);
+  const a = point(s.from, s.control!, t); const b = point(s.control!, s.control2!, t); const c = point(s.control2!, s.to, t);
+  return point(point(a, b, t), point(b, c, t), t);
+};
+const tangent = (s: Segment, t: number): Point => {
+  if (s.kind === 'L') return { x: s.to.x - s.from.x, y: s.to.y - s.from.y };
+  if (s.kind === 'Q') return { x: 2 * ((1 - t) * (s.control!.x - s.from.x) + t * (s.to.x - s.control!.x)), y: 2 * ((1 - t) * (s.control!.y - s.from.y) + t * (s.to.y - s.control!.y)) };
+  const component = (axis: 'x' | 'y') => 3 * ((1 - t) ** 2 * (s.control![axis] - s.from[axis]) + 2 * (1 - t) * t * (s.control2![axis] - s.control![axis]) + t ** 2 * (s.to[axis] - s.control2![axis]));
+  return { x: component('x'), y: component('y') };
+};
 const parallel = (a: Point, b: Point): boolean => Math.abs(a.x * b.y - a.y * b.x) <= epsilon * Math.max(1, Math.hypot(a.x, a.y), Math.hypot(b.x, b.y)) && a.x * b.x + a.y * b.y > 0;
 export const parseCurve = (d: string): Segment[] => {
-  const tokens = d.match(/[MLQ]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/gi) ?? [];
+  const tokens = d.match(/[MLQC]|[-+]?(?:\d*\.\d+|\d+\.?\d*)(?:e[-+]?\d+)?/gi) ?? [];
   if (tokens.join('').toLowerCase() !== d.replace(/[\s,]/g, '').toLowerCase()) throw new Error('Unsupported or invalid curve path.');
   let cursor = 0;
   const coordinate = (): Point => {
@@ -36,22 +45,39 @@ export const parseCurve = (d: string): Segment[] => {
   const result: Segment[] = [];
   while (cursor < tokens.length) {
     const kind = tokens[cursor++];
-    if (kind !== 'L' && kind !== 'Q') throw new Error('Curve must use absolute line or quadratic commands.');
-    const control = kind === 'Q' ? coordinate() : undefined;
+    if (kind !== 'L' && kind !== 'Q' && kind !== 'C') throw new Error('Curve must use absolute line or Bézier commands.');
+    const control = kind === 'Q' || kind === 'C' ? coordinate() : undefined;
+    const control2 = kind === 'C' ? coordinate() : undefined;
     const to = coordinate();
     if (distance(from, to) === 0) throw new Error('Zero length curve segment.');
-    result.push(control === undefined ? { kind, from, to } : { kind, from, to, control });
+    result.push(control === undefined ? { kind, from, to } : control2 === undefined ? { kind, from, to, control } : { kind, from, to, control, control2 });
     from = to;
   }
   if (result.length === 0) throw new Error('Curve has no body.');
   return result;
 };
-// Integrate the quadratic's speed analytically in coordinates parallel to its
-// acceleration. Almost straight curves use their geometric length bracket to
-// avoid cancellation; this reference does not share the renderer's subdivision.
+// Quadratic speed has an analytic integral in acceleration-aligned coordinates;
+// cubic speed is integrated below. Almost straight quadratics use their length
+// bracket to avoid cancellation. Neither reference shares renderer subdivision.
 export const referenceLength = (s: Segment, tolerance = 0.0001): number => {
   const chord = distance(s.from, s.to);
   if (s.kind === 'L') return chord;
+  if (s.kind === 'C') {
+    // Adaptive Simpson integration uses the derivative, independently of the
+    // compiler's control-polygon length enclosure and subdivision decisions.
+    const speed = (t: number) => { const value = tangent(s, t); return Math.hypot(value.x, value.y); };
+    const integrate = (left: number, right: number, a: number, m: number, b: number, estimate: number, allowance: number, depth: number): number => {
+      const center = (left + right) / 2; const first = speed((left + center) / 2); const second = speed((center + right) / 2);
+      const before = (center - left) * (a + 4 * first + m) / 6; const after = (right - center) * (m + 4 * second + b) / 6;
+      const delta = before + after - estimate;
+      if (Math.abs(delta) <= 15 * allowance) return before + after + delta / 15;
+      if (depth === 0) throw new Error('Cubic curve-length reference did not converge.');
+      return integrate(left, center, a, first, m, before, allowance / 2, depth - 1)
+        + integrate(center, right, m, second, b, after, allowance / 2, depth - 1);
+    };
+    const a = speed(0); const m = speed(0.5); const b = speed(1);
+    return integrate(0, 1, a, m, b, (a + 4 * m + b) / 6, tolerance, 30);
+  }
   const polygon = distance(s.from, s.control!) + distance(s.control!, s.to);
   if (polygon - chord <= tolerance) return (polygon + chord) / 2;
   const v = { x: s.control!.x - s.from.x, y: s.control!.y - s.from.y };
@@ -73,6 +99,27 @@ const roots = (a: number, b: number, c: number): number[] => {
   const q = -0.5 * (b + (b < 0 ? -1 : 1) * Math.sqrt(disc));
   return q === 0 ? [-b / (2 * a)] : [q / a, c / q];
 };
+const levelParameters = (s: Segment, axis: 'x' | 'y', value: number): number[] => {
+  if (s.kind === 'L') return [(value - s.from[axis]) / (s.to[axis] - s.from[axis])];
+  if (s.kind === 'Q') return roots(s.from[axis] - 2 * s.control![axis] + s.to[axis], 2 * (s.control![axis] - s.from[axis]), s.from[axis] - value);
+  const a = -s.from[axis] + 3 * s.control![axis] - 3 * s.control2![axis] + s.to[axis];
+  const b = 3 * s.from[axis] - 6 * s.control![axis] + 3 * s.control2![axis];
+  const c = 3 * (s.control![axis] - s.from[axis]); const d = s.from[axis] - value;
+  if (a === 0) return roots(b, c, d);
+  const evaluate = (t: number) => ((a * t + b) * t + c) * t + d;
+  const boundaries = [0, ...roots(3 * a, 2 * b, c).filter((t) => t > 0 && t < 1).sort((first, last) => first - last), 1];
+  const result = boundaries.filter((t) => evaluate(t) === 0);
+  for (let index = 1; index < boundaries.length; index++) {
+    let left = boundaries[index - 1]!; let right = boundaries[index]!; const sign = evaluate(left);
+    if (sign === 0 || evaluate(right) === 0 || Math.sign(sign) === Math.sign(evaluate(right))) continue;
+    for (let iteration = 0; iteration < 64; iteration++) {
+      const center = (left + right) / 2;
+      if (Math.sign(evaluate(center)) === Math.sign(sign)) left = center; else right = center;
+    }
+    result.push((left + right) / 2);
+  }
+  return result;
+};
 const parameters = (s: Segment, p: Point): number[] => {
   // SVG numeric DOM values and transformed matrices can round a painted endpoint
   // to either side of its canonical endpoint. Resolve that boundary in graph
@@ -80,23 +127,22 @@ const parameters = (s: Segment, p: Point): number[] => {
   if (distance(s.to, p) <= epsilon) return [1];
   if (distance(s.from, p) <= epsilon) return [0];
   const axis = Math.abs(s.to.x - s.from.x) >= Math.abs(s.to.y - s.from.y) ? 'x' : 'y';
-  return (s.kind === 'L' ? [(p[axis] - s.from[axis]) / (s.to[axis] - s.from[axis])]
-    : roots(s.from[axis] - 2 * s.control![axis] + s.to[axis], 2 * (s.control![axis] - s.from[axis]), s.from[axis] - p[axis]))
+  return levelParameters(s, axis, p[axis])
     .filter((t) => t >= 0 && t <= 1 && distance(at(s, t), p) <= epsilon).sort((a, b) => a - b);
 };
 const slice = (s: Segment, from: number, to: number): Segment => {
   const start = at(s, from); const end = at(s, to);
   if (s.kind === 'L') return { kind: 'L', from: start, to: end };
   const derivative = tangent(s, from);
-  return { kind: 'Q', from: start, to: end, control: { x: start.x + derivative.x * (to - from) / 2, y: start.y + derivative.y * (to - from) / 2 } };
+  if (s.kind === 'Q') return { kind: 'Q', from: start, to: end, control: { x: start.x + derivative.x * (to - from) / 2, y: start.y + derivative.y * (to - from) / 2 } };
+  const final = tangent(s, to); const scale = (to - from) / 3;
+  return { kind: 'C', from: start, to: end, control: { x: start.x + derivative.x * scale, y: start.y + derivative.y * scale }, control2: { x: end.x - final.x * scale, y: end.y - final.y * scale } };
 };
 const penetrates = (s: Segment, r: Rect): boolean => {
   const box = { left: r.left + 0.4, top: r.top + 0.4, right: r.right - 0.4, bottom: r.bottom - 0.4 };
   const breaks = [0, 1];
   for (const [axis, values] of [['x', [box.left, box.right]], ['y', [box.top, box.bottom]]] as const) {
-    for (const value of values) breaks.push(...(s.kind === 'L'
-      ? [(value - s.from[axis]) / (s.to[axis] - s.from[axis])]
-      : roots(s.from[axis] - 2 * s.control![axis] + s.to[axis], 2 * (s.control![axis] - s.from[axis]), s.from[axis] - value)).filter((t) => t > 0 && t < 1));
+    for (const value of values) breaks.push(...levelParameters(s, axis, value).filter((t) => t > 0 && t < 1));
   }
   breaks.sort((a, b) => a - b);
   return breaks.slice(1).some((t, i) => { const p = at(s, (t + breaks[i]!) / 2); return p.x > box.left && p.x < box.right && p.y > box.top && p.y < box.bottom; });
@@ -127,12 +173,27 @@ export const inspectDependencySnapshot = (snapshot: DependencySnapshot, expected
         || distance(last, { x: target.left, y: (target.top + target.bottom) / 2 }) > epsilon) fail(edge.id, 'wrong fixed left-to-right ports');
       const initial = tangent(route[0]!, 0); const final = tangent(route.at(-1)!, 1);
       if (initial.x <= 0 || final.x <= 0 || Math.abs(initial.y) > epsilon || Math.abs(final.y) > epsilon) fail(edge.id, 'endpoint direction is not horizontal left-to-right');
+      const cubics = route.filter((segment) => segment.kind === 'C');
+      for (const segment of cubics) {
+        const midpoint = segment.from.x + (segment.to.x - segment.from.x) / 2;
+        if (segment.to.x <= segment.from.x || Math.abs(segment.control!.x - midpoint) > epsilon || Math.abs(segment.control2!.x - midpoint) > epsilon
+          || Math.abs(segment.control!.y - segment.from.y) > epsilon || Math.abs(segment.control2!.y - segment.to.y) > epsilon) fail(edge.id, 'cubic leaves its horizontal-tangent rank-gap passage');
+      }
       const controls = route.filter((segment) => segment.kind === 'Q');
       for (const segment of controls) {
         if (distance(segment.from, segment.control!) > 12 + epsilon || Math.abs(distance(segment.from, segment.control!) - distance(segment.control!, segment.to)) > epsilon) fail(edge.id, 'curve exceeds its bounded symmetric corner');
       }
       const points = inputs.get(expectation.id);
-      if (points !== undefined) {
+      if (points !== undefined && cubics.length > 0) {
+        const passages = points.filter((p, index) => index === 0 || distance(p, points[index - 1]!) > 1e-8);
+        if (distance(first, passages[0]!) > epsilon || distance(last, passages.at(-1)!) > epsilon) fail(edge.id, 'lost declared input endpoints');
+        const bends = passages.slice(1).flatMap((to, index) => {
+          const from = passages[index]!;
+          if (to.x <= from.x) { fail(edge.id, 'invalid declared compiler input passage'); return []; }
+          return to.y === from.y ? [] : [{ from, to }];
+        });
+        if (bends.length !== cubics.length || bends.some((bend, index) => distance(bend.from, cubics[index]!.from) > epsilon || distance(bend.to, cubics[index]!.to) > epsilon)) fail(edge.id, 'curve differs from declared compiler input passages');
+      } else if (points !== undefined) {
         if (distance(first, points[0]!) > epsilon || distance(last, points.at(-1)!) > epsilon
           || !parallel(tangent(route[0]!, 0), { x: points[1]!.x - points[0]!.x, y: points[1]!.y - points[0]!.y })
           || !parallel(tangent(route.at(-1)!, 1), { x: points.at(-1)!.x - points.at(-2)!.x, y: points.at(-1)!.y - points.at(-2)!.y })) fail(edge.id, 'lost declared input endpoints or tangents');
@@ -149,8 +210,8 @@ export const inspectDependencySnapshot = (snapshot: DependencySnapshot, expected
       }
       for (let i = 1; i < route.length; i++) if (!parallel(tangent(route[i - 1]!, 1), tangent(route[i]!, 0))) fail(edge.id, 'nonsmooth route join');
       for (const segment of route) {
-        const xs = [segment.from.x, segment.to.x, ...(segment.control === undefined ? [] : [segment.control.x])];
-        const ys = [segment.from.y, segment.to.y, ...(segment.control === undefined ? [] : [segment.control.y])];
+        const xs = [segment.from.x, segment.to.x, ...(segment.control === undefined ? [] : [segment.control.x]), ...(segment.control2 === undefined ? [] : [segment.control2.x])];
+        const ys = [segment.from.y, segment.to.y, ...(segment.control === undefined ? [] : [segment.control.y]), ...(segment.control2 === undefined ? [] : [segment.control2.y])];
         const left = Math.min(...xs); const right = Math.max(...xs); const top = Math.min(...ys); const bottom = Math.max(...ys);
         for (const node of sortedNodes) { if (node.left >= right) break; if (node.right <= left || node.top >= bottom || node.bottom <= top) continue; if (penetrates(segment, node)) fail(edge.id, `curve passes through node ${node.id}`); }
       }
@@ -172,18 +233,21 @@ export const inspectDependencySnapshot = (snapshot: DependencySnapshot, expected
         const local = parseCurve(paint.d);
         if (paint.line && (local.length !== 1 || local[0]!.kind !== 'L' || local[0]!.from.x !== 0 || local[0]!.from.y !== 0 || local[0]!.to.y !== 0 || local[0]!.to.x <= 0
           || Math.abs(Math.hypot(paint.matrix[0]!, paint.matrix[1]!) - 1) > epsilon || Math.abs(paint.matrix[0]! - paint.matrix[3]!) > epsilon || Math.abs(paint.matrix[1]! + paint.matrix[2]!) > epsilon)) fail(edge.id, 'line is not an unscaled local horizontal stroke');
+        let paintLength = 0;
         for (const segment of local) {
-          const actual: Segment = { ...segment, from: transform(segment.from, paint.matrix), to: transform(segment.to, paint.matrix), ...(segment.control === undefined ? {} : { control: transform(segment.control, paint.matrix) }) };
+          const actual: Segment = { ...segment, from: transform(segment.from, paint.matrix), to: transform(segment.to, paint.matrix), ...(segment.control === undefined ? {} : { control: transform(segment.control, paint.matrix) }), ...(segment.control2 === undefined ? {} : { control2: transform(segment.control2, paint.matrix) }) };
           const canonical = route[index];
           if (canonical === undefined || distance(actual.from, at(canonical, t)) > epsilon || actual.kind !== canonical.kind) throw new Error('paint loses canonical coverage');
           const end = parameters(canonical, actual.to).find((candidate) => candidate > t);
           if (end === undefined) throw new Error('paint leaves canonical route');
           const reference = slice(canonical, t, end);
-          if (actual.control !== undefined && distance(actual.control, reference.control!) > epsilon) throw new Error('paint curve differs from canonical curve');
-          covered += referenceLength(reference);
+          if (actual.control !== undefined && distance(actual.control, reference.control!) > epsilon || actual.control2 !== undefined && distance(actual.control2, reference.control2!) > epsilon) throw new Error('paint curve differs from canonical curve');
+          const length = referenceLength(reference, 0.001 / Math.max(1, edge.pieces.length + route.length));
+          covered += length; paintLength += length;
           t = end;
           if (t === 1) { index++; t = 0; }
         }
+        if (paintLength > 8192 + epsilon) fail(edge.id, 'paint piece exceeds bounded arc length');
       }
       if (expectation.external && (index !== route.length || t !== 0)) fail(edge.id, 'incomplete canonical paint coverage');
     } catch (error) { fail(edge.id, error instanceof Error ? error.message : 'invalid geometry'); }

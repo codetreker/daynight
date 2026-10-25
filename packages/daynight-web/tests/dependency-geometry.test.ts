@@ -135,6 +135,51 @@ describe('independent production dependency geometry oracle', () => {
     const diagonal = snapshot(); diagonal.edges[0]!.d = d.replace('L300,50', 'Q280,60 300,50');
     expect(inspectDependencySnapshot(diagonal, expected).some((failure) => failure.includes('endpoint direction is not horizontal'))).toBe(true);
   });
+  it('accepts full cubic rank-gap passages and checks their declared endpoints', () => {
+    const value = snapshot(); const route = 'M100,50 C200,50 200,150 300,150';
+    value.nodes[1] = { id: 'target', left: 300, top: 100, right: 400, bottom: 200 };
+    value.edges[0]!.d = route; value.edges[0]!.pieces[0]!.d = route;
+    const inputs = [{ id: 'source->target', points: [{ x: 100, y: 50 }, { x: 300, y: 150 }] }];
+    expect(inspectDependencySnapshot(value, expected, inputs)).toEqual([]);
+    const wrongInput = [{ id: 'source->target', points: [{ x: 100, y: 50 }, { x: 200, y: 80 }, { x: 300, y: 150 }] }];
+    expect(inspectDependencySnapshot(value, expected, wrongInput)).toContain('source->target: curve differs from declared compiler input passages');
+    const wrongControl = structuredClone(value); wrongControl.edges[0]!.d = 'M100,50 C201,50 200,150 300,150';
+    expect(inspectDependencySnapshot(wrongControl, expected)).toContain('source->target: cubic leaves its horizontal-tangent rank-gap passage');
+    const collision = structuredClone(value); collision.nodes.push({ id: 'obstacle', left: 190, top: 90, right: 210, bottom: 110 });
+    expect(inspectDependencySnapshot(collision, { ...expected, nodes: [...expected.nodes, { id: 'obstacle' }] })).toContain('source->target: curve passes through node obstacle');
+  });
+  it('checks exact cubic dash subcurves and true-arclength gap seams', () => {
+    const halfLength = referenceLength(parseCurve('M0,0 C100,0 100,100 200,100')[0]!) / 2;
+    const seam = Math.ceil((halfLength - 7) / 9) * 9 + 7; const scale = seam / halfLength;
+    const p = (x: number, y: number) => `${100 + x * scale},${50 + y * scale}`;
+    const value = snapshot(); const edge = value.edges[0]!; const original = edge.pieces[0]!;
+    value.nodes[1] = { id: 'target', left: 100 + 200 * scale, top: 100 * scale, right: 200 + 200 * scale, bottom: 100 + 100 * scale };
+    edge.d = `M${p(0, 0)} C${p(100, 0)} ${p(100, 100)} ${p(200, 100)}`;
+    edge.pieces = [
+      { ...original, d: `M${p(0, 0)} C${p(50, 0)} ${p(75, 25)} ${p(100, 50)}` },
+      { ...original, d: `M${p(100, 50)} C${p(125, 75)} ${p(150, 100)} ${p(200, 100)}`, phase: 7 },
+    ];
+    value.declaredPieces = 2;
+    expect(inspectDependencySnapshot(value, expected)).toEqual([]);
+    const phase = structuredClone(value); phase.edges[0]!.pieces[1]!.phase = 7.2;
+    expect(inspectDependencySnapshot(phase, expected)).toContain('source->target: dash phase deviates from true curve arclength');
+    const changed = structuredClone(value); changed.edges[0]!.pieces[1]!.d = `M${p(100, 50)} C${p(125, 75)} ${p(151, 100)} ${p(200, 100)}`;
+    expect(inspectDependencySnapshot(changed, expected)).toContain('source->target: paint curve differs from canonical curve');
+    const omitted = structuredClone(value); omitted.edges[0]!.pieces.pop(); omitted.declaredPieces = 1;
+    expect(inspectDependencySnapshot(omitted, expected)).toContain('source->target: incomplete canonical paint coverage');
+  });
+  it('rejects native cubic paint whose total arclength exceeds the GPU bound', () => {
+    const value = snapshot(); const route = 'M100,50 C200,50 200,10050 300,10050';
+    value.nodes[1] = { id: 'target', left: 300, top: 10000, right: 400, bottom: 10100 };
+    value.edges[0]!.d = route; value.edges[0]!.pieces[0]!.d = route;
+    expect(inspectDependencySnapshot(value, expected)).toContain('source->target: paint piece exceeds bounded arc length');
+  });
+  it('integrates cubic speed independently, including curves with exact polynomial speed', () => {
+    expect(referenceLength(parseCurve('M0,0 C0,1 1,1 1,0')[0]!, 1e-8)).toBeCloseTo(2, 8);
+    expect(referenceLength(parseCurve('M0,0 C3,0 7,0 10,0')[0]!, 1e-8)).toBeCloseTo(10, 8);
+    const tall = referenceLength(parseCurve('M0,0 C32,0 32,68000000 64,68000000')[0]!);
+    expect(tall).toBeGreaterThanOrEqual(68000000); expect(tall).toBeLessThan(68000064);
+  });
   it('reports the full failure count with bounded examples without discarding any input failures', () => {
     const failures = Array.from({ length: 25 }, (_, index) => `edge-${index}: collision`);
     expect(summarizeGeometryFailures(failures)).toEqual({ total: 25, examples: failures.slice(0, 12) });
@@ -155,10 +200,17 @@ describe('independent production dependency geometry oracle', () => {
     const value = snapshot();
     value.nodes[1] = { id: 'target', left: 68000100, top: 0, right: 68000200, bottom: 100 };
     value.edges[0]!.d = 'M100,50 L68000100,50';
-    value.edges[0]!.pieces[0] = { ...value.edges[0]!.pieces[0]!, d: 'M0,0 L68000000,0', line: true, matrix: [1, 0, 0, 1, 100, 50] };
+    const original = value.edges[0]!.pieces[0]!;
+    value.edges[0]!.pieces = [];
+    for (let position = 0; position < 68000000;) {
+      const limit = 68000000 - position <= 8192 ? 68000000 : Math.floor((position + 8192 - 7) / 9) * 9 + 7;
+      value.edges[0]!.pieces.push({ ...original, d: `M0,0 L${limit - position},0`, line: true, matrix: [1, 0, 0, 1, 100 + position, 50], phase: position % 9 });
+      position = limit;
+    }
+    value.declaredPieces = value.edges[0]!.pieces.length;
     const inputs = [{ id: expected.edges[0]!.id, points: [{ x: 100, y: 50 }, { x: 68000100, y: 50 }] }];
     expect(inspectDependencySnapshot(value, expected, inputs)).toEqual([]);
-    value.edges[0]!.pieces[0]!.d = 'M0,0 L67999999.9,0';
+    const last = value.edges[0]!.pieces.at(-1)!; last.d = `M0,0 L${68000100 - last.matrix[4]! - 0.1},0`;
     expect(inspectDependencySnapshot(value, expected, inputs).some((failure) => failure.includes('incomplete canonical paint coverage'))).toBe(true);
   });
   it('bounds a quadratic arc independently and handles enormous straight distances without sampling them', () => {
@@ -166,7 +218,7 @@ describe('independent production dependency geometry oracle', () => {
     const exact = 1 + Math.asinh(1) / Math.SQRT2;
     expect(Math.abs(referenceLength(segment) - exact)).toBeLessThan(0.0001);
     expect(referenceLength(parseCurve('M0,0 L68000000,0')[0]!)).toBe(68000000);
-    for (const invalid of ['', 'M0,0 LNaN,2', 'M0,0 C1,2 3,4 5,6', 'M0,0 L0,0', 'm0,0 l1,1']) expect(() => parseCurve(invalid)).toThrow();
+    for (const invalid of ['', 'M0,0 LNaN,2', 'M0,0 C1,2 3,4', 'M0,0 L0,0', 'm0,0 l1,1']) expect(() => parseCurve(invalid)).toThrow();
   });
 });
 

@@ -367,7 +367,7 @@ declare const layoutGraph: (
 
 React Flow 12.12.0保留220px宽、96px或136px高的可见卡片、原生测量、视口及只读控件；布局、路由、适配和键盘揭示共享每个 CanvasNode 的实际 width/height。替代代码将主体检查、Details与方向展开分为兄弟原生控件；前两者不改变S或视口，方向/reset沿用PR134。TaskInspectionContext提供selectedTaskId/highlightedIds，稳定受控node/data和memoized内容隔离检查呈现与几何。完整H决定可见前置/真实边/箭头高亮及按ID去重隐藏数，详情资源独立。
 
-路由由[统一通道决策](../../.agents/notes/implemented/architecture/2026-10-22-uniform-task-dependency-routing.md)拥有：按实际节点宽高一次建立列与16单位扩张占用行，按中间列意图选最近自由行，仅gap中点HV转接，保留节点布局，固定源右中心/目标左中心，≤12单位Q圆角。routes编译M/L/Q及真实弧长分片，5/4相位保持，最大1.8缩放累计误差≤0.025CSSpx。DependencyEdges声明式渲染三个恒定RGB原生marker和body组局部stroke继承，保留全部可见真实边及实际paint pieces；检查不重算几何。
+路由由[贝塞尔路线决策](../../.agents/notes/implemented/architecture/2026-10-25-bezier-task-dependency-routing.md)拥有：按实际节点宽高一次建立列与16单位扩张占用行，按中间列意图选最近自由行，保留节点布局和固定源右中心/目标左中心端口。列间不同高度的端点由三次贝塞尔曲线连接，控制点位于列间中线及起止高度，凸包限制弯曲只发生在空隙中；中间列使用水平自由通道，相邻段以水平向右切向连接。routes编译M/L/C及真实弧长分片，曲线片段保留精确三次几何，全部虚线绘制片段弧长≤8192单位，切口位于全局5/4周期的第7单位；最大1.8缩放下累计相位误差≤0.025CSSpx。DependencyEdges声明式渲染三个恒定RGB原生marker和body组局部stroke继承，保留全部可见真实边及实际paint pieces；检查不重算几何。
 
 普通键盘reveal用布局/卡片/viewport坐标，避免原生focus临时overflow滚动误判；footer消失但卡片仍在时，最终DOM commit恢复主体并抑制reveal，整卡片消失用既有回退，不抢dialog焦点。普通失败保留只限同身份/项目/authscope；current401/会话/资源转换保留私有数据失效规则。当前手动/定时刷新和locale触发保持。机制详见[检查决策](../../.agents/notes/implemented/feature/2026-10-22-task-dependency-inspection.md)。
 `routes.ts` 将提取后的长直线拆成不超过 8,192 图坐标单位的片段，新增切点位于

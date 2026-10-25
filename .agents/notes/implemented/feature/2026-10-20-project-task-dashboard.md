@@ -46,11 +46,14 @@ disabled. Each task has one native button for pointer, Enter and Space activatio
 keyboard focus pans offscreen nodes without changing zoom.
 
 One memoized SVG beneath task nodes in the public `ViewportPortal` renders every
-dependency from the immutable Dagre layout. Canonical paths retain all exact
-routed points, stable edge/source/target identity, native arrow markers and
-accessibility semantics. Solid bodies keep native paint. Long dashed bodies use
-immutable locally horizontal lines and short native bend paths, preserving full
-arc length and dash phase through the
+dependency from immutable planned geometry. The
+[Bézier routing decision](../architecture/2026-10-25-bezier-task-dependency-routing.md)
+retains Dagre node placement while owning fixed lateral ports, free-row passages
+and cubic transitions across empty column gaps. Canonical paths retain complete
+geometry, stable edge/source/target identity, native arrow markers and
+accessibility semantics. Solid bodies keep native paint. Dashed bodies use
+immutable locally horizontal lines and bounded exact cubic subcurves, preserving
+full arc length and dash phase through the
 [long-dashed paint decision](../bug-fix/2026-10-20-long-dashed-dependency-paint.md).
 The portal shares the React Flow viewport transform; pan and zoom transform the
 same complete paths without per-edge store subscriptions or endpoint-admission
@@ -60,8 +63,9 @@ input, so task buttons and the canvas remain the interaction targets.
 The original custom-edge integration used invisible framework ports for
 edge admission. That choice preserved Dagre's noncentral rectangle intersections:
 framework port centers never defined the visible line endpoints. The static SVG
-retains that geometry rationale while giving immutable dependency routes their
-own rendering owner. The initial single-SVG implementation used native dashing
+established a separate rendering owner for immutable routes; the current Bézier
+planner owns the endpoint and card-avoidance rules. The initial single-SVG
+implementation used native dashing
 on each full route, preserving direct geometry without per-edge reactive state.
 The long-dashed paint decision partially replaces that body-paint choice after
 pinned-engine raster evidence, while canonical routes and native arrows remain.

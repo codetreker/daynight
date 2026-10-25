@@ -14,14 +14,20 @@ that the failing graph is supported.
 
 ## Decision
 
-Keep the existing canonical routes, native arrow markers, local line transforms
-and short native bend paths. Split each extracted straight line into pieces no
-longer than 8,192 graph units. Additional cuts use the same global phase-seven
-gap midpoint as the original decomposition. Each piece retains its cumulative
-arc distance and positive dash offset; the last piece may be shorter than the
-128-unit threshold used to extract a straight region around bends. The route
-compiler validates the full cumulative arc length before expanding paint pieces,
-so overflowing geometry fails before allocating bounded segments.
+The line-paint mechanism retains canonical routes, native arrow markers and
+local line transforms. Extracted straight regions are split into pieces no longer
+than 8,192 graph units. Additional cuts use the same global phase-seven gap
+midpoint as the original decomposition. Each piece retains its cumulative arc
+distance and positive dash offset; a final piece may be shorter than the
+128-unit extraction threshold. The route compiler validates full cumulative arc
+length before expanding paint pieces, so overflowing geometry fails before
+allocating bounded segments.
+
+The [Bézier routing decision](../architecture/2026-10-25-bezier-task-dependency-routing.md)
+replaces the former short rounded bends with complete cubic curves across column
+gaps. It retains this line mechanism and extends the same arc-length bound and
+gap-midpoint seam rule to exact cubic paint subcurves. Canonical route geometry
+and arrow ownership remain independent of the paint decomposition.
 
 The bound limits work for an individual GPU stroke without depending on viewport
 state or CPU-specific dash clipping. It applies on both Linux and macOS. Every
@@ -58,6 +64,6 @@ pieces are not automatically faster. A future renderer or browser change require
 renewed geometry, pixel and performance verification before changing the bound.
 
 Tests cover full arc coverage, rotation/translation, dash phase at internal cuts,
-native bend retention and short final pieces. Browser comparisons must verify
+exact canonical geometry retention and short final pieces. Browser comparisons must verify
 complete canonical edges and visible output. Local diagnostic improvements do
 not replace native production and Linux CI acceptance evidence.

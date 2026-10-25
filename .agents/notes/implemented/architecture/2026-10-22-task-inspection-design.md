@@ -45,9 +45,12 @@ dialog shared by all detail entry points.
 The original smooth-route target retained raw Dagre points to preserve lane
 intent and long paint spans. The
 [uniform-routing decision](2026-10-22-uniform-task-dependency-routing.md)
-partially replaces that target with one fixed-side-port column H/V planner and
-bounded quadratic corners. It keeps node placement separate from edge validity. Long straight spans retain the local-axis dash
-painting strategy. One compiled route owns body geometry and marker direction;
+replaced that target with fixed-side-port column planning and bounded quadratic
+corners. The [Bézier routing decision](2026-10-25-bezier-task-dependency-routing.md)
+retains its free-row planning and separates node placement from edge validity,
+while complete cubic curves span empty column gaps. Long straight spans retain
+local-axis dash painting; cubic paint uses bounded exact subcurves. One compiled
+route owns body geometry and marker direction;
 independent acceptance must understand curves and continue checking complete
 coverage, dash continuity and real production timing.
 
