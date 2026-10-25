@@ -149,6 +149,9 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await picture(page, info, 'auth-project-isolation');
     await page.goto(`/projects/${own.id}`);
     await expect(page.getByRole('heading', { name: own.name, exact: true })).toBeVisible();
+    await page.getByRole('button', { name: '折叠侧栏', exact: true }).click();
+    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
     await selectTaskList(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
     await page.locator(`#standalone-task-${task.id}`).click();
@@ -321,6 +324,11 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(continuity.every(Boolean)).toBe(true);
     await page.keyboard.press('Escape');
     await expect(detail).toHaveCount(0);
+    await page.setViewportSize({ width: 390, height: 700 });
+    await page.getByRole('button', { name: '展开侧栏', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: '工作空间导航', exact: true })).toBeVisible();
+    await expect(page.locator('.workspace')).toHaveAttribute('inert', '');
+    await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
     await otherTab.bringToFront();
     await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
     const changedUserGraphBaseline = graphRequests.length;
@@ -332,6 +340,12 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await page.bringToFront();
     await expect.poll(() => heldChecks.length).toBe(2);
     expect(heldChecks[1]!.identity).toBe(aliceUser.id);
+    await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
+    await expect(page.locator('.workspace')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
+    await page.setViewportSize({ width: 1600, height: 1100 });
+    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
     expect(graphRequests).toHaveLength(changedUserGraphBaseline);
     await otherTab.bringToFront();
     await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
@@ -357,6 +371,11 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     expect(membershipRefusal.headers()['daynight-user-id']).toBe(bobUser.id);
     expect((await membershipRefusal.json() as { error: { code: string } }).error.code).toBe('not_found');
     await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
+    await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
+    expect(await page.evaluate(() => localStorage.getItem('daynight.web.sidebar.collapsed'))).toBe('true');
+    await expect(page.locator('.sidebar[role="dialog"]')).toHaveCount(0);
+    await expect(page.locator('.workspace')).not.toHaveAttribute('inert', '');
+    await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     await expect(page.getByRole('heading', { name: own.name, exact: true })).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '项目不存在或你没有访问权限' })).toBeVisible();
     expect(identityRequests).toEqual(['GET', 'GET', 'GET']);

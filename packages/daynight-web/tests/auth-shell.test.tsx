@@ -5,6 +5,7 @@ import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
 import { openDB } from 'idb';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
+import { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import type { TaskGraph } from '../src/api/types';
 import { stringifyWireJson } from "./helpers/wireJson";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -14,6 +15,8 @@ import { AuthenticatedApp, parseAuthRoute } from "../src/app/AuthenticatedApp";
 import { parseRoute } from "../src/app/router";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 import { invitationStorageKey } from "../src/features/auth/invitation";
+import { SIDEBAR_STORAGE_KEY } from "../src/app/useSidebarPreference";
+import { mockSidebarMediaQuery } from "./helpers/mediaQuery";
 
 const render = createLocaleRender("zh-CN");
 let topLevelFocused = true;
@@ -60,6 +63,114 @@ beforeEach(() => {
   vi.spyOn(document, "hasFocus").mockImplementation(() => topLevelFocused);
   vi.spyOn(document, "visibilityState", "get").mockImplementation(() => visibility);
   Object.defineProperty(HTMLDialogElement.prototype, "showModal", { configurable: true, value: function (this: HTMLDialogElement) { this.open = true; } });
+});
+
+describe("sidebar integration with the authenticated workspace", () => {
+  it("preserves the mounted project and requests while toggling the origin preference", async () => {
+    window.history.replaceState(null, "", `/projects/${projectId}`);
+    const fetcher = install();
+    const initialSync = Promise.withResolvers<void>();
+    const applySync = TaskCacheScope.prototype.applySync;
+    vi.spyOn(TaskCacheScope.prototype, "applySync").mockImplementation(function (this: TaskCacheScope, ...args) {
+      const result = applySync.apply(this, args);
+      void result.then(() => initialSync.resolve(), initialSync.reject);
+      return result;
+    });
+    render(<AuthenticatedApp />);
+    // Authentication commits before the project effect can start the cache synchronization.
+    await act(async () => {});
+    await act(async () => initialSync.promise);
+    const heading = screen.getByRole("heading", { name: "私有项目" });
+    expect(fetcher.mock.calls.some(([url]) => isTaskSync(url))).toBe(true);
+    const main = screen.getByRole("main");
+    const before = fetcher.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
+    expect(window.localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe("true");
+    expect(screen.getByRole("main")).toBe(main);
+    expect(screen.getByRole("heading", { name: "私有项目" })).toBe(heading);
+    expect(screen.getByRole("button", { name: "展开侧栏" })).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    expect(window.localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe("false");
+    expect(screen.getByRole("heading", { name: "私有项目" })).toBe(heading);
+    expect(fetcher.mock.calls).toHaveLength(before);
+  });
+
+  it("retains the stored appearance after account replacement while discarding the previous identity's workspace", async () => {
+    install();
+    render(<AuthenticatedApp />);
+    const heading = await screen.findByRole("heading", { name: "私有项目" });
+    fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
+    serverUserId = otherId;
+    returnFromAnotherWindow();
+    await screen.findByRole("link", { name: "账户设置：Bob" });
+    expect(heading.isConnected).toBe(false);
+    expect(screen.getByRole("button", { name: "展开侧栏" })).toHaveAttribute("aria-expanded", "false");
+    expect(window.localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe("true");
+  });
+
+  it.each(["read", "invalid", "write"] as const)("shows a localized %s issue and recovers only after an explicit save", async (failure) => {
+    const originalRead = Storage.prototype.getItem;
+    const originalWrite = Storage.prototype.setItem;
+    let unavailable = true;
+    if (failure === "invalid") window.localStorage.setItem(SIDEBAR_STORAGE_KEY, '"true"');
+    if (failure === "read") vi.spyOn(Storage.prototype, "getItem").mockImplementation(function (this: Storage, key) {
+      if (key === SIDEBAR_STORAGE_KEY && unavailable) throw new Error("private storage cause");
+      return originalRead.call(this, key);
+    });
+    if (failure === "write") vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === SIDEBAR_STORAGE_KEY && unavailable) throw new Error("private storage cause");
+      return originalWrite.call(this, key, value);
+    });
+    install();
+    render(<AuthenticatedApp />);
+    await screen.findByRole("heading", { name: "私有项目" });
+    if (failure === "write") fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
+    const message = failure === "read" ? "无法读取侧栏偏好，当前使用展开布局。你仍可切换侧栏并重试保存。" : failure === "invalid" ? "保存的侧栏偏好无效，当前使用展开布局。请重新选择并保存。" : "侧栏偏好尚未保存。当前布局仍可使用，请重试保存。";
+    expect(screen.getByRole("alert")).toHaveTextContent(message);
+    expect(screen.queryByText("private storage cause")).toBeNull();
+    unavailable = false;
+    fireEvent.click(screen.getByRole("button", { name: "重试保存侧栏偏好" }));
+    expect(screen.queryByText(message)).toBeNull();
+    expect(window.localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe(failure === "write" ? "true" : "false");
+  });
+
+  it("closes mobile navigation for identity verification and preserves the interactive workspace until an actual failure", async () => {
+    mockSidebarMediaQuery(true);
+    window.localStorage.setItem(SIDEBAR_STORAGE_KEY, "true");
+    let meCalls = 0;
+    let finishCheck!: (response: Response) => void;
+    install((url) => url === "/api/v1/me" && ++meCalls > 1
+      ? new Promise<Response>((done) => { finishCheck = done; })
+      : defaults(url));
+    render(<AuthenticatedApp />);
+    const heading = await screen.findByRole("heading", { name: "私有项目" });
+    const shell = document.querySelector(".shell")!;
+    const workspace = document.querySelector(".workspace")!;
+    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    expect(screen.getByRole("dialog", { name: "工作空间导航" })).toHaveAttribute("aria-modal", "true");
+    expect(workspace).toHaveAttribute("inert");
+    returnFromAnotherWindow();
+    await waitFor(() => expect(meCalls).toBe(2));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(workspace).not.toHaveAttribute("inert");
+    expect(shell).not.toHaveAttribute("inert");
+    expect(document.body.style.overflow).not.toBe("hidden");
+    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await act(async () => finishCheck(fail(503, "internal")));
+    expect(screen.getByRole("dialog", { name: "重新确认当前账户" })).toBeInTheDocument();
+    expect(shell).toHaveAttribute("inert");
+    expect(heading.isConnected).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "重新确认账户" }));
+    await waitFor(() => expect(meCalls).toBe(3));
+    await act(async () => finishCheck(json(user())));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(shell).not.toHaveAttribute("inert");
+    expect(screen.getByRole("heading", { name: "私有项目" })).toBe(heading);
+    expect(window.localStorage.getItem(SIDEBAR_STORAGE_KEY)).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "展开侧栏" }));
+    expect(screen.getByRole("dialog", { name: "工作空间导航" })).toBeInTheDocument();
+  });
 });
 
 describe("authenticated application shell", () => {

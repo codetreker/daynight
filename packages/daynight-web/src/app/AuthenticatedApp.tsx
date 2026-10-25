@@ -20,6 +20,8 @@ import { TaskDetailPage } from "../features/task-detail/TaskDetailPage";
 import { navigate, parseRoute, type Route } from "./router";
 import { useI18n } from "../i18n/LocaleProvider";
 import { LanguageSelector } from "../i18n/LanguageSelector";
+import { WorkspaceSidebar } from "./WorkspaceSidebar";
+import { useSidebarPreference } from "./useSidebarPreference";
 import "../styles/auth.css";
 
 type AuthRoute = Route | { readonly kind: "account" | "invitations" } | { readonly kind: "device"; readonly userCode: string | null } | { readonly kind: "members" | "settings"; readonly projectId: string };
@@ -80,28 +82,18 @@ const ProjectManagementNav = ({ projectId, current }: { readonly projectId: stri
   return <nav className="project-management-nav" aria-label={m.projectSettings}><a className="button" href={`/projects/${projectId}`} onClick={followLink}>{app.projectTasks}</a><a className="button" href={`/projects/${projectId}/members`} onClick={followLink} aria-current={current === "members" ? "page" : undefined}>{m.members}</a><a className="button" href={`/projects/${projectId}/settings`} onClick={followLink} aria-current={current === "settings" ? "page" : undefined}>{m.projectSettings}</a></nav>;
 };
 
-const Workspace = ({ user, children, route, onSignOut, blocked }: { readonly user: CurrentUser; readonly children: ReactNode; readonly route: AuthRoute; readonly onSignOut: () => void; readonly blocked: boolean }) => {
+const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking }: { readonly user: CurrentUser; readonly children: ReactNode; readonly route: AuthRoute; readonly onSignOut: () => void; readonly blocked: boolean; readonly identityChecking: boolean }) => {
   const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
   const content = useRef<HTMLElement>(null);
+  const workspace = useRef<HTMLDivElement>(null);
+  const sidebar = useSidebarPreference();
   const label = route.kind === "projects" ? m.myProjects : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
   useLayoutEffect(() => { content.current?.focus(); }, [route.kind, "projectId" in route ? route.projectId : null]);
   return (
-    <div className="shell auth-shell" aria-hidden={blocked} inert={blocked}>
-      <a className="skip-link" href="#main-content">{app.skipToContent}</a>
-      <aside className="sidebar" aria-label={app.workspaceNavigation}>
-        <div className="sidebar-main">
-          <a className="brand" href="/" onClick={followLink} aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
-          <nav aria-label={app.mainNavigation}>
-            <p className="nav-label">{app.workspace}</p>
-            <a className="nav-button" href="/" onClick={followLink} aria-current={route.kind === "projects" || route.kind === "project" || route.kind === "members" || route.kind === "settings" ? "page" : undefined}>▦　{m.myProjects}</a>
-          </nav>
-        </div>
-        <div className="sidebar-bottom">
-          <a className="nav-button account-nav" href="/account" onClick={followLink} aria-current={route.kind === "account" ? "page" : undefined}>◎　{m.accountSettings}</a>
-          <div className="sidebar-workspace">{m.teamWorkspace}<small>{app.localWorkspaceDetail}</small></div>
-        </div>
-      </aside>
-      <div className="workspace">
+    <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}`} aria-hidden={blocked} inert={blocked}>
+      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + ("projectId" in route ? `:${route.projectId}` : "")} projectsActive={route.kind === "projects" || route.kind === "project" || route.kind === "members" || route.kind === "settings"} accountActive={route.kind === "account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
+      <div className="workspace" ref={workspace}>
+        <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
           <nav className="crumb" aria-label={app.breadcrumb}><a href="/" onClick={followLink}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{label}</span></nav>
           <div className="account-actions">
@@ -110,7 +102,10 @@ const Workspace = ({ user, children, route, onSignOut, blocked }: { readonly use
             <button className="inline-link" type="button" onClick={onSignOut}>{m.signOut}</button>
           </div>
         </header>
-        <main className="content" id="main-content" ref={content} tabIndex={-1}>{children}</main>
+        <main className="content" id="main-content" ref={content} tabIndex={-1}>
+          {sidebar.issue !== null && <div className="sidebar-preference-notice notice warning" role="alert"><p>{m.sidebar[`${sidebar.issue.kind}Error`]}</p><button className="button" type="button" onClick={sidebar.retrySave}>{m.sidebar.retrySave}</button></div>}
+          {children}
+        </main>
       </div>
     </div>
   );
@@ -307,7 +302,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   </div></TaskDetailSessionProvider></TaskCacheProvider>;
   if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={signOut} onUnavailable={unavailableInvitation} /></div></>;
   if (route.kind === "device") return <>{revalidationOverlay}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={signOut} onIdentityMismatch={invalidateIdentity} /></div></>;
-  return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}<Workspace key={identity} user={session.user} route={route} onSignOut={signOut} blocked={blocked}>
+  return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}<Workspace key={identity} user={session.user} route={route} onSignOut={signOut} blocked={blocked} identityChecking={revalidation !== "idle"}>
     {cleanupWarning}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <AuthorizedProject key={route.projectId} projectId={route.projectId} user={session.user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={session.user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={session.user} onRemoved={() => navigate("/")} /></> : route.kind === "account" ? <AccountPage user={session.user} onSignOut={signOut} onIdentityMismatch={invalidateIdentity} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/" onClick={followLink}>{app.returnToProjects}</a></section>}
     {creating && <CreateProjectDialog onClose={() => setCreating(false)} onCreated={(project) => { setCreating(false); navigate(`/projects/${project.id}`); }} />}
   </Workspace></TaskDetailSessionProvider></TaskCacheProvider>;

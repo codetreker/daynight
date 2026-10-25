@@ -3,6 +3,13 @@ import type { AuthMessages } from "../auth";
 export const auth: AuthMessages = {
   roles: { admin: "管理员", member: "成员" },
   shell: {
+    sidebar: {
+      expand: "展开侧栏", collapse: "折叠侧栏", close: "关闭导航",
+      readError: "无法读取侧栏偏好，当前使用展开布局。你仍可切换侧栏并重试保存。",
+      invalidError: "保存的侧栏偏好无效，当前使用展开布局。请重新选择并保存。",
+      writeError: "侧栏偏好尚未保存。当前布局仍可使用，请重试保存。",
+      retrySave: "重试保存侧栏偏好",
+    },
     projectSettings: "项目设置",
     myProjects: "我的项目", accountSettings: "账户设置", members: "项目成员", teamWorkspace: "团队工作空间",
     accountLink: ({ name }) => `账户设置：${name}`, currentAccount: "当前账户", genericProject: "项目",

@@ -13,8 +13,12 @@ session loss, and failed checks must remain visible and recoverable.
 ## Decision
 
 Foreground identity checks run in the background while the current authenticated
-workspace stays visible and interactive. They do not open a dialog, hide content,
-change inertness or move focus. Same-user success keeps the session generation
+content stays visible and interactive. They do not open an identity dialog, hide
+content, or disturb content focus and inertness. The temporary narrow-screen
+navigation introduced by the [sidebar preference decision](../feature/2026-10-25-sidebar-preference.md)
+closes at the start of a check and releases its own focus containment, background
+inertness and scroll lock so it cannot compete with identity recovery. Same-user
+success keeps the session generation
 and component instances, including drafts and one-time secrets. Each qualified
 external return synchronously cancels and supersedes the previous check;
 responses from older checks cannot decide the current identity. A confirmed
@@ -63,7 +67,8 @@ Keeping checks and separating their presentation preserves timely detection.
 
 ## Consequences
 
-Ordinary tab returns retain visible content, dialogs, focus and browsing state.
+Ordinary tab returns retain visible content, detail and management dialogs,
+content focus and browsing state; the temporary navigation overlay closes.
 The account check alone leaves loaded content visible and interactive while
 pending, including when another tab has changed the shared session. A separately
 verified project access loss immediately withdraws its content, including during

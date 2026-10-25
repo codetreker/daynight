@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { ApiError } from "../../src/api/client";
+import { WorkspaceSidebar } from "../../src/app/WorkspaceSidebar";
+import { useSidebarPreference } from "../../src/app/useSidebarPreference";
 import type { PersonalAccessToken } from "../../src/api/auth-types";
 import { TokensPanel, type TokenManagementApi } from "../../src/features/management/TokensPanel";
 import { LocaleProvider, useI18n } from "../../src/i18n/LocaleProvider";
@@ -34,6 +36,9 @@ const TokensMockup = () => {
   const [revision, setRevision] = useState(0);
   const [user, setUser] = useState(alice);
   const connectionRestored = useRef(false);
+  const workspace = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLElement>(null);
+  const sidebar = useSidebarPreference();
   const transport = useMemo<TokenManagementApi>(() => {
     let sequence = 10, attempted = false, conflict = false;
     let tokens: PersonalAccessToken[] = scenario === "empty" ? [] : [
@@ -76,22 +81,10 @@ const TokensMockup = () => {
   }, [scenario, revision, user.id]);
   const reset = (next: Scenario) => { connectionRestored.current = false; setScenario(next); setRevision((value) => value + 1); };
   return <>
-    <div className="shell auth-shell">
-      <a className="skip-link" href="#main-content">{app.skipToContent}</a>
-      <aside className="sidebar" aria-label={app.workspaceNavigation}>
-        <div className="sidebar-main">
-          <a className="brand" href="/" onClick={(event) => event.preventDefault()} aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
-          <nav aria-label={app.mainNavigation}>
-            <p className="nav-label">{app.workspace}</p>
-            <a className="nav-button" href="/" onClick={(event) => event.preventDefault()}>▦　{shell.myProjects}</a>
-          </nav>
-        </div>
-        <div className="sidebar-bottom">
-          <a className="nav-button account-nav" href="/account" onClick={(event) => event.preventDefault()} aria-current="page">◎　{shell.accountSettings}</a>
-          <div className="sidebar-workspace">{shell.teamWorkspace}<small>{app.localWorkspaceDetail}</small></div>
-        </div>
-      </aside>
-      <div className="workspace">
+    <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}`}>
+      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey="account" projectsActive={false} accountActive identityChecking={false} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
+      <div className="workspace" ref={workspace}>
+        <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
           <nav className="crumb" aria-label={app.breadcrumb}><a href="/" onClick={(event) => event.preventDefault()}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{shell.accountSettings}</span></nav>
           <div className="account-actions">
@@ -100,7 +93,8 @@ const TokensMockup = () => {
             <button className="inline-link" type="button">{shell.signOut}</button>
           </div>
         </header>
-        <main className="content" id="main-content" tabIndex={-1}>
+        <main className="content" id="main-content" ref={content} tabIndex={-1}>
+        {sidebar.issue !== null && <div className="notice warning sidebar-preference-notice" role="alert"><p>{shell.sidebar[`${sidebar.issue.kind}Error`]}</p><button className="button" type="button" onClick={sidebar.retrySave}>{shell.sidebar.retrySave}</button></div>}
           <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div></div>
           <div className="settings-grid">
             <nav className="settings-nav" aria-label={m.title}><button type="button" disabled>{m.profileTab}</button><button type="button" className="active" aria-current="page">{m.tokensTab}</button></nav>

@@ -46,13 +46,34 @@ It composes the existing project list, graph and shared task-detail surfaces wit
 private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-Desktop workspace navigation keeps project links in a scrollable upper region
-and the existing `/account` entry in the sidebar footer. The footer remains
-reachable while the main page scrolls or the viewport becomes short; the current
-account route has a visible selected state. The topbar account link retains its
-name and behavior. Narrow screens retain the horizontal navigation and use the
-topbar account link. The [account navigation decision](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
-owns that layout choice.
+`WorkspaceSidebar` keeps project links in a scrollable upper region and the
+existing `/account` entry and sidebar toggle in its footer. Desktop widths are
+190px expanded and 68px collapsed. The footer stays reachable on long pages and
+short viewports; icon entries retain accessible names, hover titles and selected
+route styling. The topbar account link keeps its name and behavior.
+
+`useSidebarPreference` saves only a JSON boolean under the origin-local
+`daynight.web.sidebar.collapsed` key. A missing value expands the sidebar without
+writing a default. Refresh, reopening, project navigation and account changes
+retain the browser's appearance choice. Read, invalid-value and write failures
+have localized visible feedback while the current in-memory choice remains
+usable. Retry saves that choice, and only a successful write clears the issue.
+
+At 740px and below, navigation uses a 60px rail and a 220px modal overlay. Its
+open state is temporary and never overwrites the desktop choice. The overlay
+contains keyboard focus, isolates the background and shares the reference-counted
+body scroll lock with the graph and task detail. Escape and backdrop dismissal
+restore the opener; route changes use the existing content focus behavior.
+Route changes, the desktop breakpoint, identity verification, blocking recovery
+and unmount close the overlay and release its own isolation and lock. Normal
+identity verification continues to preserve the content's existing interaction
+policy. Sidebar changes preserve the mounted project, cache, detail and graph
+viewport without another request or synchronization loop. The
+[sidebar preference decision](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
+owns these state boundaries; the
+[account navigation decision](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
+owns bottom placement. Cross-tab live updates and server or cross-device
+synchronization are outside the local persistence guarantee.
 
 Task details expose the versioned automatic-execution permission: one bilingual
 label and switch on the right of the status row below the title, with status
@@ -174,7 +195,7 @@ scenario selector covers manual entry, loading, approval, denial, expiration,
 invalid codes, request failures, rate limiting, uncertain decisions, and long
 account details. Open `/tests/mockups/tokens.html` for the production token panel,
 creation dialog, and expiration editor inside the workspace sidebar-footer layout,
-including its selected account entry and narrow-screen topbar account link.
+including its selected account entry and shared responsive workspace navigation.
 The scenario controls cover loading, conflicts, unconfirmed updates,
 reconciliation failures, unavailable tokens, and long names. The shared language
 selector and final responsive styles remain

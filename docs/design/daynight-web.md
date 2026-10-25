@@ -65,15 +65,32 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 ### 工作空间导航
 
-`AuthenticatedApp` 的 Workspace 将侧栏分为可滚动的 `.sidebar-main` 和不收缩的
-`.sidebar-bottom`。前者持有品牌和项目主导航，后者持有同一个 `/account` 链接及工作区说明。
-侧栏保持视口内 sticky 的纵向 flex 布局，主区域占用剩余空间且允许独立滚动；无需定位计算或
-额外状态即可在长页面和短窗口保留账户入口。账户页通过链接的 `aria-current="page"`
-呈现选中态。顶栏的账户入口和认证生命周期不变。
+`AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权，`WorkspaceSidebar`
+负责导航呈现。侧栏分为可滚动的 `.sidebar-main` 和不收缩的 `.sidebar-bottom`：
+前者持有品牌和项目主导航，后者持有同一个 `/account` 链接、工作区说明及切换按钮。
+sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部入口。
+链接的 `aria-current="page"` 提供当前路由选中态；图标、可访问名称及悬停提示在竖条中仍然可用。
 
-窄屏继续使用原有横向导航，主区域包装采用 `display: contents` 保持品牌和项目入口排列，
-侧栏底部区域隐藏，账户通过顶栏入口访问。[账户导航决策](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
-记录布局选择及其代价。
+`useSidebarPreference` 独立管理桌面 `collapsed`。origin-local
+`daynight.web.sidebar.collapsed` 只接受 JSON boolean，缺失时为 false 且不写入。
+读取失败、格式无效、写入失败使用带原始 cause 的内部 issue，呈现当前目录的脱敏提示；
+显式切换保留新内存值并尝试保存，重试保存当前值，成功后清除 issue。外观值不包含
+用户、项目或令牌，跨项目及身份切换保留；它不依赖 project feature 的偏好 helper。
+
+桌面网格使用 190px 或 68px 侧栏；740px 及以下固定为 60px 竖条，展开覆盖导航宽
+220px。媒体查询与脚本使用同一 740px 断点约定。临时 `drawerOpen` 与持久 `collapsed`
+分离，手机开关不写桌面记录。覆盖导航位于 Workspace 认证屏障内，提供具名模态语义、
+实际可见控件的 Tab 约束、背景 inert 和共享 `useBodyScrollLock` 引用计数锁。
+清理恢复原 inert 与滚动状态，不释放图全屏或详情持有的锁。Escape/遮罩关闭恢复展开
+按钮焦点；路由导航交给既有正文聚焦。路由、桌面断点、身份核验开始、身份阻塞或卸载
+均关闭临时层。正常身份核验仍保留正文可见与交互；单独传递核验状态以关闭导航，不扩大
+原有 `blocked` 语义，不覆盖原生身份恢复对话框。
+
+侧栏状态不参与用户、项目、缓存或详情的 React key。宽度变化仅改变布局，图沿用已有
+尺寸观察，不重新初始化视口或增加读取、缓存及轮询器。跨标签实时同步与服务端同步可独立
+扩展，当前记录只表示一个本地外观值。[侧栏偏好决策](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
+拥有状态、错误与身份边界的取舍；[账户导航决策](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
+保留底部入口布局的原始理由。
 
 ### 项目列表 `/`
 
@@ -420,7 +437,7 @@ React Flow 12.12.0保留220px宽、96px或136px高的可见卡片、原生测量
 ```text
 packages/daynight-web/
   src/main.tsx                      浏览器入口
-  src/app/{App,router}.tsx           两个页面的路由与组合
+  src/app/                          认证外壳、路由、WorkspaceSidebar、侧栏偏好与滚动锁
   src/api/{types,client,parse}.ts    DTO、请求、运行时解析与错误
   src/i18n/                         语言目录、格式化器、生产根 Provider 与共享选择器
   src/features/projects/           ProjectsPage、ProjectPage、ProjectTaskTabs、StandaloneList、偏好 hooks、统计卡
@@ -444,7 +461,7 @@ packages/daynight-server/
 
 | 模块 | 拥有的内容 | 依赖方向 |
 |---|---|---|
-| 浏览器 app/router | URL 解析、history/popstate、页面装卸与 404 | 组合页面，不直接 fetch |
+| 浏览器 app/router | URL 解析、history/popstate、页面装卸与 404；WorkspaceSidebar 的呈现及独立本地侧栏偏好 | 组合页面；导航偏好只访问浏览器存储，不调用项目私有 helper 或业务 API |
 | api/client、api/parse | 相对 `/api` 请求、AbortSignal、JSON/附件 DTO 校验、文件传输、HEAD 与 typed error | 不引用组件和图布局 |
 | i18n | 两种目录、格式化、当前语言、独立保存与偏好错误、共用选择器 | 生产根及独立入口显式挂载；领域组件订阅展示，不调用业务 API 或图布局 |
 | projects hooks | 列表游标、完整派生图快照、加载/刷新状态、按项目隔离的视图偏好 | 摘要同步调用 api 和 task-cache；偏好只访问浏览器存储 |
@@ -490,6 +507,7 @@ flowchart LR
 
 认证身份下的 TaskCacheScope 拥有持久摘要及可发布投影，页面维护图加载与当前资源；不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与状态操作，纯图模型只计算派生内容。TaskCacheProvider 包裹全部认证路由并位于详情 Provider 外，独立任务和附件路径页共享该 scope。
 
+- Workspace 按认证身份保持正文和导航边界；`useSidebarPreference` 只拥有 origin-local 桌面折叠值和保存错误，手机覆盖导航为独立临时状态。二者不参与项目、缓存、详情或图的 key，也不触发业务读取。
 - `useProjects` 拥有当前已加载页、nextCursor 和下一页错误。首次请求、加载更多和刷新有各自状态；刷新使旧游标及旧请求失效。
 - `useTaskGraph(projectId)` 拥有完整派生 TaskGraph、接收时间、独立数据库样本、成功 receipt revision、请求序号、refresh 与可见页面轮询。严格解析 task-sync 后立即捕获 receivedMonotonic，早于 IDB 应用和索引计算；每次成功同步成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。TaskCacheScope 在一个事务内按业务版本合并当前完整持久集合，再提交摘要与最大 updatedAt；相等/旧版行不写入。仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。设置版本保持 bigint。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本；磁盘或其他标签页不能提供它。
 - `TaskExecutionClockProvider` 按项目拥有稳定 context/store，将最新服务端时间、单调接收时间和已保存阈值在 layout effect 一起发布。useTaskExecution 仅让已知起点的运行任务订阅一个可见页一秒 ticker；完成任务只订阅设置说明，未知任务无活动订阅。隐藏时暂停，恢复可见立即发布单调差值；正常轮询独立刷新锚点，最后运行订阅与 provider 卸载清理 timer/listener。计时局部更新不进入 GraphIndex、投影、布局或边路由；既有身份 guard 继续约束 API，没有新增失焦监听或网络轮询。
