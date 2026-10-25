@@ -11,7 +11,7 @@ needed to use them correctly.
 |---|---|
 | `login` | Authorize CLI access through the browser using a device code. |
 | `logout` | Revoke and remove the current CLI credential. |
-| `setup` | Configure review repositories or explicit test-server/automation overrides. |
+| `review add-repo` | Configure a repository for review; review run/list also guide first-use configuration in an interactive terminal. |
 | `project create` | Register a repository as a project or find its existing project. |
 | `project list` | Find projects on the configured service. |
 | `project show` | Inspect a project's details. |
@@ -48,13 +48,17 @@ start login, retry anonymously, or blindly repeat a mutation. Reconcile an
 unconfirmed write before another mutation. Project discovery and explicit project
 IDs grant no access; current service membership decides authorization.
 
-For noninteractive automation, read `daynight setup --help` and use the explicit
-`--server-token-stdin` option with a token from a secret source. Never put a token
-in command arguments, chat, task descriptions, checkpoints or attachments.
-A token is bound to the normalized origin, and changing the origin removes its
-old local value. Credentials require HTTPS except for literal localhost or
-numeric-loopback HTTP. Setup saves configuration without network or login checks;
-ordinary setup does not prompt for a server address or token.
+For a test service or noninteractive automation, provision the existing
+`serverUrl` and `serverToken` fields in `~/.daynight/config.yml` through a trusted
+configuration or secret source. Omit `serverUrl` only for `https://daynight.cc`.
+Never put a token in command arguments, chat, task descriptions, checkpoints or
+attachments. Keep credential files private, with POSIX mode `0600`. Pair each
+credential with its intended normalized origin; when changing services externally,
+remove or replace the old token before another request. External file writes do
+not run CLI credential cleanup or participate in its write lock. Credentials
+require HTTPS except for literal localhost or numeric-loopback HTTP. File
+provisioning performs no network or login checks. There is no top-level `setup`
+command; `completion setup` remains the independent shell startup installer.
 
 **Project discovery.** Inside a Git worktree, task commands can omit `--project`:
 the CLI matches the origin repository URL to a project on the configured

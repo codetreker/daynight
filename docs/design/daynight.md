@@ -2,7 +2,7 @@
 
 状态：`packages/daynight/` 是通过 `@codetreker/daynight` 分发的 TypeScript 客户端
 命令工具包，支持 Linux、macOS 和 Windows。`review` 提供 GitHub PR 审查，`update`
-管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，`setup` 引导 review 配置并保留显式测试服务覆盖，`completion` 生成 Bash 和 zsh
+管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，review 拥有仓库配置和首次引导，`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
 CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成，安装产物、真实服务
 与默认预算验收已通过托管验证；集成状态见[PR #55](https://github.com/codetreker/daynight/pull/55)。
@@ -21,9 +21,6 @@ daynight --version                   # 同 -v
 daynight update
 daynight login [--no-browser]         # 浏览器设备授权
 daynight logout                      # 撤销并清除当前 CLI 凭据
-daynight setup                       # 配置 review 仓库
-daynight setup --server-url <url>     # 测试服务覆盖
-daynight setup --review-repo <remote> [--review-path <path>]
 daynight review                     # review 帮助
 daynight review run
 daynight review list                 # 同 review ls
@@ -86,7 +83,6 @@ src/
     document.ts
     files.ts
     errors.ts
-    setup.ts
     server.ts
   api/
     index.ts
@@ -115,9 +111,6 @@ src/
         references/run-task.md
         references/create-task.md
         references/goal.md
-    setup/
-      definition.ts
-      command.ts
     task/
       definition.ts
       command.ts
@@ -134,6 +127,7 @@ src/
       definition.ts
       command.ts
       config.ts
+      configuration-guide.ts
       paths.ts
       repositories.ts
       listing.ts
@@ -186,7 +180,7 @@ Bash 和 zsh 生成器消费同一命令树，避免解析、帮助和补全分�
 
 命令组先完成参数和帮助分派，再按操作加载默认实现。裸命令、帮助、版本及无效参数
 无需解析用户主目录、打开数据库或调用外部程序。补全生成同样不查询工作目录、
-review 状态或网络。`setup` 与 `review add-repo` 加载配置保存能力；服务业务读取默认或显式
+review 状态或网络。`review add-repo` 加载配置保存能力；服务业务读取默认或显式
 origin 并要求本地凭据，未登录时提示 `daynight login`。review 业务在缺少仓库配置时完成
 引导，随后列表加载配置与只读快照，`review run` 才加载运行时、信号处理、实例锁和适配器。
 `login/logout` 的轻量定义与执行实现位于 `commands/auth/`，client 拥有有界协议请求，
@@ -222,8 +216,7 @@ review 的配置和路径类型明确以 `ReviewConfiguration`、`ReviewPaths` �
 参数沿用状态码 2。脚本生成不读取配置和状态，不加载 review 或更新业务。
 `completion setup` 在参数校验后才加载 `setup.ts`，检查调用 shell 并安装持久启动
 配置。它独立拥有 shell 检测、默认或显式文件选择、完整管理块识别及保留原文件
-身份的写入，不改变生成操作的无 I/O 保证。它与根 `setup` 的 review 引导及显式服务覆盖
-分别归属各自命令；[客户端 C7](../spec/daynight.md#c7-补全启动配置安装)拥有其行为。
+身份的写入，不改变生成操作的无 I/O 保证。review 配置引导由 review 模块拥有；[客户端 C7](../spec/daynight.md#c7-补全启动配置安装)拥有其行为。
 普通子进程不能修改父 shell 的函数注册，`completion setup` 输出既有 source 命令
 供当前会话启用。
 
@@ -294,33 +287,33 @@ JSON 输出投影。
 ## 按需配置引导
 
 参数和业务值校验先于配置引导，帮助、版本、补全和自更新保持各自独立入口。
-`setup` 的轻量定义由共享语法生成帮助和 shell 补全，仅执行时加载实现。review run/list
-在缺少文件或 `repositories` 字段时使用 `config/setup.ts` 引导，`config/errors.ts`
-区分缺失与非法配置；`cli/prompts.ts` 拥有终端输入，`cli/cancellation.ts` 共享输入、信号和
-关闭生命周期。review 仓库登记复用现有更新函数，不复制保存路径。
+review run/list 在缺少文件或 `repositories` 字段时使用
+`commands/review/configuration-guide.ts` 引导，`config/errors.ts` 区分缺失与非法配置；
+`cli/prompts.ts` 拥有终端输入，`cli/cancellation.ts` 共享输入、信号和关闭生命周期。
+review 仓库登记复用现有更新函数，不复制保存路径。顶层没有 setup 模块或兼容入口。
 
 server 投影在文件或 `serverUrl` 缺省时返回 `https://daynight.cc`；明确提供的 origin
 与可选 `serverToken` 严格校验。业务执行层在缺少本地凭据时直接失败并提示登录，不进入配置引导。
+测试服务和自动化通过外部受控配置文件提供这些现有字段；准备者负责配对 origin 和凭据、替换目标时
+移除旧令牌、保护文件权限并保留其他设置，外部编辑不执行 CLI 的原子保存或凭据清理协议。
 review 只校验自己的字段，不要求服务配置；YAML/schema、当前能力非法值、读取错误和空 review
-仓库列表保留错误。这样新安装的普通服务使用不需要地址初始化，也不会把配置损坏视作首次运行。
+仓库列表保留错误。新安装的普通服务使用不需要地址初始化，配置损坏也不会被视作首次运行。
 
-无参数 setup 只询问 review 远程地址和可选路径。交互要求 stdin/stderr 为 TTY，提示与保存消息写
-stderr；显式 `--server-url`、`--review-repo`、`--review-path` 和 `--server-token-stdin`
-组成非交互保存请求，路径必须伴随仓库。stdin 令牌不超过 1 MiB，允许单个 LF/CRLF，拒绝空输入、
-多行和控制字符；未显式设置 origin 时使用保存值或生产默认值。普通 setup 不询问服务器或 PAT。
-
-收集完成后持配置锁重读文档，检查所选字段与观察值，合并无关字段的已完成修改，再校验并原子替换。
-服务 origin 与凭据共同参与并发检查，origin 改变同次清除旧令牌，同 origin 保留。
+review 交互引导只询问远程地址和可选路径，要求 stdin/stderr 为 TTY，提示与保存消息写 stderr。
+非交互缺配置诊断指向 `daynight review add-repo <remote> [--path <path>]`。收集完成后持配置锁
+重读文档，检查选中的 review 字段与观察值，合并无关字段的已完成修改，再校验并原子替换。
 注释、其他能力字段与已有路径保持；凭据文件统一使用 POSIX `0600`，无令牌文件保持原有权限。
 写入拒绝符号链接与非普通文件；锁冲突、校验、替换和清理失败明确暴露。
 
-取消或 EOF 不保存部分值，也不进入业务。setup 不联网、不认证、不 clone、不初始化 SQLite 或
-审查运行时。review 引导完成后以原参数调用原操作一次，人工输入不计入业务期限；后续失败保留配置。
+取消或 EOF 不保存部分值，也不进入业务。review 配置引导不联网、不认证、不 clone、不初始化
+SQLite 或审查运行时。引导完成后以原参数调用原操作一次，人工输入不计入业务期限；后续失败保留配置。
 服务命令从配置读取开始共享五分钟业务期限，设备登录拥有独立十分钟期限。
 [客户端 C6](../spec/daynight.md#c6-按需配置引导)拥有行为，
 [配置引导决策](../../.agents/notes/implemented/feature/2026-10-21-guided-configuration-setup.md)
 保留配置事务理由，[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
-拥有默认服务、登录和退出的生命周期。
+拥有默认服务、登录和退出的生命周期；
+[顶层 setup 移除决策](../../.agents/notes/implemented/simplification/2026-10-25-remove-top-level-setup.md)
+拥有配置入口收敛。
 
 ## 配置与持久化
 
@@ -335,7 +328,7 @@ conversation 后续轮次，保留旧边界、预算、会话、进程证据及 
 
 [project/task 配置设计](daynight-project-task.md)定义同一 YAML 中可省略的 `serverUrl` 和
 `serverToken`。共享解析器识别全部已知顶层字段并保留 YAML 文档，业务投影分别校验值。
-服务 origin 缺省使用生产地址，凭据由 login 或显式 stdin setup 保存；review 不校验服务业务值，添加
+服务 origin 缺省使用生产地址，凭据由 login 保存或由外部受控配置文件提供；review 不校验服务业务值，添加
 首个 review 仓库时保留它们。含令牌文档的 `0600` 规则属于共享写入者，不能由某个
 能力绕过。YAML 语法错误只携带安全类别、代码和位置，禁止原始标量及原始 parser
 cause 进入错误对象；通用诊断格式化器与其他错误链保持原职责。

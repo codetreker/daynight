@@ -279,9 +279,10 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 ## CLI 设备授权
 
 CLI server 投影在文件或 `serverUrl` 缺省时使用 `https://daynight.cc`；显式地址仅为测试服务覆盖。
-普通 setup 只收集 review 配置。`serverToken` 延续可选 opaque visible ASCII 字段，
-`setup --server-token-stdin` 保留供自动化使用，一行非空、不超过 1 MiB，允许单个 LF/CRLF。
-origin 可以是配置值或生产默认值，仅 HTTPS 或字面量 localhost/numeric loopback HTTP 允许保存凭据。
+`serverToken` 延续可选 opaque visible ASCII 字段；测试服务和自动化通过受控配置文件提供
+`serverUrl` 和匹配的 `serverToken`，不提供顶层 setup。origin 可以是配置值或生产默认值，
+仅 HTTPS 或字面量 localhost/numeric loopback HTTP 允许使用凭据。准备者切换服务时必须移除或替换
+旧令牌，外部写入不执行 CLI 凭据清理或锁协议。
 本地缺少凭据时业务请求层直接提示 `daynight login`；服务 401 同样提示，业务不自动开始登录。
 
 `login` 是独立的公开客户端 `daynight-cli`，不接触 UniAuth App Secret。
@@ -364,7 +365,7 @@ session 和精确 Origin；PAT、过期会话与跨源请求不能决定授权�
 
 共享 API 请求继续附加 Bearer，保持 manual redirect、二进制 stdout、精确 int64、分页与预算。
 401 提示登录，不自动匿名回退、登录预检或重放业务写入。仓库绑定仍只保存
-serverUrl/repoIdentity/projectId，review/update/help/version 不加载登录依赖，setup 不联网。
+serverUrl/repoIdentity/projectId，review/update/help/version 不加载登录依赖，review 配置引导不联网。
 
 ## 配置、部署与正式组合
 

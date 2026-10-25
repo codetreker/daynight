@@ -34,7 +34,10 @@ and runtime paths; the server projection validates `serverUrl` and optional
 `serverToken`. The [project/task design](2026-10-20-project-task-cli-design.md)
 owns the independent HTTP foundation, and the
 [credential decision](2026-10-22-cli-server-credentials.md) owns origin-bound
-tokens, hidden/stdin setup and POSIX `0600` for credential-bearing configuration.
+tokens and POSIX `0600` for credential-bearing configuration. Its original
+hidden/stdin acquisition paths are historical; the
+[top-level setup removal decision](../simplification/2026-10-25-remove-top-level-setup.md)
+assigns unattended provisioning to the existing YAML fields.
 Review retains its original state locations and does not validate unrelated
 server values. Configuration failures identify the fixed filename. YAML parser
 failures retain safe category, code and offsets without raw scalar text or
@@ -44,8 +47,8 @@ absent, making manual preparation an explicit prerequisite. The
 [guided setup decision](../feature/2026-10-21-guided-configuration-setup.md) partially
 supersedes that prerequisite: valid review operations can guide missing repository
 configuration before entering their operation. Invalid existing configuration
-still stops execution. `review add-repo` and setup create missing configuration
-and update existing YAML without entering review mode. The separate configuration
+still stops execution. `review add-repo` and first-use guidance create missing
+configuration and update existing YAML without entering review mode. The separate configuration
 write lock coordinates
 configuration commands while the review instance lock continues to exclude
 concurrent reviewers. The [foreground coordinator](2026-10-17-foreground-review-coordination.md)
