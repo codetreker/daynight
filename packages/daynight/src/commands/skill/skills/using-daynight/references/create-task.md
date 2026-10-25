@@ -25,8 +25,14 @@ under the entrypoint's required tracking and review rules.
 Keep an agent's transient execution steps, such as reading files, running
 commands, and routine checks, in the existing execution plan. Do not turn these
 steps into Daynight tasks merely because an agent generated them. A distinct
-acceptance or validation assignment with its own outcome can still be a task;
-running a check while delivering an existing task is an execution step. If the
+acceptance or validation assignment with its own outcome can still be a task.
+For [final acceptance](../SKILL.md#final-acceptance), identify the entire task or
+Goal being assessed and its confirmed requirement sources. Define the deliverable
+as the acceptance conclusion, evidence, defects, and unverified items. Apply the
+shared rule to temporary helpers; do not make their development or repository
+delivery the acceptance outcome.
+
+Running a check while delivering an existing task is an execution step. If the
 request contains only execution steps for existing work, keep them with that
 work and return without registering additional tasks.
 

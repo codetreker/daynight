@@ -12,7 +12,10 @@ completion also needs to remain distinct from delivery of the entire task chain.
 A task whose description only names a general problem and links cannot communicate
 its concrete assignment without opening a packet of attachments. Repeating common
 requirements and designs on each task also creates several copies with unclear
-ownership and independent update lifetimes.
+ownership and independent update lifetimes. Independent acceptance also needs a
+clear result of its own: a conclusion about the requested outcome can otherwise
+turn into building and maintaining verification tools, leaving the complete
+requirements unassessed.
 
 ## Decision
 
@@ -57,6 +60,25 @@ edges. Existing CLI reads support those references; no new link scheme or API is
 introduced. An independently required snapshot must name its source version and
 purpose.
 
+Final acceptance determines whether the complete confirmed task or Goal, including
+confirmed changes, satisfies its requirements. The canonical
+[Final acceptance rule](../../../../packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md#final-acceptance)
+owns this shared boundary. Creation identifies the whole acceptance subject and
+requirement sources; Goal breakdown and execution use that same rule. The owning
+task delivers the requirement-based conclusion, supporting evidence, defects and
+unverified items. The evidence identifies the tested source, environment, method,
+observations and material limits without requiring a new receipt format or platform.
+
+Manual verification, existing checks and temporary helper scripts are valid
+methods. Final-acceptance helpers remain uncommitted and are not integrated into
+repository tests, fixtures, runners, CI or tooling. Completing or passing helpers
+does not establish whole-task or whole-Goal acceptance, and helper review findings
+do not authorize a maintained verification system or a separate helper PR gate.
+Necessary implementation PRs retain their delivery requirements. Normal
+implementation and authorized defect fixes retain their unit, integration and
+regression tests and repository checks; explicitly requested maintained automation
+remains a development deliverable within its own confirmed scope.
+
 Four skill modes remain. The initial protocol made create-task register the pair
 and return, run-task execute one stage, and explicitly activated autopilot select
 successors. Scoped Goal-creation permission covered the pair and its agreed
@@ -92,6 +114,13 @@ checking the immutable delivered artifact and reconciling the complete Goal. Sep
 post-delivery acceptance makes that result explicit while retaining every required
 implementation check before merge.
 
+**Make a maintained verification system the final-acceptance deliverable.** Durable
+runners, fixtures or CI can be useful when explicitly requested as development,
+but making them the result of a final-acceptance assignment adds tool maintenance
+and a helper PR gate without establishing whether the requested outcome is complete.
+Temporary methods and a requirement-based conclusion preserve that assignment's
+purpose while keeping ordinary implementation and regression checks intact.
+
 **Restrict descriptions to problems and distribute the common document packet.**
 This keeps detailed prose in attachments, but hides each concrete assignment and
 replicates documents owned by the Goal or architecture. A self-contained brief plus
@@ -107,7 +136,13 @@ transition, and delays delivery-task registration until the user accepts the
 solution. Actual registered outcomes and verified artifacts remain necessary;
 a future task list or one vague implementation placeholder is insufficient.
 Protocol delivery and independent consumer acceptance have different completion
-evidence and both remain in the same Goal scope.
+evidence and both remain in the same Goal scope. Acceptance can finish without a
+code change or helper PR when the confirmed whole-outcome criteria and readable
+evidence are satisfied. Required outcomes that remain unmet or unverified prevent
+an accepted conclusion. Defects retain their actual failed criteria; authorized
+fixes and affected rechecks follow normal delivery rules. Temporary helper files
+and resources are cleaned under the repository's existing resource rules, while
+necessary observations remain on the owning task.
 Definition and design can start with honest stage briefs, while implementation
 retains completed requirements and design as inputs. Instruction review must cover
 stage transitions, permission boundaries, partial registration and whole-Goal

@@ -14,11 +14,12 @@ a mainline branch.
 
 When this skill and Daynight are available, use Daynight to manage concrete work
 with a defined objective and completion conditions: features, bug fixes,
-architecture/design work, and actual work items produced by their breakdown.
-An agent's transient execution steps, such as reading files, running commands,
-and routine checks, belong in its execution plan; their presence in a plan does
-not make them Daynight tasks. Use the owning Daynight task for every solution,
-architecture, and design review.
+architecture/design work, actual work items produced by their breakdown, and
+independently scoped [final acceptance](#final-acceptance). An agent's transient
+execution steps, such as reading files, running commands, and routine checks,
+belong in its execution plan; their presence in a plan does not make them
+Daynight tasks. Use the owning Daynight task for every solution, architecture,
+and design review.
 
 Before asking the user to review any solution, architecture, design, or related
 discussion, save the complete current review material in the owning task's
@@ -32,6 +33,33 @@ Markdown ownership under the shared constraints.
 Confirm the CLI, configured service, and intended project are accessible using
 the handbook's discovery rules. Preserve actual availability or upload failures;
 do not claim materials are ready for review until the saved contents are verified.
+
+## Final acceptance
+
+Final acceptance determines whether the complete requested task or Goal satisfies
+its confirmed requirements. Define that outcome explicitly when creating or
+breaking down work. Deliver the requirement-based conclusion, supporting evidence,
+defects, and unverified items on the owning task. Record the verification methods,
+tested source and environment, observations, and material limits.
+
+Use manual verification, existing checks, or temporary helper scripts as
+appropriate. Keep final-acceptance helpers in the project's temporary area and
+uncommitted. Do not integrate them into repository tests, fixtures, runners, CI,
+or tooling, or make building a maintained verification system the acceptance
+deliverable. Review findings about a helper do not authorize that change of scope.
+
+Complete acceptance according to the confirmed whole-task or whole-Goal criteria.
+Finishing or passing helper scripts does not establish that the requested work is
+complete. Do not report the underlying task or Goal as accepted while required
+outcomes remain unmet or unverified. Verify necessary implementation deliveries
+and PR merges as inputs; do not create a separate PR requirement for acceptance
+helpers. Handle discovered product defects within the authorized implementation
+scope.
+
+Implementation and authorized defect-fix tasks retain their normal unit,
+integration, and regression tests and required repository checks. A user-requested
+maintained testing or automation capability is a development deliverable governed
+by its own confirmed scope; do not infer it from a final-acceptance assignment.
 
 ## Select a mode
 
