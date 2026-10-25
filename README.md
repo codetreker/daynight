@@ -285,10 +285,18 @@ reread the complete task and recheck todo, ready, permission=true and null/match
 requiredPlatform. Carry automatic mode and platform into run-task; a selected ID
 does not acquire the explicit manual exception. Workflows never enable the flag.
 Explicitly designated tasks or fixed queues retain their manual path regardless
-of either automatic-selection condition, with dependencies and execution scope intact. Task descriptions are self-contained
-Markdown briefs: the concrete problem and action, scope, deliverables, constraints,
-observable completion summaries and actual input references. The Web renders that
-Markdown; API storage and CLI/Agent output preserve the original string bytes.
+of either automatic-selection condition, with dependencies and execution scope intact.
+Execution, analysis, questions, proposals and discussions follow the current task's
+confirmed objective, scope, deliverables and acceptance, including subagent work.
+Shared Goal, architecture and related-task inputs provide relevant constraints;
+reading them does not expand the current assignment. Cross-task blockers and
+follow-up proposals grant no creation or execution permission, and expanding the
+current scope requires explicit user confirmation. Goal discussions and final
+acceptance cover the whole Goal when that is the current task's confirmed scope.
+Task descriptions are self-contained Markdown briefs: the concrete problem and
+action, scope, deliverables, constraints, observable completion summaries and actual
+input references. The Web renders that Markdown; API storage and CLI/Agent output
+preserve the original string bytes.
 Each task-specific primary Markdown owns its detailed Solution, full Acceptance
 criteria and evidence. Use relative references such as
 `[Solution and acceptance](plan.md)` only after confirming that the referenced

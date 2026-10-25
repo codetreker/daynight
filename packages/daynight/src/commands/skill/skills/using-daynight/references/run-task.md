@@ -79,6 +79,10 @@ Preserve the requested task ID through recovery and waiting.
 
 ## Execute and maintain continuity
 
+Before analysis, questions, or proposals, establish this task's confirmed scope
+and acceptance criteria and apply the [shared scope constraint](../SKILL.md#shared-constraints)
+to execution and discussion.
+
 Identify [final acceptance](../SKILL.md#final-acceptance) from the task's confirmed
 outcome before applying a development or PR delivery lifecycle. Read the complete
 requirements and actual deliveries for the task or Goal being assessed, and apply
