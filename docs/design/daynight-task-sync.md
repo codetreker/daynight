@@ -184,11 +184,13 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 详情 GET 及全部任务写 API 必须接收 `TaskResponseAdmission`：明确 userId、onPrincipalMismatch，写入可提供 onWriteConfirmed。客户端在解析正文和资源错误前检查实际 `Daynight-User-ID`，401 继续既有会话失效流程。缺失/畸形头是协议错误，可信不同用户同步失效旧 scope；这些失败不能被当成本用户 404 撤权。
 
+写入接受时同步捕获确认所审阅的 cacheGeneration 与 mutation 对象身份；每次异步准备完成后及网络派发前，都要求该 owner、审阅历史和当前准入仍匹配。`beginSync` 在等待期间取得的新历史 ticket 不能替换旧确认的历史，即使任务 ID、版本相同也不足以派发。失效准备零写入，只 GET 刷新当前历史，取得 fresh GET 后要求新确认；被取代的准备不改变较新 mutation 的反馈或共享写锁。详情关闭本身保留仍属于同一 owner 和历史的已接受意图。提交准备和普通结果处理在同用户身份暂停时先经现有 `scope.ready` 等待，恢复后复核身份生命周期、原审阅 generation 与 owner，再读取受保护的实时投影或同步改变阶段；若又暂停则重新等待，不能在异常处理里重复访问受阻 getter。未发送的过期准备转为本地冲突或拒绝并 GET 当前历史；已发送的旧历史结果进入 unknown 与 GET 核对，被新 owner 取代的处理不再修改 entry。身份结束丢弃旧操作。
+
 同用户认证的 HTTP 200 或删除成功的 204 在解析正文前确认远端写响应，与正文是否可安装、是否持久化分开。正文无效仍要求 GET 核对，存储失败保留确认结果及错误，不重发操作。pending、unknown、reconciling、committed-version floor 与精确目标/版本检查继续归详情会话；关闭对话框不释放已提交写请求，身份失效仍使其结果无权发布。单任务 GET 或写结果只能触发项目同步，不能直接修改摘要或 M。附件目录与文件保持独立按需路径。
 
 ## 7. 身份、错误与本地生命周期
 
-沿用 AuthenticatedApp 的 foreground /me gate，持久读取、网络和正向内容发布等待身份核验。暂停期间详情渲染 getter 只保留先前已观察的内存版本/generation，未观察资源无值。已经确认的负向撤权立即记录并隐藏内容，允许 accessRevoked 事件和负向提示越过暂停；它们不读取新私有内容或授予访问，后续持久清理仍等待 gate。
+沿用 AuthenticatedApp 的 foreground /me gate，持久读取、网络和正向内容发布等待身份核验。暂停期间详情渲染 getter 只保留先前已观察的内存版本/generation，未观察资源无值。可信已提交 404 的 scope 所有撤权路径先于普通 mutation 准入的暂停等待，按 `canRevokeProject(ticket)` 检查捕获历史，不读取受 gate 保护的正向投影。已经确认的负向撤权立即记录并隐藏内容，允许 accessRevoked 事件和负向提示越过暂停；它们不读取新私有内容或授予访问，后续持久清理仍等待 gate。
 
 实际用户在正文或资源错误前核对。缺失/畸形 principal 为协议错误，不能据其状态撤销项目；可信不同用户使旧 scope 同步失效，再核验身份。项目同步的同用户 `404 not_found` 使用捕获 ticket 撤权。详情 GET 仅在发起时摘要中已有该任务才把可信 not_found 视为项目访问撤回；任务写入的可信 not_found 使用同一撤权入口。未知任务地址的 404 保持任务局部错误，不触发项目重建循环。
 

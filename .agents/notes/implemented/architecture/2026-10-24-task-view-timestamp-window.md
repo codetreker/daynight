@@ -62,7 +62,22 @@ confirmed/unknown phase markers normally survive; canceled reconciliation become
 available for explicit GET recovery. Reopening a deleted entry in a restored
 history resets mutation ownership and requires a fresh GET. Its old intent cannot
 occupy or overwrite the restored history's mutation state, and delayed outcomes
-still require the current operation owner and history admission. Same-generation refreshes retain their successful body. Server-derived disagreement is checked before local
+still require the current operation owner and history admission. Mutation
+acceptance synchronously captures the reviewed cache generation and owner. Every
+asynchronous preparation completion and final dispatch rechecks that admission;
+a replacement `beginSync` ticket cannot carry an old confirmation into a new
+history, even with the same task ID and version. Stale preparation sends no write
+and reads the current history, requiring a fresh GET and new confirmation.
+Superseded preparation cannot change newer feedback or release its shared write
+lock. Closing the detail alone preserves accepted intent with valid history and
+ownership. Preparation and ordinary outcome effects wait for the existing
+`scope.ready` gate during same-user verification, then recheck identity lifetime,
+reviewed history and current owner before live getters or synchronous phase
+changes. A repeated pause waits again; catch handling cannot reenter a blocked
+getter and leave an unhandled rejection or permanent pending operation. Unsent
+stale preparation settles locally with readback, while a submitted stale outcome
+retains unknown/GET-only recovery. Identity retirement drops old work.
+Same-generation refreshes retain their successful body. Server-derived disagreement is checked before local
 materialization and kept as stale evidence until the projection/read converges;
 changing a prerequisite need not fetch every successor's intrinsic body.
 
@@ -75,14 +90,17 @@ project's details in a guarded transaction, then expose the original error and
 Retry. Summary manifests and coverage remain unchanged.
 
 Authenticated task responses prove their actual principal before parsing or
-resource-error handling. A same-user HTTP 200 confirms the remote write response
-separately from payload validation and cache installation. Malformed payloads
+resource-error handling. A same-user HTTP 200 or deletion HTTP 204 confirms the
+remote write response separately from payload validation and cache installation. Malformed payloads
 require GET-only readback; cache failures preserve the confirmed operation and
 visible error without replaying it. Existing pending/unknown/reconciling state,
 committed-version floors and exact write gates remain with the detail session.
 A verified same-principal not_found withdraws project reuse when a detail GET
 started for a known summary task, or when a task write reports
-it. Unknown task IDs remain local missing-resource errors. canRevokeProject checks
+it. Trusted submitted not-found withdrawal runs before the ordinary mutation
+identity-pause wait; private content disappears immediately and durable cleanup
+still waits for the gate. Unknown task IDs remain local missing-resource errors.
+canRevokeProject checks
 the captured user fence and generation before the session clears content;
 revokeProject immediately retires that generation's admission and publishes an
 access event. A late old-generation 404 cannot clear a replacement generation.

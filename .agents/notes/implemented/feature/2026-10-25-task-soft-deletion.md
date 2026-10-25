@@ -36,8 +36,25 @@ as well as late DELETE `204` or `410` responses. Existing principal and
 project-revocation checks retain their own scope/ticket protections.
 
 CLI deletion uses the existing exact-version mutation pattern without automatic
-retries. Shared Web details require a destructive confirmation and retain their
-single operation owner, identity fencing and GET-only unknown-result recovery.
+retries. Shared Web details require a destructive confirmation bound to the
+reviewed cache generation. Acceptance synchronously captures that history and
+operation owner; every asynchronous preparation completion and final dispatch
+rechecks both against current admission. A replacement ticket from `beginSync`
+cannot authorize an old confirmation against a restored task with the same ID
+and version. Stale preparation sends no mutation, reads the current history and
+requires a fresh GET and new confirmation. Superseded preparation cannot change
+the newer owner or its write lock. Closing the detail alone preserves accepted
+intent that still belongs to the same history and owner. Preparation and ordinary
+outcome effects wait through the existing `scope.ready` gate during same-user
+identity verification, then recheck lifetime, the reviewed history and current
+owner before live getters or phase updates. A renewed pause waits again rather
+than reentering a blocked getter from error handling. An unsent stale preparation
+settles as a local conflict or refusal with readback; an already submitted stale
+outcome retains unknown/GET-only recovery. Retired identity drops the old work.
+Trusted submitted not-found withdrawal runs before ordinary pause waiting and
+uses the existing captured-ticket revocation guard to hide private content
+immediately; durable cleanup still waits for the identity gate. The session
+retains identity fencing and GET-only unknown-result recovery.
 [Requirements](../../../../docs/spec/daynight-task-deletion.md) and
 [design](../../../../docs/design/daynight-task-deletion.md) own the full behavior.
 
