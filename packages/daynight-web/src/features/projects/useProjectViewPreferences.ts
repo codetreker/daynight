@@ -83,8 +83,14 @@ export const useProjectViewPreferences = (projectId: string, roots: readonly str
   return { expandedRootId, setExpandedRootId, issue: writeIssue ?? initial.issue };
 };
 
+export type ProjectSection = "overview" | "tasks";
 export type TaskView = "standalone" | "chains";
 type ScrollPositions = Readonly<Record<TaskView, number>>;
+
+const projectSectionPreference = (value: unknown): ProjectSection => {
+  if (value !== "overview" && value !== "tasks") throw new Error("Invalid project section preference.");
+  return value;
+};
 
 const taskViewPreference = (value: unknown): TaskView => {
   if (value !== "standalone" && value !== "chains") throw new Error("Invalid project task view preference.");
@@ -119,6 +125,11 @@ const useNamedPreference = <Value,>(key: string, decode: (value: unknown) => Val
 export const useStandaloneVisibility = (projectId: string) => {
   const { value, save, issue } = useNamedPreference(`daynight:completed-standalone-tasks:${projectId}`, completedChainPreference, false);
   return { showCompleted: value, onShowCompletedChange: save, issue };
+};
+
+export const useProjectSection = (projectId: string) => {
+  const { value, save, issue } = useNamedPreference(`daynight:project-section:${projectId}`, projectSectionPreference, "overview");
+  return { section: value, onSectionChange: save, issue };
 };
 
 export const useTaskView = (projectId: string) => {

@@ -5,9 +5,9 @@ import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
 import { ProjectOverview } from "./ProjectOverview";
-import { ProjectSectionTabs, type ProjectSection } from "./ProjectSectionTabs";
+import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
-import { useCompletedChainVisibility, useProjectViewPreferences, useStandaloneVisibility, useTaskView, useTaskViewScroll, type TaskView } from "./useProjectViewPreferences";
+import { useCompletedChainVisibility, useProjectSection, useProjectViewPreferences, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
 import "../../styles/project.css";
@@ -31,7 +31,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const sessions = useTaskDetailSessions();
   useEffect(() => sessions.subscribeProject(projectId, graph.refresh), [sessions, projectId, graph.refresh]);
   const { messages: { workspace: { project: m, projects, app, preferences } }, format } = useI18n();
-  const [section, setSection] = useState<ProjectSection>("overview");
+  const { section, onSectionChange, issue: sectionIssue } = useProjectSection(projectId);
   const [tasksMounted, setTasksMounted] = useState(false);
   const [detailSelection, setDetailSelection] = useState<{ readonly id: string; readonly revision: number } | null>(null);
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
@@ -123,8 +123,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (next === section) return;
     if (section === "tasks") savePosition();
     else if (snapshotReady) overviewPosition.current = window.scrollY;
-    setSection(next);
-  }, [section, savePosition, snapshotReady]);
+    onSectionChange(next);
+  }, [section, savePosition, snapshotReady, onSectionChange]);
 
   const summary = snapshot?.graph.summary;
   return (
@@ -146,6 +146,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       <div className="project-layout">
         <ProjectSectionTabs section={section} onChange={selectSection} />
         <div className="project-section-content">
+          {sectionIssue !== null && <p className="snapshot-notice" role="status">{preferences.section[sectionIssue.kind]}</p>}
           {preferenceIssue !== null && <p className="snapshot-notice" role="status">{preferences.expanded[preferenceIssue.kind]}</p>}
           {visibilityIssue !== null && <p className="snapshot-notice" role="status">{preferences.completedChains[visibilityIssue.kind]}</p>}
           {tabIssue !== null && <p className="snapshot-notice" role="status">{preferences.tab[tabIssue.kind]}</p>}

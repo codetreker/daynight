@@ -16,7 +16,10 @@ The project Task list section has Standalone tasks and Task chains tabs within
 its existing URL. They use the same snapshot, refresh and detail owner as
 Overview. An absent inner-category preference selects Task chains; subsequent
 visits retain that category per project. The [project section decision](2026-10-25-project-overview-task-sections.md)
-adds the outer Overview destination, its default and retained task workspace. Under the
+owns the outer Overview destination and retained task workspace; the
+[section restoration decision](../bug-fix/2026-10-25-project-section-restoration.md)
+owns per-project outer selection and the Overview default without a saved record.
+Under the
 [external dependency decision](../architecture/2026-10-23-external-dependency-design.md),
 chains are ordinary-edge weak components. An ordinary singleton is standalone
 even when external prerequisites block it. Status and completed filters do not

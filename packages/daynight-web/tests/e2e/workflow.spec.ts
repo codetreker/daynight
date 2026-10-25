@@ -113,7 +113,6 @@ const openProject = async (page: Page, id: string, name: string): Promise<void> 
   expect(response?.status()).toBe(200);
   expect(response?.headers()['content-type']).toContain('text/html');
   await expect(page.getByRole('heading', { name, exact: true })).toBeVisible();
-  await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
 };
 const openTaskProject = async (page: Page, id: string, name: string): Promise<void> => {
   await openProject(page, id, name);
@@ -202,6 +201,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await executeTask(request, project.id, completed);
   const independent = await createTask(request, project.id, { title: '独立待处理任务' });
   await openProject(page, project.id, project.name);
+  await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
   for (const [label, value] of [['任务总数', '9'], ['已完成', '5'], ['待处理', '3'], ['进行中', '1'], ['可开始', '1'], ['被阻塞', '2']] as const) {
     await expect(stat(page, label)).toHaveText(value);
   }
@@ -239,8 +239,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await expect(standalone(page, completed.id)).toContainText('已完成');
   await expect(page.locator('.task-graph-canvas')).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await selectTaskList(page);
+  await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
   await expect(completedStandaloneVisibility).toBeChecked();
   expect(await page.locator('.standalone-row').evaluateAll((items) => items.map((item) => item.id))).toEqual(
@@ -331,8 +330,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     key: `daynight:project-view:${project.id}`, witness: b.id,
   });
   await page.reload();
-  await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await selectTaskList(page);
+  await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(root(page, a.id)).toHaveAttribute('aria-expanded', 'true');
   await expect(root(page, b.id)).toHaveCount(0);
   await expect(page.locator('.task-graph-canvas')).toHaveCount(1);
@@ -342,8 +340,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await root(page, a.id).click();
   await expect(page.locator('.task-graph-canvas')).toHaveCount(0);
   await page.reload();
-  await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await selectTaskList(page);
+  await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(root(page, a.id)).toHaveAttribute('aria-expanded', 'false');
   await expect(page.locator('.task-graph-canvas')).toHaveCount(0);
   expect(await page.evaluate((key) => JSON.parse(localStorage.getItem(key)!).expandedRootId, `daynight:project-view:${project.id}`)).toBeNull();
@@ -549,8 +546,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expect.poll(witness).toBe(goal.id);
     await page.clock.resume();
     await page.reload();
-    await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await selectTaskList(page);
+    await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(root(page, goal.id)).toHaveAttribute('aria-expanded', 'true');
     await expect.poll(witness).toBe(goal.id);
     const response = await request.get(`/api/v1/projects/${regression.id}/task-graph`);
@@ -786,8 +782,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   });
   try {
     await page.reload();
-    await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
-    await selectTaskList(page);
+    await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
     await membersRequestStarted;
     await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
     await expect(standaloneCompleted).not.toBeChecked();
@@ -809,7 +804,8 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await openTaskProject(page, other.id, other.name);
   await expect(viewTab(page, '任务链')).toHaveAttribute('aria-selected', 'true');
   await expect(page.getByRole('heading', { name: '暂无任务链', exact: true })).toBeVisible();
-  await openTaskProject(page, project.id, project.name);
+  await openProject(page, project.id, project.name);
+  await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
 
