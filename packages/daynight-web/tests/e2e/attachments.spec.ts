@@ -543,6 +543,8 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await page.keyboard.press('Tab');
     await expect(dialog.locator('.task-detail-title-row button[aria-haspopup="menu"]')).toBeFocused();
     await page.keyboard.press('Tab');
+    await expect(dialog.locator('.task-detail-fullscreen-toggle')).toBeFocused();
+    await page.keyboard.press('Tab');
     await expect(dialog.locator('.task-detail-popout')).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(dialog.getByRole('button', { name: '关闭任务详情', exact: true })).toBeFocused();
