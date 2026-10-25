@@ -341,6 +341,7 @@ flowchart TD
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
 | `task set-status <id> <status>` | 可选先 GET task，再 PUT 同一 task 的 `/status`，body 严格包含 version/status |
+| `task delete <id>` | 可选先 GET task，再 DELETE 同一路径并提交精确 version，成功 `204`，保留数据库与附件 |
 | `task graph` | `GET /api/v1/projects/{projectId}/task-graph`，不附加 query |
 | `task attachment put <id> <file>` | `PUT /api/v1/projects/{projectId}/tasks/{id}/attachments/files/{path...}`，流式请求体，接受 200/201 元数据 |
 | `task attachment list <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}/attachments`，按路径身份读完分页 |
@@ -364,7 +365,7 @@ flowchart TD
 API 响应与命令 choices 均只接受 todo、in_progress、done，拒绝旧状态。
 graph summary 只返回 total、todo、inProgress、done、ready、blocked；图文本不显示旧统计。
 列表默认保留未完成任务，按 in_progress、ready todo、其他 todo、done 稳定分组。
-元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。
+元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。删除由专用 delete 提交精确版本，省略版本时只预读一次；成功无需 Task 正文，不自动重试。已删除资源返回 `410 task_deleted`，业务保护与数据保留由[软删除设计](daynight-task-deletion.md)拥有。
 
 平台 DTO 要求 requiredPlatform 字段存在且为null/windows/linux/macos，不在读取器补默认。
 create/update 的 --required-platform 设置枚举，update --clear-required-platform 发送null并互斥；
@@ -417,7 +418,7 @@ compileDependencies 只在关系选项出现时加载 UUID 校验；普通 N 与
 最新值替代。CLI 不重放 PATCH，不将旧版本冲突改成成功；语义无变化的响应也直接
 按服务返回渲染。生命周期操作复用相同 project 解析、Operation、int64 序列化和
 完整 mutation 渲染器；显式版本直接 PUT status，省略时仅 GET 一次，无冲突重试。当前版本同状态 +0，实际改变 +1。
-显式 project UUID、show/update/set-status 的 task UUID、标题、描述、
+显式 project UUID、show/update/set-status/delete 的 task UUID、标题、描述、
 版本及修改字段组合在配置、Git 和网络前验证；依赖选项存在时才懒加载 canonicalId，并在本地正规化、排序及拒绝非法/重复 UUID。显式 `--project` 直接 GET project，不读取工作目录或
 加载仓库模块；自动分支将 `serverUrl`、同一 `Operation`、API 和工作目录交给
 `resolveProject`。解析返回后才发送 task 请求，因此本地准备失败没有 task mutation。

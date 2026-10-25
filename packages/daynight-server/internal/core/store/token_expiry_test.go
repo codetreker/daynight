@@ -17,7 +17,7 @@ func storeTokenExpiry(value time.Time) *time.Time { return &value }
 func TestOptionalTokenExpiryMigrationPreservesHistoryAndSessionContract(t *testing.T) {
 	ctx := context.Background()
 	pool := emptyPool(t)
-	if err := migrate(ctx, pool, schemaMigrations[:17]); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:18]); err != nil {
 		t.Fatal(err)
 	}
 	s := &Store{Pool: pool}

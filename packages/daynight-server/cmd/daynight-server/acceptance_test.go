@@ -164,9 +164,9 @@ func acceptanceRefusals(t *testing.T, scenario *acceptanceScenario) {
 		t.Fatal("invalid status or metadata bypass input changed task state")
 	}
 
-	method := process.request(context.Background(), http.MethodDelete, acceptanceTaskPath(first), nil, "")
+	method := process.request(context.Background(), http.MethodPut, acceptanceTaskPath(first), nil, "")
 	acceptanceError(t, method, http.StatusMethodNotAllowed, "method_not_allowed")
-	if method.header.Get("Allow") != "GET, HEAD, PATCH" {
+	if method.header.Get("Allow") != "GET, HEAD, PATCH, DELETE" {
 		t.Fatal("unsupported method omitted its exact Allow contract")
 	}
 	first = process.update(t, first, map[string]any{"title": "Changed"})
@@ -654,7 +654,7 @@ func acceptanceConcurrentStartup(t *testing.T, scenario *acceptanceScenario) {
 	first = first.started(t)
 	second = second.started(t)
 	var versions []int64
-	if err := fixture.admin.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18}) {
+	if err := fixture.admin.QueryRow(ctx, "SELECT array_agg(version ORDER BY version) FROM schema_migrations").Scan(&versions); err != nil || !slices.Equal(versions, []int64{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19}) {
 		t.Fatal("concurrent processes did not share exactly one migration ledger")
 	}
 	project := first.project(t, "Shared process state")

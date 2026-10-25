@@ -25,13 +25,14 @@ func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, 
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks", auth.Require(handler.list))
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.get))
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.update))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(handler.delete))
 	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(handler.setStatus))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
 	workerRoutes(mux, handler, auth, logger)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-graph", auth.Require(handler.graph))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-graph", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
-	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH")))
+	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 }
 
 func taskResponse(task core.Task) api.Task {

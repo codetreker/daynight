@@ -16,6 +16,7 @@ import { matchesStatusReview, TaskStatusConfirmation, type StatusConfirmation } 
 import { TaskDetailReading } from './TaskDetailReading';
 import { matchesPlatformReview, TaskPlatformConfirmation, TaskPlatformFeedback, TaskPlatformSelect, type PlatformConfirmation } from './TaskPlatform';
 import { TaskId } from './TaskId';
+import { matchesDeletionReview, TaskDeletionConfirmation, TaskDeletionFeedback, type DeletionConfirmation } from './TaskDeletion';
 import { TaskPullRequests } from './TaskPullRequests';
 import { TaskDetailNotice, TaskDetailNotifications } from './TaskDetailNotice';
 import { ProjectGraphErrorDetail } from '../projects/ProjectGraphError';
@@ -76,11 +77,13 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const m = messages.inspection.detail;
   const task = useTaskDetail(projectId, taskId, snapshot.revision, snapshot.index.nodes.get(taskId));
   const { detail, status, error, retry } = task;
-  type TaskConfirmationState = StatusConfirmation | (AgentPermissionConfirmation & { readonly kind: 'allowAgents' }) |
+  type TaskConfirmationState = DeletionConfirmation | StatusConfirmation | (AgentPermissionConfirmation & { readonly kind: 'allowAgents' }) |
     (PlatformConfirmation & { readonly kind: 'requiredPlatform' });
   const [confirmation, setConfirmation] = useState<TaskConfirmationState | null>(null);
   const requestConfirmation = (review: TaskConfirmationState): void => setConfirmation((current) => current === null ? review : current);
-  const confirmationValid = confirmation !== null && (confirmation.kind === 'status'
+  const confirmationValid = confirmation !== null && (confirmation.kind === 'delete'
+    ? matchesDeletionReview(confirmation, detail) && task.canDelete
+    : confirmation.kind === 'status'
     ? matchesStatusReview(confirmation, detail) && task.canSetStatus
     : confirmation.kind === 'allowAgents' ? matchesAgentPermissionReview(confirmation, detail) && task.canSetAgentPermission
       : matchesPlatformReview(confirmation, detail) && task.canSetRequiredPlatform);
@@ -89,7 +92,8 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const confirm = (): void => {
     if (confirmation === null || !confirmationValid) return;
     setConfirmation(null);
-    if (confirmation.kind === 'status') task.setStatus(confirmation.status, confirmation.detail.version);
+    if (confirmation.kind === 'delete') task.deleteTask(confirmation.detail.version);
+    else if (confirmation.kind === 'status') task.setStatus(confirmation.status, confirmation.detail.version);
     else if (confirmation.kind === 'allowAgents') task.setAgentPermission(confirmation.allowAgents, confirmation.detail.version);
     else task.setRequiredPlatform(confirmation.requiredPlatform, confirmation.detail.version);
   };
@@ -175,10 +179,11 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
         {!modal && <TaskDetailPageBar projectId={projectId} />}
         <header className="task-detail-header">
           <div className="task-detail-title-row">
-            <h2 id={headingId} className="task-detail-title" ref={titleRef} tabIndex={detail === null ? -1 : 0} title={detail?.title}>{detail === null ? status === 'error' ? m.failed : m.loading : detail.title}</h2>
+            <h2 id={headingId} className="task-detail-title" ref={titleRef} tabIndex={detail === null ? -1 : 0} title={detail?.title}>{detail === null ? status === 'deleted' ? messages.inspection.deletion.deleted : status === 'error' ? m.failed : m.loading : detail.title}</h2>
             {detail !== null && <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />}
           </div>
           <div className="task-detail-header-actions">
+            {detail !== null && <button className="button danger task-detail-delete" type="button" disabled={!task.canDelete} onClick={() => requestConfirmation({ kind: 'delete', detail })}>{messages.inspection.deletion.action}</button>}
             {modal && <a className="button task-detail-popout" href={popout} target="_blank" rel="noopener noreferrer" aria-label={m.openInNewTab} title={m.openInNewTab}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg>{m.openInNewTab}</a>}
             {modal ? <button className="button task-detail-close" type="button" ref={closeRef} aria-label={m.close} onClick={onClose}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
@@ -189,6 +194,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
           {status === 'loading' && (
             <div className="task-detail-state" role="status" aria-label={m.loading}><span className="spinner" aria-hidden="true" /></div>
           )}
+          {status === 'deleted' && <div className="task-detail-state task-detail-deleted" role="status"><p>{messages.inspection.deletion.deletedExplanation}</p><a className="button" href={`/projects/${encodeURIComponent(projectId)}`}>{m.returnToProject}</a></div>}
           {status === 'error' && (
             <div className="task-detail-state task-detail-error" role="alert" aria-labelledby={headingId}>
               <TaskDetailError error={error} />
@@ -243,6 +249,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
           )}
         </div>
         <footer className="task-detail-footer">{m.footer}</footer>
+        {status !== 'deleted' && <TaskDeletionFeedback key={`${scope}/deletion`} mutation={task.mutation} onReconcile={task.reconcile} />}
         <TaskStatusFeedback key={`${scope}/status`} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskAgentPermissionFeedback key={`${scope}/permission`} id={automationFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskPlatformFeedback key={`${scope}/platform`} id={platformFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
@@ -264,7 +271,9 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
         </TaskDetailNotice>
         </TaskDetailNotifications>
       </Surface>
-      {confirmation !== null && confirmationValid && (confirmation.kind === 'status'
+      {confirmation !== null && confirmationValid && (confirmation.kind === 'delete'
+        ? <TaskDeletionConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
+        : confirmation.kind === 'status'
         ? <TaskStatusConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
         : confirmation.kind === 'allowAgents'
           ? <TaskAgentPermissionConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />

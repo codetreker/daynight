@@ -23,7 +23,7 @@ const taskArgument = { name: "task-id", description: "Task UUID" };
 
 export const taskDefinition: CommandDefinition = {
   name: "task",
-  description: "Create, query, and update project tasks on the configured server",
+  description: "Create, query, update, and delete project tasks on the configured server",
   commands: [
     {
       name: "create",
@@ -68,6 +68,13 @@ export const taskDefinition: CommandDefinition = {
       arguments: [taskArgument, { name: "status", description: "Target task status", choices: ["todo", "in_progress", "done"] }],
       options: [versionOption, projectOption, helpOption],
       details: "Every direct prerequisite must be done when entering in_progress or done. Reopening done work is refused while a direct successor is in_progress or done.\nA current-version same-status request preserves all stored fields; a stale version still conflicts. Entering in_progress starts a new execution interval; returning to todo clears it; direct todo to done records an unknown duration.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried.",
+    },
+    {
+      name: "delete",
+      description: "Soft-delete a task while preserving its stored data and attachments",
+      arguments: [taskArgument],
+      options: [versionOption, projectOption, helpOption],
+      details: "Deleted tasks disappear from normal queries and cannot be read or changed. Stored task data, dependencies, and attachments are retained. Deletion is refused while another undeleted task depends on it or an active worker claim owns it.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried. An interrupted deletion may already have taken effect; read the task to reconcile before considering another request.",
     },
     {
       name: "graph",

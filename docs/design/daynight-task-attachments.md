@@ -213,7 +213,7 @@ LocalStorage 在目标文件所在目录创建内部临时文件，流式写完�
 | `created_at`、`updated_at` | PG 生成的创建与更新时间 |
 
 以 `(task_id, path)` 作为主键，path 使用 `COLLATE "C"` 保持排序与唯一性区分大小写。业务服务在读写前检查 project/task
-归属，不新增 foreign key。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
+归属及任务未删除状态，不新增 foreign key。[Task 软删除](daynight-task-deletion.md)不改附件元数据或字节；标记后的新操作返回授权的 `410 task_deleted`。Bucket 是附件服务中的固定值，存储路径由规范化 projectId、taskId 及 path
 推导，表中不保存分片、`storage_key` 或物理根目录。布局转换不需要新增表、列、索引或修改历史 SQL 迁移。
 
 覆盖保留 `created_at`，更新 MIME、大小和 `updated_at`。删除后重新上传同一路径

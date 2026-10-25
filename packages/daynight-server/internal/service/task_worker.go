@@ -67,7 +67,7 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal core.Principal, proje
 	if err != nil {
 		return core.Task{}, err
 	}
-	return s.workerWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
 		}
@@ -90,7 +90,7 @@ func (s *Tasks) ResumeWorker(ctx context.Context, principal core.Principal, proj
 	if err != nil {
 		return core.Task{}, err
 	}
-	return s.workerWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
 		}
@@ -128,7 +128,7 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, proj
 	if input.NativeSessionID != nil && *input.NativeSessionID != nil && !workerText(**input.NativeSessionID) {
 		return core.Task{}, invalidInput("Native session ID must be null or nonempty UTF-8 text without NUL.")
 	}
-	return s.workerWrite(ctx, principal, projectID, id, input.Version, func(_ *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(_ *store.ProjectTx, current core.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
 		if err != nil {
 			return taskMutation{}, err
@@ -163,7 +163,7 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal core.Principal, pro
 	if !input.StoppedConfirmed {
 		return core.Task{}, invalidInput("Stopped execution must be explicitly confirmed.")
 	}
-	return s.workerWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
 		if err != nil {
 			return taskMutation{}, err
@@ -195,7 +195,7 @@ func (s *Tasks) TransferWorker(ctx context.Context, principal core.Principal, pr
 	if !input.StoppedConfirmed || !input.ContinuityConfirmed {
 		return core.Task{}, invalidInput("Stopped execution and original-work continuity must be explicitly confirmed.")
 	}
-	return s.workerWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
+	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
 		if err != nil {
 			return taskMutation{}, err
@@ -218,36 +218,6 @@ func (s *Tasks) TransferWorker(ctx context.Context, principal core.Principal, pr
 			return taskMutation{}, &Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
 		}
 		return acquireWorker(ctx, tx, current, userID, descriptor)
-	})
-}
-
-func (s *Tasks) workerWrite(ctx context.Context, principal core.Principal, projectID, id string, version int64, prepare func(*store.ProjectTx, core.Task) (taskMutation, error)) (core.Task, error) {
-	if err := requirePrincipal(principal); err != nil {
-		return core.Task{}, err
-	}
-	projectID, err := CanonicalID(projectID)
-	if err != nil {
-		return core.Task{}, err
-	}
-	id, err = CanonicalID(id)
-	if err != nil {
-		return core.Task{}, err
-	}
-	if version < 1 {
-		return core.Task{}, invalidInput("Version must be a positive integer.")
-	}
-	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
-		current, err := tx.Task(ctx, id)
-		if errors.Is(err, core.ErrNotFound) {
-			return taskMutation{}, taskNotFound(err)
-		}
-		if err != nil {
-			return taskMutation{}, err
-		}
-		if current.Version != version {
-			return taskMutation{}, &Fault{Code: "version_conflict", Message: "Task version does not match."}
-		}
-		return prepare(tx, current)
 	})
 }
 

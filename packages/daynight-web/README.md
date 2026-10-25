@@ -73,14 +73,19 @@ In-progress tasks lock it. Platform confirmation shares status/permission
 freshness, request ownership and unknown-result GET reconciliation. The left
 group may wrap the compact control without moving automatic execution from the
 first status line's right edge.
-`TaskDetailSessionProvider` owns detail, status, permission and platform
-state within the authenticated branch, keyed by user identity/session generation.
-All three mutations share one task write gate and exact-version freshness
-checks. Pending or unknown platform results block permission and status writes;
+`TaskDetailSessionProvider` owns detail, status, permission, platform and task
+deletion within the authenticated branch, keyed by user identity/session generation.
+All four mutations share one task write gate and exact-version freshness
+checks. Pending, unknown or reconciling operations block other writes for the same task;
 conflicts require a fresh observation and unknown results require an actual task
-read before another write. Close/reopen and navigation preserve the original
-request owner, so late responses cannot change another task. Platform updates
+read before another write. Each accepted operation retains its reviewed project
+cache generation and operation owner through asynchronous preparation and result
+handling. Close/reopen and navigation preserve that owner, so late responses
+cannot change another task or a replacement data history. Platform updates
 preserve status, permission, dependencies, properties and execution times.
+Task deletion retains stored data while removing the task from active views;
+its [design](../../docs/design/daynight-task-deletion.md) owns dependency checks,
+cache epoch replacement and recovery from a restored data history.
 Same-user verification and project navigation retain it; identity replacement,
 logout and anonymous state dispose it so old results cannot reach a new identity. Identity changes invalidate outstanding requests
 and unmount user-owned content; a project 404 stays a resource error. Returning
@@ -862,14 +867,18 @@ task details at that file, even while preview content is loading.
 
 `TaskDetailSurface` shares the full content and existing actions between dialog
 and page: description, status, relationships, PRs, metadata, three-state setting,
-automatic-execution permission, execution platform and attachment management.
+automatic-execution permission, execution platform, task deletion and attachment management.
 `TaskDetailDialog` owns only the modal portal, inertness, scroll lock, focus loop,
 Escape and focus restoration. `TaskDetailPage` provides an ordinary full-page
 container, return-to-project link and language selector. The platform select
 stays in the status row, with its lock explanation in a hover/focus tooltip
-and operation feedback in the shared floating layer. Status, permission and
-platform use the same confirmation/review owner; file deletion keeps its own
-modal confirmation. These interactions remain available in either container.
+and operation feedback in the shared floating layer. Status, permission,
+platform and task deletion use the same confirmation/review owner; attachment
+file deletion keeps its own modal confirmation. Task deletion requires explicit
+confirmation of the captured version and data history. A confirmed deletion
+clears the task content, closes a vanished task's centered dialog, or leaves the
+standalone page's deleted state and return-to-project link. These interactions
+remain available in either container.
 The standalone page and native frames do not install the outer dialog's keys.
 
 `/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing

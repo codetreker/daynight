@@ -16,8 +16,9 @@ type TaskGraphSize struct {
 func (s *Snapshot) TaskGraphSize(ctx context.Context, projectID string) (TaskGraphSize, error) {
 	var size TaskGraphSize
 	err := s.tx.QueryRow(ctx, `SELECT
-		(SELECT count(*) FROM tasks WHERE project_id = $1),
-		(SELECT count(*) FROM task_dependencies WHERE project_id = $1)`, projectID).
+		(SELECT count(*) FROM tasks WHERE project_id = $1 AND deleted_at IS NULL),
+		(SELECT count(*) FROM task_dependencies d JOIN tasks t ON t.project_id = d.project_id AND t.id = d.task_id
+			WHERE d.project_id = $1 AND t.deleted_at IS NULL)`, projectID).
 		Scan(&size.NodeCount, &size.EdgeCount)
 	if err != nil {
 		return TaskGraphSize{}, queryError("count task graph", err)
@@ -28,7 +29,7 @@ func (s *Snapshot) TaskGraphSize(ctx context.Context, projectID string) (TaskGra
 func (s *Snapshot) TaskGraphTasks(ctx context.Context, projectID string, previewCharacters int) ([]core.GraphTask, error) {
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, left(t.title, $2), char_length(t.title) > $2,
 		t.status, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, `+taskDependsOn+`, `+taskExternalDependsOn+`, `+taskBlockedBy+`, `+taskReady+`
-		FROM tasks t WHERE t.project_id = $1 ORDER BY t.created_at, t.id`, projectID, previewCharacters)
+		FROM tasks t WHERE t.project_id = $1 AND t.deleted_at IS NULL ORDER BY t.created_at, t.id`, projectID, previewCharacters)
 	if err != nil {
 		return nil, queryError("read task graph", err)
 	}

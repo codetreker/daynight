@@ -60,6 +60,7 @@ export const runTaskCommand = async (
   const help = `${command.path.join(" ")} --help`;
   const name = command.command.name;
   const setsStatus = name === "set-status";
+  const targetsTask = name === "show" || name === "update" || setsStatus || name === "delete";
   const title = command.options.get("--title") as string | undefined;
   const description = command.options.get("--description") as string | undefined;
   const status = command.options.get("--status") as TaskFilters["status"];
@@ -99,13 +100,13 @@ export const runTaskCommand = async (
   const rawProjectId = command.options.get("--project") as string | undefined;
   let projectId: string | undefined;
   let taskId: string | undefined;
-  if (rawProjectId !== undefined || name === "show" || name === "update" || setsStatus) {
+  if (rawProjectId !== undefined || targetsTask) {
     const { canonicalId } = await import("../../api/parse.js");
     if (rawProjectId !== undefined) {
       projectId = canonicalId(rawProjectId) ?? undefined;
       if (projectId === undefined) throw new UsageError("project-id must be a hyphenated UUID.", help);
     }
-    if (name === "show" || name === "update" || setsStatus) {
+    if (targetsTask) {
       taskId = canonicalId(command.values[0]!) ?? undefined;
       if (taskId === undefined) throw new UsageError("task-id must be a hyphenated UUID.", help);
     }
@@ -159,6 +160,11 @@ export const runTaskCommand = async (
     }
     const version = expectedVersion === undefined ? (await api.getTask(project.id, taskId!)).version : expectedVersion;
     operation.check();
+    if (name === "delete") {
+      await api.deleteTask(project.id, taskId!, { version });
+      operation.check();
+      return `Task deleted. Stored data and attachments are retained.\nID: ${taskId!}\nProject: ${project.id}\n`;
+    }
     if (setsStatus) {
       const task = await api.setTaskStatus(project.id, taskId!, { version, status: command.values[1] as Task["status"] });
       operation.check();

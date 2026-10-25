@@ -1329,6 +1329,7 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(page.locator('#root')).toHaveAttribute('inert', '');
   const taskTitle = dialog.locator('.task-detail-title');
   const statusAction = dialog.getByRole('button', { name: '待处理', exact: true });
+  const deleteTaskAction = dialog.getByRole('button', { name: '删除任务', exact: true });
   const popout = dialog.locator('.task-detail-popout');
   const automation = dialog.getByRole('switch', { name: '自动执行', exact: true });
   const overviewTab = dialog.getByRole('tab', { name: '概览', exact: true });
@@ -1354,6 +1355,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Shift+Tab');
   await expect(popout).toBeFocused();
   await page.keyboard.press('Shift+Tab');
+  await expect(deleteTaskAction).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
   await expect(statusAction).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(taskTitle).toBeFocused();
@@ -1367,6 +1370,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(taskTitle).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(statusAction).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(deleteTaskAction).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(popout).toBeFocused();
   await page.keyboard.press('Tab');

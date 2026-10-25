@@ -65,7 +65,12 @@ project epoch and authenticated-response identity header are implemented. Web
 project views now use persistent intrinsic summaries and atomically merge
 timestamp-window responses before deriving complete graphs locally. Full details
 use bounded intrinsic persistence and business-version-driven refresh, with a
-live read required on opening before mutations become available.
+live read required on opening before mutations become available. Task
+[soft deletion](docs/spec/daynight-task-deletion.md) is available through
+`daynight task delete` and confirmed Web detail actions. It retains database
+records and attachment bytes, rejects undeleted dependents and active worker claims, and
+rotates the project cache epoch so every view removes the task consistently.
+The [deletion design](docs/design/daynight-task-deletion.md) owns these rules.
 
 | Component | Location | Implementation status | Requirements and design |
 |---|---|---|---|

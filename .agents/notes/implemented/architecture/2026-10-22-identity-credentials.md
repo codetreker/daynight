@@ -34,7 +34,7 @@ returned once. The [device-login decision](2026-10-25-cli-device-login.md) reuse
 PAT storage for CLI authorization. A browser session can create named PATs and
 modify an active token's nullable expiry while preserving its ID, hash and secret;
 account and observed-expiry checks protect the update. Expired or revoked tokens
-cannot be revived. Migration 018 makes only PAT expiry nullable and preserves all
+cannot be revived. Migration 019 makes only PAT expiry nullable and preserves all
 existing finite expiry timestamps. Credential lookup checks current revocation
 and any configured expiry; project roles remain outside credentials. Explicit
 invalid Bearer authentication does not fall back to a browser cookie.

@@ -134,8 +134,10 @@ and completing `run-task` never activate it.
   Only an explicitly user-selected task or fixed Goal queue may follow the manual
   execution path regardless of the flag or platform compatibility; dependency,
   stage inputs and execution authorization still apply.
-- Preserve the exact version observed when deciding a metadata update or
-  `task set-status` change. Generic updates cannot change status. Confirm writes,
+- Preserve the exact version observed when deciding a metadata update,
+  `task set-status` change, or authorized `task delete`. Deletion retains stored
+  data and attachments and requires explicit authorization for the target task.
+  Generic updates cannot change status. Confirm writes,
   reconcile uncertain results before further mutations, and preserve actual
   failures. The handbook explains operational context; installed CLI help owns
   command usage.

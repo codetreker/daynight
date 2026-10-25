@@ -232,6 +232,8 @@ snapshot. Cached selection intentionally remains stable after later duplicate
 projects appear. Additional lookup capabilities can be introduced later without
 replacing the cache format if they preserve the same identity and ambiguity
 rules. Arbitrary SSH alias equivalence needs a separate mapping decision;
-transport context must not be erased to infer it. Remote authentication,
-project/task deletion and task ownership are outside this design and require
-their own service contracts.
+transport context must not be erased to infer it. Remote authentication, deletion
+and task ownership were outside the original design and required their own
+service contracts. [Retained task deletion](../feature/2026-10-25-task-soft-deletion.md)
+now extends the same exact-version command pattern; project deletion remains
+unavailable.

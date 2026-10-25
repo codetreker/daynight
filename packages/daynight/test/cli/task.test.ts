@@ -303,7 +303,7 @@ describe("compiled task commands", () => {
     const f = await fixture();
     try {
       const helpBlocked = ["/api/", "/config/", "/repository/", "/commands/server/", "/commands/task/rendering.js", "better-sqlite3"];
-      for (const args of [[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "graph"].map((name) => [name, "--help"]), ["attachment"], ["attachment", "--help"], ...["put", "list", "read", "remove"].map((name) => ["attachment", name, "--help"])]) {
+      for (const args of [[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph"].map((name) => [name, "--help"]), ["attachment"], ["attachment", "--help"], ...["put", "list", "read", "remove"].map((name) => ["attachment", name, "--help"])]) {
         const result = await f.invoke(args, { blocked: helpBlocked });
         expect(result.code, result.stderr).toBe(0);
         expect(result.stdout).toContain("Usage: daynight task");
@@ -378,6 +378,27 @@ describe("compiled task commands", () => {
         expect(resource).toEqual(command === "list" ? [taskListItem(current)] : command === "ready" ? [current] : command === "graph" ? graphValue : current);
         if (command === "list") expect(resource).not.toHaveProperty("0.description");
         if (command !== "graph") expect(json.stdout).toContain('"version":9223372036854775807');
+      }
+    } finally { await f.close(); }
+  }, 60_000);
+
+  it("soft-deletes through the compiled entrypoint with observed and explicit exact versions", async () => {
+    const f = await fixture();
+    try {
+      const current = task({ version: 9_007_199_254_740_993n });
+      const { requests } = await f.serve((request, response) => {
+        if (request.method === "DELETE") { response.writeHead(204); response.end(); }
+        else respond(response, current);
+      });
+      for (const version of [undefined, "9223372036854775807"]) {
+        const before = requests.length;
+        const result = await f.invoke(["delete", taskId.toUpperCase(), ...(version === undefined ? [] : ["--if-version", version]), ...explicit]);
+        expect(result.code, result.stderr).toBe(0);
+        expect(result.stdout).toBe(`Task deleted. Stored data and attachments are retained.\nID: ${taskId}\nProject: ${projectId}\n`);
+        expect(requests.slice(before).map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([
+          `GET ${projectPath}`, ...(version === undefined ? [`GET ${taskPath}/${taskId}`] : []), `DELETE ${taskPath}/${taskId}`,
+        ]);
+        expect(requests.at(-1)!.bodyText).toBe(`{"version":${version === undefined ? current.version : version}}`);
       }
     } finally { await f.close(); }
   }, 60_000);

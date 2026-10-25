@@ -52,6 +52,47 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
 };
 
 describe("task commands over HTTP", () => {
+  it.each([undefined, "9223372036854775807"])("deletes once with an observed or explicit lossless version %s", async (version) => {
+    const f = await fixture((request, response) => {
+      if (request.method === "DELETE") { response.writeHead(204); response.end(); }
+      else respond(response, task);
+    });
+    await f.run(["delete", taskId.toUpperCase(), ...(version === undefined ? [] : ["--if-version", version])]);
+    expect(f.requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      `GET /api/v1/projects/${projectId}`,
+      ...(version === undefined ? [`GET /api/v1/projects/${projectId}/tasks/${taskId}`] : []),
+      `DELETE /api/v1/projects/${projectId}/tasks/${taskId}`,
+    ]);
+    expect(f.requests.at(-1)!.body).toBe(`{"version":${version === undefined ? task.version : version}}`);
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Task deleted. Stored data and attachments are retained.\nID: ${taskId}\nProject: ${projectId}\n`);
+  });
+
+  it.each([
+    { code: "version_conflict", status: 409 },
+    { code: "dependency_unsatisfied", status: 409 },
+    { code: "invalid_transition", status: 409 },
+    { code: "task_deleted", status: 410 },
+  ])("preserves deletion refusal $code without replay", async ({ code, status }) => {
+    const f = await fixture((_request, response) => respond(response, { error: { code, message: "Deletion refused", requestId: "delete-refused", details: { taskIds: [otherId] } } }, status));
+    await expect(f.run(["delete", taskId, "--if-version", "1"])).rejects.toMatchObject({ operation: "task.delete", projectId, taskId, code, status, requestId: "delete-refused", details: { taskIds: [otherId] }, confirmedRefusal: true });
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("reports a lost deletion response as unconfirmed without resubmitting", async () => {
+    const f = await fixture((_request, _response, raw) => { raw.socket.destroy(); });
+    await expect(f.run(["delete", taskId, "--if-version", "9007199254740993"])).rejects.toMatchObject({ operation: "task.delete", projectId, taskId, outcomeUnconfirmed: true });
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("does not submit deletion when its version read fails", async () => {
+    const f = await fixture((_request, response) => respond(response, { error: { code: "task_deleted", message: "Task was deleted.", requestId: "already-deleted" } }, 410));
+    await expect(f.run(["delete", taskId])).rejects.toMatchObject({ operation: "task.show", code: "task_deleted" });
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "GET"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
   it.each(["todo", "in_progress", "done"] as const)("sends one %s status PUT after reading or with an exact supplied version", async (status) => {
     const f = await fixture((request, response) => {
       const version = request.method === "GET" ? task.version : (parseApiJson(request.body) as { version: bigint }).version;
