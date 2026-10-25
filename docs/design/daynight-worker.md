@@ -179,11 +179,11 @@ API 是本地换行分隔 JSON；Unix 使用 domain socket，Windows 使用 name
 
 Worker 同一时刻只向一个 task 的同一已就绪 agent 提交一轮输入。超时/断连不证明输入未送达，先观察已有执行和 task 资料；不得盲目重发工作。Herdr idle/done 仅触发核验，blocked 展示人工入口，unknown/不可达先核对并按恢复策略处理。
 
-Prompt 加载随包 `using-daynight` 的阶段和交付规则，传入 task/claim/worktree/session 与冻结配置；worker-managed 上下文明确由 worker 控制领取、最终完成和资源生命周期。Agent 继续维护现有 PR 属性和验收附件，不输出新报告协议。
+Prompt 加载随包 `using-daynight` 的阶段和交付规则，传入 task/claim/worktree/session 与冻结配置；worker-managed 上下文明确由 worker 控制领取、最终完成和资源生命周期。Agent 继续维护现有 PR 属性和任务明确指定的验收证据位置，不输出新报告协议。
 
 ## 完成核验与人工操作
 
-Worker 核验当前 claim、task/附件可读、引用 PR 的仓库/提交/真实合并及必要检查、工作树成果整合和验收证据引用。验收语义由 task 及 agent 执行负责；文字声明不是任意自然语言条件的独立证明。明确的人验要求、缺失/冲突证据或当前适配器无法核实的事实保持未完成，在原会话请求人工处理；不增加通用验收表达式/Markdown 解析引擎。
+Worker 核验当前 claim、task 与必需引用可读、引用 PR 的仓库/提交/真实合并及必要检查、工作树成果整合和任务指定的验收证据引用。验收语义由 task 及 agent 执行负责；文字声明不是任意自然语言条件的独立证明。明确的人验要求、缺失/冲突证据或当前适配器无法核实的事实保持未完成，在原会话请求人工处理；不增加通用验收表达式/Markdown 解析引擎。
 
 原生托管检查复用当前 GitHub/gh 读取能力；不能核实的托管结果不得仅凭 URL 或文字当作已合并。额外托管适配不是领取/归属模型的前提，完成检查接口保持具体结果和错误，遇到缺少适配则等待人工核验。
 
@@ -237,7 +237,7 @@ Linux 本地 Herdr 0.8.2 的隔离无原生 agent 冒烟已验证：原始 JSON 
 
 Agent 的模型入口使用随包 `using-daynight` 与既有 task CLI；Worker 自己的任务操作直接调用进程内 typed ApiClient。启动上下文传 task/claim/session/worktree 标识及技能路径，不复制完整 Goal 或全部交互资源。初始设计对三个代表性输入的测量中，简介为 1708～3067 个 UTF-8 字节，主 Markdown 为 7588～15259 个字节；这些是当时输入的测量范围，后续资料修改不受该大小约束。
 
-读取一个普通任务至少需要详情、附件清单、主 Markdown 三次现有 CLI 操作，额外 UI/证据按需读取。保留完整要求，不截断来制造固定 token 上限；具体 token 随 agent/model、仓库指示变化，原生验收记录实际模型使用量。未增加 report tool、模型 RPC 或通用 MCP 服务。
+已知任务先读取完整详情，再按正文入口读取实际必需资料、UI 和证据；正文完整时不强制读取主附件。共享内容规则由随包 `references/task-content.md` 拥有，调用次数取决于真实引用与阶段输入，不能假定固定为三次。保留完整要求，不截断来制造固定 token 上限；具体 token 随 agent/model、仓库指示变化，原生验收记录实际模型使用量。未增加 report tool、模型 RPC 或通用 MCP 服务。
 
 ## 选择与范围
 

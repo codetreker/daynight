@@ -94,7 +94,8 @@ original circumstances. Explicit archives remain immutable.
   task scope, permitted worktree, and required evidence.
 - Use the task worktree's `.tmp/` for probes, clones, and generated evidence.
   Local scratch execution plans may use Git-ignored `docs/plans/`; persistent
-  task plans belong in Daynight attachments. Keep temporary files inside the
+  task content belongs in its owning Daynight description or explicitly referenced
+  documents, with confirmation and delivery evidence located in that task. Keep temporary files inside the
   project and remove task-owned temporary resources after verification.
 - Clean up task-owned services and probes, including resources left by failed
   subagents. Retain an unfinished worktree until its changes are delivered;

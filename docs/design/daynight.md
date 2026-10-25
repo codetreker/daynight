@@ -115,6 +115,8 @@ src/
         references/run-task.md
         references/create-task.md
         references/goal.md
+        references/task-content.md
+        references/handoff.md
     setup/
       definition.ts
       command.ts

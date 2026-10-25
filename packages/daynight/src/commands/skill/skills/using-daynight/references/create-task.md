@@ -1,7 +1,8 @@
 # Create a task
 
 Use this mode to prepare and register work that needs persistent tracking. Read
-[the handbook](handbook.md) before discovery, queries, or writes. Return after
+[the handbook](handbook.md) before discovery, queries, or writes and
+[the task content standard](task-content.md) for content preparation. Return after
 registration; registration alone does not authorize execution or
 autopilot. An explicit request to start a Goal discussion routes the registered
 current stage to run-task under the Goal protocol.
@@ -52,50 +53,32 @@ applicable mock UI before registration, following the artifact rules below.
 
 Look for existing work with the same problem and scope, including completed
 tasks; the default list contains only unfinished work. Inspect full descriptions,
-actual dependencies, primary Markdown, and acceptance criteria. For a Goal,
+actual dependencies, content sources, and acceptance criteria. For a Goal,
 inspect the existing chain and its owning inputs. Titles alone do not establish
 identity. Reuse suitable work and preserve valid requirements; interrupted
 registration does not justify a duplicate task or chain.
 
 ## Write task-specific content
 
-Use the target repository's document and workspace rules.
+Use the target repository's document and workspace rules and the shared six-item
+content standard. Give each task an outcome-focused title and a Markdown
+description that identifies its concrete work, responsibility, and actual content
+sources. The description and readable references together provide the objective,
+scope, solution, exchange contracts, acceptance, and sources. Complete inline
+content needs no primary attachment; reference-owned and mixed content are also
+valid without repeating complete documents. State where this task's confirmations,
+acceptance conclusions, and delivery evidence will live in its description or
+attachments. Stage briefs describe work that produces the stage's outputs; do
+not claim unfinished outputs already exist.
 
-| Content | Owner |
-|---|---|
-| Concrete problem, current actions and scope, deliverables, constraints, completion summary, and real input references | Task `description` |
-| Detailed solution, full acceptance criteria, verification methods, and completion evidence | This task's primary Markdown attachment |
-| Applicable visual and interaction design | Owning task's interactive mock UI and resources, referenced by consumers |
-| Prerequisite tasks and edge classification | Complete `dependsOn` plus its `externalDependsOn` subset |
-| Delivery PR URLs and titles | `properties.pullRequests` |
-
-Give each task an outcome-focused title and a self-contained Markdown
-description: a reader must understand what this specific task will do, deliver,
-and verify without opening attachments. Summarize the approach and observable
-completion conditions, then reference the real detailed sources. A generic
-problem sentence and a link list are insufficient. Keep the summary consistent
-with its primary Markdown without maintaining a second complete plan in the
-description.
-
-The primary Markdown must contain **Solution** and **Acceptance criteria**
-sections; equivalent headings in the task's language are valid. Define the
-current task's approach, scope, behavioral constraints, observable completion
-conditions, and how to verify them. Stage briefs describe the work that will
-produce that stage's results. They do not claim unfinished outputs already exist.
-Link supporting resources from the primary document.
-
-Attach only this task's detailed plan, needed resources, and outputs. Shared
-Goal requirements stay with the Goal description task; architecture and
-breakdown stay with the design task. Consumers identify the source task ID and
-attachment path and confirm the contents using the installed CLI's attachment
-read command. For repository inputs, use verified immutable references. Do not
-assume a `task://` scheme, cross-task relative links, or a fixed service host.
-For every Goal delivery task, list the architecture task ID and all required
-architecture document references directly in its description, including indirect
-successors. Use the Goal protocol's full attachment paths or immutable repository
-references; keep these input references separate from execution dependencies.
-Do not upload the same whole packet to every task. Create a separate snapshot
-only when the task needs an independent copy, recording its purpose, original
+Attach only resources this task needs or owns. Keep shared Goal requirements
+with the requirements task and architecture and breakdown with the solution
+task. Reference source task IDs and complete attachment paths or verified
+immutable repository sources, and actually read the required contents. For every
+Goal delivery task, list the architecture task ID and all required architecture
+document references directly in its description, including indirect successors,
+as [the Goal protocol](goal.md) requires. Do not copy the whole shared packet
+into every task. An independently needed snapshot records its purpose, original
 source, and source revision or content identity.
 
 A frontend delivery task requires an interactive mock UI that runs with frontend code
@@ -115,8 +98,8 @@ ownership before registering the relationship. A top-level task has no ordinary
 prerequisites; it may still have real external prerequisites that block execution.
 Do not add a Dependencies section or duplicate the relationship lists in task
 prose. Repository specifications and design documents retain their full contracts;
-the task's own primary attachment still provides its specific solution and
-verifiable acceptance criteria.
+the current task identifies its specific solution and verifiable acceptance
+criteria directly or through their actual owners.
 
 ## Author Markdown
 
@@ -156,14 +139,17 @@ confirming it.
 - [交互原型](mockui/index.html)
 ```
 
-This remains a concise assignment. Its own primary Markdown still contains the
-specific **Solution** and **Acceptance criteria**, verification methods, and
-evidence. The prototype remains with its actual owner when shared across a Goal.
+This example uses an attachment for the detailed content; the same six-item
+standard also permits complete inline or mixed organization. Its actual `plan.md`
+provides the requirements, solution, applicable exchange contracts, acceptance,
+and task-owned evidence location. The prototype stays with its actual owner when
+shared across a Goal.
 
 ## Register and verify
 
 New tasks have `allowAgents=false`; creation cannot enable the permission.
-Automatic workers and agent workflows must not turn it on themselves. Execution
+Creation and breakdown do not enable it. A separate, explicitly requested
+[handoff](handoff.md) reviews each task before enabling permission. Execution
 authorization and automatic-discovery permission remain separate decisions.
 
 Tasks without `--required-platform` are unrestricted. Set windows, linux or macos
@@ -172,16 +158,17 @@ do not start tasks or enable automatic execution; they survive all status change
 
 Reuse the established project and suitable tasks. Create new tasks in `todo`,
 retaining each confirmed ID. Set concrete descriptions and actual ordinary and
-external prerequisites using the handbook's full CLI replacement rule. Upload each task's own primary Markdown and required
-resources; add actual attachment references to the complete description using
-the observed task version. Reference already readable shared inputs at their
-source. Do not present planned uploads as existing attachments.
+external prerequisites using the handbook's full CLI replacement rule. Upload
+required task-owned resources when the content uses attachments; add actual
+references to the complete description using the observed task version. Reference
+already readable shared inputs at their source. Do not present planned uploads as existing attachments.
 
 Read back each complete task, its attachment inventory and required contents,
 and its referenced shared inputs. Verify self-contained Markdown descriptions,
-valid links and images, the two required primary-document sections, real source
-identities, complete prerequisites and their intended external subset, and applicable mock UI resources and
-interaction. For a Goal, verify only the current discussion stage and its brief;
+valid links and images, all six content requirements, the explicit task-owned
+evidence location, real source identities, complete prerequisites and their
+intended external subset, and applicable mock UI resources and interaction. For a
+Goal, verify only the current discussion stage and its brief;
 verify later stages and delivery tasks when their confirmation gate permits
 registration. When registering delivery work, check every task's description,
 including indirect successors, for its architecture task ID and required document
@@ -197,8 +184,8 @@ scope; ready successors in an authorized fixed queue need no per-task authorizat
 If creation succeeds but a later operation fails, retain the confirmed IDs and
 resume missing operations there. Tasks remain `todo`. Reconcile uncertain results through the handbook before another
 mutation. Report incomplete registration with the exact missing operation or
-artifact and next step. Do not move detailed plans into descriptions to bypass
-an attachment failure. Return after verified registration without selecting or
-executing a task for registration-only requests. If the user explicitly requested
+artifact and next step. An unreadable required source is still a failure; do
+not silently replace it with invented or weaker content. Return after verified
+registration without selecting or executing a task for registration-only requests. If the user explicitly requested
 the current Goal discussion to start, pass its confirmed ID to run-task under
 the Goal protocol.

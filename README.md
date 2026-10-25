@@ -30,8 +30,8 @@ ordinary relative file links select the existing Attachments preview through one
 controller, while real hrefs retain native browser navigation. The
 [Markdown reading decision](.agents/notes/implemented/architecture/2026-10-22-task-description-markdown.md)
 owns root/document resolution, complete-inventory checks and focus integration.
-The published skill preserves self-contained briefs, primary-plan ownership and
-Goal, dependency and PR ownership with explicit implementation and merge permissions.
+The published skill preserves self-contained task content, explicit evidence ownership
+and Goal, dependency and PR ownership with independent implementation and merge permissions.
 
 The [external dependency requirements](docs/spec/daynight-external-dependencies.md),
 [architecture](docs/design/daynight-external-dependencies.md) and
@@ -219,9 +219,9 @@ The [public Agent skill design](docs/design/daynight-agent-skill.md) defines one
 npm-bundled `using-daynight` skill and interactive installation for Codex, Copilot
 CLI and Claude Code. Its [requirements](docs/spec/daynight-agent-skill.md) cover
 context-based routing, explicit continuous-execution intent, Daynight-backed
-concrete work and design reviews, attachment-backed planning and complete
-replacement on reinstall. The entrypoint, four mode references and shared
-`goal.md` protocol are published under
+concrete work and design reviews, reviewed task handoff and complete
+replacement on reinstall. The entrypoint, five mode references, shared
+`task-content.md` standard and `goal.md` protocol are published under
 `dist/commands/skill/skills/using-daynight/`. The
 [Goal workflow requirements](docs/spec/daynight-goal-workflow.md) and
 [design](docs/design/daynight-goal-workflow.md) define staged persistent work:
@@ -251,6 +251,7 @@ is shared by task creation, Goal breakdown, execution and completion.
 |---|---|
 | `handbook` | Command purposes and operational context; use CLI help for command usage |
 | `create-task` | Register concrete work within creation permission; a Goal first has only its requirements task. Registration-only requests return; explicit discussion-start requests follow the Goal protocol |
+| `handoff <task-id>` | Review the designated task and its required sources; with explicit handoff authorization, enable automatic selection only after review passes |
 | `run-task <task-id>` | Execute the designated task using discussion confirmation or actual delivery acceptance; explicit Goal discussion transitions follow the shared protocol |
 | `autopilot <goal or scope>` | Restore the current task or select one most relevant ready todo within the authorized scope, and continue only after confirmed completion |
 
@@ -283,7 +284,8 @@ Use `task ready --allow-agents true --compatible-platform <actual-platform> --js
 and retain both filters on fallback inventories. Before exact-version start,
 reread the complete task and recheck todo, ready, permission=true and null/matching
 requiredPlatform. Carry automatic mode and platform into run-task; a selected ID
-does not acquire the explicit manual exception. Workflows never enable the flag.
+does not acquire the explicit manual exception. Creation and execution workflows
+do not enable the flag; explicitly authorized handoff owns reviewed enablement.
 Explicitly designated tasks or fixed queues retain their manual path regardless
 of either automatic-selection condition, with dependencies and execution scope intact.
 Execution, analysis, questions, proposals and discussions follow the current task's
@@ -293,12 +295,15 @@ reading them does not expand the current assignment. Cross-task blockers and
 follow-up proposals grant no creation or execution permission, and expanding the
 current scope requires explicit user confirmation. Goal discussions and final
 acceptance cover the whole Goal when that is the current task's confirmed scope.
-Task descriptions are self-contained Markdown briefs: the concrete problem and
-action, scope, deliverables, constraints, observable completion summaries and actual
-input references. The Web renders that Markdown; API storage and CLI/Agent output
-preserve the original string bytes.
-Each task-specific primary Markdown owns its detailed Solution, full Acceptance
-criteria and evidence. Use relative references such as
+Task descriptions identify the current assignment, its responsibility and its
+readable sources. The shared content standard covers objective and requirements,
+scope and deliverables, solution and design, input/output contracts, acceptance
+and verification, and references. These can be provided directly in the Markdown
+description, through documents it clearly references, or in combination; a complete
+description needs no primary attachment. Each content item has one owner, and each
+task identifies where its confirmation, acceptance conclusion and delivery evidence
+belong. The Web renders that Markdown; API storage and CLI/Agent output preserve
+the original string bytes. Use relative references such as
 `[Solution and acceptance](plan.md)` only after confirming that the referenced
 file belongs to that task and its uploaded contents are readable.
 Shared Goal and design inputs stay with their owners; attachments follow actual
@@ -315,6 +320,18 @@ gate. Actual repository delivery and any PR explicitly included in discussion
 acceptance still require platform-confirmed merges and their acceptance. A request
 to retain a delivery PR for review keeps that delivery pending. User-confirmed
 discussion transitions do not activate autopilot or grant delivery authority.
+
+Handoff reads the actual task and required references, including necessary further
+references, before deciding whether the current stage is sufficiently specified.
+An explicitly authorized handoff may enable `allowAgents` on a reviewed `todo`
+task using its exact observed version, even while real prerequisites still block
+execution. Already-enabled tasks receive a read-only re-audit; failure reports the
+remaining scheduling exposure and leaves permission unchanged. Revocation or
+stopping requires its own authorization and existing worker controls. Handoff
+does not start execution, change dependencies or bypass running-task locks and
+worker continuity. Task versions cannot freeze attachments or cross-task sources;
+read content again before enablement and execution, reconcile unknown writes by
+reading, and report actual observations without claiming a durable certificate.
 
 [`daynight skill install`](#agent-skill-installation) detects supported launchers
 and installs the selected scope. Once the complete using-daynight bundle is

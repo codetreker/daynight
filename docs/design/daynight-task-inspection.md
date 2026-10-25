@@ -171,9 +171,9 @@ Markdown 引用反馈绑定其所属的语义任务/页签/文件选择；首次
 结果，同路径更新仍使用既有 revision 与 `updatedAt` 重读规则。
 
 公开 skill 源为 `packages/daynight/src/commands/skill/skills/using-daynight/`。
-入口、create-task、run-task、handbook 和适用 Goal 指引要求 Markdown 自足简介，
-包含具体问题、行动、范围、交付物、约束、简明完成条件和真实引用。任务专属主
-Markdown 仍拥有详细 Solution、完整 Acceptance criteria 与证据。每个 Goal 交付正文
+共享 task-content 标准由入口和 create-task、handoff、run-task 及适用 Goal 指引读取，
+任务 description 明确当前责任与资料入口。六项内容由正文、实际引用或混合组织提供，
+正文完整无需主附件；确认、验收结论和交付证据保存在本任务明确的正文或附件位置。每个 Goal 交付正文
 直接列出架构任务 ID 及适用文档完整附件路径，间接后继同样保留入口；登记时核验，
 实施前读取所列输入，仓库文档保留架构任务身份与不可变引用。资料引用不新增执行
 依赖；共享要求、设计和原型引用实际来源，不复制整套资料。`[方案与验收](plan.md)` 或

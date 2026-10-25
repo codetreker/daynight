@@ -21,7 +21,9 @@ breakdown, and discussion completion rules of the
 [original staged Goal decision](2026-10-22-goal-workflow-design.md), while retaining
 its self-contained briefs, stage-produced outputs and shared-artifact ownership.
 The [mode decision](../architecture/2026-10-21-using-daynight-modes.md) retains the
-four modes and general authorization boundaries.
+general authorization boundaries; the [task-content and handoff decision](2026-10-25-task-content-handoff.md)
+adds a fifth mode and replaces mandatory primary-attachment storage without changing
+this decision's stage-confirmation gates.
 
 Starting a Goal requirements discussion creates or reuses only `[Goal]<outcome>`.
 An explicit request to begin that discussion authorizes set-status in_progress,

@@ -22,10 +22,12 @@ whole-Goal completion. Mode routing, command ownership, authorization and the
 installer decisions remain here.
 The later [user-confirmed Goal discussion decision](../process/2026-10-24-user-confirmed-goal-discussions.md)
 owns sequential discussion creation, explicit user transition gates, and scoped
-starting the specified discussion.
+starting the specified discussion. The [task-content and handoff decision](../process/2026-10-25-task-content-handoff.md)
+replaces mandatory primary-attachment ownership with one content owner and adds
+a separately authorized handoff mode; this note retains the original rationale.
 
 The public bundle is named `using-daynight`. Its entrypoint routes from the actual
-request and context to handbook, create-task, run-task or autopilot, with one
+request and context to handbook, create-task, handoff, run-task or autopilot, with one
 reference document per mode. A bare invocation uses context; insufficient or
 ambiguous context prompts for intent. Autopilot requires an explicit user request
 for continuous execution. Mentioning automation, loading the skill or finishing
@@ -64,14 +66,18 @@ execution steps as tasks. The [tracking and review decision](../process/2026-10-
 now defines eligibility by concrete outcomes, keeping agent-generated execution
 steps in the owning task's plan. Create-task checks creation permission, matches
 existing problem/scope and acceptance, and registers ordinary single-outcome work
-or a staged Goal. Every description is a self-contained Markdown brief with a
-concrete problem, scope/actions, deliverables, constraints, an observable completion
-summary and real input references. Description-relative links and images start at
+or a staged Goal. Every description identifies its task, responsibility and readable
+sources. The shared task-content standard requires objective and requirements,
+scope and deliverables, solution and design, input/output contracts, acceptance
+and verification, and references. Direct descriptions, referenced documents and
+mixed organization meet the same content-sufficiency requirement. Description-relative links and images start at
 the current task's attachment root; attachment Markdown retains its document
 directory. Uploaded contents are confirmed before linking, and full-field updates
 preserve Markdown and valid references. The create-task reference owns authoring
-examples; no new stored format or format flag is introduced. A task-specific
-primary Markdown owns detailed solution, full acceptance and evidence. Shared Goal
+examples; no new stored format or format flag is introduced. Each content item has
+one owner, and the task designates its own description or attachment location for
+confirmation, acceptance conclusions and evidence. A complete description does not
+require a primary attachment. Shared Goal
 and design inputs remain with their owners. Each Goal delivery description
 directly identifies its architecture task and relevant document attachment paths,
 even for indirect successors. Repository documents retain the architecture task
@@ -100,8 +106,8 @@ cover ready successors without task approval. Explicit discussion starts still
 apply only to the current user-confirmed Goal stage.
 
 Dependencies remain in dependsOn; PR URLs and titles remain in
-properties.pullRequests. Results and merge references belong with the primary
-attachment's acceptance items. Execution position, blockers and next steps use
+properties.pullRequests. Results and merge references belong at the task's
+designated evidence location, associated with its acceptance items. Execution position, blockers and next steps use
 an existing checkpoint. Registration is complete only after necessary task-owned
 artifacts and shared inputs are read back. Partial registration retains IDs;
 uncertain writes are reconciled before further mutation. Registration leaves
@@ -169,9 +175,10 @@ and autopilot still has its explicit-request gate.
 **Put solution, acceptance and progress in the description.** This was convenient
 before attachment-backed planning was available, but keeps unrelated lifetimes in
 one field and encourages repeated copies. At the original decision, problem text, attached requirements, structured
-dependencies and execution checkpoints received separate owners. The Goal decision
-keeps detailed ownership while allowing a concise assignment and completion summary
-in each description.
+dependencies and execution checkpoints received separate owners. The Goal decision then retained detailed attachment ownership while allowing a concise
+assignment and completion summary in each description. The content/handoff successor
+allows a complete description while retaining a single owner and separate operational
+checkpoints, so the original risk of competing plans and progress logs remains avoided.
 
 **Repeat the complete scope rule in every mode.** This makes each mode locally
 explicit, but creates multiple copies whose exceptions and permission boundaries
@@ -185,17 +192,17 @@ cost of an explicit partial-migration error and a possible temporary duplicate.
 
 ## Consequences
 
-One installed directory contains the entrypoint, four mode references and the
-shared Goal protocol.
+One installed directory contains the entrypoint, five mode references, the shared
+task-content standard and Goal protocol.
 Command usage stays with the installed CLI, and the compact handbook explains
 the operational facts needed to choose and combine commands. Task execution and
 repeated selection share one completion gate. Explicit autopilot entry prevents ordinary skill use
 from silently becoming a continuous work queue. Scoped task creation permission,
 including applicable standing tracking/review instructions, prevents autonomous
 execution from expanding the persistent backlog beyond the confirmed scope;
-missing permission requires user input before registration. Task attachments become required
-inputs to execution; create-task must reconcile partial registration and cannot
-claim readiness from an existing task ID alone. A task's confirmed scope also bounds
+missing permission requires user input before registration. Required referenced content
+becomes an execution input; a complete body needs no attachment. Create-task must
+reconcile partial registration and cannot claim readiness from an existing task ID alone. A task's confirmed scope also bounds
 its discussion content, while broader inputs remain readable and Goal-level
 discussions and acceptance retain their agreed scope. Cross-task discoveries remain
 visible without silently adding work to the current delivery.

@@ -49,7 +49,7 @@ afterEach(() => {
 });
 
 describe("packaged skill resource copy", () => {
-  it.each([{ name: "LF", lineEnding: "\n" }, { name: "CRLF", lineEnding: "\r\n" }])("retains platform-filtered automatic selection and the full-task status recheck with $name line endings", async ({ lineEnding }) => {
+  it.each([{ name: "LF", lineEnding: "\n" }, { name: "CRLF", lineEnding: "\r\n" }])("preserves installed instruction contracts with $name line endings", async ({ lineEnding }) => {
     const f = fixture();
     const source = f.source(bundles[1]);
     for (const name of files(source).filter((name) => name.endsWith(".md"))) {
@@ -74,6 +74,28 @@ describe("packaged skill resource copy", () => {
       const original = documents.get(mutation.resource)!.replaceAll("\r\n", "\n");
       expect(original).toContain(mutation.before);
       documents.set(mutation.resource, original.replace(mutation.before, mutation.after).replaceAll("\n", lineEnding));
+      expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario)).toThrow();
+    }
+  });
+
+  it("detects removal of handoff authorization, re-audit and reconciliation safeguards from the copied instructions", async () => {
+    const f = fixture();
+    const copied = f.run();
+    expect(copied.status, copied.stderr).toBe(0);
+    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
+    const mutations = [
+      { scenario: "task-content-organization", resource: "references/task-content.md", before: "Complete inline content needs no primary attachment", after: "Complete inline content requires a primary attachment" },
+      { scenario: "handoff-no-implicit-authorization", resource: "references/create-task.md", before: "Creation and breakdown do not enable it", after: "Creation and breakdown may enable it" },
+      { scenario: "handoff-enabled-reaudit", resource: "references/handoff.md", before: "Keep its permission unchanged", after: "Disable its permission immediately" },
+      { scenario: "handoff-state-and-worker-continuity", resource: "references/handoff.md", before: "confirmed original worktree/Agent continuity", after: "a new worktree and Agent" },
+      { scenario: "handoff-concurrency-and-unknown-outcome", resource: "references/handoff.md", before: "reconcile by reads only before considering any new mutation; do not automatically replay it", after: "resubmit the write using the latest version" },
+    ];
+    for (const mutation of mutations) {
+      const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
+      const documents = new Map(bundle.documents);
+      const original = documents.get(mutation.resource)!.replaceAll(/\s+/g, " ");
+      expect(original).toContain(mutation.before);
+      documents.set(mutation.resource, documents.get(mutation.resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
       expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario)).toThrow();
     }
   });

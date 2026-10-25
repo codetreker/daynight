@@ -56,8 +56,11 @@ export const inspectInstalledSkill = async (directory: string): Promise<Installe
   };
   await visit(root);
   resources.sort((left, right) => left.path.localeCompare(right.path));
+  for (const resource of [
+    "SKILL.md", "references/handbook.md", "references/create-task.md", "references/run-task.md",
+    "references/autopilot.md", "references/goal.md", "references/task-content.md", "references/handoff.md",
+  ]) assert.ok(documents.has(resource), `The installed bundle contains ${resource}.`);
   const entrypoint = documents.get("SKILL.md");
-  assert.equal(typeof entrypoint, "string", "The installed bundle contains SKILL.md.");
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(entrypoint!);
   assert.notEqual(frontmatter, null, "The installed skill has YAML frontmatter.");
   const metadata: unknown = parseYaml(frontmatter![1]!);
@@ -83,7 +86,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     propositions: [
       { resource: "references/autopilot.md", section: "## Select one related task", requires: [/daynight task ready --allow-agents true --compatible-platform <actual-platform> --json/, /task with `allowAgents=true`/, /daynight task list --allow-agents true --compatible-platform <actual-platform> --json/, /Automatic selection never enables `allowAgents`/, /manual execution path remains available regardless of the flag/] },
       { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/explicitly user-selected task may use the manual execution path regardless of `allowAgents`/, /Automated task selection requires true and must not enable the flag itself/] },
-      { resource: "references/handbook.md", section: "**Automatic execution permission.**", requires: [/New tasks start false/, /Actual changes are locked during in_progress/, /server combines that condition with other filters before pagination and the ready limit/, /Automated workflows must not enable it themselves/i] },
+      { resource: "references/handbook.md", section: "**Automatic execution permission.**", requires: [/New tasks start false/, /Actual changes are locked during in_progress/, /server combines that condition with other filters before pagination and the ready limit/, /Automatic selection requires true and does not enable permission itself/] },
     ],
   },
   {
@@ -220,10 +223,10 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "A new agent receives delivery task B in architecture -> A -> B, with no discussion history; A is complete and the architecture documents belong to the solution task.",
     obligation: "B's description directly identifies the architecture task and every required document; registration verifies those inputs and execution reads them before implementation, without duplicating documents or adding dependency edges.",
     propositions: [
-      { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/Every delivery task's description must directly list the architecture task ID and every architecture document required for that task/, /full attachment path under the source task/, /retain the architecture task ID and use a verified immutable repository reference/, /This applies to indirect successors as well as delivery roots/, /a reference only in another task or the delivery task's own primary Markdown is insufficient/, /These input references do not add execution dependencies or duplicate shared documents/, /Check each delivery task's description, including indirect successors/, /confirm that each reference resolves to the intended readable content/] },
+      { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/Every delivery task's description must directly list the architecture task ID and every architecture document required for that task/, /full attachment path under the source task/, /retain the architecture task ID and use a verified immutable repository reference/, /This applies to indirect successors as well as delivery roots/, /a reference only in another task or inside an attachment is insufficient/, /These input references do not add execution dependencies or duplicate shared documents/, /Check each delivery task's description, including indirect successors/, /confirm that each reference resolves to the intended readable content/] },
       { resource: "references/create-task.md", section: "## Write task-specific content", requires: [/For every Goal delivery task, list the architecture task ID and all required architecture document references directly in its description, including indirect successors/] },
       { resource: "references/create-task.md", section: "## Register and verify", requires: [/check every task's description, including indirect successors, for its architecture task ID and required document references/, /read the referenced contents under the Goal protocol/] },
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/Before implementation, read every required architecture document listed in the delivery task's description/, /architecture task is only an indirect prerequisite/, /missing or unreadable required architecture reference or input leaves execution unready/] },
+      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/Before implementation, read every required architecture document listed in the delivery task's description/, /architecture task is only an indirect prerequisite/, /Missing required content, an unreadable required source, or a missing required architecture reference or input leaves execution unready/] },
     ],
   },
   {
@@ -231,9 +234,78 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "A Markdown brief links its own plan and references a prototype owned by another task.",
     obligation: "Keep a self-contained brief and one detailed owner; resolve real resources from the proper task or document base.",
     propositions: [
-      { resource: "references/create-task.md", section: "## Write task-specific content", requires: [/self-contained Markdown description/, /without maintaining a second complete plan in the description/, /primary Markdown must contain \*\*Solution\*\* and \*\*Acceptance criteria\*\*/, /Consumers identify the source task ID and attachment path and confirm the contents/, /Do not upload the same whole packet to every task/] },
+      { resource: "references/create-task.md", section: "## Write task-specific content", requires: [/description that identifies its concrete work, responsibility, and actual content sources/, /Complete inline content needs no primary attachment/, /reference-owned and mixed content are also valid without repeating complete documents/, /Reference source task IDs and complete attachment paths or verified immutable repository sources, and actually read the required contents/, /Do not copy the whole shared packet into every task/] },
+      { resource: "references/task-content.md", section: "## Content ownership and evidence", requires: [/Each detailed explanation has one owner/, /Record this task's user confirmations, acceptance conclusions, and delivery evidence in an explicitly identified location in its own description or attachments/, /do not leave them only in chat or mix them into shared design/] },
       { resource: "references/create-task.md", section: "## Author Markdown", requires: [/A relative link or image in a description starts at this task's attachment root/, /A link inside a Markdown attachment starts at that file's directory/, /Confirm an upload and read back its contents before adding its link/, /Use these paths only when those files actually belong to that task/, /A Goal stage that produces a prototype links it only after producing and confirming it/] },
       { resource: "references/handbook.md", section: "**Markdown descriptions.**", requires: [/reads preserve the original string, including line breaks and fenced code/, /Shared inputs retain their source task ID and path or verified immutable repository URL/, /they are not cross-task relative links/] },
+    ],
+  },
+  {
+    id: "task-content-organization",
+    input: "A task provides all required information inline, through readable documents, or using both, without a dedicated primary attachment.",
+    obligation: "Apply the same six content requirements to every organization and identify task-owned confirmations and evidence.",
+    propositions: [
+      { resource: "references/task-content.md", section: "## Six content requirements", requires: [/content requirements, not six mandatory headings/, /in the description, in clearly referenced documents, or through a mixture of both/, /Complete inline content needs no primary attachment/, /Objective and requirements/, /Scope and deliverables/, /Solution and design/, /Input and output contracts/, /Acceptance criteria and verification/, /Sources/, /Judge completeness from the description and the contents actually read/, /unreadable resources, and missing decisions are insufficient/] },
+      { resource: "references/create-task.md", section: "## Register and verify", requires: [/all six content requirements, the explicit task-owned evidence location/] },
+      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/Complete inline content needs no primary attachment/, /document-owned and mixed organization are valid when the combined contents satisfy the same six requirements/] },
+    ],
+  },
+  {
+    id: "task-content-source-sufficiency",
+    input: "The task references shared documents, further required sources, or producer/consumer contracts; some source is unreadable or materially inconsistent.",
+    obligation: "Read applicable contents recursively, keep the task boundary, and resolve missing decisions or inconsistent contracts before reporting readiness.",
+    propositions: [
+      { resource: "references/task-content.md", section: "## Resolve and read sources", requires: [/source task ID and complete attachment path/, /Read the required source contents, including further references needed for the current stage/, /Track already-read resource identities to avoid circular reading/, /A reference cycle that supplies no actual required content cannot pass/, /Limit traversal to this task's requirements/, /Resolve material conflicts between the description and sources or between sources before declaring the content sufficient/] },
+      { resource: "references/task-content.md", section: "## Input and output contracts", requires: [/Describe actual exchanges rather than inventing an interface to fill a template/, /Check the relevant producer and consumer explanations for consistency/, /source reference does not create an execution dependency/] },
+      { resource: "references/task-content.md", section: "## Check sufficiency", requires: [/Unknown requirements, design choices, acceptance thresholds, and interface decisions are concrete blockers, not details to invent/, /A material scope or behavior change requires user confirmation/] },
+    ],
+  },
+  {
+    id: "handoff-authorized-blocked-todo",
+    input: "The user explicitly requests handoff of a false-permission todo task whose implementation prerequisite is unfinished but agreed interfaces and design are readable.",
+    obligation: "Review real content and authorized changes, then allow version-bound permission enable without starting execution or removing blockers.",
+    propositions: [
+      { resource: "SKILL.md", section: "## Select a mode", requires: [/`handoff <task-id>`/, /references\/handoff\.md/] },
+      { resource: "references/handoff.md", section: "## Review the task and its sources", requires: [/retaining its exact version, status, `allowAgents`, platform, dependencies, and worker record/, /organize its description or authorized source documents only from existing confirmed information/, /Missing decisions block review/, /Unfinished prerequisites need not prevent handoff when the design and agreed interfaces already define the future work/, /preserve their real blockers/] },
+      { resource: "references/handoff.md", section: "## Enable permission and reconcile", requires: [/For a reviewed false-permission `todo`/, /`task update --allow-agents true` with the exact version on which the final review decision was based/, /Omit unrelated options and preserve dependencies, platform, PR references, worker data, and other fields/, /Do not update status to make the task eligible/] },
+      { resource: "references/handoff.md", section: "## Report and return", requires: [/Return without selecting work or starting execution/] },
+    ],
+  },
+  {
+    id: "handoff-no-implicit-authorization",
+    input: "A task is created, broken down, or automatically discovered without an explicit request to hand it off.",
+    obligation: "Keep automatic-execution permission unchanged and preserve separate execution and delivery authorization.",
+    propositions: [
+      { resource: "SKILL.md", section: "## Shared constraints", requires: [/Automatic selection and execution must not enable this permission themselves/, /Only an explicitly authorized \[handoff\]\(references\/handoff\.md\) may enable it after content review/, /handoff does not start execution or replace other authority/] },
+      { resource: "references/create-task.md", section: "## Register and verify", requires: [/Creation and breakdown do not enable it/, /A separate, explicitly requested \[handoff\]\(handoff\.md\) reviews each task before enabling permission/] },
+      { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/`allowAgents=false`; registration does not enable it/, /Only a separately explicit \[handoff\]\(handoff\.md\) may review and enable permission/, /does not supply delivery execution authorization or advance the discussion gate/] },
+    ],
+  },
+  {
+    id: "handoff-enabled-reaudit",
+    input: "An already-enabled task fails content re-audit while it remains available to the scheduler.",
+    obligation: "Perform a read-only re-audit, report failure and scheduling exposure, and preserve permission without assuming suspension.",
+    propositions: [
+      { resource: "references/handoff.md", section: "## Review the task and its sources", requires: [/Already-enabled tasks receive a read-only re-audit/, /they may be selected while review is underway/, /Do not assume they are paused or edit their content under that assumption/] },
+      { resource: "references/handoff.md", section: "## State and ownership rules", requires: [/do not rewrite the same flag as an audit marker/, /If an already-enabled task fails re-audit, report the failed review, actual flag, and continued scheduling exposure/, /Keep its permission unchanged/, /Revocation or stopping needs separately explicit scope/, /A failed review is not a successful handoff or an implicit suspension/] },
+    ],
+  },
+  {
+    id: "handoff-state-and-worker-continuity",
+    input: "Handoff encounters a running task, a completed task, or active/released worker ownership.",
+    obligation: "Respect running permission locks, completed-task mode policy, and the original execution's controlled ownership and continuity.",
+    propositions: [
+      { resource: "references/handoff.md", section: "## State and ownership rules", requires: [/`in_progress`, permission false/, /Report the permission lock; do not newly enable or reset status to evade it/, /Review does not pause, stop, release, or transfer execution/, /Report completion and no handoff needed; do not reopen or update permission/, /This is mode policy, not an API prohibition/, /Preserve ownership and execution history/, /confirmed original worktree\/Agent continuity/, /enabling permission does not authorize a fresh execution elsewhere/] },
+    ],
+  },
+  {
+    id: "handoff-concurrency-and-unknown-outcome",
+    input: "Required sources change, the permission write conflicts or loses its response, or scheduling claims the task before the final GET.",
+    obligation: "Recheck actual content, reconcile uncertain writes with reads only, and report observed state without replay or unsupported attribution.",
+    propositions: [
+      { resource: "references/handoff.md", section: "## Enable permission and reconcile", requires: [/Finish authorized document changes and read them back before enabling permission/, /compare actual contents, not merely inventory or timestamps/, /not atomically protected by the task version/, /On a version conflict, reread and reassess/, /reconcile by reads only before considering any new mutation; do not automatically replay it/, /An unreadable reconciliation leaves the outcome unconfirmed/, /the final GET may show a higher version and `in_progress` with a worker/, /do not require equality with the update response's version or retry because execution was observed/, /Without a confirmed write result, report only the observed state rather than attributing the change to this operation/, /If final source verification fails or reveals material changes, report review incomplete or failed and the actual permission\/state/, /Do not claim success or automatically revoke the flag/] },
+      { resource: "references/task-content.md", section: "## Check sufficiency", requires: [/Verify mutable contents before enabling permission and read the required contents again before execution/, /A content check is not an atomic freeze or permanent certification/] },
+      { resource: "references/handoff.md", section: "## Report and return", requires: [/Distinguish a confirmed permission update from an uncertain write and a read-only re-audit/, /Permission true alone proves neither execution started nor completion/, /For a fixed set, review and report each task separately/] },
     ],
   },
 ];

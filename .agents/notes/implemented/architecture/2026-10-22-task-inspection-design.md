@@ -61,9 +61,11 @@ links select and focus the existing preview through one attachment-state owner
 and activate its tab; complete-inventory checks and visible errors share that
 owner. The published skill teaches self-contained Markdown briefs with concrete
 actions, scope, deliverables, constraints, brief observable completion and actual
-references. Detailed Solution, full Acceptance criteria and evidence remain in
-the task-specific primary Markdown attachment. The Markdown description decision
-owns this structure without changing Goal stages or authorization rules.
+references. The [task-content and handoff decision](../process/2026-10-25-task-content-handoff.md)
+now permits full content in the description or required referenced documents and
+requires a designated task-local confirmation and evidence location. It replaces
+the original primary-attachment storage rule without changing this reading
+composition, Goal stages or independent execution and delivery authority.
 
 ## Alternatives
 

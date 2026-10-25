@@ -27,8 +27,11 @@ checks within another task remain execution steps.
 Every solution, architecture, and design review uses its owning task. Before
 requesting user review, the complete current material is saved in its description or attachments,
 read back, and identified by task and resource reference. Revisions and review
-decisions stay synchronized there. Short review proposals may use the description;
-detailed task plans retain their primary Markdown owner.
+decisions stay synchronized there. The later
+[task-content and handoff decision](2026-10-25-task-content-handoff.md) permits
+detailed content in the description or its explicitly referenced owning documents,
+with one content owner and a task-local confirmation/evidence location. This replaces
+the original requirement to keep detailed plans in a primary Markdown attachment.
 
 An explicit user or applicable repository tracking/review instruction supplies
 standing creation permission for necessary tasks within the user's confirmed

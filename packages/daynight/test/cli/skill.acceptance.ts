@@ -69,7 +69,10 @@ const expectBundle = async (target: string): Promise<void> => {
   expect(example).toContain("[方案与验收](plan.md)");
   expect(example).toContain("[交互原型](mockui/index.html)");
   expect(authoring).toMatch(/Use these paths only when those files actually\s+belong to that task/);
-  expect(authoring).toContain("**Solution** and **Acceptance criteria**");
+  expect(authoring).toMatch(/Complete inline\s+content needs no primary attachment/);
+  expect(await readFile(path.join(target, "references/task-content.md"), "utf8")).toContain("## Six content requirements");
+  expect(await readFile(path.join(target, "references/handoff.md"), "utf8")).toContain("# Handoff a task");
+  expect(await readFile(path.join(target, "SKILL.md"), "utf8")).toContain("`handoff <task-id>`");
   expect(await readFile(path.join(target, "references/handbook.md"), "utf8")).toContain("**Markdown descriptions.**");
   const goal = await readFile(path.join(target, "references/goal.md"), "utf8");
   expect(goal).toMatch(/self-contained Markdown\s+description/);

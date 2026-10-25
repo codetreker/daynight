@@ -1,6 +1,6 @@
 ---
 name: using-daynight
-description: Manage concrete work (features, bug fixes, architecture, and their breakdown) and design reviews in Daynight; create or execute tasks, and automatically execute related tasks only when explicitly requested.
+description: Manage concrete work and design reviews in Daynight; create, execute, or review tasks for handoff, and automatically execute related tasks only when explicitly requested.
 ---
 
 # Using Daynight
@@ -26,9 +26,9 @@ discussion, save the complete current review material in the owning task's
 description or attachments. Read it back to confirm it is accessible, then
 provide the task ID or verified URL and any attachment paths. Keep revisions and
 review decisions synchronized with that task. Chat summaries and repository or
-PR links may supplement the material; they do not replace it. A short review
-proposal may live in the description; detailed task plans retain their primary
-Markdown ownership under the shared constraints.
+PR links may supplement the material; they do not replace it. The description
+and its actual sources follow the shared [task content standard](references/task-content.md),
+including task-owned confirmation and delivery evidence.
 
 Confirm the CLI, configured service, and intended project are accessible using
 the handbook's discovery rules. Preserve actual availability or upload failures;
@@ -72,6 +72,7 @@ requires. Do not load every mode by default.
 | `handbook` | Answering usage questions or performing requested task-management operations | [Handbook](references/handbook.md) |
 | `create-task <request>` | Preparing or registering persistent work explicitly requested by the user | [Create task](references/create-task.md) |
 | `run-task <task-id>` | Executing one specified task | [Run task](references/run-task.md) |
+| `handoff <task-id>` | Reviewing an explicitly requested task for handoff and enabling permission after it passes | [Handoff](references/handoff.md) |
 | `autopilot <goal or scope>` | The user explicitly requests automatic execution of Daynight tasks | [Autopilot](references/autopilot.md) |
 
 Honor an explicitly selected mode. For `using-daynight` without further input,
@@ -82,7 +83,7 @@ to `handbook` or select a task merely because one is ready.
 Enter `autopilot` only after an explicit user request for automatic Daynight task
 execution. A bare invocation may resume it when the conversation establishes
 that it is already active. Loading this skill, discovering tasks, creating work,
-and completing `run-task` never activate it.
+completing `run-task`, and handing off a task never activate it.
 
 ## Shared constraints
 
@@ -120,26 +121,26 @@ and completing `run-task` never activate it.
   authorization to create or execute other tasks. Expanding the current task's
   scope requires explicit user confirmation. A Goal discussion or final-acceptance
   task may cover the whole Goal when that is its confirmed scope.
-- Write each task description in Markdown as a self-contained brief: concrete
-  problem, actions, scope, deliverables, constraints, observable completion summary,
-  and real input references. Its own primary Markdown owns the detailed solution,
-  acceptance criteria, and evidence. Confirm resources before linking them;
-  description-relative links start at this task's attachment root. Attach resources
-  according to actual ownership and need; reference shared inputs at their verified
-  source. Each Goal delivery task's description directly identifies the architecture
-  task and required architecture documents, including indirect successors; follow
-  the Goal protocol's reference and readback rules. Express all prerequisites through
-  `dependsOn` and their explicit external subset through `externalDependsOn`.
-  Ordinary edges connect confirmed work in the same chain; mark a verified
-  prerequisite from another chain as external.
-  Both kinds block execution. CLI dependency options replace the full relationship
-  set; preserve needed ordinary and external edges as the handbook requires.
+- Use the shared [task content standard](references/task-content.md) when
+  creating, breaking down, handing off, or executing tasks. The description and
+  actual references jointly supply the six content requirements; complete inline
+  content needs no primary attachment. Give confirmations and delivery evidence
+  an explicit location in the owning task. Confirm resources before linking and
+  keep shared sources at their real owner. Each Goal delivery description directly
+  identifies the architecture task and every required document, including indirect
+  successors, under the Goal protocol's reference and readback rules. Express
+  prerequisites through complete `dependsOn` and its `externalDependsOn` subset.
+  Same-chain prerequisites are ordinary; verified cross-chain prerequisites are
+  external. Both block execution. CLI dependency options replace the full sets;
+  preserve required relationships as the handbook requires.
 - Automatic task selection requires `allowAgents=true`, readiness, and
   `requiredPlatform` compatibility with the actual current execution environment.
   Follow autopilot's runtime mapping, filter both ready and supplemental inventory
   before pagination, and carry automatic selection and its platform into run-task
   for a full-task recheck before version-bound `set-status in_progress`.
-  Automated workers and agent workflows must not enable this permission themselves.
+  Automatic selection and execution must not enable this permission themselves.
+  Only an explicitly authorized [handoff](references/handoff.md) may enable it
+  after content review; handoff does not start execution or replace other authority.
   Only an explicitly user-selected task or fixed Goal queue may follow the manual
   execution path regardless of the flag or platform compatibility; dependency,
   stage inputs and execution authorization still apply.
