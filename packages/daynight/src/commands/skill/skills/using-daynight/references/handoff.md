@@ -17,8 +17,9 @@ delivery authorization remains applicable to later scheduling.
 
 Read the intended project and complete task, retaining its exact version,
 status, `allowAgents`, platform, dependencies, and worker record. Read the
-required source contents and necessary further references under the content
-standard. Check current-stage sufficiency, responsibility boundaries, relevant
+required source contents, including referenced source-task descriptions or
+actual attachments, and necessary further references under the content standard.
+Check current-stage sufficiency, responsibility boundaries, relevant
 producer/consumer contracts, and Goal delivery tasks' direct architecture index.
 
 For a `todo` task with permission false, organize its description or authorized

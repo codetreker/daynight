@@ -55,10 +55,12 @@ Materials follow content ownership. Requirements stay with the Goal requirements
 task; architecture owns its phase plan, design and registered breakdown; implementation
 and acceptance own their respective plans and later evidence. These may be in task
 bodies or required referenced documents, according to the content/handoff successor. Every delivery description directly
-identifies the architecture task and relevant document attachment paths, including
-indirect successors whose direct prerequisite is another implementation task.
-Repository documents retain the owning architecture task and verified immutable
-references. Registration checks each description's source index; executors read
+identifies the architecture task and each required source, including indirect
+successors whose direct prerequisite is another implementation task. Shared body
+content names its owning task ID, the description field (whole body or applicable sections),
+read with task show; real attachments retain complete paths. Repository documents
+retain the owning architecture task and verified immutable references. Inline
+architecture needs no fabricated file path or copied attachment. Registration checks each description's source index; executors read
 the listed inputs before implementation. This gives independent consumers the
 confirmed design's location without copying its content or changing dependency
 edges. Existing CLI reads support those references; no new link scheme or API is

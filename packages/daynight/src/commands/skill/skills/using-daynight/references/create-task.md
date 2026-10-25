@@ -73,11 +73,13 @@ not claim unfinished outputs already exist.
 
 Attach only resources this task needs or owns. Keep shared Goal requirements
 with the requirements task and architecture and breakdown with the solution
-task. Reference source task IDs and complete attachment paths or verified
-immutable repository sources, and actually read the required contents. For every
-Goal delivery task, list the architecture task ID and all required architecture
-document references directly in its description, including indirect successors,
-as [the Goal protocol](goal.md) requires. Do not copy the whole shared packet
+task. Reference the owning task ID and its description with applicable sections
+for inline content, full paths for actual attachments, or verified immutable
+repository sources. Read source descriptions through `task show --json` and
+attachment bytes through the attachment commands. For every Goal delivery task,
+list the architecture task ID and all required architecture source locations
+directly in its description, including indirect successors, as
+[the Goal protocol](goal.md) requires. Do not copy the whole shared packet
 into every task. An independently needed snapshot records its purpose, original
 source, and source revision or content identity.
 
@@ -113,8 +115,9 @@ A relative link or image in a description starts at this task's attachment root.
 A link inside a Markdown attachment starts at that file's directory. Keep paths
 inside the task root and preserve the actual case and resource identity. Confirm
 an upload and read back its contents before adding its link. Reference shared
-inputs by their verified source task ID and attachment path or immutable
-repository URL; a relative link cannot identify another task's attachment.
+inputs by their verified owning task ID and description/sections or actual
+attachment path, or by an immutable repository URL. A relative link cannot
+identify another task's content.
 
 For example, the following brief applies to a task whose confirmed, readable
 attachments include its own `plan.md` and the complete `mockui/index.html`

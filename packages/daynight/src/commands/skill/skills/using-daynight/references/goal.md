@@ -140,14 +140,17 @@ replacement semantics. Do not create dependencies merely to group cards.
 
 Upload needed task-owned resources when their content uses attachments. Keep
 shared requirements with the requirements task and the solution and breakdown with the
-solution task. Consumers reference the verified source task ID and attachment
-path, or an immutable repository source. Every delivery task's description must
-directly list the architecture task ID and every architecture document required
-for that task, using its full attachment path under the source task. For a
-repository document, retain the architecture task ID and use a verified immutable
-repository reference. Include applicable sections when they clarify what to read.
-This applies to indirect successors as well as delivery roots; a reference only
-in another task or inside an attachment is insufficient.
+solution task. Consumers reference the owning task ID and the source description
+with applicable sections for inline content, full paths for actual attachments,
+or immutable repository sources. Use `task show --json` for source descriptions
+and the attachment commands for actual attachment contents. Every delivery
+task's description must directly list the architecture task ID and all required
+architecture source locations: description and applicable sections for inline
+design, full paths under the source task for each actual required attachment
+document, and verified immutable repository references for repository documents.
+Do not fabricate an attachment path or copy or relocate inline architecture to
+fit this index. This applies to indirect successors as well as delivery roots;
+a reference only in another task or inside an attachment is insufficient.
 These input references do not add execution dependencies or duplicate shared
 documents.
 
@@ -183,6 +186,11 @@ Read these attachments from that task before implementation:
 ## Task plan
 This task's `plan.md` owns its implementation plan and full acceptance criteria.
 ```
+
+When the shared architecture is inline, the architecture inputs instead identify
+the same source task ID and its description sections, such as "Upload flow" and
+"Error classification". Read those sections with `task show --json`; list full
+paths only for actual attachment documents that are also required.
 
 ## Preserve ownership and recover partial registration
 

@@ -79,9 +79,12 @@ one owner, and the task designates its own description or attachment location fo
 confirmation, acceptance conclusions and evidence. A complete description does not
 require a primary attachment. Shared Goal
 and design inputs remain with their owners. Each Goal delivery description
-directly identifies its architecture task and relevant document attachment paths,
-even for indirect successors. Repository documents retain the architecture task
-identity and a verified immutable URL. Registration verifies every source index,
+directly identifies its architecture task and every required source, even for
+indirect successors. Shared body content names the owning task ID, description
+field (whole body or applicable sections) and is read with task show; actual attachments use
+full paths. Repository documents retain the architecture task identity and a
+verified immutable URL. Complete inline architecture requires no fabricated path
+or duplicate attachment. Registration verifies every source index,
 and execution reads the listed inputs before implementation;
 registration does not copy the same document packet to every task. Independently
 required snapshots retain source version and purpose.

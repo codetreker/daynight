@@ -127,8 +127,9 @@ completing `run-task`, and handing off a task never activate it.
   content needs no primary attachment. Give confirmations and delivery evidence
   an explicit location in the owning task. Confirm resources before linking and
   keep shared sources at their real owner. Each Goal delivery description directly
-  identifies the architecture task and every required document, including indirect
-  successors, under the Goal protocol's reference and readback rules. Express
+  identifies the architecture task and every required source location, including
+  inline description sections and full paths for actual attachment documents,
+  even for indirect successors, under the Goal protocol's readback rules. Express
   prerequisites through complete `dependsOn` and its `externalDependsOn` subset.
   Same-chain prerequisites are ordinary; verified cross-chain prerequisites are
   external. Both block execution. CLI dependency options replace the full sets;

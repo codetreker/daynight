@@ -50,11 +50,18 @@ acceptance, and evidence location inline.
 Description-relative links and images start at the current task's attachment
 root; references inside a Markdown attachment start at its containing directory.
 Keep paths inside the task root and preserve case and resource identity. Confirm
-uploaded contents before adding their links. Shared task attachments require the
-source task ID and complete attachment path. Repository documents need accurate
-paths and the required verified immutable source revision. State the sections,
-requirements, or interfaces applicable to this task when a source covers more.
-Do not invent a URL scheme, cross-task relative link, or fixed service host.
+uploaded contents before adding their links. Shared task sources identify the
+owning task ID and content location: its description and applicable sections for
+inline content, or the complete attachment path for an actual attachment. Name
+the whole description when all of it applies; sections only delimit a larger
+source and do not require invented headings. Read source task descriptions with
+`task show --json`; list and read attachment
+contents separately with the installed attachment commands. Repository documents
+need accurate paths and the required verified immutable source revision. State
+the sections, requirements, or interfaces applicable to this task when a source
+covers more. Do not invent an attachment path for inline content, relocate or
+copy it merely to satisfy a reference format, or invent a URL scheme, cross-task
+relative link, or fixed service host.
 
 Read the required source contents, including further references needed for the
 current stage. Track already-read resource identities to avoid circular reading.
@@ -64,11 +71,13 @@ or executing related tasks. Resolve material conflicts between the description
 and sources or between sources before declaring the content sufficient.
 
 Every Goal delivery task's description must directly list the architecture task
-ID and every required architecture document's full attachment path, including
-indirect successors. For repository architecture, retain the owning architecture
-task ID and a verified immutable reference. An entry only in another task or
-inside an attachment is insufficient. [The Goal protocol](goal.md) owns this
-additional source-index requirement and its registration checks.
+ID and all required architecture source locations, including indirect successors.
+For inline architecture, name the source task's description and applicable
+sections. For each actual required attachment document, include its full path;
+for repository architecture, retain the owning task ID and a verified immutable
+reference. An entry only in another task or inside an attachment is insufficient.
+[The Goal protocol](goal.md) owns this additional source-index requirement and
+its registration checks.
 
 ## Input and output contracts
 

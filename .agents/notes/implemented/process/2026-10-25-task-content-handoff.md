@@ -33,9 +33,14 @@ The original split kept stable plans distinct from transient execution progress
 and prevented several competing copies. Single content ownership and separate
 execution checkpoints retain that rationale while allowing complete descriptions.
 The [user-confirmed Goal discussion decision](2026-10-24-user-confirmed-goal-discussions.md)
-continues to own stage gates. Shared inputs remain with their actual owners, and
-every Goal delivery description directly lists the architecture task identity and
-all required architecture document paths, including indirect successors.
+continues to own stage gates. Shared inputs remain with their actual owners.
+Shared task-body content is referenced by its owning task ID, explicit description
+field (whole body or applicable sections), and read through task show. Every Goal delivery
+description directly lists the architecture task identity and every required
+source: that description content, full paths for actual attachment documents,
+or verified immutable repository references. Indirect successors retain the same
+direct index; inline architecture does not require a fabricated path, copy or
+relocation into an attachment.
 
 Handoff requires the user's explicit authorization for its designated tasks.
 It reads actual task content and necessary further references, checks the six

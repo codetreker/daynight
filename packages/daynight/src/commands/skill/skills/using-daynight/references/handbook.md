@@ -223,8 +223,11 @@ is no format flag. Relative description links and images start at the current
 task's attachment root; Markdown attachment internals start at their containing
 file's directory. Keep real case-sensitive paths inside the task root, confirm
 uploaded contents before linking them, and preserve Markdown and valid references
-when replacing a description. Shared inputs retain their source task ID and path
-or verified immutable repository URL; they are not cross-task relative links.
+when replacing a description. Shared inputs retain their owning task ID and
+content location: description with applicable sections for inline content, full
+path for an actual attachment, or verified immutable repository URL. Read source
+descriptions with `task show --json` and attachment contents separately. They
+are not cross-task relative links, and inline content needs no fabricated path.
 
 **Attachment independence.** Task reads contain no attachment inventory.
 Attachments use case-sensitive relative paths; uploads to the same path replace

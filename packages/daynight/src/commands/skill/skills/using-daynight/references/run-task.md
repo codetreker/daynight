@@ -18,9 +18,11 @@ content needs no primary attachment; document-owned and mixed organization are
 valid when the combined contents satisfy the same six requirements.
 Resolve description-relative links and images from the current task's attachment
 root; links inside a Markdown attachment use its own directory. Resolve real
-shared input references using the source task ID and attachment path or a verified
-immutable repository reference. Read required contents rather than assuming a
-task read loads attachment inventory or bytes.
+shared input references using the owning task ID and description/sections,
+complete paths for actual attachments, or a verified immutable repository
+reference. Read source descriptions through `task show --json` and actual
+attachment contents through the attachment commands; a task read does not load
+attachment inventory or bytes.
 
 For a Goal stage or delivery task, read [the Goal protocol](goal.md) and identify
 its role from the actual task content and context. Apply that stage's input and
@@ -28,9 +30,10 @@ output requirements. Requirements and solution discussions start from their stag
 the completed requirements, applicable UI prototype, and architecture are outputs
 of the stages that produce them. Delivery tasks require the delivered design and
 applicable prototype. Before implementation, read every required architecture
-document listed in the delivery task's description using its architecture task ID
-and full attachment paths or verified immutable repository references. This also
-applies when the architecture task is only an indirect prerequisite. Confirm the
+source listed in the delivery task's description: the owning architecture task's
+inline description and applicable sections, full paths for actual attachment
+documents, or verified immutable repository references. This also applies when
+the architecture task is only an indirect prerequisite. Confirm the
 description's references satisfy the Goal protocol. When a prototype is a required
 input, view and exercise it with its resources. An unfinished output of the current
 stage is not a missing input.

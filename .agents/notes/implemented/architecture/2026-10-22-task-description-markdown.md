@@ -59,8 +59,10 @@ Markdown task content. The later [task-content and handoff decision](../process/
 replaces mandatory primary-attachment ownership: descriptions identify current task
 responsibility and readable sources; body and references jointly provide the six
 content items, each with one owner. Confirmation, acceptance conclusions and delivery
-evidence have a designated location in the current task. Shared inputs retain their source task/path or verified immutable
-repository URL; real uploads are confirmed before references are added. Existing
+evidence have a designated location in the current task. Shared body content names
+its owning task ID, explicit description field (whole body or applicable sections) for task show
+reads; actual attachment inputs retain source task/full path, and repository inputs
+use verified immutable URLs; real uploads are confirmed before references are added. Existing
 Goal stages, task-creation authority, implementation authority, merge authority,
 `dependsOn` and PR properties retain their meanings. API storage and CLI/Agent
 output preserve the original description bytes; there is no new stored format,

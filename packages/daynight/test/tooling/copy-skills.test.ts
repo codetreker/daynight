@@ -85,6 +85,7 @@ describe("packaged skill resource copy", () => {
     const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
     const mutations = [
       { scenario: "task-content-organization", resource: "references/task-content.md", before: "Complete inline content needs no primary attachment", after: "Complete inline content requires a primary attachment" },
+      { scenario: "goal-shared-inline-architecture", resource: "references/task-content.md", before: "Do not invent an attachment path for inline content, relocate or copy it merely to satisfy a reference format", after: "Create an attachment and copy inline content before handoff" },
       { scenario: "handoff-no-implicit-authorization", resource: "references/create-task.md", before: "Creation and breakdown do not enable it", after: "Creation and breakdown may enable it" },
       { scenario: "handoff-enabled-reaudit", resource: "references/handoff.md", before: "Keep its permission unchanged", after: "Disable its permission immediately" },
       { scenario: "handoff-state-and-worker-continuity", resource: "references/handoff.md", before: "confirmed original worktree/Agent continuity", after: "a new worktree and Agent" },

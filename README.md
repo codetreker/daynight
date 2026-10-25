@@ -307,10 +307,13 @@ the original string bytes. Use relative references such as
 `[Solution and acceptance](plan.md)` only after confirming that the referenced
 file belongs to that task and its uploaded contents are readable.
 Shared Goal and design inputs stay with their owners; attachments follow actual
-need. Every Goal delivery description directly names its architecture task ID and
-the relevant architecture document attachment paths, including delivery tasks
-that depend on another implementation task. Repository documents use verified
-immutable references with their owning architecture task identified. Executors
+need. Shared content in another task's description is referenced by its owning task
+ID, the explicit `description` field (whole body or applicable sections), then read with
+`task show`. Every Goal delivery description directly names its architecture task
+ID and each required source: the whole description or applicable sections for inline architecture, complete
+attachment paths for actual attached documents, or verified immutable repository
+references. This includes delivery tasks that depend on another implementation task;
+repository sources retain the owning architecture task identity. Executors
 read the listed inputs before implementation; registration verifies these
 references in every delivery description. Frontend implementation tasks read the completed final-style interactive prototype and
 its representative states. Dependencies use dependsOn, PR references use properties,
