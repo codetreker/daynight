@@ -154,7 +154,7 @@ const bilingualToken = async (page: Page, context: BrowserContext, origin: strin
   const name = `Combined CLI ${randomUUID()}`;
   const input = dialog.getByLabel('Token name', { exact: false });
   await input.fill(name);
-  await dialog.getByLabel('Validity', { exact: true }).fill('1');
+  await dialog.getByLabel('Expiration', { exact: true }).selectOption('never');
   const originalInput = await input.elementHandle();
   check(originalInput !== null, 'The production token input is missing.');
   const fetched = Promise.withResolvers<Token>();
@@ -274,7 +274,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     clients.push(client); return client;
   };
   const pat = async (api: AuthenticatedAPI, name: string): Promise<Token> => {
-    const token = await request<Token>(api, options.target.baseUrl, 'POST', '/api/v1/me/tokens', 201, { name, days: 1 });
+    const token = await request<Token>(api, options.target.baseUrl, 'POST', '/api/v1/me/tokens', 201, { name, expiresAt: null });
     secrets.add(token.token); return token;
   };
   const origin = options.target.baseUrl;

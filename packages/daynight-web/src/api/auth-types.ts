@@ -15,7 +15,12 @@ export type PersonalAccessToken = {
   readonly id: string;
   readonly name: string;
   readonly createdAt: string;
-  readonly expiresAt: string;
+  readonly expiresAt: string | null;
+};
+export type PersonalAccessTokenExpiryUpdate = {
+  readonly expiresAt: string | null;
+  readonly expectedExpiresAt: string | null;
+  readonly expectedUserId: string;
 };
 export type CreatedPersonalAccessToken = PersonalAccessToken & { readonly token: string };
 export type ProjectRole = "admin" | "member";

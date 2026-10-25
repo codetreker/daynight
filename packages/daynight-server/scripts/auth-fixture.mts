@@ -180,7 +180,7 @@ export const login = async (options: {
     return await exchange(url, { ...init, headers });
   };
   const createPAT = async (name = "Acceptance fixture", days = 1): Promise<string> => {
-    const response = await request("/api/v1/me/tokens", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, days }) });
+    const response = await request("/api/v1/me/tokens", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name, expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString() }) });
     if (response.status !== 201) { await response.body?.cancel(); throw new Error("Fixture PAT creation failed."); }
     let value: { token?: unknown };
     try { value = await response.json() as typeof value; }

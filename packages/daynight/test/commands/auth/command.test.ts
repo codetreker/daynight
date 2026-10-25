@@ -58,6 +58,26 @@ describe("explicit device login", () => {
     expect(new Headers(businessFetch.mock.calls[0]![1]!.headers).get("Authorization")).toBe(`Bearer ${token.access_token}`);
   });
 
+  it.each([undefined, 60, 2592000])("accepts an omitted or finite token expiry without adding local expiry state: %j", async (expiresIn) => {
+    const { context, paths } = await fixture();
+    const response = { access_token: token.access_token, token_type: "Bearer", ...(expiresIn === undefined ? {} : { expires_in: expiresIn }) };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(authorization())).mockResolvedValueOnce(json(response));
+    await runLoginCommand(["--no-browser"], context, { fetch, wait: immediateWait });
+    expect(parse(await readFile(paths.configFile, "utf8"))).toEqual({ serverToken: token.access_token });
+    const businessFetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ items: [], nextCursor: null }));
+    await runServerCommand(context, async ({ api }) => { await api.listProjects(); }, { fetch: businessFetch });
+    expect(new Headers(businessFetch.mock.calls[0]![1]!.headers).get("Authorization")).toBe(`Bearer ${token.access_token}`);
+  });
+
+  it.each([null, 0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "2592000", true, {}, []])("rejects a present invalid token expiry while preserving existing credentials: %j", async (expiresIn) => {
+    const original = "serverToken: existing-credential\n";
+    const { context, paths } = await fixture(original);
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(authorization())).mockResolvedValueOnce(json({ ...token, expires_in: expiresIn }));
+    await expect(runLoginCommand(["--no-browser"], context, { fetch, wait: immediateWait })).rejects.toThrow("Invalid device authorization response.");
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(await readFile(paths.configFile, "utf8")).toBe(original);
+  });
+
   it("supports another-device login and continues when opening a browser fails", async () => {
     for (const noBrowser of [false, true]) {
       const { context } = await fixture();

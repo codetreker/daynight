@@ -90,7 +90,7 @@ func (s *Store) DecideDeviceAuthorization(ctx context.Context, p core.Principal,
 }
 
 // A successful redemption consumes the grant and inserts its credential in one commit.
-func (s *Store) RedeemDeviceAuthorization(ctx context.Context, hash []byte, c core.Credential) (string, error) {
+func (s *Store) RedeemDeviceAuthorization(ctx context.Context, hash []byte, c core.PersonalAccessToken) (string, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return "", authQueryError("begin device redemption", err)

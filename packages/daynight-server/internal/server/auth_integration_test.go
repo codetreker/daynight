@@ -242,10 +242,10 @@ func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
 		t.Fatal("refreshing Alice changed Bob's same-email account")
 	}
 	origin := map[string]string{"Origin": integration.server.URL}
-	identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"CLI acceptance","days":1}`, nil, http.StatusForbidden)
-	_, data = identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"CLI acceptance","days":1}`, origin, http.StatusCreated)
+	identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"CLI acceptance","expiresAt":null}`, nil, http.StatusForbidden)
+	_, data = identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"CLI acceptance","expiresAt":null}`, origin, http.StatusCreated)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
-	if token.ID == "" || !strings.HasPrefix(token.Token, "dnpat_") || token.Name != "CLI acceptance" || token.ExpiresAt.Sub(token.CreatedAt) != 24*time.Hour {
+	if token.ID == "" || !strings.HasPrefix(token.Token, "dnpat_") || token.Name != "CLI acceptance" || token.ExpiresAt != nil {
 		t.Fatal("personal token creation contract changed")
 	}
 	integration.secrets = append(integration.secrets, token.Token)
@@ -256,7 +256,7 @@ func TestAuthenticationUniAuthIdentityAndCredentials(t *testing.T) {
 		t.Fatal("PAT did not authenticate its owning user")
 	}
 	identityRequest(t, patBrowser, http.MethodGet, integration.server.URL+"/api/v1/me/tokens", "", bearer, http.StatusForbidden)
-	identityRequest(t, patBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"forbidden","days":1}`, bearer, http.StatusForbidden)
+	identityRequest(t, patBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"forbidden","expiresAt":null}`, bearer, http.StatusForbidden)
 	identityRequest(t, aliceBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", map[string]string{"Authorization": "Bearer invalid"}, http.StatusUnauthorized)
 	_, data = identityRequest(t, aliceBrowser, http.MethodGet, integration.server.URL+"/api/v1/me/tokens", "", nil, http.StatusOK)
 	listed := identityDecode[api.PersonalAccessTokenList](t, data)

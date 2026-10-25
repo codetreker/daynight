@@ -3,7 +3,6 @@ package server
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -124,8 +123,9 @@ func (h *Authentication) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/v1/auth/logout", h.Require(h.logout))
 	mux.HandleFunc("GET /api/v1/me/tokens", h.Require(h.listTokens))
 	mux.HandleFunc("POST /api/v1/me/tokens", h.Require(h.createToken))
+	mux.HandleFunc("PATCH /api/v1/me/tokens/{tokenId}", h.Require(h.updateToken))
 	mux.HandleFunc("DELETE /api/v1/me/tokens/{tokenId}", h.Require(h.revokeToken))
-	for path, methods := range map[string]string{"/api/v1/auth/login": "GET", h.callbackPath: "GET", "/api/v1/auth/providers": "GET, HEAD", "/api/v1/me": "GET, HEAD", "/api/v1/auth/logout": "POST", "/api/v1/me/tokens": "GET, HEAD, POST", "/api/v1/me/tokens/{tokenId}": "DELETE"} {
+	for path, methods := range map[string]string{"/api/v1/auth/login": "GET", h.callbackPath: "GET", "/api/v1/auth/providers": "GET, HEAD", "/api/v1/me": "GET, HEAD", "/api/v1/auth/logout": "POST", "/api/v1/me/tokens": "GET, HEAD, POST", "/api/v1/me/tokens/{tokenId}": "PATCH, DELETE"} {
 		fallback := methodNotAllowed(h.logger, methods)
 		if path == "/api/v1/auth/logout" || strings.HasPrefix(path, "/api/v1/me") {
 			mux.HandleFunc(path, h.Require(func(w http.ResponseWriter, request *http.Request, _ core.Principal) { fallback(w, request) }))
@@ -188,8 +188,8 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 func userResponse(user core.User) api.User {
 	return api.User{ID: user.ID, Email: user.Email, EmailVerified: user.EmailVerified, Name: user.Name, AvatarURL: user.AvatarURL}
 }
-func tokenResponse(c core.Credential) api.PersonalAccessToken {
-	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: c.ExpiresAt.UTC()}
+func tokenResponse(c core.PersonalAccessToken) api.PersonalAccessToken {
+	return api.PersonalAccessToken{ID: c.ID, Name: c.Name, CreatedAt: c.CreatedAt.UTC(), ExpiresAt: utcTokenExpiry(c.ExpiresAt)}
 }
 
 func (h *Authentication) me(w http.ResponseWriter, request *http.Request, p core.Principal) {
@@ -224,7 +224,7 @@ func (h *Authentication) listTokens(w http.ResponseWriter, request *http.Request
 }
 func (h *Authentication) createToken(w http.ResponseWriter, request *http.Request, p core.Principal) {
 	w.Header().Set("Cache-Control", "no-store")
-	fields, err := decodeObject(w, request, "name", "days")
+	fields, err := decodeObject(w, request, "name", "expiresAt")
 	if err != nil {
 		writeError(w, request, h.logger, "auth", "create_token", err)
 		return
@@ -234,14 +234,12 @@ func (h *Authentication) createToken(w http.ResponseWriter, request *http.Reques
 		writeError(w, request, h.logger, "auth", "create_token", err)
 		return
 	}
-	days := 30
-	if raw, exists := fields["days"]; exists {
-		if string(raw) == "null" || json.Unmarshal(raw, &days) != nil {
-			writeError(w, request, h.logger, "auth", "create_token", invalidInput("days must be an integer from 1 to 365"))
-			return
-		}
+	expiresAt, err := requiredTokenTimestamp(fields, "expiresAt")
+	if err != nil {
+		writeError(w, request, h.logger, "auth", "create_token", err)
+		return
 	}
-	result, err := h.identity.CreatePAT(request.Context(), p, service.CreatePAT{Name: name, Days: days})
+	result, err := h.identity.CreatePAT(request.Context(), p, service.CreatePAT{Name: name, ExpiresAt: expiresAt})
 	if err != nil {
 		writeError(w, request, h.logger, "auth", "create_token", err)
 		return

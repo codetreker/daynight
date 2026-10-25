@@ -445,12 +445,13 @@ test('auth-personal-tokens', scenario('auth-personal-tokens'), async ({ page, ap
   await page.getByRole('button', { name: '创建令牌', exact: true }).click();
   const name = `Browser token ${randomUUID()}`;
   await page.getByLabel('令牌名称', { exact: false }).fill(name);
-  await page.getByLabel('有效期', { exact: true }).fill('1');
+  await page.getByLabel('有效期', { exact: true }).selectOption('never');
   const created = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/me/tokens` && response.request().method() === 'POST');
   await page.getByRole('dialog').getByRole('button', { name: '创建令牌', exact: true }).click();
   const response = await created;
   expect(response.status()).toBe(201);
-  const metadata = await response.json() as { id: string; token: string };
+  const metadata = await response.json() as { id: string; token: string; expiresAt: string | null };
+  expect(metadata.expiresAt).toBeNull();
   const secret = page.getByLabel('一次性访问令牌', { exact: true });
   expect(await secret.inputValue() === metadata.token, 'The one-time field displays the newly issued token').toBe(true);
   const tokenClient = await tokenContext(playwright.request, baseURL, metadata.token);
@@ -557,7 +558,7 @@ test('auth-resource-session', scenario('auth-resource-session'), async ({ page, 
   await attachments.locator('button.attachment-file').filter({ hasText: /index\.html/ }).click();
   await expect(frame.locator('body')).toHaveAttribute('data-value', 'relative-authenticated');
   expect((await authenticatedAPI(context.request).head(preview)).status()).toBe(200);
-  expect((await authenticatedAPI(context.request).post('/api/v1/me/tokens', { headers: { Origin: 'https://wrong-origin.example' }, data: { name: 'Rejected browser origin', days: 1 } })).status()).toBe(403);
+  expect((await authenticatedAPI(context.request).post('/api/v1/me/tokens', { headers: { Origin: 'https://wrong-origin.example' }, data: { name: 'Rejected browser origin', expiresAt: null } })).status()).toBe(403);
   await frame.locator('#counter').press('Escape');
   await expect(detail).toHaveCount(0);
   const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');

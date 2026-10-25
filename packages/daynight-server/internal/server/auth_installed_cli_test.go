@@ -204,7 +204,7 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 	repository := "https://example.test/auth-cli/shared.git"
 	_, data := identityRequest(t, bobBrowser, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Bob private project","repoUrl":"`+repository+`"}`, origin, http.StatusCreated)
 	bobProject := identityDecode[api.Project](t, data)
-	_, data = identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Installed CLI acceptance","days":1}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Installed CLI acceptance","expiresAt":null}`, origin, http.StatusCreated)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	if token.ID == "" || !strings.HasPrefix(token.Token, "dnpat_") {
 		t.Fatal("real browser session did not mint a personal access token")

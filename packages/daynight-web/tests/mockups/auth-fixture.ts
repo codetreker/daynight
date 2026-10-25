@@ -54,6 +54,7 @@ const wait = (signal: AbortSignal | null | undefined): Promise<Response> => new 
   signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
 });
 const empty = (): Response => new Response(null, { status: 204 });
+const tokenExpiry = (value: unknown): value is string | null => value === null || typeof value === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(value) && Number.isFinite(Date.parse(value)) && Date.parse(value) > Date.now();
 
 export const authPreviewAssets: Readonly<Record<string, { readonly contentType: string; readonly body: string }>> = {
   'site/index.html': { contentType: 'text/html', body: previewHtml },
@@ -85,7 +86,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
     identityPaused = false; activeUser = currentUser;
     authenticated = !['logged-out', 'login-error', 'providers-loading', 'providers-error', 'providers-empty', 'invite-signed-out'].includes(next);
     tokens = next === 'tokens-empty' ? [] : [
-      { id: uuid(301), name: 'MacBook · 日常开发', createdAt: stamp, expiresAt: future },
+      { id: uuid(301), name: 'MacBook · 日常开发', createdAt: stamp, expiresAt: null },
       { id: uuid(302), name: '构建服务器 · 发布自动化', createdAt: stamp, expiresAt: future },
       { id: uuid(303), name: '旧开发环境', createdAt: '2026-09-18T09:00:00Z', expiresAt: '2026-10-18T09:00:00Z' },
     ];
@@ -139,20 +140,33 @@ export const installAuthFixture = (initial: AuthScenario) => {
     if (url.pathname === '/api/v1/me/tokens') {
       if (method === 'GET') {
         if (scenario === 'tokens-loading') return wait(signal);
-        if (scenario === 'tokens-error') return error(500, 'internal_error');
-        return Response.json({ items: tokens });
+        if (scenario === 'tokens-error') {
+          const failure = error(500, 'internal_error'); failure.headers.set('Daynight-User-ID', activeUser.id); return failure;
+        }
+        return Response.json({ items: tokens }, { headers: { 'Daynight-User-ID': activeUser.id } });
       }
       if (method === 'POST') {
         if (scenario === 'token-create-error') return error(500, 'internal_error');
         const data = await body();
-        const days = data.days === undefined ? 30 : data.days;
-        if (typeof data.name !== 'string' || data.name.trim() === '' || [...data.name].length > 100 || typeof days !== 'number' || !Number.isInteger(days) || days < 1 || days > 365) return error(400, 'invalid_input');
-        const token: PersonalAccessToken = { id: uuid(++sequence), name: data.name, createdAt: stamp, expiresAt: new Date(Date.parse(stamp) + days * 86_400_000).toISOString() };
+        if (typeof data.name !== 'string' || data.name.trim() === '' || [...data.name].length > 100 || !tokenExpiry(data.expiresAt)) return error(400, 'invalid_input');
+        const token: PersonalAccessToken = { id: uuid(++sequence), name: data.name, createdAt: stamp, expiresAt: data.expiresAt };
         tokens = [token, ...tokens];
         return Response.json({ ...token, token: 'dn_auth_fixture_example_7pN4sK2mQ9xT6vR3hW8cA5yB1zF0' }, { status: 201 });
       }
     }
     const tokenMatch = /^\/api\/v1\/me\/tokens\/([^/]+)$/.exec(url.pathname);
+    if (tokenMatch !== null && method === 'PATCH') {
+      const data = await body();
+      const refusal = (status: number, code: string) => Response.json({ error: { code, message: 'Controlled token expiration failure.', requestId: `auth-fixture-${code}` } }, { status, headers: { 'Daynight-User-ID': activeUser.id } });
+      if (data.expectedUserId !== activeUser.id) return refusal(403, 'forbidden');
+      if (!tokenExpiry(data.expiresAt)) return refusal(400, 'invalid_input');
+      const token = tokens.find((entry) => entry.id === tokenMatch[1]);
+      if (token === undefined || token.expiresAt !== null && Date.parse(token.expiresAt) <= Date.now()) return refusal(404, 'not_found');
+      if (data.expectedExpiresAt !== token.expiresAt) return refusal(409, 'version_conflict');
+      const updated: PersonalAccessToken = { ...token, expiresAt: data.expiresAt };
+      tokens = tokens.map((entry) => entry.id === updated.id ? updated : entry);
+      return Response.json(updated, { headers: { 'Daynight-User-ID': activeUser.id } });
+    }
     if (tokenMatch !== null && method === 'DELETE') { tokens = tokens.filter((token) => token.id !== tokenMatch[1]); return empty(); }
     if (url.pathname === '/api/v1/projects') {
       if (method === 'GET') {

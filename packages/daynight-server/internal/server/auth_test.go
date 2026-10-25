@@ -146,8 +146,8 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if empty.Items == nil || len(empty.Items) != 0 {
 		t.Fatalf("empty tokens: %+v", empty)
 	}
-	minted := decodeResponse[api.CreatedPersonalAccessToken](t, h.request("POST", "/api/v1/me/tokens", `{"name":"CI agent"}`, cookies, nil, h.auth.origin), 201)
-	if !strings.HasPrefix(minted.Token, "dnpat_") || minted.ExpiresAt.Sub(minted.CreatedAt) != 30*24*time.Hour {
+	minted := decodeResponse[api.CreatedPersonalAccessToken](t, h.request("POST", "/api/v1/me/tokens", `{"name":"CI agent","expiresAt":null}`, cookies, nil, h.auth.origin), 201)
+	if !strings.HasPrefix(minted.Token, "dnpat_") || minted.ExpiresAt != nil {
 		t.Fatalf("token: %+v", minted)
 	}
 	var stored []byte
@@ -170,7 +170,7 @@ func TestIdentityHTTPLoginCredentialsAndRevocation(t *testing.T) {
 	if got := h.request("POST", "/mutation", "", cookies, bearer, "https://foreign.test"); got.Code != 204 {
 		t.Fatalf("Bearer origin behavior: %d %s", got.Code, got.Body)
 	}
-	for _, call := range []struct{ method, path, body string }{{"GET", "/api/v1/me/tokens", ""}, {"POST", "/api/v1/me/tokens", `{"name":"nested"}`}, {"DELETE", "/api/v1/me/tokens/" + minted.ID, ""}, {"POST", "/api/v1/auth/logout", ""}} {
+	for _, call := range []struct{ method, path, body string }{{"GET", "/api/v1/me/tokens", ""}, {"POST", "/api/v1/me/tokens", `{"name":"nested","expiresAt":null}`}, {"DELETE", "/api/v1/me/tokens/" + minted.ID, ""}, {"POST", "/api/v1/auth/logout", ""}} {
 		got := h.request(call.method, call.path, call.body, cookies, bearer, h.auth.origin)
 		assertProjectError(t, got, 403, "forbidden")
 	}
@@ -240,7 +240,7 @@ func TestIdentityHTTPResponsePrincipalProvenance(t *testing.T) {
 	}
 
 	minted := decodeResponse[api.CreatedPersonalAccessToken](t,
-		h.request("POST", "/api/v1/me/tokens", `{"name":"principal-test"}`, aliceCookies, nil, h.auth.origin), http.StatusCreated)
+		h.request("POST", "/api/v1/me/tokens", `{"name":"principal-test","expiresAt":null}`, aliceCookies, nil, h.auth.origin), http.StatusCreated)
 	bearer := []string{"Bearer " + minted.Token}
 	patResponse := h.request("GET", "/api/v1/me", "", bobCookies, bearer, "")
 	if user := decodeResponse[api.User](t, patResponse, http.StatusOK); user.ID != alice.ID || patResponse.Header().Get("Daynight-User-ID") != alice.ID {
@@ -262,7 +262,7 @@ func TestIdentityHTTPResponsePrincipalProvenance(t *testing.T) {
 	}
 	invalid := h.request("POST", "/api/v1/me/tokens", `{}`, aliceCookies, nil, h.auth.origin)
 	assertProjectError(t, invalid, http.StatusBadRequest, "invalid_input")
-	forbidden := h.request("POST", "/api/v1/me/tokens", `{"name":"nested"}`, bobCookies, bearer, h.auth.origin)
+	forbidden := h.request("POST", "/api/v1/me/tokens", `{"name":"nested","expiresAt":null}`, bobCookies, bearer, h.auth.origin)
 	assertProjectError(t, forbidden, http.StatusForbidden, "forbidden")
 	for _, response := range []*httptest.ResponseRecorder{invalid, forbidden} {
 		if response.Header().Get("Daynight-User-ID") != alice.ID {
@@ -351,7 +351,7 @@ func TestIdentityHTTPInputAndOperationalFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertProjectError(t, h.request("GET", "/api/v1/me/tokens", "", cookies, nil, ""), 500, "internal_error")
-	assertProjectError(t, h.request("POST", "/api/v1/me/tokens", `{"name":"fails"}`, cookies, nil, h.auth.origin), 500, "internal_error")
+	assertProjectError(t, h.request("POST", "/api/v1/me/tokens", `{"name":"fails","expiresAt":null}`, cookies, nil, h.auth.origin), 500, "internal_error")
 	assertProjectError(t, h.request("DELETE", "/api/v1/me/tokens/00000000-0000-0000-0000-000000000001", "", cookies, nil, h.auth.origin), 500, "internal_error")
 	if _, err := h.database.Pool.Exec(context.Background(), `DROP TABLE users`); err != nil {
 		t.Fatal(err)

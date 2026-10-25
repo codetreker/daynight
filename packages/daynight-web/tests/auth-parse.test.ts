@@ -55,6 +55,8 @@ describe("personal access token parsing", () => {
     expect(parseToken(value)).toEqual(token);
     expect(parseTokens({ items: [value, { ...value, id: otherId }] })).toEqual([token, { ...token, id: otherId }]);
     expect(parseTokens({ items: [] })).toEqual([]);
+    expect(parseToken({ ...token, expiresAt: null })).toEqual({ ...token, expiresAt: null });
+    expect(parseCreatedToken({ ...token, expiresAt: null, token: "permanent-token" })).toEqual({ ...token, expiresAt: null, token: "permanent-token" });
   });
 
   it("returns a creation secret unchanged while discarding unrelated secret fields", () => {

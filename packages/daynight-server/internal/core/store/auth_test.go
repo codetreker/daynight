@@ -13,11 +13,11 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func testAuthRecords(t *testing.T, s *Store) (core.User, core.Principal, core.Credential) {
+func testAuthRecords(t *testing.T, s *Store) (core.User, core.Principal, core.Session) {
 	t.Helper()
 	now := time.Now().UTC()
 	hash := sha256.Sum256([]byte(uuid.NewString()))
-	c := core.Credential{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
+	c := core.Session{ID: uuid.NewString(), TokenHash: hash[:], CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
 	u, err := s.CreateIdentitySession(context.Background(), core.User{ID: uuid.NewString(), UniAuthID: "github:" + uuid.NewString()}, c)
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestIdentityStorageRollbackAndOwnership(t *testing.T) {
 		t.Fatalf("user not rolled back: %d %v", count, err)
 	}
 	hash := sha256.Sum256([]byte("pat"))
-	pat := core.Credential{ID: uuid.NewString(), TokenHash: hash[:], Name: "owned", CreatedAt: time.Now().UTC(), ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	pat := core.PersonalAccessToken{ID: uuid.NewString(), TokenHash: hash[:], Name: "owned", CreatedAt: time.Now().UTC(), ExpiresAt: storeTokenExpiry(time.Now().UTC().Add(time.Hour))}
 	if err := s.CreatePAT(ctx, p, pat); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +143,7 @@ func TestIdentityStorageOperationalFailures(t *testing.T) {
 			case "upsert-user", "insert-session":
 				_, err = s.CreateIdentitySession(context.Background(), core.User{ID: uuid.NewString(), UniAuthID: "github:new"}, c)
 			case "insert-pat":
-				err = s.CreatePAT(context.Background(), p, core.Credential{ID: uuid.NewString(), TokenHash: hash[:], Name: "token", CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
+				err = s.CreatePAT(context.Background(), p, core.PersonalAccessToken{ID: uuid.NewString(), TokenHash: hash[:], Name: "token", CreatedAt: now, ExpiresAt: storeTokenExpiry(now.Add(time.Hour))})
 			case "list-pat":
 				_, err = s.ListPATs(context.Background(), p, now)
 			case "delete-pat":
@@ -169,7 +169,7 @@ func TestIdentityStorageOperationalFailures(t *testing.T) {
 	if err := s.CreateLogin(context.Background(), core.LoginTransaction{}, now); err == nil {
 		t.Fatal("closed pool login accepted")
 	}
-	if _, err := s.CreateIdentitySession(context.Background(), core.User{}, core.Credential{}); err == nil {
+	if _, err := s.CreateIdentitySession(context.Background(), core.User{}, core.Session{}); err == nil {
 		t.Fatal("closed pool identity accepted")
 	}
 	if _, err := s.ListPATs(context.Background(), core.Principal{Kind: core.SessionCredential}, now); err == nil {

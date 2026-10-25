@@ -123,8 +123,9 @@ states. The [authentication architecture](../../docs/design/daynight-auth.md#登
 owns the discovery protocol.
 
 The `/device` entry retains its optional `user_code` through browser sign-in and
-shows the current account, authorization code, project permissions, and 30-day
-access lifetime. Opening the page reads the request without granting access. The
+shows the current account, authorization code, project permissions, and how to
+manage access. CLI access does not expire automatically. Opening the page reads
+the request without granting access. The
 user must compare the displayed terminal code, select its confirmation checkbox,
 and explicitly approve; denial requires no matching-code confirmation. Both
 operations send the reviewed account ID so the server can refuse a changed
@@ -133,7 +134,23 @@ admitted identity against the displayed account. An uncertain decision blocks
 further decisions until inspection confirms the actual state. Inspection never
 replays approval, and a still-pending result requires another explicit decision.
 Identity changes abort requests and remount this page through the shared shell.
-CLI access appears in the existing account token list and can be revoked there.
+CLI access appears in the account token list, where its expiration can be changed
+or access revoked. The device request's ten-minute approval deadline remains
+independent of the token lifetime.
+
+Token creation defaults to Never expires and optionally accepts a future local
+date and time, serialized as a UTC `expiresAt`. Token metadata requires either a
+UTC timestamp or explicit null; null is displayed as Never expires. The shared
+expiration editor also changes active tokens without changing their secret or
+requiring clients to sign in again. An unchanged editor preserves the original
+timestamp, including seconds and fractional precision, and does not submit.
+Updates send the exact observed `expectedExpiresAt` and displayed account ID.
+Token list and update responses must identify the reviewed account before their
+metadata can be rendered. A conflict refreshes the current expiration for review.
+An unconfirmed update blocks further writes until a token-list read confirms
+the actual state; a failed read retains the displayed metadata and the write
+block. Reads never repeat the update. Expired, revoked, and missing tokens are
+unavailable for editing.
 
 With `pnpm web:dev`, open `/tests/mockups/auth.html` for actual components with
 controlled fetch responses, the same locale Provider and final styles. This
@@ -143,7 +160,10 @@ retains the broader scenario reference. Open `/tests/mockups/device.html` for
 the production device page with frontend-only controlled request states. Its
 scenario selector covers manual entry, loading, approval, denial, expiration,
 invalid codes, request failures, rate limiting, uncertain decisions, and long
-account details. The shared language selector and final responsive styles remain
+account details. Open `/tests/mockups/tokens.html` for the production token panel,
+creation dialog, and expiration editor with controlled loading, conflict,
+unconfirmed-update, reconciliation-failure, unavailable-token, and long-name
+states. The shared language selector and final responsive styles remain
 interactive without a Go service.
 
 ## Project execution-warning settings

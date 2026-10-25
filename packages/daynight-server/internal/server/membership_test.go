@@ -140,7 +140,7 @@ func TestMembershipHTTPRolesVersionsAndCredentials(t *testing.T) {
 	}
 	assertProjectError(t, h.call("PATCH", memberPath, memberBody("member"), h.admin), 409, "version_conflict")
 	assertProjectError(t, h.call("DELETE", memberPath, fmt.Sprintf(`{"version":%d}`, member.Version), h.admin), 409, "version_conflict")
-	pat := decodeResponse[api.CreatedPersonalAccessToken](t, h.call("POST", "/api/v1/me/tokens", `{"name":"project administrator"}`, h.member), 201)
+	pat := decodeResponse[api.CreatedPersonalAccessToken](t, h.call("POST", "/api/v1/me/tokens", `{"name":"project administrator","expiresAt":null}`, h.member), 201)
 	if response := h.request("GET", base+"/members", "", nil, []string{"Bearer " + pat.Token}, ""); response.Code != 200 {
 		t.Fatalf("PAT membership access: %d %s", response.Code, response.Body)
 	}

@@ -21,8 +21,8 @@ func deviceStoreGrant(t *testing.T, s *Store, now time.Time) core.DeviceAuthoriz
 	}
 	return d
 }
-func deviceStoreCredential(now time.Time) core.Credential {
-	return core.Credential{ID: uuid.NewString(), Kind: core.PATCredential, Name: "Daynight CLI", TokenHash: deviceStoreHash(uuid.NewString()), CreatedAt: now, ExpiresAt: now.Add(30 * 24 * time.Hour)}
+func deviceStoreCredential(now time.Time) core.PersonalAccessToken {
+	return core.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI", TokenHash: deviceStoreHash(uuid.NewString()), CreatedAt: now}
 }
 func requireDeviceStoreFailure(t *testing.T, err error) {
 	t.Helper()

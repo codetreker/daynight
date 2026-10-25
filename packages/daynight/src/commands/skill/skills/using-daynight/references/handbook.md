@@ -34,8 +34,10 @@ configuration file or `serverUrl`. An explicit origin overrides it for a test
 server. Use `daynight login` to display a code and open the browser verification
 page, or `daynight login --no-browser` to authorize in another browser. The user
 must compare the code, check the account and explicitly approve. A saved CLI
-credential lasts thirty days and can be revoked from the Web account's token
-list. `daynight logout` revokes the current credential and clears its saved value
+credential never expires by default. The Web account's token manager can set a
+future expiry, restore “Never expires”, or revoke it; changing expiry preserves the same
+credential and does not require another login. Expired or revoked credentials
+cannot be revived. `daynight logout` revokes the current credential and clears its saved value
 after confirmation or an already-invalid response; network or unconfirmed
 failures remain visible. Login does not execute any pending business operation.
 

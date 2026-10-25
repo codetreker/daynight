@@ -70,3 +70,33 @@ test("an aborted login never invokes the provided browser transport", async () =
   } }), (error) => error === reason);
   assert.equal(calls, 0);
 });
+
+
+test("fixture PAT lifetime convenience emits the current explicit expiry contract", async () => {
+  const origin = "http://127.0.0.1:8787";
+  const requests: Array<{ name: string; expiresAt: string }> = [];
+  const browser = await login({ origin, fetch: async (input, init) => {
+    const url = new URL(String(input));
+    if (url.origin === origin && url.pathname === "/api/v1/auth/login") return new Response(null, { status: 303, headers: { Location: "https://identity.example/auth/authorize" } });
+    if (url.hostname === "identity.example" && url.pathname === "/auth/authorize") return new Response(null, { status: 302, headers: { Location: "https://github.com/login/oauth/authorize?code_challenge_method=S256&code_challenge=fixture-challenge&state=fixture-state&redirect_uri=https%3A%2F%2Fidentity.example%2Fauth%2Fcallback" } });
+    if (url.hostname === "identity.example" && url.pathname === "/auth/callback") return new Response(null, { status: 302, headers: { Location: `${origin}/api/v1/auth/callback` } });
+    if (url.origin === origin && url.pathname === "/api/v1/auth/callback") return new Response(null, { status: 303, headers: { Location: origin, "Set-Cookie": "daynight_session=fixture-session; Path=/; HttpOnly" } });
+    assert.equal(url.href, `${origin}/api/v1/me/tokens`);
+    assert.equal(init?.method, "POST");
+    const body = JSON.parse(String(init.body)) as { name: string; expiresAt: string };
+    assert.deepEqual(Object.keys(body).sort(), ["expiresAt", "name"]);
+    requests.push(body);
+    return Response.json({ token: "dnpat_fixture-test-credential" }, { status: 201 });
+  } });
+  for (const [days, name] of [[1, "Acceptance fixture"], [2, "Explicit lifetime"]] as const) {
+    const before = Date.now();
+    const token = days === 1 ? await browser.createPAT() : await browser.createPAT(name, days);
+    const after = Date.now();
+    assert.equal(token, "dnpat_fixture-test-credential");
+    const body = requests.at(-1)!;
+    assert.equal(body.name, name);
+    assert.ok(body.expiresAt.endsWith("Z"));
+    const expiresAt = Date.parse(body.expiresAt);
+    assert.ok(expiresAt >= before + days * 86_400_000 && expiresAt <= after + days * 86_400_000);
+  }
+});

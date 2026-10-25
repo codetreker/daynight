@@ -124,6 +124,9 @@
 .token-row { grid-template-columns: minmax(180px, 1fr) minmax(160px, .9fr) auto; }
 .token-row.revoked { background: #fcfcfd; }
 .token-row.revoked .person-name { color: #778298; }
+.token-row .actions { flex-wrap: wrap; }
+.token-expiry-custom { margin-top: 15px; }
+.token-current-expiry { margin-top: 15px; overflow-wrap: anywhere; }
 .token-symbol { width: 33px; height: 33px; border-radius: 8px; background: #f0f1fa; color: #7776b4; display: flex; align-items: center; justify-content: center; flex: none; }
 .auth-shell .back-link { display: inline-flex; align-items: center; gap: 7px; }
 .auth-shell .back-link.button { margin-bottom: 22px; }

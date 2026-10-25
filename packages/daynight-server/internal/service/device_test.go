@@ -69,7 +69,7 @@ func TestDeviceAuthorizationLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !validSecret(minted.Secret, "dnpat_") || minted.Credential.Name != "Daynight CLI" || minted.Credential.ExpiresAt.Sub(minted.Credential.CreatedAt) != DeviceTokenLifetime {
+	if !validSecret(minted.Secret, "dnpat_") || minted.Credential.Name != "Daynight CLI" || minted.Credential.ExpiresAt != nil {
 		t.Fatal("invalid CLI credential")
 	}
 	pat, err := f.identity.Authenticate(ctx, core.PATCredential, minted.Secret)

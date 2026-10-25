@@ -33,7 +33,7 @@ administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
 every project, task, graph and attachment route. The production dashboard mounts
 `AuthenticatedApp`; `daynight login` uses Daynight device authorization to obtain
-a 30-day `Daynight CLI` Bearer credential. Explicit PAT configuration remains
+a nonexpiring `Daynight CLI` Bearer credential. Explicit PAT configuration remains
 available for automation. Existing projects are assigned members
 manually and remain inaccessible while they have no members. Trusted executable
 HTML retains its application origin, relative resources and keyboard behavior.
@@ -74,13 +74,18 @@ PostgreSQL stores only device-secret and credential hashes. Grant decisions and
 redemption are serialized; consuming one approved grant and inserting one named
 PAT commit atomically. A lost successful token response requires a fresh login;
 consumed grants cannot issue the secret again. The account token page can revoke
-`Daynight CLI` credentials. There is no refresh token.
+`Daynight CLI` credentials and edit the expiration of an active token without
+changing its secret or requiring another CLI login. `null` means never expires;
+a future UTC timestamp sets an expiration. Existing finite expirations retain
+their original values. Browser sessions keep their fixed seven-day lifetime.
+There is no refresh token.
 
 The persistent polling schedule returns `authorization_pending` while waiting,
 `slow_down` for an early poll with a five-second interval increase,
 `access_denied` after denial, `expired_token` after expiry, and `invalid_grant`
 after consumption. Public endpoints use RFC error JSON; browser endpoints use
-the normal Daynight error envelope. All responses are `no-store`.
+the normal Daynight error envelope. All responses are `no-store`. Nonexpiring token responses omit OAuth
+`expires_in`; the device authorization code still expires after ten minutes.
 
 Persistent one-minute budgets limit creation to 120 requests globally and 30 per
 direct connection source; browser code inspection and decisions share 120 global
@@ -88,6 +93,27 @@ attempts and 12 per user. Forwarded headers do not control the source key.
 Expired rate buckets and grants are cleaned in batches of at most 100. Grants
 remain for one hour after expiry so their approving user can reconcile an
 uncertain decision; another account cannot inspect a decided grant.
+
+## Token expiration management
+
+`POST /api/v1/me/tokens` requires `{name,expiresAt}`, with `expiresAt` explicitly
+`null` for no expiration or a future UTC timestamp ending in `Z`. Legacy `days`
+input is rejected. Token metadata always contains nullable `expiresAt`.
+
+`PATCH /api/v1/me/tokens/{tokenId}` requires
+`{expiresAt,expectedExpiresAt,expectedUserId}` and returns the complete token
+metadata with status 200. The current browser session and exact main-site Origin
+are required. `expectedUserId` binds the reviewed account, and
+`expectedExpiresAt` must equal the observed nullable expiry. A stale observation
+returns 409 `version_conflict`; a changed account returns 403. Missing, revoked,
+and expired tokens return 404 and cannot be restored through this operation.
+
+Updates lock the token row inside the existing session transaction and preserve
+the token ID, name, creation time and hash. A matching unchanged value returns
+200 without a write. An uncertain response is reconciled by reading the token
+list before another decision. Dates are returned in UTC; new finite expirations
+use PostgreSQL microsecond precision. Revocation remains the explicit immediate
+invalidation action. Expiry and revocation affect subsequent credential admission.
 
 ## Layout
 

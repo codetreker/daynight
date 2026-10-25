@@ -208,7 +208,7 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	if read := identityDecode[api.Project](t, request(member, http.MethodGet, "/api/v1/projects/"+project.ID, "", nil, http.StatusOK, "")); read != updated {
 		t.Fatal("saved settings did not reach another authorized client")
 	}
-	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Settings administrator","days":1}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Settings administrator","expiresAt":null}`, origin, http.StatusCreated)
 	adminToken := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	integration.secrets = append(integration.secrets, adminToken.Token)
 	data = request(anonymous, http.MethodPatch, path, `{"version":2,"executionWarningMinutes":95}`, map[string]string{"Authorization": "Bearer " + adminToken.Token, "Origin": "https://foreign.example", "X-Request-ID": "settings-admin-pat"}, http.StatusOK, "")
@@ -216,7 +216,7 @@ func TestProjectSettingsHTTPAuthenticationAndProjectRoles(t *testing.T) {
 	if updated.Settings.Version != 3 || updated.Settings.ExecutionWarningMinutes != 95 {
 		t.Fatalf("administrator PAT could not save settings: %+v", updated)
 	}
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Read settings","days":1}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Read settings","expiresAt":null}`, origin, http.StatusCreated)
 	memberToken := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	integration.secrets = append(integration.secrets, memberToken.Token)
 	memberHeaders := map[string]string{"Authorization": "Bearer " + memberToken.Token}

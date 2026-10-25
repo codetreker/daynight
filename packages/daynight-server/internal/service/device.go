@@ -16,7 +16,6 @@ import (
 const DeviceClientID = "daynight-cli"
 const DeviceGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 const DeviceLifetime = 10 * time.Minute
-const DeviceTokenLifetime = 30 * 24 * time.Hour
 const deviceAlphabet = "BCDFGHJKLMNPQRSTVWXZ"
 
 type DeviceGrantError struct{ Code string }
@@ -171,9 +170,9 @@ func (s *Identity) RedeemDevice(ctx context.Context, clientID, grantType, code s
 	if !validSecret(code, "") {
 		return MintedPAT{}, &DeviceGrantError{Code: "invalid_grant"}
 	}
-	now := s.now().UTC()
+	now := s.now().UTC().Truncate(time.Microsecond)
 	result := MintedPAT{Secret: randomSecret("dnpat_")}
-	result.Credential = core.Credential{ID: uuid.NewString(), Kind: core.PATCredential, Name: "Daynight CLI", TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(DeviceTokenLifetime)}
+	result.Credential = core.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI", TokenHash: secretHash(result.Secret), CreatedAt: now}
 	outcome, err := s.store.RedeemDeviceAuthorization(ctx, secretHash(code), result.Credential)
 	if err != nil {
 		return MintedPAT{}, err

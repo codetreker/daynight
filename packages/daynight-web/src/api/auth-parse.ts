@@ -45,7 +45,7 @@ export const parseUser = (value: unknown): User => {
 
 export const parseToken = (value: unknown): PersonalAccessToken => {
   const data = record(value);
-  return { id: id(data.id), name: nonemptyString(data.name), createdAt: timestamp(data.createdAt), expiresAt: timestamp(data.expiresAt) };
+  return { id: id(data.id), name: nonemptyString(data.name), createdAt: timestamp(data.createdAt), expiresAt: nullable(data.expiresAt, timestamp) };
 };
 export const parseTokens = (value: unknown): PersonalAccessToken[] => unique(array(record(value).items, parseToken), (item) => item.id);
 export const parseCreatedToken = (value: unknown): CreatedPersonalAccessToken => {

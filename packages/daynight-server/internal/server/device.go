@@ -138,8 +138,7 @@ func (h *Authentication) deviceToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, r, h.logger, 200, struct {
 		AccessToken string `json:"access_token"`
 		TokenType   string `json:"token_type"`
-		ExpiresIn   int    `json:"expires_in"`
-	}{result.Secret, "Bearer", int(service.DeviceTokenLifetime.Seconds())})
+	}{result.Secret, "Bearer"})
 }
 
 func (h *Authentication) deviceInspect(w http.ResponseWriter, r *http.Request, p core.Principal) {

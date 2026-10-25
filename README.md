@@ -1003,12 +1003,17 @@ Run `daynight login` to display an authorization code and open the verification
 page. Check that the page's code matches the terminal, confirm the account and
 approve access. The CLI saves the resulting credential without displaying its
 secret. `daynight login --no-browser` displays the URL and code for authorization
-in another browser. Login expires after ten minutes; rejection, expiry and
+in another browser. The device authorization expires after ten minutes; rejection, expiry and
 cancellation leave an existing saved credential unchanged.
 
-The CLI credential is valid for thirty days, has the name `Daynight CLI`, and can
-be revoked from the Web account's token list. It represents the account's current
-project permissions. `daynight logout` revokes the current credential and removes
+The CLI credential has the name `Daynight CLI` and never expires by default.
+The Web account's token manager can set a future expiration, restore “Never expires”, or
+revoke it. Changing expiration keeps the same credential, so the saved CLI login
+continues without replacing its secret. Expired or revoked credentials cannot be
+revived. The [token manager mockup](packages/daynight-web/tests/mockups/tokens.html)
+shares the production components and styles for creating tokens and editing
+expiration, including conflict and uncertain-result states. A credential
+represents the account's current project permissions. `daynight logout` revokes the current credential and removes
 its local value after a confirmed response; an already invalid credential is
 removed locally. Network or unconfirmed failures remain visible. Configuration
 changes made during login or logout cannot overwrite another service origin or

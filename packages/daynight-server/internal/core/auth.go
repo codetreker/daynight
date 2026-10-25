@@ -35,12 +35,19 @@ type LoginTransaction struct {
 	ExpiresAt          time.Time
 }
 
-type Credential struct {
+type Session struct {
 	ID        string
 	UserID    string
-	Kind      CredentialKind
+	TokenHash []byte
+	CreatedAt time.Time
+	ExpiresAt time.Time
+}
+
+type PersonalAccessToken struct {
+	ID        string
+	UserID    string
 	TokenHash []byte
 	Name      string
 	CreatedAt time.Time
-	ExpiresAt time.Time
+	ExpiresAt *time.Time
 }

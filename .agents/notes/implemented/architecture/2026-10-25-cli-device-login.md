@@ -30,8 +30,13 @@ business-operation budgets.
 
 The device grant is a new authorization method for the existing PAT credential
 store. Approval binds the browser's account. A locked transaction consumes that
-grant and creates one thirty-day `Daynight CLI` credential; the existing account
-token list exposes its metadata and revocation. The server stores only device and
+grant and creates one `Daynight CLI` credential with no expiration. The account
+token manager exposes its metadata, editable expiration and revocation. Both CLI
+and manually created PATs default to never expiring, so unattended commands keep
+access until the owner chooses an expiration or revokes it. A future expiry can
+be set or cleared later without replacing the token secret. Edits require a
+current browser session, the displayed account and the observed expiry; expired
+or revoked credentials cannot be revived. The server stores only device and
 credential secret hashes. Concurrent redemption cannot issue two credentials,
 and a lost successful response requires a fresh login; the orphaned credential
 can be revoked from the account list. No refresh token or new credential kind is
@@ -76,8 +81,8 @@ the user-initiated model in RFC 8628 section 3.1.
 
 **Add a separate device credential and refresh-token lifecycle.** It enables
 independent device-session policy, but requires another credential table,
-authentication path and account-management model. Existing expiring, revocable
-PATs already provide the requested access. Refresh for a public client would
+authentication path and account-management model. Existing revocable PATs with
+optional expiry already provide the requested access. Refresh for a public client would
 also require rotation or sender constraint under
 [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700#section-2.2.2). A separate lifecycle
 can be added when its product semantics are needed; the authorization method is
@@ -98,8 +103,10 @@ for every business request; a credential does not freeze roles or membership.
 The application gains short-lived authorization state and persistent rate
 windows, with bounded cleanup and shared limits. A consumed response cannot be
 replayed because plaintext credentials are not retained. Users repeat login after
-expiry or a lost successful exchange. Browser-session logout remains separate
-from CLI logout; neither silently revokes the other's credential.
+a lost successful exchange, revocation or a configured expiration. Changing an
+active credential's expiration preserves its secret and the saved CLI login.
+Browser sessions retain their independent seven-day lifetime; browser logout
+remains separate from CLI logout, and neither silently revokes the other's credential.
 
 Changing the origin still clears the old local token atomically. The remote
 credential remains revocable through the account list if origin changes or local

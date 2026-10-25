@@ -80,12 +80,13 @@ func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE device_authorizations SET next_poll_at=$1`, time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	tokenReply := h.poll(d)
 	response := decodeResponse[struct {
 		AccessToken string `json:"access_token"`
 		TokenType   string `json:"token_type"`
-		ExpiresIn   int    `json:"expires_in"`
-	}](t, h.poll(d), 200)
-	if !strings.HasPrefix(response.AccessToken, "dnpat_") || response.TokenType != "Bearer" || response.ExpiresIn != 2592000 {
+		ExpiresIn   *int   `json:"expires_in"`
+	}](t, tokenReply, 200)
+	if !strings.HasPrefix(response.AccessToken, "dnpat_") || response.TokenType != "Bearer" || response.ExpiresIn != nil || strings.Contains(tokenReply.Body.String(), `"expires_in"`) {
 		t.Fatal("invalid CLI credential response")
 	}
 	auth := []string{"Bearer " + response.AccessToken}

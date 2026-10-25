@@ -133,7 +133,7 @@ export const createDeviceClient = (origin: string, operation: Operation, fetch: 
       const value = object(body);
       if (status === 200) {
         if (value.token_type !== "Bearer") throw new Error("Invalid device authorization token type.");
-        seconds(value.expires_in);
+        if (Object.hasOwn(value, "expires_in")) seconds(value.expires_in);
         return { token: validateServerToken(value.access_token) };
       }
       if (status === 400 && (value.error === "authorization_pending" || value.error === "slow_down")) return { pending: true, slowDown: value.error === "slow_down" };
