@@ -1249,7 +1249,9 @@ focus before choosing an option. Cached details can appear while the live read
 still disables editing; option selection's later actionability wait does not
 repair a focus attempt on a disabled control. The cancellation assertions still
 require the saved value, restored select focus and zero writes, without forcing
-focus after dismissal or increasing timeouts. The
+focus after dismissal or increasing timeouts. Attachment component checks wait
+for actual preview focus after delete-dialog teardown while its list reload is
+still pending, then release the reload and require focus to remain. The
 [observable-readiness decision](../../.agents/notes/implemented/testing/2026-10-20-observable-acceptance-readiness.md)
 records the synchronization rule.
 

@@ -379,7 +379,8 @@ describe('task attachments', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.queryByRole('button', { name: '更多操作：target.txt' })).toBeNull();
     expect(screen.getByRole('button', { name: '刷新附件' })).toBeDisabled();
-    expect(screen.getByRole('group', { name: '附件预览' })).toHaveFocus();
+    // Dialog removal can precede the passive cleanup that restores preview focus.
+    await waitFor(() => expect(screen.getByRole('group', { name: '附件预览' })).toHaveFocus());
     await act(async () => pending.resolve({ items: [], nextCursor: null }));
     expect(screen.getByRole('group', { name: '附件预览' })).toHaveFocus();
   });

@@ -8,7 +8,8 @@ Acceptance drivers can act before the component being tested reaches the state
 that an assertion assumes. An HTTP handler can be entered before PostgreSQL
 executes its query, and a shell command can print a completion marker before the
 next interactive editor exists. A cached browser control can also be visible
-before a live read enables interaction. Those signals can produce network-write
+before a live read enables interaction, and a modal can leave the DOM before
+passive cleanup restores focus. Those signals can produce network-write
 errors, dropped input or an incorrect modal opener while leaving the intended
 cancellation, completion or focus behavior unobserved.
 
@@ -55,6 +56,14 @@ PATCH. No focus is forced after cancellation, and no assertion timeout or retry
 policy is relaxed. The [Web design](../../../../docs/design/daynight-web.md)
 owns the browser acceptance contract.
 
+Attachment component tests distinguish delete-dialog DOM removal from passive
+focus restoration. They await focus on the surviving preview pane while the list
+reload remains pending, then release that reload and require focus to remain.
+The [modal restoration decision](../bug-fix/2026-10-20-drawer-focus-restoration.md)
+keeps restoration after DOM deletion. Waiting for the focus condition observes
+that completion without changing production scheduling or letting a completed
+reload conceal an earlier failure.
+
 ## Alternatives
 
 **Treat handler entry or an in-command marker as readiness.** Those events occur
@@ -83,6 +92,11 @@ the select was disabled, the confirmation captures the page body and correctly
 restores its fallback title. Waiting longer after cancellation cannot change
 which opener was captured.
 
+**Treat dialog disappearance as completed focus restoration.** A DOM observer
+can report removal before React runs passive unmount cleanup. An immediate focus
+assertion can observe the intervening body focus. Waiting on the actual fallback
+focus while holding the reload pending preserves the intended lifecycle check.
+
 ## Consequences
 
 Tests require one additional observer connection and two shell readiness phases.
@@ -90,7 +104,8 @@ SQL markers and prompt generations isolate unrelated work and stale output.
 The observer does not share the running query's connection or transaction;
 cleanup remains possible after a failed readiness assertion. Browser helpers
 observe enabled and focused states before their selection event, so cached
-rendering remains covered without assuming it already permits edits.
+rendering remains covered without assuming it already permits edits. Attachment
+focus checks observe passive cleanup before the held reload is released.
 
 The focused race probe passed both database cases across 20 iterations each,
 and the complete server gate passed build, vet, race, critical coverage checks
