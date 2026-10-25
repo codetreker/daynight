@@ -5,6 +5,17 @@ export class DeviceRequestTimeoutError extends Error {
   constructor(cause: unknown) { super("Device authorization HTTP request timed out.", { cause }); this.name = "DeviceRequestTimeoutError"; }
 }
 
+// Native fetch wraps connector failures; every failed address must time out before an aggregate is retryable.
+// https://github.com/nodejs/undici/blob/9e38fc121d2eb26086d41c7d9379b47a6fada1c5/lib/web/fetch/index.js#L234-L237
+// https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/lib/net.js#L1959-L1969
+const isConnectionTimeout = (failure: unknown): boolean => {
+  if (!(failure instanceof Error)) return false;
+  if (failure instanceof AggregateError) return failure.errors.length > 0 && failure.errors.every(isConnectionTimeout);
+  if (failure.cause !== undefined) return isConnectionTimeout(failure.cause);
+  return "code" in failure && (failure.code === "UND_ERR_CONNECT_TIMEOUT"
+    || failure.code === "ETIMEDOUT" && "syscall" in failure && failure.syscall === "connect");
+};
+
 const CLIENT_ID = "daynight-cli";
 const GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code";
 export type DeviceAuthorization = {
@@ -78,9 +89,12 @@ export const createDeviceClient = (origin: string, operation: Operation, fetch: 
       }
     } catch (cause) {
       let failure = cause;
-      try { operation.check(); }
+      try { operation.check(); suppliedSignal?.throwIfAborted(); }
       catch (operationFailure) { failure = operationFailure; }
-      if (failure === cause && signal.aborted && signal.reason instanceof Error && signal.reason.name === "TimeoutError") failure = new DeviceRequestTimeoutError(cause);
+      if (failure === cause && !operation.signal.aborted && suppliedSignal?.aborted !== true
+        && (signal.aborted && signal.reason instanceof Error && signal.reason.name === "TimeoutError" || isConnectionTimeout(cause))) {
+        failure = new DeviceRequestTimeoutError(cause);
+      }
       if (reader !== undefined && !done && readFailure === undefined) {
         let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
         try {

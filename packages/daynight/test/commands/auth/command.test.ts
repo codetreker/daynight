@@ -3,6 +3,8 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parse } from "yaml";
 import type { CliContext } from "../../../src/cli/context.js";
+import { createOperation, OperationError } from "../../../src/api/operation.js";
+import { createDeviceClient, DeviceRequestTimeoutError } from "../../../src/commands/auth/client.js";
 import { runLoginCommand, runLogoutCommand } from "../../../src/commands/auth/command.js";
 import { loadServerConfiguration } from "../../../src/config/server.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
@@ -23,6 +25,13 @@ const json = (value: unknown, status = 200) => new Response(JSON.stringify(value
 const authorization = (origin = "https://daynight.cc") => ({ device_code: "private-device-secret", user_code: "BCDFG-HJKLM", verification_uri: `${origin}/device`, verification_uri_complete: `${origin}/device?user_code=BCDFG-HJKLM`, expires_in: 600, interval: 5 });
 const token = { access_token: "opaque-cli-credential", token_type: "Bearer", expires_in: 2592000 };
 const successFetch = () => vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(authorization())).mockResolvedValueOnce(json(token));
+const connectionError = (code: string, syscall?: string): Error => Object.assign(new Error(code), { code, ...(syscall === undefined ? {} : { syscall }) });
+const nativeFetchError = (cause: unknown): TypeError => new TypeError("fetch failed", { cause });
+const nativeTimeoutCases = [
+  ["Undici connector timeout", nativeFetchError(connectionError("UND_ERR_CONNECT_TIMEOUT"))],
+  ["nested connector timeout", nativeFetchError(new Error("connection failed", { cause: connectionError("UND_ERR_CONNECT_TIMEOUT") }))],
+  ["per-address connect timeouts", nativeFetchError(new AggregateError([connectionError("ETIMEDOUT", "connect"), connectionError("ETIMEDOUT", "connect")]))],
+] as const;
 const immediateWait = vi.fn(async (_milliseconds: number, signal: AbortSignal) => { signal.throwIfAborted(); });
 
 describe("explicit device login", () => {
@@ -120,6 +129,37 @@ describe("explicit device login", () => {
     expect(vi.mocked(context.stderr).mock.calls.flat().join("")).toContain("request timed out");
   });
 
+  it.each(nativeTimeoutCases)("backs off after a native %s without waiting for the local request timer", async (_name, failure) => {
+    const { context } = await fixture();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(authorization())).mockRejectedValueOnce(failure).mockResolvedValueOnce(json(token));
+    const wait = immediateWait.mockClear();
+    await runLoginCommand(["--no-browser"], context, { fetch, wait });
+    expect(wait.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([5000, 10000]);
+    expect(fetch).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(context.stderr).mock.calls.flat().join("")).toContain("request timed out");
+  });
+
+  it.each([
+    ["connection reset", nativeFetchError(connectionError("ECONNRESET"))],
+    ["connection refused", nativeFetchError(connectionError("ECONNREFUSED", "connect"))],
+    ["DNS failure", nativeFetchError(connectionError("ENOTFOUND", "getaddrinfo"))],
+    ["certificate failure", nativeFetchError(connectionError("CERT_HAS_EXPIRED"))],
+    ["read timeout", nativeFetchError(connectionError("ETIMEDOUT", "read"))],
+    ["unspecified socket timeout", nativeFetchError(connectionError("ETIMEDOUT"))],
+    ["header timeout", nativeFetchError(connectionError("UND_ERR_HEADERS_TIMEOUT"))],
+    ["body timeout", nativeFetchError(connectionError("UND_ERR_BODY_TIMEOUT"))],
+    ["mixed certificate aggregate", nativeFetchError(new AggregateError([connectionError("ETIMEDOUT", "connect"), connectionError("CERT_HAS_EXPIRED")]))],
+    ["mixed connection aggregate", nativeFetchError(new AggregateError([connectionError("UND_ERR_CONNECT_TIMEOUT"), connectionError("ECONNREFUSED", "connect")]))],
+  ] as const)("keeps native %s terminal and preserves the original failure", async (_name, failure) => {
+    const { context, paths } = await fixture("serverToken: original-credential\n");
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValueOnce(json(authorization())).mockRejectedValueOnce(failure);
+    const wait = immediateWait.mockClear();
+    await expect(runLoginCommand(["--no-browser"], context, { fetch, wait })).rejects.toBe(failure);
+    expect(wait.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([5000]);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(await readFile(paths.configFile, "utf8")).toBe("serverToken: original-credential\n");
+  });
+
   it("reports creation request timeout distinctly and sends no polling request", async () => {
     const { context } = await fixture();
     const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async (_url, init) => new Promise((_resolve, reject) => { init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }); }));
@@ -208,6 +248,62 @@ describe("explicit device login", () => {
       await expect(runLoginCommand(["--no-browser"], context, { fetch: transport })).rejects.toThrow();
       expect(transport).toHaveBeenCalledTimes(1);
     }
+  });
+});
+
+describe("native device transport failures", () => {
+  it.each(nativeTimeoutCases)("preserves the original fetch cause when classifying %s", async (_name, failure) => {
+    const operation = createOperation();
+    try {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(failure);
+      const client = createDeviceClient("https://daynight.cc", operation, fetch);
+      const error: unknown = await client.poll("device-secret").catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(DeviceRequestTimeoutError);
+      expect((error as Error).cause).toBe(failure);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { operation.dispose(); }
+  });
+
+  it("prioritizes command cancellation over a simultaneous native timeout", async () => {
+    const cancellation = new AbortController();
+    const operation = createOperation({ signal: cancellation.signal });
+    try {
+      const failure = nativeFetchError(connectionError("UND_ERR_CONNECT_TIMEOUT"));
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => { cancellation.abort(new Error("Stop login")); throw failure; });
+      const error: unknown = await createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret").catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(OperationError);
+      expect(error).toMatchObject({ kind: "cancelled" });
+      expect(error).not.toBeInstanceOf(DeviceRequestTimeoutError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { operation.dispose(); }
+  });
+
+  it("prioritizes a grant abort reason over a simultaneous native timeout", async () => {
+    const operation = createOperation();
+    const grant = new AbortController();
+    const expired = new DOMException("Grant expired", "TimeoutError");
+    try {
+      const failure = nativeFetchError(connectionError("UND_ERR_CONNECT_TIMEOUT"));
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => { grant.abort(expired); throw failure; });
+      await expect(createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret", grant.signal)).rejects.toBe(expired);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { operation.dispose(); }
+  });
+
+  it("prioritizes the operation deadline over a native timeout", async () => {
+    const operation = createOperation({ limits: { totalMs: 10 } });
+    try {
+      const failure = nativeFetchError(connectionError("UND_ERR_CONNECT_TIMEOUT"));
+      const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => {
+        await new Promise<void>((resolve) => operation.signal.addEventListener("abort", () => resolve(), { once: true }));
+        throw failure;
+      });
+      const error: unknown = await createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret").catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(OperationError);
+      expect(error).toMatchObject({ kind: "deadline" });
+      expect(error).not.toBeInstanceOf(DeviceRequestTimeoutError);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { operation.dispose(); }
   });
 });
 
