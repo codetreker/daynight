@@ -217,6 +217,17 @@ completing the discussion. Applicable UI Goals produce a final-style, frontend-o
 interactive prototype during requirements discussion. Stage briefs are inputs;
 requirements, prototypes and architecture are their outputs.
 
+Final acceptance determines whether the complete confirmed task or Goal meets its
+requirements, including confirmed changes. Its owning task records the conclusion,
+supporting evidence, defects and unverified items. Manual verification, existing
+checks and temporary helper scripts are valid methods. Final-acceptance helpers
+remain uncommitted and do not become repository tests, fixtures, runners, CI or
+tooling; their completion does not establish acceptance or create a helper PR gate.
+Normal implementation and authorized bug-fix tests, required implementation PRs,
+and explicitly requested maintained automation retain their delivery requirements.
+The packaged [Final acceptance rule](packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md#final-acceptance)
+is shared by task creation, Goal breakdown, execution and completion.
+
 | Mode | Responsibility |
 |---|---|
 | `handbook` | Command purposes and operational context; use CLI help for command usage |

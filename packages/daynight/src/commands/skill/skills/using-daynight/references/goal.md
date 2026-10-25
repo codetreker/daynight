@@ -114,8 +114,11 @@ Only after user solution confirmation, create or reuse the concrete delivery tas
 needed for the agreed outcome. Each needs its own problem, objective, scope,
 deliverables, constraints, solution, observable acceptance, verification methods,
 and real input references. Include independently scoped acceptance work when it
-has its own outcome; do not turn agent-generated execution steps into tasks.
-The combined scope must cover the confirmed Goal, rather than a vague placeholder.
+has its own outcome. A [final-acceptance](../SKILL.md#final-acceptance) brief
+identifies the original whole-Goal requirements and confirmed changes, and assesses
+the combined delivery under the shared rule. Do not turn agent-generated execution
+steps into tasks. The combined scope must cover the confirmed Goal, rather than a
+vague placeholder.
 
 Create new delivery tasks in `todo`. Solution confirmation authorizes the
 confirmed breakdown's registration, not implementation, autopilot,
@@ -220,7 +223,12 @@ waits stay with the current delivery task.
 Delivery tasks follow normal run-task completion: accepted outcomes, required
 review, all necessary authorized PR merges, and readable evidence. To report the
 whole Goal complete, inspect the full confirmed delivery scope, every delivery
-task's completion, all required PR merges, and the original whole-Goal acceptance.
+task's completion, all required delivery PR merges, and the original
+whole-Goal requirements with their confirmed changes. Apply
+[Final acceptance](../SKILL.md#final-acceptance) to the combined delivery and its
+evidence; completing or passing temporary helpers does not establish that the
+Goal is complete.
+
 The requirements task being done means only that requirements discussion is
 complete. The solution task being done means the confirmed solution and verified
 breakdown are delivered. An empty ready page or a single delivery result proves

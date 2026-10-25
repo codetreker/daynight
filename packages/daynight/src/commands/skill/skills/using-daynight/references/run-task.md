@@ -79,6 +79,11 @@ Preserve the requested task ID through recovery and waiting.
 
 ## Execute and maintain continuity
 
+Identify [final acceptance](../SKILL.md#final-acceptance) from the task's confirmed
+outcome before applying a development or PR delivery lifecycle. Read the complete
+requirements and actual deliveries for the task or Goal being assessed, and apply
+the shared rule to verification methods, temporary helpers, and result ownership.
+
 Follow the target repository's instructions for worktrees, implementation,
 review, validation, and delivery. Use the task's stage-appropriate solution and
 acceptance criteria, including applicable final-style prototype interactions.
@@ -139,8 +144,10 @@ unavailable merge visibility, or an unmet merge check likewise keeps completion
 pending and successors blocked.
 
 For tasks without a development or PR delivery path, use their stated stage
-acceptance. In every case, confirm required evidence is recorded and readable,
-then reread the complete in-progress task and use `task set-status <task-id> done` with its exact
+acceptance. For [final acceptance](../SKILL.md#final-acceptance), also apply the
+shared whole-task or whole-Goal completion rule. In every case, confirm required
+evidence is recorded and readable, then reread the complete in-progress
+task and use `task set-status <task-id> done` with its exact
 observed version. For Goal discussions, use their confirmation gates and verified
 accepted materials; for delivery tasks, use their acceptance and required authorized PR
 merges.
