@@ -44,8 +44,17 @@ render dates and counts. Language changes retain form inputs, dialog and
 one-time secrets, identity and pending requests without restarting operations.
 It composes the existing project list, graph and shared task-detail surfaces with
 private project creation, account/token pages, member/invitation management,
-project execution-warning settings and explicit invitation acceptance. Task
-details expose the versioned automatic-execution permission: one bilingual
+project execution-warning settings and explicit invitation acceptance.
+
+Desktop workspace navigation keeps project links in a scrollable upper region
+and the existing `/account` entry in the sidebar footer. The footer remains
+reachable while the main page scrolls or the viewport becomes short; the current
+account route has a visible selected state. The topbar account link retains its
+name and behavior. Narrow screens retain the horizontal navigation and use the
+topbar account link. The [account navigation decision](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
+owns that layout choice.
+
+Task details expose the versioned automatic-execution permission: one bilingual
 label and switch on the right of the status row below the title, with status
 and readiness on the left. Both enabling and disabling require confirmation;
 Cancel, close and Escape submit nothing. The switch keeps confirmed server

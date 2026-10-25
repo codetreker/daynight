@@ -63,6 +63,18 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 当前模型、确认与版本响应由[三状态架构](daynight-task-status.md)拥有；早期四状态读取与审批
 保留在历史决策中。图组件负责导航，状态写入由完整详情及共享会话拥有。
 
+### 工作空间导航
+
+`AuthenticatedApp` 的 Workspace 将侧栏分为可滚动的 `.sidebar-main` 和不收缩的
+`.sidebar-bottom`。前者持有品牌和项目主导航，后者持有同一个 `/account` 链接及工作区说明。
+侧栏保持视口内 sticky 的纵向 flex 布局，主区域占用剩余空间且允许独立滚动；无需定位计算或
+额外状态即可在长页面和短窗口保留账户入口。账户页通过链接的 `aria-current="page"`
+呈现选中态。顶栏的账户入口和认证生命周期不变。
+
+窄屏继续使用原有横向导航，主区域包装采用 `display: contents` 保持品牌和项目入口排列，
+侧栏底部区域隐藏，账户通过顶栏入口访问。[账户导航决策](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
+记录布局选择及其代价。
+
 ### 项目列表 `/`
 
 - 页首显示“项目”和刷新按钮。

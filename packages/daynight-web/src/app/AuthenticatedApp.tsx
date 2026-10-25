@@ -85,7 +85,35 @@ const Workspace = ({ user, children, route, onSignOut, blocked }: { readonly use
   const content = useRef<HTMLElement>(null);
   const label = route.kind === "projects" ? m.myProjects : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
   useLayoutEffect(() => { content.current?.focus(); }, [route.kind, "projectId" in route ? route.projectId : null]);
-  return <div className="shell auth-shell" aria-hidden={blocked} inert={blocked}><a className="skip-link" href="#main-content">{app.skipToContent}</a><aside className="sidebar" aria-label={app.workspaceNavigation}><a className="brand" href="/" onClick={followLink} aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a><nav aria-label={app.mainNavigation}><p className="nav-label">{app.workspace}</p><a className="nav-button" href="/" onClick={followLink} aria-current={route.kind === "projects" || route.kind === "project" || route.kind === "members" || route.kind === "settings" ? "page" : undefined}>▦　{m.myProjects}</a><a className="nav-button account-nav" href="/account" onClick={followLink} aria-current={route.kind === "account" ? "page" : undefined}>◎　{m.accountSettings}</a></nav><div className="sidebar-bottom">{m.teamWorkspace}<small>{app.localWorkspaceDetail}</small></div></aside><div className="workspace"><header className="topbar"><nav className="crumb" aria-label={app.breadcrumb}><a href="/" onClick={followLink}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{label}</span></nav><div className="account-actions"><LanguageSelector /><a className="account-button" href="/account" onClick={followLink} aria-label={m.accountLink({ name: accountLabel(user, m.currentAccount) })}><span className="avatar" aria-hidden="true">{accountLabel(user, m.currentAccount).slice(0, 1).toUpperCase()}</span><span className="account-name">{accountLabel(user, m.currentAccount)}</span></a><button className="inline-link" type="button" onClick={onSignOut}>{m.signOut}</button></div></header><main className="content" id="main-content" ref={content} tabIndex={-1}>{children}</main></div></div>;
+  return (
+    <div className="shell auth-shell" aria-hidden={blocked} inert={blocked}>
+      <a className="skip-link" href="#main-content">{app.skipToContent}</a>
+      <aside className="sidebar" aria-label={app.workspaceNavigation}>
+        <div className="sidebar-main">
+          <a className="brand" href="/" onClick={followLink} aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
+          <nav aria-label={app.mainNavigation}>
+            <p className="nav-label">{app.workspace}</p>
+            <a className="nav-button" href="/" onClick={followLink} aria-current={route.kind === "projects" || route.kind === "project" || route.kind === "members" || route.kind === "settings" ? "page" : undefined}>▦　{m.myProjects}</a>
+          </nav>
+        </div>
+        <div className="sidebar-bottom">
+          <a className="nav-button account-nav" href="/account" onClick={followLink} aria-current={route.kind === "account" ? "page" : undefined}>◎　{m.accountSettings}</a>
+          <div className="sidebar-workspace">{m.teamWorkspace}<small>{app.localWorkspaceDetail}</small></div>
+        </div>
+      </aside>
+      <div className="workspace">
+        <header className="topbar">
+          <nav className="crumb" aria-label={app.breadcrumb}><a href="/" onClick={followLink}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{label}</span></nav>
+          <div className="account-actions">
+            <LanguageSelector />
+            <a className="account-button" href="/account" onClick={followLink} aria-label={m.accountLink({ name: accountLabel(user, m.currentAccount) })}><span className="avatar" aria-hidden="true">{accountLabel(user, m.currentAccount).slice(0, 1).toUpperCase()}</span><span className="account-name">{accountLabel(user, m.currentAccount)}</span></a>
+            <button className="inline-link" type="button" onClick={onSignOut}>{m.signOut}</button>
+          </div>
+        </header>
+        <main className="content" id="main-content" ref={content} tabIndex={-1}>{children}</main>
+      </div>
+    </div>
+  );
 };
 
 const RevalidationOverlay = ({ failed, onRetry }: { readonly failed: boolean; readonly onRetry: () => void }) => {
