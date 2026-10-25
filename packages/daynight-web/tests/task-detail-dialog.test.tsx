@@ -339,6 +339,8 @@ describe('task detail dialog', () => {
     const close = screen.getByRole('button', { name: '关闭任务详情' });
     const user = userEvent.setup();
     await user.tab();
+    expect(screen.getByRole('button', { name: '待处理' })).toHaveFocus();
+    await user.tab();
     expect(screen.getByRole('combobox', { name: '执行平台' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('switch', { name: '自动执行' })).toHaveFocus();
@@ -353,9 +355,6 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('heading', { name: '任务 1' })).toHaveFocus();
     await user.tab();
-    expect(screen.getByRole('button', { name: '待处理' })).toHaveFocus();
-
-    await user.tab();
     expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('button', { name: '更多任务操作' })).toHaveFocus();
@@ -365,9 +364,6 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('button', { name: '更多任务操作' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
-
-    await user.tab({ shift: true });
-    expect(screen.getByRole('button', { name: '待处理' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('heading', { name: '任务 1' })).toHaveFocus();
     await user.tab({ shift: true });

@@ -26,9 +26,9 @@
 .task-detail-backdrop { top: var(--prototype-toolbar-height); }
 .task-detail-dialog { height: min(880px, calc(100dvh - var(--prototype-toolbar-height) - 48px)); max-height: min(880px, calc(100dvh - var(--prototype-toolbar-height) - 48px)); }
 .task-status-loaded { display: flex; flex: 1; flex-direction: column; min-height: 0; min-width: 0; overflow: hidden; }
-.task-status-control { display: flex; align-items: center; flex: none; margin-left: auto; max-width: 100%; }
-.task-status-control .button { font-size: 11px; padding: 8px 11px; min-height: 34px; }
-.task-status-trigger { color: #56647d; min-width: 125px; justify-content: flex-start; }
+.task-status-control { display: flex; align-items: center; flex: none; max-width: 100%; }
+.task-status-control .button { height: 24px; font-size: 10px; padding: 3px 7px; line-height: 1.55; }
+.task-status-trigger { color: #56647d; justify-content: flex-start; }
 .task-status-trigger .task-status-chevron { margin-left: auto; color: #7e87a0; }
 .task-status-current-note { font-size: 10px; color: #737d8e; line-height: 1.8; margin: 9px 0 0; }
 .task-status-current-note:empty { display: none; }
@@ -87,9 +87,6 @@
   .task-status-confirmation { max-height: calc(100dvh - var(--prototype-toolbar-height) - 28px); }
   .task-detail-title-row { flex-wrap: wrap; gap: 9px; }
   .task-detail-title { flex-basis: 100%; }
-  .task-status-control { margin-left: auto; }
-  .task-status-control .button { font-size: 10px; padding: 7px 10px; min-height: 32px; }
-  .task-status-trigger { min-width: 119px; }
   .task-status-feedback { padding: 9px 11px; }
   .task-status-route { gap: 8px; padding: 10px; }
   .task-status-route .task-detail-status { font-size: 10px; padding: 5px 8px; }

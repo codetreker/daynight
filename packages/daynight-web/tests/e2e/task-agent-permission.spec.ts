@@ -28,7 +28,8 @@ const geometry = async (page: Page): Promise<void> => {
     const bounds = row.getBoundingClientRect();
     const left = row.querySelector('.task-detail-badges')!.getBoundingClientRect();
     const right = row.querySelector('.task-automation-control')!.getBoundingClientRect();
-    return Math.abs(bounds.right - right.right) < .5 && Math.abs(left.y - right.y) < .5 && left.right <= right.left;
+    return Math.abs(bounds.right - right.right) < .5 && (left.right <= right.left || left.bottom <= right.top)
+      && row.scrollWidth <= row.clientWidth;
   })).toBe(true);
 };
 

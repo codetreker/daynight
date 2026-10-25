@@ -18,15 +18,19 @@ accessible name. Loading and initial failure use their corresponding state
 titles. The complete task title owns bounded native scrolling and keyboard focus;
 status, fullscreen, action-menu and close controls stay accessible across supported
 viewport sizes. Task details consume the current application locale through the
-shared `LocaleProvider`; the modal header contains the title, current status menu,
-fullscreen toggle, More task actions menu and close control. The `…` trigger sits
+shared `LocaleProvider`; the modal header contains the title, fullscreen toggle,
+More task actions menu and close control. The `…` trigger sits
 immediately left of Close and groups Open in new tab and Delete task, leaving more
 width for task reading. The standalone page uses the same menu for Delete task.
 The menu retains keyboard navigation, outside dismissal and its own Escape layer.
 Selecting deletion focuses the surviving menu trigger before opening confirmation,
 so cancellation restores that trigger. The
 [standalone-detail decision](../architecture/2026-10-24-standalone-task-detail.md)
-owns that link and shares the same complete content with its page container. The body heading retains status and automation controls. The
+owns that link and shares the same complete content with its page container.
+The body heading places the status menu immediately before the platform selector,
+with readiness after both and automatic execution at the right. Status and
+platform use the same compact control height, and the left group can wrap at
+narrow widths. The
 [notification decision](../bug-fix/2026-10-24-task-detail-notifications.md) owns
 actionable floating notices and lock tooltips. Overview metadata retains the full selectable ID and a localized Copy
 button that directly writes its exact value with the browser Clipboard API. Copy success and failure belong to the displayed task and use timed bubbles;

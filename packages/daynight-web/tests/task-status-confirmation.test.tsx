@@ -41,9 +41,11 @@ const open = async (detail = source()) => {
 };
 const select = (dialog: HTMLElement, current: TaskStatus, target: TaskStatus) => { fireEvent.click(within(dialog).getByRole('button', { name: labels[current] })); fireEvent.click(within(dialog).getByRole('menuitemradio', { name: labels[target] })); return screen.getByRole('alertdialog', { name: 'Set task status' }); };
 describe('status menu and reviewed confirmation', () => {
-  it('opens in the shared title row on either tab and preserves attachment drafts through cancellation and Escape', async () => {
+  it('opens beside the platform selector on either tab and preserves attachment drafts through cancellation and Escape', async () => {
     const { dialog, props } = await open(); const opener = within(dialog).getByRole('button', { name: 'To do' });
-    expect(opener.closest('.task-detail-title-row')).toContainElement(within(dialog).getByRole('heading', { name: 'Reviewed task' }));
+    expect(opener.closest('.task-detail-header')).toBeNull();
+    expect(opener.closest('.task-detail-state-controls')).toContainElement(within(dialog).getByRole('combobox', { name: 'Execution platform' }));
+    expect(opener.parentElement!.nextElementSibling).toContainElement(within(dialog).getByRole('combobox', { name: 'Execution platform' }));
     fireEvent.click(within(dialog).getByRole('tab', { name: 'Attachments' })); const draft = within(dialog).getByRole('textbox', { name: 'Attachment draft' }); fireEvent.change(draft, { target: { value: 'Retained review notes' } });
     opener.focus(); let confirmation = select(dialog, 'todo', 'done'); expect(dialog).toHaveAttribute('inert'); expect(within(confirmation).getByText('Reviewed task')).toBeVisible(); expect(within(confirmation).getByRole('button', { name: 'Cancel' })).toHaveFocus();
     fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' })); expect(opener).toHaveFocus(); expect(dialog).not.toHaveAttribute('inert'); expect(draft).toHaveValue('Retained review notes');

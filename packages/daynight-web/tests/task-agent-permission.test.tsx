@@ -49,7 +49,8 @@ describe('confirmed automatic execution header control', () => {
     await open();
     const control = screen.getByRole('switch', { name: 'Automatic execution' });
     expect(control).not.toBeChecked();
-    expect(screen.getByRole('button', { name: 'To do' }).closest('.task-detail-title-row')).not.toBeNull();
+    expect(screen.getByRole('button', { name: 'To do' }).closest('.task-detail-status-row')).toContainElement(control);
+    expect(screen.getByRole('button', { name: 'To do' }).closest('.task-detail-header')).toBeNull();
     expect(screen.getAllByRole('switch')).toHaveLength(1);
     expect(document.querySelector('.task-detail-heading .task-agent-permission')).toBeNull();
     expect(document.querySelector('.task-detail-panel-overview [role=switch]')).toBeNull();

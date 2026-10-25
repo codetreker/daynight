@@ -16,7 +16,7 @@ import { authenticatedAPI, fulfillAuthenticatedResponse, type AuthenticatedAPI }
 const states: readonly TaskStatus[] = ['todo', 'in_progress', 'done'];
 const labels = { 'zh-CN': { todo: '待处理', in_progress: '进行中', done: '已完成' }, en: { todo: 'To do', in_progress: 'In progress', done: 'Done' } };
 const detail = (page: Page): Locator => page.locator('.task-detail-dialog');
-const trigger = (page: Page): Locator => detail(page).locator('.task-detail-title-row button[aria-haspopup="menu"]');
+const trigger = (page: Page): Locator => detail(page).locator('.task-detail-status-row .task-status-trigger');
 const confirmation = (page: Page): Locator => page.getByRole('alertdialog', { name: /^(设置任务状态|Set task status)$/ });
 const taskPath = (project: string, task: string): string => `/api/v1/projects/${project}/tasks/${task}`;
 const origin = (info: TestInfo): string => {

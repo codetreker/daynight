@@ -927,7 +927,7 @@ test('detail-navigation', scenario('detail-navigation'), async ({ page, api: req
     await admission.requested();
     await expect(dialog.locator('.task-detail-title')).toHaveText('正在加载任务详情');
     await expect(dialog.locator('.task-description')).toHaveCount(0);
-    await expect(dialog.locator('.task-detail-title-row button[aria-haspopup="menu"]')).toHaveCount(0);
+    await expect(dialog.locator('.task-detail-status-row .task-status-trigger')).toHaveCount(0);
     await expect(stat(page, '任务总数')).toHaveText('3');
     admission.release();
     expect((await admittedSync).status()).toBe(200);
@@ -1030,7 +1030,7 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
     await expect(dialog.locator('.task-detail-title')).toHaveText(dependent.title);
     await expect(dialog.locator('.task-detail-blocked')).toHaveText('被阻塞');
     await expect(dialog.getByText('任务详情与当前任务图不同，刷新后可查看一致的进度和关系。')).toBeVisible();
-    await expect(dialog.locator('.task-detail-title-row button[aria-haspopup="menu"]')).toBeDisabled();
+    await expect(dialog.locator('.task-detail-status-row .task-status-trigger')).toBeDisabled();
     await expect(stat(page, '已完成')).toHaveText('0');
     await expect(stat(page, '被阻塞')).toHaveText('1');
     await expect(root(page, predecessor.id).locator('.root-status')).toHaveText('待处理');
@@ -1066,7 +1066,7 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
   await expect(stat(page, '待处理')).toHaveText('0');
   await expect(inspectTask(page, dependent.id).locator('.graph-status')).toHaveText('进行中');
   await expect(inspectTask(page, dependent.id)).toHaveAttribute('aria-pressed', 'true');
-  await expect(dialog.locator('.task-detail-title-row button[aria-haspopup="menu"]')).toHaveAccessibleName('进行中');
+  await expect(dialog.locator('.task-detail-status-row .task-status-trigger')).toHaveAccessibleName('进行中');
   await expect(dialog.locator('.task-detail-stale')).toHaveCount(0);
   await checkPullRequests(dialog, pullRequests, 2);
   await expect(dialog.getByRole('combobox', { name: '关联 PR 页码' })).toBeFocused();
@@ -1437,6 +1437,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(dialog.getByRole('button', { name: '保存平台', exact: true })).toHaveCount(0);
   const copyTaskId = dialog.getByRole('button', { name: '复制任务 ID', exact: true });
   await page.keyboard.press('Tab');
+  await expect(statusAction).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(executionPlatform).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(automation).toBeFocused();
@@ -1451,13 +1453,13 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Shift+Tab');
   await expect(executionPlatform).toBeFocused();
   await page.keyboard.press('Shift+Tab');
+  await expect(statusAction).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
   await expect(close).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(moreActions).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(detailFullscreen).toBeFocused();
-  await page.keyboard.press('Shift+Tab');
-  await expect(statusAction).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(taskTitle).toBeFocused();
   await page.keyboard.press('Shift+Tab');
@@ -1468,8 +1470,6 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(copyTaskId).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(taskTitle).toBeFocused();
-  await page.keyboard.press('Tab');
-  await expect(statusAction).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(detailFullscreen).toBeFocused();
   await page.keyboard.press('Tab');
