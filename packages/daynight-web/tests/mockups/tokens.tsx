@@ -27,7 +27,7 @@ const wait = (signal: AbortSignal): Promise<void> => new Promise((resolve, rejec
 const stalled = (signal: AbortSignal): Promise<never> => new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
 
 const TokensMockup = () => {
-  const { locale, messages: { auth: { management: { account: m }, shell } } } = useI18n();
+  const { locale, messages: { auth: { management: { account: m }, shell }, workspace: { app } } } = useI18n();
   useEffect(() => { document.documentElement.lang = locale; document.title = shell.documentTitle.account; }, [locale, shell]);
   const requested = new URLSearchParams(window.location.search).get("scenario");
   const [scenario, setScenario] = useState<Scenario>(scenarios.some(([id]) => id === requested) ? requested as Scenario : "normal");
@@ -75,7 +75,40 @@ const TokensMockup = () => {
     };
   }, [scenario, revision, user.id]);
   const reset = (next: Scenario) => { connectionRestored.current = false; setScenario(next); setRevision((value) => value + 1); };
-  return <><div className="shell auth-shell"><aside className="sidebar"><a className="brand" href="#" onClick={(event) => event.preventDefault()}><span className="brand-mark" aria-hidden="true" />daynight</a><nav><p className="nav-label">WORKSPACE</p><span className="nav-button">▦　{shell.myProjects}</span><span className="nav-button active">◎　{shell.accountSettings}</span></nav></aside><div className="workspace"><header className="topbar"><nav className="crumb"><span>{shell.accountSettings}</span></nav><div className="account-actions"><LanguageSelector /><span className="person"><span className="avatar" aria-hidden="true">{user.name.slice(0, 1)}</span>{user.name}</span></div></header><main className="content"><div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div></div><div className="settings-grid"><nav className="settings-nav"><button type="button" disabled>{m.profileTab}</button><button type="button" className="active" aria-current="page">{m.tokensTab}</button></nav><div className="settings-main"><TokensPanel key={revision} user={user} transport={transport} onIdentityMismatch={() => setUser({ ...alice, id: uuid(9), name: "Bob Wang" })} /></div></div></main></div></div>
+  return <>
+    <div className="shell auth-shell">
+      <a className="skip-link" href="#main-content">{app.skipToContent}</a>
+      <aside className="sidebar" aria-label={app.workspaceNavigation}>
+        <div className="sidebar-main">
+          <a className="brand" href="/" onClick={(event) => event.preventDefault()} aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
+          <nav aria-label={app.mainNavigation}>
+            <p className="nav-label">{app.workspace}</p>
+            <a className="nav-button" href="/" onClick={(event) => event.preventDefault()}>▦　{shell.myProjects}</a>
+          </nav>
+        </div>
+        <div className="sidebar-bottom">
+          <a className="nav-button account-nav" href="/account" onClick={(event) => event.preventDefault()} aria-current="page">◎　{shell.accountSettings}</a>
+          <div className="sidebar-workspace">{shell.teamWorkspace}<small>{app.localWorkspaceDetail}</small></div>
+        </div>
+      </aside>
+      <div className="workspace">
+        <header className="topbar">
+          <nav className="crumb" aria-label={app.breadcrumb}><a href="/" onClick={(event) => event.preventDefault()}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{shell.accountSettings}</span></nav>
+          <div className="account-actions">
+            <LanguageSelector />
+            <a className="account-button" href="/account" onClick={(event) => event.preventDefault()} aria-label={shell.accountLink({ name: user.name })}><span className="avatar" aria-hidden="true">{user.name.slice(0, 1).toUpperCase()}</span><span className="account-name">{user.name}</span></a>
+            <button className="inline-link" type="button">{shell.signOut}</button>
+          </div>
+        </header>
+        <main className="content" id="main-content" tabIndex={-1}>
+          <div className="page-heading"><div><div className="eyebrow">{m.eyebrow}</div><h1>{m.title}</h1><p className="subtitle">{m.subtitle}</p></div></div>
+          <div className="settings-grid">
+            <nav className="settings-nav" aria-label={m.title}><button type="button" disabled>{m.profileTab}</button><button type="button" className="active" aria-current="page">{m.tokensTab}</button></nav>
+            <div className="settings-main"><TokensPanel key={revision} user={user} transport={transport} onIdentityMismatch={() => setUser({ ...alice, id: uuid(9), name: "Bob Wang" })} /></div>
+          </div>
+        </main>
+      </div>
+    </div>
     {createPortal(<aside aria-label="Token management fixture controls" style={{ position: "fixed", zIndex: 100, bottom: 12, left: 12, maxWidth: "calc(100vw - 24px)", background: "#fffffff5", border: "1px solid #e2e4ed", borderRadius: 8, fontSize: 11, boxShadow: "0 4px 22px #25325312" }}><details><summary style={{ padding: "8px 12px", cursor: "pointer" }}>访问令牌 · 交互场景</summary><div style={{ display: "grid", gap: 9, padding: "4px 12px 12px", width: 320, maxWidth: "calc(100vw - 28px)" }}><label htmlFor="token-scenario">场景</label><select id="token-scenario" value={scenario} onChange={(event) => reset(event.currentTarget.value as Scenario)}>{scenarios.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select><button className="button" type="button" onClick={() => reset(scenario)}>重置当前场景</button><button className="button" type="button" onClick={() => { connectionRestored.current = true; }}>恢复核对读取</button><button className="button" type="button" onClick={() => setUser(user.id === alice.id ? { ...alice, id: uuid(9), name: "Bob Wang" } : alice)}>切换账户</button><p>令牌列表、创建、修改有效期与对话框使用正式组件。所有变化仅保存在此页面，无需后端。</p></div></details></aside>, document.body)}
   </>;
 };

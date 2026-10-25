@@ -175,9 +175,11 @@ the production device page with frontend-only controlled request states. Its
 scenario selector covers manual entry, loading, approval, denial, expiration,
 invalid codes, request failures, rate limiting, uncertain decisions, and long
 account details. Open `/tests/mockups/tokens.html` for the production token panel,
-creation dialog, and expiration editor with controlled loading, conflict,
-unconfirmed-update, reconciliation-failure, unavailable-token, and long-name
-states. The shared language selector and final responsive styles remain
+creation dialog, and expiration editor inside the workspace sidebar-footer layout,
+including its selected account entry and narrow-screen topbar account link.
+The scenario controls cover loading, conflicts, unconfirmed updates,
+reconciliation failures, unavailable tokens, and long names. The shared language
+selector and final responsive styles remain
 interactive without a Go service.
 
 ## Project execution-warning settings
