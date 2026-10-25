@@ -1,8 +1,10 @@
+import { createRef } from 'react';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
 import type { Attachment, AttachmentPage } from '../src/api/types';
 import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading';
+import type { AttachmentKeyboardOwner } from '../src/features/task-detail/attachments/AttachmentPreview';
 import type { AttachmentApi } from '../src/features/task-detail/attachments/useAttachments';
 import { LanguageSelector } from '../src/i18n/LanguageSelector';
 import { createLocaleRender, renderWithLocale } from './helpers/renderWithLocale';
@@ -24,7 +26,7 @@ const fixture = (items: readonly Attachment[] = [file('plan.md')]): AttachmentAp
   readText: vi.fn(async (_project, _task, path) => `# Preview ${path}`),
   checkPreview: vi.fn(async () => {}), put: vi.fn(), remove: vi.fn(),
 });
-const reading = (api: AttachmentApi, description = '[方案](plan.md)', id = taskId) => <TaskDetailReading key={id} projectId={projectId} taskId={id} api={api} description={description} onClose={vi.fn()} overview={(content) => <section aria-label="描述">{content}</section>} />;
+const reading = (api: AttachmentApi, description = '[方案](plan.md)', id = taskId) => <TaskDetailReading key={id} projectId={projectId} taskId={id} api={api} description={description} overview={(content) => <section aria-label="描述">{content}</section>} />;
 const showOverview = () => fireEvent.click(screen.getByRole('tab', { name: '概览' }));
 const pane = () => screen.getByRole('group', { name: '附件预览' });
 
@@ -80,6 +82,36 @@ describe('task description reading', () => {
     expect(pane()).toHaveFocus();
     expect(api.checkPreview).toHaveBeenCalledOnce();
     expect(api.list).toHaveBeenCalledOnce();
+  });
+
+  it('preserves a loaded frame, upload draft and controller while keyboard ownership changes', async () => {
+    const api = fixture([file('mockui/index.html', 'text/html')]);
+    const ownerRoot = createRef<HTMLElement>();
+    const onEscape = vi.fn();
+    const content = (keyboardOwner?: AttachmentKeyboardOwner) => <main ref={ownerRoot}><TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="Description" selection={{ tab: 'attachments', path: 'mockui/index.html' }} overview={(description) => description} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} /></main>;
+    const view = render(content());
+    const frame = await screen.findByTitle('HTML 预览：mockui/index.html') as HTMLIFrameElement;
+    fireEvent.load(frame);
+    const frameDocument = frame.contentDocument!;
+    screen.getByText('上传文件', { selector: 'summary' }).parentElement!.setAttribute('open', '');
+    const fileInput = screen.getByLabelText('选择一个文件') as HTMLInputElement;
+    const upload = new File(['draft'], 'draft.txt', { type: 'text/plain' });
+    fireEvent.change(fileInput, { target: { files: [upload] } });
+    const path = screen.getByRole('textbox', { name: '目标相对路径' });
+    fireEvent.change(path, { target: { value: 'draft/未提交.txt' } });
+    view.rerender(content({ root: ownerRoot, onEscape }));
+    fireEvent.keyDown(frameDocument, { key: 'Escape' });
+    expect(onEscape).toHaveBeenCalledOnce();
+    expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
+    expect(screen.getByLabelText('选择一个文件')).toBe(fileInput);
+    expect(fileInput.files?.[0]).toBe(upload);
+    expect(path).toHaveValue('draft/未提交.txt');
+    view.rerender(content());
+    expect(fireEvent.keyDown(frameDocument, { key: 'Escape' })).toBe(true);
+    expect(screen.getByTitle('HTML 预览：mockui/index.html')).toBe(frame);
+    expect(api.list).toHaveBeenCalledOnce();
+    expect(api.checkPreview).toHaveBeenCalledOnce();
+    expect(api.put).not.toHaveBeenCalled();
   });
 
   it('keeps an HTML frame unmounted when inventory resolution starts its availability check', async () => {

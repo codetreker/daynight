@@ -39,7 +39,7 @@ const fixture = (initial = [attachment()]) => {
 };
 const openAttachments = (api: AttachmentApi) => renderWithLocale(<>
   <LanguageSelector />
-  <TaskAttachments projectId={projectId} taskId={taskId} api={api} onClose={vi.fn()} />
+  <TaskAttachments projectId={projectId} taskId={taskId} api={api} />
 </>, { locale: 'zh-CN' });
 const switchTo = (locale: 'en' | 'zh-CN') => fireEvent.change((document.querySelector('dialog[open]') === null ? screen : within(document.querySelector('dialog[open]')!)).getByRole('combobox', { name: '语言 / Language' }), { target: { value: locale } });
 
@@ -167,7 +167,7 @@ describe('inspection language changes', () => {
     const item = attachment('原始-file.txt', 'text/plain');
     renderWithLocale(<><LanguageSelector /><AttachmentPreview attachment={item}
       preview={{ path: item.path, status: 'error', text: null, error: new ApiError('server', 500, 'internal_error', 'preview-request-raw') }}
-      url="/original-preview" previewRoot="/" onRetry={vi.fn()} onClose={vi.fn()} /></>, { locale: 'zh-CN' });
+      url="/original-preview" previewRoot="/" onRetry={vi.fn()} /></>, { locale: 'zh-CN' });
     expect(screen.getByRole('alert')).toHaveTextContent('无法读取文件预览');
     switchTo('en');
     expect(screen.getByRole('alert')).toHaveTextContent('Unable to read the file preview.');

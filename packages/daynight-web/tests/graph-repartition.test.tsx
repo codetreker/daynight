@@ -58,7 +58,8 @@ afterEach(() => {
 it('resets membership visibility and inspection while retaining fullscreen and active task details for the same representative', async () => {
   const before = [node(A, 'Root', []), node(B, 'Detached branch', [A]), node(C, 'Branch successor', [B]), node(X, 'Remaining branch', [A])];
   const after = before.map((task) => task.id === B ? { ...task, dependsOn: [], blockedBy: [], ready: true } : task);
-  graphRequest.mockResolvedValueOnce(graph(before)).mockResolvedValueOnce(graph(after));
+  const refreshed = Promise.withResolvers<TaskGraph>();
+  graphRequest.mockResolvedValueOnce(graph(before)).mockReturnValue(refreshed.promise);
   const detached = after.find((task) => task.id === B)!;
   const initial = before.find((task) => task.id === B)!;
   vi.mocked(getTask).mockResolvedValueOnce({ ...initial, blockedBy: [], ready: true, projectId, title: initial.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: 1n })
@@ -77,7 +78,13 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   await within(dialog).findByRole('heading', { name: 'Detached branch' });
   const close = within(dialog).getByRole('button', { name: '关闭任务详情' });
   expect(close).toHaveFocus();
+  // The stale detail starts a refresh before the explicit refresh supersedes it.
+  await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+  const automaticRefresh = graphRequest.mock.calls[1]![1];
   fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
+  await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(3));
+  expect(automaticRefresh.aborted).toBe(true);
+  refreshed.resolve(graph(after));
   await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(2));
   expect(fullscreen).toBeVisible();
   expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);

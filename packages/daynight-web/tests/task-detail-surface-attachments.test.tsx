@@ -41,9 +41,10 @@ const fixture = (items: readonly Attachment[]): AttachmentApi => {
 const preview = () => within(screen.getByRole('group', { name: '附件预览' }));
 const readyPreview = async () => within(await screen.findByRole('group', { name: '附件预览' }));
 const Reader = ({ api, path, id, urls }: { readonly api: AttachmentApi; readonly path: string; readonly id: string; readonly urls?: AttachmentUrls }) => {
+  const [fullscreen, setFullscreen] = useState(false);
   const [selection, setSelection] = useState<TaskDetailNavigation>({ tab: 'attachments', path });
   useLayoutEffect(() => { setSelection({ tab: 'attachments', path }); }, [path]);
-  return <TaskDetailSessionBoundary><TaskDetailSurface presentation="page" projectId={projectId} taskId={id} snapshot={snapshotFixture([detailFixture(projectId, id)])} navigation={selection}
+  return <TaskDetailSessionBoundary><TaskDetailSurface presentation="page" fullscreen={{ active: fullscreen, onChange: setFullscreen }} projectId={projectId} taskId={id} snapshot={snapshotFixture([detailFixture(projectId, id)])} navigation={selection}
     attachmentApi={api} {...(urls === undefined ? {} : { attachmentUrls: urls })} onNavigate={(next) => { setSelection(next); navigateTaskDetail(projectId, id, next); }} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} /></TaskDetailSessionBoundary>;
 };
 const page = (api: AttachmentApi, path = 'docs/readme.md', id = taskId) => <Reader key={id} api={api} path={path} id={id} />;

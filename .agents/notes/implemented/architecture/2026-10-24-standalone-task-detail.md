@@ -23,9 +23,13 @@ mounted with its local state. Attachment popouts open the same complete detail
 at that file.
 
 The dialog wrapper retains portal, background inertness, counted scroll lock,
-focus containment, Escape close and focus restoration. The standalone page uses
-ordinary browser focus and keys, with its own return and language controls. It
-does not install the outer modal iframe bridge. Platform selection belongs in
+focus containment, Escape close and focus restoration. In normal mode the standalone page uses
+ordinary browser focus and keys, with its own return and language controls. The
+[fullscreen-reading decision](../feature/2026-10-25-task-detail-fullscreen.md) adds
+a transient workspace mode without changing Surface identity or URL navigation.
+Fullscreen hides the auxiliary top bar, keeps an explicit project return link
+and temporarily supplies the reading root/onEscape owner to loaded frames. Exit
+restores native standalone keys and the auxiliary controls. Platform selection belongs in
 the status row, with a lock tooltip and live floating feedback. Overview shares
 that same control. The
 [notification decision](../bug-fix/2026-10-24-task-detail-notifications.md) owns

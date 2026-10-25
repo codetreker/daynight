@@ -56,6 +56,70 @@ const moveHistory = async (direction: 'back' | 'forward') => {
 };
 
 describe('standalone full task details', () => {
+  it('focuses the same page without history changes or refetch and keeps ordinary Escape native', async () => {
+    const { fetcher } = installed();
+    window.history.replaceState(null, '', address('attachments', 'docs/guide.md'));
+    render(<App />);
+    await screen.findByText('方案正文');
+    const main = screen.getByRole('main');
+    const panel = document.querySelector('.task-attachments');
+    const fileInput = document.querySelector('input[type="file"]');
+    const historyLength = history.length;
+    const requestCount = fetcher.mock.calls.length;
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+    const draft = screen.getByLabelText('目标相对路径');
+    fireEvent.change(draft, { target: { value: 'retained/page.txt' } });
+    const toggle = screen.getByRole('button', { name: '进入全屏' });
+    fireEvent.click(toggle);
+    expect(screen.getByRole('main')).toBe(main);
+    expect(main).toHaveClass('task-detail-fullscreen');
+    expect(screen.queryByRole('combobox', { name: '语言 / Language' })).toBeNull();
+    expect(screen.getByRole('link', { name: '返回任务所在项目' })).toHaveAttribute('href', `/projects/${projectId}`);
+    expect(document.querySelector('.task-attachments')).toBe(panel);
+    expect(document.querySelector('input[type="file"]')).toBe(fileInput);
+    expect(draft).toHaveValue('retained/page.txt');
+    expect(fetcher.mock.calls).toHaveLength(requestCount);
+    expect(location.pathname).toBe(address('attachments', 'docs/guide.md'));
+    expect(history.length).toBe(historyLength);
+    expect(fireEvent.keyDown(document, { key: 'Escape' })).toBe(false);
+    expect(main).not.toHaveClass('task-detail-fullscreen');
+    expect(toggle).toHaveFocus();
+    expect(screen.getByRole('combobox', { name: '语言 / Language' })).toBeVisible();
+    expect(fireEvent.keyDown(document, { key: 'Escape' })).toBe(true);
+    expect(screen.getByRole('main')).toBe(main);
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    fireEvent.click(screen.getByRole('button', { name: '后续任务，普通依赖' }));
+    await screen.findByRole('heading', { name: '后续任务' });
+    expect(screen.getByRole('main')).toHaveClass('task-detail-fullscreen');
+  });
+
+  it('retains an in-flight exact-version write when entering and leaving fullscreen', async () => {
+    const fixture = installed();
+    let complete!: () => void;
+    fixture.fetcher.mockImplementation(async (url, options) => {
+      if (options?.method === 'PUT') await new Promise<void>((resolve) => { complete = resolve; });
+      return fixture.handler(url, options);
+    });
+    window.history.replaceState(null, '', address());
+    render(<App />);
+    await screen.findByRole('heading', { name: '独立任务' });
+    const main = screen.getByRole('main');
+    fireEvent.click(screen.getByRole('button', { name: '待处理' }));
+    fireEvent.click(screen.getByRole('menuitemradio', { name: '进行中' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认设置' }));
+    await waitFor(() => expect(fixture.fetcher.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1));
+    fireEvent.click(screen.getByRole('button', { name: '进入全屏' }));
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByRole('main')).toBe(main);
+    expect(screen.getByRole('button', { name: '待处理' })).toBeDisabled();
+    await act(async () => { complete(); });
+    await waitFor(() => expect(screen.getByRole('button', { name: '进行中' })).toBeEnabled());
+    expect(fixture.fetcher.mock.calls.filter(([, options]) => options?.method === 'PUT')).toHaveLength(1);
+    expect(fixture.fetcher.mock.calls.find(([, options]) => options?.method === 'PUT')?.[1]?.body).toBe('{"version":1,"status":"in_progress"}');
+    expect(screen.getByRole('main')).toBe(main);
+  });
+
   it('keeps full details, hidden file selection and upload drafts through search-only tab and file history', async () => {
     const { fetcher } = installed();
     window.history.replaceState(null, '', address('attachments'));
