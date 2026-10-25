@@ -5,6 +5,7 @@ import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
 import { openDB } from 'idb';
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from '../src/features/task-cache/database';
+import { TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
 import type { TaskGraph } from '../src/api/types';
 import { stringifyWireJson } from "./helpers/wireJson";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -68,9 +69,19 @@ describe("sidebar integration with the authenticated workspace", () => {
   it("preserves the mounted project and requests while toggling the origin preference", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
     const fetcher = install();
+    const initialSync = Promise.withResolvers<void>();
+    const applySync = TaskCacheScope.prototype.applySync;
+    vi.spyOn(TaskCacheScope.prototype, "applySync").mockImplementation(function (this: TaskCacheScope, ...args) {
+      const result = applySync.apply(this, args);
+      void result.then(() => initialSync.resolve(), initialSync.reject);
+      return result;
+    });
     render(<AuthenticatedApp />);
-    const heading = await screen.findByRole("heading", { name: "私有项目" });
-    await waitFor(() => expect(fetcher.mock.calls.some(([url]) => isTaskSync(url))).toBe(true));
+    // Authentication commits before the project effect can start the cache synchronization.
+    await act(async () => {});
+    await act(async () => initialSync.promise);
+    const heading = screen.getByRole("heading", { name: "私有项目" });
+    expect(fetcher.mock.calls.some(([url]) => isTaskSync(url))).toBe(true);
     const main = screen.getByRole("main");
     const before = fetcher.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "折叠侧栏" }));
