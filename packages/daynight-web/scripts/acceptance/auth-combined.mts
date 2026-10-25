@@ -263,7 +263,7 @@ const fullscreenPreview = async (page: Page, context: BrowserContext, origin: st
         return box !== null && Math.abs(box.x) <= 1 && Math.abs(box.y) <= 1
           && Math.abs(box.width - viewport.width) <= 1 && Math.abs(box.height - viewport.height) <= 1;
       }).toBe(true);
-      for (const control of [detail.locator('.task-detail-delete'), toggle, detail.locator('.task-detail-popout'), detail.locator('.task-detail-close')]) {
+      for (const control of [toggle, detail.locator('.task-detail-more'), detail.locator('.task-detail-close')]) {
         const box = await control.boundingBox();
         check(box !== null && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width + 1 && box.y + box.height <= viewport.height + 1, 'A fullscreen header action is outside the viewport.');
       }

@@ -40,7 +40,7 @@ Copilot 作为子进程启动。
 修改后下次启动生效。每个显式值必须是含非空白内容且不含 NUL 的字符串；null、
 其他类型、空串和纯空白须报错，合法字符串原样保留。模型名称、强度等级及两者
 兼容性由 Copilot 判断，不使用静态枚举；`auto` 可用于交由 Copilot 选择模型。
-setup 及仓库登记保留这两个字段和注释；server 投影识别这些已登记键，但不校验其
+交互引导及仓库登记保留这两个字段和注释；server 投影识别这些已登记键，但不校验其
 review 值。
 
 同一文件可包含已登记的其他客户端字段，例如 `serverUrl`；review 只校验自己的
@@ -48,14 +48,13 @@ review 值。
 仍须报错。运行和列表需要已登记 review 仓库；缺少文件或 `repositories` 字段时，
 按[客户端 C6](daynight.md#c6-按需配置引导)在 TTY 中引导登记，保存后继续原命令，
 无需设置服务地址。空列表和其他无效 review 值仍须报错。非交互环境缺配置时给出
-`daynight setup --review-repo <remote>` 指引。添加命令和 setup 可向仅含 server 配置的
+`daynight review add-repo <remote>` 指引。添加命令和交互引导可向仅含 server 配置的
 文件登记首个仓库，保留已有字段、注释及原有 review 字段语义。
 
 `daynight review add-repo <remote> [--path <path>]` 负责读取、校验和保存配置。配置不存在时
 自动创建；已有配置中的其他设置和 YAML 注释须保留。命令不执行 clone、认证检查、
 GitHub 查询、SQLite 初始化或 PR 初始化。运行中的 daemon 在下次启动时读取新配置；
-添加成功只表示配置已保存。`daynight setup --review-repo <remote>` 及可选
-`--review-path <path>` 复用同一登记和路径规则；引导只保存配置，后续的原 `review run`
+添加成功只表示配置已保存。交互首次引导复用同一登记和路径规则；引导只保存配置，后续的原 `review run`
 才启动正常审查生命周期。
 
 顶层 `repositoryRoot` 默认是 `~/daynights`，仅在添加仓库且省略 `--path` 时用于决定
@@ -351,13 +350,13 @@ skill 的方法不能取代本次审查目标、发布资格、远端结果对�
 | 在 Linux、macOS 或 Windows 上执行 `daynight review run`。 | 前台 CLI 通过直接启动 Copilot 子进程支持所需工作流程，并已验证命令执行、输出处理和正常退出。 | R1 |
 | 从不同工作目录执行启动命令。 | 读取同一份 `~/.daynight/config.yml` YAML 配置，使用 `~/.daynight/` 中的同一份运行状态；仓库相对路径按配置目录解析。 | R1, R2, R13 |
 | 首次在 TTY 执行 `review run`、`review list` 或 `review ls`，缺少文件或仓库字段。 | 仅引导仓库登记，保存后继续原操作；无 server 地址也可使用 review。 | R2, R15 |
-| 非交互环境缺少 review 仓库，或已配置空列表、无效字段及损坏 YAML。 | 缺配置给出 setup 命令；无效已有配置明确失败，不覆盖配置或启动运行时。 | R2 |
+| 非交互环境缺少 review 仓库，或已配置空列表、无效字段及损坏 YAML。 | 缺配置给出 `review add-repo` 命令；无效已有配置明确失败，不覆盖配置或启动运行时。 | R2 |
 | 配置不存在时执行 `daynight review add-repo <remote>`。 | 自动创建 YAML，使用默认 `~/daynights` 根目录和规范化仓库身份生成绝对 `path`；只保存配置。 | R2 |
 | 添加仓库后修改 `repositoryRoot`，再添加另一个仓库。 | 只有后添加仓库使用新的根目录；原条目的 `path` 保持原值。 | R2 |
 | 从任意目录执行带相对 `--path` 的添加命令。 | 按命令当前目录解析并保存绝对路径，保留已有配置设置与注释。 | R2 |
 | 重复添加同一仓库，或两个添加命令并发执行。 | 同仓库省略路径时复用已保存路径，显式同实际路径保持幂等，显式不同路径报错；并发写入不会丢失另一项修改，锁冲突明确失败。 | R2 |
 | daemon 运行时添加仓库。 | 当前进程保留已有配置，下次启动后按正常启动流程克隆并初始化新增仓库。 | R2, R3, R4 |
-| 两个模型选项均省略、仅配置 `copilotModel`、仅配置 `copilotReasoningEffort` 或同时配置，包括在运行中修改配置。 | 正式 argv 只包含已配置字段对应的独立 flag/value，不为省略项增加覆盖；本次进程使用启动原值，下次启动才读取修改。setup 和仓库登记保留字段及注释。 | R2, R8 |
+| 两个模型选项均省略、仅配置 `copilotModel`、仅配置 `copilotReasoningEffort` 或同时配置，包括在运行中修改配置。 | 正式 argv 只包含已配置字段对应的独立 flag/value，不为省略项增加覆盖；本次进程使用启动原值，下次启动才读取修改。交互引导和仓库登记保留字段及注释。 | R2, R8 |
 | `copilotModel` 或 `copilotReasoningEffort` 为 null、其他类型、空串、纯空白或含 NUL 的字符串。 | review 配置明确失败且不被引导覆盖；server 命令仅校验自己的配置值，未知顶层字段仍须报错。 | R2 |
 | 执行 `daynight review list` 或 `daynight review ls`。 | 两者输出相同的本地一致快照，按配置仓库顺序及 PR 编号排列，包含 Draft 与仍然 Open 的已完成或失败审查。 | R15 |
 | 已初始化仓库没有已跟踪的 Open PR，或仓库尚未初始化。 | 分别显示 `No tracked ongoing PRs.` 或 `Not initialized.`。 | R4, R15 |
