@@ -508,9 +508,14 @@ localStorage JSON 记录。选择与滚动记录不扩展原有格式，也不�
 | `daynight:completed-standalone-tasks:${projectId}` | boolean；缺省 `false`。 |
 | `daynight:task-view-scroll:${projectId}` | `{ chains: number, standalone: number }`；两个值均为非负有限的页面纵向滚动坐标，缺省为 0。 |
 
-滚动 hook 监听已加载页面的 `scroll` 和 `pagehide`，切换页签前保存当前坐标，并在目标
-内容可用后的 layout effect 恢复其坐标。浏览器按实际文档高度限制可恢复的位置，
-依赖变化或完成项过滤可能缩短页面。读取、校验及写入错误分别报告，当前内存状态仍可操作。
+滚动 hook 仅在快照可用且外层任务列表活动时监听 `scroll` 和 `pagehide`，离开任务区前
+保存当前坐标，在布局阶段释放监听，并在目标内容可见后的 layout effect 恢复其坐标。
+浏览器按实际文档高度限制可恢复的位置，依赖变化或完成项过滤可能缩短页面。读取、校验及
+写入错误分别报告，当前内存状态仍可操作。
+
+任务区画布通过 `.project-tasks .task-graph-canvas` 设置 `scroll-margin-block: 12px`。
+浏览器原生滚入视口时可能对分数像素位置取整，前后留白使完整画布保留在可见视口内；
+该滚动留白不改变画布盒尺寸或图变换。
 
 ### Go 路由和静态资源
 

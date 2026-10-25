@@ -42,6 +42,11 @@ snapshot arrival never read or overwrite the task offsets. A connected element
 inside hidden Tasks is not a valid detail-close focus target; restoration uses
 an available control in the visible section or the project heading.
 
+Task workspace canvases use `scroll-margin-block: 12px` for native scroll-into-view
+clearance. Browser scrolling can round fractional layout coordinates differently
+from the canvas bounds; block-axis clearance keeps the complete canvas within
+the viewport without changing its box geometry or graph transform.
+
 The [Web specification](../../../../docs/spec/daynight-web.md) owns required
 behavior, and the [Web design](../../../../docs/design/daynight-web.md) owns the
 current composition. The production-component browsing fixture is the current
