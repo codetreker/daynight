@@ -5,7 +5,7 @@ export const ProjectOverview = ({ summary }: { readonly summary: TaskGraph["summ
   const { messages: { workspace: { project: m, sections }, common }, format } = useI18n();
   const completion = summary.total === 0 ? 0 : Math.round(summary.done * 100 / summary.total);
   return <>
-    <div className="project-section-heading"><h2>{sections.overview}</h2><p>{sections.overviewDescription}</p></div>
+    <div className="project-section-heading"><h2>{sections.overview}</h2><p title={sections.overviewDescription}>{sections.overviewDescription}</p></div>
     <section className="stats" aria-label={m.statistics}>
       <div className="stat"><p className="stat-label">{m.totalTasks}</p><p className="stat-number">{format.number(summary.total)}</p><p className="stat-foot">{m.uniqueTasks}</p></div>
       <div className="stat done"><p className="stat-label">{common.status.done}</p><p className="stat-number">{format.number(summary.done)}</p><p className="stat-foot">{m.completion({ percent: completion })}</p></div>
