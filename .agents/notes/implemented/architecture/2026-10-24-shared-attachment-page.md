@@ -30,6 +30,10 @@ Back/Forward apply selection without creating history. Dialog selection remains
 local. Same-task tab/file changes retain inventory, directory disclosure,
 sidebar scroll and upload drafts; task and identity changes still release old
 resources. Existing preview identity and request cancellation reject stale data.
+The [directory-disclosure decision](../feature/2026-10-25-attachment-directory-disclosure.md)
+starts directories closed and reveals ancestors for direct attachment entry and
+history navigation. Local tree/upload address updates and tab changes preserve
+manual disclosure without requesting another reveal.
 
 New standalone attachment metadata requires a complete inventory; partial pages
 and failures cannot establish absence. Incomplete refreshes retain already

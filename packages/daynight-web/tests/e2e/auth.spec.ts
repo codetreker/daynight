@@ -5,6 +5,7 @@ import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/clien
 import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type ProjectRecord } from '../../src/features/task-cache/database';
 import { authenticatedAPI, bearerContext, browserAuthentication, tokenContext, type AuthenticatedAPI } from './authentication';
 import { executeTask, createProject, createTask, expect, test } from './fixtures';
+import { attachmentFileButton } from './attachment-tree';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const origin = (info: TestInfo): string => {
@@ -158,7 +159,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const detail = page.locator('.task-detail-dialog');
     await expect(detail.locator('.task-detail-title')).toHaveText(task.title);
     await detail.getByRole('tab', { name: '附件', exact: true }).click();
-    await detail.locator('button.attachment-file').filter({ hasText: /index\.html/ }).click();
+    await (await attachmentFileButton(detail, 'site/index.html')).click();
     await expect(detail.frameLocator('iframe').getByRole('button', { name: 'Private file' })).toBeVisible();
     await detail.locator('.attachment-upload-disclosure>summary').click();
     const fileInput = detail.getByLabel('选择一个文件', { exact: true });
@@ -563,7 +564,7 @@ test('auth-resource-session', scenario('auth-resource-session'), async ({ page, 
   await uploadDisclosure.locator('summary').click();
   await expect(uploadDisclosure).toHaveAttribute('open', '');
   await expect(attachments.locator('input[type=text]')).toBeVisible();
-  await attachments.locator('button.attachment-file').filter({ hasText: /index\.html/ }).click();
+  await (await attachmentFileButton(attachments, path)).click();
   const frame = detail.frameLocator('iframe');
   await expect(frame.locator('body')).toHaveAttribute('data-value', 'relative-authenticated');
   await expect(frame.locator('#counter')).toHaveCSS('color', 'rgb(17, 99, 155)');
@@ -574,10 +575,10 @@ test('auth-resource-session', scenario('auth-resource-session'), async ({ page, 
   await pathInput.fill('uploads/retained-after-frame.txt');
   await expect(pathInput).toHaveValue('uploads/retained-after-frame.txt');
   await frame.locator('#counter').click();
-  await attachments.locator('button.attachment-file').filter({ hasText: /app\.js/ }).click();
+  await (await attachmentFileButton(attachments, 'site/app.js')).click();
   await expect(attachments.getByRole('heading', { name: 'site/app.js', exact: true })).toBeVisible();
   expect(identityRequests).toHaveLength(checksBeforeGesture);
-  await attachments.locator('button.attachment-file').filter({ hasText: /index\.html/ }).click();
+  await (await attachmentFileButton(attachments, path)).click();
   await expect(frame.locator('body')).toHaveAttribute('data-value', 'relative-authenticated');
   expect((await authenticatedAPI(context.request).head(preview)).status()).toBe(200);
   expect((await authenticatedAPI(context.request).post('/api/v1/me/tokens', { headers: { Origin: 'https://wrong-origin.example' }, data: { name: 'Rejected browser origin', expiresAt: null } })).status()).toBe(403);

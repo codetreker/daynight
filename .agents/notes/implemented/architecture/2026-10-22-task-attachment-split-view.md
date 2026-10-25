@@ -23,7 +23,10 @@ Home/End activation provide keyboard navigation. Both panels stay mounted and
 the inactive panel is hidden and inert. Tab round trips retain the attachment
 controller, native file input, relative-path draft, directory expansion and
 preview state. A new project/task identity resets them. The
-[Markdown description decision](2026-10-22-task-description-markdown.md) adds
+[directory-disclosure decision](../feature/2026-10-25-attachment-directory-disclosure.md)
+sets the tree's root-only initial view and limits automatic ancestor expansion to
+explicit attachment navigation, while preserving manual disclosure choices.
+The [Markdown description decision](2026-10-22-task-description-markdown.md) adds
 root-based description navigation through this same panel and controller;
 `TaskDetailReading` owns the hook and passes its controller to
 `TaskAttachmentsPanel`. Complete-inventory checks and navigation errors share

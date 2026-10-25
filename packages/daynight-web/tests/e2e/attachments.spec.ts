@@ -11,29 +11,14 @@ import { createProject, createTask, expect, test, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
 import { longConfirmationPath } from '../mockups/attachment-paths';
 import { hasPaintedPdfMarker, readPdfPixels, type PdfPixels } from './pdf-pixels';
+import { attachmentFileButton as fileButton, attachmentFileActions as fileActions } from './attachment-tree';
 
 const exact = (value: string): RegExp => new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 const asset = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
-const fileButton = async (region: Locator, path: string): Promise<Locator> => {
-  let branch = region.getByRole('navigation', { name: /^(附件文件|Attachment files)$/ }).locator(':scope > ul');
-  const parts = path.split('/');
-  for (const name of parts.slice(0, -1)) {
-    const summary = branch.locator(':scope > li > details > summary').filter({ hasText: exact(`▱ ${name}`) });
-    await expect(summary).toHaveCount(1);
-    const directory = summary.locator('..');
-    if (await directory.getAttribute('open') === null) await summary.click();
-    branch = directory.locator(':scope > ul');
-  }
-  const name = branch.locator(':scope > li > .attachment-file-row > .attachment-file > .attachment-file-name').filter({ hasText: exact(parts.at(-1)!) });
-  await expect(name).toHaveCount(1);
-  return name.locator('..');
-};
 const selectFile = async (region: Locator, path: string): Promise<void> => {
   await (await fileButton(region, path)).click();
   await expect(region.getByRole('heading', { name: path, exact: true })).toBeVisible();
 };
-const fileActions = async (region: Locator, path: string): Promise<Locator> =>
-  (await fileButton(region, path)).locator('..').locator('.attachment-actions-trigger');
 const confirmDeletion = async (page: Page, region: Locator, path: string): Promise<Locator> => {
   await (await fileActions(region, path)).click();
   await page.getByRole('menuitem', { name: /^(删除|Delete)$/ }).click();
@@ -98,7 +83,7 @@ const paintedPdf = async (page: Page, frame: Locator, info: TestInfo, source: Bu
 
 test('task-attachments', { annotation: { type: 'scenario', description: 'task-attachments' } }, async ({ page, api: request, allowAttachmentWrites }, info) => {
   const project = await createProject(request, { name: `Attachments ${randomUUID()}` });
-  const task = await createTask(request, project.id, { title: 'CLI 与 Web 共享同一任务附件', description: '验证文件内容、预览和单文件操作。' });
+  const task = await createTask(request, project.id, { title: 'CLI 与 Web 共享同一任务附件', description: '验证文件内容、预览和单文件操作。\n\n[深层附件](notes/one/same.txt) [根层附件](empty.txt)' });
   const baseURL = info.project.use.baseURL;
   if (typeof baseURL !== 'string') throw new Error('Attachment acceptance requires the actual service base URL.');
   const acceptanceDirectory = process.env.DAYNIGHT_ACCEPTANCE_DIRECTORY;
@@ -200,6 +185,38 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
       expect(await page.evaluate(() => ({ document: document.documentElement.style.overflow, body: document.body.style.overflow }))).toEqual(originalOverflow);
     };
     await expect(attachments.getByRole('heading', { name: `附件 · ${seeds.length}`, exact: true })).toBeVisible();
+    await expect(attachments.locator('.attachment-tree details[open]')).toHaveCount(0);
+    const notesDirectory = attachments.locator('summary').filter({ hasText: exact('▱ notes') }).locator('..');
+    const notesOne = notesDirectory.locator('summary').filter({ hasText: exact('▱ one') }).locator('..');
+    const notesTwo = notesDirectory.locator('summary').filter({ hasText: exact('▱ two') }).locator('..');
+    const nestedFile = attachments.locator('.attachment-actions-trigger[aria-label="更多操作：notes/one/same.txt"]').locator('..').locator('.attachment-file');
+    await expect(nestedFile).toBeHidden();
+    await expect(attachments.locator('.attachment-file-name').filter({ hasText: exact('empty.txt') })).toBeVisible();
+    await dialog.getByRole('tab', { name: '概览', exact: true }).click();
+    await dialog.getByRole('link', { name: '深层附件', exact: true }).click();
+    await expect(nestedFile).toBeVisible();
+    await expect(notesDirectory).toHaveAttribute('open', '');
+    await expect(notesOne).toHaveAttribute('open', '');
+    await expect(notesTwo).not.toHaveAttribute('open', '');
+    await expect(attachments.locator('.attachment-tree details[open]')).toHaveCount(2);
+    await notesDirectory.locator('summary').first().click();
+    await attachments.getByRole('button', { name: '刷新附件', exact: true }).click();
+    await expect(nestedFile).toBeHidden();
+    await expect(notesDirectory).not.toHaveAttribute('open', '');
+    await dialog.getByRole('tab', { name: '概览', exact: true }).click();
+    await dialog.getByRole('tab', { name: '附件', exact: true }).click();
+    await expect(notesDirectory).not.toHaveAttribute('open', '');
+    await dialog.getByRole('tab', { name: '概览', exact: true }).click();
+    await dialog.getByRole('link', { name: '深层附件', exact: true }).click();
+    await expect(nestedFile).toBeVisible();
+    await expect(notesDirectory).toHaveAttribute('open', '');
+    await expect(notesTwo).not.toHaveAttribute('open', '');
+    await notesOne.locator('summary').first().click();
+    await notesDirectory.locator('summary').first().click();
+    await dialog.getByRole('tab', { name: '概览', exact: true }).click();
+    await dialog.getByRole('link', { name: '根层附件', exact: true }).click();
+    await expect(attachments.locator('.attachment-tree details[open]')).toHaveCount(0);
+    await expect(attachments.getByRole('heading', { name: 'empty.txt', exact: true })).toBeVisible();
     const uploadDisclosure = attachments.locator('.attachment-upload-disclosure');
     const uploadSummary = uploadDisclosure.locator('summary');
     await expect(uploadDisclosure).not.toHaveAttribute('open', '');
@@ -266,6 +283,9 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await expect(dialog.getByRole('tab', { name: '附件', exact: true })).toHaveAttribute('aria-selected', 'true');
     const readerAttachments = reader.locator('.task-attachments');
     await expect(readerAttachments.getByRole('navigation', { name: '附件文件', exact: true })).toBeVisible();
+    await expect(readerAttachments.locator('.attachment-tree details[open]')).toHaveCount(1);
+    await expect(readerAttachments.locator('.attachment-actions-trigger[aria-label="更多操作：docs/design.md"]').locator('..').locator('.attachment-file')).toBeVisible();
+    await expect(readerAttachments.locator('.attachment-actions-trigger[aria-label="更多操作：notes/one/same.txt"]').locator('..').locator('.attachment-file')).toBeHidden();
     const readerSidebar = await readerAttachments.locator('.attachment-sidebar').elementHandle();
     if (readerSidebar === null) throw new Error('The standalone attachment sidebar is absent.');
     const readerUpload = readerAttachments.locator('.attachment-upload-disclosure');
@@ -273,6 +293,9 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await readerAttachments.getByRole('textbox', { name: '目标相对路径' }).fill('drafts/reader.txt');
     await readerUpload.locator('summary').click();
     const readerLongDirectory = readerAttachments.locator('summary').filter({ hasText: exact('▱ long') }).locator('..');
+    await expect(readerLongDirectory).not.toHaveAttribute('open', '');
+    await readerLongDirectory.locator('summary').first().click();
+    await expect(readerLongDirectory).toHaveAttribute('open', '');
     await readerLongDirectory.locator('summary').first().click();
     await expect(readerLongDirectory).not.toHaveAttribute('open', '');
     await selectFile(readerAttachments, 'notes/one/same.txt');
@@ -281,10 +304,18 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await expect(readerAttachments.locator('pre')).toHaveText('First nested text\nSecond line\n');
     await selectFile(readerAttachments, 'notes/two/same.txt');
     await expect(reader).toHaveURL(new URL(attachmentPageUrl(project.id, task.id, 'notes/two/same.txt'), origin).href);
+    const readerNotes = readerAttachments.locator('summary').filter({ hasText: exact('▱ notes') }).locator('..');
+    const readerNotesTwo = readerNotes.locator('summary').filter({ hasText: exact('▱ two') }).locator('..');
+    await readerNotes.locator('summary').first().click();
+    await expect(readerNotes).not.toHaveAttribute('open', '');
     await reader.goBack();
     await expect(readerAttachments.locator('pre')).toHaveText('First nested text\nSecond line\n');
+    await expect(readerNotes).toHaveAttribute('open', '');
+    await readerNotesTwo.locator('summary').first().click();
+    await expect(readerNotesTwo).not.toHaveAttribute('open', '');
     await reader.goForward();
     await expect(readerAttachments.locator('pre')).toHaveText('Second same-name text\n');
+    await expect(readerNotesTwo).toHaveAttribute('open', '');
     await expect(readerLongDirectory).not.toHaveAttribute('open', '');
     await expect(readerUpload).not.toHaveAttribute('open', '');
     await expect(readerAttachments.getByLabel('目标相对路径')).toHaveValue('drafts/reader.txt');

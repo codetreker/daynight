@@ -33,20 +33,75 @@ const fixture = (initial: readonly Attachment[] = []) => {
   return api;
 };
 const open = (api: AttachmentApi, taskId = '00000000-0000-4000-8000-000000000001') => render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId={taskId} api={api} />);
+const openAncestors = (element: HTMLElement) => {
+  const ancestors: HTMLDetailsElement[] = [];
+  for (let parent = element.parentElement; parent !== null; parent = parent.parentElement) {
+    if (parent instanceof HTMLDetailsElement) ancestors.unshift(parent);
+  }
+  for (const directory of ancestors) if (!directory.open) fireEvent.click(directory.querySelector('summary')!);
+};
 const fileButton = (name: RegExp): HTMLElement => {
-  const selection = screen.getAllByRole('button', { name }).find((button) => button.hasAttribute('aria-pressed'));
+  const selection = screen.getAllByRole('button', { name, hidden: true }).find((button) => button.hasAttribute('aria-pressed'));
   if (selection === undefined) throw new Error(`No file selection button matches ${name}`);
+  openAncestors(selection);
   return selection;
 };
 const findFileButton = (name: RegExp) => waitFor(() => fileButton(name));
 const showDeleteConfirmation = (path: string) => {
-  fireEvent.click(screen.getByRole('button', { name: `更多操作：${path}` }));
+  const trigger = screen.getByRole('button', { name: `更多操作：${path}`, hidden: true });
+  openAncestors(trigger);
+  fireEvent.click(trigger);
   fireEvent.click(screen.getByRole('menuitem', { name: '删除' }));
   return screen.getByRole('dialog', { name: '删除附件？' });
 };
 
 
 describe('task attachments', () => {
+  it('shows only root entries and preserves manual directory choices through refresh', async () => {
+    const api = fixture([file('root.txt'), file('docs/design/spec.md'), file('docs/readme.txt'), file('images/icon.svg')]);
+    open(api);
+    const docs = (await screen.findByText('docs', { selector: 'summary' })).parentElement!;
+    const design = screen.getByText('design', { selector: 'summary' }).parentElement!;
+    const images = screen.getByText('images', { selector: 'summary' }).parentElement!;
+    expect(screen.getByText('root.txt')).toBeVisible();
+    expect(docs).not.toHaveAttribute('open');
+    expect(design).not.toHaveAttribute('open');
+    expect(images).not.toHaveAttribute('open');
+    expect(screen.getByText('readme.txt')).not.toBeVisible();
+    expect(screen.getByText('spec.md')).not.toBeVisible();
+    fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
+    expect(screen.getByText('readme.txt')).toBeVisible();
+    expect(screen.getByText('spec.md')).not.toBeVisible();
+    fireEvent.click(screen.getByText('design', { selector: 'summary' }));
+    expect(screen.getByText('spec.md')).toBeVisible();
+    fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+    expect(docs).not.toHaveAttribute('open');
+    expect(design).toHaveAttribute('open');
+    expect(images).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
+    expect(screen.getByText('spec.md')).toBeVisible();
+  });
+
+  it('keeps a newly uploaded nested file selected while its new directories remain collapsed', async () => {
+    const api = fixture();
+    open(api);
+    await screen.findByText('暂无附件，上传文件后即可在这里浏览。');
+    const user = userEvent.setup();
+    await user.click(screen.getByText('上传文件', { selector: 'summary' }));
+    await user.upload(screen.getByLabelText('选择一个文件'), new File(['new'], 'new.txt', { type: 'text/plain' }));
+    const path = screen.getByRole('textbox', { name: '目标相对路径' });
+    await user.clear(path);
+    await user.type(path, 'docs/design/new.txt');
+    await user.click(screen.getByRole('button', { name: '上传文件' }));
+    await screen.findByRole('heading', { name: 'docs/design/new.txt' });
+    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
+    expect(screen.getByText('design', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
+    expect(screen.getByText('new.txt', { selector: '.attachment-file-name' })).not.toBeVisible();
+    expect(screen.getByText('Contents of docs/design/new.txt')).toBeVisible();
+  });
+
   it('keeps embedded file selection local without writing address or browser history', async () => {
     window.history.replaceState(null, '', '/projects/embedded');
     const initialLength = window.history.length;
@@ -356,6 +411,9 @@ describe('task attachments', () => {
   it('confirms the exact unselected path while preserving preview DOM and reading position', async () => {
     const api = fixture([file('docs/readme.md'), file('other/readme.md')]);
     open(api);
+    await screen.findByText('docs', { selector: 'summary' });
+    fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
+    fireEvent.click(screen.getByText('other', { selector: 'summary' }));
     const selections = await screen.findAllByRole('button', { name: /readme.md/ });
     fireEvent.click(selections.find((button) => button.hasAttribute('aria-pressed'))!);
     const content = await screen.findByText('Contents of docs/readme.md');

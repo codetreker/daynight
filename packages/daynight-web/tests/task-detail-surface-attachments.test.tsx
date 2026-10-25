@@ -65,6 +65,9 @@ describe('full-detail attachment surface', () => {
     expect(screen.getByText('上传文件', { selector: 'summary' })).toBeVisible();
     expect(screen.getByRole('button', { name: '更多操作：docs/readme.md' })).toBeVisible();
     const initialLength = window.history.length;
+    const otherDirectory = screen.getByText('资料', { selector: 'summary' }).parentElement!;
+    expect(otherDirectory).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('资料', { selector: 'summary' }));
     const target = screen.getByRole('button', { name: /^设计 %2F #\?\.txt/ });
     fireEvent.click(target);
     await screen.findByText(`Contents of ${special}`);
@@ -90,6 +93,32 @@ describe('full-detail attachment surface', () => {
     expect(window.location.pathname).toBe(attachmentPageUrl(projectId, taskId, 'notes/new.txt'));
     expect(screen.getByRole('link', { name: '下载' })).toHaveAttribute('href', expect.stringContaining('/notes/new.txt'));
     expect(screen.getByLabelText('目标相对路径')).toHaveValue('');
+    expect(screen.getByText('notes', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
+    expect(screen.getByText('new.txt')).not.toBeVisible();
+  });
+
+  it('reveals only a changed route target while retaining manually closed directories through refresh', async () => {
+    const api = fixture([file('docs/deep/readme.md'), file('docs/examples/sample.txt'), file('other/next.txt'), file('root.txt')]);
+    const view = render(page(api, 'docs/deep/readme.md'));
+    await screen.findByText('Contents of docs/deep/readme.md');
+    const directory = (name: string) => screen.getByText(name, { selector: 'summary' }).parentElement!;
+    expect(directory('docs')).toHaveAttribute('open');
+    expect(directory('deep')).toHaveAttribute('open');
+    expect(directory('examples')).not.toHaveAttribute('open');
+    expect(directory('other')).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+    expect(directory('docs')).not.toHaveAttribute('open');
+    view.rerender(page(api, 'other/next.txt'));
+    await screen.findByText('Contents of other/next.txt');
+    expect(directory('other')).toHaveAttribute('open');
+    expect(directory('docs')).not.toHaveAttribute('open');
+    view.rerender(page(api, 'root.txt'));
+    await screen.findByText('Contents of root.txt');
+    expect(directory('docs')).not.toHaveAttribute('open');
+    expect(directory('examples')).not.toHaveAttribute('open');
+    expect(api.list).toHaveBeenCalledTimes(2);
   });
 
   it('synchronizes a completed upload after another file was selected while the write was pending', async () => {
