@@ -112,7 +112,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 ### 居中任务详情
 
-`TaskDetailDialog` 通过 body portal 相对可用视口居中，最大宽度 960px，桌面四周
+`TaskDetailDialog` 普通模式通过 body portal 相对可用视口居中，最大宽度 960px，桌面四周
 至少 24px；600px 及以下边距为 12px。外壳最大高度为
 `min(880px, 100dvh − 2 × gutter)`，公共标题、状态、页签和底部说明处于面板滚动区
 之外，关闭入口始终可访问。顶栏的 `h2.task-detail-title` 直接使用实际任务标题并提供对话框的可访问名称；没有已加载详情时使用加载或失败状态标题。完整标题自身有界、可聚焦并原生滚动，状态、新标签和关闭控件保持可访问；详情通过同一个 `LocaleProvider` 使用应用当前语言，顶栏保留实际标题、当前状态菜单、按当前任务/页签/附件生成的新标签链接与关闭入口。正文头部只保留状态和操作控件；提示归属独立浮层。`task-detail.css` 使用统一的 `task-detail-*` 类名。
@@ -125,6 +125,15 @@ project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有�
 项目图快照并展示同一主体，不挂载工作空间侧栏或弹窗外壳。任务/页签/文件 URL、
 历史、查询参数和独立刷新由[独立详情设计](daynight-task-inspection.md#独立完整任务详情)
 拥有；文件渲染与滚动由[独立附件阅读页](daynight-task-attachments.md#独立附件阅读页)拥有。
+
+弹窗与独立页的外层阅读工作区各自持有全屏模式，Surface 标题栏统一提供双语切换
+按钮。CSS 将同一外壳铺满视口，不更换 portal、presentation、key 或阅读面板，
+也不重新申请弹窗滚动锁；应用滚动容器在切换布局前后按合法范围恢复原位置。
+页签、附件、输入草稿和写入 session 保持原所有者。Escape 先由菜单/确认/frame
+子应用处理，再退出详情全屏并聚焦切换按钮，随后普通弹窗才关闭；图全屏最后退出。
+独立页全屏隐藏辅助顶栏但保留明确返回项目入口，普通页 Escape 保持原行为。
+frame 接收活动 root/onEscape 所有者，已加载 document 随 owner 变化更新键盘监听
+而不重载。完整机制与状态寿命由[全屏阅读设计](daynight-task-inspection.md#全屏阅读工作区)拥有。
 
 概览是详情中任务内容的滚动所有者。阅读主栏展示共享 CommonMark/GFM 视图渲染的描述和关联 PR，265px 辅栏
 展示时间、完整 ID、直接前置、当前阻塞项和直接后续。ID 旁的复制按钮直接调用 `navigator.clipboard.writeText` 写入完整 ID；成功和失败反馈属于当前 ID，以限时气泡展示，切换任务时清除。失败保留可选择的完整 ID 与重试入口，不显示虚假的复制成功。850px 及以下辅栏为 225px，

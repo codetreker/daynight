@@ -536,7 +536,26 @@ body。成功后 frame 正常 GET 文件和其资源；HEAD 仅证明入口可�
 端口、Service Worker 或离线文件系统。[鉴权架构](daynight-auth.md)在附件请求
 准入时验证登录态，并在文件 I/O 前检查项目成员，保留可信 HTML 的同源执行约定。
 
-居中详情对话框拥有 body portal、背景 inert、共享滚动锁和被动卸载后的焦点恢复；其居中尺寸、概览滚动与详情页签由[看板设计](daynight-web.md#居中任务详情)说明，附件页签的分屏和右侧滚动由本节拥有。`dialogFocusables` 使用 `tabbable` 6.5.0 的生产默认可见性检查，统一枚举对话框与同源 frame 的可 Tab 元素；frame 的 load 监听桥接 Esc 与首末 Tab/Shift+Tab 到对话框，并在替换或卸载时释放。该桥仍属于预览组件，不因外壳居中另建键盘所有者。详细历史与取舍见 [Web 附件决策](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-web.md)。
+居中详情对话框拥有 body portal、背景 inert、共享滚动锁和被动卸载后的焦点恢复；其普通尺寸、概览滚动与详情页签由[看板设计](daynight-web.md#居中任务详情)说明，附件页签的分屏和右侧滚动由本节拥有。全屏沿用同一附件控制器、面板、文件输入及 frame，不改变 path/timestamp 预览身份或发起新的内容请求；应用拥有的滚动位置按新布局合法范围恢复，frame 内部滚动继续归原生文档或阅读器。
+
+`AttachmentKeyboardOwner` 由共享详情 Surface 经 Reading 和附件面板传到预览，包含
+活动阅读容器的 `root` 与语义 `onEscape`。弹窗始终提供 owner，独立页仅全屏时
+提供。`TrustedFrame` 在 load 时记录当前同源 document；document 或 owner root 变化时
+释放旧监听，回调 ref 保持最新。document 的 keydown 监听对每个 Escape/Tab 事件
+临时注册专属 Window 冒泡处理器，排在子应用当前已有的 Window 消费者之后；处理器
+只处理同一事件，检查 `defaultPrevented` 后同步执行 Escape 或边界 Tab。子应用在
+Document 或 Window 消费的快捷键均不会触发外层操作。
+
+每个临时处理器使用 `AbortController` signal 释放；父窗口的零延迟清理定时器处理
+事件被停止传播后留下的处理器。清理只使用 signal 和父窗口定时器，不访问可能已因
+跨源导航而不可访问的 WindowProxy。document/owner 变化、停用及卸载同时移除
+Document 监听并释放全部待处理器；退出独立页全屏不重建 frame。`dialogFocusables`
+使用 `tabbable` 6.5.0 的生产默认可见性检查，边界 Tab/Shift+Tab 围绕当前 owner root
+与 frame 控件处理。
+PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的桥接结果作为 PDF
+键盘证明；保留原生 reader 与显式退出/返回控件，并记录真实浏览器验证的边界。
+[全屏阅读决策](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
+拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
 
 `tests/mockups/attachments.html` 仅由 Vite 开发服务提供，实际组件和 CSS 使用内存
 fixture API 与原生 fixture 文件，覆盖有文件、空态、加载、失败和忙碌状态及长内容。fixture 分配的对象
@@ -574,10 +593,10 @@ URL 在删除后仍保持有效，到 fixture dispose 才释放，避免已加�
 由拟合正文的 iframe 内文档滚动。所有可收缩层保持零最小尺寸，外壳隐藏外溢，不
 以固定头高减法或 frame 最低高度产生嵌套滚动。
 
-`AttachmentPreview` 的关闭能力可选。`TrustedFrame` 仅在实际任务详情 dialog 祖先
-与关闭回调同时存在时安装 Escape/边界 Tab 桥。独立完整详情不安装该桥，内部原生
-删除确认继续拥有当前层焦点和键盘交互。内嵌详情的焦点圈定、frame load/替换/卸载
-清理和关闭恢复按原规则执行。
+`AttachmentPreview` 接收可选的语义键盘 owner。普通独立详情不提供 owner；全屏
+专注阅读提供当前 Surface 的 root/onEscape，即使 frame 已加载也会安装桥，退出
+立即释放。内部原生删除确认继续拥有当前层焦点和键盘交互；弹窗的焦点圈定、
+frame document/owner/卸载清理和关闭恢复按上述共享规则执行。
 
 Go UI mux 精确登记基础任务和附件页面 GET/HEAD，继续交付相同 no-store index。
 附件原始路径守卫在 ServeMux 清理或重定向前验证路径，保留中间 `..` 掩盖命名空间

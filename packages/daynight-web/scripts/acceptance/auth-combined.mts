@@ -208,6 +208,106 @@ const bilingualToken = async (page: Page, context: BrowserContext, origin: strin
   }
 };
 
+const fullscreenPreview = async (page: Page, context: BrowserContext, origin: string, projectId: string, task: Task): Promise<Record<string, unknown>> => {
+  const detail = page.getByRole('dialog', { name: task.title, exact: true });
+  const toggle = detail.locator('.task-detail-fullscreen-toggle');
+  const frame = detail.frameLocator('iframe');
+  const retained = await Promise.all([detail.elementHandle(), detail.locator('iframe').elementHandle(), detail.locator('input[type=file]').elementHandle()]);
+  check(retained.every((element) => element !== null), 'Fullscreen reading elements are missing.');
+  await detail.locator('.attachment-upload-disclosure summary').click();
+  await detail.locator('input[type=file]').setInputFiles({ name: 'fullscreen-draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Fullscreen draft') });
+  const path = detail.locator('.attachment-upload-target input');
+  await path.fill('draft/retained.txt');
+  const resourceRequests: string[] = [];
+  const observe = (request: import('@playwright/test').Request): void => {
+    if (request.url().includes(`/tasks/${task.id}/preview/`)) resourceRequests.push(request.url());
+  };
+  page.on('request', observe);
+  try {
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 640 }, { width: 320, height: 240 }]) {
+      await page.setViewportSize(viewport);
+      await expect.poll(async () => {
+        const box = await detail.boundingBox();
+        return box !== null && Math.abs(box.x) <= 1 && Math.abs(box.y) <= 1
+          && Math.abs(box.width - viewport.width) <= 1 && Math.abs(box.height - viewport.height) <= 1;
+      }).toBe(true);
+      for (const control of [toggle, detail.locator('.task-detail-close')]) {
+        const box = await control.boundingBox();
+        check(box !== null && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width + 1 && box.y + box.height <= viewport.height + 1, 'A fullscreen header action is outside the viewport.');
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await detail.locator('.attachment-actions-trigger').first().click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await frame.locator('#counter').evaluate((element) => {
+      element.ownerDocument.defaultView!.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && element.ownerDocument.body.dataset.consumeEscape === 'yes') {
+          event.preventDefault();
+          element.ownerDocument.body.dataset.consumeEscape = 'no';
+        }
+      });
+      element.ownerDocument.body.dataset.consumeEscape = 'yes';
+    });
+    await frame.locator('#counter').press('Escape');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(frame.locator('body')).toHaveAttribute('data-consume-escape', 'no');
+    await frame.locator('#counter').press('Escape');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(toggle).toBeFocused();
+    await expect(path).toHaveValue('draft/retained.txt');
+    check(await retained[2]!.evaluate((element) => (element as HTMLInputElement).files?.[0]?.name) === 'fullscreen-draft.txt', 'Fullscreen switching lost the selected local file.');
+    await expect(frame.locator('#counter')).toHaveText('1');
+    check((await Promise.all(retained.map((element) => element!.evaluate((node) => node.isConnected)))).every(Boolean), 'Fullscreen switching replaced retained reading DOM.');
+    check(resourceRequests.length === 0, 'Fullscreen switching reloaded a preview resource.');
+    await frame.locator('#counter').press('Escape');
+    await expect(detail).toHaveCount(0);
+    await expect(page.locator(`#standalone-task-${task.id}`)).toBeFocused();
+  } finally { page.off('request', observe); await Promise.all(retained.map((element) => element?.dispose())); }
+
+  const reader = await context.newPage();
+  try {
+    await reader.goto(`${origin}/projects/${projectId}/tasks/${task.id}/attachments/site/index.html`);
+    const surface = reader.locator('.task-detail-page');
+    const readerToggle = surface.locator('.task-detail-fullscreen-toggle');
+    const counter = surface.frameLocator('iframe').locator('#counter');
+    await expect(counter).toHaveText('0');
+    await counter.click();
+    await counter.evaluate((element) => {
+      element.ownerDocument.defaultView!.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') setTimeout(() => { element.ownerDocument.body.dataset.escapePrevented = String(event.defaultPrevented); }, 0);
+      });
+    });
+    const originalFrame = await surface.locator('iframe').elementHandle();
+    check(originalFrame !== null, 'Standalone fullscreen iframe is missing.');
+    const address = reader.url();
+    const standaloneRequests: string[] = [];
+    reader.on('request', (request) => { if (request.url().includes(`/tasks/${task.id}/preview/`)) standaloneRequests.push(request.url()); });
+    for (let iteration = 0; iteration < 2; iteration++) {
+      await readerToggle.click();
+      await expect(readerToggle).toHaveAttribute('aria-pressed', 'true');
+      await expect(surface.locator('.task-detail-page-topbar')).toBeHidden();
+      await expect(surface.getByRole('link', { name: '返回任务所在项目', exact: true })).toBeVisible();
+      await counter.press('Escape');
+      await expect(readerToggle).toHaveAttribute('aria-pressed', 'false');
+      await expect(readerToggle).toBeFocused();
+      await expect(surface.frameLocator('iframe').locator('body')).toHaveAttribute('data-escape-prevented', 'true');
+      await counter.press('Escape');
+      await expect(surface.frameLocator('iframe').locator('body')).toHaveAttribute('data-escape-prevented', 'false');
+      await expect(surface).toBeVisible();
+      await expect(counter).toHaveText('1');
+      check(reader.url() === address && await originalFrame.evaluate((element) => element.isConnected), 'Standalone fullscreen changed the URL or iframe identity.');
+    }
+    check(standaloneRequests.length === 0, 'Standalone fullscreen reloaded its HTML resources.');
+    await originalFrame.dispose();
+  } finally { await reader.close(); }
+  return { modalEscape: 'full-normal-close', standaloneEscape: 'full-normal-native', retainedFrameAndFileInput: true,
+    draftRetained: true, noPreviewReload: true, nestedMenuFirst: true, childWindowEscapeFirst: true, viewports: ['1440x1000', '390x640', '320x240'] };
+};
+
 export const runAuthCombined = async (options: AuthCombinedOptions): Promise<AuthCombinedReceipt> => {
   check(options.directory === join(options.target.acceptanceDirectory, options.target.target === 'native' ? 'native/auth-combined' : 'container/auth-combined'), 'Combined directory is outside its owned target.');
   const signal = AbortSignal.any([options.signal, AbortSignal.timeout(180_000)]);
@@ -386,8 +486,8 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await expect(frame.locator('#counter')).toHaveCSS('color', 'rgb(17, 99, 155)');
     await frame.locator('#counter').click(); await expect(frame.locator('#counter')).toHaveText('1');
     await screenshots(bobPage, 'shared-preview-chinese');
-    await frame.locator('#counter').press('Escape'); await expect(detail).toHaveCount(0);
-    await record('same-data-cli-browser', { projectId: shared.id, taskId: task.id, taskVersion: snapshot.version.toString(), path: 'shared/data.bin', bytes: binary.length, sha256: hash(binary), propertiesRetained: true, moduleAndRelativeFetch: true });
+    const fullscreen = await fullscreenPreview(bobPage, bobContext, origin, shared.id, task);
+    await record('same-data-cli-browser', { projectId: shared.id, taskId: task.id, taskVersion: snapshot.version.toString(), path: 'shared/data.bin', bytes: binary.length, sha256: hash(binary), propertiesRetained: true, moduleAndRelativeFetch: true, fullscreen });
     const pending = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});
     const pendingToken = new URL(pending.link).hash.slice(1); secrets.add(pendingToken);
     const memberSnapshot = encode(await request(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200));

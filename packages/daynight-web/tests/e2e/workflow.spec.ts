@@ -1330,6 +1330,7 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   const taskTitle = dialog.locator('.task-detail-title');
   const statusAction = dialog.getByRole('button', { name: '待处理', exact: true });
   const popout = dialog.locator('.task-detail-popout');
+  const detailFullscreen = dialog.locator('.task-detail-fullscreen-toggle');
   const automation = dialog.getByRole('switch', { name: '自动执行', exact: true });
   const overviewTab = dialog.getByRole('tab', { name: '概览', exact: true });
   const executionPlatform = dialog.getByRole('combobox', { name: '执行平台', exact: true });
@@ -1354,6 +1355,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Shift+Tab');
   await expect(popout).toBeFocused();
   await page.keyboard.press('Shift+Tab');
+  await expect(detailFullscreen).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
   await expect(statusAction).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(taskTitle).toBeFocused();
@@ -1368,6 +1371,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Tab');
   await expect(statusAction).toBeFocused();
   await page.keyboard.press('Tab');
+  await expect(detailFullscreen).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(popout).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(close).toBeFocused();
@@ -1375,6 +1380,21 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
     await page.keyboard.press('Tab');
     expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   }
+  await detailFullscreen.click();
+  await expect(detailFullscreen).toHaveAttribute('aria-pressed', 'true');
+  await statusAction.click();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('menu')).toHaveCount(0);
+  await expect(detailFullscreen).toHaveAttribute('aria-pressed', 'true');
+  await statusAction.click();
+  await page.getByRole('menuitemradio', { name: '已完成', exact: true }).click();
+  await expect(page.getByRole('alertdialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  await expect(detailFullscreen).toHaveAttribute('aria-pressed', 'true');
+  await page.keyboard.press('Escape');
+  await expect(detailFullscreen).toHaveAttribute('aria-pressed', 'false');
+  await expect(detailFullscreen).toBeFocused();
   await page.keyboard.press('Escape');
   await expect(dialog).toHaveCount(0);
   await expect(fullscreen).toBeVisible();

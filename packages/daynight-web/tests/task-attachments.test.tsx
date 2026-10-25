@@ -32,7 +32,7 @@ const fixture = (initial: readonly Attachment[] = []) => {
   };
   return api;
 };
-const open = (api: AttachmentApi, taskId = '00000000-0000-4000-8000-000000000001') => render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId={taskId} api={api} onClose={vi.fn()} />);
+const open = (api: AttachmentApi, taskId = '00000000-0000-4000-8000-000000000001') => render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId={taskId} api={api} />);
 const fileButton = (name: RegExp): HTMLElement => {
   const selection = screen.getAllByRole('button', { name }).find((button) => button.hasAttribute('aria-pressed'));
   if (selection === undefined) throw new Error(`No file selection button matches ${name}`);
@@ -213,7 +213,7 @@ describe('task attachments', () => {
   it('retries text previews and uses injected native preview and download URLs', async () => {
     const api = fixture([file('text.txt'), file('image.svg', 'image/svg+xml')]);
     const readText = vi.fn().mockRejectedValueOnce(new Error('private preview')).mockResolvedValue('Recovered');
-    render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="task" api={{ ...api, readText }} onClose={vi.fn()} urls={{ page: (path) => `/reader/${path}`, previewRoot: '/fixtures/', preview: (path) => `/fixtures/${path}`, download: (path) => `/downloads/${path}` }} />);
+    render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="task" api={{ ...api, readText }} urls={{ page: (path) => `/reader/${path}`, previewRoot: '/fixtures/', preview: (path) => `/fixtures/${path}`, download: (path) => `/downloads/${path}` }} />);
     fireEvent.click(await findFileButton(/text.txt/));
     expect(await screen.findByRole('alert')).not.toHaveTextContent('private preview');
     fireEvent.click(screen.getByRole('button', { name: '重试预览' }));
@@ -433,7 +433,7 @@ describe('task attachments', () => {
     const view = open(api);
     await findFileButton(/old.txt/);
     const dialog = showDeleteConfirmation('old.txt');
-    view.rerender(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="00000000-0000-4000-8000-000000000002" api={api} onClose={vi.fn()} />);
+    view.rerender(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="00000000-0000-4000-8000-000000000002" api={api} />);
     expect(dialog).not.toHaveAttribute('open');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(api.remove).not.toHaveBeenCalled();
@@ -452,7 +452,7 @@ describe('task attachments', () => {
     const user = userEvent.setup();
     await user.click(screen.getByText('上传文件', { selector: 'summary' }));
     await user.upload(screen.getByLabelText('选择一个文件'), new File(['old'], 'old-upload.txt'));
-    view.rerender(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="00000000-0000-4000-8000-000000000002" api={injected} onClose={vi.fn()} />);
+    view.rerender(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="00000000-0000-4000-8000-000000000002" api={injected} />);
     expect(screen.queryByText('Contents of old.txt')).toBeNull();
     expect(screen.getByText('上传文件', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
     expect(screen.getByLabelText('目标相对路径')).toHaveValue('');

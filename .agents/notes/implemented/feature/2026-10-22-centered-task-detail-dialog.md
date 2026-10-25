@@ -22,7 +22,7 @@ shares that complete surface with a normal page and adds the title-bar popout,
 while this decision retains modal geometry and focus ownership. `task-detail.css` owns one
 `task-detail-*` namespace for its shell and content.
 
-The body portal centers the dialog in the available viewport, with a maximum
+In normal mode, the body portal centers the dialog in the available viewport, with a maximum
 width of 960px and 24px gutters, reduced to 12px at 600px and below. Maximum height
 is `min(880px, 100dvh - 2 × gutter)`. The original centered composition used one
 content scroller to keep the heading and footer accessible while preserving all
@@ -48,13 +48,17 @@ passive cleanup restores focus after sibling DOM removal, as required by the
 Relationship navigation changes the resource within one dialog lifetime.
 
 The dialog remains above the [fullscreen graph](2026-10-22-task-graph-fullscreen.md).
-Escape closes details before the graph; a vanished entry falls back to the
+The [fullscreen-reading decision](2026-10-25-task-detail-fullscreen.md) extends
+the same mounted shell with viewport reading and a semantic frame keyboard owner.
+Escape first leaves detail fullscreen, then closes details, then exits the graph,
+after nested children consume their own layer; a vanished entry falls back to the
 surviving fullscreen exit control or the current project view's visible controls,
 with the project heading retained for an empty project. Both modal owners use
 the same counted body scroll lock, including when the graph unmounts first.
 The [attachment decision](2026-10-21-task-attachment-web.md) continues to own
-same-origin frame load, replacement and unmount listeners. Its Tab/Escape bridge
-uses `dialogFocusables` and the same dialog lifecycle.
+same-origin rendering and request behavior. Its Tab/Escape bridge now follows
+the active root and loaded document under the fullscreen-reading decision, using
+`dialogFocusables` without changing the frame or dialog lifecycle.
 
 The [inspection requirements](../../../../docs/spec/daynight-task-inspection.md)
 TI6–TI7 and [design](../../../../docs/design/daynight-task-inspection.md) own the

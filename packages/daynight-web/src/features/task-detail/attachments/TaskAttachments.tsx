@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type FormEvent } f
 import { ApiError, attachmentPageUrl, attachmentDownloadUrl, attachmentPreviewRoot, attachmentPreviewUrl } from '../../../api/client';
 import { useI18n } from '../../../i18n/LocaleProvider';
 import { AttachmentActionMenu, AttachmentDeleteDialog, type AttachmentActionTarget } from './AttachmentActions';
-import { AttachmentPreview } from './AttachmentPreview';
+import { AttachmentPreview, type AttachmentKeyboardOwner } from './AttachmentPreview';
 import { attachmentTree, isAttachmentPath, type AttachmentNode } from './model';
 import { useAttachments, type AttachmentApi, type AttachmentController } from './useAttachments';
 import '../../../styles/attachments.css';
@@ -17,7 +17,7 @@ export type AttachmentUrls = {
 type TaskAttachmentsProps = {
   readonly projectId: string;
   readonly taskId: string;
-  readonly onClose?: () => void;
+  readonly keyboardOwner?: AttachmentKeyboardOwner;
   readonly api?: AttachmentApi;
   readonly urls?: AttachmentUrls;
 };
@@ -67,7 +67,7 @@ const FileTree = ({ nodes, selectedPath, onSelect, onActions, actionPath, busy }
   </ul>;
 };
 
-export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, navigation, onInteract, onClose, onSelect, onRemove, active = true }: TaskAttachmentsPanelProps) => {
+export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, navigation, onInteract, keyboardOwner, onSelect, onRemove, active = true }: TaskAttachmentsPanelProps) => {
   const { messages, format } = useI18n();
   const m = messages.inspection.attachments;
   const headingId = useId();
@@ -174,7 +174,7 @@ export const TaskAttachmentsPanel = ({ projectId, taskId, attachments, urls, nav
                   <a className="button" href={urls === undefined ? attachmentPageUrl(projectId, taskId, selected.path) : urls.page(selected.path)} target="_blank" rel="noopener noreferrer"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg>{m.openInNewTab}</a>
                 </div>
               </header>
-              <AttachmentPreview key={`${selected.path}/${selected.updatedAt}`} attachment={selected} preview={attachments.preview} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, selected.path) : urls.preview(selected.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} {...(onClose === undefined ? {} : { onClose })} />
+              <AttachmentPreview key={`${selected.path}/${selected.updatedAt}`} attachment={selected} preview={attachments.preview} url={urls === undefined ? attachmentPreviewUrl(projectId, taskId, selected.path) : urls.preview(selected.path)} previewRoot={urls === undefined ? attachmentPreviewRoot(projectId, taskId) : urls.previewRoot} onRetry={attachments.retryPreview} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} />
             </section>
           )}
         </div>

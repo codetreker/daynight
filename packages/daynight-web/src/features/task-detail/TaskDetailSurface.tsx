@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import { ApiError } from '../../api/client';
 import { taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
 import { LanguageSelector } from '../../i18n/LanguageSelector';
+import type { AttachmentKeyboardOwner } from './attachments/AttachmentPreview';
 import type { AttachmentApi } from './attachments/useAttachments';
 import type { AttachmentUrls } from './attachments/TaskAttachments';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -21,7 +22,13 @@ import { TaskDetailNotice, TaskDetailNotifications } from './TaskDetailNotice';
 import { ProjectGraphErrorDetail } from '../projects/ProjectGraphError';
 import '../../styles/task-detail.css';
 
+export type DetailFullscreen = {
+  readonly active: boolean;
+  readonly onChange: (active: boolean) => void;
+};
+
 type TaskDetailCommonProps = {
+  readonly fullscreen: DetailFullscreen;
   readonly attachmentApi?: AttachmentApi;
   readonly attachmentUrls?: AttachmentUrls;
   readonly detailUrl?: (taskId: string, navigation: TaskDetailNavigation) => string;
@@ -64,7 +71,7 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
   </>;
 };
 
-export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null }: TaskDetailSurfaceProps) => {
+export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen }: TaskDetailSurfaceProps) => {
   const modal = presentation === 'dialog';
   const scope = `${projectId}/${taskId}`;
   const [localNavigation, setLocalNavigation] = useState<{ readonly scope: string; readonly value: TaskDetailNavigation }>({ scope, value: { tab: 'overview', path: null } });
@@ -99,8 +106,32 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const dialogRef = useRef<HTMLElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
-  const callbacks = useRef({ onClose, onRestoreFocus, confirmationOpen });
-  callbacks.current = { onClose, onRestoreFocus, confirmationOpen };
+  const fullscreenRef = useRef<HTMLButtonElement>(null);
+  const pendingLayout = useRef<readonly { readonly element: HTMLElement; readonly top: number; readonly left: number }[] | null>(null);
+  const changeFullscreen = (active: boolean) => {
+    // Capture before the browser clamps offsets to the new viewport's scroll range.
+    pendingLayout.current = Array.from(dialogRef.current!.querySelectorAll<HTMLElement>('*'))
+      .filter((element) => element instanceof HTMLElement && (element.scrollTop !== 0 || element.scrollLeft !== 0 || element.scrollHeight > element.clientHeight || element.scrollWidth > element.clientWidth))
+      .map((element) => ({ element, top: element.scrollTop, left: element.scrollLeft }));
+    fullscreen.onChange(active);
+  };
+  useLayoutEffect(() => {
+    if (pendingLayout.current === null) return;
+    for (const { element, top, left } of pendingLayout.current) {
+      element.scrollTop = top;
+      element.scrollLeft = left;
+    }
+    pendingLayout.current = null;
+    if (!fullscreen.active) fullscreenRef.current!.focus({ preventScroll: true });
+  }, [fullscreen.active]);
+  const onEscape = () => {
+    if (confirmationOpen) return;
+    if (fullscreen.active) changeFullscreen(false);
+    else onClose?.();
+  };
+  const callbacks = useRef({ onEscape, onRestoreFocus, confirmationOpen });
+  callbacks.current = { onEscape, onRestoreFocus, confirmationOpen };
+  const keyboardOwner = useMemo<AttachmentKeyboardOwner>(() => ({ root: dialogRef, onEscape: () => callbacks.current.onEscape() }), []);
   useBodyScrollLock(modal);
 
   useLayoutEffect(() => {
@@ -111,12 +142,17 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
     root.setAttribute('inert', '');
     closeRef.current!.focus();
 
+    return () => { if (!wasInert) root.removeAttribute('inert'); };
+  }, [projectId, modal]);
+
+  useLayoutEffect(() => {
+    if (!modal && !fullscreen.active) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (callbacks.current.confirmationOpen || event.defaultPrevented) return;
       if (event.key === 'Escape') {
         event.preventDefault();
-        callbacks.current.onClose!();
-      } else if (event.key === 'Tab') {
+        callbacks.current.onEscape();
+      } else if (event.key === 'Tab' && modal) {
         const dialog = dialogRef.current!;
         const buttons = dialogFocusables(dialog);
         const first = buttons[0]!;
@@ -134,9 +170,8 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
     document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('keydown', onKeyDown);
-      if (!wasInert) root.removeAttribute('inert');
     };
-  }, [projectId, modal]);
+  }, [projectId, modal, fullscreen.active]);
 
   useEffect(() => () => {
     // Restore after sibling DOM removals so a disappearing trigger cannot capture focus.
@@ -170,15 +205,19 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   };
 
   const content = <>
-      <Surface className={modal ? 'task-detail-dialog' : 'task-detail-page'} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
+      <Surface className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}`} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
         <TaskDetailNotifications fallbackFocus={titleRef}>
-        {!modal && <TaskDetailPageBar projectId={projectId} />}
+        {!modal && <div hidden={fullscreen.active}><TaskDetailPageBar projectId={projectId} /></div>}
         <header className="task-detail-header">
           <div className="task-detail-title-row">
             <h2 id={headingId} className="task-detail-title" ref={titleRef} tabIndex={detail === null ? -1 : 0} title={detail?.title}>{detail === null ? status === 'error' ? m.failed : m.loading : detail.title}</h2>
             {detail !== null && <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />}
           </div>
           <div className="task-detail-header-actions">
+            {!modal && fullscreen.active && <a className="button task-detail-project-return" href={`/projects/${encodeURIComponent(projectId)}`}>{m.returnToProject}</a>}
+            <button className="button task-detail-fullscreen-toggle" type="button" ref={fullscreenRef} aria-label={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} title={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} aria-pressed={fullscreen.active} onClick={() => changeFullscreen(!fullscreen.active)}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d={fullscreen.active ? 'M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6'} /></svg>
+            </button>
             {modal && <a className="button task-detail-popout" href={popout} target="_blank" rel="noopener noreferrer" aria-label={m.openInNewTab} title={m.openInNewTab}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg>{m.openInNewTab}</a>}
             {modal ? <button className="button task-detail-close" type="button" ref={closeRef} aria-label={m.close} onClick={onClose}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
@@ -208,7 +247,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />
                 </div>
               </div>
-              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(onClose === undefined ? {} : { onClose })} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
+              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
                 <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className="task-detail-section" aria-label={m.description}>

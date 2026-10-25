@@ -46,6 +46,8 @@ export type InspectionMessages = {
     readonly showNotice: string;
     readonly openInNewTab: string;
     readonly returnToProject: string;
+    readonly enterFullscreen: string;
+    readonly exitFullscreen: string;
     readonly title: string;
     readonly overview: string;
     readonly close: string;

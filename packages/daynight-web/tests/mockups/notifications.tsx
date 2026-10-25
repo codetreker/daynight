@@ -23,6 +23,7 @@ if (scenario === 'stale') fixture.holdGraph();
 const NotificationsMockup = () => {
   const snapshot = useSyncExternalStore(fixture.subscribe, fixture.snapshot);
   const [open, setOpen] = useState(true);
+  const [fullscreen, setFullscreen] = useState(false);
   const [taskId, setTaskId] = useState(query.get('task') ?? detailTaskId);
   const [graphError, setGraphError] = useState<unknown>(null);
   const [selection, setSelection] = useState<TaskDetailNavigation>({ tab: query.get('tab') === 'attachments' || query.has('file') ? 'attachments' : 'overview', path: query.get('file') });
@@ -37,7 +38,7 @@ const NotificationsMockup = () => {
     if (navigation.path !== null) parameters.set('file', navigation.path);
     return `${window.location.pathname}?${parameters}`;
   };
-  const shared = {
+  const shared = { fullscreen: { active: fullscreen, onChange: setFullscreen },
     projectId: detailProjectId, taskId, snapshot, detailUrl,
     navigation: selection, onNavigate: setSelection,
     onSelectTask: (id: string) => { setTaskId(id); setSelection({ tab: 'overview', path: null }); }, graphError, onRefreshGraph: () => { setGraphError(null); fixture.refreshGraph(); },
@@ -57,7 +58,7 @@ const NotificationsMockup = () => {
         </div>
         <button id="open-detail" className="button primary" type="button" onClick={() => setOpen(true)}>打开任务详情</button>
       </main>
-      {open && createPortal(<TaskDetailSurface {...shared} presentation="dialog" onClose={() => setOpen(false)} onRestoreFocus={() => document.getElementById('open-detail')?.focus()} />, document.body)}
+      {open && createPortal(<TaskDetailSurface {...shared} presentation="dialog" onClose={() => { setFullscreen(false); setOpen(false); }} onRestoreFocus={() => document.getElementById('open-detail')?.focus()} />, document.body)}
     </>}
   </TaskDetailFixtureBoundary>;
 };
