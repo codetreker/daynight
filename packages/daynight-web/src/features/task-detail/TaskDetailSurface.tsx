@@ -15,6 +15,7 @@ import { TaskStatusFeedback, TaskStatusMenu } from './TaskStatus';
 import { matchesAgentPermissionReview, TaskAgentPermissionConfirmation, TaskAgentPermissionFeedback, TaskAgentPermissionSwitch, type AgentPermissionConfirmation } from './TaskAgentPermission';
 import { matchesStatusReview, TaskStatusConfirmation, type StatusConfirmation } from './TaskStatusConfirmation';
 import { TaskDetailReading } from './TaskDetailReading';
+import { TaskDetailActions } from './TaskDetailActions';
 import { matchesPlatformReview, TaskPlatformConfirmation, TaskPlatformFeedback, TaskPlatformSelect, type PlatformConfirmation } from './TaskPlatform';
 import { TaskId } from './TaskId';
 import { matchesDeletionReview, TaskDeletionConfirmation, TaskDeletionFeedback, type DeletionConfirmation } from './TaskDeletion';
@@ -219,11 +220,10 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
           </div>
           <div className="task-detail-header-actions">
             {!modal && fullscreen.active && <a className="button task-detail-project-return" href={`/projects/${encodeURIComponent(projectId)}`}>{m.returnToProject}</a>}
-            {detail !== null && <button className="button danger task-detail-delete" type="button" disabled={!task.canDelete} onClick={() => requestConfirmation({ kind: 'delete', detail, removeDepends: true })}>{messages.inspection.deletion.action}</button>}
             <button className="button task-detail-fullscreen-toggle" type="button" ref={fullscreenRef} aria-label={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} title={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} aria-pressed={fullscreen.active} onClick={() => changeFullscreen(!fullscreen.active)}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d={fullscreen.active ? 'M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6'} /></svg>
             </button>
-            {modal && <a className="button task-detail-popout" href={popout} target="_blank" rel="noopener noreferrer" aria-label={m.openInNewTab} title={m.openInNewTab}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg><span className="task-detail-popout-label">{m.openInNewTab}</span></a>}
+            {(modal || detail !== null) && <TaskDetailActions key={scope} {...(modal ? { popout } : {})} canDelete={task.canDelete} {...(detail === null ? {} : { onDelete: () => requestConfirmation({ kind: 'delete', detail, removeDepends: true }) })} />}
             {modal ? <button className="button task-detail-close" type="button" ref={closeRef} aria-label={m.close} onClick={onClose}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
             </button> : null}

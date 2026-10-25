@@ -420,7 +420,9 @@ sets HTML `lang` and the authentication loading title before React renders.
 metadata on navigation and language changes. The top bar and fullscreen graph
 expose selectors using the same saved language. Task details consume the current
 application locale through the same Provider; their header contains the task
-title, current status menu and close control.
+title, current status menu, fullscreen toggle, More task actions menu and close
+control. The `…` menu sits immediately left of Close and contains Open in new tab
+and Delete task; the standalone page retains only Delete task in that menu.
 
 `LocaleProvider` requires an explicit initial locale result. `useI18n()` reads
 `locale`, `messages` and `format`; `useLocaleCommands()` exposes selection and
@@ -781,9 +783,10 @@ scrolling. CSS viewport sizing retains the title, actions and internal scroll
 owners at 320px/390px and short heights. At heights up to 500px, fullscreen
 uses compact title/action rows, a single metadata-control row and tighter tabs
 and panel padding; the informational footer is hidden. The full title stays in
-a focusable one-line-height scroll region. Popout links keep their accessible
-labels while showing their existing icons. The preview header keeps path/metadata
-context and actions on one row, preserving full strings through DOM/title text.
+a focusable one-line-height scroll region. The task action-menu trigger and
+attachment popout icons retain their accessible labels. The preview header keeps
+path/metadata context and actions on one row, preserving full strings through
+DOM/title text.
 These fullscreen-only rules leave readable nonzero Overview and preview bodies
 at 320×240. Verification observes body/frame dimensions, actual content paint
 and scrolling; visible controls alone do not establish reading access. The
@@ -939,9 +942,9 @@ does not implement reconciliation or rollback.
 ### Standalone complete task details
 
 The default graph/list entry still opens the centered `TaskDetailDialog`. Its
-header has a real Open in new tab anchor with `target="_blank"` and
-`rel="noopener noreferrer"`, preserving the current task, Overview/Attachments
-tab and selected attachment. The source dialog remains open with its local
+title-bar More task actions menu has a real Open in new tab anchor with
+`target="_blank"` and `rel="noopener noreferrer"`, preserving the current task,
+Overview/Attachments tab and selected attachment. The source dialog remains open with its local
 state. A preview's neighboring Open in new tab action enters the same complete
 task details at that file, even while preview content is loading.
 

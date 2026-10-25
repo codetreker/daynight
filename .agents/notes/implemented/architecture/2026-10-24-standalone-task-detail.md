@@ -17,9 +17,9 @@ focus, inertness or Escape behavior.
 Both `TaskDetailDialog` and `TaskDetailPage` compose it, including Overview,
 Attachments, task status, relationships, PRs, metadata, three-state setting,
 automatic-execution permission, platform editing and attachment file operations.
-The dialog title provides a real Open in new tab anchor for its current task,
-tab and file, with `_blank` and `noopener noreferrer`. The source dialog remains
-mounted with its local state. Attachment popouts open the same complete detail
+The dialog title-bar More task actions menu provides a real Open in new tab
+anchor for its current task, tab and file, with `_blank` and
+`noopener noreferrer`. The source dialog remains mounted with its local state. Attachment popouts open the same complete detail
 at that file.
 
 The dialog wrapper retains portal, background inertness, counted scroll lock,

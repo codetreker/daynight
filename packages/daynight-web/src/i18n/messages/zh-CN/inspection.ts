@@ -59,7 +59,7 @@ export const inspection: InspectionMessages = {
   },
   detail: {
     dismissNotice: "关闭提示", showNotice: "查看任务提示",
-    openInNewTab: "在新标签页打开", returnToProject: "返回任务所在项目", enterFullscreen: "进入全屏", exitFullscreen: "退出全屏",
+    moreActions: "更多任务操作", openInNewTab: "在新标签页打开", returnToProject: "返回任务所在项目", enterFullscreen: "进入全屏", exitFullscreen: "退出全屏",
     overview: "概览",
     title: "任务详情", close: "关闭任务详情", loading: "正在加载任务详情", failed: "任务详情加载失败",
     refreshFailed: "任务详情更新失败",

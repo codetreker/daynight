@@ -326,23 +326,27 @@ describe('standalone full task details', () => {
     const view = render(<TaskDetailDialog projectId={projectId} taskId={taskId} snapshot={snapshotFixture([...fixture.tasks.values()])} onSelectTask={vi.fn()} onClose={vi.fn()} onRestoreFocus={vi.fn()} onRefreshGraph={vi.fn()} />, { container: application, taskCache: { scope: world.scope } });
     try {
       const dialog = await screen.findByRole('dialog', { name: '独立任务' });
-      const popout = within(dialog).getByRole('link', { name: '在新标签页打开' });
-      expect(popout).toHaveAttribute('href', address());
-      expect(popout).toHaveAttribute('target', '_blank');
-      expect(popout).toHaveAttribute('rel', 'noopener noreferrer');
+      const popout = () => {
+        const more = within(dialog).getByRole('button', { name: '更多任务操作' });
+        if (more.getAttribute('aria-expanded') !== 'true') fireEvent.click(more);
+        return within(dialog).getByRole('menuitem', { name: '在新标签页打开' });
+      };
+      expect(popout()).toHaveAttribute('href', address());
+      expect(popout()).toHaveAttribute('target', '_blank');
+      expect(popout()).toHaveAttribute('rel', 'noopener noreferrer');
       fireEvent.click(within(dialog).getByRole('tab', { name: '附件' }));
       fireEvent.click(await within(dialog).findByRole('button', { name: /^guide\.md/ }));
       await within(dialog).findByText('方案正文');
-      expect(popout).toHaveAttribute('href', address('attachments', 'docs/guide.md'));
+      expect(popout()).toHaveAttribute('href', address('attachments', 'docs/guide.md'));
       fireEvent.click(within(dialog).getByRole('tab', { name: '概览' }));
-      expect(popout).toHaveAttribute('href', address('overview', 'docs/guide.md'));
+      expect(popout()).toHaveAttribute('href', address('overview', 'docs/guide.md'));
       fireEvent.click(within(dialog).getByRole('tab', { name: '附件' }));
       fireEvent.click(within(dialog).getByRole('button', { name: '更多操作：docs/guide.md' }));
       fireEvent.click(screen.getByRole('menuitem', { name: '删除' }));
       const deletion = screen.getByRole('dialog', { name: '删除附件？' });
       fireEvent.click(within(deletion).getByRole('button', { name: '删除附件' }));
       await within(dialog).findByText('选择文件查看预览或下载。');
-      expect(popout).toHaveAttribute('href', address('attachments'));
+      expect(popout()).toHaveAttribute('href', address('attachments'));
       expect(window.location.pathname).toBe(`/projects/${projectId}`);
       expect(window.history.length).toBe(historyLength);
     } finally { view.unmount(); world.dispose(); application.remove(); }
