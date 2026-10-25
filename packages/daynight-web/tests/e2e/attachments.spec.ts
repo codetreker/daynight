@@ -11,29 +11,14 @@ import { createProject, createTask, expect, test, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
 import { longConfirmationPath } from '../mockups/attachment-paths';
 import { hasPaintedPdfMarker, readPdfPixels, type PdfPixels } from './pdf-pixels';
+import { attachmentFileButton as fileButton, attachmentFileActions as fileActions } from './attachment-tree';
 
 const exact = (value: string): RegExp => new RegExp(`^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
 const asset = (path: string): string => fileURLToPath(new URL(path, import.meta.url));
-const fileButton = async (region: Locator, path: string): Promise<Locator> => {
-  let branch = region.getByRole('navigation', { name: /^(附件文件|Attachment files)$/ }).locator(':scope > ul');
-  const parts = path.split('/');
-  for (const name of parts.slice(0, -1)) {
-    const summary = branch.locator(':scope > li > details > summary').filter({ hasText: exact(`▱ ${name}`) });
-    await expect(summary).toHaveCount(1);
-    const directory = summary.locator('..');
-    if (await directory.getAttribute('open') === null) await summary.click();
-    branch = directory.locator(':scope > ul');
-  }
-  const name = branch.locator(':scope > li > .attachment-file-row > .attachment-file > .attachment-file-name').filter({ hasText: exact(parts.at(-1)!) });
-  await expect(name).toHaveCount(1);
-  return name.locator('..');
-};
 const selectFile = async (region: Locator, path: string): Promise<void> => {
   await (await fileButton(region, path)).click();
   await expect(region.getByRole('heading', { name: path, exact: true })).toBeVisible();
 };
-const fileActions = async (region: Locator, path: string): Promise<Locator> =>
-  (await fileButton(region, path)).locator('..').locator('.attachment-actions-trigger');
 const confirmDeletion = async (page: Page, region: Locator, path: string): Promise<Locator> => {
   await (await fileActions(region, path)).click();
   await page.getByRole('menuitem', { name: /^(删除|Delete)$/ }).click();

@@ -6,6 +6,7 @@ import { parseTaskDetail } from '../../src/api/parse';
 import type { TaskStatus } from '../../src/api/types';
 import { createProject, createTask, expect, test, updateTask, type Task } from './fixtures';
 import { authenticatedAPI, fulfillAuthenticatedResponse } from './authentication';
+import { attachmentFileButton, attachmentFileActions } from './attachment-tree';
 
 const taskPath = (project: string, task: string): string => `/api/v1/projects/${project}/tasks/${task}`;
 const pagePath = (project: string, task: string): string => `/projects/${project}/tasks/${task}`;
@@ -13,12 +14,11 @@ const surface = (page: Page): Locator => page.locator('.task-detail-page');
 const tab = (page: Page, value: 'overview' | 'attachments'): Locator => surface(page).getByRole('tab', {
   name: value === 'overview' ? /^(概览|Overview)$/ : /^(附件|Attachments)$/, exact: true,
 });
-const file = (root: Locator, path: string): Locator => root.getByRole('button', { name: `更多操作：${path}`, exact: true })
-  .locator('..').locator('.attachment-file');
 const selectFile = async (root: Locator, path: string): Promise<void> => {
-  await file(root, path).click();
+  const button = await attachmentFileButton(root, path);
+  await button.click();
   await expect(root.getByRole('heading', { name: path, exact: true })).toBeVisible();
-  await expect(file(root, path)).toHaveAttribute('aria-pressed', 'true');
+  await expect(button).toHaveAttribute('aria-pressed', 'true');
 };
 const openUpload = async (root: Locator): Promise<void> => {
   const disclosure = root.locator('.attachment-upload-disclosure');
@@ -189,6 +189,8 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     const inputHandle = await input.elementHandle();
     if (inputHandle === null) throw new Error('The standalone upload input is absent.');
     const directory = attachments.locator('summary').filter({ hasText: /^▱ folded$/ }).locator('..');
+    await expect(directory).not.toHaveAttribute('open');
+    await directory.locator('summary').click(); await expect(directory).toHaveAttribute('open');
     await directory.locator('summary').click(); await expect(directory).not.toHaveAttribute('open');
     await selectFile(attachments, 'docs/next.txt');
     await expectAddress(reader, project.id, task.id, 'attachments', 'docs/next.txt');
@@ -317,7 +319,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     await expectAddress(reader, project.id, task.id, 'attachments', uploadedPath);
     await expect(attachments.locator('.attachment-text')).toHaveText('Full detail upload\n');
     expect(await (await api.get(attachmentDownloadUrl(project.id, task.id, uploadedPath))).text()).toBe('Full detail upload\n');
-    await file(attachments, uploadedPath).locator('..').locator('.attachment-actions-trigger').click();
+    await (await attachmentFileActions(attachments, uploadedPath)).click();
     await reader.getByRole('menuitem', { name: '删除', exact: true }).click();
     const deletion = reader.locator('.attachment-delete-dialog');
     await deletion.getByRole('button', { name: '删除附件', exact: true }).click();

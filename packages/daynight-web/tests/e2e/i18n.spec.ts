@@ -4,6 +4,7 @@ import type { Locator, Page, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
 import { createProject, createTask, expect, test, withDependencyFailure } from './fixtures';
 import { panPoint } from './graph-pan';
+import { attachmentFileButton, attachmentFileActions } from './attachment-tree';
 
 const scenario = (description: string) => ({ annotation: { type: 'scenario', description } });
 const language = (scope: Page | Locator): Locator => scope.getByRole('combobox', { name: '语言 / Language', exact: true });
@@ -189,7 +190,7 @@ test.describe('Web language journeys', () => {
     await expect(dialog.locator('.task-detail-pr-title')).toHaveText(['原始 PR 101']);
     const attachments = dialog.locator('.task-attachments');
     const changeDetailLanguage = async (locale: 'en' | 'zh-CN'): Promise<void> => {
-      await attachments.getByRole('button', { name: /^(More actions: |更多操作：)preview\.html$/ }).click();
+      await (await attachmentFileActions(attachments, htmlPath)).click();
       await page.getByRole('menuitem', { name: /^(Delete|删除)$/, exact: true }).click();
       const confirmation = dialog.locator('.attachment-delete-dialog');
       await expect(confirmation).toContainText(htmlPath);
@@ -199,7 +200,7 @@ test.describe('Web language journeys', () => {
     };
     await expect(dialog.locator('.task-detail-header').getByRole('combobox')).toHaveCount(0);
     await dialog.getByRole('tab', { name: 'Attachments', exact: true }).click();
-    await attachments.locator('.attachment-file').filter({ hasText: htmlPath }).click();
+    await (await attachmentFileButton(attachments, htmlPath)).click();
     const frame = attachments.locator('iframe');
     await expect(frame).toHaveAttribute('src', attachmentPreviewUrl(project.id, task.id, htmlPath));
     await frame.contentFrame().locator('#counter').click();
@@ -245,7 +246,7 @@ test.describe('Web language journeys', () => {
       if (method === 'PUT') await attachments.locator('button[type=submit]').click();
       else {
         const english = await page.locator('html').getAttribute('lang') === 'en';
-        await attachments.getByRole('button', { name: `${english ? 'More actions: ' : '更多操作：'}${uploadPath}`, exact: true }).click();
+        await (await attachmentFileActions(attachments, uploadPath)).click();
         await page.getByRole('menuitem', { name: english ? 'Delete' : '删除', exact: true }).click();
         await expect(confirmation).toContainText(uploadPath);
         await confirmation.getByRole('button', { name: english ? 'Delete attachment' : '删除附件', exact: true }).click();
@@ -433,7 +434,7 @@ test.describe('Web language journeys', () => {
         await expect(page.locator('html')).toHaveAttribute('lang', locale);
         const attachments = dialog.locator('.task-attachments');
         await dialog.getByRole('tab', { name: locale === 'en' ? 'Attachments' : '附件', exact: true }).click();
-        await attachments.locator('.attachment-file').filter({ hasText: '原始.txt' }).click();
+        await (await attachmentFileButton(attachments, '原始.txt')).click();
         await expect(attachments.locator('pre')).toHaveText('原始附件 Raw attachment\n');
         await expectDialogLayout(page, dialog);
         await expect(attachments.locator('input[type=text]')).toHaveAttribute('placeholder', locale === 'en' ? 'For example, docs/design.md' : '例如 docs/design.md');
