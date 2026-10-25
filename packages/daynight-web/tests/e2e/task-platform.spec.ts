@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import type { Locator, Page } from '@playwright/test';
 import { startTask, createProject, createTask, expect, test, updateTask, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
@@ -20,6 +21,7 @@ const confirm = async (page: Page): Promise<void> => {
 };
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>((done) => { resolve = done; }); return { promise, resolve }; };
 const open = async (page: Page, id: string): Promise<void> => {
+  await selectTaskList(page);
   await page.getByRole('tab', { name: /^(独立任务|Standalone tasks)$/, exact: true }).click();
   await page.locator(`#standalone-task-${id}`).click();
   await expect(platform(page)).toBeVisible();

@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import type { Locator, Page, Route, TestInfo } from '@playwright/test';
@@ -162,6 +163,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     page.on('response', (response) => { if (new URL(response.url()).pathname === syncPath) delivered += 1; });
     await page.goto(`/projects/${project.id}`);
     const openTimingChain = async () => {
+      await selectTaskList(page);
       const toggle = page.locator(`#task-root-${roots[0]!.id}`);
       await expect(toggle).toBeVisible();
       if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();

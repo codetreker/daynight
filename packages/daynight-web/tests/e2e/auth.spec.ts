@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import type { Page, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
@@ -148,6 +149,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await picture(page, info, 'auth-project-isolation');
     await page.goto(`/projects/${own.id}`);
     await expect(page.getByRole('heading', { name: own.name, exact: true })).toBeVisible();
+    await selectTaskList(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
     await page.locator(`#standalone-task-${task.id}`).click();
     const detail = page.locator('.task-detail-dialog');
@@ -531,6 +533,7 @@ test('auth-resource-session', scenario('auth-resource-session'), async ({ page, 
   const identityRequests: string[] = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v1/me') identityRequests.push(request.method()); });
   await page.goto(`/projects/${project.id}`);
+  await selectTaskList(page);
   await page.getByRole('tab', { name: '独立任务', exact: true }).click();
   await page.locator(`#standalone-task-${task.id}`).click();
   const detail = page.locator('.task-detail-dialog');

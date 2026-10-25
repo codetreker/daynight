@@ -320,16 +320,22 @@ Its data and runtime are independent of the client review module. The
 [server design decision](.agents/notes/implemented/architecture/2026-10-19-daynight-server-task-design.md)
 records the adopted scope and concurrency choices. The development and runtime
 CLI commands below apply to the client; server commands have their own module.
-The dashboard architecture presents project statistics and two in-project task
-tabs from one complete server snapshot. Standalone tasks open details directly;
-root-based task chains retain dependency graphs, shared successors and aggregate
-progress. Both tab badges count unfinished tasks from the complete snapshot;
-shared chain tasks count once across all roots, and completed-item visibility
-does not affect the badges. Expanding a chain includes all upstream prerequisites of its root and
-reachable successors, without adding unrelated successors of contextual tasks.
-Only the root and its reachable successors contribute to chain progress and status. The first visit opens task chains, and each project retains its last
-tab, independent completed-item filters and browse positions. The [task view
-preview](docs/design/mockups/task-views.html) demonstrates those interactions.
+A project opens its Overview section, with six statistics from one complete
+snapshot. The adjacent Task list section contains the existing Standalone tasks
+and Task chains tabs. Section selection stays local to the current project
+visit; the inner task category, independent completed-item filters, chain
+expansion and task browse positions retain their per-project browser records.
+The task workspace mounts on its first selection and remains mounted while
+Overview is visible, preserving the graph's viewport and inspection state.
+Standalone rows open details directly. Task chains are ordinary-edge weak
+components; their graphs include the full prerequisite context, while progress
+counts only chain members. The two category badges count unfinished tasks from
+the complete snapshot and remain independent of completion filters. The
+[project-view architecture](docs/design/daynight-web.md#项目详情-projectsprojectid)
+owns the section and scroll boundaries. The original [task view
+preview](docs/design/mockups/task-views.html) preserves the earlier inner-category
+visual baseline; the production-component fixture demonstrates the current
+workspace.
 The project list is implemented in the private web workspace, including task
 visualization and details. Its [design decision](.agents/notes/implemented/architecture/2026-10-20-task-dashboard-mvp-design.md)
 defines the original read-only MVP. Attachment upload, overwrite and deletion

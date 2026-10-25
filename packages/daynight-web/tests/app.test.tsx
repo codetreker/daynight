@@ -62,7 +62,8 @@ describe('application navigation', () => {
     render(<App />);
     await screen.findByRole('heading', { name: '项目任务页面' });
     expect(fetch).toHaveBeenCalledWith(`/api/v1/projects/${projectId}/task-sync`, expect.objectContaining({ signal: expect.any(AbortSignal) }));
-    expect(screen.getByRole('heading', { name: '还没有任务' })).toBeTruthy();
+    expect(screen.getByRole('tab', { name: '概览' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
     expect(screen.getByRole('link', { name: '项目' }).getAttribute('aria-current')).toBe('page');
     fireEvent.click(screen.getByRole('link', { name: '← 项目' }));
     await screen.findByRole('heading', { name: '真实项目' });

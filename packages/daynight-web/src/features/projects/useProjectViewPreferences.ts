@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
 type Preferences = { readonly expandedRootId: string | null };
 type PreferenceIssue = { readonly kind: "read" | "invalid" | "write"; readonly cause: unknown };
@@ -126,12 +126,13 @@ export const useTaskView = (projectId: string) => {
   return { activeView: value, onViewChange: save, issue };
 };
 
-export const useTaskViewScroll = (projectId: string, activeView: TaskView, ready: boolean) => {
+export const useTaskViewScroll = (projectId: string, activeView: TaskView, active: boolean) => {
   const key = `daynight:task-view-scroll:${projectId}`;
   const [initial] = useState(() => readPreference(key, scrollPreference));
   const positions = useRef<ScrollPositions>(initial.value === undefined ? { chains: 0, standalone: 0 } : initial.value);
   const [writeIssue, setWriteIssue] = useState<PreferenceIssue | null>(null);
   const savePosition = useCallback(() => {
+    if (!active) return;
     const next = { ...positions.current, [activeView]: window.scrollY };
     if (next[activeView] === positions.current[activeView]) return;
     positions.current = next;
@@ -141,21 +142,18 @@ export const useTaskViewScroll = (projectId: string, activeView: TaskView, ready
     } catch (cause) {
       setWriteIssue({ kind: "write", cause });
     }
-  }, [key, activeView]);
+  }, [key, activeView, active]);
 
   useLayoutEffect(() => {
-    if (ready) window.scrollTo({ top: positions.current[activeView], behavior: "instant" });
-  }, [ready, activeView]);
-
-  useEffect(() => {
-    if (!ready) return;
+    if (!active) return;
+    window.scrollTo({ top: positions.current[activeView], behavior: "instant" });
     window.addEventListener("scroll", savePosition, { passive: true });
     window.addEventListener("pagehide", savePosition);
     return () => {
       window.removeEventListener("scroll", savePosition);
       window.removeEventListener("pagehide", savePosition);
     };
-  }, [ready, savePosition]);
+  }, [active, activeView, savePosition]);
 
   return { savePosition, issue: writeIssue ?? initial.issue };
 };

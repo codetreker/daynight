@@ -29,8 +29,11 @@ graph/index references and preserves the same-task detail body during refresh.
 
 The [task view decision](2026-10-22-project-task-views.md) separates standalone
 rows, which open details directly, from non-isolated root chains. Only one root
-canvas is mounted in the active chain view; inactive panel contents unmount
-while their hidden wrappers retain stable tabpanel IDs. The project
+canvas is mounted in the active chain category; inactive inner-category contents
+unmount while their hidden wrappers retain stable tabpanel IDs. The
+[project section decision](2026-10-25-project-overview-task-sections.md) keeps the
+visited Task list subtree mounted across outer Overview switches and isolates
+its page scroll ownership. The project
 restores the expanded root or
 an explicitly collapsed list from per-project browser storage; the
 [browsing preference decision](2026-10-21-task-browsing-preferences.md) owns its
