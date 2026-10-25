@@ -111,6 +111,15 @@ and completing `run-task` never activate it.
   `run-task` and `create-task` return when their own work ends, except for the
   explicit user-directed discussion transition in the Goal protocol. Discussion
   confirmation does not activate autopilot or start delivery.
+- Keep execution, analysis, questions, proposals, and task discussions within the
+  current task's confirmed objective, scope, deliverables, and acceptance criteria.
+  Apply this boundary to subagents. Read parent Goal materials, shared architecture,
+  and sibling or successor tasks as needed to understand this task's required
+  inputs, interfaces, and constraints; reading them does not expand its scope.
+  Report cross-task blockers and follow-up proposals without treating them as
+  authorization to create or execute other tasks. Expanding the current task's
+  scope requires explicit user confirmation. A Goal discussion or final-acceptance
+  task may cover the whole Goal when that is its confirmed scope.
 - Write each task description in Markdown as a self-contained brief: concrete
   problem, actions, scope, deliverables, constraints, observable completion summary,
   and real input references. Its own primary Markdown owns the detailed solution,

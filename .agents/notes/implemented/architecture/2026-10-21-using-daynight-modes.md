@@ -8,7 +8,10 @@ A task-management skill combines reference material, work registration, executio
 and continuous scheduling. Loading it for a command question can therefore be
 mistaken for authorization to start tasks or continue through a backlog. Keeping
 plans, acceptance and progress together in task descriptions also makes stable
-requirements harder to distinguish from the current execution position.
+requirements harder to distinguish from the current execution position. Serial
+execution alone leaves discussion scope ambiguous: a designated subtask can still
+absorb proposals for its parent Goal, siblings or successors without changing its
+task ID.
 
 ## Decision
 
@@ -102,9 +105,21 @@ attachment's acceptance items. Execution position, blockers and next steps use
 an existing checkpoint. Registration is complete only after necessary task-owned
 artifacts and shared inputs are read back. Partial registration retains IDs;
 uncertain writes are reconciled before further mutation. Registration leaves
-todo without starting execution. Run-task reads the self-contained
-brief, detailed plan and stage inputs, executes its designated task and returns
-after completion or an external blocker. Development and PR-delivered documentation
+todo without starting execution. Run-task reads the self-contained brief, detailed
+plan and stage inputs, establishes the task's confirmed scope and acceptance before
+analysis, questions or proposals, executes its designated task and returns after
+completion or an external blocker. The entrypoint's shared constraints own the
+complete execution and discussion scope rule; run-task links to that rule from its
+execution reminder. Analysis, questions, proposals, discussions and subagent work
+follow the current task's confirmed objective, scope, deliverables and acceptance.
+Parent Goal, shared architecture, sibling and successor material supplies required
+inputs, interfaces and constraints without expanding the assignment. Cross-task
+blockers and follow-up proposals retain the existing creation and execution
+permission requirements. Expanding the current task's scope requires explicit user
+confirmation. A Goal discussion or final-acceptance task covers the whole Goal
+when that is its confirmed scope.
+
+Development and PR-delivered documentation
 require every necessary PR platform-confirmed merged and acceptance satisfied
 before versioned task set-status done. Retaining a delivery PR keeps its task in progress;
 completion grants no merge authority. Goal discussions instead follow user-confirmed
@@ -158,6 +173,11 @@ dependencies and execution checkpoints received separate owners. The Goal decisi
 keeps detailed ownership while allowing a concise assignment and completion summary
 in each description.
 
+**Repeat the complete scope rule in every mode.** This makes each mode locally
+explicit, but creates multiple copies whose exceptions and permission boundaries
+can diverge. The entrypoint owns the shared rule, with a linked reminder where
+run-task begins analysis and execution.
+
 **Delete the legacy entry before publishing the new bundle.** This reduces the
 period with two names but can remove working guidance before replacement succeeds.
 Publishing first preserves the new bundle even if legacy cleanup fails, at the
@@ -175,7 +195,10 @@ including applicable standing tracking/review instructions, prevents autonomous
 execution from expanding the persistent backlog beyond the confirmed scope;
 missing permission requires user input before registration. Task attachments become required
 inputs to execution; create-task must reconcile partial registration and cannot
-claim readiness from an existing task ID alone.
+claim readiness from an existing task ID alone. A task's confirmed scope also bounds
+its discussion content, while broader inputs remain readable and Goal-level
+discussions and acceptance retain their agreed scope. Cross-task discoveries remain
+visible without silently adding work to the current delivery.
 
 The instructions constrain agents but do not add a server lock or guarantee model
 compliance. Static bundle checks and independent scenario review cover content;
