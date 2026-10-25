@@ -17,7 +17,7 @@ and an interactive `daynight skill install` command. The
 [mode and attachment decision](2026-10-21-using-daynight-modes.md) partially
 supersedes its public name and task-protocol ownership. The current bundle is
 `using-daynight` under `src/commands/skill/skills/using-daynight/`, with an
-entrypoint, four mode references and the
+entrypoint, five mode references, shared task-content standard and the
 [shared Goal protocol](../process/2026-10-22-goal-workflow-design.md). The
 [requirements](../../../../docs/spec/daynight-agent-skill.md) and
 [design](../../../../docs/design/daynight-agent-skill.md) own the current contract.
@@ -57,8 +57,11 @@ Execution and delivery permission boundaries remain independent of state.
 Development and PR-delivered design/documentation tasks remain in progress while
 necessary PRs are open. All required PRs must be platform-confirmed merged and
 acceptance satisfied before done. PR URLs/titles remain in properties; the
-replacement decision moves acceptance evidence and merge commits to the primary
-Markdown attachment and progress to existing checkpoints. Non-PR tasks use their
+replacement decision originally moved acceptance evidence and merge commits to the
+primary Markdown attachment and progress to existing checkpoints. The later
+[task-content and handoff decision](../process/2026-10-25-task-content-handoff.md)
+allows a designated task-body or attachment evidence location while retaining
+separate operational checkpoints. Non-PR tasks use their
 explicit acceptance criteria. No completion rule supplies merge authority.
 
 The [installation acceptance decision](../testing/2026-10-21-simulated-agent-installation-acceptance.md)

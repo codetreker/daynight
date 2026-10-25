@@ -55,11 +55,14 @@ extends their reading composition without replacing those responsibilities.
 
 The npm-bundled `using-daynight` entry and applicable mode/Goal references follow
 the [Goal brief decision](../process/2026-10-22-goal-workflow-design.md) with
-self-contained Markdown briefs: problem, concrete action, scope, deliverable,
-constraints, brief observable completion and actual references. A task-specific
-primary Markdown still owns detailed Solution, full Acceptance criteria and
-evidence. Shared inputs retain their source task/path or verified immutable
-repository URL; real uploads are confirmed before references are added. Existing
+Markdown task content. The later [task-content and handoff decision](../process/2026-10-25-task-content-handoff.md)
+replaces mandatory primary-attachment ownership: descriptions identify current task
+responsibility and readable sources; body and references jointly provide the six
+content items, each with one owner. Confirmation, acceptance conclusions and delivery
+evidence have a designated location in the current task. Shared body content names
+its owning task ID, explicit description field (whole body or applicable sections) for task show
+reads; actual attachment inputs retain source task/full path, and repository inputs
+use verified immutable URLs; real uploads are confirmed before references are added. Existing
 Goal stages, task-creation authority, implementation authority, merge authority,
 `dependsOn` and PR properties retain their meanings. API storage and CLI/Agent
 output preserve the original description bytes; there is no new stored format,
@@ -100,8 +103,10 @@ missing-file result. Focus and panel state remain tied to the existing resource
 identity; locale changes translate interface messages without changing user
 Markdown, file inputs or pending-operation identity.
 
-The description remains a summary, and its primary attachment remains the
-complete plan and acceptance owner. A Markdown editor, generated heading anchors
+Descriptions can contain complete task content or lead to its owning documents;
+a complete body needs no primary attachment. The original summary-and-attachment
+policy kept stable plans distinct from execution progress; the content/handoff
+successor preserves single ownership without requiring that storage split. A Markdown editor, generated heading anchors
 and task-field editing are separate additive capabilities. Keeping raw strings,
 caller-supplied URL handling and explicit bases leaves those extensions possible
 without changing storage or replacing the controller structure.

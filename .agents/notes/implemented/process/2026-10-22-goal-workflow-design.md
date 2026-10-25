@@ -26,7 +26,9 @@ replaces this decision's initial-pair registration, pre-confirmation delivery
 breakdown and discussion completion rules. The original architecture was delivered separately
 from its dependent protocol implementation and independent consumer acceptance.
 The [mode decision](../architecture/2026-10-21-using-daynight-modes.md) continues to
-own the current entrypoint and authorization rules.
+own the current entrypoint and authorization rules. The
+[task-content and handoff decision](2026-10-25-task-content-handoff.md) replaces
+mandatory primary-attachment ownership while retaining stage and shared-source rules.
 
 A Goal uses existing tasks, attachments and dependsOn. The original registration
 created a Goal description task titled `[Goal]<outcome>` and a dependent
@@ -39,21 +41,26 @@ and registered the actual delivery breakdown before implementation became ready.
 Sequential user-confirmed discussions now govern when those tasks are created
 and completed; the stage-produced-output rule still applies.
 
-Every task description is a self-contained brief for that task: its problem, concrete
-scope and actions, deliverables, constraints, and observable completion summary must
-be visible before following attachments. Goal descriptions state the complete Goal;
-implementation and acceptance descriptions state their own assignments. Detailed
-solution, complete acceptance and evidence remain with the task-specific primary
-Markdown attachment. Summaries and details have distinct roles and are maintained
-together within the owning task.
+Every task description identifies the current task, its responsibility and readable
+sources. Its body and required references jointly provide the six task-content items;
+a complete description needs no primary attachment. Goal tasks cover their agreed
+whole outcome, while implementation and acceptance tasks retain their own assignments.
+Each content item has one owner; confirmation, acceptance conclusions and delivery
+evidence have a designated location in the current task's body or attachments. The
+original brief-plus-primary-attachment structure separated stable detail from transient
+progress; that rationale remains covered by single content ownership and separate
+execution checkpoints.
 
-Attachments follow content ownership. The Goal owns goal.md; architecture owns its
-phase plan, design and registered breakdown; implementation and acceptance own only
-their respective plans and later evidence. Every delivery description directly
-identifies the architecture task and relevant document attachment paths, including
-indirect successors whose direct prerequisite is another implementation task.
-Repository documents retain the owning architecture task and verified immutable
-references. Registration checks each description's source index; executors read
+Materials follow content ownership. Requirements stay with the Goal requirements
+task; architecture owns its phase plan, design and registered breakdown; implementation
+and acceptance own their respective plans and later evidence. These may be in task
+bodies or required referenced documents, according to the content/handoff successor. Every delivery description directly
+identifies the architecture task and each required source, including indirect
+successors whose direct prerequisite is another implementation task. Shared body
+content names its owning task ID, the description field (whole body or applicable sections),
+read with task show; real attachments retain complete paths. Repository documents
+retain the owning architecture task and verified immutable references. Inline
+architecture needs no fabricated file path or copied attachment. Registration checks each description's source index; executors read
 the listed inputs before implementation. This gives independent consumers the
 confirmed design's location without copying its content or changing dependency
 edges. Existing CLI reads support those references; no new link scheme or API is
@@ -79,7 +86,7 @@ implementation and authorized defect fixes retain their unit, integration and
 regression tests and repository checks; explicitly requested maintained automation
 remains a development deliverable within its own confirmed scope.
 
-Four skill modes remain. The initial protocol made create-task register the pair
+The initial protocol retained four skill modes and made create-task register the pair
 and return, run-task execute one stage, and explicitly activated autopilot select
 successors. Scoped Goal-creation permission covered the pair and its agreed
 breakdown, while the [approval lifecycle](../feature/2026-10-22-task-approval-lifecycle.md)
@@ -146,7 +153,7 @@ necessary observations remain on the owning task.
 Definition and design can start with honest stage briefs, while implementation
 retains completed requirements and design as inputs. Instruction review must cover
 stage transitions, permission boundaries, partial registration and whole-Goal
-completion, description-only assignment comprehension, and attachment ownership;
+completion, task responsibility and reference comprehension, and content ownership;
 recursive copy and installer checks establish artifact integrity
 separately from instruction behavior. The architecture-to-A-to-B scenario checks
 that B directly retains its applicable architecture references and that an

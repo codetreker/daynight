@@ -27,13 +27,15 @@ cases publish using-daynight before removing the legacy daynight leaf, preserve
 other scopes and link targets, and report cleanup failures with the new bundle
 still installed.
 
-Static checks preserve using-daynight frontmatter, the four mode references and
-shared Goal protocol, with guidance for explicit autopilot entry, bounded single-task selection,
-attachment-backed registration, observed-version updates and merge-bound
-completion. The [mode decision](../architecture/2026-10-21-using-daynight-modes.md)
+Static checks preserve using-daynight frontmatter, five mode references, the shared
+task-content standard and Goal protocol, with guidance for explicit autopilot entry,
+bounded single-task selection, content-aware registration and handoff, observed-version
+updates and merge-bound completion. The [mode decision](../architecture/2026-10-21-using-daynight-modes.md)
 owns routing and legacy-name migration; the
 [Goal decision](../process/2026-10-22-goal-workflow-design.md) owns stage rules,
-self-contained task briefs and attachment ownership. Independent scenario review
+stage-specific task content and shared-source ownership. The
+[task-content and handoff decision](../process/2026-10-25-task-content-handoff.md)
+owns the current six-item standard and reviewed permission enablement. Independent scenario review
 assesses routing and workflow meaning separately from file installation. Existing task-command tests own those commands' executable contracts.
 Agent installation, login, runtime execution and model behavior are outside
 this installer's acceptance boundary.
