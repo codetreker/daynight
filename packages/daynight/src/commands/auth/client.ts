@@ -142,8 +142,8 @@ export const createDeviceClient = (origin: string, operation: Operation, fetch: 
         expiresIn: seconds(value.expires_in), interval: value.interval === undefined ? 5 : Math.min(600, seconds(value.interval)),
       };
     },
-    poll: async (deviceCode: string, signal?: AbortSignal): Promise<TokenResult> => {
-      const { status, body } = await request("token", { client_id: CLIENT_ID, grant_type: GRANT_TYPE, device_code: deviceCode }, undefined, signal);
+    poll: async (deviceCode: string, deviceName: string, signal?: AbortSignal): Promise<TokenResult> => {
+      const { status, body } = await request("token", { client_id: CLIENT_ID, grant_type: GRANT_TYPE, device_code: deviceCode, device_name: deviceName }, undefined, signal);
       const value = object(body);
       if (status === 200) {
         if (value.token_type !== "Bearer") throw new Error("Invalid device authorization token type.");
