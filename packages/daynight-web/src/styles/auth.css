@@ -6,6 +6,7 @@
 }
 
 .auth-shell .nav-button.active,
+.auth-shell .account-nav[aria-current="page"],
 .auth-shell .nav-button:hover {
   background: #ffffff0d;
   color: #f0f1ff;
@@ -15,7 +16,11 @@
 .auth-shell h1 { overflow-wrap: anywhere; }
 .auth-shell .crumb button { border: 0; background: none; padding: 0; color: #727d90; }
 .auth-shell .crumb button:hover { color: var(--indigo); }
-.auth-shell .sidebar-bottom { overflow-wrap: anywhere; }
+.auth-shell .sidebar { overflow-y: auto; }
+.auth-shell .sidebar-main { flex: 1; min-height: 0; overflow-y: auto; }
+.auth-shell .sidebar-bottom { flex: none; padding: 14px 0 0; overflow-wrap: anywhere; }
+.auth-shell .sidebar-bottom .account-nav { margin: 0; }
+.auth-shell .sidebar-workspace { padding: 14px 12px 0; }
 .auth-shell .project-card { min-height: 255px; }
 .auth-shell .project-footer { padding-top: 28px; }
 .auth-shell .list-footer { margin-top: 30px; }
@@ -286,6 +291,7 @@ dialog.auth-revalidation-overlay::backdrop { background: var(--bg); }
 }
 
 @media (max-width: 600px) {
+  .auth-shell .sidebar-main { display: contents; }
   .auth-shell .sidebar nav { display: flex; align-items: center; gap: 4px; }
   .auth-shell .nav-button { width: auto; font-size: 11px; padding: 7px 9px; gap: 6px; margin: 0; }
   .auth-shell .nav-button svg { width: 14px; height: 14px; }

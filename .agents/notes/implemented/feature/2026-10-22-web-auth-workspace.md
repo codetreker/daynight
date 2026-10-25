@@ -19,7 +19,9 @@ serves as the production entry through the
 [activation decision](../architecture/2026-10-22-authentication-activation.md).
 It provides login, private project creation, account/token pages, member and invitation management,
 and explicit invitation acceptance. It composes the existing project list,
-project task tabs, graph and centered `TaskDetailDialog`. Production `main.tsx`
+project task tabs, graph and centered `TaskDetailDialog`. Workspace navigation
+keeps the account entry in its sidebar footer; the [account navigation decision](2026-10-25-bottom-account-navigation.md)
+owns its placement and responsive layout. Production `main.tsx`
 now renders `AuthenticatedApp` under the same persistent `LocaleProvider`. Both
 catalogs extend their complete `messages.auth` contract to login, project creation, account, members, invitations, tokens and
 management dialogs. Selectors remain available on login, invitation, workspace
