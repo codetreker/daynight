@@ -78,7 +78,7 @@ require GET-only readback; cache failures preserve the confirmed operation and
 visible error without replaying it. Existing pending/unknown/reconciling state,
 committed-version floors and exact write gates remain with the detail session.
 A verified same-principal not_found withdraws project reuse when a detail GET
-started for a known summary task, or when one of the three task writes reports
+started for a known summary task, or when a task write reports
 it. Unknown task IDs remain local missing-resource errors. canRevokeProject checks
 the captured user fence and generation before the session clears content;
 revokeProject immediately retires that generation's admission and publishes an
@@ -147,6 +147,8 @@ reclassified as unsubmitted.
 The protocol still relies on the existing project writer serialization and
 normal database time. Wall-clock rollback and bypassed maintenance require the
 recovery policy; supported history replacement rotates epochs before service
-resumes. Native browser persistence, network counts, failure and identity evidence
+resumes. [Task soft deletion](../feature/2026-10-25-task-soft-deletion.md) rotates
+the same epoch inside its write transaction. Its distinct `410 task_deleted`
+response removes only the task and does not revoke project admission. Native browser persistence, network counts, failure and identity evidence
 remain necessary alongside deterministic tests. Attachments retain their
 independent reads, mutations and preview lifetime.

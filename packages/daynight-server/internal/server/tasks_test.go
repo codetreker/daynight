@@ -283,8 +283,8 @@ func TestTaskHTTPScopesIDsAndMethods(t *testing.T) {
 		assertProjectError(t, response, http.StatusBadRequest, "invalid_input")
 	}
 	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(task), jsonBody(t, map[string]any{"version": task.Version, "dependsOn": []string{task.ID}})), http.StatusBadRequest, "invalid_input")
-	for path, allowed := range map[string]string{taskCollection(project.ID): "GET, HEAD, POST", taskPath(task): "GET, HEAD, PATCH"} {
-		response := projectRequest(handler, http.MethodDelete, path, "")
+	for path, allowed := range map[string]string{taskCollection(project.ID): "GET, HEAD, POST", taskPath(task): "GET, HEAD, PATCH, DELETE"} {
+		response := projectRequest(handler, http.MethodPut, path, "")
 		assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
 		if response.Header().Get("Allow") != allowed {
 			t.Fatalf("wrong Allow header: %s", response.Header().Get("Allow"))

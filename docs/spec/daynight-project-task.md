@@ -203,6 +203,7 @@ daynight task set-status <task-id> done
 daynight task update <task-id> --depends-on <task-a> --depends-on <task-b>
 daynight task update <task-id> --clear-dependencies
 daynight task set-status <task-id> done --if-version 3
+daynight task delete <task-id> --if-version 3
 daynight task update <task-id> --pull-request-url <url> --pull-request-title <title>
 daynight task update <task-id> --clear-pull-requests
 daynight task graph
@@ -222,13 +223,13 @@ daynight task graph
 PR URL/title 配对；省略描述、依赖和 PR 引用分别使用服务规定的空字符串、空集合
 和空数组，平台省略为null，不限制执行平台；新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可选项。PR 标题只要求字符串类型，不使用 task 标题的内容
 校验。任务响应解码接受 `todo`、`in_progress`、`done`，列表默认选择
-所有未完成任务；`--all` 选择所有状态，
+所有未完成任务；`--all` 选择所有未删除任务的业务状态，
 单个 `--status` 选择指定状态，包括 `done`。`--all` 与 `--status` 互斥，组合使用
 属于参数错误；列表状态值为 `todo`、`in_progress`、`done`，共享语法负责校验和静态候选，
 帮助显示选项说明。`--ready` 表示 `ready=true`，与所选状态按 AND 组合，支持
 `--all --ready`。`list` 与 `ready` 接受 --allow-agents true|false 与 --compatible-platform windows|linux|macos。严格拒绝其他值，省略不筛选；兼容包含null和同值要求，全部过滤先于服务排序、分页和ready上限，不在本地丢项。列表读完全部匹配分页后，按 `in_progress`、ready、其余 `todo`、
 `done` 分组排序；组内保留跨页的服务顺序，文本和 JSON 使用同一顺序。详情按选定
-project 和 task ID 查询。显式 project ID、show/update 的 task ID、标题、描述、状态、
+project 和 task ID 查询。[软删除需求](daynight-task-deletion.md)定义 `task delete` 的精确版本、一次预读、不重试及数据保留规则。显式 project ID、show/update/set-status/delete 的 task ID、标题、描述、状态、
 版本及修改字段组合的参数错误必须先于配置读取、Git 和网络访问拒绝；两类依赖 ID 在本地正规化并排序，
 非法 UUID、列表内及跨列表重复（包括大小写等价）先拒绝，服务继续验证引用、项目、环及状态条件。
 

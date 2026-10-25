@@ -28,7 +28,7 @@ func TestActiveDependentIDsUseOnlyDirectScopedOrdinaryAndExternalEdges(t *testin
 		BEGIN RAISE EXCEPTION 'dependent materials must not be selected'; END $$;
 		ALTER TABLE tasks RENAME TO task_source;
 		CREATE VIEW tasks AS SELECT id, project_id, status, reject_dependent_materials() AS title,
-		reject_dependent_materials() AS description FROM task_source`)
+		reject_dependent_materials() AS description, deleted_at FROM task_source`)
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 		ids, err := tx.ActiveDependentIDs(ctx, predecessor.ID)
 		if err != nil || !reflect.DeepEqual(ids, []string{active.ID, done.ID}) {

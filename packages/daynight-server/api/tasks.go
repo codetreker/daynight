@@ -40,6 +40,10 @@ type UpdateTaskRequest struct {
 	DependsOn         *[]string            `json:"dependsOn,omitempty"`
 }
 
+type TaskDeleteRequest struct {
+	Version int64 `json:"version"`
+}
+
 type TaskStatusUpdateRequest struct {
 	Version int64   `json:"version"`
 	Status  string  `json:"status"`

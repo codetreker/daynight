@@ -36,7 +36,7 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 		BEGIN RAISE EXCEPTION 'description must not be selected'; END $$;
 		ALTER TABLE tasks RENAME TO task_source;
 		CREATE VIEW tasks AS SELECT id, project_id, title, reject_description() AS description,
-		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform FROM task_source`)
+		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform, deleted_at FROM task_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		size, err := snapshot.TaskGraphSize(ctx, project.ID)
 		if err != nil || size != (TaskGraphSize{NodeCount: 6, EdgeCount: 5}) {
@@ -121,11 +121,11 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 		{"count", "DROP TABLE task_dependencies", true},
 		{"query", "DROP TABLE tasks", false},
 		{"decode", `ALTER TABLE tasks RENAME TO task_source;
-			CREATE VIEW tasks AS SELECT id, project_id, title, status, 1::bigint AS created_at, updated_at, started_at, completed_at, allow_agents, required_platform FROM task_source`, false},
+			CREATE VIEW tasks AS SELECT id, project_id, title, status, 1::bigint AS created_at, updated_at, started_at, completed_at, allow_agents, required_platform, deleted_at FROM task_source`, false},
 		{"iteration", `CREATE FUNCTION fail_graph_stamp() RETURNS timestamptz LANGUAGE plpgsql AS $$
 			BEGIN RAISE EXCEPTION USING ERRCODE = 'P1003', MESSAGE = 'private graph failure'; END $$;
 			ALTER TABLE tasks RENAME TO task_source;
-			CREATE VIEW tasks AS SELECT id, project_id, title, status, created_at, fail_graph_stamp() AS updated_at, started_at, completed_at, allow_agents, required_platform FROM task_source`, false},
+			CREATE VIEW tasks AS SELECT id, project_id, title, status, created_at, fail_graph_stamp() AS updated_at, started_at, completed_at, allow_agents, required_platform, deleted_at FROM task_source`, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			s := isolatedStore(t)

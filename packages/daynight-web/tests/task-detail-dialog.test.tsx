@@ -262,11 +262,15 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('button', { name: '待处理' })).toHaveFocus();
     await user.tab();
+    expect(screen.getByRole('button', { name: '删除任务' })).toHaveFocus();
+    await user.tab();
     expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
     await user.tab();
     expect(close).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: '删除任务' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('button', { name: '待处理' })).toHaveFocus();
     await user.tab({ shift: true });

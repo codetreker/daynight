@@ -46,8 +46,12 @@ snapshot or current records whose `updatedAt` is at least the supplied task
 watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
 exact decimal strings; derived blockers and readiness remain outside these
 intrinsic summaries. A stored project epoch invalidates caches after supported
-history replacement. The Web currently continues its complete-graph polling;
-IndexedDB summary and detail caches are separate delivery work.
+history replacement and transactional task soft deletion. The Web persists
+summaries and details and replaces them atomically after an epoch change.
+The [task deletion requirements](../../docs/spec/daynight-task-deletion.md) and
+[design](../../docs/design/daynight-task-deletion.md) define versioned DELETE,
+retained task/dependency/attachment data, active-successor and worker protection,
+and the task-local `410 task_deleted` response.
 
 ## Layout
 

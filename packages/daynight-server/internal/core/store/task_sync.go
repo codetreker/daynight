@@ -29,7 +29,7 @@ func (s *Snapshot) TaskSyncTasks(ctx context.Context, projectID string, lower *t
 	}
 	rows, err := s.tx.Query(ctx, `SELECT t.id::text, left(t.title, $2), char_length(t.title) > $2,
 		t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, `+taskDependsOn+`, `+taskExternalDependsOn+`
-		FROM tasks t WHERE t.project_id = $1 AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
+		FROM tasks t WHERE t.project_id = $1 AND t.deleted_at IS NULL AND ($3::timestamptz IS NULL OR t.updated_at >= $3)
 		ORDER BY t.created_at, t.id`, projectID, previewCharacters, lower)
 	if err != nil {
 		return nil, queryError("read task sync", err)
