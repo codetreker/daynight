@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import type { Locator, Page, Route, TestInfo } from '@playwright/test';
@@ -162,6 +163,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     page.on('response', (response) => { if (new URL(response.url()).pathname === syncPath) delivered += 1; });
     await page.goto(`/projects/${project.id}`);
     const openTimingChain = async () => {
+      await selectTaskList(page);
       const toggle = page.locator(`#task-root-${roots[0]!.id}`);
       await expect(toggle).toBeVisible();
       if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
@@ -176,6 +178,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     expect(seeded).toEqual({ ...claimed, startedAt: seeded.startedAt, version: claimed.version + 1n, updatedAt: seeded.updatedAt });
     expect(seeded.startedAt).not.toBe(claimed.startedAt); expect(seeded.updatedAt).not.toBe(claimed.updatedAt);
     await page.reload();
+    await openTimingChain();
     const ticking = card(page, crossing.id);
     await expect(duration(ticking)).toBeVisible();
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
@@ -288,7 +291,10 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
         evidence.layouts.push({ locale, width, kind: 'standalone' }); await screenshot(page, info, `execution-standalone-${locale}-${width}`);
       }
     }
-    await page.reload(); await expect(page.locator(`#standalone-task-${legacy.id}`)).toBeVisible(); await expect(duration(page.locator(`#standalone-task-${legacy.id}`))).toHaveCount(0);
+    await page.reload();
+    await selectTaskList(page);
+    await expect(page.locator(`#standalone-task-${legacy.id}`)).toBeVisible();
+    await expect(duration(page.locator(`#standalone-task-${legacy.id}`))).toHaveCount(0);
     const final = parseTaskDetail(parseApiJson(await success(['task', 'show', crossing.id, '--project', project.id, '--json'])), project.id, crossing.id);
     expect(final.startedAt).toBe(completed.startedAt); expect(final.completedAt).toBe(completed.completedAt);
     evidence.progress.push('bilingual-narrow-presentation-and-reload-verified');

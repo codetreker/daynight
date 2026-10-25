@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import type { Browser, Locator, Page, Request, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPageUrl } from '../../src/api/client';
 import { parseApiJson } from '../../src/api/json';
@@ -148,6 +149,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
   const statusWrites: { version: string; status: TaskStatus; result: number }[] = [];
   try {
     await page.goto(`/projects/${project.id}`);
+    await selectTaskList(page);
     await page.locator(`.react-flow__node[data-id="${task.id}"] .task-node-details`).click();
     const modal = page.locator('.task-detail-dialog');
     await expect(modal.locator('.task-detail-title')).toHaveText(title);

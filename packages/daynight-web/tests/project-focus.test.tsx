@@ -95,6 +95,7 @@ afterEach(() => {
 
 const openDialog = async (fullscreen = false) => {
   render(<ProjectPage projectId={projectId} />, { container: root });
+  fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
   fireEvent.click(await screen.findByRole('button', { name: /^原任务链/ }));
   if (fullscreen) fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const trigger = await screen.findByRole('button', { name: '节点 所选任务' });
@@ -188,16 +189,16 @@ describe('project dialog focus restoration', () => {
     }
   });
 
-  it('focuses the page heading after refresh removes the selected chain and every task', async () => {
+  it('focuses the outer task tab after refresh removes the selected chain and every task', async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await screen.findByRole('heading', { name: '还没有任务' });
-    await waitFor(() => expect(screen.getByRole('heading', { name: '核心项目' })).toHaveFocus());
+    await waitFor(() => expect(screen.getByRole('tab', { name: '任务列表' })).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
     expectModalReleased();
     expect(screen.getByText('所选任务已不在新的任务图中，详情已关闭。')).toBeVisible();
-    expect(within(screen.getByRole('region', { name: '项目任务统计' })).getAllByText('0', { selector: '.stat-number' })).toHaveLength(6);
+    expect(within(screen.getByRole('region', { name: '项目任务统计', hidden: true })).getAllByText('0', { selector: '.stat-number' })).toHaveLength(6);
     expect(screen.queryByRole('region', { name: '任务依赖链' })).toBeNull();
   });
 

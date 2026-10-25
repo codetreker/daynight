@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import { randomUUID, createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import type { APIResponse, Locator, Page, Route, TestInfo } from '@playwright/test';
@@ -45,6 +46,7 @@ const open = async (page: Page, project: string, task: string): Promise<void> =>
   const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await graphResponse.text())), project);
   const index = buildGraphIndex(graph); const representative = index.componentByTask.get(task)!;
   const standalone = index.components.get(representative)!.memberIds.size === 1;
+  await selectTaskList(page);
   await page.getByRole('tab', { name: standalone ? /^(独立任务|Standalone tasks)$/ : /^(任务链|Task chains)$/, exact: true }).click();
   await page.locator('.completed-chain-control input').check();
   if (standalone) await page.locator(`#standalone-task-${task}`).click();

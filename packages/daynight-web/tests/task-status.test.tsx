@@ -1,3 +1,4 @@
+import { selectTaskList } from './helpers/projectViews';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
 import { TEST_VIEWER_ID, taskSyncFromGraph } from "./helpers/taskSync";
@@ -86,7 +87,11 @@ beforeEach(() => {
   vi.mocked(checkAttachmentPreview).mockReset().mockResolvedValue(undefined);
 });
 afterEach(() => { cleanup(); root.remove(); });
-const mount = () => renderWithLocale(<ProjectPage projectId={project} />, { taskCache: true, locale: 'en', container: root });
+const mount = async () => {
+  const view = renderWithLocale(<ProjectPage projectId={project} />, { taskCache: true, locale: 'en', container: root });
+  await selectTaskList();
+  return view;
+};
 const openChild = async () => {
   const node = await screen.findByRole('button', { name: 'Task 2, Details' });
   fireEvent.click(node);
@@ -109,7 +114,7 @@ describe('status in shared production task details', () => {
     records.set(standalone, { ...records.get(standalone)!, description: '# Task materials\n\n[Selected attachment](kept.txt)' });
     let otherReads = 0;
     vi.mocked(getTask).mockImplementation(async (_project, taskId) => taskId === standalone && ++otherReads === 2 ? refresh.promise : records.get(taskId)!);
-    mount(); let dialog = await openChild();
+    await mount(); let dialog = await openChild();
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
@@ -182,6 +187,7 @@ describe('status in shared production task details', () => {
     });
     vi.mocked(setTaskStatus).mockRejectedValueOnce(original);
     renderWithLocale(<TaskDetailSessionProvider><Subject /></TaskDetailSessionProvider>, { taskCache: true, locale: 'en', container: root });
+    await selectTaskList();
     const dialog = await openChild(); graphRequest.mockImplementation(() => freshGraph.promise);
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await waitFor(() => expect(dialog).not.toBeInTheDocument());
@@ -232,6 +238,7 @@ describe('status in shared production task details', () => {
       await screen.findByRole('heading', { name });
     };
     const openStandalone = async (title: string) => {
+      await selectTaskList();
       fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
       fireEvent.click(screen.getByRole('button', { name: new RegExp(title) }));
       const dialog = screen.getByRole('dialog');
@@ -272,7 +279,7 @@ describe('status in shared production task details', () => {
 
   it.each(['in_progress', 'done'] as const)('retains the status receipt when a later detail read reaches %s', async (status) => {
     vi.mocked(setTaskStatus).mockImplementation(async () => commit(standalone));
-    const view = mount(); await screen.findByRole('tab', { name: 'Standalone tasks' });
+    const view = await mount(); await screen.findByRole('tab', { name: 'Standalone tasks' });
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
     let dialog = screen.getByRole('dialog');
@@ -295,7 +302,7 @@ describe('status in shared production task details', () => {
 
   it('starts a ready graph task once across close/reopen and refreshes rows/counts without losing fullscreen or zoom', async () => {
     const mutation = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
-    mount();
+    await mount();
     const inspected = await screen.findByRole('button', { name: 'Task 2, To do' });
     fireEvent.click(inspected);
     expect(inspected).toHaveAttribute('aria-pressed', 'true');
@@ -337,7 +344,7 @@ describe('status in shared production task details', () => {
   it('retains confirmed todo details and exposes truthful stale feedback if graph refresh fails', async () => {
     vi.mocked(setTaskStatus).mockImplementation(async () => commit());
     graphRequest.mockResolvedValueOnce(graph()).mockRejectedValueOnce(new ApiError('network')).mockImplementation(async () => graph());
-    mount(); const dialog = await openChild();
+    await mount(); const dialog = await openChild();
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await within(dialog).findByText('Task status confirmed.');
     await screen.findByRole('heading', { name: 'Refresh failed' });
@@ -355,7 +362,7 @@ describe('status in shared production task details', () => {
     const obsolete = deferred<TaskGraph>(); const fresh = deferred<TaskGraph>(); const mutation = deferred<TaskDetail>();
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(obsolete.promise).mockReturnValueOnce(fresh.promise);
     vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
-    mount(); await screen.findByRole('heading', { name: 'Approval project' });
+    await mount(); await screen.findByRole('heading', { name: 'Approval project' });
     fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
     const oldSignal = graphRequest.mock.calls[1]![1]; const oldGraph = graph();

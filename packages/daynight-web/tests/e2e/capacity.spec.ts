@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import { decodeTaskGraphJson } from '../../src/api/project-json';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -554,14 +555,15 @@ test.describe('fixed capacity and performance @capacity', () => {
           const graphResponse = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${fixture.project.id}/task-sync`);
           const coldStart = performance.now();
           await page.goto(`/projects/${fixture.project.id}`, { waitUntil: 'domcontentloaded' });
-          if (await page.locator(`#task-root-${fixture.root.id}`).getAttribute('aria-expanded') !== 'true') await page.locator(`#task-root-${fixture.root.id}`).click();
-          await visibleGraph(page, fixture.root.id, overview);
-          await assertVisibleTopology(page, overview, full);
           const total = page.locator('.stat').filter({ has: page.locator('.stat-label', { hasText: /^任务总数$/ }) }).locator('.stat-number');
           await expect(total).toHaveText(count(1000));
           await expect(page.locator('.stats .stat')).toHaveCount(6);
           await expect(page.locator('.stats .stat-label').filter({ hasText: /^待审批$/ })).toHaveCount(0);
           await expect(page.locator('.stat').filter({ has: page.locator('.stat-label', { hasText: /^待处理$/ }) }).locator('.stat-number')).toHaveText(count(1000));
+          await selectTaskList(page);
+          if (await page.locator(`#task-root-${fixture.root.id}`).getAttribute('aria-expanded') !== 'true') await page.locator(`#task-root-${fixture.root.id}`).click();
+          await visibleGraph(page, fixture.root.id, overview);
+          await assertVisibleTopology(page, overview, full);
           const externalIds = new Set(full.nodes.filter((node) => !full.memberIds.includes(node.id)).map((node) => node.id));
           await expect(page.locator(`#task-root-${fixture.root.id} .root-progress-label`)).toHaveText(`0/${count(1000 - externalIds.size)} 已完成`);
           await expect(page.locator('.task-node-external')).toHaveCount(overview.nodes.filter((node) => externalIds.has(node.id)).length);

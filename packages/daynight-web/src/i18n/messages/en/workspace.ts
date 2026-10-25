@@ -32,6 +32,7 @@ export const workspace: WorkspaceMessages = {
     explanation: "Sorted by creation time, newest first. Standalone tasks have no ordinary dependencies or successors. External prerequisites can still block execution. Select a task to view its details.", empty: "No standalone tasks", emptyDetail: "All current tasks are connected by ordinary dependencies. View them in the task chains tab.", allCompleted: "All standalone tasks are complete",
     hiddenCompleted: ({ count }) => `${number(count)} completed standalone ${count === 1 ? "task is" : "tasks are"} hidden. Project statistics still include all tasks.`, showCompleted: "Show completed standalone tasks", createdOn: ({ date }) => `Created on ${date}`,
   },
+  sections: { label: "Project views", overview: "Overview", tasks: "Task list", overviewDescription: "View overall progress and current task status.", tasksDescription: "Browse standalone tasks and dependency chains." },
   tabs: { label: "Project task views", standalone: "Standalone tasks", chains: "Task chains", unfinishedCount: "Unfinished task count" },
   preferences: {
     expanded: { read: "The saved task chain expansion state could not be read. You can continue browsing.", invalid: "The saved task chain expansion state is invalid. The default state is in use, and you can continue browsing.", write: "The task chain expansion state could not be saved. It may not return after a reload. You can continue browsing." },

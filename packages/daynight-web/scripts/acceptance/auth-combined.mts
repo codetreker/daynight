@@ -1,3 +1,4 @@
+import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
@@ -534,6 +535,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     for (const path of [`/api/v1/projects/${privateProject.id}`, `/api/v1/projects/${privateProject.id}/tasks/${privateTask.id}`, privateResource]) await request(alice, origin, 'GET', path, 404);
     await bobPage.goto(`${origin}/projects/${shared.id}`);
     await bobPage.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption('zh-CN');
+    await selectTaskList(bobPage);
     await bobPage.getByRole('tab', { name: '独立任务', exact: true }).click();
     await bobPage.locator(`#standalone-task-${task.id}`).click();
     const detail = bobPage.getByRole('dialog', { name: task.title, exact: true });

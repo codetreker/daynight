@@ -17,9 +17,11 @@ expanded-root JSON record keeps its original
 Completed-chain visibility uses its existing separate localStorage JSON-boolean
 record and defaults to hidden. The [task view decision](2026-10-22-project-task-views.md)
 extends this ownership with independent records for the selected tab, standalone
-completion visibility and the two page scroll positions. First visits default
-to chains, both completion filters default to hidden, and page positions default
-to the start. There is no server preference or task-data change.
+completion visibility and the two task-category page positions. Within Task
+list, absent category state defaults to chains, both completion filters default
+to hidden, and page positions default to the start. The [project section decision](2026-10-25-project-overview-task-sections.md)
+opens the project on Overview independently of these records and restricts their
+scroll ownership to active Tasks. There is no server preference or task-data change.
 
 The [presentation decision](2026-10-21-task-chain-presentation.md) supplies
 newest-first ordinary-component representatives. The saved string is an original
@@ -41,9 +43,12 @@ stored data and denied storage access leave browsing usable with in-memory
 choices. Write failure preserves the current interaction and reports that it
 cannot be retained after reload. The tabs, checkboxes, reveal actions and graph
 controls remain operable. Selected details, graph layouts, zoom, pan and
-fullscreen are not persisted. Page scroll restoration is independent per tab;
-inactive panel contents unmount, so returning to chains initializes the canvas
-viewport. Stable hidden wrappers preserve each tab's associated panel ID.
+fullscreen are not persisted. Page scroll restoration is independent per inner
+category; inactive category contents unmount, so returning from Standalone tasks
+to Task chains initializes the canvas viewport. Stable hidden wrappers preserve
+each category's associated panel ID. Outer Overview/Task list switching instead
+retains the visited task workspace; Overview keeps a separate per-mount position
+and cannot restore or write these task offsets.
 The [dashboard decision](2026-10-20-project-task-dashboard.md) retains the
 single-canvas and snapshot lifecycle rationale.
 
@@ -64,7 +69,8 @@ without requiring a record migration or compatibility branch.
 
 ## Consequences
 
-Reload and project navigation preserve the selected category, each category's
+Reload and project navigation reopen Overview while preserving the saved task
+category, each category's
 completed visibility and page scroll position, and chain expansion while graph data
 still comes from a fresh complete snapshot. Storage access is synchronous and
 bounded to small project records. Privacy settings or invalid stored values can

@@ -1,3 +1,4 @@
+import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
 import { taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
@@ -265,6 +266,7 @@ describe("authenticated application shell", () => {
     try {
       await waitForCacheUi(() => expect(screen.getByRole('heading', { name: 'Alice 的项目' })).toBeInTheDocument());
       const heading = screen.getByRole('heading', { name: 'Alice 的项目' });
+      await selectTaskList();
       fireEvent.click(screen.getByRole('tab', { name: '独立任务' }));
       fireEvent.click(screen.getByRole('button', { name: /Alice-only task/ }));
       const dialog = screen.getByRole('dialog');
@@ -818,6 +820,7 @@ describe("authenticated application shell", () => {
     const view = render(<AuthenticatedApp />, { container: root });
     try {
       await screen.findByRole("heading", { name: "私有项目" });
+      await selectTaskList();
       fireEvent.click(screen.getByRole("tab", { name: "独立任务" }));
       fireEvent.click(screen.getByRole("button", { name: /Lifecycle task/ }));
       let dialog = screen.getByRole("dialog");
@@ -833,6 +836,7 @@ describe("authenticated application shell", () => {
       await screen.findByRole("heading", { name: "Status reference" });
       act(() => { window.history.pushState(null, "", `/projects/${projectId}`); window.dispatchEvent(new PopStateEvent("popstate")); });
       await screen.findByRole("heading", { name: "私有项目" });
+      await selectTaskList();
       fireEvent.click(screen.getByRole("tab", { name: "独立任务" }));
       fireEvent.click(screen.getByRole("button", { name: /Lifecycle task/ }));
       dialog = screen.getByRole("dialog");

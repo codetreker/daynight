@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import type { Locator, Page } from '@playwright/test';
 import { startTask, createProject, createTask, expect, test, updateTask, type Task } from './fixtures';
 import { expectCenteredTaskDetail } from './detail-dialog';
@@ -14,6 +15,7 @@ const enable = async (page: Page, value: boolean): Promise<void> => {
   await dialog.getByRole('button', { name: value ? '开启自动执行' : '关闭自动执行', exact: true }).click();
 };
 const open = async (page: Page, id: string): Promise<void> => {
+  await selectTaskList(page);
   await page.getByRole('tab', { name: /^(独立任务|Standalone tasks)$/, exact: true }).click();
   await page.locator(`#standalone-task-${id}`).click();
   await expect(automatic(page)).toBeVisible();

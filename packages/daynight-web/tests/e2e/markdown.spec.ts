@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import { decodeTaskGraphJson } from '../../src/api/project-json';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -190,6 +191,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
     await page.clock.install({ time: clockTime });
     await page.clock.pauseAt(clockTime);
     await page.goto(`/projects/${project.id}`);
+    await selectTaskList(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
     const trigger = page.locator(`#standalone-task-${task.id}`);
     await trigger.click();
@@ -358,6 +360,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
       }
       const highlighted = new Set([task.id, ...upstream]);
       await page.goto(`/projects/${project.id}`);
+      await selectTaskList(page);
       await page.getByRole('tab', { name: '任务链', exact: true }).click();
       await expect(page.locator(`#task-root-${ancestor.id}`)).toHaveAttribute('aria-expanded', 'true');
       const graph = page.locator('.task-graph');

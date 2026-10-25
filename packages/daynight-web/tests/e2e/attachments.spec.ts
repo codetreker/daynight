@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -181,6 +182,7 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await page.clock.pauseAt(clockTime);
     await page.goto(`/projects/${project.id}`);
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
+    await selectTaskList(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
     const trigger = page.locator(`#standalone-task-${task.id}`);
     await expect(page.locator('.task-graph-canvas')).toHaveCount(0);

@@ -1,16 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { Project } from "../../api/types";
 import { navigate } from "../../app/router";
 import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
-import { ChainList } from "../task-graph/ChainList";
-import { ProjectTaskTabs } from "./ProjectTaskTabs";
-import { StandaloneList } from "./StandaloneList";
+import { ProjectOverview } from "./ProjectOverview";
+import { ProjectSectionTabs, type ProjectSection } from "./ProjectSectionTabs";
+import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
 import { useCompletedChainVisibility, useProjectViewPreferences, useStandaloneVisibility, useTaskView, useTaskViewScroll, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
-import { TaskExecutionClockProvider } from "../task-execution/TaskExecutionClock";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -21,20 +20,40 @@ const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
 
 type ProjectNotice = { readonly kind: "selected-task-removed" };
 
+const focusVisible = (element: HTMLElement | null | undefined) => {
+  if (element == null || !element.isConnected || element.closest('[hidden], [inert]') !== null) return false;
+  element.focus();
+  return true;
+};
+
 const ProjectView = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => {
   const graph = useTaskGraph(projectId);
   const sessions = useTaskDetailSessions();
   useEffect(() => sessions.subscribeProject(projectId, graph.refresh), [sessions, projectId, graph.refresh]);
-  const { messages: { workspace: { project: m, projects, app, preferences }, common }, format } = useI18n();
+  const { messages: { workspace: { project: m, projects, app, preferences } }, format } = useI18n();
+  const [section, setSection] = useState<ProjectSection>("overview");
+  const [tasksMounted, setTasksMounted] = useState(false);
   const [detailSelection, setDetailSelection] = useState<{ readonly id: string; readonly revision: number } | null>(null);
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
   const expandedRoot = useRef<string | null>(null);
   const currentView = useRef<TaskView>("chains");
+  const currentSection = useRef<ProjectSection>(section);
+  currentSection.current = section;
+  const overviewPosition = useRef(0);
   const snapshot = graph.snapshot;
+  const snapshotReady = snapshot !== null;
   const { activeView, onViewChange, issue: tabIssue } = useTaskView(projectId);
-  const { savePosition, issue: scrollIssue } = useTaskViewScroll(projectId, activeView, snapshot !== null);
+  const { savePosition, issue: scrollIssue } = useTaskViewScroll(projectId, activeView, snapshotReady && section === "tasks");
+  useLayoutEffect(() => {
+    if (!snapshotReady) setTasksMounted(false);
+    else if (section === "tasks") setTasksMounted(true);
+  }, [snapshotReady, section]);
+  useLayoutEffect(() => {
+    if (section !== "overview" || !snapshotReady) return;
+    window.scrollTo({ top: overviewPosition.current, behavior: "instant" });
+  }, [section, snapshotReady]);
   currentView.current = activeView;
   const { showCompleted, onShowCompletedChange, issue: visibilityIssue } = useCompletedChainVisibility(projectId);
   const { showCompleted: showCompletedStandalone, onShowCompletedChange: onStandaloneVisibilityChange, issue: standaloneIssue } = useStandaloneVisibility(projectId);
@@ -81,25 +100,17 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }, [snapshot]);
   const onClose = useCallback(() => { setDetailSelection(null); }, []);
   const restoreFocus = useCallback(() => {
-    if (originalTrigger.current?.isConnected) {
-      originalTrigger.current.focus();
-      return;
-    }
+    if (focusVisible(originalTrigger.current)) return;
     const fullscreenToggle = currentView.current !== "chains" || expandedRoot.current === null ? null : document.getElementById(`task-graph-${expandedRoot.current}`)
       ?.querySelector<HTMLButtonElement>('.task-graph-fullscreen .graph-fullscreen-toggle');
-    if (fullscreenToggle != null) {
-      fullscreenToggle.focus();
-      return;
-    }
+    if (focusVisible(fullscreenToggle)) return;
     const root = currentView.current !== "chains" || expandedRoot.current === null ? null : document.getElementById(`task-root-${expandedRoot.current}`);
-    if (root !== null) root.focus();
-    else {
-      const standalone = currentView.current === "standalone" ? document.querySelector<HTMLButtonElement>(".standalone-row") : null;
-      const tab = document.getElementById(`project-task-tab-${currentView.current}`);
-      if (standalone !== null) standalone.focus();
-      else if (tab !== null) tab.focus();
-      else heading.current?.focus();
-    }
+    if (focusVisible(root)) return;
+    const standalone = currentView.current === "standalone" ? document.querySelector<HTMLButtonElement>(".standalone-row") : null;
+    if (focusVisible(standalone)) return;
+    if (focusVisible(document.getElementById(`project-task-tab-${currentView.current}`))) return;
+    if (focusVisible(document.getElementById(`project-section-tab-${currentSection.current}`))) return;
+    heading.current?.focus();
   }, []);
 
   const selectView = useCallback((view: TaskView) => {
@@ -108,8 +119,14 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     onViewChange(view);
   }, [activeView, savePosition, onViewChange]);
 
+  const selectSection = useCallback((next: ProjectSection) => {
+    if (next === section) return;
+    if (section === "tasks") savePosition();
+    else if (snapshotReady) overviewPosition.current = window.scrollY;
+    setSection(next);
+  }, [section, savePosition, snapshotReady]);
+
   const summary = snapshot?.graph.summary;
-  const completion = summary === undefined || summary.total === 0 ? 0 : Math.round(summary.done * 100 / summary.total);
   return (
     <>
       <div className="project-navigation">
@@ -126,61 +143,50 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         </div>
         <div className="project-title-actions">{snapshot !== null && renderActions?.(snapshot.graph.project)}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button></div>
       </div>
-      {preferenceIssue !== null && <p className="snapshot-notice" role="status">{preferences.expanded[preferenceIssue.kind]}</p>}
-      {visibilityIssue !== null && <p className="snapshot-notice" role="status">{preferences.completedChains[visibilityIssue.kind]}</p>}
-      {tabIssue !== null && <p className="snapshot-notice" role="status">{preferences.tab[tabIssue.kind]}</p>}
-      {standaloneIssue !== null && <p className="snapshot-notice" role="status">{preferences.standalone[standaloneIssue.kind]}</p>}
-      {scrollIssue !== null && <p className="snapshot-notice" role="status">{preferences.scroll[scrollIssue.kind]}</p>}
-      {graph.status === "loading" && (
-        <section className="state-box" role="status" aria-label={m.loading}>
-          <span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2><p>{m.loadingDetail}</p>
-        </section>
-      )}
-      {graph.status === "error" && (
-        <section className="state-box" role="alert">
-          <h2>{projectGraphErrorTitle(graph.error, m)}</h2><ProjectGraphErrorDetail error={graph.error} />
-          <button className="button primary" type="button" onClick={graph.refresh}>{projects.retry}</button>
-          <a className="back-link" href="/" onClick={backToProjects}>{app.returnToProjects}</a>
-        </section>
-      )}
-      {snapshot !== null && summary !== undefined && (
-        <>
-          {graph.error !== null && (
+      <div className="project-layout">
+        <ProjectSectionTabs section={section} onChange={selectSection} />
+        <div className="project-section-content">
+          {preferenceIssue !== null && <p className="snapshot-notice" role="status">{preferences.expanded[preferenceIssue.kind]}</p>}
+          {visibilityIssue !== null && <p className="snapshot-notice" role="status">{preferences.completedChains[visibilityIssue.kind]}</p>}
+          {tabIssue !== null && <p className="snapshot-notice" role="status">{preferences.tab[tabIssue.kind]}</p>}
+          {standaloneIssue !== null && <p className="snapshot-notice" role="status">{preferences.standalone[standaloneIssue.kind]}</p>}
+          {scrollIssue !== null && <p className="snapshot-notice" role="status">{preferences.scroll[scrollIssue.kind]}</p>}
+          {graph.status === "loading" && (
+            <section className="state-box" role="status" aria-label={m.loading}>
+              <span className="spinner" aria-hidden="true" /><h2>{m.loading}</h2><p>{m.loadingDetail}</p>
+            </section>
+          )}
+          {graph.status === "error" && (
+            <section className="state-box" role="alert">
+              <h2>{projectGraphErrorTitle(graph.error, m)}</h2><ProjectGraphErrorDetail error={graph.error} />
+              <button className="button primary" type="button" onClick={graph.refresh}>{projects.retry}</button>
+              <a className="back-link" href="/" onClick={backToProjects}>{app.returnToProjects}</a>
+            </section>
+          )}
+          {snapshot !== null && graph.error !== null && (
             <section className="snapshot-error" role="alert"><h2>{m.refreshFailed}</h2><p>{m.showingSnapshot}</p><ProjectGraphErrorDetail error={graph.error} />
               <button className="button" type="button" onClick={graph.refresh}>{m.retryRefresh}</button>
             </section>
           )}
-          {notice !== null && <p className="snapshot-notice" role="status">{m.selectedTaskRemoved}</p>}
-          <section className="stats" aria-label={m.statistics}>
-            <div className="stat"><p className="stat-label">{m.totalTasks}</p><p className="stat-number">{format.number(summary.total)}</p><p className="stat-foot">{m.uniqueTasks}</p></div>
-            <div className="stat done"><p className="stat-label">{common.status.done}</p><p className="stat-number">{format.number(summary.done)}</p><p className="stat-foot">{m.completion({ percent: completion })}</p></div>
-            <div className="stat"><p className="stat-label">{common.status.todo}</p><p className="stat-number">{format.number(summary.todo)}</p><p className="stat-foot">{m.waiting}</p></div>
-            <div className="stat active"><p className="stat-label">{common.status.in_progress}</p><p className="stat-number">{format.number(summary.inProgress)}</p><p className="stat-foot">{m.advancing}</p></div>
-            <div className="stat ready"><p className="stat-label">{m.ready}</p><p className="stat-number">{format.number(summary.ready)}</p><p className="stat-foot">{m.todoSubset}</p></div>
-            <div className="stat blocked"><p className="stat-label">{m.blocked}</p><p className="stat-number">{format.number(summary.blocked)}</p><p className="stat-foot">{m.todoSubset}</p></div>
+          {snapshot !== null && notice !== null && <p className="snapshot-notice" role="status">{m.selectedTaskRemoved}</p>}
+          <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
+            aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
+            {summary !== undefined && <ProjectOverview summary={summary} />}
           </section>
-          {summary.total === 0 ? (
-            <section className="state-box"><h2>{m.empty}</h2><p>{m.emptyDetail}</p></section>
-          ) : (
-            <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
-              <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
-                unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView} />
-              <div role="tabpanel" id="project-task-panel-chains" aria-labelledby="project-task-tab-chains" hidden={activeView !== "chains"}>
-                {activeView === "chains" && <section aria-label={m.chains}>
-                  <ChainList index={snapshot.index} representativeIds={rootIds!} allRepresentativeIds={categories!.chains} expandedRootId={expandedRootId} onExpand={setExpandedRootId} onOpenTask={onOpenTask}
-                    showCompleted={showCompleted} onShowCompletedChange={onShowCompletedChange} />
-                </section>}
-              </div>
-              <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"}>
-                {activeView === "standalone" && <StandaloneList index={snapshot.index} taskIds={standaloneIds} allTaskIds={categories!.standalone} onSelectTask={onOpenTask}
-                  showCompleted={showCompletedStandalone} onShowCompletedChange={onStandaloneVisibilityChange} />}
-              </div>
-            </TaskExecutionClockProvider>
-          )}
-          {detailTaskId !== null && <TaskDetailDialog projectId={projectId} taskId={detailTaskId} snapshot={snapshot} onSelectTask={onSelectRelation}
-            onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} />}
-        </>
-      )}
+          <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
+            aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
+            {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot}
+              activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
+              unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView}
+              chains={{ representativeIds: rootIds!, allRepresentativeIds: categories!.chains, expandedRootId, onExpand: setExpandedRootId,
+                onOpenTask, showCompleted, onShowCompletedChange }}
+              standalone={{ taskIds: standaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
+                showCompleted: showCompletedStandalone, onShowCompletedChange: onStandaloneVisibilityChange }} />}
+          </section>
+        </div>
+      </div>
+      {snapshot !== null && detailTaskId !== null && <TaskDetailDialog projectId={projectId} taskId={detailTaskId} snapshot={snapshot} onSelectTask={onSelectRelation}
+        onClose={onClose} onRestoreFocus={restoreFocus} onRefreshGraph={graph.refresh} />}
     </>
   );
 };

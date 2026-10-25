@@ -1,3 +1,4 @@
+import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
@@ -66,6 +67,7 @@ test.describe('Web language journeys', () => {
     await link.click();
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
     await expect(page).toHaveTitle('Project tasks · Daynight');
+    await selectTaskList(page);
     await page.getByRole('tab', { name: 'Standalone tasks', exact: true }).click();
     const trigger = page.locator(`#standalone-task-${task.id}`);
     await expect(trigger).toContainText(task.title);
@@ -81,6 +83,7 @@ test.describe('Web language journeys', () => {
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
     await expect(language(page)).toHaveValue('zh-CN');
     await expect(page.locator('html')).toHaveAttribute('lang', 'zh-CN');
+    await selectTaskList(page);
     await trigger.click();
     const dialog = page.locator('.task-detail-dialog');
     await expect(dialog.locator('.task-detail-title')).toHaveText(task.title);
@@ -120,6 +123,7 @@ test.describe('Web language journeys', () => {
     await page.clock.install({ time: clockTime });
     await page.clock.pauseAt(clockTime);
     await page.goto(`/projects/${project.id}`);
+    await selectTaskList(page);
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
     await page.clock.runFor(100);
     await expect(inspectTask(page, task.id)).toBeVisible();
@@ -347,6 +351,7 @@ test.describe('Web language journeys', () => {
     const seed = await request.put(attachmentDownloadUrl(project.id, task.id, '原始.txt'), { headers: { 'content-type': 'text/plain' }, data: '原始附件 Raw attachment\n' });
     expect(seed.status()).toBe(201);
     await page.goto(`/projects/${project.id}`);
+    await selectTaskList(page);
     await expect(inspectTask(page, task.id)).toBeVisible();
     await page.clock.pauseAt(new Date('2030-01-01T00:00:00Z'));
     await expect(page.locator('.snapshot-time time')).toHaveAttribute('datetime', /^2030-/);

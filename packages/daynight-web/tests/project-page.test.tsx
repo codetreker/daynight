@@ -67,6 +67,7 @@ const deferred = <T,>() => {
 };
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const detailRequest = vi.mocked(getTask);
+const selectTasks = () => { fireEvent.click(screen.getByRole('tab', { name: '任务列表' })); };
 const number = (label: string) => screen.getByText(label, { selector: ".stat-label" }).parentElement?.querySelector(".stat-number")?.textContent;
 const preferenceKey = (id = projectId) => `daynight:project-view:${id}`;
 const rememberRoot = (root: string | null, id = projectId) => window.localStorage.setItem(preferenceKey(id), JSON.stringify({ expandedRootId: root }));
@@ -106,7 +107,7 @@ describe("project dashboard", () => {
     window.localStorage.clear();
     const pending = deferred<TaskGraph>();
     graphRequest.mockReturnValueOnce(pending.promise);
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(screen.getByRole("status", { name: "正在加载任务图" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "项目任务统计" })).toBeNull();
     await act(async () => { pending.resolve(graph()); });
@@ -128,7 +129,7 @@ describe("project dashboard", () => {
   it("retains the snapshot and receipt time on refresh failure and keeps a valid expanded root", async () => {
     const pending = deferred<TaskGraph>();
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(pending.promise).mockResolvedValueOnce(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });
     fireEvent.click(screen.getByRole("button", { name: "另一任务链" }));
     const receipt = screen.getByText(/最近成功刷新/).closest("time")?.getAttribute("datetime");
@@ -149,7 +150,7 @@ describe("project dashboard", () => {
 
   it("selects the new first root after refresh removes the expanded root and closes a vanished detail with focus fallback", async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([seeds[2]!, seeds[3]!])));
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     const trigger = await screen.findByRole("button", { name: "节点 后续任务" });
     trigger.focus(); fireEvent.click(trigger);
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
@@ -163,7 +164,7 @@ describe("project dashboard", () => {
 
   it("reuses a retained detail after an unchanged graph receipt without patching graph statistics", async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     expect(detailRequest).toHaveBeenCalledTimes(1);
@@ -178,7 +179,7 @@ describe("project dashboard", () => {
 
   it("preserves the original node focus across relation navigation and allows unknown snapshot references", async () => {
     graphRequest.mockResolvedValue(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     const trigger = await screen.findByRole("button", { name: "节点 后续任务" });
     trigger.focus(); fireEvent.click(trigger);
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
@@ -192,14 +193,14 @@ describe("project dashboard", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it("falls back to the page heading when the selected chain disappears into an empty snapshot", async () => {
+  it("falls back to the task section tab when the selected chain disappears into an empty snapshot", async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([])));
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
     await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("后续任务"));
     fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
     await screen.findByRole("heading", { name: "还没有任务" });
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { name: "核心项目" })));
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("tab", { name: "任务列表" })));
     expect(number("任务总数")).toBe("0");
     expect(screen.queryByTestId("root-list")).toBeNull();
   });
@@ -207,9 +208,9 @@ describe("project dashboard", () => {
   it("clears project-specific display immediately when the project prop changes", async () => {
     const pending = deferred<TaskGraph>();
     graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(pending.promise);
-    const view = render(<ProjectPage projectId={projectId} />);
+    const view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "核心项目" });
-    view.rerender(<ProjectPage projectId={otherProject} />);
+    view.rerender(<ProjectPage projectId={otherProject} />); selectTasks();
     expect(screen.queryByRole("heading", { name: "核心项目" })).toBeNull();
     expect(screen.queryByRole("region", { name: "项目任务统计" })).toBeNull();
     await act(async () => { pending.resolve(graph(seeds, otherProject)); });
@@ -218,7 +219,7 @@ describe("project dashboard", () => {
 
   it("renders an empty project as zero statistics and an explicit empty state", async () => {
     graphRequest.mockResolvedValue(graph([]));
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "还没有任务" });
     expect(["任务总数", "已完成", "待处理", "进行中", "可开始", "被阻塞"].map(number)).toEqual(["0", "0", "0", "0", "0", "0"]);
     expect(screen.getByText("完成比例 0%")).toBeTruthy();
@@ -230,7 +231,7 @@ describe("project dashboard", () => {
     [new ApiError("protocol", 200), "任务图数据不完整", "任务图数据不完整或不一致，请重试。"],
   ] as const)("shows safe first-load errors without zero-stat fallbacks %#", async (failure, heading, message) => {
     graphRequest.mockRejectedValueOnce(failure).mockResolvedValueOnce(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect((await screen.findByRole("alert")).textContent).toContain(heading);
     expect(screen.getByText(message)).toBeTruthy();
     expect(screen.queryByText("任务总数")).toBeNull();
@@ -241,7 +242,7 @@ describe("project dashboard", () => {
   it("explains graph limits using actual counts and rejects malformed graph snapshots", async () => {
     graphRequest.mockRejectedValueOnce(new ApiError("server", 409, "graph_limit_exceeded", "large-graph", { nodeCount: 1001, edgeCount: 5100, maxNodes: 1000, maxEdges: 5000 }))
       .mockResolvedValueOnce({ ...graph(), tasks: graph().tasks.map((task) => task.id === B ? { ...task, dependsOn: [X] } : task) });
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     const alert = await screen.findByRole("alert");
     expect(within(alert).getByRole("heading", { name: "任务图超过展示上限" })).toBeTruthy();
     expect(alert.textContent).toContain("当前 1,001 个任务、5,100 条依赖；支持最多 1,000 个任务、5,000 条依赖。");
@@ -253,7 +254,7 @@ describe("project dashboard", () => {
 
   it("renders untrusted project values as plain text and preserves modified return clicks", async () => {
     graphRequest.mockResolvedValue({ ...graph([]), project: { ...graph().project, name: "<img src=x onerror=alert(1)>", repoUrl: "javascript:alert(1)" } });
-    const view = render(<ProjectPage projectId={projectId} />);
+    const view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "<img src=x onerror=alert(1)>" });
     expect(screen.getByText("javascript:alert(1)")).toBeTruthy();
     expect(view.container.querySelector("img")).toBeNull();
@@ -291,7 +292,7 @@ describe("newest-first task chains", () => {
     }))) };
     expect(new Set(snapshot.tasks.map((task) => Date.parse(task.createdAt))).size).toBe(1);
     graphRequest.mockResolvedValue(snapshot);
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${F}`)).toBeVisible();
     expect(presentedRoots()).toEqual([F, E, A].map((id) => `task-root-${id}`));
     expect(screen.getByTestId("root-list")).toHaveAttribute("data-index-roots", [A, E, F].join(","));
@@ -307,7 +308,7 @@ describe("newest-first task chains", () => {
     rememberRoot(A);
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...seeds, ...newerRoots]))
       .mockResolvedValueOnce(resetSnapshot(graph([seeds[2]!, seeds[3]!, ...newerRoots])));
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     await screen.findByRole("button", { name: "最新任务链" });
@@ -324,7 +325,7 @@ describe("newest-first task chains", () => {
   it("keeps an explicitly collapsed list closed when newer roots arrive", async () => {
     rememberRoot(null);
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph([...seeds, ...newerRoots]));
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("button", { name: "另一任务链" });
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     await screen.findByRole("button", { name: "最新任务链" });
@@ -342,7 +343,7 @@ describe("component witness preferences", () => {
     rememberRoot(D);
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(joined())
       .mockResolvedValueOnce(joined()).mockResolvedValueOnce(graph());
-    let view = render(<ProjectPage projectId={projectId} />);
+    let view = render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();
     expect(saved()).toEqual({ expandedRootId: D });
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
@@ -350,7 +351,7 @@ describe("component witness preferences", () => {
     expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
     expect(saved()).toEqual({ expandedRootId: D });
     view.unmount();
-    view = render(<ProjectPage projectId={projectId} />);
+    view = render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
     expect(saved()).toEqual({ expandedRootId: D });
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
@@ -363,14 +364,14 @@ describe("component witness preferences", () => {
     rememberRoot(null);
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(joined())
       .mockResolvedValueOnce(joined()).mockResolvedValueOnce(graph());
-    let view = render(<ProjectPage projectId={projectId} />);
+    let view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("button", { name: "另一任务链" });
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     await waitFor(() => expect(screen.queryByRole("button", { name: "另一任务链" })).toBeNull());
     expect(saved()).toEqual({ expandedRootId: null });
     view.unmount();
-    view = render(<ProjectPage projectId={projectId} />);
+    view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("button", { name: "已完成根" });
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
@@ -384,16 +385,16 @@ describe("remembered task chain expansion", () => {
   beforeEach(() => { window.localStorage.setItem(`daynight:completed-chains:${projectId}`, "true"); });
   it("restores a chosen root and an explicitly collapsed list after remounting", async () => {
     graphRequest.mockResolvedValue(graph());
-    let view = render(<ProjectPage projectId={projectId} />);
+    let view = render(<ProjectPage projectId={projectId} />); selectTasks();
     fireEvent.click(await screen.findByRole("button", { name: "已完成根" }));
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
     view.unmount();
-    view = render(<ProjectPage projectId={projectId} />);
+    view = render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "已完成根" }));
     view.unmount();
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("button", { name: "已完成根" });
     expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
     expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
@@ -402,14 +403,14 @@ describe("remembered task chain expansion", () => {
 
   it("keeps project preferences separate across navigation", async () => {
     graphRequest.mockImplementation(async (id) => graph(seeds, id));
-    const view = render(<ProjectPage projectId={projectId} />);
+    const view = render(<ProjectPage projectId={projectId} />); selectTasks();
     fireEvent.click(await screen.findByRole("button", { name: "已完成根" }));
-    view.rerender(<ProjectPage projectId={otherProject} />);
+    view.rerender(<ProjectPage projectId={otherProject} />); selectTasks();
     expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "另一任务链" }));
-    view.rerender(<ProjectPage projectId={projectId} />);
+    view.rerender(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${A}`)).toBeVisible();
-    view.rerender(<ProjectPage projectId={otherProject} />);
+    view.rerender(<ProjectPage projectId={otherProject} />); selectTasks();
     await screen.findByRole("button", { name: "另一任务链" });
     expect(screen.queryByTestId(`chain-${C}`)).toBeNull();
     expect(screen.queryByTestId(`chain-${A}`)).toBeNull();
@@ -421,7 +422,7 @@ describe("remembered task chain expansion", () => {
     const write = vi.spyOn(Storage.prototype, "setItem");
     const pending = deferred<TaskGraph>();
     graphRequest.mockReturnValueOnce(pending.promise).mockRejectedValueOnce(new ApiError("network"));
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(read.mock.calls.filter(([key]) => key === preferenceKey())).toHaveLength(1);
     expect(write).not.toHaveBeenCalled();
     await act(async () => { pending.resolve(graph()); });
@@ -437,7 +438,7 @@ describe("remembered task chain expansion", () => {
     rememberRoot(A);
     const write = vi.spyOn(Storage.prototype, "setItem");
     graphRequest.mockRejectedValueOnce(new ApiError("network")).mockResolvedValueOnce(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("alert");
     expect(write).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
@@ -450,7 +451,7 @@ describe("remembered task chain expansion", () => {
     const pending = deferred<TaskGraph>();
     const write = vi.spyOn(Storage.prototype, "setItem");
     graphRequest.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(resetSnapshot(graph([seeds[0]!, seeds[1]!])));
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(write).not.toHaveBeenCalled();
     await act(async () => { pending.resolve(graph()); });
     expect(await screen.findByTestId(`chain-${remembered === B ? A : C}`)).toBeVisible();
@@ -464,11 +465,11 @@ describe("remembered task chain expansion", () => {
     if (remembered !== undefined) rememberRoot(remembered);
     const write = vi.spyOn(Storage.prototype, "setItem");
     graphRequest.mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(graph());
-    const view = render(<ProjectPage projectId={projectId} />);
+    const view = render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "还没有任务" });
     expect(write).not.toHaveBeenCalled();
     view.unmount();
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "还没有任务" });
     expect(write).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
@@ -478,7 +479,7 @@ describe("remembered task chain expansion", () => {
   it("retains an explicit collapse when an empty project later gains roots", async () => {
     rememberRoot(null);
     graphRequest.mockResolvedValueOnce(resetSnapshot(graph([]))).mockResolvedValueOnce(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("heading", { name: "还没有任务" });
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     await screen.findByRole("button", { name: "已完成根" });
@@ -490,7 +491,7 @@ describe("remembered task chain expansion", () => {
     "reports invalid stored preferences and keeps the list usable (%s)", async (stored) => {
       window.localStorage.setItem(preferenceKey(), stored);
       graphRequest.mockResolvedValue(graph());
-      render(<ProjectPage projectId={projectId} />);
+      render(<ProjectPage projectId={projectId} />); selectTasks();
       expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();
       expect(screen.getByRole("status")).toHaveTextContent("浏览器保存的任务链展开状态无效");
       fireEvent.click(screen.getByRole("button", { name: "已完成根" }));
@@ -503,7 +504,7 @@ describe("remembered task chain expansion", () => {
     vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new DOMException("Blocked by browser policy", "SecurityError"); });
     const write = vi.spyOn(Storage.prototype, "setItem");
     graphRequest.mockResolvedValue(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();
     expect(screen.getByText(/^无法读取浏览器保存的任务链展开状态/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "已完成根" }));
@@ -514,7 +515,7 @@ describe("remembered task chain expansion", () => {
   it("reports blocked storage access without preventing browsing", async () => {
     vi.spyOn(window, "localStorage", "get").mockImplementation(() => { throw new DOMException("Storage access denied", "SecurityError"); });
     graphRequest.mockResolvedValue(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();
     await waitFor(() => expect(screen.getByText(/^任务链展开状态无法保存到浏览器/)).toBeVisible());
     fireEvent.click(screen.getByRole("button", { name: "已完成根" }));
@@ -524,7 +525,7 @@ describe("remembered task chain expansion", () => {
   it("reports failed saves and clears that notice when a later user choice is saved", async () => {
     const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new DOMException("Storage is full", "QuotaExceededError"); });
     graphRequest.mockResolvedValue(graph());
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); selectTasks();
     expect(await screen.findByTestId(`chain-${C}`)).toBeVisible();
     expect(screen.getByText(/^任务链展开状态无法保存到浏览器/)).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "已完成根" }));

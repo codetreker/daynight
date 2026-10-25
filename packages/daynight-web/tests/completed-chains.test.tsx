@@ -1,3 +1,4 @@
+import { selectTaskList } from './helpers/projectViews';
 import { createGraphSyncFixture } from "./helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
@@ -64,7 +65,7 @@ beforeEach(() => { request.mockReset(); request.mockResolvedValue(graph()); });
 
 describe('completed task chain visibility', () => {
   it('hides only complete chains while keeping done roots, explicit external dependencies and full project counts', async () => {
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox', { name: '显示已完成任务链（2）' });
     expect(checkbox()).not.toBeChecked();
     expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000001']);
@@ -86,7 +87,7 @@ describe('completed task chain visibility', () => {
 
   it('persists the newest visible fallback when hiding an expanded complete chain', async () => {
     window.localStorage.setItem(visibilityKey(), 'true');
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
     fireEvent.click(root('00000000-0000-4000-8000-000000000005'));
     checkbox().focus(); fireEvent.click(checkbox());
@@ -100,18 +101,18 @@ describe('completed task chain visibility', () => {
 
   it('remembers visibility across remounts and isolates projects without changing expansion format', async () => {
     request.mockImplementation(async (id) => graph(seeds, id));
-    let view = render(<ProjectPage projectId={projectId} />);
+    let view = render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
     fireEvent.click(checkbox()); fireEvent.click(root('00000000-0000-4000-8000-000000000003'));
-    view.unmount(); view = render(<ProjectPage projectId={projectId} />);
+    view.unmount(); view = render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
     expect(checkbox()).toBeChecked();
     expect(root('00000000-0000-4000-8000-000000000003')).toHaveAttribute('aria-expanded', 'true');
     expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000003' });
-    view.rerender(<ProjectPage projectId={otherProject} />);
+    view.rerender(<ProjectPage projectId={otherProject} />); await selectTaskList();
     await screen.findByRole('checkbox'); expect(checkbox()).not.toBeChecked();
     fireEvent.click(checkbox()); fireEvent.click(checkbox());
-    view.rerender(<ProjectPage projectId={projectId} />);
+    view.rerender(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox'); expect(checkbox()).toBeChecked();
     expect(window.localStorage.getItem(visibilityKey(otherProject))).toBe('false');
   });
@@ -119,7 +120,7 @@ describe('completed task chain visibility', () => {
   it.each(['00000000-0000-4000-8000-000000000003', null])('distinguishes all-complete from empty and preserves saved expansion intent (%s)', async (saved) => {
     window.localStorage.setItem(expansionKey, JSON.stringify({ expandedRootId: saved }));
     request.mockResolvedValue(graph([seeds[2]!, seeds[3]!, seeds[4]!, seeds[7]!]));
-    render(<ProjectPage projectId={projectId} />);
+    render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('heading', { name: '所有任务链已完成' });
     expect(screen.queryByText('还没有任务')).toBeNull();
     expect(count('任务总数')).toBe('4'); expect(count('已完成')).toBe('4');
@@ -135,7 +136,7 @@ describe('completed task chain visibility', () => {
   });
 
   it('keeps a truly empty project distinct from an all-complete list', async () => {
-    request.mockResolvedValue(graph([])); render(<ProjectPage projectId={projectId} />);
+    request.mockResolvedValue(graph([])); render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('heading', { name: '还没有任务' });
     expect(screen.queryByRole('checkbox')).toBeNull();
     expect(screen.queryByRole('heading', { name: '所有任务链已完成' })).toBeNull();
@@ -143,7 +144,7 @@ describe('completed task chain visibility', () => {
 
   it('preserves intent through a refresh that completes every chain and falls back after a remembered root disappears', async () => {
     request.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(allDone())).mockResolvedValueOnce(resetSnapshot(graph([task('00000000-0000-4000-8000-000000000011', 'todo'), task('00000000-0000-4000-8000-000000000012', 'todo', ['00000000-0000-4000-8000-000000000011'])])));
-    render(<ProjectPage projectId={projectId} />); await screen.findByRole('checkbox');
+    render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     fireEvent.click(root('00000000-0000-4000-8000-000000000001')); fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '所有任务链已完成' });
     expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000001' });
@@ -157,7 +158,7 @@ describe('completed task chain visibility', () => {
 
   it('preserves an explicit collapse while filtering and refreshing', async () => {
     window.localStorage.setItem(expansionKey, JSON.stringify({ expandedRootId: null }));
-    render(<ProjectPage projectId={projectId} />); await screen.findByRole('checkbox');
+    render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     fireEvent.click(checkbox()); fireEvent.click(checkbox()); fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     expect(screen.queryByTestId('projection')).toBeNull(); expect(expansion()).toEqual({ expandedRootId: null });
@@ -177,7 +178,7 @@ describe('completed task chain visibility', () => {
   it('retains the chosen visibility and complete snapshot when a refresh fails', async () => {
     request.mockResolvedValueOnce(graph()).mockRejectedValueOnce(new ApiError('network'));
     const read = vi.spyOn(Storage.prototype, 'getItem');
-    render(<ProjectPage projectId={projectId} />); await screen.findByRole('checkbox');
+    render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     fireEvent.click(checkbox()); fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByRole('alert');
     expect(checkbox()).toBeChecked(); expect(roots()).toHaveLength(4);
@@ -188,7 +189,7 @@ describe('completed task chain visibility', () => {
 
   it.each(['{', 'null', '{}', '[]', '"true"', '1'])('reports invalid visibility data and keeps filtering usable (%s)', async (saved) => {
     window.localStorage.setItem(visibilityKey(), saved);
-    render(<ProjectPage projectId={projectId} />); await screen.findByRole('checkbox');
+    render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     expect(screen.getByText(/^浏览器保存的已完成任务链显示偏好无效/)).toBeVisible();
     expect(checkbox()).not.toBeChecked(); fireEvent.click(checkbox());
     expect(checkbox()).toBeChecked(); expect(window.localStorage.getItem(visibilityKey())).toBe('true');
@@ -200,7 +201,7 @@ describe('completed task chain visibility', () => {
       if (key === visibilityKey()) throw new DOMException('Storage denied', 'SecurityError');
       return original.call(this, key);
     });
-    render(<ProjectPage projectId={projectId} />); await screen.findByRole('checkbox');
+    render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     expect(screen.getByText(/^无法读取浏览器保存的已完成任务链显示偏好/)).toBeVisible();
     fireEvent.click(checkbox()); expect(checkbox()).toBeChecked(); expect(roots()).toHaveLength(4);
   });
@@ -211,7 +212,7 @@ describe('completed task chain visibility', () => {
       if (key === visibilityKey()) throw new DOMException('Storage full', 'QuotaExceededError');
       original.call(this, key, value);
     });
-    render(<ProjectPage projectId={projectId} />); await screen.findByRole('checkbox');
+    render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     fireEvent.click(checkbox()); expect(checkbox()).toBeChecked(); expect(roots()).toHaveLength(4);
     expect(screen.getByText(/^已完成任务链显示偏好无法保存到浏览器/)).toBeVisible();
     write.mockRestore(); fireEvent.click(checkbox());
@@ -221,7 +222,7 @@ describe('completed task chain visibility', () => {
 
   it('keeps visibility controls usable when browser storage access is entirely denied', async () => {
     vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new DOMException('Storage denied', 'SecurityError'); });
-    render(<ProjectPage projectId={projectId} />); await screen.findByRole('checkbox');
+    render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     expect(screen.getByText(/^无法读取浏览器保存的已完成任务链显示偏好/)).toBeVisible();
     fireEvent.click(checkbox()); expect(checkbox()).toBeChecked(); expect(roots()).toHaveLength(4);
     expect(screen.getByText(/^已完成任务链显示偏好无法保存到浏览器/)).toBeVisible();

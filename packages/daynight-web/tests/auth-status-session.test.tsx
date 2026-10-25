@@ -1,3 +1,4 @@
+import { selectTaskList } from './helpers/projectViews';
 import { taskSyncFromGraph, taskSyncEpoch } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -82,6 +83,7 @@ beforeEach(() => {
 afterEach(() => { cleanup(); root.remove(); });
 const mount = () => renderWithLocale(<AuthenticatedApp />, { locale: 'en', container: root });
 const open = async (title: string) => {
+  await selectTaskList();
   fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
   fireEvent.click(screen.getByRole('button', { name: new RegExp(title) }));
   const dialog = screen.getByRole('dialog');

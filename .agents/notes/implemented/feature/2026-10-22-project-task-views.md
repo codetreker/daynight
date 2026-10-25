@@ -12,9 +12,11 @@ project snapshot and avoid reclassifying a task when its prerequisites finish.
 
 ## Decision
 
-The project has Standalone tasks and Task chains tabs within its existing URL.
-Both share statistics, refresh, the full graph and the detail dialog. First
-visits open Task chains and retain the selected tab per project. Under the
+The project Task list section has Standalone tasks and Task chains tabs within
+its existing URL. They use the same snapshot, refresh and detail owner as
+Overview. An absent inner-category preference selects Task chains; subsequent
+visits retain that category per project. The [project section decision](2026-10-25-project-overview-task-sections.md)
+adds the outer Overview destination, its default and retained task workspace. Under the
 [external dependency decision](../architecture/2026-10-23-external-dependency-design.md),
 chains are ordinary-edge weak components. An ordinary singleton is standalone
 even when external prerequisites block it. Status and completed filters do not
@@ -30,15 +32,17 @@ counted entries. The [unfinished count decision](2026-10-22-unfinished-task-tab-
 replaces the badge unit with unfinished tasks. Current components give each task
 one membership; toolbars separately report visible/total entries.
 
-Each tab has its own completed-item filter and page scroll position. The chain
+Each inner category has its own completed-item filter and page scroll position. The chain
 view retains its original member witness or explicit-collapse choice when tabs change.
 Both lists use the exact newest-first presentation order. Existing expansion
 and completed-chain storage records retain their shapes; tab, standalone
 visibility and scroll positions use independent records. Storage failure leaves
 in-memory interaction available with a visible persistence notice. Page scroll
 positions do not persist graph geometry, pan, zoom, details or fullscreen.
-Both tabpanel wrappers keep stable IDs and hide the inactive category. Only
-active contents mount, so a returning chain initializes its canvas viewport.
+Both inner tabpanel wrappers keep stable IDs and hide the inactive category.
+Only active category contents mount, so returning from Standalone tasks to Task
+chains initializes its canvas viewport. The outer Task list subtree remains
+mounted after first use when Overview is selected.
 
 This partially supersedes the unified list in the [presentation decision](2026-10-21-task-chain-presentation.md)
 and extends the [browsing preference decision](2026-10-21-task-browsing-preferences.md).
@@ -81,9 +85,10 @@ changes.
 Per-project browser records preserve browsing intent across visits while the
 server remains authoritative for a freshly read snapshot. New dependency edits
 can move a task between views or change its representative; original member
-witnesses resolve the surviving component and visible fallback handles absence. Inactive canvases consume no
-mounted graph resources, at the cost of initializing pan and zoom after tab
-return. Keyboard tabs, native row actions and active-view focus restoration are
+witnesses resolve the surviving component and visible fallback handles absence. Inactive inner-category canvases consume no mounted graph resources, at the
+cost of initializing pan and zoom after category return. Outer section switches
+retain the visited task subtree and its graph state instead. Keyboard tabs,
+native row actions and active-view focus restoration are
 part of the delivered interaction, including empty and all-completed views.
 The actual-backend `project-view-tabs` scenario runs on native and production
 container targets; the [acceptance pipeline](../testing/2026-10-21-web-acceptance-pipeline.md)

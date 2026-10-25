@@ -1,3 +1,4 @@
+import { selectTaskList } from './helpers/projectViews';
 import { createGraphSyncFixture } from "./helpers/taskSync";
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -65,6 +66,7 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   vi.mocked(getTask).mockResolvedValueOnce({ ...initial, blockedBy: [], ready: true, projectId, title: initial.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: 1n })
     .mockResolvedValue({ ...detached, projectId, title: detached.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: 2n });
   const view = render(<ProjectPage projectId={projectId} />, { container: root });
+  await selectTaskList();
   await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(4));
   fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const fullscreen = screen.getByRole('dialog', { name: '任务依赖图全屏查看' });

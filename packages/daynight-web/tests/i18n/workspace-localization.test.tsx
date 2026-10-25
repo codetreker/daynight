@@ -1,3 +1,4 @@
+import { selectTaskList } from '../helpers/projectViews';
 import { createGraphSyncFixture } from "../helpers/taskSync";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -66,12 +67,15 @@ describe("workspace localization", () => {
     expect(statistics.querySelectorAll(".stat")).toHaveLength(6);
     const waiting = statistics.querySelectorAll(".stat")[2]!;
     expect(waiting).toHaveTextContent("To do1Waiting to start");
+    await selectTaskList();
     await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
     const row = screen.getByRole("button", { name: /Task 用户数据/ });
     expect(row).toHaveTextContent("To do");
     expect(row).toHaveTextContent("Ready");
     await user.selectOptions(screen.getByRole("combobox"), "zh-CN");
-    expect(screen.getByRole("region", { name: "项目任务统计" })).toBe(statistics);
+    expect(document.querySelector(".stats")).toBe(statistics);
+    expect(statistics).toHaveAttribute("aria-label", "项目任务统计");
+    expect(statistics).not.toBeVisible();
     expect(waiting).toHaveTextContent("待处理1等待开始");
     expect(screen.getByRole("button", { name: /Task 用户数据/ })).toBe(row);
     expect(row).toHaveTextContent("待处理");
@@ -141,6 +145,7 @@ describe("workspace localization", () => {
     const user = userEvent.setup();
     renderWithLocale(<App />, { taskCache: true, locale: "en" });
     await screen.findByRole("heading", { name: project.name });
+    await selectTaskList();
     await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
     const standaloneTab = screen.getByRole("tab", { name: "Standalone tasks" });
     const filter = screen.getByRole("checkbox", { name: "Show completed standalone tasks (0)" });

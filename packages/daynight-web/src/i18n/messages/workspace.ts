@@ -84,6 +84,13 @@ export type WorkspaceMessages = {
     readonly showCompleted: string;
     readonly createdOn: (args: { readonly date: string }) => string;
   };
+  readonly sections: {
+    readonly label: string;
+    readonly overview: string;
+    readonly tasks: string;
+    readonly overviewDescription: string;
+    readonly tasksDescription: string;
+  };
   readonly tabs: {
     readonly label: string;
     readonly standalone: string;

@@ -19,6 +19,7 @@ export const workspace: WorkspaceMessages = {
   standalone: {
     list: "独立任务列表", showCompletedCount: ({ count }) => `显示已完成独立任务（${number(count)}）`, summary: ({ visible, total }) => `最新创建在前 · ${number(visible)} / ${number(total)} 个独立任务`, summaryLabel: ({ visible, total }) => `显示 ${number(visible)} 个，共 ${number(total)} 个独立任务`, explanation: "按创建时间倒序排列。独立任务没有普通前置或普通后续依赖；外部前置仍可能阻塞执行，点击任务直接查看详情。", empty: "暂无独立任务", emptyDetail: "当前任务均由普通依赖连接为任务链，可在任务链页签查看。", allCompleted: "所有独立任务已完成", hiddenCompleted: ({ count }) => `已隐藏 ${number(count)} 个已完成独立任务，项目统计仍包含全部任务。`, showCompleted: "显示已完成独立任务", createdOn: ({ date }) => `创建于 ${date}`,
   },
+  sections: { label: "项目视图", overview: "概览", tasks: "任务列表", overviewDescription: "查看项目整体进展与当前任务状态。", tasksDescription: "浏览独立任务与按依赖关联的任务链。" },
   tabs: { label: "项目任务视图", standalone: "独立任务", chains: "任务链", unfinishedCount: "未完成任务数" },
   preferences: {
     expanded: { read: "无法读取浏览器保存的任务链展开状态，本次浏览仍可正常使用。", invalid: "浏览器保存的任务链展开状态无效，已使用默认状态，本次浏览仍可正常使用。", write: "任务链展开状态无法保存到浏览器，刷新后可能无法恢复，本次浏览仍可正常使用。" },

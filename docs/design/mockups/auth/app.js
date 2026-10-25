@@ -57,7 +57,7 @@ const inviteUrl = 'https://daynight.example.com/invitations#example-7Kp3m9';
 
 const resetState = (id) => {
   const item = scenarios.find(([candidate]) => candidate === id) || scenarios[0];
-  Object.assign(state, { scenario: item[0], view: item[2], role: item[0] === 'members-member' ? 'member' : 'admin', loginForInvite: false, loginProvider: 'github', name: 'Daynight', repository: 'github.com/oc-engteam/day-night', taskCount: 48, error: '', projects: structuredClone(initialProjects), tokens: [
+  Object.assign(state, { scenario: item[0], view: item[2], role: item[0] === 'members-member' ? 'member' : 'admin', loginForInvite: false, loginProvider: 'github', name: 'Daynight', repository: 'github.com/oc-engteam/day-night', taskCount: 48, projectSection: 'overview', projectPositions: { overview: 0, tasks: 0 }, error: '', projects: structuredClone(initialProjects), tokens: [
     { id: 'cli', name: 'MacBook · 日常开发', created: '2026 年 10 月 20 日创建', expiry: '2027 年 1 月 20 日到期', status: 'active' },
     { id: 'agent', name: '构建服务器 · 发布自动化', created: '2026 年 10 月 21 日创建', expiry: '2026 年 11 月 21 日到期', status: 'active' },
     { id: 'old', name: '旧开发环境', created: '2026 年 9 月 18 日创建', expiry: '2026 年 10 月 18 日已过期', status: 'expired' },
@@ -83,7 +83,7 @@ const notify = (message) => {
   toastTimer = setTimeout(() => toast.classList.remove('visible'), 3200);
 };
 const headingFocus = () => document.querySelector('#main h1')?.focus();
-const navigate = (view) => { closeDialog(); state.view = view; state.error = ''; state.scenario = view === 'projects' ? 'projects' : view; render(); headingFocus(); };
+const navigate = (view) => { closeDialog(); state.view = view; state.error = ''; state.scenario = view === 'projects' ? 'projects' : view; if (view === 'project') { state.projectSection = 'overview'; state.projectPositions = { overview: 0, tasks: 0 }; } render(); headingFocus(); };
 const setScenario = (id) => {
   clearTimeout(transitionTimer);
   closeDialog();
@@ -111,9 +111,22 @@ const projectsPage = () => {
   if (!state.projects.length) return header + stateBox('从一个项目开始', '创建私有项目来整理工作，或使用管理员发给你的邀请链接加入团队。', button(`${icon('plus')}创建项目`, 'create-project', 'primary'));
   return header + `<ul class="project-grid">${state.projects.map((project, index) => `<li><button class="project-card" data-action="open-project" data-index="${index}"><span class="project-icon">${icon('grid', 23)}</span><span class="project-name">${escapeHtml(project.name)}</span><span class="repo">${icon('repo', 12)}<span>${escapeHtml(project.repo)}</span></span><span class="project-footer"><span>${roleBadge(project.role)} <span class="small">${project.members} 位成员</span></span><span class="project-open">${project.tasks} 个任务 ${icon('arrow', 13)}</span></span><span class="project-footer" style="padding-top:13px">最近更新 ${escapeHtml(project.date)}</span></button></li>`).join('')}</ul><p class="list-footer">共 ${state.projects.length} 个项目 · 仅你和项目成员可访问</p>`;
 };
+const sectionOrientation = () => window.innerWidth <= 740 ? 'horizontal' : 'vertical';
+const projectSections = (overview, tasks) => `<div class="project-layout"><nav class="project-section-tabs" role="tablist" aria-label="项目视图" aria-orientation="${sectionOrientation()}">${[['overview', '概览'], ['tasks', '任务列表']].map(([id, label]) => `<button type="button" id="project-section-tab-${id}" role="tab" aria-controls="project-section-panel-${id}" aria-selected="${state.projectSection === id}" tabindex="${state.projectSection === id ? 0 : -1}" data-action="project-section" data-project-section="${id}">${label}</button>`).join('')}</nav><div class="project-section-content"><section id="project-section-panel-overview" role="tabpanel" aria-labelledby="project-section-tab-overview" ${state.projectSection === 'overview' ? '' : 'hidden inert'}>${overview}</section><section id="project-section-panel-tasks" role="tabpanel" aria-labelledby="project-section-tab-tasks" ${state.projectSection === 'tasks' ? '' : 'hidden inert'}>${tasks}</section></div></div>`;
+const selectProjectSection = (section) => {
+  state.projectPositions[state.projectSection] = window.scrollY;
+  state.projectSection = section;
+  document.querySelectorAll('[data-project-section]').forEach((tab) => { const active = tab.dataset.projectSection === section; tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; });
+  for (const id of ['overview', 'tasks']) { const panel = document.getElementById(`project-section-panel-${id}`); panel.hidden = id !== section; panel.toggleAttribute('inert', id !== section); }
+  window.scrollTo({ top: state.projectPositions[section], behavior: 'instant' });
+  document.getElementById(`project-section-tab-${section}`).focus({ preventScroll: true });
+};
 const projectPage = () => {
-  if (state.taskCount === 0) return `<button class="button quiet back-link" data-action="projects">${icon('back', 14)}返回项目列表</button><div class="page-heading project-heading"><div><div class="eyebrow">项目工作空间</div><h1 tabindex="-1">${escapeHtml(state.name)}</h1><p class="subtitle break">${escapeHtml(state.repository)} · 1 位成员</p></div><div class="project-title-actions">${roleBadge('admin')}${button(`${icon('users')}项目成员`, 'members')}</div></div><div style="margin-top:26px">${stateBox('项目已就绪', '在 CLI 中创建任务后，可以在这里查看任务与依赖关系。你也可以邀请协作者加入。', button(`${icon('users')}邀请协作者`, 'members'))}</div>`;
-  return `<button class="button quiet back-link" data-action="projects">${icon('back', 14)}返回项目列表</button><div class="page-heading project-heading"><div><div class="eyebrow">项目工作空间</div><h1 tabindex="-1">${escapeHtml(state.name)}</h1><p class="subtitle break">${escapeHtml(state.repository)}</p></div><div class="project-title-actions">${roleBadge(state.role)}${button(`${icon('users')}项目成员`, 'members')}</div></div><div class="stats">${[['全部任务', '48', ''], ['已完成', '31', 'green'], ['进行中', '9', 'blue'], ['待处理', '8', 'amber']].map(([label, value, color]) => `<div class="stat"><div class="stat-label">${label}</div><div class="stat-number ${color}">${value}</div></div>`).join('')}</div><div class="section-heading"><h2>任务链</h2><span class="muted small">最近创建优先</span></div><div class="root-row"><div><div class="root-title">⌄　项目鉴权与团队协作</div><div class="root-meta">ROOT-024 · 6 个任务 · 最近更新于今天 14:32</div></div><div class="root-progress">3 / 6 已完成<div class="progress"><i style="width:50%"></i></div></div></div><div class="graph-preview" aria-label="任务依赖关系示意"><div class="graph-node"><small>TASK-105</small><h3>接入 UniAuth 身份登录</h3><span class="badge success">已完成</span></div><span class="graph-arrow" aria-hidden="true">→</span><div class="graph-node"><small>TASK-106</small><h3>项目成员与访问权限</h3><span class="badge admin">进行中</span></div><span class="graph-arrow" aria-hidden="true">→</span><button class="graph-node" data-action="open-preview" aria-label="查看任务：团队邀请与账户管理"><small>TASK-107</small><h3>团队邀请与账户管理</h3><span class="badge">待处理</span></button></div><div class="root-row" style="margin-top:12px"><div><div class="root-title">›　附件预览与成果共享</div><div class="root-meta">ROOT-022 · 8 个任务</div></div><div class="root-progress">8 / 8 已完成<div class="progress"><i style="width:100%"></i></div></div></div>`;
+  const header = `<button class="button quiet back-link" data-action="projects">${icon('back', 14)}返回项目列表</button><div class="page-heading project-heading"><div><div class="eyebrow">项目工作空间</div><h1 tabindex="-1">${escapeHtml(state.name)}</h1><p class="subtitle break">${escapeHtml(state.repository)}${state.taskCount === 0 ? ' · 1 位成员' : ''}</p></div><div class="project-title-actions">${roleBadge(state.role)}${button(`${icon('users')}项目成员`, 'members')}</div></div>`;
+  const overview = `<div class="stats">${[['全部任务', '48', ''], ['已完成', '31', 'green'], ['进行中', '9', 'blue'], ['待处理', '8', 'amber']].map(([label, value, color]) => `<div class="stat"><div class="stat-label">${label}</div><div class="stat-number ${color}">${value}</div></div>`).join('')}</div>`;
+  const tasks = `<div class="section-heading"><h2>任务链</h2><span class="muted small">最近创建优先</span></div><div class="root-row"><div><div class="root-title">⌄　项目鉴权与团队协作</div><div class="root-meta">ROOT-024 · 6 个任务 · 最近更新于今天 14:32</div></div><div class="root-progress">3 / 6 已完成<div class="progress"><i style="width:50%"></i></div></div></div><div class="graph-preview" aria-label="任务依赖关系示意"><div class="graph-node"><small>TASK-105</small><h3>接入 UniAuth 身份登录</h3><span class="badge success">已完成</span></div><span class="graph-arrow" aria-hidden="true">→</span><div class="graph-node"><small>TASK-106</small><h3>项目成员与访问权限</h3><span class="badge admin">进行中</span></div><span class="graph-arrow" aria-hidden="true">→</span><button class="graph-node" data-action="open-preview" aria-label="查看任务：团队邀请与账户管理"><small>TASK-107</small><h3>团队邀请与账户管理</h3><span class="badge">待处理</span></button></div><div class="root-row" style="margin-top:12px"><div><div class="root-title">›　附件预览与成果共享</div><div class="root-meta">ROOT-022 · 8 个任务</div></div><div class="root-progress">8 / 8 已完成<div class="progress"><i style="width:100%"></i></div></div></div>`;
+  const empty = stateBox('项目已就绪', '在 CLI 中创建任务后，可以在这里查看任务与依赖关系。你也可以邀请协作者加入。', button(`${icon('users')}邀请协作者`, 'members'));
+  return header + projectSections(state.taskCount === 0 ? empty : overview, state.taskCount === 0 ? empty : tasks);
 };
 const membersPage = () => {
   const isAdmin = state.role === 'admin';
@@ -218,6 +231,7 @@ const handleAction = (element) => {
   const action = element.dataset.action;
   const id = element.dataset.id;
   if (['projects', 'project', 'members', 'account', 'tokens'].includes(action)) return navigate(action);
+  if (action === 'project-section') return selectProjectSection(element.dataset.projectSection);
   if (action === 'cancel-dialog') { dialogCancel(); closeDialog(); return; }
   if (action === 'close-preview') { closeDialog(); return; }
   if (action === 'login') return startLogin(state.loginForInvite === true, element.dataset.provider);
@@ -248,7 +262,7 @@ const handleAction = (element) => {
   if (action === 'create-project') return openDialog({ title: '创建私有项目', body: `<div class="field"><label for="project-name">项目名称 <span class="required">*</span></label><input id="project-name" name="name" required maxlength="160" placeholder="例如：团队开发平台" autocomplete="off"></div><div class="field"><label for="project-repo">代码仓库 <span class="required">*</span></label><input id="project-repo" name="repo" placeholder="https://github.com/organization/repository" type="text" required autocomplete="off"><p class="hint">填写 HTTPS 或 SSH Git 地址，例如 git@github.com:organization/repository.git。</p></div><div class="notice" style="margin-top:20px">你将成为项目管理员。项目仅对你和你邀请的成员可见。</div>`, confirm: '创建项目', submit: (form) => {
     const data = new FormData(form); const name = String(data.get('name')).trim();
     state.projects.unshift({ name, repo: String(data.get('repo')), role: 'admin', members: 1, tasks: 0, date: '刚刚' });
-    closeDialog(); state.name = name; state.repository = String(data.get('repo')); state.role = 'admin'; state.taskCount = 0; state.members = [{ ...state.members[0], role: 'admin' }]; state.invites = []; state.view = 'project'; state.scenario = 'project'; render(); headingFocus(); notify('私有项目已创建');
+    closeDialog(); state.name = name; state.repository = String(data.get('repo')); state.role = 'admin'; state.taskCount = 0; state.members = [{ ...state.members[0], role: 'admin' }]; state.invites = []; state.view = 'project'; state.scenario = 'project'; state.projectSection = 'overview'; state.projectPositions = { overview: 0, tasks: 0 }; render(); headingFocus(); notify('私有项目已创建');
   } });
 };
 document.addEventListener('click', (event) => {
@@ -256,6 +270,17 @@ document.addEventListener('click', (event) => {
   if (!element || element.disabled || element.tagName === 'SELECT') return;
   handleAction(element);
 });
+document.addEventListener('keydown', (event) => {
+  const tab = event.target.closest('[data-project-section]');
+  if (tab === null) return;
+  const keys = sectionOrientation() === 'vertical' ? ['ArrowUp', 'ArrowDown'] : ['ArrowLeft', 'ArrowRight'];
+  let section;
+  if (keys.includes(event.key)) section = tab.dataset.projectSection === 'overview' ? 'tasks' : 'overview';
+  else if (event.key === 'Home') section = 'overview';
+  else if (event.key === 'End') section = 'tasks';
+  if (section !== undefined) { event.preventDefault(); selectProjectSection(section); }
+});
+window.addEventListener('resize', () => document.querySelector('.project-section-tabs')?.setAttribute('aria-orientation', sectionOrientation()));
 document.addEventListener('change', (event) => {
   const element = event.target;
   if (element.dataset.action !== 'member-role') return;

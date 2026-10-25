@@ -1,3 +1,4 @@
+import { selectOverview, selectTaskList } from './project-view';
 import { readFile, writeFile } from 'node:fs/promises';
 import type { Page, Request, TestInfo } from '@playwright/test';
 import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
@@ -85,6 +86,7 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
     };
     const syncPath = `/api/v1/projects/${project.id}/task-sync`;
     const readWeb = async (navigate = false) => {
+      if (!navigate) await selectOverview(page);
       const requests = new Set<Request>();
       const capture = (request: Request) => {
         const url = new URL(request.url());
@@ -114,6 +116,7 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
       } finally { page.off('request', capture); }
     };
     const openChain = async (representative: string) => {
+      await selectTaskList(page);
       await page.getByRole('tab', { name: '任务链', exact: true }).click();
       const toggle = page.locator(`#task-root-${representative}`); await expect(toggle).toBeVisible();
       if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
@@ -183,7 +186,7 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
       consumer = await cliRead(consumer.id, label); relationOnly(before, consumer, dependencies, externalIds);
     };
     await replace(['--external-depends-on', external.id], [external.id], [external.id], 'cli-external-only-replacement');
-    await readWeb(); await page.getByRole('tab', { name: '独立任务', exact: true }).click();
+    await readWeb(); await selectTaskList(page); await page.getByRole('tab', { name: '独立任务', exact: true }).click();
     await expect(page.locator(`#standalone-task-${consumer.id}`)).toBeVisible();
     await replace(['--depends-on', external.id], [external.id], [], 'cli-normal-only-clears-classification');
     const ordinaryGraph = await readWeb(); await openChain(externalRoot.id);
@@ -191,11 +194,12 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
     await expect(page.locator('.task-node-external')).toHaveCount(0);
     await expect(page.locator(`.task-dependency-edge[data-id="${external.id}->${consumer.id}"]`)).toHaveAttribute('data-external', 'false');
     await replace(['--clear-dependencies'], [], [], 'cli-clear-both-dependency-sets');
-    await readWeb(); await page.getByRole('tab', { name: '独立任务', exact: true }).click();
+    await readWeb(); await selectTaskList(page); await page.getByRole('tab', { name: '独立任务', exact: true }).click();
     await expect(page.locator(`#standalone-task-${consumer.id}`)).toBeVisible(); expect(consumer.startedAt).toBe(runningStart);
     const beforeCompletion = consumer; consumer = await action(consumer, 'done'); expect(consumer.startedAt).toBe(runningStart); expect(consumer.completedAt).not.toBeNull();
     await patchFlags(consumer, []); await patchFlags(consumer, [], 409, beforeCompletion.version); await patchFlags(consumer, [ordinary.id], 400);
     await readWeb();
+    await selectTaskList(page);
     await page.getByRole('checkbox', { name: /显示已完成独立任务/ }).check();
     const completedRow = page.locator(`#standalone-task-${consumer.id}`);
     await expect(completedRow.locator('.root-status')).toHaveText('已完成');

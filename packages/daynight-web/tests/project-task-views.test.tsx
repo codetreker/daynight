@@ -2,7 +2,7 @@ import { createGraphSyncFixture } from "./helpers/taskSync";
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { getTask, getTaskSync } from '../src/api/client';
+import { ApiError, getTask, getTaskSync } from '../src/api/client';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import type { GraphIndex } from '../src/features/task-graph/model';
@@ -75,9 +75,12 @@ beforeEach(() => {
   });
 });
 afterEach(() => { cleanup(); root.remove(); });
+const selectTasks = () => { fireEvent.click(screen.getByRole('tab', { name: '任务列表' })); };
 const mount = () => {
   if (!root.isConnected) document.body.append(root);
-  return render(<ProjectPage projectId={project} />, { container: root });
+  const view = render(<ProjectPage projectId={project} />, { container: root });
+  selectTasks();
+  return view;
 };
 
 const openStandalone = async (id: string) => {
@@ -96,7 +99,7 @@ describe('project task views', () => {
     ]));
     mount(); await screen.findByRole('tab', { name: '任务链' });
     expectUnfinishedCounts(4, 1);
-    const stats = screen.getByRole('region', { name: '项目任务统计' });
+    const stats = screen.getByRole('region', { name: '项目任务统计', hidden: true });
     expect(stats.querySelectorAll('.stat')).toHaveLength(6);
     expect(stats).toHaveTextContent('待处理5等待开始');
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')?.querySelector('.root-status')).toHaveTextContent('待处理');
@@ -135,7 +138,9 @@ describe('project task views', () => {
     expect(row('00000000-0000-4000-8000-000000000003')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005')).toHaveTextContent('进行中');
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000002')).toBeNull();
     expect(screen.getByRole('checkbox', { name: '显示已完成独立任务（1）' })).not.toBeChecked();
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     expect(within(screen.getByRole('region', { name: '项目任务统计' })).getByText('5')).toBeVisible();
+    selectTasks();
     expect(complete.tasks.map(({ id }) => id)).toEqual(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000003', '00000000-0000-4000-8000-000000000004', '00000000-0000-4000-8000-000000000005']);
     expect(graphRequest).toHaveBeenCalledTimes(1);
   });
@@ -260,10 +265,10 @@ describe('project task views', () => {
     expect(screen.getByRole('checkbox', { name: /^显示已完成任务链/ })).toBeChecked();
     expect(JSON.parse(window.localStorage.getItem(key('project-view'))!)).toEqual({ expandedRootId: null });
     expect(window.localStorage.getItem(key('completed-chains'))).toBe('true');
-    view.rerender(<ProjectPage projectId={otherProject} />); await screen.findByRole('heading', { name: otherProject });
+    view.rerender(<ProjectPage projectId={otherProject} />); selectTasks(); await screen.findByRole('heading', { name: otherProject });
     expect(tab('chains')).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(tab('standalone')); expect(screen.getByRole('checkbox', { name: /^显示已完成独立任务/ })).not.toBeChecked();
-    view.rerender(<ProjectPage projectId={project} />); await screen.findByRole('heading', { name: project });
+    view.rerender(<ProjectPage projectId={project} />); selectTasks(); await screen.findByRole('heading', { name: project });
     expect(tab('chains')).toHaveAttribute('aria-selected', 'true');
     fireEvent.click(tab('standalone')); expect(screen.getByRole('checkbox', { name: /^显示已完成独立任务/ })).toBeChecked();
   });
@@ -281,7 +286,7 @@ describe('project task views', () => {
     expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 320, standalone: 540 });
     cleanup(); view = mount(); await screen.findByRole('tab', { name: '独立任务' });
     expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 540, behavior: 'instant' });
-    view.rerender(<ProjectPage projectId={otherProject} />); await screen.findByRole('heading', { name: otherProject });
+    view.rerender(<ProjectPage projectId={otherProject} />); selectTasks(); await screen.findByRole('heading', { name: otherProject });
     expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: 'instant' });
   });
 
@@ -294,7 +299,7 @@ describe('project task views', () => {
     fireEvent.click(screen.getByRole('button', { name: '显示已完成独立任务' }));
     expect(screen.getByRole('checkbox')).toHaveFocus(); expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '刷新' })); await screen.findByRole('heading', { name: '还没有任务' });
-    expect(screen.queryByRole('tab')).toBeNull(); expect(screen.queryByRole('checkbox')).toBeNull();
+    expect(screen.queryByRole('tab', { name: '任务链' })).toBeNull(); expect(screen.getByRole('tab', { name: '任务列表' })).toHaveAttribute('aria-selected', 'true'); expect(screen.queryByRole('checkbox')).toBeNull();
   });
 
   it('keeps details when refresh adds an edge and returns focus to the active category tab when its row vanishes', async () => {
@@ -367,5 +372,124 @@ describe('task view storage failures', () => {
     expect(screen.queryByText(/^任务页签无法保存到浏览器/)).toBeNull();
     expect(screen.queryByText(/^任务浏览位置无法保存到浏览器/)).toBeNull();
     expect(screen.queryByText(/^已完成独立任务显示偏好无法保存到浏览器/)).toBeNull();
+  });
+});
+
+
+describe('project overview and task workspace', () => {
+  const mountOverview = () => {
+    if (!root.isConnected) document.body.append(root);
+    return render(<ProjectPage projectId={project} />, { container: root });
+  };
+  const sectionTab = (section: 'overview' | 'tasks') => within(screen.getByRole('tablist', { name: '项目视图' })).getByRole('tab', { name: section === 'overview' ? '概览' : '任务列表' });
+
+  it('starts on Overview and keeps stored task scroll isolated from overview scrolling', async () => {
+    window.localStorage.setItem(key('task-view-scroll'), JSON.stringify({ chains: 320, standalone: 540 }));
+    let scroll = 80;
+    vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
+    vi.mocked(window.scrollTo).mockImplementation((options) => { scroll = (options as ScrollToOptions).top!; });
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
+    expect(screen.queryByRole('tab', { name: '任务链' })).toBeNull();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
+    expect(scroll).toBe(0);
+    scroll = 90; fireEvent.scroll(window); fireEvent(window, new Event('pagehide'));
+    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 320, standalone: 540 });
+    fireEvent.click(sectionTab('tasks'));
+    const graph = await screen.findByTestId('graph-node');
+    expect(scroll).toBe(320);
+    scroll = 400; fireEvent.scroll(window);
+    fireEvent.click(sectionTab('overview'));
+    expect(scroll).toBe(90);
+    expect(graph.isConnected).toBe(true);
+    expect(graph).not.toBeVisible();
+    expect(document.getElementById('project-section-panel-tasks')).toHaveAttribute('inert');
+    scroll = 120; fireEvent.scroll(window); fireEvent(window, new Event('pagehide'));
+    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 400, standalone: 540 });
+    fireEvent.click(sectionTab('tasks'));
+    expect(await screen.findByTestId('graph-node')).toBe(graph);
+    expect(scroll).toBe(400);
+    fireEvent.click(sectionTab('tasks'));
+    expect(graphRequest).toHaveBeenCalledOnce();
+    cleanup();
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
+    expect(scroll).toBe(0);
+    fireEvent.click(sectionTab('tasks'));
+    expect(scroll).toBe(400);
+  });
+
+  it('mounts a task workspace only after its first visible usable snapshot', async () => {
+    let resolve!: (value: TaskGraph) => void;
+    let scroll = 64;
+    vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
+    vi.mocked(window.scrollTo).mockImplementation((options) => { scroll = (options as ScrollToOptions).top!; });
+    graphRequest.mockReturnValueOnce(new Promise<TaskGraph>((done) => { resolve = done; }));
+    mountOverview();
+    fireEvent.click(sectionTab('tasks'));
+    fireEvent.click(sectionTab('overview'));
+    await act(async () => { resolve(snapshot()); });
+    await screen.findByRole('heading', { name: project });
+    expect(scroll).toBe(0);
+    expect(screen.queryByTestId('graph-node')).toBeNull();
+    expect(screen.queryByRole('tab', { name: '任务链', hidden: true })).toBeNull();
+    fireEvent.click(sectionTab('tasks'));
+    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it('updates Overview from the same synchronization while Tasks are hidden and clears private children on trusted removal', async () => {
+    graphRequest.mockResolvedValueOnce(snapshot()).mockResolvedValueOnce(snapshot([...seeds, seed(canonicalTask(9))]))
+      .mockRejectedValueOnce(new ApiError('server', 404, 'not_found', 'missing-project')).mockResolvedValueOnce(snapshot());
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    fireEvent.click(sectionTab('tasks'));
+    const graph = await screen.findByTestId('graph-node');
+    fireEvent.click(sectionTab('overview'));
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(screen.getByRole('region', { name: '项目任务统计' }).querySelector('.stat-number')).toHaveTextContent('6'));
+    expect(screen.getByTestId('graph-node')).toBe(graph);
+    expect(graph).not.toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    await screen.findByRole('heading', { name: '项目不存在' });
+    expect(graph.isConnected).toBe(false);
+    expect(screen.queryByRole('tab', { name: '任务链', hidden: true })).toBeNull();
+    expect(screen.queryByRole('region', { name: '项目任务统计', hidden: true })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
+    await screen.findByRole('heading', { name: project });
+    expect(screen.queryByTestId('graph-node')).toBeNull();
+    fireEvent.click(sectionTab('tasks'));
+    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(graphRequest).toHaveBeenCalledTimes(4);
+  });
+
+  it('returns detail focus to the visible outer view instead of a retained hidden task trigger', async () => {
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    fireEvent.click(sectionTab('tasks'));
+    const { trigger, dialog } = await openStandalone(canonicalTask(3));
+    fireEvent.click(sectionTab('overview'));
+    expect(trigger.isConnected).toBe(true);
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
+    await waitFor(() => expect(sectionTab('overview')).toHaveFocus());
+    expect(trigger).not.toHaveFocus();
+    expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
+  });
+
+  it('retains both outer navigation choices for an empty project and resets the section on project change', async () => {
+    graphRequest.mockImplementation(async (id) => snapshot([], id));
+    const view = mountOverview();
+    await screen.findByRole('heading', { name: project });
+    expect(screen.getAllByRole('tab')).toHaveLength(2);
+    fireEvent.click(sectionTab('tasks'));
+    expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
+    view.rerender(<ProjectPage projectId={otherProject} />);
+    await screen.findByRole('heading', { name: otherProject });
+    expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByRole('heading', { name: '还没有任务' })).toBeNull();
+    expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
   });
 });
