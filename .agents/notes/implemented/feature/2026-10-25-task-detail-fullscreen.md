@@ -27,13 +27,15 @@ Native HTML/PDF retain their frame identity and URL, leaving internal scrolling
 to the document or browser reader.
 
 At viewport heights up to 500px, fullscreen allocates space through compact
-chrome: narrow headers use title/status and action rows; the complete focusable
+chrome: the header shares its row between title and actions; the complete focusable
 title has a one-line-height scrolling window; the task action-menu trigger and
-attachment popout icons retain accessible names. The body metadata controls share
-one row with a shrinkable platform select, tabs/panels use tighter spacing, and
-the informational footer is hidden. The attachment preview header keeps path/metadata context and actions in
-one row; context may ellipsize with its full DOM/title strings preserved, Download
-retains text, and Open in new tab retains its icon and accessible name. These
+attachment popout icons retain accessible names. The body metadata controls group
+the compact status menu and platform select before readiness, with automatic
+execution at the right and wrapping within the left group when needed. Tabs/panels
+use tighter spacing, and the informational footer is hidden. The attachment preview
+header keeps path/metadata context and actions in one row; context may ellipsize
+with its full DOM/title strings preserved, Download retains text, and Open in
+new tab retains its icon and accessible name. These
 fullscreen-only rules preserve nonzero readable Overview and native-preview
 bodies at 320×240 with the original scroll owners. No outer body scroller or
 arbitrary reader minimum height takes space from those owners.

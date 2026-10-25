@@ -216,7 +216,6 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
         <header className="task-detail-header">
           <div className="task-detail-title-row">
             <h2 id={headingId} className="task-detail-title" ref={titleRef} tabIndex={detail === null ? -1 : 0} title={detail?.title}>{detail === null ? status === 'deleted' ? messages.inspection.deletion.deleted : status === 'error' ? m.failed : m.loading : detail.title}</h2>
-            {detail !== null && <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />}
           </div>
           <div className="task-detail-header-actions">
             {!modal && fullscreen.active && <a className="button task-detail-project-return" href={`/projects/${encodeURIComponent(projectId)}`}>{m.returnToProject}</a>}
@@ -245,9 +244,12 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
               <div className="task-detail-heading">
                 <div className="task-detail-status-row">
                   <div className="task-detail-badges">
+                    <div className="task-detail-state-controls">
+                      <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />
+                      <TaskPlatformSelect detail={detail} disabled={!task.canSetRequiredPlatform} describedBy={platformFeedbackId}
+                        onReview={(requiredPlatform) => requestConfirmation({ kind: 'requiredPlatform', detail, requiredPlatform })} />
+                    </div>
                     {detail.status === 'todo' && <span className={detail.ready ? 'task-detail-ready' : 'task-detail-blocked'}>{detail.ready ? m.ready : m.blocked}</span>}
-                    <TaskPlatformSelect detail={detail} disabled={!task.canSetRequiredPlatform} describedBy={platformFeedbackId}
-                      onReview={(requiredPlatform) => requestConfirmation({ kind: 'requiredPlatform', detail, requiredPlatform })} />
                   </div>
                   <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />

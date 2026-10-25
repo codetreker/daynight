@@ -100,9 +100,10 @@ select focus. The select displays the last confirmed value until success; Any
 platform clears the requirement with null. Overview has no separate platform
 editor or Save action, and the control remains available on either detail tab.
 In-progress tasks lock it. Platform confirmation shares status/permission
-freshness, request ownership and unknown-result GET reconciliation. The left
-group may wrap the compact control without moving automatic execution from the
-first status line's right edge.
+freshness, request ownership and unknown-result GET reconciliation. When space
+permits, automatic execution aligns with the first status line. At narrow widths,
+the left group and the complete automatic-execution control can wrap while
+retaining full labels, right alignment and nonoverlapping controls.
 `TaskDetailSessionProvider` owns detail, status, permission and platform
 state within the authenticated branch, keyed by user identity/session generation.
 All three mutations share one task write gate and exact-version freshness
@@ -420,8 +421,8 @@ sets HTML `lang` and the authentication loading title before React renders.
 metadata on navigation and language changes. The top bar and fullscreen graph
 expose selectors using the same saved language. Task details consume the current
 application locale through the same Provider; their header contains the task
-title, current status menu, fullscreen toggle, More task actions menu and close
-control. The `…` menu sits immediately left of Close and contains Open in new tab
+title, fullscreen toggle, More task actions menu and close control. The status
+menu sits beside platform selection in the state row below the title. The `…` menu sits immediately left of Close and contains Open in new tab
 and Delete task; the standalone page retains only Delete task in that menu.
 
 `LocaleProvider` requires an explicit initial locale result. `useI18n()` reads
@@ -549,8 +550,11 @@ All-done chains are done; any done or in-progress member makes an unfinished
 chain in progress; other chains are todo. External context does not affect progress.
 
 The actual task title is the common dialog header and accessible name; ID/copy
-belongs to Overview. The three-item status menu remains available on both tabs,
-marks the current item and permits selecting it. Arrow/Home/End, activation and
+belongs to Overview. The three-item status menu begins the shared state row, immediately before the
+platform selector, with readiness after both and automatic execution at the right.
+Status and platform controls share a compact 24px height; the left group can wrap
+on narrow screens. The menu remains available on both tabs, marks the current
+item and permits selecting it. Arrow/Home/End, activation and
 Escape preserve keyboard access and focus. Confirmation shows the full task name,
 current/target states and timing consequences. Cancel is initially focused;
 Cancel/close/Escape submits nothing. Long title and confirmation text have bounded
@@ -781,8 +785,8 @@ Application scroll containers restore their prior offsets within the new layout
 limits, including positions near the end. Exit focuses the same toggle without
 scrolling. CSS viewport sizing retains the title, actions and internal scroll
 owners at 320px/390px and short heights. At heights up to 500px, fullscreen
-uses compact title/action rows, a single metadata-control row and tighter tabs
-and panel padding; the informational footer is hidden. The full title stays in
+uses a compact header for title/actions, a metadata-control row with a wrapping
+left group, and tighter tabs and panel padding; the informational footer is hidden. The full title stays in
 a focusable one-line-height scroll region. The task action-menu trigger and
 attachment popout icons retain their accessible labels. The preview header keeps
 path/metadata context and actions on one row, preserving full strings through

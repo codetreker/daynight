@@ -36,8 +36,13 @@ const geometry = async (page: Page): Promise<void> => {
     const left = row.querySelector('.task-detail-badges')!.getBoundingClientRect();
     const right = row.querySelector('.task-automation-control')!.getBoundingClientRect();
     const select = row.querySelector('select')!.getBoundingClientRect();
-    return Math.abs(bounds.right - right.right) < .5 && Math.abs(left.y - right.y) < .5 && left.right <= right.left
-      && select.left >= left.left && select.right <= left.right && row.scrollWidth <= row.clientWidth;
+    const status = row.querySelector('.task-status-trigger')!.getBoundingClientRect();
+    const controls = row.querySelector('.task-detail-state-controls')!.getBoundingClientRect();
+    const separated = left.right <= right.left || left.bottom <= right.top;
+    const adjacent = status.right <= select.left || status.bottom <= select.top;
+    return Math.abs(bounds.right - right.right) < .5 && separated && adjacent
+      && status.left >= controls.left && status.right <= controls.right
+      && select.left >= controls.left && select.right <= controls.right && row.scrollWidth <= row.clientWidth;
   })).toBe(true);
   expect(await detail(page).evaluate((dialog) => dialog.scrollWidth <= dialog.clientWidth)).toBe(true);
 };

@@ -264,6 +264,8 @@ describe('standalone full task details', () => {
     await screen.findByText('方案正文');
     const platform = screen.getByRole('combobox', { name: '执行平台' });
     expect(platform.closest('.task-detail-status-row')).not.toBeNull();
+    expect(document.querySelector('.task-status-trigger')!.closest('.task-detail-state-controls')).toContainElement(platform);
+    expect(document.querySelector('.task-status-trigger')!.closest('.task-detail-header')).toBeNull();
     expect(screen.queryByRole('button', { name: '保存平台' })).toBeNull();
     const panel = document.querySelector('.task-attachments');
     platform.focus();

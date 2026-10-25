@@ -12,9 +12,10 @@ version review, deliberate submission, request ownership and keyboard access.
 
 ## Decision
 
-Task details use one compact select in the left status group for the confirmed
-platform and its operation. It offers Any platform, Windows, Linux and macOS;
-Any platform represents the existing null requirement. The former detail badge
+Task details use one compact select immediately after the status menu in the
+left status group for the confirmed platform and its operation. Both controls
+use a 24px height; readiness follows the pair. The select offers Any platform,
+Windows, Linux and macOS; Any platform represents the existing null requirement. The former detail badge
 and Overview editor are removed. List and graph platform badges stay read-only.
 The control remains available on either detail tab. The left group can wrap at
 narrow widths while the automatic-execution control remains right aligned with
