@@ -41,7 +41,8 @@ type UpdateTaskRequest struct {
 }
 
 type TaskDeleteRequest struct {
-	Version int64 `json:"version"`
+	Version       int64 `json:"version"`
+	RemoveDepends bool  `json:"removeDepends,omitempty"`
 }
 
 type TaskStatusUpdateRequest struct {

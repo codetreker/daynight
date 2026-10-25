@@ -118,7 +118,7 @@ export type UpdateTaskInput = {
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
 };
-export type DeleteTaskInput = { readonly version: bigint };
+export type DeleteTaskInput = { readonly version: bigint; readonly removeDepends?: boolean };
 export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus };
 export type WorkerClaimDescriptor = {
   readonly claimId: string;

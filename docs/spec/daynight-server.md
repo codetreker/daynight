@@ -177,7 +177,7 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta，使用 epoch 与任务最大 updatedAt 水位 |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`，三状态精确版本设置，返回完整任务 |
-| `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 精确版本软删除，成功 `204`，保留任务与附件数据 |
+| `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 精确版本软删除；可选 removeDepends=true 原子解除全部传入引用，成功 `204`，保留任务与附件数据 |
 
 HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 charset。请求体
 最多 1 MiB，必须是单个 JSON 对象；拒绝无效 UTF-8、重复 key、字段名大小写不符、
@@ -186,7 +186,7 @@ HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 chars
 所有成功读取返回 `200`。Project 不存在时，其 task 子路径必须返回 `404`，
 不能将空 task 列表作为不存在 project 的结果。授权成员访问已软删除任务的定点资源返回
 `410 task_deleted`；非成员与不存在任务仍为 `404 not_found`。列表、ready、图、同步、统计与
-新依赖引用排除已删除任务。[软删除需求](daynight-task-deletion.md)拥有删除保护、数据保留及完整错误规则。
+新依赖引用排除已删除任务。DELETE 正文 removeDepends 可省略或为严格布尔：省略/false 遇未删除引用者时拒绝且零变更；true 原子清除全部传入普通/外部及已删除源历史引用，并各自增加受影响源版本一次。目标自己的前置与附件保留，active 目标 worker 仍禁止删除。[软删除需求](daynight-task-deletion.md)拥有删除保护、数据保留及完整错误规则。
 
 设置 PATCH 必须同时提供 `version` 与 `executionWarningMinutes`，不接受 query 参数。
 缺失、重复、未知、只读、`null`、非整数、非正或超界字段按既有严格 JSON 规则拒绝；
@@ -270,10 +270,11 @@ points，截短时标记 titleTruncated；不返回完整标题、description �
 | `404` | `not_found` | 路径资源缺失、当前用户不是项目成员或 task 不属于指定 project |
 | `405` | `method_not_allowed` | 已知路径使用不支持的方法，并返回 `Allow` |
 | `409` | `version_conflict` | 任务元数据、生命周期或项目设置的期望版本过期 |
-| `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents |
+| `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |
-| `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则，或 done 重开存在 active/done 直接后继 |
+| `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则、done 重开存在 active/done 直接后继，或严格删除存在未删除引用者 |
 | `409` | `graph_limit_exceeded` | 完整图超过节点或边上限，返回精确数量和支持上限 |
+| `410` | `task_deleted` | 授权成员访问已软删除任务；不表示项目访问撤回 |
 | `500` | `internal_error` | 内部或持久化操作失败，响应不泄露数据库连接信息或 SQL |
 
 ## 运行与范围

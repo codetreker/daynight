@@ -82,6 +82,9 @@ describe("task parameter boundaries", () => {
     ["list", "--status", "blocked"], ["list", "--status", "proposed"], ["set-status", taskId, "proposed"], ["set-status", taskId], ["set-status", "invalid", "todo"],
     ...["0", "1.5", "9223372036854775808"].map((version) => ["set-status", taskId, "todo", "--if-version", version]), ["update", taskId, "--status", "proposed"], ["list", "--project", "invalid"], ["show", "invalid"], ["show", taskId, "--project", "invalid"],
     ["delete"], ["delete", "invalid"], ["delete", taskId, "--json"],
+    ["delete", taskId, "--remove-depends=true"], ["delete", taskId, "--remove-depends=false"],
+    ["delete", taskId, "--remove-depends", "true"], ["delete", taskId, "--remove-depends", "--remove-depends"],
+    ["update", taskId, "--remove-depends"],
     ...["0", "1.5", "9223372036854775808"].map((version) => ["delete", taskId, "--if-version", version]),
     ["update", taskId], ["update", taskId, "--if-version", "1"], ["update", taskId, "--status", "done", "--if-version", "0"],
     ["update", taskId, "--title", "\u2003"], ["update", taskId, "--status", "done", "--if-version", "9223372036854775808"],
@@ -116,13 +119,22 @@ describe("task parameter boundaries", () => {
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Use daynight task set-status to change status.");
   });
 
-  it("soft-deletes using the observed exact version and reports retained data", async () => {
+  it.each([false, true])("soft-deletes using the observed version and explicit dependency-removal choice %s", async (removeDepends) => {
     const f = fixture();
-    await runTaskCommand(["delete", taskId.toUpperCase()], f.context, f.dependencies);
+    await runTaskCommand(["delete", taskId.toUpperCase(), ...(removeDepends ? ["--remove-depends"] : [])], f.context, f.dependencies);
     expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
-    expect(f.api.deleteTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: task.version });
+    expect(f.api.deleteTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: task.version, ...(removeDepends ? { removeDepends: true } : {}) });
+    expect(f.api.getTaskGraph).not.toHaveBeenCalled();
     expect(f.api.getTask.mock.invocationCallOrder[0]!).toBeLessThan(f.api.deleteTask.mock.invocationCallOrder[0]!);
     expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Task deleted. Stored data and attachments are retained.\nID: ${taskId}\nProject: ${projectId}\n`);
+  });
+
+  it("submits dependency-removal consent with the supplied exact version without a task or graph read", async () => {
+    const f = fixture();
+    await runTaskCommand(["delete", taskId, "--remove-depends", "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.getTaskGraph).not.toHaveBeenCalled();
+    expect(f.api.deleteTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, removeDepends: true });
   });
 
   it("preserves a deletion refusal without rereading or retrying an explicit version", async () => {

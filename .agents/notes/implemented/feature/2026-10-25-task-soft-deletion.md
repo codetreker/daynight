@@ -10,12 +10,16 @@ and prevent a single disappearing task from being mistaken for lost project acce
 
 ## Decision
 
-Task deletion marks `tasks.deleted_at`, preserves task fields, dependency records,
-attachment metadata and bytes, and excludes the task from normal reads, graphs,
-statistics, execution candidates and new dependency references. A version-bound
-DELETE uses the existing project lock and member authorization. Any undeleted
-successor prevents deletion; an active worker claim must be released first.
-Human in-progress tasks without an active claim remain deletable.
+Task deletion marks `tasks.deleted_at`, preserves task fields, attachment metadata
+and bytes, and excludes the task from normal reads, graphs, statistics, execution
+candidates and new dependency references. A version-bound DELETE uses the existing
+project lock and member authorization. Strict deletion remains the default and
+refuses any undeleted incoming reference.
+[Explicit incoming reference removal](2026-10-25-task-delete-remove-depends.md)
+now permits an optional combined operation that removes all incoming edges and
+updates their source versions atomically; the target's own prerequisites remain.
+An active target worker claim must be released first. Human in-progress targets
+without an active claim remain deletable.
 
 The marker, version/timestamp update and rotation of `projects.task_cache_epoch`
 commit atomically. The existing summary protocol then replaces the complete
@@ -74,9 +78,12 @@ tasks without a full snapshot. It would add deletion DTOs, persistent lifecycle
 semantics and client cutover work. The existing epoch replacement already provides
 atomic removal and is used here, accepting a full project sync per deletion.
 
-**Hide or detach a referenced prerequisite.** Ignoring retained edges would either
-break complete graph context or silently make dependent work ready. Deletion
-therefore refuses any undeleted successor and leaves relationship editing explicit.
+**Hide or detach a referenced prerequisite.** The original delivery refused every
+undeleted successor because ignoring retained edges would break complete graph
+context or silently make dependent work ready. That rationale remains the strict
+default. The [explicit removal decision](2026-10-25-task-delete-remove-depends.md)
+adds caller-selected atomic detachment with a combined Web confirmation, making
+the changed readiness an authorized consequence rather than an implicit default.
 
 **Return ordinary not-found for deleted tasks.** Existing detail sessions interpret
 a known task's not-found response as project access withdrawal. A distinct Gone
@@ -89,8 +96,9 @@ markers satisfy the required data-preservation behavior without that cleanup.
 ## Consequences
 
 The public Task and task-sync shapes stay stable. Delete shares the existing
-project serialization boundary, so new references cannot race a successful
-removal. Retained data still consumes database and storage capacity. Each deletion
+project serialization boundary, so reference creation and either strict refusal
+or explicit removal produce a complete valid relationship set. Retained data still
+consumes database and storage capacity. Each deletion
 invalidates the whole project cache and causes a full snapshot rather than a small
 delta. A high deletion rate would justify reconsidering tombstones with measured
 transport and cache costs.
@@ -103,8 +111,10 @@ and the current mutation owner. Discarding an old history's view authority canno
 allow its delayed callback to release a newer operation's exclusion or replace
 that operation's feedback.
 
-Task-level restore, trash browsing, bulk deletion and cascading relationship edits
-remain separate features. Their later addition must preserve retained task
-identity, explicit reference rules, access checks and cache-generation
-invalidation; no current API exposes deleted task contents or treats the marker
-as a fourth status.
+Task-level restore, trash browsing, bulk task deletion, cascading task deletion
+and transitive rewiring remain separate features. Explicit removal changes direct
+incoming references only; its [decision owner](2026-10-25-task-delete-remove-depends.md)
+records the source-version and historical-edge consequences. Later features must
+preserve retained task identity, explicit reference rules, access checks and
+cache-generation invalidation; no current API exposes deleted task contents or
+treats the marker as a fourth status.

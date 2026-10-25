@@ -43,7 +43,7 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tasks.Delete(ctx, principal, strings.ToUpper(task.ProjectID), strings.ToUpper(task.ID), task.Version); err != nil {
+	if err := tasks.Delete(ctx, principal, strings.ToUpper(task.ProjectID), strings.ToUpper(task.ID), DeleteTask{Version: task.Version}); err != nil {
 		t.Fatal(err)
 	}
 	after, marker, updated, version := deletedTaskStorage(t, database, task)
@@ -88,7 +88,7 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 	requireFault(t, err, "task_deleted")
 	_, err = tasks.SetStatus(ctx, principal, task.ProjectID, task.ID, SetTaskStatus{Version: version, Status: core.TaskDone})
 	requireFault(t, err, "task_deleted")
-	requireFault(t, tasks.Delete(ctx, principal, task.ProjectID, task.ID, version), "task_deleted")
+	requireFault(t, tasks.Delete(ctx, principal, task.ProjectID, task.ID, DeleteTask{Version: version}), "task_deleted")
 	_, err = tasks.ClaimWorker(ctx, principal, task.ProjectID, task.ID, ClaimWorker{Version: version, WorkerDescriptor: workerDescriptor()})
 	requireFault(t, err, "task_deleted")
 	_, err = tasks.Create(ctx, principal, task.ProjectID, CreateTask{Title: "Invalid reference", DependsOn: []string{task.ID}})
@@ -101,7 +101,7 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 	requireFault(t, err, "task_deleted")
 	requireFault(t, attachments.Delete(ctx, principal, task.ProjectID, task.ID, attachment.Path), "task_deleted")
 	// Retained outgoing history must not prevent deleting the former prerequisite.
-	if err := tasks.Delete(ctx, principal, task.ProjectID, pre.ID, pre.Version); err != nil {
+	if err := tasks.Delete(ctx, principal, task.ProjectID, pre.ID, DeleteTask{Version: pre.Version}); err != nil {
 		t.Fatal(err)
 	}
 	graph, err = tasks.Graph(ctx, principal, task.ProjectID)
@@ -125,8 +125,8 @@ func TestTaskDeletionProtectsVersionDependenciesAndWorker(t *testing.T) {
 	if err := database.Pool.QueryRow(ctx, "SELECT task_cache_epoch::text FROM projects WHERE id=$1", project.ID).Scan(&epoch); err != nil {
 		t.Fatal(err)
 	}
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, pre.ID, pre.Version+1), "version_conflict")
-	fault := requireFault(t, tasks.Delete(ctx, principal, project.ID, pre.ID, pre.Version), "dependency_unsatisfied")
+	requireFault(t, tasks.Delete(ctx, principal, project.ID, pre.ID, DeleteTask{Version: pre.Version + 1}), "version_conflict")
+	fault := requireFault(t, tasks.Delete(ctx, principal, project.ID, pre.ID, DeleteTask{Version: pre.Version}), "dependency_unsatisfied")
 	want := []string{dependents[0].ID, dependents[1].ID, dependents[2].ID}
 	slices.Sort(want)
 	if !slices.Equal(fault.TaskIDs, want) {
@@ -139,20 +139,20 @@ func TestTaskDeletionProtectsVersionDependenciesAndWorker(t *testing.T) {
 		t.Fatalf("refusal mutated marker/data/epoch: %v %v", marker, err)
 	}
 	active := claimWorkerTask(t, tasks, principal, claimableTask(t, tasks, principal, project.ID), workerDescriptor())
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, active.ID, active.Version), "invalid_transition")
+	requireFault(t, tasks.Delete(ctx, principal, project.ID, active.ID, DeleteTask{Version: active.Version}), "invalid_transition")
 	released, err := tasks.ReleaseWorker(ctx, principal, project.ID, active.ID, ReleaseWorker{Version: active.Version, ClaimID: active.Properties.Worker.ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := tasks.Delete(ctx, principal, project.ID, released.ID, released.Version); err != nil {
+	if err := tasks.Delete(ctx, principal, project.ID, released.ID, DeleteTask{Version: released.Version}); err != nil {
 		t.Fatal(err)
 	}
 	for _, dependent := range dependents {
-		if err := tasks.Delete(ctx, principal, project.ID, dependent.ID, dependent.Version); err != nil {
+		if err := tasks.Delete(ctx, principal, project.ID, dependent.ID, DeleteTask{Version: dependent.Version}); err != nil {
 			t.Fatalf("status %s cannot be deleted: %v", dependent.Status, err)
 		}
 	}
-	if err := tasks.Delete(ctx, principal, project.ID, pre.ID, pre.Version); err != nil {
+	if err := tasks.Delete(ctx, principal, project.ID, pre.ID, DeleteTask{Version: pre.Version}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -162,19 +162,19 @@ func TestTaskDeletionValidationAndAccessDoNotExposeHistory(t *testing.T) {
 	ctx := context.Background()
 	task := createTask(t, tasks, principal, project.ID, "Private")
 	stranger := servicePrincipal(t, database)
-	requireFault(t, tasks.Delete(ctx, core.Principal{}, project.ID, task.ID, task.Version), "unauthenticated")
-	requireFault(t, tasks.Delete(ctx, principal, "invalid", task.ID, task.Version), "invalid_input")
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, "invalid", task.Version), "invalid_input")
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, task.ID, 0), "invalid_input")
-	requireFault(t, tasks.Delete(ctx, stranger, project.ID, task.ID, task.Version), "not_found")
-	requireFault(t, tasks.Delete(ctx, principal, project.ID, "00000000-0000-4000-8000-000000000099", 1), "not_found")
+	requireFault(t, tasks.Delete(ctx, core.Principal{}, project.ID, task.ID, DeleteTask{Version: task.Version}), "unauthenticated")
+	requireFault(t, tasks.Delete(ctx, principal, "invalid", task.ID, DeleteTask{Version: task.Version}), "invalid_input")
+	requireFault(t, tasks.Delete(ctx, principal, project.ID, "invalid", DeleteTask{Version: task.Version}), "invalid_input")
+	requireFault(t, tasks.Delete(ctx, principal, project.ID, task.ID, DeleteTask{Version: 0}), "invalid_input")
+	requireFault(t, tasks.Delete(ctx, stranger, project.ID, task.ID, DeleteTask{Version: task.Version}), "not_found")
+	requireFault(t, tasks.Delete(ctx, principal, project.ID, "00000000-0000-4000-8000-000000000099", DeleteTask{Version: 1}), "not_found")
 	assertTaskUnchanged(t, tasks, principal, task)
-	if err := tasks.Delete(ctx, principal, project.ID, task.ID, task.Version); err != nil {
+	if err := tasks.Delete(ctx, principal, project.ID, task.ID, DeleteTask{Version: task.Version}); err != nil {
 		t.Fatal(err)
 	}
 	_, err := tasks.Get(ctx, stranger, project.ID, task.ID)
 	requireFault(t, err, "not_found")
-	requireFault(t, tasks.Delete(ctx, stranger, project.ID, task.ID, task.Version), "not_found")
+	requireFault(t, tasks.Delete(ctx, stranger, project.ID, task.ID, DeleteTask{Version: task.Version}), "not_found")
 }
 
 func TestTaskDeletionSerializesWithDependencyCreation(t *testing.T) {
@@ -182,7 +182,7 @@ func TestTaskDeletionSerializesWithDependencyCreation(t *testing.T) {
 	pre := createTask(t, tasks, principal, project.ID, "Prerequisite")
 	results := competeTaskWrites(t, database, project.ID,
 		func(ctx context.Context) (core.Task, error) {
-			return core.Task{}, tasks.Delete(ctx, principal, project.ID, pre.ID, pre.Version)
+			return core.Task{}, tasks.Delete(ctx, principal, project.ID, pre.ID, DeleteTask{Version: pre.Version})
 		},
 		func(ctx context.Context) (core.Task, error) {
 			return tasks.Create(ctx, principal, project.ID, CreateTask{Title: "New dependent", DependsOn: []string{pre.ID}})
@@ -224,7 +224,7 @@ func TestTaskDeletionRollsBackWhenEpochInvalidationFails(t *testing.T) {
 		FOR EACH ROW EXECUTE FUNCTION reject_epoch_rotation()`); err != nil {
 		t.Fatal(err)
 	}
-	err := tasks.Delete(ctx, principal, project.ID, task.ID, task.Version)
+	err := tasks.Delete(ctx, principal, project.ID, task.ID, DeleteTask{Version: task.Version})
 	if err == nil {
 		t.Fatal("epoch failure was hidden")
 	}
@@ -243,7 +243,7 @@ func TestTaskDeletionPreservesCompletedWorkerHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	before, _, _, _ := deletedTaskStorage(t, database, completed)
-	if err := tasks.Delete(context.Background(), principal, project.ID, completed.ID, completed.Version); err != nil {
+	if err := tasks.Delete(context.Background(), principal, project.ID, completed.ID, DeleteTask{Version: completed.Version}); err != nil {
 		t.Fatal(err)
 	}
 	after, _, _, _ := deletedTaskStorage(t, database, completed)

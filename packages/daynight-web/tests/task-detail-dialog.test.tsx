@@ -156,7 +156,7 @@ describe('task detail dialog', () => {
     const deletion = screen.getByRole('button', { name: '删除任务' });
     deletion.focus();
     fireEvent.click(deletion);
-    expect(screen.getByRole('alertdialog')).toHaveTextContent('删除任务');
+    expect(screen.getByRole('alertdialog', { name: '删除并解除依赖？' })).toHaveTextContent('普通和外部依赖');
     expect(shell).toHaveAttribute('inert');
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('alertdialog')).toBeNull();

@@ -161,7 +161,7 @@ export const runTaskCommand = async (
     const version = expectedVersion === undefined ? (await api.getTask(project.id, taskId!)).version : expectedVersion;
     operation.check();
     if (name === "delete") {
-      await api.deleteTask(project.id, taskId!, { version });
+      await api.deleteTask(project.id, taskId!, { version, ...(command.options.has("--remove-depends") ? { removeDepends: true } : {}) });
       operation.check();
       return `Task deleted. Stored data and attachments are retained.\nID: ${taskId!}\nProject: ${project.id}\n`;
     }

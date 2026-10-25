@@ -137,6 +137,8 @@ and completing `run-task` never activate it.
 - Preserve the exact version observed when deciding a metadata update,
   `task set-status` change, or authorized `task delete`. Deletion retains stored
   data and attachments and requires explicit authorization for the target task.
+  Add `--remove-depends` only when explicitly authorized to remove other tasks'
+  ordinary and external dependencies on that task; omission keeps strict deletion.
   Generic updates cannot change status. Confirm writes,
   reconcile uncertain results before further mutations, and preserve actual
   failures. The handbook explains operational context; installed CLI help owns

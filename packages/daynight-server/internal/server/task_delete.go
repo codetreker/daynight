@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 )
 
 func (h *taskHandler) delete(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -17,7 +18,7 @@ func (h *taskHandler) delete(w http.ResponseWriter, request *http.Request, princ
 		writeError(w, request, logger, "task", "delete", invalidInput("task deletion does not accept query parameters"))
 		return
 	}
-	fields, err := decodeObject(w, request, "version")
+	fields, err := decodeObject(w, request, "version", "removeDepends")
 	if err != nil {
 		writeError(w, request, logger, "task", "delete", err)
 		return
@@ -27,7 +28,13 @@ func (h *taskHandler) delete(w http.ResponseWriter, request *http.Request, princ
 		writeError(w, request, logger, "task", "delete", err)
 		return
 	}
-	if err := h.tasks.Delete(request.Context(), principal, projectID, id, version); err != nil {
+	removeDepends, err := optionalBool(fields, "removeDepends")
+	if err != nil {
+		writeError(w, request, logger, "task", "delete", err)
+		return
+	}
+	input := service.DeleteTask{Version: version, RemoveDepends: removeDepends != nil && *removeDepends}
+	if err := h.tasks.Delete(request.Context(), principal, projectID, id, input); err != nil {
 		writeError(w, request, logger, "task", "delete", err)
 		return
 	}

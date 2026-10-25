@@ -50,13 +50,13 @@ beforeEach(() => { reads.mockReset().mockResolvedValue(initial); deletes.mockRes
 describe('reviewed task mutation preparation', () => {
   it.each((['beginSync', 'detailTransaction'] as const).flatMap((point) => [false, true].map((observe) => ({ point, observe }))))('expires a reviewed DELETE paused at $point when replacement history arrives with observe=$observe', async ({ point, observe }) => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const gate = pausePreparation(sessions, point);
-    sessions.deleteTask(project, task, initial.version); await gate.entered; assertNoWrites();
+    sessions.deleteTask(project, task, initial.version, true); await gate.entered; assertNoWrites();
     await replace(sessions, [replacement]); if (observe) sessions.observe(project, task, world.node(project, task), true);
     reads.mockResolvedValue(replacement); gate.release();
     await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(replacement));
     expect(sessions.snapshot(project, task).status).toBe('ready'); expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true); assertNoWrites(); expect(reads).toHaveBeenCalledTimes(2);
-    const pending = deferred<void>(); deletes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, replacement.version);
-    await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, replacement.version, expect.any(AbortSignal), expect.anything()));
+    const pending = deferred<void>(); deletes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, replacement.version, true);
+    await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, replacement.version, true, expect.any(AbortSignal), expect.anything()));
   });
   it.each((['status', 'allowAgents', 'requiredPlatform'] as const).flatMap((action) => (['beginSync', 'detailTransaction'] as const).map((point) => ({ action, point }))))('expires $action preparation paused at $point before it can mutate a different history', async ({ action, point }) => {
     const sessions = createSessions(); await open(sessions); const gate = pausePreparation(sessions, point);
@@ -69,36 +69,36 @@ describe('reviewed task mutation preparation', () => {
   });
   it.each(['beginSync', 'detailTransaction'] as const)('does not dispatch or unlock an obsolete owner paused at %s after a new deletion owns restored history', async (point) => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const gate = pausePreparation(sessions, point);
-    sessions.deleteTask(project, task, initial.version); await gate.entered;
+    sessions.deleteTask(project, task, initial.version, true); await gate.entered;
     await replace(sessions, [detailFixture(project, sibling)]); sessions.observe(project, task, undefined, true); expect(sessions.snapshot(project, task).status).toBe('deleted');
     const restored = { ...replacement, version: 3n }; await replace(sessions, [restored]); sessions.observe(project, task, world.node(project, task), true); reads.mockResolvedValue(restored); sessions.requireOpeningRead(project, task); sessions.load(project, task, 3, 'open');
-    await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(restored)); const pending = deferred<void>(); deletes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, restored.version);
-    await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, 3n, expect.any(AbortSignal), expect.anything()));
-    gate.release(); await flush(); expect(deletes).toHaveBeenCalledOnce(); expect(sessions.snapshot(project, task).mutation).toMatchObject({ operation: { action: 'delete', version: 3n }, phase: 'pending' });
+    await waitFor(() => expect(sessions.snapshot(project, task).detail).toEqual(restored)); const pending = deferred<void>(); deletes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, restored.version, true);
+    await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, 3n, true, expect.any(AbortSignal), expect.anything()));
+    gate.release(); await flush(); expect(deletes).toHaveBeenCalledOnce(); expect(sessions.snapshot(project, task).mutation).toMatchObject({ operation: { action: 'delete', version: 3n, removeDepends: true }, phase: 'pending' });
     pending.resolve(); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted')); expect(reads).toHaveBeenCalledTimes(2);
   });
   it.each(['beginSync', 'detailTransaction'] as const)('retains one same-history deletion intent through view closure while %s is pending', async (point) => {
     const sessions = createSessions(); const close = sessions.subscribe(project, task, vi.fn()); await open(sessions); const gate = pausePreparation(sessions, point); const pending = deferred<void>(); deletes.mockReturnValueOnce(pending.promise);
-    sessions.deleteTask(project, task, initial.version); await gate.entered; close(); sessions.releaseRead(project, task); sessions.deleteTask(project, task, initial.version); assertNoWrites();
-    gate.release(); await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, expect.any(AbortSignal), expect.anything()));
-    expect(deletes.mock.calls[0]![3].aborted).toBe(false); pending.resolve(); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted')); expect(reads).toHaveBeenCalledOnce();
+    sessions.deleteTask(project, task, initial.version, true); await gate.entered; close(); sessions.releaseRead(project, task); sessions.deleteTask(project, task, initial.version, true); assertNoWrites();
+    gate.release(); await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, true, expect.any(AbortSignal), expect.anything()));
+    expect(deletes.mock.calls[0]![4].aborted).toBe(false); pending.resolve(); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted')); expect(reads).toHaveBeenCalledOnce();
   });
   it.each(['beginSync', 'detailTransaction'] as const)('retains its confirmed intent when the same task closes and reopens during %s preparation', async (point) => {
     const sessions = createSessions(); const close = sessions.subscribe(project, task, vi.fn()); await open(sessions); const world = worlds.get(sessions)!;
-    const gate = pausePreparation(sessions, point); const pending = deferred<void>(); deletes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, initial.version); await gate.entered;
+    const gate = pausePreparation(sessions, point); const pending = deferred<void>(); deletes.mockReturnValueOnce(pending.promise); sessions.deleteTask(project, task, initial.version, true); await gate.entered;
     close(); sessions.releaseRead(project, task); const closeReopened = sessions.subscribe(project, task, vi.fn()); sessions.requireOpeningRead(project, task); sessions.observe(project, task, world.node(project, task), true); sessions.load(project, task, 2, 'open');
     expect(sessions.snapshot(project, task).requiresFreshRead).toBe(true); expect(reads).toHaveBeenCalledOnce(); assertNoWrites();
-    gate.release(); await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, expect.any(AbortSignal), expect.anything()));
+    gate.release(); await waitFor(() => expect(deletes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, true, expect.any(AbortSignal), expect.anything()));
     pending.resolve(); await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted')); expect(reads).toHaveBeenCalledOnce(); closeReopened();
   });
   it.each(['beginSync', 'detailTransaction'] as const)('does not dispatch after project access is revoked during %s preparation', async (point) => {
     const sessions = createSessions(); await open(sessions); const world = worlds.get(sessions)!; const ticket = await world.scope.beginSync(project, world.scope.signal);
-    const gate = pausePreparation(sessions, point); sessions.deleteTask(project, task, initial.version); await gate.entered;
+    const gate = pausePreparation(sessions, point); sessions.deleteTask(project, task, initial.version, true); await gate.entered;
     await expect(world.scope.revokeProject(ticket, world.scope.signal, false)).resolves.toBe(true); expect(world.scope.getAuthorizedProject(project)).toBeNull();
     gate.release(); await flush(); assertNoWrites(); expect(reads).toHaveBeenCalledOnce();
   });
   it.each(['beginSync', 'detailTransaction'] as const)('does not dispatch after identity retirement during %s preparation', async (point) => {
-    const sessions = createSessions(); await open(sessions); const gate = pausePreparation(sessions, point); sessions.deleteTask(project, task, initial.version); await gate.entered;
+    const sessions = createSessions(); await open(sessions); const gate = pausePreparation(sessions, point); sessions.deleteTask(project, task, initial.version, true); await gate.entered;
     const world = worlds.get(sessions)!; void world.scope.invalidateScope(); gate.release(); await flush();
     expect(world.scope.isInvalidated).toBe(true); assertNoWrites(); expect(reads).toHaveBeenCalledOnce();
   });

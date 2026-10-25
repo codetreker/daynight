@@ -67,9 +67,13 @@ timestamp-window responses before deriving complete graphs locally. Full details
 use bounded intrinsic persistence and business-version-driven refresh, with a
 live read required on opening before mutations become available. Task
 [soft deletion](docs/spec/daynight-task-deletion.md) is available through
-`daynight task delete` and confirmed Web detail actions. It retains database
-records and attachment bytes, rejects undeleted dependents and active worker claims, and
-rotates the project cache epoch so every view removes the task consistently.
+`daynight task delete` and confirmed Web detail actions. CLI deletion is strict
+by default: undeleted references refuse the write. Optional `--remove-depends`
+atomically removes every incoming reference and soft-deletes the target; Web
+requires explicit confirmation of that combined action. Task records, the
+target's prerequisites and attachment bytes remain, while active target worker
+claims prevent deletion. The project cache epoch rotates once so every view
+observes the removal and changed dependencies consistently.
 The [deletion design](docs/design/daynight-task-deletion.md) owns these rules.
 
 | Component | Location | Implementation status | Requirements and design |

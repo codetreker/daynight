@@ -167,6 +167,22 @@ describe("operation-scoped API access", () => {
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
+  it.each([undefined, false, true])("submits exact deletion consent %s once without other reads", async (removeDepends) => {
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, { status: 204 }));
+    const input = { version: 9_223_372_036_854_775_807n, ...(removeDepends === undefined ? {} : { removeDepends }) };
+    await expect(client(fetch).deleteTask(projectId, taskId, input)).resolves.toBeUndefined();
+    expect(fetch).toHaveBeenCalledOnce();
+    const [url, options] = fetch.mock.calls[0]!;
+    expect(new URL(String(url)).pathname).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}`);
+    expect(options).toMatchObject({ method: "DELETE", body: `{"version":9223372036854775807${removeDepends === undefined ? "" : `,"removeDepends":${removeDepends}`}}`, redirect: "manual", cache: "no-store" });
+  });
+
+  it.each([null, "true", "false", 0, 1, [], {}])("rejects invalid deletion consent %j before I/O", (removeDepends) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    expect(() => client(fetch).deleteTask(projectId, taskId, { version: 1n, removeDepends: removeDepends as never })).toThrow("removeDepends must be a boolean");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each(["todo", "in_progress", "done"] as const)("submits one precise %s PUT and reads the full resulting task", async (status) => {
     const version = 9_223_372_036_854_775_806n;
     const result = { ...task, status, ready: status === "todo", description: "Full result", version: version + 1n };

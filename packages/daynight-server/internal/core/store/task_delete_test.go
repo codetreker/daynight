@@ -50,7 +50,7 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 		if err != nil || !reflect.DeepEqual(ids, []string{dependent.ID}) {
 			t.Fatalf("direct dependent lookup: %v %v", ids, err)
 		}
-		if err := tx.DeleteTask(ctx, queryID(99)); !errors.Is(err, core.ErrNotFound) {
+		if err := tx.DeleteTask(ctx, queryID(99), false); !errors.Is(err, core.ErrNotFound) {
 			t.Fatalf("missing delete swallowed: %v", err)
 		}
 		return nil
@@ -58,14 +58,14 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		if err := tx.DeleteTask(ctx, dependent.ID); err != nil {
+		if err := tx.DeleteTask(ctx, dependent.ID, false); err != nil {
 			return err
 		}
 		ids, err := tx.DependentIDs(ctx, pre.ID)
 		if err != nil || len(ids) != 0 {
 			t.Fatalf("deleted sources retained as live dependents: %v %v", ids, err)
 		}
-		return tx.DeleteTask(ctx, pre.ID)
+		return tx.DeleteTask(ctx, pre.ID, false)
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -80,12 +80,39 @@ func TestTaskDeleteAndDependentLookupFailuresPreserveCauses(t *testing.T) {
 	}
 	for _, operation := range []func() error{
 		func() error { _, err := expired.DependentIDs(ctx, pre.ID); return err },
-		func() error { return expired.DeleteTask(ctx, pre.ID) },
+		func() error { return expired.DeleteTask(ctx, pre.ID, false) },
+		func() error { return expired.DeleteTask(ctx, pre.ID, true) },
 	} {
 		err := operation()
 		var failure *Error
 		if !errors.As(err, &failure) || errors.Is(err, core.ErrNotFound) {
 			t.Fatalf("closed transaction lost database cause: %v", err)
 		}
+	}
+}
+
+func TestTaskDeleteRemoveDependsUpdatesOnlyIncomingSources(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := context.Background()
+	project, other := queryProject(t, database, 1), queryProject(t, database, 2)
+	root := queryTask(t, database, project.ID, 10, core.TaskDone)
+	target := queryTask(t, database, project.ID, 11, core.TaskTodo, root.ID)
+	source := queryTask(t, database, project.ID, 12, core.TaskTodo, target.ID, root.ID)
+	foreign := queryTask(t, database, other.ID, 13, core.TaskTodo)
+	if err := database.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
+		return tx.DeleteTask(ctx, target.ID, true)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current := snapshotTask(t, database, project.ID, source.ID)
+	if current.Version != source.Version+1 || !reflect.DeepEqual(current.DependsOn, []string{root.ID}) || !current.Ready {
+		t.Fatalf("source was not changed once: %#v", current)
+	}
+	if current := snapshotTask(t, database, other.ID, foreign.ID); !reflect.DeepEqual(current, foreign) {
+		t.Fatal("another project was modified")
+	}
+	var outgoing int
+	if err := database.Pool.QueryRow(ctx, "SELECT count(*) FROM task_dependencies WHERE project_id=$1 AND task_id=$2", project.ID, target.ID).Scan(&outgoing); err != nil || outgoing != 1 {
+		t.Fatalf("target outgoing history removed: %d %v", outgoing, err)
 	}
 }

@@ -33,9 +33,11 @@ transaction has completed successfully.
 
 The project check before writes reuses the project service. Projects have no
 deletion API, so a valid project cannot disappear through an allowed concurrent
-operation. [Task soft deletion](2026-10-25-task-soft-deletion.md) preserves rows and
-refuses undeleted successors under the same project lock; active reference
-validation excludes marked tasks.
+operation. [Task soft deletion](2026-10-25-task-soft-deletion.md) preserves rows
+and, by default, refuses undeleted references under the same project lock.
+[Explicit incoming removal](2026-10-25-task-delete-remove-depends.md) can atomically
+remove all direct references before marking the target and revises each affected
+source once; active reference validation excludes marked targets.
 Task reads and lists check project and task data within one read-only snapshot.
 Task cursors reuse the versioned format and bind project, status and readiness.
 

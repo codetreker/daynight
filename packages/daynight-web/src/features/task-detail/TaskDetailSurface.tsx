@@ -99,7 +99,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const confirm = (): void => {
     if (confirmation === null || !confirmationValid) return;
     setConfirmation(null);
-    if (confirmation.kind === 'delete') task.deleteTask(confirmation.detail.version);
+    if (confirmation.kind === 'delete') task.deleteTask(confirmation.detail.version, confirmation.removeDepends);
     else if (confirmation.kind === 'status') task.setStatus(confirmation.status, confirmation.detail.version);
     else if (confirmation.kind === 'allowAgents') task.setAgentPermission(confirmation.allowAgents, confirmation.detail.version);
     else task.setRequiredPlatform(confirmation.requiredPlatform, confirmation.detail.version);
@@ -219,7 +219,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
           </div>
           <div className="task-detail-header-actions">
             {!modal && fullscreen.active && <a className="button task-detail-project-return" href={`/projects/${encodeURIComponent(projectId)}`}>{m.returnToProject}</a>}
-            {detail !== null && <button className="button danger task-detail-delete" type="button" disabled={!task.canDelete} onClick={() => requestConfirmation({ kind: 'delete', detail })}>{messages.inspection.deletion.action}</button>}
+            {detail !== null && <button className="button danger task-detail-delete" type="button" disabled={!task.canDelete} onClick={() => requestConfirmation({ kind: 'delete', detail, removeDepends: true })}>{messages.inspection.deletion.action}</button>}
             <button className="button task-detail-fullscreen-toggle" type="button" ref={fullscreenRef} aria-label={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} title={fullscreen.active ? m.exitFullscreen : m.enterFullscreen} aria-pressed={fullscreen.active} onClick={() => changeFullscreen(!fullscreen.active)}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d={fullscreen.active ? 'M9 3v6H3m12-6v6h6M9 21v-6H3m12 6v-6h6' : 'M9 3H3v6m12-6h6v6M3 15v6h6m6 0h6v-6'} /></svg>
             </button>

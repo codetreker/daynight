@@ -21,7 +21,7 @@ const open = async (sessions: TaskDetailSessions, detail = initial) => {
   const world = worlds.get(sessions)!; await world.sync([detail]); sessions.observe(project, task, world.node(project, task)); sessions.load(project, task, 1);
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('ready'));
 };
-const remove = (sessions: TaskDetailSessions, version = initial.version) => sessions.deleteTask(project, task, version);
+const remove = (sessions: TaskDetailSessions, version = initial.version) => sessions.deleteTask(project, task, version, true);
 const expectDeleted = async (sessions: TaskDetailSessions) => {
   await waitFor(() => expect(sessions.snapshot(project, task).status).toBe('deleted'));
   expect(sessions.snapshot(project, task).detail).toBeNull();
@@ -35,8 +35,13 @@ describe('task-local soft-delete ownership', () => {
     const detail = source(status); reads.mockResolvedValue(detail); writes.mockResolvedValueOnce();
     const sessions = createSessions(); const refresh = vi.fn(); sessions.subscribeProject(project, refresh); await open(sessions, detail);
     expect(canDeleteTask(sessions.snapshot(project, task))).toBe(true); remove(sessions); await expectDeleted(sessions);
-    expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, expect.any(AbortSignal), expect.objectContaining({ userId: worlds.get(sessions)!.scope.userId, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
+    expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, true, expect.any(AbortSignal), expect.objectContaining({ userId: worlds.get(sessions)!.scope.userId, onPrincipalMismatch: expect.any(Function), onWriteConfirmed: expect.any(Function) }));
     expect(sessions.snapshot(project, task).mutation.phase).toBe('confirmed'); expect(refresh).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
+  });
+  it.each([false, true])('retains the reviewed removeDepends=%s choice during GET-only reconciliation', async (removeDepends) => {
+    const sessions = createSessions(); await open(sessions); writes.mockRejectedValueOnce(new ApiError('network')); reads.mockRejectedValueOnce(deleted()); sessions.deleteTask(project, task, initial.version, removeDepends);
+    expect(sessions.snapshot(project, task).mutation.operation).toEqual({ action: 'delete', version: initial.version, removeDepends }); await expectDeleted(sessions);
+    expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, removeDepends, expect.any(AbortSignal), expect.anything()); expect(reads).toHaveBeenCalledTimes(2);
   });
   it('does not dispatch a stale reviewed version', async () => {
     const sessions = createSessions(); await open(sessions); remove(sessions, initial.version - 1n); expect(writes).not.toHaveBeenCalled(); expect(sessions.snapshot(project, task).detail).toEqual(initial);
@@ -80,7 +85,7 @@ describe('task-local soft-delete ownership', () => {
   });
   it('keeps an already submitted deletion alive after closing its last view', async () => {
     const sessions = createSessions(); const release = sessions.subscribe(project, task, vi.fn()); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); remove(sessions);
-    await waitFor(() => expect(writes).toHaveBeenCalledOnce()); const requestSignal = writes.mock.calls[0]![3]; release(); sessions.releaseRead(project, task); expect(requestSignal.aborted).toBe(false);
+    await waitFor(() => expect(writes).toHaveBeenCalledOnce()); const requestSignal = writes.mock.calls[0]![4]; release(); sessions.releaseRead(project, task); expect(requestSignal.aborted).toBe(false);
     pending.resolve(); await expectDeleted(sessions); expect(writes).toHaveBeenCalledOnce();
   });
   it('keeps terminal deletion through an epoch replacement and never reloads retained data', async () => {

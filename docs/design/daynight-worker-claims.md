@@ -64,7 +64,7 @@ Transfer 的 target 必须包含 userId、workerId、machine、platform、agent�
 | released | 普通 todo→in_progress/done 被拒绝；通过自动认领或显式人工 resume 延续原成果。 |
 | completed 或 null | 普通三状态设置保持原行为；completed 历史记录不会因状态重开而变成 active。 |
 
-非当前 claim 引用不能完成或更新执行。管理员可以 release/transfer，但不以管理员身份代替 owner 完成当前执行。metadata PATCH 没有 status，也不能写 worker。
+非当前 claim 引用不能完成或更新执行。管理员可以 release/transfer，但不以管理员身份代替 owner 完成当前执行。metadata PATCH 没有 status，也不能写 worker。[显式解除引用并删除其他目标](daynight-task-deletion.md)允许源任务仍持有 active claim：只移除其指向目标的依赖并增加源任务版本，保留 claim、状态和计时。源 worker 的下一次写入须核对新版本，该操作不表示 release、停止或移交执行；active 目标任务自身仍禁止删除。
 
 ### 释放、移交和计时
 
