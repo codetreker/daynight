@@ -1741,6 +1741,8 @@ test('narrow-layout', scenario('narrow-layout'), async ({ page, api: request }, 
       };
     });
     await page.setViewportSize({ width: 320, height: 500 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
     await page.reload();
     const notice = page.locator('.sidebar-preference-notice');
     await expect(notice).toContainText('无法读取侧栏偏好');
