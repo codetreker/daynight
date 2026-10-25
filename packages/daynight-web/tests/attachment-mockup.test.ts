@@ -84,6 +84,8 @@ describe('development attachment fixture', () => {
     await upload('First mockup contents');
     await upload('Overwritten mockup contents');
     expect(screen.getByRole('heading', { name: '附件 · 1' })).toBeVisible();
+    expect(screen.getByText('notes', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
+    await user.click(screen.getByText('notes', { selector: 'summary' }));
     await user.click(screen.getByRole('button', { name: '更多操作：notes/new.txt' }));
     await user.click(screen.getByRole('menuitem', { name: '删除' }));
     await user.click(within(screen.getByRole('dialog', { name: '删除附件？' })).getByRole('button', { name: '删除附件' }));

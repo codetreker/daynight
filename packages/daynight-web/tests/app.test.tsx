@@ -99,11 +99,15 @@ describe('application navigation', () => {
     await screen.findByText('Initial document');
     const panel = document.querySelector('.task-attachments');
     const directory = screen.getByText('docs', { selector: 'summary' }).parentElement!;
+    expect(directory).toHaveAttribute('open');
+    const otherDirectory = screen.getByText('other', { selector: 'summary' }).parentElement!;
+    expect(otherDirectory).not.toHaveAttribute('open');
     fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
     const upload = screen.getByText('上传文件', { selector: 'summary' });
     fireEvent.click(upload);
     const target = screen.getByLabelText('目标相对路径');
     fireEvent.change(target, { target: { value: 'unsent/draft.txt' } });
+    fireEvent.click(screen.getByText('other', { selector: 'summary' }));
     fireEvent.click(screen.getByRole('button', { name: /^next\.txt/ }));
     await screen.findByText('Next document');
     expect(window.location.pathname).toBe(address('other/next.txt'));
@@ -111,13 +115,18 @@ describe('application navigation', () => {
     expect(directory).not.toHaveAttribute('open');
     expect(screen.getByLabelText('目标相对路径')).toBe(target);
     expect(target).toHaveValue('unsent/draft.txt');
+    fireEvent.click(screen.getByText('other', { selector: 'summary' }));
+    expect(otherDirectory).not.toHaveAttribute('open');
     await act(async () => { window.history.back(); });
     await screen.findByText('Initial document');
     expect(window.location.pathname).toBe(address('docs/guide.md'));
+    expect(directory).toHaveAttribute('open');
+    expect(otherDirectory).not.toHaveAttribute('open');
     expect(document.querySelector('.task-attachments')).toBe(panel);
     expect(target).toHaveValue('unsent/draft.txt');
     await act(async () => { window.history.forward(); });
     await screen.findByText('Next document');
+    expect(otherDirectory).toHaveAttribute('open');
     expect(requests.mock.calls.filter(([url]) => url.includes('/attachments?'))).toHaveLength(1);
   });
 

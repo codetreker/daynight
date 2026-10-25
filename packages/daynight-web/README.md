@@ -877,6 +877,19 @@ loaded state, preview and an unsent file/path draft. Changing project/task reset
 the tab and attachment scope. Description-to-attachment navigation activates this
 same panel and controller.
 
+The file tree initially shows only root files and first-level directory names;
+all directories start closed. Native directory disclosures support pointer and
+keyboard operation. Manual expansion survives attachment refreshes, tab and locale
+changes, and ordinary rerenders within the same project/task. Description links,
+direct attachment URLs and history restoration of an attachment path reveal only
+the target's ancestor directories, retaining other manual choices. A user can
+collapse the selected file's directory afterward; refresh and tab changes do not
+reopen it. Repeating the same description link reveals its ancestors again.
+Tree selection and successful uploads do not request directory expansion, including
+when they update the standalone address. A project/task change resets disclosure.
+The [directory-disclosure decision](../../.agents/notes/implemented/feature/2026-10-25-attachment-directory-disclosure.md)
+owns the separation between selection and navigation reveal.
+
 The upload section starts collapsed. Activate Upload with a click or the
 keyboard to expand it, then select one local file, accept its name as the initial
 target or edit the relative path, and upload. Activating the disclosure again

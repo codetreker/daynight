@@ -1,7 +1,8 @@
-import { createRef } from 'react';
+import { createRef, useState } from 'react';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../src/api/client';
+import type { TaskDetailNavigation } from '../src/app/router';
 import type { Attachment, AttachmentPage } from '../src/api/types';
 import { TaskDetailReading } from '../src/features/task-detail/TaskDetailReading';
 import type { AttachmentKeyboardOwner } from '../src/features/task-detail/attachments/AttachmentPreview';
@@ -31,6 +32,90 @@ const showOverview = () => fireEvent.click(screen.getByRole('tab', { name: '概�
 const pane = () => screen.getByRole('group', { name: '附件预览' });
 
 describe('task description reading', () => {
+  it('reveals only linked ancestors and reapplies the same link after manual collapse', async () => {
+    const path = 'docs/design/方案 %?#.md';
+    const api = fixture([file(path), file('docs2/other.md'), file('images/icon.svg'), file('root.md')]);
+    render(reading(api, '[方案](docs/design/方案%20%25%3F%23.md) [根文件](root.md)'));
+    fireEvent.click(screen.getByRole('tab', { name: '附件' }));
+    const docs = (await screen.findByText('docs', { selector: 'summary' })).parentElement!;
+    const design = screen.getByText('design', { selector: 'summary' }).parentElement!;
+    const docs2 = screen.getByText('docs2', { selector: 'summary' }).parentElement!;
+    const images = screen.getByText('images', { selector: 'summary' }).parentElement!;
+    expect(docs).not.toHaveAttribute('open');
+    expect(design).not.toHaveAttribute('open');
+    expect(screen.getByText('方案 %?#.md')).not.toBeVisible();
+    showOverview();
+    fireEvent.click(screen.getByRole('link', { name: '方案' }));
+    await screen.findByRole('heading', { name: `Preview ${path}` });
+    expect(docs).toHaveAttribute('open');
+    expect(design).toHaveAttribute('open');
+    expect(docs2).not.toHaveAttribute('open');
+    expect(images).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
+    fireEvent.click(screen.getByRole('button', { name: '刷新附件' }));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+    expect(docs).not.toHaveAttribute('open');
+    showOverview();
+    fireEvent.click(screen.getByRole('tab', { name: '附件' }));
+    expect(docs).not.toHaveAttribute('open');
+    showOverview();
+    fireEvent.click(screen.getByRole('link', { name: '方案' }));
+    expect(docs).toHaveAttribute('open');
+    expect(screen.getByText('方案 %?#.md')).toBeVisible();
+    fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
+    showOverview();
+    fireEvent.click(screen.getByRole('link', { name: '根文件' }));
+    await screen.findByRole('heading', { name: 'Preview root.md' });
+    expect(docs).not.toHaveAttribute('open');
+    expect(docs2).not.toHaveAttribute('open');
+    expect(images).not.toHaveAttribute('open');
+  });
+
+  it('records route ancestors before delayed pages arrive and reveals later external paths', async () => {
+    const page = deferred<AttachmentPage>();
+    const api = { ...fixture(), list: vi.fn().mockResolvedValueOnce({ items: [file('root.md')], nextCursor: 'next' }).mockReturnValueOnce(page.promise).mockResolvedValue({ items: [file('root.md'), file('docs/design/spec.md'), file('other/next.md')], nextCursor: null }) };
+    const content = (path: string | null) => <TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="Description" selection={{ tab: 'attachments', path }} overview={(description) => description} />;
+    const view = render(content('docs/design/spec.md'));
+    await waitFor(() => expect(api.list).toHaveBeenCalledTimes(2));
+    await act(async () => page.resolve({ items: [file('docs/design/spec.md'), file('other/next.md')], nextCursor: null }));
+    await screen.findByRole('heading', { name: 'Preview docs/design/spec.md' });
+    const docs = screen.getByText('docs', { selector: 'summary' }).parentElement!;
+    const design = screen.getByText('design', { selector: 'summary' }).parentElement!;
+    const other = screen.getByText('other', { selector: 'summary' }).parentElement!;
+    expect(docs).toHaveAttribute('open');
+    expect(design).toHaveAttribute('open');
+    expect(other).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('docs', { selector: 'summary' }));
+    view.rerender(content('other/next.md'));
+    await screen.findByRole('heading', { name: 'Preview other/next.md' });
+    expect(other).toHaveAttribute('open');
+    expect(docs).not.toHaveAttribute('open');
+    fireEvent.click(screen.getByText('other', { selector: 'summary' }));
+    view.rerender(content('docs/design/spec.md'));
+    await screen.findByRole('heading', { name: 'Preview docs/design/spec.md' });
+    expect(docs).toHaveAttribute('open');
+    expect(other).not.toHaveAttribute('open');
+  });
+
+  it('does not treat the controlled route update after an upload as an external reveal', async () => {
+    const items: Attachment[] = [];
+    const api = { ...fixture(), list: vi.fn(async () => ({ items: [...items], nextCursor: null })), put: vi.fn(async (_project: string, _task: string, path: string) => { const item = file(path); items.push(item); return item; }) };
+    const Content = () => {
+      const [selection, setSelection] = useState<TaskDetailNavigation>({ tab: 'attachments', path: null });
+      return <TaskDetailReading projectId={projectId} taskId={taskId} api={api} description="Description" selection={selection} onSelectionChange={setSelection} overview={(description) => description} />;
+    };
+    render(<Content />);
+    await screen.findByText('暂无附件，上传文件后即可在这里浏览。');
+    fireEvent.click(screen.getByText('上传文件', { selector: 'summary' }));
+    fireEvent.change(screen.getByLabelText('选择一个文件'), { target: { files: [new File(['new'], 'new.md', { type: 'text/markdown' })] } });
+    fireEvent.change(screen.getByRole('textbox', { name: '目标相对路径' }), { target: { value: 'docs/design/new.md' } });
+    fireEvent.click(screen.getByRole('button', { name: '上传文件' }));
+    await screen.findByRole('heading', { name: 'Preview docs/design/new.md' });
+    expect(screen.getByText('docs', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
+    expect(screen.getByText('design', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
+    expect(screen.getByText('new.md', { selector: '.attachment-file-name' })).not.toBeVisible();
+  });
+
   it('renders Markdown structure, root images, original raw HTML and the existing URL policy', async () => {
     const api = fixture();
     const source = '# 中英文 Heading\n\nParagraph **bold**.\n\n- One\n- Two\n\n> Quote\n\n```ts\nconst x = 1;\n```\n\n| Name | State |\n| --- | --- |\n| 中文 | Ready |\n\n![图示](images/图%20示.svg)\n\n[Unsafe](javascript:alert%281%29) [External](https://example.com)\n\n<script>privateMarkup()</script>';

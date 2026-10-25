@@ -47,13 +47,16 @@ describe('task detail panels', () => {
     const api = fixture();
     const view = render(panels(api));
     fireEvent.click(screen.getByRole('tab', { name: '附件' }));
+    const directory = (await screen.findByText('site', { selector: 'summary' })).parentElement!;
+    expect(directory).not.toHaveAttribute('open');
+    expect(screen.getByText('index.html')).not.toBeVisible();
+    fireEvent.click(screen.getByText('site', { selector: 'summary' }));
     fireEvent.click(await screen.findByRole('button', { name: /index.html/, pressed: false }));
     const frame = await screen.findByTitle('HTML 预览：site/index.html') as HTMLIFrameElement;
     fireEvent.load(frame);
     const content = frame.contentDocument!;
     content.appendChild(content.createElement('html')).appendChild(content.createElement('body'));
     content.body.innerHTML = '<button id="inner">Inside frame</button>';
-    const directory = screen.getByText('site').parentElement!;
     directory.removeAttribute('open');
     fireEvent(directory, new Event('toggle'));
     const source = new File(['draft'], 'draft.txt');

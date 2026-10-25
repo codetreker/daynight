@@ -96,7 +96,11 @@ stopped-write planning, verification, continuation and backup rollback. Task
 details open on Overview and provide a separate Attachments
 tab with adjacent file and preview panes at every supported width. Each pane
 owns its scroll region; the preview has exactly one vertical scroll owner,
-including native HTML/PDF documents. A link beside Download opens the same complete
+including native HTML/PDF documents. The attachment tree starts with root files
+and first-level directory names; directories remain closed until manually opened
+or an attachment link, direct address or history navigation reveals the selected
+file's ancestors. Refresh and tab changes retain manual disclosure choices.
+A link beside Download opens the same complete
 Task Detail outside the workspace and dialog, locating the selected attachment
 while retaining Overview, status, relationships and all existing task/file actions.
 The dialog title also opens its current task, tab and attachment in a new tab.

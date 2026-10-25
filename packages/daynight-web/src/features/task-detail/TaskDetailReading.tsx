@@ -4,7 +4,7 @@ import { attachmentPreviewRoot } from '../../api/client';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { MarkdownContent } from './MarkdownContent';
 import { TaskDetailPanels } from './TaskDetailPanels';
-import { TaskAttachmentsPanel, type AttachmentNavigation, type AttachmentUrls } from './attachments/TaskAttachments';
+import { TaskAttachmentsPanel, type AttachmentNavigation, type AttachmentTreeReveal, type AttachmentUrls } from './attachments/TaskAttachments';
 import type { AttachmentKeyboardOwner } from './attachments/AttachmentPreview';
 import { resolveAttachmentReference, resolveMarkdownAttachmentUrl } from './attachments/model';
 import { useAttachments, type AttachmentApi } from './attachments/useAttachments';
@@ -27,7 +27,16 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, ke
   const attachments = useAttachments(projectId, taskId, api, { requireCompleteInventory });
   const [localSelection, setLocalSelection] = useState<TaskDetailNavigation>({ tab: 'overview', path: null });
   const selection = controlledSelection === undefined ? localSelection : controlledSelection;
-  const select = (next: TaskDetailNavigation) => { setLocalSelection(next); onSelectionChange?.(next); };
+  const localNavigation = useRef<TaskDetailNavigation | null>(null);
+  const select = (next: TaskDetailNavigation) => { localNavigation.current = next; setLocalSelection(next); onSelectionChange?.(next); };
+  const [reveal, setReveal] = useState<AttachmentTreeReveal>(() => ({ path: selection.path }));
+  const observedPath = useRef(selection.path);
+  useLayoutEffect(() => {
+    if (observedPath.current === selection.path) return;
+    observedPath.current = selection.path;
+    if (localNavigation.current?.path !== selection.path) setReveal({ path: selection.path });
+    localNavigation.current = null;
+  }, [selection.path]);
   const currentSelection = useRef(selection);
   currentSelection.current = selection;
   const unselected = attachments.selectedPath === null;
@@ -50,6 +59,7 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, ke
       attachments.select(path);
       const next = { tab: 'attachments', path } as const;
       select(next);
+      setReveal({ path });
       setReference({ invalid: resolved.kind !== 'relative', selection: next });
-    }} />)} attachments={(active) => <TaskAttachmentsPanel active={active} projectId={projectId} taskId={taskId} attachments={attachments} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} {...(urls === undefined ? {} : { urls })} />} />;
+    }} />)} attachments={(active) => <TaskAttachmentsPanel active={active} projectId={projectId} taskId={taskId} attachments={attachments} reveal={reveal} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} {...(urls === undefined ? {} : { urls })} />} />;
 };
