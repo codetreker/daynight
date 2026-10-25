@@ -124,7 +124,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 ### 居中任务详情
 
-`TaskDetailDialog` 通过 body portal 相对可用视口居中，最大宽度 960px，桌面四周
+`TaskDetailDialog` 普通模式通过 body portal 相对可用视口居中，最大宽度 960px，桌面四周
 至少 24px；600px 及以下边距为 12px。外壳最大高度为
 `min(880px, 100dvh − 2 × gutter)`，公共标题、状态、页签和底部说明处于面板滚动区
 之外，关闭入口始终可访问。顶栏的 `h2.task-detail-title` 直接使用实际任务标题并提供对话框的可访问名称；没有已加载详情时使用加载或失败状态标题。完整标题自身有界、可聚焦并原生滚动，状态、新标签和关闭控件保持可访问；详情通过同一个 `LocaleProvider` 使用应用当前语言，顶栏保留实际标题、当前状态菜单、任务删除、按当前任务/页签/附件生成的新标签链接与关闭入口。任务删除在共享详情主体中使用二次确认，操作所有权、已删除终态和缓存移除由[软删除设计](daynight-task-deletion.md)拥有。正文头部只保留状态和操作控件；提示归属独立浮层。`task-detail.css` 使用统一的 `task-detail-*` 类名。
@@ -137,6 +137,17 @@ project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有�
 项目图快照并展示同一主体，不挂载工作空间侧栏或弹窗外壳。任务/页签/文件 URL、
 历史、查询参数和独立刷新由[独立详情设计](daynight-task-inspection.md#独立完整任务详情)
 拥有；文件渲染与滚动由[独立附件阅读页](daynight-task-attachments.md#独立附件阅读页)拥有。
+
+弹窗与独立页的外层阅读工作区各自持有全屏模式，Surface 标题栏统一提供双语切换
+按钮。CSS 将同一外壳铺满视口，不更换 portal、presentation、key 或阅读面板，
+也不重新申请弹窗滚动锁；应用滚动容器在切换布局前后按合法范围恢复原位置。
+短全屏压紧标题、操作、元数据行和页签，隐藏静态说明 footer，并为概览及预览保留
+非零可读空间；320×240 验证检查实际正文高度、滚动和绘制，按钮可达只是一部分。
+页签、附件、输入草稿和写入 session 保持原所有者。Escape 先由菜单/确认/frame
+子应用处理，再退出详情全屏并聚焦切换按钮，随后普通弹窗才关闭；图全屏最后退出。
+独立页全屏隐藏辅助顶栏但保留明确返回项目入口，普通页 Escape 保持原行为。
+frame 接收活动 root/onEscape 所有者，已加载 document 随 owner 变化更新键盘监听
+而不重载。完整机制与状态寿命由[全屏阅读设计](daynight-task-inspection.md#全屏阅读工作区)拥有。
 
 概览是详情中任务内容的滚动所有者。阅读主栏展示共享 CommonMark/GFM 视图渲染的描述和关联 PR，265px 辅栏
 展示时间、完整 ID、直接前置、当前阻塞项和直接后续。ID 旁的复制按钮直接调用 `navigator.clipboard.writeText` 写入完整 ID；成功和失败反馈属于当前 ID，以限时气泡展示，切换任务时清除。失败保留可选择的完整 ID 与重试入口，不显示虚假的复制成功。850px 及以下辅栏为 225px，
@@ -193,8 +204,8 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 `focus.ts` 的 `dialogFocusables` 统一调用 `tabbable` 6.5.0，使用生产默认的完整可见性检查，按实际可 Tab
 次序识别表单、链接、iframe 和 contenteditable。可信同源 frame 在 load 后登记
 键盘桥接：Esc 调用当前关闭回调，首末 Tab/Shift+Tab 回到对话框相邻可聚焦元素；监听
-随 frame 替换或卸载释放。关闭后优先恢复仍连接 DOM 的原节点；节点已随刷新消失时，
-若全屏图仍在则恢复其退出按钮，否则使用当前页签内仍可见的任务或页签控件；整个项目为空时恢复项目 H1。
+随 frame 替换或卸载释放。关闭后优先恢复仍连接、可见且未被 inert 隔离的原入口；入口已随刷新消失或位于隐藏任务区时，
+优先使用仍可见的全屏退出按钮，否则使用当前可见任务、项目页签或项目 H1。
 
 卸载时，`useLayoutEffect` 同步移除键盘监听、恢复背景 inert 与 body 滚动状态；独立的 `useEffect([])` cleanup 在 DOM 删除后，调用 ref 中最新的焦点恢复回调。刷新可能同时卸载对话框和相邻任务链，恢复必须等旧节点真正移除后再检查 `isConnected`，否则焦点会先落到即将删除的节点，随后丢失到 body。关系跳转继续复用对话框，不触发卸载恢复。具体失败机制与验证由[焦点恢复决策](../../.agents/notes/implemented/bug-fix/2026-10-20-drawer-focus-restoration.md)记录。
 
@@ -888,6 +899,8 @@ provider 响应证明 gateway/SDK 协议，不等同于真实上游账号登录�
 PUT/DELETE；`task-status`、`task-status-conflicts`、`task-status-recovery` 和 `task-status-transitions`
 单独允许已登记 project/task 的 PUT status 和精确请求次数；六个鉴权场景仅放行各自
 登记的精确管理请求；`project-settings` 另只放行四次登记设置 PATCH，覆盖成功、409、真实提交后丢失响应及降权 403，重读失败后只重试读取。该场景还检查真实大版本、项目隔离、成员只读及双语 320px/390px 控件与导航边界及文字不截断。`task-agent-permission` 只允许登记任务的许可 PATCH 和精确请求次数，覆盖普通成员双向确认、取消/Escape、锁定、冲突、已提交响应丢失与读取核对、详情关闭/切换后的请求归属、严格布尔/精确版本及双语窄屏几何；未知写入只核对，不重放。`task-platform` 仅允许登记任务的精确平台 PATCH，覆盖状态行选择后确认、当前值无操作、各取消路径零写入和下拉框焦点恢复、确认后设置/清除、状态/许可共享锁、冲突与真实丢响应后的 GET 核对、跨任务归属、人工开始后锁定、字段传播及双语 320px/390px 窄屏。
+平台确认的浏览器辅助函数先等待下拉框可用，再聚焦并确认焦点，随后才选择选项；缓存详情可见不表示实时读取已允许编辑。取消后的原值、焦点恢复和零写入断言保持独立验证，不在取消后强制聚焦，也不放宽超时或重试规则。附件组件测试将删除确认框的 DOM 移除与被动清理中的焦点恢复分开，在附件重载仍挂起时等待预览区域实际获得焦点，随后放行重载并继续验证焦点保持。[可观测验收就绪决策](../../.agents/notes/implemented/testing/2026-10-20-observable-acceptance-readiness.md)记录这项前置条件。
+
 `task-detail-page` 在 browser context 层观测来源页与 popup，精确放行登记任务五次属性 PATCH、三次 PUT status（todo→in_progress→done→todo）及精确附件各一次 PUT/DELETE；核对逐次版本、起止/重置时间及运行中平台/许可锁定，来源页自身不放行写入，取消不增加请求，未知结果只读取核查。另一个匿名 context 通过真实应用/gateway 重定向验证保留导航查询参数的登录返回，仅控制 provider 端点且不允许应用写入。task-execution-time 保持浏览器 GET/HEAD-only，由正常 API/安装 CLI 准备起止、保存阈值和完成任务；挂起图响应与错误本机墙钟隔离本地单调 tick，验证实时/冻结/未知、卡片/独立行、外部虚线及焦点和图几何，其他写请求仍失败。附件场景在两目标上都让安装 CLI 与生产页面操作同一
 组数据，按原始字节交叉验证写入、覆盖、下载与删除；具体机制由
 [附件组合验收决策](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)

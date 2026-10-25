@@ -2,7 +2,7 @@ import { selectTaskList } from '../../tests/e2e/project-view.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
-import { chromium, expect, request as playwrightRequest, type Browser, type BrowserContext, type Page } from '@playwright/test';
+import { chromium, expect, request as playwrightRequest, type Browser, type BrowserContext, type Locator, type Page } from '@playwright/test';
 import { authenticatedAPI, browserFetch, tokenContext, type AuthenticatedAPI } from '../../tests/e2e/authentication.ts';
 import { stringifyApiJson } from '../../src/api/json.ts';
 import { login } from './auth-fixture.mts';
@@ -209,6 +209,162 @@ const bilingualToken = async (page: Page, context: BrowserContext, origin: strin
   }
 };
 
+const visibleReadingHeight = async (owner: Locator): Promise<number> => {
+  const geometry = await owner.evaluate((element) => {
+    const box = element.getBoundingClientRect();
+    let top = 0;
+    let bottom = innerHeight;
+    let left = 0;
+    let right = innerWidth;
+    for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
+      const style = getComputedStyle(ancestor);
+      const bounds = ancestor.getBoundingClientRect();
+      if (style.overflowY !== 'visible') { top = Math.max(top, bounds.top); bottom = Math.min(bottom, bounds.bottom); }
+      if (style.overflowX !== 'visible') { left = Math.max(left, bounds.left); right = Math.min(right, bounds.right); }
+    }
+    return { clientHeight: element.clientHeight, visibleHeight: Math.max(0, Math.min(bottom, box.bottom) - Math.max(top, box.top)),
+      visibleWidth: Math.max(0, Math.min(right, box.right) - Math.max(left, box.left)) };
+  });
+  check(geometry.clientHeight > 0 && geometry.visibleHeight > 0 && geometry.visibleWidth > 0, 'Fullscreen reading content has no visible area.');
+  return geometry.visibleHeight;
+};
+
+const scrollReading = async (page: Page, owner: Locator): Promise<number> => {
+  check(await owner.evaluate((element) => element.scrollHeight > element.clientHeight), 'The reading fixture does not overflow.');
+  await owner.hover();
+  await page.mouse.wheel(0, 600);
+  await expect.poll(() => owner.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+  return await owner.evaluate((element) => element.scrollTop);
+};
+
+const fullscreenPreview = async (page: Page, context: BrowserContext, origin: string, projectId: string, task: Task): Promise<Record<string, unknown>> => {
+  const detail = page.getByRole('dialog', { name: task.title, exact: true });
+  const toggle = detail.locator('.task-detail-fullscreen-toggle');
+  const frame = detail.frameLocator('iframe');
+  const retained = await Promise.all([detail.elementHandle(), detail.locator('iframe').elementHandle(), detail.locator('input[type=file]').elementHandle()]);
+  check(retained.every((element) => element !== null), 'Fullscreen reading elements are missing.');
+  await detail.locator('.attachment-upload-disclosure summary').click();
+  await detail.locator('input[type=file]').setInputFiles({ name: 'fullscreen-draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Fullscreen draft') });
+  const path = detail.locator('.attachment-upload-target input');
+  await path.fill('draft/retained.txt');
+  const resourceRequests: string[] = [];
+  const shortReading: Record<string, number> = {};
+  const observe = (request: import('@playwright/test').Request): void => {
+    if (request.url().includes(`/tasks/${task.id}/preview/`)) resourceRequests.push(request.url());
+  };
+  page.on('request', observe);
+  try {
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 640 }, { width: 320, height: 240 }]) {
+      await page.setViewportSize(viewport);
+      await expect.poll(async () => {
+        const box = await detail.boundingBox();
+        return box !== null && Math.abs(box.x) <= 1 && Math.abs(box.y) <= 1
+          && Math.abs(box.width - viewport.width) <= 1 && Math.abs(box.height - viewport.height) <= 1;
+      }).toBe(true);
+      for (const control of [detail.locator('.task-detail-delete'), toggle, detail.locator('.task-detail-popout'), detail.locator('.task-detail-close')]) {
+        const box = await control.boundingBox();
+        check(box !== null && box.x >= 0 && box.y >= 0 && box.x + box.width <= viewport.width + 1 && box.y + box.height <= viewport.height + 1, 'A fullscreen header action is outside the viewport.');
+      }
+      if (viewport.height === 240) {
+        shortReading.htmlHeight = await visibleReadingHeight(detail.locator('.attachment-preview-body-native'));
+        await visibleReadingHeight(detail.locator('iframe'));
+        await frame.locator('#counter').press('End');
+        await expect.poll(() => frame.locator('html').evaluate((element) => element.ownerDocument.scrollingElement!.scrollTop)).toBeGreaterThan(0);
+        shortReading.htmlScroll = await frame.locator('html').evaluate((element) => element.ownerDocument.scrollingElement!.scrollTop);
+        await detail.getByRole('tab', { name: '概览', exact: true }).click();
+        const overview = detail.locator('.task-detail-panel-overview');
+        shortReading.overviewHeight = await visibleReadingHeight(overview);
+        shortReading.overviewScroll = await scrollReading(page, overview);
+        await detail.getByRole('tab', { name: '附件', exact: true }).click();
+      }
+    }
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await detail.locator('.attachment-actions-trigger').first().click();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('menu')).toHaveCount(0);
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await frame.locator('#counter').evaluate((element) => {
+      element.ownerDocument.defaultView!.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape' && element.ownerDocument.body.dataset.consumeEscape === 'yes') {
+          event.preventDefault();
+          element.ownerDocument.body.dataset.consumeEscape = 'no';
+        }
+      });
+      element.ownerDocument.body.dataset.consumeEscape = 'yes';
+    });
+    await frame.locator('#counter').press('Escape');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(frame.locator('body')).toHaveAttribute('data-consume-escape', 'no');
+    await frame.locator('#counter').press('Escape');
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(toggle).toBeFocused();
+    await expect(path).toHaveValue('draft/retained.txt');
+    check(await retained[2]!.evaluate((element) => (element as HTMLInputElement).files?.[0]?.name) === 'fullscreen-draft.txt', 'Fullscreen switching lost the selected local file.');
+    await expect(frame.locator('#counter')).toHaveText('1');
+    check((await Promise.all(retained.map((element) => element!.evaluate((node) => node.isConnected)))).every(Boolean), 'Fullscreen switching replaced retained reading DOM.');
+    check(resourceRequests.length === 0, 'Fullscreen switching reloaded a preview resource.');
+    await frame.locator('#counter').press('Escape');
+    await expect(detail).toHaveCount(0);
+    await expect(page.locator(`#standalone-task-${task.id}`)).toBeFocused();
+  } finally { page.off('request', observe); await Promise.all(retained.map((element) => element?.dispose())); }
+
+  await page.locator(`#standalone-task-${task.id}`).click();
+  await detail.getByRole('tab', { name: '附件', exact: true }).click();
+  await detail.locator('button.attachment-file').filter({ hasText: /long\.md/ }).click();
+  await expect(detail.locator('.attachment-markdown h1')).toHaveText('Fullscreen reading');
+  await toggle.click();
+  await page.setViewportSize({ width: 320, height: 240 });
+  const markdown = detail.locator('.attachment-preview-body');
+  shortReading.markdownHeight = await visibleReadingHeight(markdown);
+  shortReading.markdownScroll = await scrollReading(page, markdown);
+  await page.keyboard.press('Escape');
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await page.keyboard.press('Escape');
+  await expect(detail).toHaveCount(0);
+  await page.setViewportSize({ width: 1440, height: 1000 });
+
+  const reader = await context.newPage();
+  try {
+    await reader.goto(`${origin}/projects/${projectId}/tasks/${task.id}/attachments/site/index.html`);
+    const surface = reader.locator('.task-detail-page');
+    const readerToggle = surface.locator('.task-detail-fullscreen-toggle');
+    const counter = surface.frameLocator('iframe').locator('#counter');
+    await expect(counter).toHaveText('0');
+    await counter.click();
+    await counter.evaluate((element) => {
+      element.ownerDocument.defaultView!.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') setTimeout(() => { element.ownerDocument.body.dataset.escapePrevented = String(event.defaultPrevented); }, 0);
+      });
+    });
+    const originalFrame = await surface.locator('iframe').elementHandle();
+    check(originalFrame !== null, 'Standalone fullscreen iframe is missing.');
+    const address = reader.url();
+    const standaloneRequests: string[] = [];
+    reader.on('request', (request) => { if (request.url().includes(`/tasks/${task.id}/preview/`)) standaloneRequests.push(request.url()); });
+    for (let iteration = 0; iteration < 2; iteration++) {
+      await readerToggle.click();
+      await expect(readerToggle).toHaveAttribute('aria-pressed', 'true');
+      await expect(surface.locator('.task-detail-page-topbar')).toBeHidden();
+      await expect(surface.getByRole('link', { name: '返回任务所在项目', exact: true })).toBeVisible();
+      await counter.press('Escape');
+      await expect(readerToggle).toHaveAttribute('aria-pressed', 'false');
+      await expect(readerToggle).toBeFocused();
+      await expect(surface.frameLocator('iframe').locator('body')).toHaveAttribute('data-escape-prevented', 'true');
+      await counter.press('Escape');
+      await expect(surface.frameLocator('iframe').locator('body')).toHaveAttribute('data-escape-prevented', 'false');
+      await expect(surface).toBeVisible();
+      await expect(counter).toHaveText('1');
+      check(reader.url() === address && await originalFrame.evaluate((element) => element.isConnected), 'Standalone fullscreen changed the URL or iframe identity.');
+    }
+    check(standaloneRequests.length === 0, 'Standalone fullscreen reloaded its HTML resources.');
+    await originalFrame.dispose();
+  } finally { await reader.close(); }
+  return { modalEscape: 'full-normal-close', standaloneEscape: 'full-normal-native', retainedFrameAndFileInput: true,
+    draftRetained: true, noPreviewReload: true, nestedMenuFirst: true, childWindowEscapeFirst: true, shortReading, viewports: ['1440x1000', '390x640', '320x240'] };
+};
+
 export const runAuthCombined = async (options: AuthCombinedOptions): Promise<AuthCombinedReceipt> => {
   check(options.directory === join(options.target.acceptanceDirectory, options.target.target === 'native' ? 'native/auth-combined' : 'container/auth-combined'), 'Combined directory is outside its owned target.');
   const signal = AbortSignal.any([options.signal, AbortSignal.timeout(180_000)]);
@@ -332,7 +488,8 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const bobMember = members.items.find((member) => member.userId === bobUser.id);
     check(bobMember?.role === 'member', 'Invitation did not create a normal member.');
     await record('partial-sharing', { aliceId: aliceUser.id, bobId: bobUser.id, sharedProject: shared.id, privateProject: privateProject.id, baselineAlice: a0, baselineBob: b0, pageLimit: 1 });
-    const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: 'Browser and installed CLI share this task.' });
+    const reading = `# Fullscreen reading\n\n${'Browser and installed CLI share this long reading task.\n\n'.repeat(120)}`;
+    const task = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${shared.id}/tasks`, 201, { title: 'Combined member task', description: reading });
     const privateTask = await request<Task>(bob, origin, 'POST', `/api/v1/projects/${privateProject.id}/tasks`, 201, { title: 'Private authority control' });
     await request(bob, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 403, {});
     await request(bob, origin, 'PATCH', `/api/v1/projects/${shared.id}/members/${bobUser.id}`, 403, { version: bobMember.version, role: 'admin' });
@@ -357,10 +514,11 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const privateResource = fileUrl(privateProject.id, privateTask.id, 'private.bin');
     check((await bob.put(`${origin}${privateResource}`, { headers: { Origin: origin, 'Content-Type': 'application/octet-stream' }, data: binary })).status() === 201, 'Private control attachment creation failed.');
     const assets = [
-      ['site/index.html', 'text/html', '<!doctype html><link rel="stylesheet" href="style.css"><button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button><script type="module" src="app.js"></script>'],
-      ['site/style.css', 'text/css', 'button{color:rgb(17,99,155)}'],
+      ['site/index.html', 'text/html', '<!doctype html><link rel="stylesheet" href="style.css"><button id="counter" onclick="this.textContent=String(Number(this.textContent)+1)">0</button><main id="reading-space">Long embedded document</main><script type="module" src="app.js"></script>'],
+      ['site/style.css', 'text/css', 'button{color:rgb(17,99,155)}#reading-space{height:1800px}'],
       ['site/app.js', 'text/javascript', 'const response=await fetch("data.json");document.body.dataset.value=(await response.json()).value;'],
       ['site/data.json', 'application/json', '{"value":"combined-cookie-module"}'],
+      ['docs/long.md', 'text/markdown', reading],
     ] as const;
     for (const [path, type, body] of assets) check((await bob.put(`${origin}${fileUrl(shared.id, task.id, path)}`, {
       headers: { Origin: origin, 'Content-Type': type }, data: body })).status() === 201, 'Shared preview resource creation failed.');
@@ -388,8 +546,8 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     await expect(frame.locator('#counter')).toHaveCSS('color', 'rgb(17, 99, 155)');
     await frame.locator('#counter').click(); await expect(frame.locator('#counter')).toHaveText('1');
     await screenshots(bobPage, 'shared-preview-chinese');
-    await frame.locator('#counter').press('Escape'); await expect(detail).toHaveCount(0);
-    await record('same-data-cli-browser', { projectId: shared.id, taskId: task.id, taskVersion: snapshot.version.toString(), path: 'shared/data.bin', bytes: binary.length, sha256: hash(binary), propertiesRetained: true, moduleAndRelativeFetch: true });
+    const fullscreen = await fullscreenPreview(bobPage, bobContext, origin, shared.id, task);
+    await record('same-data-cli-browser', { projectId: shared.id, taskId: task.id, taskVersion: snapshot.version.toString(), path: 'shared/data.bin', bytes: binary.length, sha256: hash(binary), propertiesRetained: true, moduleAndRelativeFetch: true, fullscreen });
     const pending = await request<Invitation>(alice, origin, 'POST', `/api/v1/projects/${shared.id}/invitations`, 201, {});
     const pendingToken = new URL(pending.link).hash.slice(1); secrets.add(pendingToken);
     const memberSnapshot = encode(await request(alice, origin, 'GET', `/api/v1/projects/${shared.id}/members`, 200));

@@ -12,9 +12,12 @@ const detail = (page: Page): Locator => page.locator('.task-detail-dialog');
 const platform = (page: Page): Locator => detail(page).getByRole('combobox', { name: /^(执行平台|Execution platform)$/, exact: true });
 const confirmation = (page: Page): Locator => page.getByRole('alertdialog', { name: /^(修改执行平台？|Change execution platform\?)$/, exact: true });
 const review = async (page: Page, target: string): Promise<void> => {
-  const saved = await platform(page).inputValue();
-  await platform(page).focus(); await platform(page).selectOption(target);
-  await expect(confirmation(page)).toBeVisible(); await expect(platform(page)).toHaveValue(saved);
+  const select = platform(page);
+  await expect(select).toBeEnabled();
+  const saved = await select.inputValue();
+  await select.focus(); await expect(select).toBeFocused();
+  await select.selectOption(target);
+  await expect(confirmation(page)).toBeVisible(); await expect(select).toHaveValue(saved);
 };
 const confirm = async (page: Page): Promise<void> => {
   await confirmation(page).getByRole('button', { name: /^(修改平台|Change platform)$/, exact: true }).click();
