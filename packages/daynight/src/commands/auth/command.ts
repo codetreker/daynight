@@ -1,3 +1,4 @@
+import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { OperationLimits } from "../../api/operation.js";
@@ -14,6 +15,7 @@ import { loginDefinition, logoutDefinition } from "./definition.js";
 export type AuthDependencies = {
   fetch?: typeof globalThis.fetch;
   openBrowser?: typeof openBrowser;
+  hostname?: typeof hostname;
   wait?: (milliseconds: number, signal: AbortSignal) => Promise<void>;
   limits?: Partial<OperationLimits>;
   signal?: AbortSignal;
@@ -28,6 +30,7 @@ export const runLoginCommand = async (args: readonly string[], context: CliConte
     try {
       const paths = resolveConfigurationPaths(context.homeDirectory());
       const observed = await loadServerConfiguration(paths, operation.signal);
+      const deviceName = (dependencies.hostname ?? hostname)();
       const client = createDeviceClient(observed.serverUrl, operation, dependencies.fetch);
       const authorization = await client.begin();
       authorizationExpiry = AbortSignal.timeout(Math.min(600_000, authorization.expiresIn * 1000));
@@ -45,7 +48,7 @@ export const runLoginCommand = async (args: readonly string[], context: CliConte
         await (dependencies.wait ?? ((milliseconds, currentSignal) => delay(milliseconds, undefined, { signal: currentSignal })))(interval, authorizationSignal);
         authorizationSignal.throwIfAborted();
         let result;
-        try { result = await client.poll(authorization.deviceCode, authorizationSignal); }
+        try { result = await client.poll(authorization.deviceCode, deviceName, authorizationSignal); }
         catch (cause) {
           authorizationSignal.throwIfAborted();
           if (!(cause instanceof DeviceRequestTimeoutError)) throw cause;

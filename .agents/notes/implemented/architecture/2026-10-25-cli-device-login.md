@@ -30,7 +30,9 @@ business-operation budgets.
 
 The device grant is a new authorization method for the existing PAT credential
 store. Approval binds the browser's account. A locked transaction consumes that
-grant and creates one `Daynight CLI` credential with no expiration. The account
+grant and creates one `Daynight CLI (<hostname>)` credential with no expiration.
+The [machine-name decision](../feature/2026-10-25-cli-credential-machine-name.md)
+owns the client-supplied hostname and its display limits. The account
 token manager exposes its metadata, editable expiration and revocation. Both CLI
 and manually created PATs default to never expiring, so unattended commands keep
 access until the owner chooses an expiration or revokes it. A future expiry can
