@@ -32,7 +32,7 @@ const fixture = (initial: readonly Attachment[] = []) => {
   };
   return api;
 };
-const open = (api: AttachmentApi, taskId = '00000000-0000-4000-8000-000000000001') => render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId={taskId} api={api} onClose={vi.fn()} />);
+const open = (api: AttachmentApi, taskId = '00000000-0000-4000-8000-000000000001') => render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId={taskId} api={api} />);
 const fileButton = (name: RegExp): HTMLElement => {
   const selection = screen.getAllByRole('button', { name }).find((button) => button.hasAttribute('aria-pressed'));
   if (selection === undefined) throw new Error(`No file selection button matches ${name}`);
@@ -213,7 +213,7 @@ describe('task attachments', () => {
   it('retries text previews and uses injected native preview and download URLs', async () => {
     const api = fixture([file('text.txt'), file('image.svg', 'image/svg+xml')]);
     const readText = vi.fn().mockRejectedValueOnce(new Error('private preview')).mockResolvedValue('Recovered');
-    render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="task" api={{ ...api, readText }} onClose={vi.fn()} urls={{ page: (path) => `/reader/${path}`, previewRoot: '/fixtures/', preview: (path) => `/fixtures/${path}`, download: (path) => `/downloads/${path}` }} />);
+    render(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="task" api={{ ...api, readText }} urls={{ page: (path) => `/reader/${path}`, previewRoot: '/fixtures/', preview: (path) => `/fixtures/${path}`, download: (path) => `/downloads/${path}` }} />);
     fireEvent.click(await findFileButton(/text.txt/));
     expect(await screen.findByRole('alert')).not.toHaveTextContent('private preview');
     fireEvent.click(screen.getByRole('button', { name: '重试预览' }));
@@ -221,6 +221,11 @@ describe('task attachments', () => {
     fireEvent.click(fileButton(/image.svg/));
     expect(await screen.findByRole('img')).toHaveAttribute('src', '/fixtures/image.svg');
     expect(screen.getByRole('link', { name: '下载' })).toHaveAttribute('href', '/downloads/image.svg');
+    const openPreview = screen.getByRole('link', { name: '在新标签页打开' });
+    expect(openPreview).toHaveAttribute('aria-label', '在新标签页打开');
+    expect(openPreview).toHaveAttribute('title', '在新标签页打开');
+    expect(screen.getByRole('heading', { name: 'image.svg' })).toHaveAttribute('title', 'image.svg');
+    expect(screen.getByText(/image\/svg\+xml/)).toHaveAttribute('title', expect.stringContaining('image/svg+xml'));
   });
 
   it('retries HTML availability failures before mounting its native frame and reloads successful overwrites', async () => {
@@ -379,7 +384,8 @@ describe('task attachments', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.queryByRole('button', { name: '更多操作：target.txt' })).toBeNull();
     expect(screen.getByRole('button', { name: '刷新附件' })).toBeDisabled();
-    expect(screen.getByRole('group', { name: '附件预览' })).toHaveFocus();
+    // Dialog removal can precede the passive cleanup that restores preview focus.
+    await waitFor(() => expect(screen.getByRole('group', { name: '附件预览' })).toHaveFocus());
     await act(async () => pending.resolve({ items: [], nextCursor: null }));
     expect(screen.getByRole('group', { name: '附件预览' })).toHaveFocus();
   });
@@ -433,7 +439,7 @@ describe('task attachments', () => {
     const view = open(api);
     await findFileButton(/old.txt/);
     const dialog = showDeleteConfirmation('old.txt');
-    view.rerender(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="00000000-0000-4000-8000-000000000002" api={api} onClose={vi.fn()} />);
+    view.rerender(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="00000000-0000-4000-8000-000000000002" api={api} />);
     expect(dialog).not.toHaveAttribute('open');
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(api.remove).not.toHaveBeenCalled();
@@ -452,7 +458,7 @@ describe('task attachments', () => {
     const user = userEvent.setup();
     await user.click(screen.getByText('上传文件', { selector: 'summary' }));
     await user.upload(screen.getByLabelText('选择一个文件'), new File(['old'], 'old-upload.txt'));
-    view.rerender(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="00000000-0000-4000-8000-000000000002" api={injected} onClose={vi.fn()} />);
+    view.rerender(<TaskAttachments projectId="00000000-0000-4000-8000-000000000100" taskId="00000000-0000-4000-8000-000000000002" api={injected} />);
     expect(screen.queryByText('Contents of old.txt')).toBeNull();
     expect(screen.getByText('上传文件', { selector: 'summary' }).parentElement).not.toHaveAttribute('open');
     expect(screen.getByLabelText('目标相对路径')).toHaveValue('');

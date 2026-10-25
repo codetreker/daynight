@@ -40,9 +40,12 @@ semantics apply in both containers without a new API, storage key or renderer.
 
 The shared split retains adjacent inventory and preview at narrow widths, with
 independent inventory scrolling and one right-side vertical owner. Standalone
-native frames use ordinary browser keys; the modal frame bridge remains scoped
-to an actual detail dialog and close callback. File confirmation retains its own
-native modal ownership.
+native frames use ordinary browser keys in normal mode. The
+[fullscreen-reading decision](../feature/2026-10-25-task-detail-fullscreen.md)
+extends the bridge from dialog-only close semantics to an explicit reading
+root/onEscape owner. Standalone fullscreen enables it on the already-loaded
+document, and exit releases it without a frame reload. File confirmation retains
+its own native modal ownership.
 
 This panel-reuse decision partially supersedes the initial read-only composition
 in the [full-reader decision](2026-10-22-task-attachment-full-reader.md).

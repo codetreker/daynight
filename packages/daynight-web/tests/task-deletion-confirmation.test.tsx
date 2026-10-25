@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, deleteTask, getTask } from '../src/api/client';
@@ -25,6 +26,10 @@ const open = async (locale: 'en' | 'zh-CN' = 'en') => {
   await screen.findByRole('heading', { name: initial.title }); await waitFor(() => expect(screen.getByRole('button', { name: locale === 'en' ? 'Delete task' : '删除任务' })).toBeEnabled());
   return { ...view, props, dialog: screen.getByRole('dialog') };
 };
+const IndependentDetail = () => {
+  const [fullscreen, setFullscreen] = useState(false);
+  return <TaskDetailSessionBoundary><TaskDetailSurface presentation="page" fullscreen={{ active: fullscreen, onChange: setFullscreen }} projectId={project} taskId={task} snapshot={snapshotFixture([initial])} navigation={{ tab: 'overview', path: null }} onNavigate={vi.fn()} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} /></TaskDetailSessionBoundary>;
+};
 const review = (dialog: HTMLElement) => { const opener = within(dialog).getByRole('button', { name: 'Delete task' }); opener.focus(); fireEvent.click(opener); return screen.getByRole('alertdialog', { name: 'Delete and remove dependencies?' }); };
 
 describe('reviewed task-deletion confirmation', () => {
@@ -50,6 +55,17 @@ describe('reviewed task-deletion confirmation', () => {
     expect(within(dialog).queryByText('Original task materials')).toBeNull(); expect(within(dialog).queryByRole('button', { name: 'Delete task' })).toBeNull(); expect(within(dialog).queryByRole('button', { name: 'Retry details' })).toBeNull();
     expect(within(dialog).getByRole('link', { name: 'Return to task project' })).toHaveAttribute('href', `/projects/${project}`); expect(reads).toHaveBeenCalledOnce();
   });
+  it('keeps combined deletion consent and the pending operation through fullscreen changes', async () => {
+    const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); const { dialog, props } = await open();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enter fullscreen' }));
+    const cancelled = review(dialog); expect(within(cancelled).getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Escape' }); expect(screen.queryByRole('alertdialog')).toBeNull(); expect(dialog).toHaveClass('task-detail-fullscreen'); expect(writes).not.toHaveBeenCalled();
+    const confirmation = review(dialog); fireEvent.click(within(confirmation).getByRole('button', { name: 'Delete and remove dependencies' }));
+    await waitFor(() => expect(writes).toHaveBeenCalledExactlyOnceWith(project, task, initial.version, true, expect.any(AbortSignal), expect.objectContaining({ userId: TEST_VIEWER_ID })));
+    fireEvent.keyDown(document, { key: 'Escape' }); expect(dialog).not.toHaveClass('task-detail-fullscreen'); expect(props.onClose).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Enter fullscreen' })); expect(dialog).toHaveClass('task-detail-fullscreen'); expect(within(dialog).getByRole('button', { name: 'Delete task' })).toBeDisabled();
+    await act(async () => pending.resolve()); await within(dialog).findByRole('heading', { name: 'Task deleted' }); expect(dialog).toHaveClass('task-detail-fullscreen'); expect(writes).toHaveBeenCalledOnce(); expect(reads).toHaveBeenCalledOnce();
+  });
   it('invalidates a reviewed confirmation when a new task version is observed', async () => {
     const { dialog, props, rerender } = await open(); const confirmation = review(dialog); const oldSubmit = within(confirmation).getByRole('button', { name: 'Delete and remove dependencies' });
     const changed = { ...initial, title: 'Updated task', version: initial.version + 1n }; reads.mockResolvedValue(changed);
@@ -63,9 +79,16 @@ describe('reviewed task-deletion confirmation', () => {
   });
   it('provides the same confirmation and deleted terminal on an independent detail page', async () => {
     await world.sync([initial]); writes.mockResolvedValueOnce();
-    renderWithLocale(<TaskDetailSessionBoundary><TaskDetailSurface presentation="page" projectId={project} taskId={task} snapshot={snapshotFixture([initial])} navigation={{ tab: 'overview', path: null }} onNavigate={vi.fn()} onSelectTask={vi.fn()} onRefreshGraph={vi.fn()} /></TaskDetailSessionBoundary>, { locale: 'en', container: root, taskCache: { scope: world.scope } });
-    const page = screen.getByRole('main'); await waitFor(() => expect(within(page).getByRole('button', { name: 'Delete task' })).toBeEnabled()); const confirmation = review(page); fireEvent.click(within(confirmation).getByRole('button', { name: 'Delete and remove dependencies' }));
+    renderWithLocale(<IndependentDetail />, { locale: 'en', container: root, taskCache: { scope: world.scope } });
+    const page = screen.getByRole('main'); await waitFor(() => expect(within(page).getByRole('button', { name: 'Delete task' })).toBeEnabled());
+    fireEvent.click(within(page).getByRole('button', { name: 'Enter fullscreen' }));
+    const confirmation = review(page); fireEvent.click(within(confirmation).getByRole('button', { name: 'Delete and remove dependencies' }));
     await within(page).findByRole('heading', { name: 'Task deleted' }); expect(within(page).getAllByRole('link', { name: 'Return to task project' }).every((link) => link.getAttribute('href') === `/projects/${project}`)).toBe(true); expect(reads).toHaveBeenCalledOnce(); expect(writes).toHaveBeenCalledOnce();
+    expect(page).toHaveClass('task-detail-fullscreen');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(page).not.toHaveClass('task-detail-fullscreen');
+    expect(within(page).getByRole('button', { name: 'Enter fullscreen' })).toHaveFocus();
+    expect(fireEvent.keyDown(document, { key: 'Escape' })).toBe(true);
   });
   it('confirms in Chinese with preservation text and Cancel as the initial focused control', async () => {
     const { dialog } = await open('zh-CN'); fireEvent.click(within(dialog).getByRole('button', { name: '删除任务' })); const confirmation = screen.getByRole('alertdialog', { name: '删除并解除依赖？' });

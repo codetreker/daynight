@@ -5,6 +5,7 @@ import { useI18n } from '../../i18n/LocaleProvider';
 import { MarkdownContent } from './MarkdownContent';
 import { TaskDetailPanels } from './TaskDetailPanels';
 import { TaskAttachmentsPanel, type AttachmentNavigation, type AttachmentUrls } from './attachments/TaskAttachments';
+import type { AttachmentKeyboardOwner } from './attachments/AttachmentPreview';
 import { resolveAttachmentReference, resolveMarkdownAttachmentUrl } from './attachments/model';
 import { useAttachments, type AttachmentApi } from './attachments/useAttachments';
 
@@ -13,7 +14,7 @@ type TaskDetailReadingProps = {
   readonly taskId: string;
   readonly description: string;
   readonly overview: (description: ReactNode) => ReactNode;
-  readonly onClose?: () => void;
+  readonly keyboardOwner?: AttachmentKeyboardOwner;
   readonly selection?: TaskDetailNavigation;
   readonly onSelectionChange?: (selection: TaskDetailNavigation) => void;
   readonly requireCompleteInventory?: boolean;
@@ -21,7 +22,7 @@ type TaskDetailReadingProps = {
   readonly urls?: AttachmentUrls;
 };
 
-export const TaskDetailReading = ({ projectId, taskId, description, overview, onClose, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false }: TaskDetailReadingProps) => {
+export const TaskDetailReading = ({ projectId, taskId, description, overview, keyboardOwner, api, urls, selection: controlledSelection, onSelectionChange, requireCompleteInventory = false }: TaskDetailReadingProps) => {
   const { messages } = useI18n();
   const attachments = useAttachments(projectId, taskId, api, { requireCompleteInventory });
   const [localSelection, setLocalSelection] = useState<TaskDetailNavigation>({ tab: 'overview', path: null });
@@ -50,5 +51,5 @@ export const TaskDetailReading = ({ projectId, taskId, description, overview, on
       const next = { tab: 'attachments', path } as const;
       select(next);
       setReference({ invalid: resolved.kind !== 'relative', selection: next });
-    }} />)} attachments={(active) => <TaskAttachmentsPanel active={active} projectId={projectId} taskId={taskId} attachments={attachments} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(onClose === undefined ? {} : { onClose })} {...(urls === undefined ? {} : { urls })} />} />;
+    }} />)} attachments={(active) => <TaskAttachmentsPanel active={active} projectId={projectId} taskId={taskId} attachments={attachments} navigation={ownsReference ? reference : null} onInteract={() => setReference(null)} onSelect={(path) => select({ tab: 'attachments', path })} onRemove={(path) => { if (!requireCompleteInventory && currentSelection.current.path === path) select({ ...currentSelection.current, path: null }); }} {...(keyboardOwner === undefined ? {} : { keyboardOwner })} {...(urls === undefined ? {} : { urls })} />} />;
 };

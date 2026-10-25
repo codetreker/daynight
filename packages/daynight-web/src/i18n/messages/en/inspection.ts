@@ -59,7 +59,7 @@ export const inspection: InspectionMessages = {
   },
   detail: {
     dismissNotice: "Dismiss notification", showNotice: "Show task notification",
-    openInNewTab: "Open in new tab", returnToProject: "Return to task project",
+    openInNewTab: "Open in new tab", returnToProject: "Return to task project", enterFullscreen: "Enter fullscreen", exitFullscreen: "Exit fullscreen",
     overview: "Overview",
     title: "Task details", close: "Close task details", loading: "Loading task details", failed: "Task details could not be loaded",
     refreshFailed: "Task details could not be refreshed",

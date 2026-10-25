@@ -651,13 +651,13 @@ with the same mounted canvas. Exit fullscreen or Escape returns to the inline
 graph without resetting pan, zoom or nodes. Fullscreen isolates background
 controls and cycles Tab through its visible controls; exit restores focus to the
 fullscreen button. Task details remain available above the graph, and Escape
-closes details before exiting fullscreen. Both views share a counted body scroll
+first leaves detail fullscreen, then closes details, then exits graph fullscreen, after nested menus or confirmations have handled their own layer. Both views share a counted body scroll
 lock so either unmount order restores the original scrolling state. Fullscreen
 is local to the mounted graph and is not saved as a browsing preference. The
 [fullscreen decision](../../.agents/notes/implemented/feature/2026-10-22-task-graph-fullscreen.md)
 records the modal and viewport ownership. Each node has sibling native inspection, Details and direction controls. A long graph starts with its
 root visible at readable zoom; keyboard focus brings offscreen nodes into view.
-The centered body-portal dialog has a 960px maximum width, 24px viewport gutters
+In normal mode, the centered body-portal dialog has a 960px maximum width, 24px viewport gutters
 (12px at 600px and below), and a maximum height of
 `min(880px, 100dvh - 2 × gutter)`. The persistent heading, tabs and footer
 surround an Overview panel and an Attachments panel. Overview owns its content
@@ -672,8 +672,29 @@ supports its close button, backdrop, Escape and Tab,
 and restores a surviving original trigger or a visible control in the active task view on close. Focusable
 controls are enumerated with `tabbable` 6.5.0 using its normal browser visibility
 checks. Same-origin preview frames bridge Escape and first/last Tab boundaries
-back into that dialog lifecycle. Passive unmount restoration remains responsible
+back into the active reading container. Passive unmount restoration remains responsible
 for focusing a surviving trigger after DOM removal.
+
+The title-bar Enter fullscreen/Exit fullscreen button fills the browser content
+area with the same mounted Surface in both dialog and standalone entries. The
+outer reading workspace owns this transient mode: relationship navigation retains
+it, while closing and reopening starts normal mode. Mode changes preserve the
+portal, task/tab/file selection, native file input, attachment controller, frame
+URL/identity, drafts and pending mutation session, with no new business requests.
+Application scroll containers restore their prior offsets within the new layout
+limits, including positions near the end. Exit focuses the same toggle without
+scrolling. CSS viewport sizing retains the title, actions and internal scroll
+owners at 320px/390px and short heights. At heights up to 500px, fullscreen
+uses compact title/action rows, a single metadata-control row and tighter tabs
+and panel padding; the informational footer is hidden. The full title stays in
+a focusable one-line-height scroll region. Popout links keep their accessible
+labels while showing their existing icons. The preview header keeps path/metadata
+context and actions on one row, preserving full strings through DOM/title text.
+These fullscreen-only rules leave readable nonzero Overview and preview bodies
+at 320×240. Verification observes body/frame dimensions, actual content paint
+and scrolling; visible controls alone do not establish reading access. The
+[fullscreen-reading decision](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
+records mode, scroll and keyboard ownership.
 
 ## Markdown task descriptions
 
@@ -833,14 +854,26 @@ task details at that file, even while preview content is loading.
 `TaskDetailSurface` shares the full content and existing actions between dialog
 and page: description, status, relationships, PRs, metadata, three-state setting,
 automatic-execution permission, execution platform and attachment management.
-`TaskDetailDialog` owns only the modal portal, inertness, scroll lock, focus loop,
-Escape and focus restoration. `TaskDetailPage` provides an ordinary full-page
-container, return-to-project link and language selector. The platform select
+`TaskDetailDialog` retains the modal portal, inertness, scroll lock, focus loop
+and focus restoration. `TaskDetailPage` provides an ordinary full-page container,
+return-to-project link and language selector. Their outer workspaces own fullscreen
+mode and the shared Surface handles layered Escape. Standalone fullscreen hides
+the auxiliary top bar while keeping an explicit return-to-project link in the
+title bar; exit restores normal page controls. The platform select
 stays in the status row, with its lock explanation in a hover/focus tooltip
 and operation feedback in the shared floating layer. Status, permission and
 platform use the same confirmation/review owner; file deletion keeps its own
 modal confirmation. These interactions remain available in either container.
-The standalone page and native frames do not install the outer dialog's keys.
+Ordinary standalone mode retains native page and frame keys. Fullscreen supplies
+an `AttachmentKeyboardOwner` with the active reading root and `onEscape`; the
+already-loaded same-origin frame updates its listeners without reloading. The
+bridge adds a final Window handler for each Escape/Tab event after the child
+application's current Window consumers, so consumed shortcuts retain precedence
+while boundary Tab remains synchronous. Abortable cleanup also works after the
+frame navigates cross-origin. Exiting releases the standalone bridge; ordinary page
+Escape does not navigate or close the window. Native PDF readers may not expose
+a controllable document: HTML keyboard proof does not establish PDF key behavior,
+and explicit exit/return controls remain available.
 
 `/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
@@ -1244,6 +1277,17 @@ with select-focus restoration, explicit set/clear, shared mutation locks,
 conflicts, unknown-result readback, late-response ownership and bilingual
 320px/390px layouts through the real service.
 
+Platform-review helpers wait for an enabled select, focus it and verify that
+focus before choosing an option. Cached details can appear while the live read
+still disables editing; option selection's later actionability wait does not
+repair a focus attempt on a disabled control. The cancellation assertions still
+require the saved value, restored select focus and zero writes, without forcing
+focus after dismissal or increasing timeouts. Attachment component checks wait
+for actual preview focus after delete-dialog teardown while its list reload is
+still pending, then release the reload and require focus to remain. The
+[observable-readiness decision](../../.agents/notes/implemented/testing/2026-10-20-observable-acceptance-readiness.md)
+records the synchronization rule.
+
 The `task-detail-page` journey observes source and popup requests at the browser
 context boundary. Only one registered task may receive exactly five PATCHes
 (platform success, permission enable, platform conflict, deliberate platform
@@ -1292,7 +1336,7 @@ scenario annotations validated in each target's report.
 | W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, correlated errors, empty/not-found states, delayed request replacement and complete size refusal |
 | W10 | Native and container functional targets, exact image identity and dev-ci cleanup receipt |
 | W11 | Strict raw Go/V8 coverage reports, validated complete browser/performance receipts and the final `checks` result |
-| W12, TI6–TI7 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: centered 1440px/320px dialog geometry, independently scrolling content and persistent controls; graph/standalone entry, layered fullscreen Escape, trigger disappearance, inert/scroll release and same-origin frame keys |
+| W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |
 | W13 | `task-status`, `task-status-conflicts`, `task-status-recovery`, `task-status-transitions`: same-data packed-CLI/ordinary-graph lifecycle, three-state transitions, direct completion, reopening and same-state no-op, metadata/attachment preservation, status menu and permission confirmations and tabs, cancel/Escape/focus, invalidation, stale CLI metadata, CLI/Web same-version competition, pending protection, exact int64 digits, real-commit response loss, real graph failure and task/SPA-project identity/focus/browsing preservation |
 | W15 | `task-platform`: status-row selection and confirmation, zero-write dismissal and select-focus restoration, set/clear, shared status/permission gate, exact versions, stale/unknown GET-only recovery, cross-task late ownership, manual-start lock, field propagation and bilingual narrow layouts |
 | TT3 | `project-settings`: real-service direct entry/reload, administrator save and independent member read, project isolation, exact settings versions above 2^53, stale conflict and demotion, read-only member recovery, actual commit with lost response and failed-read retry without PATCH replay, bilingual 320px/390px form/control/navigation containment and unclipped text |

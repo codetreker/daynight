@@ -67,7 +67,7 @@ describe('development attachment fixture', () => {
     let nextUrl = 0;
     vi.stubGlobal('URL', class extends URL { static createObjectURL = () => `blob:mockup-${++nextUrl}`; static revokeObjectURL = revoke; });
     const fixture = createAttachmentFixture('empty');
-    const view = render(createElement(TaskAttachments, { projectId: 'mockup-project', taskId: 'mockup-task', api: fixture.api, urls: fixture.urls, onClose: vi.fn() }));
+    const view = render(createElement(TaskAttachments, { projectId: 'mockup-project', taskId: 'mockup-task', api: fixture.api, urls: fixture.urls }));
     await screen.findByText('暂无附件，上传文件后即可在这里浏览。');
     const user = userEvent.setup();
     const summary = screen.getByText('上传文件', { selector: 'summary' });

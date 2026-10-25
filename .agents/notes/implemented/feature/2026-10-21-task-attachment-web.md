@@ -31,8 +31,11 @@ management in a dedicated tab with adjacent inventory and preview panes and one
 right-side vertical scroll owner. The [centered detail decision](2026-10-22-centered-task-detail-dialog.md)
 retains the outer shell and modal lifecycle. The
 [full-reader decision](../architecture/2026-10-22-task-attachment-full-reader.md)
-extends the shared renderer with a reloadable nonmodal page and scopes the
-frame keyboard bridge to actual dialog use. The
+extended the shared renderer with a reloadable nonmodal page and originally
+scoped the frame keyboard bridge to actual dialog use. The
+[fullscreen-reading decision](2026-10-25-task-detail-fullscreen.md) extends that
+bridge to an explicit reading owner for dialog and focused standalone modes,
+while normal standalone mode retains native keys. The
 [shared-page decision](../architecture/2026-10-24-shared-attachment-page.md) composes
 the complete attachment panel in both containers while keeping URL/history in
 the standalone outer page. One file input
@@ -76,9 +79,14 @@ Service Worker or separate preview origin.
 The [dashboard lifecycle](2026-10-20-project-task-dashboard.md) retains portal,
 background inertness and scroll ownership. `tabbable` 6.5.0 supplies normal
 production visibility and keyboard-order checks for form controls, CSS-hidden
-elements, iframes and contenteditable. Same-origin frame load inside an actual dialog with a close callback registers
-Escape and boundary Tab/Shift+Tab bridges into that dialog and releases them on replace
-or unmount. The [passive restoration decision](../bug-fix/2026-10-20-drawer-focus-restoration.md)
+elements, iframes and contenteditable. A loaded same-origin frame with an active
+reading owner registers Escape and boundary Tab/Shift+Tab bridges into that root.
+Loaded document or owner changes release old listeners; current callbacks do not
+require a frame reload. A per-event final Window handler lets existing Document
+and Window consumers prevent an outer shortcut before synchronous Escape/Tab
+handling. Abortable cleanup releases pending handlers without accessing a
+WindowProxy after cross-origin navigation. Replacement, disabling and unmount
+release the bridge under the fullscreen-reading decision. The [passive restoration decision](../bug-fix/2026-10-20-drawer-focus-restoration.md)
 continues to restore a surviving trigger after sibling DOM removal.
 
 The Vite-only `/tests/mockups/attachments.html` entry reuses actual attachment

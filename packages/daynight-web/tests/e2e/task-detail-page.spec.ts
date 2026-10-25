@@ -47,10 +47,14 @@ const setStatus = async (page: Page, status: TaskStatus): Promise<void> => {
 const platformSelect = (page: Page): Locator => surface(page).getByRole('combobox', { name: '执行平台', exact: true });
 const platformConfirmation = (page: Page): Locator => page.getByRole('alertdialog', { name: '修改执行平台？', exact: true });
 const reviewPlatform = async (page: Page, target: string): Promise<void> => {
-  const saved = await platformSelect(page).inputValue();
-  await platformSelect(page).focus(); await platformSelect(page).selectOption(target);
+  const select = platformSelect(page);
+  // Opening reads can display cached details before editing is enabled; focus() does not wait.
+  await expect(select).toBeEnabled();
+  const saved = await select.inputValue();
+  await select.focus(); await expect(select).toBeFocused();
+  await select.selectOption(target);
   await expect(platformConfirmation(page)).toBeVisible();
-  await expect(platformSelect(page)).toHaveValue(saved);
+  await expect(select).toHaveValue(saved);
 };
 const confirmPlatform = async (page: Page): Promise<void> => {
   await platformConfirmation(page).getByRole('button', { name: '修改平台', exact: true }).click();
