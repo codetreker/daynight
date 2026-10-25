@@ -44,8 +44,10 @@ describe("explicit device login", () => {
       .mockResolvedValueOnce(json({ error: "authorization_pending" }, 400))
       .mockResolvedValueOnce(json(token));
     const openBrowser = vi.fn(async () => {});
+    const hostname = vi.fn(() => "开发机 & laptop");
     const wait = immediateWait.mockClear();
-    await runLoginCommand([], context, { fetch, openBrowser, wait });
+    await runLoginCommand([], context, { fetch, openBrowser, wait, hostname });
+    expect(hostname).toHaveBeenCalledTimes(1);
     expect(openBrowser).toHaveBeenCalledExactlyOnceWith("https://daynight.cc/device?user_code=BCDFG-HJKLM", expect.any(AbortSignal));
     expect(wait.mock.calls.map(([milliseconds]) => milliseconds)).toEqual([5000, 5000, 10000, 10000]);
     const [firstUrl, firstInit] = fetch.mock.calls[0]!;
@@ -54,7 +56,8 @@ describe("explicit device login", () => {
     expect(new Headers(firstInit!.headers).get("Authorization")).toBeNull();
     const [pollUrl, pollInit] = fetch.mock.calls[1]!;
     expect(String(pollUrl)).toBe("https://daynight.cc/api/v1/auth/device/token");
-    expect(Object.fromEntries(new URLSearchParams(pollInit!.body as string))).toEqual({ client_id: "daynight-cli", grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: "private-device-secret" });
+    expect(Object.fromEntries(new URLSearchParams(pollInit!.body as string))).toEqual({ client_id: "daynight-cli", grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: "private-device-secret", device_name: "开发机 & laptop" });
+    expect(fetch.mock.calls.slice(1).every(([, init]) => new URLSearchParams(init!.body as string).get("device_name") === "开发机 & laptop")).toBe(true);
     expect(parse(await readFile(paths.configFile, "utf8"))).toEqual({ serverToken: token.access_token });
     if (process.platform !== "win32") expect((await stat(paths.configFile)).mode & 0o777).toBe(0o600);
     const output = vi.mocked(context.stderr).mock.calls.flat().join("");
@@ -91,10 +94,22 @@ describe("explicit device login", () => {
     for (const noBrowser of [false, true]) {
       const { context } = await fixture();
       const openBrowser = vi.fn(async () => { throw new Error("No browser installed"); });
-      await runLoginCommand(noBrowser ? ["--no-browser"] : [], context, { fetch: successFetch(), openBrowser, wait: immediateWait });
+      const fetch = successFetch();
+      await runLoginCommand(noBrowser ? ["--no-browser"] : [], context, { fetch, openBrowser, wait: immediateWait, hostname: () => "originating-host" });
+      expect(new URLSearchParams(fetch.mock.calls[1]![1]!.body as string).get("device_name")).toBe("originating-host");
       expect(openBrowser).toHaveBeenCalledTimes(noBrowser ? 0 : 1);
       expect(vi.mocked(context.stderr).mock.calls.flat().join("")).toContain("Logged in to https://daynight.cc");
     }
+  });
+
+  it("propagates hostname lookup failure before authorization and preserves the current credential", async () => {
+    const original = "serverToken: existing-credential\n";
+    const { context, paths } = await fixture(original);
+    const fetch = successFetch();
+    const failure = new Error("Hostname lookup failed");
+    await expect(runLoginCommand(["--no-browser"], context, { fetch, hostname: () => { throw failure; } })).rejects.toBe(failure);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(await readFile(paths.configFile, "utf8")).toBe(original);
   });
 
   it.each(["access_denied", "expired_token", "invalid_grant", "invalid_client"])("exposes terminal authorization failure and preserves existing credentials: %s", async (error) => {
@@ -257,7 +272,7 @@ describe("native device transport failures", () => {
     try {
       const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(failure);
       const client = createDeviceClient("https://daynight.cc", operation, fetch);
-      const error: unknown = await client.poll("device-secret").catch((cause: unknown) => cause);
+      const error: unknown = await client.poll("device-secret", "test-host").catch((cause: unknown) => cause);
       expect(error).toBeInstanceOf(DeviceRequestTimeoutError);
       expect((error as Error).cause).toBe(failure);
       expect(fetch).toHaveBeenCalledTimes(1);
@@ -270,7 +285,7 @@ describe("native device transport failures", () => {
     try {
       const failure = nativeFetchError(connectionError("UND_ERR_CONNECT_TIMEOUT"));
       const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => { cancellation.abort(new Error("Stop login")); throw failure; });
-      const error: unknown = await createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret").catch((cause: unknown) => cause);
+      const error: unknown = await createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret", "test-host").catch((cause: unknown) => cause);
       expect(error).toBeInstanceOf(OperationError);
       expect(error).toMatchObject({ kind: "cancelled" });
       expect(error).not.toBeInstanceOf(DeviceRequestTimeoutError);
@@ -285,7 +300,7 @@ describe("native device transport failures", () => {
     try {
       const failure = nativeFetchError(connectionError("UND_ERR_CONNECT_TIMEOUT"));
       const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(async () => { grant.abort(expired); throw failure; });
-      await expect(createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret", grant.signal)).rejects.toBe(expired);
+      await expect(createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret", "test-host", grant.signal)).rejects.toBe(expired);
       expect(fetch).toHaveBeenCalledTimes(1);
     } finally { operation.dispose(); }
   });
@@ -298,7 +313,7 @@ describe("native device transport failures", () => {
         await new Promise<void>((resolve) => operation.signal.addEventListener("abort", () => resolve(), { once: true }));
         throw failure;
       });
-      const error: unknown = await createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret").catch((cause: unknown) => cause);
+      const error: unknown = await createDeviceClient("https://daynight.cc", operation, fetch).poll("device-secret", "test-host").catch((cause: unknown) => cause);
       expect(error).toBeInstanceOf(OperationError);
       expect(error).toMatchObject({ kind: "deadline" });
       expect(error).not.toBeInstanceOf(DeviceRequestTimeoutError);

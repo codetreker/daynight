@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/google/uuid"
@@ -160,19 +162,23 @@ func (s *Identity) DecideDevice(ctx context.Context, p core.Principal, code, dec
 	return nil
 }
 
-func (s *Identity) RedeemDevice(ctx context.Context, clientID, grantType, code string) (MintedPAT, error) {
+func (s *Identity) RedeemDevice(ctx context.Context, clientID, grantType, code, deviceName string) (MintedPAT, error) {
 	if clientID != DeviceClientID {
 		return MintedPAT{}, &DeviceGrantError{Code: "invalid_client"}
 	}
 	if grantType != DeviceGrantType {
 		return MintedPAT{}, &DeviceGrantError{Code: "unsupported_grant_type"}
 	}
+	if !utf8.ValidString(deviceName) || strings.TrimSpace(deviceName) == "" || utf8.RuneCountInString(deviceName) > 255 || strings.ContainsFunc(deviceName, unicode.IsControl) {
+		return MintedPAT{}, &DeviceGrantError{Code: "invalid_request"}
+	}
 	if !validSecret(code, "") {
 		return MintedPAT{}, &DeviceGrantError{Code: "invalid_grant"}
 	}
 	now := s.now().UTC().Truncate(time.Microsecond)
 	result := MintedPAT{Secret: randomSecret("dnpat_")}
-	result.Credential = core.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI", TokenHash: secretHash(result.Secret), CreatedAt: now}
+	name := []rune(deviceName)
+	result.Credential = core.PersonalAccessToken{ID: uuid.NewString(), Name: "Daynight CLI (" + string(name[:min(len(name), 85)]) + ")", TokenHash: secretHash(result.Secret), CreatedAt: now}
 	outcome, err := s.store.RedeemDeviceAuthorization(ctx, secretHash(code), result.Credential)
 	if err != nil {
 		return MintedPAT{}, err

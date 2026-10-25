@@ -33,7 +33,7 @@ administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
 every project, task, graph and attachment route. The production dashboard mounts
 `AuthenticatedApp`; `daynight login` uses Daynight device authorization to obtain
-a nonexpiring `Daynight CLI` Bearer credential. Explicit PAT configuration remains
+a nonexpiring `Daynight CLI (<hostname>)` Bearer credential named for the initiating machine. Explicit PAT configuration remains
 available for automation. Existing projects are assigned members
 manually and remain inaccessible while they have no members. Trusted executable
 HTML retains its application origin, relative resources and keyboard behavior.
@@ -73,16 +73,25 @@ approve another device. Decisions bind the reviewed account through required
 | Endpoint | Contract |
 |---|---|
 | `POST /api/v1/auth/device/code` | RFC 8628 form request with `client_id=daynight-cli`; returns device and human codes, verification URLs, 600-second lifetime and five-second polling interval |
-| `POST /api/v1/auth/device/token` | Form request with the device grant type, client ID and device code; returns a Bearer credential once |
+| `POST /api/v1/auth/device/token` | Form request with the device grant type, client ID, device code and required `device_name`; returns a Bearer credential once |
 | `POST /api/v1/auth/device/inspect` | Browser JSON `{userCode}`; returns canonical code, expiry and pending/approved/denied/expired/consumed status |
 | `POST /api/v1/auth/device/decision` | Browser JSON `{userCode,decision:"approve"|"deny",expectedUserId}`; returns 204 for a new decision |
 | `POST /api/v1/auth/device/logout` | Authenticated Bearer request; deletes only the current credential and returns 204 |
+
+The CLI reads its OS hostname once when login begins and sends it as `device_name`
+on every token poll, even when the browser approval happens on another machine.
+The service accepts 1–255 valid UTF-8 Unicode characters, requires a nonblank
+value without control characters, and returns `invalid_request` for missing or
+invalid names without consuming the grant. It uses the first 85 characters inside
+`Daynight CLI (<hostname>)` to satisfy the existing 100-character PAT name limit.
+The name is client-supplied display metadata, not machine authentication. Existing
+credential names remain unchanged.
 
 PostgreSQL stores only device-secret and credential hashes. Grant decisions and
 redemption are serialized; consuming one approved grant and inserting one named
 PAT commit atomically. A lost successful token response requires a fresh login;
 consumed grants cannot issue the secret again. The account token page can revoke
-`Daynight CLI` credentials and edit the expiration of an active token without
+`Daynight CLI (<hostname>)` credentials and edit the expiration of an active token without
 changing its secret or requiring another CLI login. `null` means never expires;
 a future UTC timestamp sets an expiration. Existing finite expirations retain
 their original values. Browser sessions keep their fixed seven-day lifetime.

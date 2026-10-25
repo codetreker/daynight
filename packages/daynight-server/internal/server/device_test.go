@@ -57,7 +57,7 @@ func deviceHTTPOAuthError(t *testing.T, w *httptest.ResponseRecorder, status int
 	}
 }
 func (h *authHarness) poll(d deviceStartResponse) *httptest.ResponseRecorder {
-	return h.form("/api/v1/auth/device/token", url.Values{"client_id": {service.DeviceClientID}, "grant_type": {service.DeviceGrantType}, "device_code": {d.DeviceCode}}.Encode(), "application/x-www-form-urlencoded")
+	return h.form("/api/v1/auth/device/token", url.Values{"client_id": {service.DeviceClientID}, "grant_type": {service.DeviceGrantType}, "device_code": {d.DeviceCode}, "device_name": {"workstation"}}.Encode(), "application/x-www-form-urlencoded")
 }
 func deviceBody(d deviceStartResponse, decision string) string {
 	b, _ := json.Marshal(map[string]string{"userCode": d.UserCode, "decision": decision, "expectedUserId": d.ExpectedUserID})
@@ -80,6 +80,14 @@ func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	if _, err := h.database.Pool.Exec(context.Background(), `UPDATE device_authorizations SET next_poll_at=$1`, time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	fields := url.Values{"client_id": {service.DeviceClientID}, "grant_type": {service.DeviceGrantType}, "device_code": {d.DeviceCode}}
+	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", fields.Encode(), "application/x-www-form-urlencoded"), 400, "invalid_request")
+	for _, name := range []string{"", " ", "\xff", "host\x00name", "host\nname", strings.Repeat("界", 256)} {
+		fields.Set("device_name", name)
+		deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", fields.Encode(), "application/x-www-form-urlencoded"), 400, "invalid_request")
+	}
+	fields["device_name"] = []string{"workstation", "other-machine"}
+	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", fields.Encode(), "application/x-www-form-urlencoded"), 400, "invalid_request")
 	tokenReply := h.poll(d)
 	response := decodeResponse[struct {
 		AccessToken string `json:"access_token"`
@@ -93,6 +101,10 @@ func TestDeviceHTTPApprovalRedemptionAndLogout(t *testing.T) {
 	me := decodeResponse[api.User](t, h.request("GET", "/api/v1/me", "", nil, auth, ""), 200)
 	if me.ID == "" {
 		t.Fatal("issued credential cannot authenticate")
+	}
+	listed := decodeResponse[api.PersonalAccessTokenList](t, h.request("GET", "/api/v1/me/tokens", "", cookies, nil, ""), 200)
+	if len(listed.Items) != 1 || listed.Items[0].Name != "Daynight CLI (workstation)" {
+		t.Fatalf("hostname not exposed in account token list: %+v", listed)
 	}
 	inspected := decodeResponse[service.DeviceInspection](t, h.request("POST", "/api/v1/auth/device/inspect", `{"userCode":"`+d.UserCode+`"}`, cookies, nil, h.auth.origin), 200)
 	if inspected.Status != "consumed" {
@@ -156,9 +168,9 @@ func TestDeviceHTTPValidationAndBrowserOrigin(t *testing.T) {
 	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/code?client_id=x", "client_id=daynight-cli", "application/x-www-form-urlencoded"), 400, "invalid_request")
 	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/code", "client_id=other", "application/x-www-form-urlencoded"), 400, "invalid_client")
 	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", "client_id=daynight-cli", "application/x-www-form-urlencoded"), 400, "invalid_request")
-	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", "client_id=other&grant_type=x&device_code=x", "application/x-www-form-urlencoded"), 400, "invalid_client")
-	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", "client_id=daynight-cli&grant_type=x&device_code=x", "application/x-www-form-urlencoded"), 400, "unsupported_grant_type")
-	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", "client_id=daynight-cli&grant_type="+url.QueryEscape(service.DeviceGrantType)+"&device_code=x", "application/x-www-form-urlencoded"), 400, "invalid_grant")
+	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", "client_id=other&grant_type=x&device_code=x&device_name=workstation", "application/x-www-form-urlencoded"), 400, "invalid_client")
+	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", "client_id=daynight-cli&grant_type=x&device_code=x&device_name=workstation", "application/x-www-form-urlencoded"), 400, "unsupported_grant_type")
+	deviceHTTPOAuthError(t, h.form("/api/v1/auth/device/token", "client_id=daynight-cli&grant_type="+url.QueryEscape(service.DeviceGrantType)+"&device_code=x&device_name=workstation", "application/x-www-form-urlencoded"), 400, "invalid_grant")
 	for _, path := range []string{"code", "token"} {
 		w := h.request("GET", "/api/v1/auth/device/"+path, "", nil, nil, "")
 		deviceHTTPOAuthError(t, w, 405, "invalid_request")

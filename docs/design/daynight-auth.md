@@ -121,7 +121,7 @@ __Host-daynight_session、Path=/、Secure、HttpOnly、SameSite=Lax、无 Domain
 会话绝对有效期七天，不后台续期；注销删除当前会话。Session 的有限到期和 PersonalAccessToken
 的可空到期由独立领域记录表达，Principal 仍区分 session/PAT。PAT 默认永不过期，
 `expiresAt:null` 表示持续有效至撤销；有限值表示对应 UTC 时刻后拒绝新请求。Web 会话可创建名称
-1–100 字符的 PAT，设备授权在明确批准后通过领取事务创建同类型的永不过期 `Daynight CLI` 凭据。
+1–100 字符的 PAT，设备授权在明确批准后通过领取事务创建同类型的永不过期 `Daynight CLI (<hostname>)` 凭据。
 明文只交付一次，列表返回 ID、名称、创建时间与必填的 nullable expiresAt。
 会话可修改或撤销自己的有效 PAT，CLI 可撤销当前 Bearer 自身，均不影响其他凭据。
 
@@ -299,7 +299,7 @@ sequenceDiagram
     B->>D: 现有登录后 inspect 短码
     B->>D: 用户核对账号/短码后 approve 或 deny
     loop 按指定间隔等待
-        C->>D: POST device/token (device_code)
+        C->>D: POST device/token (device_code、device_name)
         D-->>C: pending / slow_down / 终止 / 单次凭据
     end
     C->>C: 锁内核对 origin/凭据并原子保存
@@ -312,8 +312,11 @@ sequenceDiagram
 验证 URL 固定使用已配置主站 origin 与 `/device`，不信任请求 Host 或转发 header。
 CLI 只接受目标服务同源的验证页，设备秘密和访问凭据不放入浏览器 URL。
 
-`POST /api/v1/auth/device/token` 接收相同 form 编码的 `client_id`、`device_code` 和
-`grant_type=urn:ietf:params:oauth:grant-type:device_code`。成功返回 `access_token`、
+`POST /api/v1/auth/device/token` 接收相同 form 编码的 `client_id`、`device_code`、必填 `device_name` 和
+`grant_type=urn:ietf:params:oauth:grant-type:device_code`。CLI 在登录开始时通过 `node:os.hostname()`
+读取一次发起机器名，全部轮询使用同一值，浏览器所在机器不影响该名称。服务端要求有效 UTF-8、
+1–255 个 Unicode 字符、非空白且不含控制字符；非法值以 `invalid_request` 拒绝，授权不被消费。
+机器名获取失败直接传播，不替换为通用名称。成功返回 `access_token`、
 `token_type:Bearer`；默认永不过期，省略 `expires_in`，CLI 接受缺省或明确的正整数秒数。
 设备授权的 `expires_in:600` 仍表示十分钟领取窗口，不是凭据寿命。协议错误返回 `{error:...}`；
 `authorization_pending` 按当前间隔继续，过快请求返回 `slow_down` 并把后续间隔增加五秒，
@@ -334,7 +337,9 @@ session 和精确 Origin；PAT、过期会话与跨源请求不能决定授权�
 批准绑定已复核有效会话的用户，拒绝后不可领取。
 
 领取在单个事务锁定授权，复核有效期与批准状态，原子创建现有 PAT 并标记已消费。
-凭据名称固定 `Daynight CLI`，expiresAt 为 null，默认永不过期；账户令牌管理器可修改到期时间
+服务层将机器名前 85 个 Unicode 字符格式化为 `Daynight CLI (<hostname>)`，满足现有 PAT
+名称最多 100 字符的存储约束。该字段只用于凭据展示，既不认证机器，也不参与批准账号或权限判断；
+无需在设备授权记录中持久化。已有凭据名称保持原值。expiresAt 为 null，默认永不过期；账户令牌管理器可修改到期时间
 或撤销，修改保持原秘密。授权确认页说明持续访问，不提供期限选择。不增加 credential kind 或 refresh token。并发领取只有一次成功；明文不持久化，领取成功响应丢失
 不能重新取回，用户重新发起登录，遗留凭据可在账户页撤销。现有 PAT 创建接口仍只允许有效浏览器会话。
 
