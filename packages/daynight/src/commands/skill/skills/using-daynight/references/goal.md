@@ -2,7 +2,8 @@
 
 Read this reference when starting or registering a Goal, discussing one of its
 stages, or advancing its authorized scope. Use [create-task](create-task.md) for
-content and registration, [run-task](run-task.md) for task execution, and
+registration, [the task content standard](task-content.md) for the shared six
+content requirements, [run-task](run-task.md) for task execution, and
 [the handbook](handbook.md) for CLI semantics. A Goal uses existing tasks,
 attachments, complete `dependsOn` relationships, their `externalDependsOn`
 classification, and PR properties. It adds no resource, command, or status.
@@ -35,8 +36,9 @@ Create or reuse only the requirements discussion task, titled `[Goal]<outcome>`.
 The marker is followed directly by the outcome. Do not create an architecture
 placeholder or delivery tasks at this point. Give the task a self-contained Markdown description
 for the known problem, intended outcome, scope, constraints, open
-questions, and observable completion conditions. Its primary Markdown's Solution
-and Acceptance criteria describe this discussion and its user-confirmation gate;
+questions, and observable completion conditions. The description and actual
+references provide this discussion's solution, acceptance criteria, confirmation
+gate, and task-owned evidence location under the shared content standard;
 finished requirements and prototypes are outputs, not prerequisites to starting.
 
 Each task starts in `todo`. For an explicit discussion-start request, read its
@@ -49,8 +51,8 @@ task is resumed after checking its actual work and context.
 Discuss requirements with the user: the whole problem, desired behavior, scope,
 constraints, exclusions, and whole-Goal acceptance. Keep current material and open
 questions in this task's description or attachments. The description remains a
-self-contained brief; its primary Markdown owns detailed requirements, validation,
-and evidence. Before requesting user review, save the complete current material,
+task-specific brief and source entrypoint; detailed requirements have one owner,
+and confirmation, validation, and evidence stay at an identified task-owned location. Before requesting user review, save the complete current material,
 read it back, and provide the task and resource reference.
 
 For a UI Goal, produce a final-style interactive frontend-only prototype with
@@ -111,9 +113,9 @@ either discussion does not establish whole-Goal completion.
 ## Register the confirmed delivery breakdown
 
 Only after user solution confirmation, create or reuse the concrete delivery tasks
-needed for the agreed outcome. Each needs its own problem, objective, scope,
-deliverables, constraints, solution, observable acceptance, verification methods,
-and real input references. Include independently scoped acceptance work when it
+needed for the agreed outcome. Each description and its actual references must
+satisfy the six-item content standard, including task-specific responsibility,
+input/output contracts, observable acceptance, verification, and evidence ownership. Include independently scoped acceptance work when it
 has its own outcome. A [final-acceptance](../SKILL.md#final-acceptance) brief
 identifies the original whole-Goal requirements and confirmed changes, and assesses
 the combined delivery under the shared rule. Do not turn agent-generated execution
@@ -124,7 +126,9 @@ Create new delivery tasks in `todo`. Solution confirmation authorizes the
 confirmed breakdown's registration, not implementation, autopilot,
 automatic-execution permission, publishing, deployment, or merge. Apply any
 separate explicit authorization only within its stated scope. New tasks have
-`allowAgents=false`; automated workflows must not enable it themselves.
+`allowAgents=false`; registration does not enable it. Only a separately explicit
+[handoff](handoff.md) may review and enable permission; it does not supply delivery
+execution authorization or advance the discussion gate.
 
 Use ordinary dependencies for real within-Goal prerequisites. Every delivery root
 without another ordinary implementation prerequisite depends directly on the
@@ -134,16 +138,19 @@ external prerequisites remain real blockers and do not replace that ordinary
 design gate. Preserve the complete relationship sets under the handbook's CLI
 replacement semantics. Do not create dependencies merely to group cards.
 
-Upload each task's own primary Markdown and needed resources. Keep shared
-requirements with the requirements task and the solution and breakdown with the
-solution task. Consumers reference the verified source task ID and attachment
-path, or an immutable repository source. Every delivery task's description must
-directly list the architecture task ID and every architecture document required
-for that task, using its full attachment path under the source task. For a
-repository document, retain the architecture task ID and use a verified immutable
-repository reference. Include applicable sections when they clarify what to read.
-This applies to indirect successors as well as delivery roots; a reference only
-in another task or the delivery task's own primary Markdown is insufficient.
+Upload needed task-owned resources when their content uses attachments. Keep
+shared requirements with the requirements task and the solution and breakdown with the
+solution task. Consumers reference the owning task ID and the source description
+with applicable sections for inline content, full paths for actual attachments,
+or immutable repository sources. Use `task show --json` for source descriptions
+and the attachment commands for actual attachment contents. Every delivery
+task's description must directly list the architecture task ID and all required
+architecture source locations: description and applicable sections for inline
+design, full paths under the source task for each actual required attachment
+document, and verified immutable repository references for repository documents.
+Do not fabricate an attachment path or copy or relocate inline architecture to
+fit this index. This applies to indirect successors as well as delivery roots;
+a reference only in another task or inside an attachment is insufficient.
 These input references do not add execution dependencies or duplicate shared
 documents.
 
@@ -180,11 +187,18 @@ Read these attachments from that task before implementation:
 This task's `plan.md` owns its implementation plan and full acceptance criteria.
 ```
 
+When the shared architecture is inline, the architecture inputs instead identify
+the same source task ID and its description sections, such as "Upload flow" and
+"Error classification". Read those sections with `task show --json`; list full
+paths only for actual attachment documents that are also required.
+
 ## Preserve ownership and recover partial registration
 
 Stage briefs describe the work to produce the stage's outputs; they do not claim
-unfinished results exist. Every stage and delivery task has its own self-contained
-Markdown brief and detailed primary Markdown. Keep shared inputs at their actual
+unfinished results exist. Every stage and delivery task provides a task-specific
+Markdown brief and the complete applicable content, directly or through verified
+references. Complete inline content needs no primary attachment. Identify each
+task's own confirmation and evidence location. Keep shared inputs at their actual
 owner. Do not distribute a duplicate whole packet to every task. An independently
 needed snapshot records its purpose, original source, and source revision or
 content identity. Existing attachment reads support these references; do not

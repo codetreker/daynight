@@ -10,15 +10,19 @@ it is not automatic backlog selection.
 ## Establish the task and stage
 
 Read the complete task with `daynight task show <task-id> --json`. Its Markdown
-description must make the problem, current actions, scope, deliverables,
-constraints, and observable completion summary understandable. Read its own primary
-Markdown's Solution and Acceptance criteria; equivalent headings in the task's
-language are valid.
+description must identify the concrete current work, responsibility, and content
+sources. Read it and its actual required references under
+[the task content standard](task-content.md), including the solution, acceptance
+criteria, and explicit task-owned confirmation/evidence location. Complete inline
+content needs no primary attachment; document-owned and mixed organization are
+valid when the combined contents satisfy the same six requirements.
 Resolve description-relative links and images from the current task's attachment
 root; links inside a Markdown attachment use its own directory. Resolve real
-shared input references using the source task ID and attachment path or a verified
-immutable repository reference. Read required contents rather than assuming a
-task read loads attachment inventory or bytes.
+shared input references using the owning task ID and description/sections,
+complete paths for actual attachments, or a verified immutable repository
+reference. Read source descriptions through `task show --json` and actual
+attachment contents through the attachment commands; a task read does not load
+attachment inventory or bytes.
 
 For a Goal stage or delivery task, read [the Goal protocol](goal.md) and identify
 its role from the actual task content and context. Apply that stage's input and
@@ -26,9 +30,10 @@ output requirements. Requirements and solution discussions start from their stag
 the completed requirements, applicable UI prototype, and architecture are outputs
 of the stages that produce them. Delivery tasks require the delivered design and
 applicable prototype. Before implementation, read every required architecture
-document listed in the delivery task's description using its architecture task ID
-and full attachment paths or verified immutable repository references. This also
-applies when the architecture task is only an indirect prerequisite. Confirm the
+source listed in the delivery task's description: the owning architecture task's
+inline description and applicable sections, full paths for actual attachment
+documents, or verified immutable repository references. This also applies when
+the architecture task is only an indirect prerequisite. Confirm the
 description's references satisfy the Goal protocol. When a prototype is a required
 input, view and exercise it with its resources. An unfinished output of the current
 stage is not a missing input.
@@ -54,12 +59,11 @@ express same-chain prerequisites, external marks distinguish verified cross-chai
 ownership. Both kinds must be done before entering in_progress or done. Classification
 never grants permission to execute a prerequisite, enable automatic
 execution, or remove a blocker.
-A missing or unreadable primary Markdown, missing Solution or Acceptance criteria,
-or missing or unreadable required architecture reference or input leaves execution
-unready. Resolve it within the existing authorization or return the concrete issue.
-Do not infer requirements from a title, silently invent acceptance criteria, or
-move detailed plans into the description. Do not execute prerequisites as an
-implicit expansion of the requested task.
+Missing required content, an unreadable required source, or a missing required
+architecture reference or input leaves execution unready. Resolve it within
+existing authorization or return the concrete issue. Do not infer requirements
+from a title or silently invent acceptance criteria. Do not execute prerequisites
+as an implicit expansion of the requested task.
 
 Creation leaves a task `todo` and does not execute it. An explicit request to
 start the current Goal discussion, or the user-directed transition that starts
@@ -109,15 +113,16 @@ updates; confirm new or replaced resources before linking them. Dependency edits
 must follow the handbook's CLI replacement contract: read full D/E, retain needed
 ordinary D−E and external E declarations, submit their intended complete sets
 with the observed version, and read back both. Omit all dependency options for
-unrelated metadata updates. Each primary
-Markdown owns its detailed plan and evidence; shared inputs remain at their
-verified source.
+unrelated metadata updates. Keep detailed content at its identified owner and
+confirmations and evidence at their explicit task-owned location; shared inputs
+remain at their verified source.
 
 Advance only this task. Subagents collaborate on it, and waiting for CI, review,
 approval, or merge remains part of it. Keep all required delivery PR URLs and
 titles in the complete `properties.pullRequests` list, preserving existing
 entries. Record acceptance results and necessary delivery evidence, including
-merge commits, with the primary Markdown's corresponding acceptance criteria.
+merge commits, at this task's identified evidence location against the
+corresponding acceptance criteria.
 Rewrite current evidence coherently rather than accumulating an execution log.
 Keep operational progress, blockers, waiting items, and next action in the
 conversation or existing execution checkpoint, retaining the task ID and needed

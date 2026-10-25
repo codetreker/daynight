@@ -141,9 +141,11 @@ version and timestamps, while stale versions still conflict. Status changes and 
 `task list` and `task ready` accept `--allow-agents true|false`. The server
 combines that condition with other filters before pagination and the ready limit;
 an unfiltered ready page may contain tasks without automatic-execution permission.
-Automatic selection requires true and automated workflows must not enable it
-themselves. An explicitly user-selected task may still use manual execution regardless
-of the flag. Permission does not grant execution, publication or merge authority.
+Automatic selection requires true and does not enable permission itself.
+Only explicitly authorized [handoff](handoff.md) reviews the task against
+[the content standard](task-content.md) before enabling it; creation, breakdown,
+and execution do not do so implicitly. An explicitly user-selected task may still
+use manual execution regardless of the flag. Permission does not grant execution, publication or merge authority.
 A lost permission PATCH response is an unconfirmed write: read actual task state
 before reconsidering the operation, without resubmitting automatically.
 
@@ -215,15 +217,21 @@ explicit full relationship replacement; do not infer CLI append semantics from i
 whole supplied field. Preserve every still-needed value. Omitted fields stay
 unchanged; clearing and option-pairing syntax is in command help.
 
-**Markdown descriptions.** Write self-contained task briefs in Markdown following
-[create-task](create-task.md). The Web displays CommonMark/GFM, while API and CLI
-reads preserve the original string, including line breaks and fenced code. There
+**Markdown descriptions.** Write task-specific Markdown descriptions following
+[create-task](create-task.md) and [the task content standard](task-content.md).
+The description and actual references jointly supply the six requirements;
+complete inline content needs no primary attachment, and task-owned confirmation
+and evidence locations must be explicit. The Web displays CommonMark/GFM, while
+API and CLI reads preserve the original string, including line breaks and fenced code. There
 is no format flag. Relative description links and images start at the current
 task's attachment root; Markdown attachment internals start at their containing
 file's directory. Keep real case-sensitive paths inside the task root, confirm
 uploaded contents before linking them, and preserve Markdown and valid references
-when replacing a description. Shared inputs retain their source task ID and path
-or verified immutable repository URL; they are not cross-task relative links.
+when replacing a description. Shared inputs retain their owning task ID and
+content location: description with applicable sections for inline content, full
+path for an actual attachment, or verified immutable repository URL. Read source
+descriptions with `task show --json` and attachment contents separately. They
+are not cross-task relative links, and inline content needs no fabricated path.
 
 **Attachment independence.** Task reads contain no attachment inventory.
 Attachments use case-sensitive relative paths; uploads to the same path replace
@@ -240,9 +248,10 @@ create, establish identity from complete fields and operation context; a matchin
 title or an empty lookup alone is insufficient. Preserve actual errors and
 resource IDs rather than reporting success or blindly resending a write.
 
-Task registration, execution, and selection follow [create-task](create-task.md),
-[run-task](run-task.md), and [autopilot](autopilot.md), respectively. For a chain
-of independently tracked delivery stages, use [the Goal protocol](goal.md).
+Task registration, execution, selection, and requested handoff follow
+[create-task](create-task.md), [run-task](run-task.md), [autopilot](autopilot.md),
+and [handoff](handoff.md), respectively. For a chain of independently tracked
+delivery stages, use [the Goal protocol](goal.md).
 Every stage and delivery task follows the same todo/in_progress/done contract.
 A fixed Goal queue may use existing scoped execution authorization for its ready
 successors; registration and discussion confirmation grant no delivery execution

@@ -54,7 +54,11 @@ either null or equal to the actual platform, most relevant to the confirmed Goal
 and authorized work. Compare actions, scope, deliverables, solution, acceptance
 criteria and actual dependencies; creation order does not establish relevance.
 Read full details and actual task-specific and shared inputs for plausible
-candidates. Inspect complete `dependsOn` and its `externalDependsOn` subset.
+candidates under [the task content standard](task-content.md). Satisfy the same
+six requirements whether content is inline, referenced, or mixed, and identify
+the task-owned evidence location; permission true is not a permanent review
+certificate. Reassess changed required sources before execution. Inspect complete
+`dependsOn` and its `externalDependsOn` subset.
 External prerequisites still block readiness, and cross-chain classification does
 not authorize executing them or expand the confirmed scope. Readiness checks all
 prerequisites, not stage artifact completeness or execution authorization.
@@ -91,7 +95,9 @@ without execution; complete solution discussion only after accepted material and
 the real breakdown are verified. Existing explicit execution scope continues to
 cover its ready successors without another per-task authorization.
 
-Automatic selection never enables `allowAgents`. An explicitly selected task or
+Automatic selection never enables `allowAgents`; explicit
+[handoff](handoff.md) is a separate review and permission operation that does not
+activate this mode. An explicitly selected task or
 fixed Goal queue's manual execution path remains available regardless of the flag
 or platform compatibility; preserve prerequisite, stage-input and authorization
 checks. An automatically selected ID passed to run-task remains automatic
