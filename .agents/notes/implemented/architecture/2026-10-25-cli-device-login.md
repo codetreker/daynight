@@ -14,8 +14,12 @@ with the origin isolation and concurrency guarantees of the existing configurati
 
 Service configuration defaults to `https://daynight.cc` when its file or
 `serverUrl` field is absent. An explicit origin is a test-server override and
-retains strict validation. Ordinary setup collects review configuration;
-`--server-url` and `--server-token-stdin` remain explicit noninteractive options.
+retains strict validation. The later
+[top-level setup removal decision](../simplification/2026-10-25-remove-top-level-setup.md)
+assigns review preparation to `review add-repo` and first-use guidance, and test
+origins or unattended credentials to existing YAML fields. The original device
+login delivery retained setup options for these consumers; that command is no
+longer present.
 A missing local credential fails before business dispatch and points to
 `daynight login`; a server 401 gives the same guidance. Business commands do not
 start authorization or replay writes.
@@ -74,7 +78,8 @@ owns endpoint, data and interaction contracts.
 
 **Keep manual PAT provisioning as the normal login.** It preserves the existing
 workflow but still requires every interactive user to create and transfer a
-secret. Explicit stdin PAT configuration remains useful for unattended jobs.
+secret. The original delivery retained stdin PAT configuration for unattended
+jobs; those jobs now provision the same credential field externally.
 
 **Authorize automatically after a failed business command.** It can reduce one
 terminal command, but makes ordinary reads or writes initiate browser work and
@@ -110,7 +115,9 @@ active credential's expiration preserves its secret and the saved CLI login.
 Browser sessions retain their independent seven-day lifetime; browser logout
 remains separate from CLI logout, and neither silently revokes the other's credential.
 
-Changing the origin still clears the old local token atomically. The remote
-credential remains revocable through the account list if origin changes or local
+An external origin change must remove or replace the old local token; it does not
+run CLI cleanup. Login/logout detect concurrent changes to origin and credential
+before writing. The remote credential remains revocable through the account list
+if origin changes or local
 write failure prevent a later CLI logout. Runtime and platform acceptance remain
 source-bound evidence rather than a claim made by this decision record.

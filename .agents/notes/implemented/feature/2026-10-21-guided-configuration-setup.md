@@ -18,16 +18,17 @@ stdin and stderr are terminals. Complete configuration executes directly.
 Shared YAML/schema errors, invalid selected values, empty review repository lists
 and ordinary read failures retain their errors; unrelated capability values stay
 outside the current projection. Noninteractive missing review configuration gives
-an explicit setup command. No common initialization-complete marker is stored.
+the existing `review add-repo` command. No common initialization-complete marker is stored.
 
 The original design also guided a missing service origin and offered a
 server/review/both choice in plain `daynight setup`. The
 [device-login decision](../architecture/2026-10-25-cli-device-login.md) replaces
 that service branch with the production default and explicit login/logout.
-Plain setup now collects review configuration. Explicit `--server-url`,
-`--review-repo`, optional `--review-path`, and `--server-token-stdin` retain
-noninteractive configuration; a path requires its repository. A service-only
-machine needs no review configuration. The
+The later [top-level setup removal decision](../simplification/2026-10-25-remove-top-level-setup.md)
+removes the generic command and its explicit service-write options. Review owns
+its interactive guidance and existing `review add-repo` entry; test services and
+automation provision the existing YAML fields. A service-only machine needs no
+review configuration. The
 [client requirements](../../../../docs/spec/daynight.md#c6-按需配置引导) own the
 current behavior and the [client design](../../../../docs/design/daynight.md#按需配置引导)
 owns composition.
@@ -36,9 +37,10 @@ Input collection precedes mutation. One transaction takes the configuration lock
 rereads the latest document, checks selected fields against their observed values,
 validates the merged result and replaces the file atomically. A selected-field
 change fails explicitly; completed changes to unrelated fields are preserved.
-Origin and token are observed together, with a changed normalized origin clearing
-the old credential atomically. Comments, other capabilities and existing
-repository paths remain. Credential-bearing results use POSIX `0600` for every
+Review guidance checks its selected review fields; login/logout separately
+observe origin and token together. External service configuration writers own
+the origin/token pairing and do not run CLI cleanup. Comments, other capabilities
+and existing repository paths remain. Credential-bearing results use POSIX `0600` for every
 writer, as required by the
 [credential decision](../architecture/2026-10-22-cli-server-credentials.md).
 Files without a token keep their existing permission behavior. The
@@ -49,7 +51,7 @@ Prompts and save diagnostics use stderr, preserving machine-readable stdout.
 The shared CLI prompt/cancellation lifecycle also serves
 [skill installation](../../../../docs/design/daynight-agent-skill.md).
 Cancellation signals or EOF stop input without partial saves or original business
-execution. Setup does not access the network, prepare clones, initialize SQLite
+execution. Review guidance does not access the network, prepare clones, initialize SQLite
 or start review. After successful review guidance, the original operation executes
 once with its original arguments. Human input consumes no business budget, and
 a later failure keeps the saved configuration.
@@ -66,8 +68,8 @@ continue unchanged.
 
 **Require manual setup before every first command.** It keeps preparation
 explicit but reports an absent file before a new operator learns the available
-configuration command. Scriptable setup remains available; interactive review
-commands collect the same values when needed.
+configuration command. Explicit review registration remains available; interactive
+review commands collect the same values when needed.
 
 **Configure service access and review together on every machine.** It could
 establish one initialization state but requires repository registration on machines
@@ -94,7 +96,8 @@ The original service-input path released its initial operation deadline during
 human input and restarted the business budget after saving. Service commands now
 resolve their effective origin and credential within the ordinary business budget;
 device login has its own deadline. The original hidden credential-input extension
-kept setup independent of network state; current stdin setup retains that rule.
+kept configuration persistence independent of network state; current review
+guidance retains that boundary.
 Deployment, connectivity validation and live reviewer reload have their own
 owners. Business errors remain visible, and authentication errors never cause an
 anonymous retry or mutation replay.

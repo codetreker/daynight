@@ -6,8 +6,9 @@ Status: implemented
 
 Skill installation requires an actual terminal for Agent checkboxes and scope
 selection. Pipe-fed answers cannot prove keyboard behavior, cancellation or
-native isTTY checks. Existing setup acceptance uses a POSIX Python PTY and skips
-Windows interaction, so it does not establish the required Windows behavior.
+native isTTY checks. At this decision's adoption, setup acceptance used a POSIX
+Python PTY and skipped Windows interaction, so it did not establish the required
+Windows behavior.
 Combining terminal output also obscures whether ordinary results stay separate
 from prompt and diagnostic output.
 

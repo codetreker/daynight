@@ -6,7 +6,6 @@ import type { ReviewConfiguration } from "./config.js";
 import { resolveReviewPaths } from "./paths.js";
 import type { ReviewPaths } from "./paths.js";
 import type { AddRepositoryInput, AddRepositoryOptions, AddRepositoryResult } from "./repositories.js";
-import { guideReviewConfiguration } from "../../config/setup.js";
 
 export type ReviewCommandDependencies = {
   addRepository: (input: AddRepositoryInput, paths: ReviewPaths, options: AddRepositoryOptions) => Promise<AddRepositoryResult>;
@@ -17,8 +16,8 @@ export type ReviewCommandDependencies = {
 
 const defaultDependencies = (context: CliContext): ReviewCommandDependencies => ({
   addRepository: async (...args) => (await import("./repositories.js")).addRepository(...args),
-  listReviews: async (paths) => guideReviewConfiguration(context, async () => (await import("./listing.js")).listReviews(paths)),
-  loadConfiguration: async (paths) => guideReviewConfiguration(context, async () => (await import("./config.js")).loadConfiguration(paths)),
+  listReviews: async (paths) => (await import("./configuration-guide.js")).guideReviewConfiguration(context, async () => (await import("./listing.js")).listReviews(paths)),
+  loadConfiguration: async (paths) => (await import("./configuration-guide.js")).guideReviewConfiguration(context, async () => (await import("./config.js")).loadConfiguration(paths)),
   runReview: async (configuration, paths) => {
     const { formatCoordinatorEvent, runForegroundReview } = await import("./runtime.js");
     await runForegroundReview(configuration, paths, {

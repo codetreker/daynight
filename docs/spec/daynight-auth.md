@@ -71,11 +71,12 @@ Cookie 写请求校验精确主站 Origin；明确提供无效 Bearer 时拒绝�
 重定向不得转发凭据。
 
 CLI 在缺少配置文件或 `serverUrl` 时使用 `https://daynight.cc`，保留显式地址配置供测试服务使用。
-普通 setup 和业务命令不询问服务器或 PAT。本地无凭据时，业务命令在派发请求前报错并提示
+普通业务命令不询问服务器或 PAT。本地无凭据时，业务命令在派发请求前报错并提示
 `daynight login`；服务 401 也只给出登录指导，不自动登录、匿名回退或重试业务写入。
-自动化保留显式 `setup --server-token-stdin` 单行输入；配置保存本身无网络检查。
-HTTPS 或字面量 localhost/numeric loopback HTTP 才能保存令牌。origin 变更原子清除旧令牌，同
-origin 保留；含凭据文件在 POSIX 上使用 `0600`，其他能力写入同样遵守。YAML 错误不泄露标量或
+自动化通过受控配置文件提供 `serverToken` 和匹配的服务 origin，不提供顶层 setup 或令牌命令参数。
+HTTPS 或字面量 localhost/numeric loopback HTTP 才能使用令牌。外部更换 origin 时必须移除或替换旧
+令牌；外部文件写入不执行 CLI 的锁和凭据清理协议。CLI 登录/退出在锁内共同核对 origin 与令牌；
+含凭据文件在 POSIX 上使用 `0600`，其他能力写入同样遵守。YAML 错误不泄露标量或
 原始 parser cause。配置并发和持久化要求由[客户端 C6](daynight.md#c6-按需配置引导)与
 [客户端配置要求](daynight-project-task.md#pt2-服务配置)拥有。
 

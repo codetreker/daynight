@@ -58,7 +58,7 @@ describe("YAML configuration", () => {
   });
 
   it("explains how to configure review when only server access is configured", () => {
-    expect(() => parse("serverUrl: http://localhost:8787\n")).toThrow("Review repositories are not configured; use daynight setup --review-repo <remote>");
+    expect(() => parse("serverUrl: http://localhost:8787\n")).toThrow("Review repositories are not configured; use daynight review add-repo <remote>");
     expect(() => parse("serverUrl: http://localhost:8787\nmaxConcurrentWorker: 0\n")).toThrow("maxConcurrentWorker must be a positive safe integer");
   });
 

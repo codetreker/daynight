@@ -19,9 +19,13 @@ The shared HTTP client attaches Bearer to its existing requests while retaining
 manual redirects, request/operation/response budgets, pagination, exact versions
 and binary stdout. Credentials remain outside repository bindings.
 
-The origin and token observation are checked together under the existing write
-lock; changing the normalized origin clears the old credential atomically.
-Unrelated completed review changes are preserved. The shared configuration writer
+Login and logout check their origin and token observation together under the
+existing write lock. The original setup writer also cleared the old credential
+atomically when changing the normalized origin. Its
+[removal decision](../simplification/2026-10-25-remove-top-level-setup.md) assigns
+external service configuration to its provisioner, which must remove or replace
+the previous origin's credential. External writes do not execute CLI cleanup.
+Unrelated completed review changes are preserved by CLI writes. The shared configuration writer
 restricts credential-bearing files to POSIX `0600`, including other capability
 writes; files without a token retain the existing permission behavior. The lock,
 regular-file/symlink checks and atomic replacement remain.
@@ -42,7 +46,9 @@ Those observations describe that delivery's input path.
 
 The [device-login decision](2026-10-25-cli-device-login.md) replaces normal manual
 provisioning with explicit login/logout and removes interactive server setup.
-The stdin path remains for automation and uses the configured or default service.
+The later [top-level setup removal decision](../simplification/2026-10-25-remove-top-level-setup.md)
+removes the stdin CLI path; unattended credentials are provisioned through the
+existing YAML fields for the intended service.
 Missing local credentials and server 401s now point to `daynight login`, without
 anonymous fallback or business mutation replay. The
 [identity foundation](2026-10-22-identity-credentials.md) owns ordinary credential
@@ -52,8 +58,9 @@ owns device issuance, revocation and the trusted same-origin attachment model.
 ## Alternatives
 
 **Plain token command-line option.** It exposes a secret in shell history and
-process arguments. The original hidden prompt and retained stdin path avoid
-that exposure; current device login also avoids manual secret transfer.
+process arguments. The original hidden prompt and stdin path avoided that
+exposure; current device login avoids manual secret transfer, and external secret
+provisioners keep credentials in private configuration files.
 
 **Implement a CLI provider-login flow at original delivery.** The selected
 product model then used Web-created PATs, while UniAuth supplied a confidential
@@ -83,7 +90,8 @@ bootstrap with stdin setup, project creation/filtered listing and revocation.
 Platform terminal and shell checks were separate evidence. Those historical
 results do not establish current-source login or platform acceptance.
 
-Explicit origin replacement still validates the previously stored origin before
-saving. An invalid old value therefore requires manual repair. Fail-fast locking
+CLI login/logout retain strict validation of the observed origin and credential;
+an invalid stored value requires manual repair. External provisioners must
+maintain the origin/credential pairing themselves. Fail-fast locking
 also leaves abnormal lock recovery to the operator after confirming no writer is
 running.
