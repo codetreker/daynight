@@ -108,9 +108,11 @@ projects can proceed independently. The database intentionally has no foreign
 keys: the locked service write path validates references, local constraints
 guard individual rows. The original design had no deletion API;
 [retained task deletion](../feature/2026-10-25-task-soft-deletion.md) now supplies
-reference maintenance under that same project lock: undeleted successors block
-deletion and new dependencies cannot reference marked tasks. Introducing another
-writer still requires the same reference-maintenance discipline.
+reference maintenance under that same project lock: undeleted references block
+strict deletion, while [explicit incoming removal](../feature/2026-10-25-task-delete-remove-depends.md)
+can detach them atomically with source-version updates. New dependencies cannot
+reference marked targets. Introducing another writer still requires the same
+reference-maintenance discipline.
 
 The original deployment was loopback-only for local CLI and internal program
 callers. The [authentication activation](2026-10-22-authentication-activation.md)

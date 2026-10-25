@@ -7,7 +7,7 @@ import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 
-export type TaskMutationOperation = { readonly action: "delete"; readonly version: bigint } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint };
+export type TaskMutationOperation = { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint };
 type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string };
 class TaskMutationReviewExpired extends Error {}
 export type TaskMutationState = {
@@ -412,10 +412,10 @@ export class TaskDetailSessions {
     if (!canSetRequiredPlatform(state) || state.detail!.version !== version || state.detail!.requiredPlatform === requiredPlatform) return;
     this.performMutation(projectId, taskId, { action: "requiredPlatform", requiredPlatform, version });
   }
-  deleteTask(projectId: string, taskId: string, version: bigint): void {
+  deleteTask(projectId: string, taskId: string, version: bigint, removeDepends: boolean): void {
     const state = this.writableState(projectId, taskId);
     if (!canDeleteTask(state) || state.detail!.version !== version) return;
-    this.performMutation(projectId, taskId, { action: "delete", version });
+    this.performMutation(projectId, taskId, { action: "delete", version, removeDepends });
   }
   private async runMutationStage<T>(projectId: string, taskId: string, operation: TaskMutationOperation, work: () => T | Promise<T>): Promise<{ readonly value: T } | null> {
     const entry = this.entry(projectId, taskId);
@@ -517,7 +517,7 @@ export class TaskDetailSessions {
           const response = await this.runMutationStage(projectId, taskId, operation, () => {
             this.assertMutationReview(projectId, taskId, operation, review, requestTicket);
             submitted = true;
-            return deleteTask(projectId, taskId, operation.version, signal, admission);
+            return deleteTask(projectId, taskId, operation.version, operation.removeDepends, signal, admission);
           });
           if (response === null) return;
           await this.runMutationStage(projectId, taskId, operation, () => {

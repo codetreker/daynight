@@ -390,15 +390,15 @@ describe("compiled task commands", () => {
         if (request.method === "DELETE") { response.writeHead(204); response.end(); }
         else respond(response, current);
       });
-      for (const version of [undefined, "9223372036854775807"]) {
+      for (const { version, removeDepends } of [false, true].flatMap((removeDepends) => [undefined, "9223372036854775807"].map((version) => ({ version, removeDepends })))) {
         const before = requests.length;
-        const result = await f.invoke(["delete", taskId.toUpperCase(), ...(version === undefined ? [] : ["--if-version", version]), ...explicit]);
+        const result = await f.invoke(["delete", taskId.toUpperCase(), ...(removeDepends ? ["--remove-depends"] : []), ...(version === undefined ? [] : ["--if-version", version]), ...explicit]);
         expect(result.code, result.stderr).toBe(0);
         expect(result.stdout).toBe(`Task deleted. Stored data and attachments are retained.\nID: ${taskId}\nProject: ${projectId}\n`);
         expect(requests.slice(before).map(({ method, pathname }) => `${method} ${pathname}`)).toEqual([
           `GET ${projectPath}`, ...(version === undefined ? [`GET ${taskPath}/${taskId}`] : []), `DELETE ${taskPath}/${taskId}`,
         ]);
-        expect(requests.at(-1)!.bodyText).toBe(`{"version":${version === undefined ? current.version : version}}`);
+        expect(requests.at(-1)!.bodyText).toBe(`{"version":${version === undefined ? current.version : version}${removeDepends ? ",\"removeDepends\":true" : ""}}`);
       }
     } finally { await f.close(); }
   }, 60_000);

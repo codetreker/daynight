@@ -216,14 +216,14 @@ export const getTask = async (projectId: string, taskId: string, signal: AbortSi
 };
 
 export const deleteTask = async (
-  projectId: string, taskId: string, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+  projectId: string, taskId: string, exactVersion: bigint, removeDepends: boolean | undefined, signal: AbortSignal, admission: TaskResponseAdmission,
 ): Promise<void> => {
   const project = requestId(projectId);
   const task = requestId(taskId);
-  if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
+  if (!isTaskVersion(exactVersion) || removeDepends !== undefined && typeof removeDepends !== "boolean") throw new ApiError("protocol");
   const response = await request(`/api/v1/projects/${project}/tasks/${task}`, signal, {
     method: "DELETE", headers: { Accept: "application/json", "Content-Type": "application/json" },
-    body: stringifyApiJson({ version: exactVersion }),
+    body: stringifyApiJson({ version: exactVersion, removeDepends }),
   });
   assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
   if (response.status === 204) { admission.onWriteConfirmed?.(); return; }

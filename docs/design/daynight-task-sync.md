@@ -210,7 +210,7 @@ schema 升级时关闭旧连接，在升级事务清除可重建缓存并轮换�
 
 只保留一个项目 cache epoch，避免数据库恢复后要求每个浏览器人工清缓存。支持的恢复/导入/原始替换流程停止全部写入，完成操作后、开放服务前执行受影响项目的 `UPDATE projects SET task_cache_epoch=gen_random_uuid()`。备份本身会恢复旧 UUID，维护流程必须显式轮换。
 
-窗口不会自动识别时钟倒退或绕过正式写路径的修改。运行环境保持数据库时间正常；异常回拨或离线历史维护应恢复时间并轮换 epoch 触发完整重建。维护验收须确认任务时间假设已恢复；导入的未来任务时间不能仅靠 epoch 修正。普通重启保持 epoch。[Task 软删除](daynight-task-deletion.md)在标记删除的同一事务内轮换项目 epoch，旧客户端基线因而获得不含该任务的完整 snapshot。delta 继续只表示当前未删除任务，不增加墓碑字段。
+窗口不会自动识别时钟倒退或绕过正式写路径的修改。运行环境保持数据库时间正常；异常回拨或离线历史维护应恢复时间并轮换 epoch 触发完整重建。维护验收须确认任务时间假设已恢复；导入的未来任务时间不能仅靠 epoch 修正。普通重启保持 epoch。[Task 软删除](daynight-task-deletion.md)在标记删除的同一事务内轮换项目 epoch，旧客户端基线因而获得不含该任务的完整 snapshot。delta 继续只表示当前未删除任务，不增加墓碑字段。显式 removeDepends=true 的删除同时更新每个实际引用源的 version/updatedAt；同一 epoch 替换原子发布源任务关系、ready 和目标消失，不引入逐源同步提交。
 
 服务端先提供新接口，旧 Web/CLI 可继续完整图；随后 Web 切换新路径，建立新的本地 schema。无运行时双协议 fallback。回退旧 Web 后新增索引/epoch 可保留，正式 updatedAt 写路径保持原样，不存在需修复的同步序号遗漏。
 

@@ -414,7 +414,8 @@ export const createApiClient = (options: {
     deleteTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       taskVersion(input.version);
-      return exchange({ operation: "task.delete", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "DELETE", { kind: "empty", result: undefined }, [204], { kind: "json", value: { version: input.version } }, true);
+      if (input.removeDepends !== undefined && typeof input.removeDepends !== "boolean") throw new Error("removeDepends must be a boolean.");
+      return exchange({ operation: "task.delete", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "DELETE", { kind: "empty", result: undefined }, [204], { kind: "json", value: { version: input.version, ...(input.removeDepends === undefined ? {} : { removeDepends: input.removeDepends }) } }, true);
     },
     setTaskStatus: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);

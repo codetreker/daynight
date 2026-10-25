@@ -52,7 +52,8 @@ describe("Bash completion rendering", () => {
 
   it("completes deletion with a task ID and exact-version/project text options", () => {
     const script = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "delete")!);
-    expect(script).toContain("dn_options=('--if-version' '--project' '-h' '--help')");
+    expect(script).toContain("dn_options=('--remove-depends' '--if-version' '--project' '-h' '--help')");
+    expect(script).toContain("dn_option_values=('' 'text' 'text' '' '')");
     expect(script).toContain("dn_argument_count=1");
     expect(script).not.toContain("'--status'");
     expect(script).not.toContain("'--json'");

@@ -209,11 +209,20 @@ describe("shared command syntax", () => {
     }
   });
 
+  it.each([false, true])("accepts optional valueless deletion consent %s", (removeDepends) => {
+    const parsed = parseCommand(taskDefinition, ["delete", "task-id", ...(removeDepends ? ["--remove-depends"] : [])]);
+    expect(parsed.kind === "run" && parsed.options.has("--remove-depends")).toBe(removeDepends);
+    const definition = taskDefinition.commands!.find(({ name }) => name === "delete")!;
+    expect(renderCommandHelp(definition, ["daynight", "task", "delete"])).toContain("[--remove-depends]");
+  });
+
   it.each([
     ["create", "--title="], ["create", "--title", "-leading"],
     ["create", "--title", "Title", "--description"],
     ["create", "--title", "Title", "--description", "--status"],
     ["list", "--status=proposed"], ["set-status", "task-id", "proposed"], ["list", "--status=TODO"], ["list", "--status", "invalid"], ["list", "--status="],
+    ["delete", "task-id", "--remove-depends=true"], ["delete", "task-id", "--remove-depends=false"],
+    ["delete", "task-id", "--remove-depends", "true"], ["delete", "task-id", "--remove-depends", "--remove-depends"],
     ["list", "--ready=true"], ["list", "--help=true"],
     ["create", "--title=Title", "--depends-on="],
     ["update", "task-id", "--status=todo", "--status", "done"],

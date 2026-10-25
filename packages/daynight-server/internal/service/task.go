@@ -55,12 +55,13 @@ type TaskPage struct {
 }
 
 type taskMutation struct {
-	id      string
-	current core.Task
-	values  store.TaskWrite
-	create  bool
-	changed bool
-	deleted bool
+	id            string
+	current       core.Task
+	values        store.TaskWrite
+	create        bool
+	changed       bool
+	deleted       bool
+	removeDepends bool
 }
 
 func (s *Tasks) Create(ctx context.Context, principal core.Principal, projectID string, input CreateTask) (core.Task, error) {
@@ -168,7 +169,7 @@ func (s *Tasks) write(ctx context.Context, principal core.Principal, projectID s
 			return nil
 		}
 		if mutation.deleted {
-			return tx.DeleteTask(ctx, mutation.id)
+			return tx.DeleteTask(ctx, mutation.id, mutation.removeDepends)
 		}
 		if mutation.create {
 			result, err = tx.CreateTask(ctx, mutation.id, mutation.values)

@@ -50,6 +50,8 @@ describe("native zsh completion", () => {
 
   it("completes deletion with one task ID and exact-version/project text options", () => {
     const script = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "delete")!);
+    expect(script).toContain("(--remove-depends)--remove-depends[Remove other tasks'\\'' ordinary and external dependencies on this task atomically with deletion]");
+    expect(script).not.toContain("--remove-depends=");
     expect(script).toContain("(--if-version)--if-version=[Use this expected task version without reading a newer version]:version:->text_value");
     expect(script).toContain("(--project)--project=[Use this project UUID for this invocation]:project-id:->text_value");
     expect(script).toContain("specifications+=( '1:Task UUID:->argument_1' )");

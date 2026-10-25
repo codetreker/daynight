@@ -149,8 +149,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 
 表不建立 foreign key。引用存在性、同 project 限制和图规则由获得 project 写锁后的
 service 写入路径校验；所有写入都必须经过该路径。`017_task_soft_delete.sql` 增加可空
-`deleted_at`，删除保留任务、依赖及附件；存在未删除后继时拒绝删除，新依赖不能引用已删除任务，
-因此活动图保持完整前置。[软删除设计](daynight-task-deletion.md)拥有事务保护、可见性和缓存失效。
+`deleted_at`，删除保留任务与附件。removeDepends 省略/false 时，存在未删除引用者即拒绝；true 明确解除全部传入引用，包括已删除源历史边，受影响源版本各增加一次，目标自己的前置保持。新依赖不能引用已删除任务，两种删除模式均保持活动图完整。[软删除设计](daynight-task-deletion.md)拥有事务保护、可见性和缓存失效。
 其他数据库写入者仍须遵守同一引用维护规则。
 
 ## 仓库地址注册
@@ -234,8 +233,7 @@ PATCH 的语义空操作仍检查版本及输入，返回当前资源，保持 `
 业务校验先生成候选变更计划，完成全部检查后才执行写入。预期拒绝保留为业务结果，
 callback 不执行写入并正常结束；只有外层事务成功后才返回业务 Fault，提交或清理失败
 优先暴露为内部失败。Project 没有删除 API，锁前确认过的 project 存在性不会由合法 API
-操作撤回。Task 软删除在同一项目锁内检查精确版本、active worker 及所有未删除后继，
-原子写入删除标记并轮换项目缓存 epoch。任务和边不能分次提交。响应资源在同一事务快照内构造，提交成功后再返回，避免提交后
+操作撤回。Task 软删除在同一项目锁内先检查成员、目标精确版本和目标 active worker；严格模式再保护未删除引用者，显式 removeDepends=true 则在执行阶段解除全部传入引用并更新源版本。准备阶段不能有副作用，避免等待外层事务结束才返回的 Fault 提交修改；解除引用、目标标记和一次项目缓存 epoch 轮换原子执行。任务和边不能分次提交。响应资源在同一事务快照内构造，提交成功后再返回，避免提交后
 分次重读混合不同状态。事务内不执行网络访问、Git、子进程或其他外部操作。
 
 该设计以同 project 写入吞吐量换取明确的串行规则。采用 `SERIALIZABLE` 可以提供
@@ -340,9 +338,10 @@ service 返回可识别的领域错误；server 负责唯一的 HTTP 映射。�
 | `not_found` | `404` | 指定 project 不存在、调用者不是成员或其范围内的 task 不存在 |
 | `method_not_allowed` | `405` | 已知路径不支持该方法，`Allow` 提供允许的方法 |
 | `version_conflict` | `409` | 元数据更新或生命周期动作的期望版本过期 |
-| `invalid_transition` | `409` | in_progress 中禁止实际切换 allowAgents 或 requiredPlatform |
+| `invalid_transition` | `409` | in_progress 中禁止实际切换 allowAgents/requiredPlatform，或删除目标仍有 active worker 归属 |
 | `dependency_cycle` | `409` | 候选依赖产生环 |
-| `dependency_unsatisfied` | `409` | 状态或依赖修改违反前置完成规则，或重开存在 active/done 直接后继 |
+| `dependency_unsatisfied` | `409` | 状态或依赖修改违反前置完成规则、重开存在 active/done 直接后继，或严格删除存在未删除引用者 |
+| `task_deleted` | `410` | 已授权的任务定点读取或操作命中软删除标记，不撤回整个项目 |
 | `internal_error` | `500` | 数据库或其他未分类服务端失败 |
 
 HTTP 只映射 service 的类型化业务错误；其他失败统一作为内部错误。读取缺失资源时，

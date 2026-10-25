@@ -7,7 +7,7 @@ import { TaskConfirmation } from './TaskConfirmation';
 import { TaskDetailNotice, useMutationNoticeEvent } from './TaskDetailNotice';
 import type { TaskMutationState } from './TaskDetailSession';
 
-export type DeletionConfirmation = { readonly kind: 'delete'; readonly detail: TaskDetail };
+export type DeletionConfirmation = { readonly kind: 'delete'; readonly detail: TaskDetail; readonly removeDepends: true };
 export const matchesDeletionReview = (confirmation: DeletionConfirmation, detail: TaskDetail | null): boolean =>
   detail !== null && taskReviewKey(confirmation.detail) === taskReviewKey(detail);
 

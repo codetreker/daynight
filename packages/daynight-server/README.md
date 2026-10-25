@@ -50,8 +50,12 @@ history replacement and transactional task soft deletion. The Web persists
 summaries and details and replaces them atomically after an epoch change.
 The [task deletion requirements](../../docs/spec/daynight-task-deletion.md) and
 [design](../../docs/design/daynight-task-deletion.md) define versioned DELETE,
-retained task/dependency/attachment data, active-successor and worker protection,
-and the task-local `410 task_deleted` response.
+retained task/attachment data and active target-worker protection. Omitted or
+false `removeDepends` preserves strict reference refusal; explicit true removes
+all incoming ordinary/external references, including deleted-source history,
+updates each affected source version once and marks the target in one transaction.
+The target's own prerequisites remain. Target removal and one epoch rotation are
+atomic, with the task-local `410 task_deleted` response for later access.
 
 ## Layout
 

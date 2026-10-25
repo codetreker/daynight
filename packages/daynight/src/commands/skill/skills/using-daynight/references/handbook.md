@@ -76,23 +76,38 @@ metadata updates preserve timing. State changes provide no process ownership,
 release, transfer, stop, or lease semantics. The Web confirms every status choice,
 including the current status; cancel and Escape submit no request.
 
-**Task deletion.** `task delete <task-id> --if-version <version>` removes a task
-from normal lists, graphs, readiness, and detail access while retaining its stored
-data, dependency records, and attachment files. It is independent of the task's
-status. Deletion is refused while an undeleted task depends on it or an active
-worker claim owns it; remove the dependency or release the stopped worker through
-the authorized workflow before reconsidering deletion. Deleting a task requires
-explicit user authorization for that task; deletion is not a completion action.
+**Task deletion.** `task delete <task-id> [--remove-depends] --if-version <version>`
+removes a task from normal lists, graphs, readiness, and detail access while
+retaining its stored data, its own prerequisite references, and attachment files.
+Deletion is independent of the task's status. Without `--remove-depends`, an
+undeleted task depending on the target prevents deletion; a task with no such
+references can be deleted directly. The service checks this in the deletion
+transaction; the CLI does not download the graph to decide whether deletion is
+allowed.
+
+`--remove-depends` is an optional switch with no value. It explicitly authorizes
+removing all other tasks' ordinary and external dependencies on the target in the
+same transaction as soft deletion, including references added before that
+transaction executes. This can make affected tasks ready. Each task whose
+relationships change receives a new version; its status, execution times, worker
+ownership, and other data are preserved. The target's own prerequisite references
+are retained. An active worker claim on the target always prevents deletion;
+release the stopped worker through the authorized workflow before reconsidering
+it. Deleting a task requires explicit user authorization for that task; removing
+other tasks' dependencies requires that additional authorization. Deletion is not
+a completion action.
 
 Read the full task and preserve the exact version used for the deletion decision.
 Without `--if-version`, the CLI reads the latest version immediately before
 submitting; that read cannot protect an earlier decision. A successful deletion
-returns no task resource. An authorized read of a deleted task returns
-`410 task_deleted`, distinct from a missing task or inaccessible project. On a
-lost response, GET the task to reconcile: `task_deleted` confirms it is deleted;
-a live resource requires a new decision, and a permission or transport failure
-leaves the outcome unconfirmed. Never replay deletion automatically. The Web
-requires a confirmation dialog; the CLI command submits directly.
+returns no task resource or removed-reference count. An authorized read of a
+deleted task returns `410 task_deleted`, distinct from a missing task or
+inaccessible project. On a lost response, GET the task to reconcile:
+`task_deleted` confirms it is deleted; a live resource requires a new decision,
+and a permission or transport failure leaves the outcome unconfirmed. Never
+replay deletion automatically. The Web confirmation explicitly authorizes
+removing other tasks' dependencies together with deletion; the CLI submits its
+selected mode directly.
 
 **Automatic execution permission.** Tasks expose the required boolean
 `allowAgents`, independent of status and dependency readiness. New tasks

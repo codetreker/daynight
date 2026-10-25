@@ -33,7 +33,7 @@ export const useTaskDetail = (projectId: string, taskId: string, revision: numbe
   const setStatus = useCallback((status: TaskStatus, version: bigint) => { sessions.setStatus(projectId, taskId, status, version); }, [sessions, projectId, taskId]);
   const setAgentPermission = useCallback((allowAgents: boolean, version: bigint) => { sessions.setAgentPermission(projectId, taskId, allowAgents, version); }, [sessions, projectId, taskId]);
   const setRequiredPlatform = useCallback((requiredPlatform: ExecutionPlatform | null, version: bigint) => { sessions.setRequiredPlatform(projectId, taskId, requiredPlatform, version); }, [sessions, projectId, taskId]);
-  const deleteTask = useCallback((version: bigint) => { sessions.deleteTask(projectId, taskId, version); }, [sessions, projectId, taskId]);
+  const deleteTask = useCallback((version: bigint, removeDepends: boolean) => { sessions.deleteTask(projectId, taskId, version, removeDepends); }, [sessions, projectId, taskId]);
   const reconcile = useCallback(() => { sessions.reconcile(projectId, taskId); }, [sessions, projectId, taskId]);
   const visible = revision > 0 && (sessions.hasCurrentGeneration(projectId, taskId) && (sameIdentity || state.mutation.phase !== "idle") || sameIdentity && state.detail === null && state.status === "error") ? state
     : { ...state, detail: null, loadedRevision: null, status: "loading" as const, refreshing: false, error: null };

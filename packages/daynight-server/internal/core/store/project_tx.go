@@ -178,7 +178,16 @@ func (tx *ProjectTx) DependentIDs(ctx context.Context, id string) ([]string, err
 	return ids, nil
 }
 
-func (tx *ProjectTx) DeleteTask(ctx context.Context, id string) error {
+func (tx *ProjectTx) DeleteTask(ctx context.Context, id string, removeDepends bool) error {
+	if removeDepends {
+		if _, err := tx.tx.Exec(ctx, `WITH removed AS (
+			DELETE FROM task_dependencies WHERE project_id = $1 AND depends_on_task_id = $2
+			RETURNING task_id
+		) UPDATE tasks SET version = version + 1, updated_at = statement_timestamp()
+		WHERE project_id = $1 AND id IN (SELECT task_id FROM removed)`, tx.projectID, id); err != nil {
+			return queryError("remove dependent relationships", err)
+		}
+	}
 	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET deleted_at = statement_timestamp(),
 		updated_at = statement_timestamp(), version = version + 1
 		WHERE project_id = $1 AND id = $2 AND deleted_at IS NULL`, tx.projectID, id)

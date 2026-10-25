@@ -341,7 +341,7 @@ flowchart TD
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
 | `task set-status <id> <status>` | 可选先 GET task，再 PUT 同一 task 的 `/status`，body 严格包含 version/status |
-| `task delete <id>` | 可选先 GET task，再 DELETE 同一路径并提交精确 version，成功 `204`，保留数据库与附件 |
+| `task delete <id> [--remove-depends]` | 可选先 GET task，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |
 | `task graph` | `GET /api/v1/projects/{projectId}/task-graph`，不附加 query |
 | `task attachment put <id> <file>` | `PUT /api/v1/projects/{projectId}/tasks/{id}/attachments/files/{path...}`，流式请求体，接受 200/201 元数据 |
 | `task attachment list <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}/attachments`，按路径身份读完分页 |
@@ -365,7 +365,7 @@ flowchart TD
 API 响应与命令 choices 均只接受 todo、in_progress、done，拒绝旧状态。
 graph summary 只返回 total、todo、inProgress、done、ready、blocked；图文本不显示旧统计。
 列表默认保留未完成任务，按 in_progress、ready todo、其他 todo、done 稳定分组。
-元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。删除由专用 delete 提交精确版本，省略版本时只预读一次；成功无需 Task 正文，不自动重试。已删除资源返回 `410 task_deleted`，业务保护与数据保留由[软删除设计](daynight-task-deletion.md)拥有。
+元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。删除由专用 delete 提交精确版本，省略版本时只预读一次；可选 --remove-depends 决定是否明确发送 removeDepends=true，未提供时不解除引用。成功无需 Task 正文，不自动重试。已删除资源返回 `410 task_deleted`，业务保护与数据保留由[软删除设计](daynight-task-deletion.md)拥有。
 
 平台 DTO 要求 requiredPlatform 字段存在且为null/windows/linux/macos，不在读取器补默认。
 create/update 的 --required-platform 设置枚举，update --clear-required-platform 发送null并互斥；

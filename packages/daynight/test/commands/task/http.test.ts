@@ -52,19 +52,34 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
 };
 
 describe("task commands over HTTP", () => {
-  it.each([undefined, "9223372036854775807"])("deletes once with an observed or explicit lossless version %s", async (version) => {
+  it.each([false, true].flatMap((removeDepends) => [undefined, "9223372036854775807"].map((version) => ({ removeDepends, version }))))("deletes once with exact version $version and removal consent $removeDepends", async ({ version, removeDepends }) => {
     const f = await fixture((request, response) => {
       if (request.method === "DELETE") { response.writeHead(204); response.end(); }
       else respond(response, task);
     });
-    await f.run(["delete", taskId.toUpperCase(), ...(version === undefined ? [] : ["--if-version", version])]);
+    await f.run(["delete", taskId.toUpperCase(), ...(removeDepends ? ["--remove-depends"] : []), ...(version === undefined ? [] : ["--if-version", version])]);
     expect(f.requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
       `GET /api/v1/projects/${projectId}`,
       ...(version === undefined ? [`GET /api/v1/projects/${projectId}/tasks/${taskId}`] : []),
       `DELETE /api/v1/projects/${projectId}/tasks/${taskId}`,
     ]);
-    expect(f.requests.at(-1)!.body).toBe(`{"version":${version === undefined ? task.version : version}}`);
+    expect(f.requests.at(-1)!.body).toBe(`{"version":${version === undefined ? task.version : version}${removeDepends ? ",\"removeDepends\":true" : ""}}`);
     expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Task deleted. Stored data and attachments are retained.\nID: ${taskId}\nProject: ${projectId}\n`);
+  });
+
+  it("leaves dependency refusal authoritative to the server until removal is explicitly authorized", async () => {
+    const f = await fixture((request, response) => {
+      const body = parseApiJson(request.body) as { version: bigint; removeDepends?: boolean };
+      if (body.removeDepends === true) { response.writeHead(204); response.end(); }
+      else respond(response, { error: { code: "dependency_unsatisfied", message: "Other tasks depend on this task.", requestId: "incoming-dependencies", details: { taskIds: [otherId] } } }, 409);
+    });
+    await expect(f.run(["delete", taskId, "--if-version", "9007199254740993"])).rejects.toMatchObject({ code: "dependency_unsatisfied", details: { taskIds: [otherId] }, confirmedRefusal: true });
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+    await f.run(["delete", taskId, "--remove-depends", "--if-version", "9007199254740993"]);
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE", "GET", "DELETE"]);
+    expect(f.requests.at(-1)!.body).toBe('{"version":9007199254740993,"removeDepends":true}');
+    expect(f.context.stdout).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -79,9 +94,10 @@ describe("task commands over HTTP", () => {
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 
-  it("reports a lost deletion response as unconfirmed without resubmitting", async () => {
+  it.each([false, true])("reports a lost deletion response with consent %s as unconfirmed without resubmitting", async (removeDepends) => {
     const f = await fixture((_request, _response, raw) => { raw.socket.destroy(); });
-    await expect(f.run(["delete", taskId, "--if-version", "9007199254740993"])).rejects.toMatchObject({ operation: "task.delete", projectId, taskId, outcomeUnconfirmed: true });
+    await expect(f.run(["delete", taskId, ...(removeDepends ? ["--remove-depends"] : []), "--if-version", "9007199254740993"])).rejects.toMatchObject({ operation: "task.delete", projectId, taskId, outcomeUnconfirmed: true });
+    expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: task.version, ...(removeDepends ? { removeDepends: true } : {}) });
     expect(f.requests.map(({ method }) => method)).toEqual(["GET", "DELETE"]);
     expect(f.context.stdout).not.toHaveBeenCalled();
   });

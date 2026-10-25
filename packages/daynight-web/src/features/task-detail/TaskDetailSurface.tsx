@@ -92,7 +92,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const confirm = (): void => {
     if (confirmation === null || !confirmationValid) return;
     setConfirmation(null);
-    if (confirmation.kind === 'delete') task.deleteTask(confirmation.detail.version);
+    if (confirmation.kind === 'delete') task.deleteTask(confirmation.detail.version, confirmation.removeDepends);
     else if (confirmation.kind === 'status') task.setStatus(confirmation.status, confirmation.detail.version);
     else if (confirmation.kind === 'allowAgents') task.setAgentPermission(confirmation.allowAgents, confirmation.detail.version);
     else task.setRequiredPlatform(confirmation.requiredPlatform, confirmation.detail.version);
@@ -183,7 +183,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
             {detail !== null && <TaskStatusMenu status={detail.status} disabled={!task.canSetStatus} onSelect={(status) => requestConfirmation({ kind: 'status', status, detail })} />}
           </div>
           <div className="task-detail-header-actions">
-            {detail !== null && <button className="button danger task-detail-delete" type="button" disabled={!task.canDelete} onClick={() => requestConfirmation({ kind: 'delete', detail })}>{messages.inspection.deletion.action}</button>}
+            {detail !== null && <button className="button danger task-detail-delete" type="button" disabled={!task.canDelete} onClick={() => requestConfirmation({ kind: 'delete', detail, removeDepends: true })}>{messages.inspection.deletion.action}</button>}
             {modal && <a className="button task-detail-popout" href={popout} target="_blank" rel="noopener noreferrer" aria-label={m.openInNewTab} title={m.openInNewTab}><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="M14 3h7v7M21 3 10 14M10 3H4a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h16a1 1 0 0 0 1-1v-6" /></svg>{m.openInNewTab}</a>}
             {modal ? <button className="button task-detail-close" type="button" ref={closeRef} aria-label={m.close} onClick={onClose}>
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>

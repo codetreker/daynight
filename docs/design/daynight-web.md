@@ -127,7 +127,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 `TaskDetailDialog` 通过 body portal 相对可用视口居中，最大宽度 960px，桌面四周
 至少 24px；600px 及以下边距为 12px。外壳最大高度为
 `min(880px, 100dvh − 2 × gutter)`，公共标题、状态、页签和底部说明处于面板滚动区
-之外，关闭入口始终可访问。顶栏的 `h2.task-detail-title` 直接使用实际任务标题并提供对话框的可访问名称；没有已加载详情时使用加载或失败状态标题。完整标题自身有界、可聚焦并原生滚动，状态、新标签和关闭控件保持可访问；详情通过同一个 `LocaleProvider` 使用应用当前语言，顶栏保留实际标题、当前状态菜单、任务删除、按当前任务/页签/附件生成的新标签链接与关闭入口。任务删除在共享详情主体中使用二次确认，操作所有权、已删除终态和缓存移除由[软删除设计](daynight-task-deletion.md)拥有。正文头部只保留状态和操作控件；提示归属独立浮层。`task-detail.css` 使用统一的 `task-detail-*` 类名。
+之外，关闭入口始终可访问。顶栏的 `h2.task-detail-title` 直接使用实际任务标题并提供对话框的可访问名称；没有已加载详情时使用加载或失败状态标题。完整标题自身有界、可聚焦并原生滚动，状态、新标签和关闭控件保持可访问；详情通过同一个 `LocaleProvider` 使用应用当前语言，顶栏保留实际标题、当前状态菜单、任务删除、按当前任务/页签/附件生成的新标签链接与关闭入口。任务删除在共享详情主体中明确确认“解除全部传入依赖并删除”，说明可能改变 ready；确认按执行时全部引用这一类别授权，不冻结显示数量，捕获 removeDepends=true 后由会话传给 API。操作所有权、已删除终态和缓存移除由[软删除设计](daynight-task-deletion.md)拥有。正文头部只保留状态和操作控件；提示归属独立浮层。`task-detail.css` 使用统一的 `task-detail-*` 类名。
 `TaskDetailPanels` 提供默认概览及附件页签，两面板保持挂载并以 hidden/inert 隔离
 隐藏控件；页签使用可访问关联、roving tabindex、方向键与 Home/End 自动激活。
 project/task 身份切换按入口状态初始化。`TaskDetailSurface` 拥有两种容器共用的

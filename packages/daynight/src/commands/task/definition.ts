@@ -73,8 +73,8 @@ export const taskDefinition: CommandDefinition = {
       name: "delete",
       description: "Soft-delete a task while preserving its stored data and attachments",
       arguments: [taskArgument],
-      options: [versionOption, projectOption, helpOption],
-      details: "Deleted tasks disappear from normal queries and cannot be read or changed. Stored task data, dependencies, and attachments are retained. Deletion is refused while another undeleted task depends on it or an active worker claim owns it.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried. An interrupted deletion may already have taken effect; read the task to reconcile before considering another request.",
+      options: [{ names: ["--remove-depends"], description: "Remove other tasks' ordinary and external dependencies on this task atomically with deletion" }, versionOption, projectOption, helpOption],
+      details: "Deleted tasks disappear from normal queries and cannot be read or changed. Stored task data, its own prerequisite references, and attachments are retained. Without --remove-depends, deletion is refused if an undeleted task depends on the target. With --remove-depends, explicitly authorize removing all other tasks' ordinary and external dependencies on the target in the same transaction as soft deletion; affected tasks may become ready. An active worker claim on the target always prevents deletion.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried. An interrupted deletion may already have taken effect; read the task to reconcile before considering another request.",
     },
     {
       name: "graph",

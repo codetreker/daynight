@@ -204,6 +204,7 @@ daynight task update <task-id> --depends-on <task-a> --depends-on <task-b>
 daynight task update <task-id> --clear-dependencies
 daynight task set-status <task-id> done --if-version 3
 daynight task delete <task-id> --if-version 3
+daynight task delete <task-id> --remove-depends --if-version 3
 daynight task update <task-id> --pull-request-url <url> --pull-request-title <title>
 daynight task update <task-id> --clear-pull-requests
 daynight task graph
@@ -229,7 +230,7 @@ PR URL/title 配对；省略描述、依赖和 PR 引用分别使用服务规定
 帮助显示选项说明。`--ready` 表示 `ready=true`，与所选状态按 AND 组合，支持
 `--all --ready`。`list` 与 `ready` 接受 --allow-agents true|false 与 --compatible-platform windows|linux|macos。严格拒绝其他值，省略不筛选；兼容包含null和同值要求，全部过滤先于服务排序、分页和ready上限，不在本地丢项。列表读完全部匹配分页后，按 `in_progress`、ready、其余 `todo`、
 `done` 分组排序；组内保留跨页的服务顺序，文本和 JSON 使用同一顺序。详情按选定
-project 和 task ID 查询。[软删除需求](daynight-task-deletion.md)定义 `task delete` 的精确版本、一次预读、不重试及数据保留规则。显式 project ID、show/update/set-status/delete 的 task ID、标题、描述、状态、
+project 和 task ID 查询。[软删除需求](daynight-task-deletion.md)定义 `task delete` 的精确版本、一次预读、不重试及数据保留规则。`--remove-depends` 是可选开关：省略时无未删除引用者即可删除，有引用者则 409 拒绝；传入才明确解除全部传入引用并原子软删除，不要求无引用任务也传开关。显式 project ID、show/update/set-status/delete 的 task ID、标题、描述、状态、
 版本及修改字段组合的参数错误必须先于配置读取、Git 和网络访问拒绝；两类依赖 ID 在本地正规化并排序，
 非法 UUID、列表内及跨列表重复（包括大小写等价）先拒绝，服务继续验证引用、项目、环及状态条件。
 
