@@ -9,7 +9,6 @@ export type PromptMultipleSelection<Value> = { message: string; choices: readonl
 export type CliPrompt = {
   readonly isInteractive: boolean;
   ask(question: string, signal: AbortSignal): Promise<string>;
-  askSecret?(question: string, signal: AbortSignal): Promise<string>;
   select<Value>(selection: PromptSelection<Value>, signal: AbortSignal): Promise<Value>;
   selectMany<Value>(selection: PromptMultipleSelection<Value>, signal: AbortSignal): Promise<Value[]>;
   close(): void;
@@ -68,26 +67,6 @@ export const createTerminalPrompt = (): CliPrompt => {
         };
         signal.addEventListener("abort", abort, { once: true });
         if (signal.aborted) abort();
-      });
-    },
-    askSecret: async (question, signal) => {
-      if (process.stdin.isTTY !== true || process.stderr.isTTY !== true || typeof process.stdin.setRawMode !== "function") throw new Error("Hidden terminal input requires terminal input and stderr.");
-      // Retire readline before another prompt owns stdin, so its echo handler cannot observe the secret.
-      terminal?.off("close", cancel);
-      terminal?.off("SIGINT", cancel);
-      terminal?.close();
-      terminal = undefined;
-      lines.length = 0;
-      return selection(signal, async (context) => {
-        const { password } = await import("@inquirer/prompts");
-        const cancellation = new AbortController();
-        const eof = (_value: unknown, key: { ctrl?: boolean; name?: string }): void => {
-          if (key.ctrl === true && key.name === "d") cancellation.abort(new CliCancelledError("Setup cancelled."));
-        };
-        process.stdin.on("keypress", eof);
-        try {
-          return await password({ message: question, mask: false, toggleMask: false }, { ...context, signal: AbortSignal.any([context.signal, cancellation.signal]) });
-        } finally { process.stdin.off("keypress", eof); }
       });
     },
     select: async <Value>(config: PromptSelection<Value>, signal: AbortSignal): Promise<Value> => selection(signal, async (context) => {

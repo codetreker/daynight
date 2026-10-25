@@ -158,7 +158,7 @@ describe("API bearer authentication", () => {
     expect(new Headers(fetch.mock.calls[0]![1]?.headers).get("Authorization")).toBe(`Bearer ${token}`);
   });
 
-  it.each(["valid JSON", "malformed JSON", "non-JSON"])("gives setup guidance for a 401 with %s and never retries", async (body) => {
+  it.each(["valid JSON", "malformed JSON", "non-JSON"])("gives login guidance for a 401 with %s and never retries", async (body) => {
     let requests = 0;
     const url = await server((_request, response) => {
       requests++;
@@ -171,7 +171,7 @@ describe("API bearer authentication", () => {
     const error: unknown = await createApiClient({ serverUrl: url, serverToken: token, operation: operation() }).createProject({ name: project.name, repoUrl: project.repoUrl }).catch((failure: unknown) => failure);
 
     expect(error).toBeInstanceOf(ApiError);
-    expect(error).toMatchObject({ status: 401, message: expect.stringContaining("daynight setup --server-token-stdin") });
+    expect(error).toMatchObject({ status: 401, message: expect.stringContaining("daynight login") });
     expect((error as Error).message).not.toContain(token);
     if (body === "valid JSON") expect(error).toMatchObject({ code: "unauthorized", requestId: "req-401", confirmedRefusal: true, outcomeUnconfirmed: false });
     expect(requests).toBe(1);
@@ -187,7 +187,7 @@ describe("API bearer authentication", () => {
 
     expect(error).toBeInstanceOf(ApiError);
     expect(error).toMatchObject({ status, code, requestId: "req-refusal", phase: "response", confirmedRefusal: true, outcomeUnconfirmed: false, message: expect.stringContaining("Actual server explanation.") });
-    expect((error as Error).message).not.toContain("daynight setup --server-token-stdin");
+    expect((error as Error).message).not.toContain("daynight login");
     expect(requests).toBe(1);
   });
 

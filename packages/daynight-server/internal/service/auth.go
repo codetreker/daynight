@@ -46,7 +46,7 @@ type LoginStart struct {
 type LoginCompletion struct {
 	LoginID    string
 	User       core.User
-	Session    core.Credential
+	Session    core.Session
 	Secret     string
 	ReturnPath string
 }
@@ -152,7 +152,7 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	}
 	now := s.now().UTC()
 	result.Secret = randomSecret("dnst_")
-	result.Session = core.Credential{ID: uuid.NewString(), Kind: core.SessionCredential, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
+	result.Session = core.Session{ID: uuid.NewString(), TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
 	result.User, err = s.store.CreateIdentitySession(ctx, core.User{ID: uuid.NewString(), UniAuthID: identity.ID, Email: identity.Email, EmailVerified: identity.EmailVerified, Name: identity.Name, AvatarURL: identity.AvatarURL}, result.Session)
 	if err != nil {
 		return LoginCompletion{LoginID: pending.ID}, err
@@ -193,13 +193,13 @@ func (s *Identity) Logout(ctx context.Context, principal core.Principal) error {
 }
 
 type MintedPAT struct {
-	Credential core.Credential
+	Credential core.PersonalAccessToken
 	Secret     string
 }
 
 type CreatePAT struct {
-	Name string
-	Days int
+	Name      string
+	ExpiresAt *time.Time
 }
 
 func (s *Identity) CreatePAT(ctx context.Context, principal core.Principal, input CreatePAT) (MintedPAT, error) {
@@ -209,19 +209,20 @@ func (s *Identity) CreatePAT(ctx context.Context, principal core.Principal, inpu
 	if !utf8.ValidString(input.Name) || strings.ContainsRune(input.Name, 0) || strings.TrimSpace(input.Name) == "" || utf8.RuneCountInString(input.Name) > 100 {
 		return MintedPAT{}, invalidInput("Token name must contain 1 to 100 UTF-8 characters without NUL.")
 	}
-	if input.Days < 1 || input.Days > 365 {
-		return MintedPAT{}, invalidInput("Token lifetime must be from 1 to 365 days.")
+	now := s.now().UTC().Truncate(time.Microsecond)
+	expiresAt, err := validatedTokenExpiry(input.ExpiresAt, now)
+	if err != nil {
+		return MintedPAT{}, err
 	}
-	now := s.now().UTC()
 	result := MintedPAT{Secret: randomSecret("dnpat_")}
-	result.Credential = core.Credential{ID: uuid.NewString(), UserID: principal.UserID, Kind: core.PATCredential, Name: input.Name, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(time.Duration(input.Days) * 24 * time.Hour)}
+	result.Credential = core.PersonalAccessToken{ID: uuid.NewString(), UserID: principal.UserID, Name: input.Name, TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: expiresAt}
 	if err := s.store.CreatePAT(ctx, principal, result.Credential); err != nil {
 		return MintedPAT{}, authLookupError(err)
 	}
 	return result, nil
 }
 
-func (s *Identity) ListPATs(ctx context.Context, principal core.Principal) ([]core.Credential, error) {
+func (s *Identity) ListPATs(ctx context.Context, principal core.Principal) ([]core.PersonalAccessToken, error) {
 	if principal.Kind != core.SessionCredential {
 		return nil, forbidden()
 	}

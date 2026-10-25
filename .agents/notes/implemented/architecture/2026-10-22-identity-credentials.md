@@ -27,11 +27,17 @@ The full external identity ID uniquely maps to a local user UUID; nullable profi
 fields retain their meaning and email does not merge identities.
 
 Sessions and personal access tokens are opaque high-entropy secrets represented
-by hashes in PostgreSQL. Sessions expire after seven days; a browser session can
-create a named PAT with a one-to-365-day lifetime, defaulting to 30 days. The raw
-PAT is returned once. Credential lookup checks current expiry/revocation, and
-project roles remain outside credentials. Explicit invalid Bearer authentication
-does not fall back to a browser cookie.
+by hashes in PostgreSQL. Separate Session and PersonalAccessToken records express
+their distinct expiry contracts: browser sessions expire after seven days, while
+PATs default to no expiration and may carry a future UTC expiry. The raw PAT is
+returned once. The [device-login decision](2026-10-25-cli-device-login.md) reuses
+PAT storage for CLI authorization. A browser session can create named PATs and
+modify an active token's nullable expiry while preserving its ID, hash and secret;
+account and observed-expiry checks protect the update. Expired or revoked tokens
+cannot be revived. Migration 019 makes only PAT expiry nullable and preserves all
+existing finite expiry timestamps. Credential lookup checks current revocation
+and any configured expiry; project roles remain outside credentials. Explicit
+invalid Bearer authentication does not fall back to a browser cookie.
 
 HTTP handlers validate exact main-site Origin on cookie-authenticated mutations
 and use host-only session cookies. Production uses Secure, HttpOnly and Lax;

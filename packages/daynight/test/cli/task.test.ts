@@ -106,7 +106,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     if (address === null || typeof address === "string") throw new Error("Missing controlled HTTP listener.");
     const serverUrl = `http://127.0.0.1:${address.port}`;
     await mkdir(path.join(home, ".daynight"), { recursive: true });
-    await writeFile(path.join(home, ".daynight/config.yml"), `serverUrl: ${serverUrl}\n`);
+    await writeFile(path.join(home, ".daynight/config.yml"), `serverUrl: ${serverUrl}\nserverToken: fixture-token\n`);
     return { requests, serverUrl };
   };
   const git = (cwd: string, args: readonly string[]) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", env: environment, timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });

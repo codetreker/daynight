@@ -129,6 +129,9 @@
 .token-row { grid-template-columns: minmax(180px, 1fr) minmax(160px, .9fr) auto; }
 .token-row.revoked { background: #fcfcfd; }
 .token-row.revoked .person-name { color: #778298; }
+.token-row .actions { flex-wrap: wrap; }
+.token-expiry-custom { margin-top: 15px; }
+.token-current-expiry { margin-top: 15px; overflow-wrap: anywhere; }
 .token-symbol { width: 33px; height: 33px; border-radius: 8px; background: #f0f1fa; color: #7776b4; display: flex; align-items: center; justify-content: center; flex: none; }
 .auth-shell .back-link { display: inline-flex; align-items: center; gap: 7px; }
 .auth-shell .back-link.button { margin-bottom: 22px; }
@@ -185,6 +188,31 @@
 .invite-account > .inline-link { flex: none; }
 .invite-card .notice { margin-top: 20px; }
 .invite-card .state-box { border: 0; padding: 10px 0; min-height: 180px; }
+
+.device-card { max-width: 530px; }
+.device-card .eyebrow { text-align: center; margin-bottom: 9px; }
+.device-card h1 { margin-bottom: 12px; }
+.device-code-form { margin-top: 26px; }
+.device-code-form > .button { width: 100%; margin-top: 18px; }
+.device-code-form input { font: 18px ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 2px; text-transform: uppercase; }
+.device-code { border: 1px solid #dddff3; border-radius: 9px; background: #f7f7ff; padding: 19px 12px; margin: 23px 0 20px; text-align: center; }
+.device-code span { display: block; color: #778298; font-size: 11px; margin-bottom: 8px; }
+.device-code code { font: 600 clamp(17px, 4.7vw, 27px) ui-monospace, SFMono-Regular, Consolas, monospace; color: #5452a8; letter-spacing: 2px; overflow-wrap: anywhere; }
+.device-permissions { font-size: 12px; line-height: 1.85; color: #637087; }
+.device-permissions p + p { margin-top: 9px; }
+.device-expiry { color: #7b8598; font-size: 11px; margin-top: 12px; overflow-wrap: anywhere; }
+.device-match { display: flex; align-items: flex-start; gap: 10px; font-size: 12px; color: #4c5870; margin: 23px 0 16px; }
+.device-match input { flex: none; width: 16px; height: 16px; margin-top: 2px; accent-color: #5c5ce0; }
+.device-match span { min-width: 0; overflow-wrap: anywhere; }
+.device-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 10px; }
+.device-actions .button { min-height: 42px; white-space: normal; }
+.device-home { margin-top: 25px; text-align: center; }
+.device-loading { min-height: 150px; display: flex; align-items: center; justify-content: center; gap: 12px; font-size: 13px; color: #637087; }
+.device-result { font-size: 13px; color: #637087; text-align: center; margin-top: 23px; line-height: 1.85; }
+.device-result > .button { margin-top: 21px; }
+.device-result-mark { display: flex; align-items: center; justify-content: center; width: 58px; height: 58px; margin: 0 auto 20px; border-radius: 50%; background: #f0f1fa; font-size: 28px; color: #7776b4; }
+.device-result-mark.success { color: #398567; background: #eaf5ef; }
+.device-card .request-id { font-size: 11px; margin-top: 8px; overflow-wrap: anywhere; }
 
 .auth-modal-backdrop { position: fixed; inset: 0; z-index: 40; background: #19233560; backdrop-filter: blur(2px); display: flex; align-items: center; justify-content: center; padding: 20px 16px; }
 .auth-dialog { padding: 0; margin: auto; border: 1px solid #e0e3ec; border-radius: 12px; width: 480px; max-width: 100%; max-height: calc(100vh - 40px); max-height: calc(100dvh - 40px); min-height: 0; color: var(--ink); box-shadow: 0 18px 70px #17244735; background: #fff; display: flex; flex-direction: column; overflow: hidden; }

@@ -62,6 +62,12 @@ var taskWorkerSQL string
 //go:embed migrations/017_task_soft_delete.sql
 var taskSoftDeleteSQL string
 
+//go:embed migrations/018_device_authorization.sql
+var deviceAuthorizationSQL string
+
+//go:embed migrations/019_optional_token_expiry.sql
+var optionalTokenExpirySQL string
+
 type migration struct {
 	version int64
 	sql     string
@@ -85,6 +91,8 @@ var schemaMigrations = []migration{
 	{version: 15, sql: taskSyncSQL},
 	{version: 16, sql: taskWorkerSQL},
 	{version: 17, sql: taskSoftDeleteSQL},
+	{version: 18, sql: deviceAuthorizationSQL},
+	{version: 19, sql: optionalTokenExpirySQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

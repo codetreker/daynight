@@ -69,7 +69,7 @@ func servicePrincipal(t *testing.T, database *store.Store) core.Principal {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	secret := randomSecret("dnst_")
-	credential := core.Credential{ID: uuid.NewString(), Kind: core.SessionCredential, TokenHash: secretHash(secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
+	credential := core.Session{ID: uuid.NewString(), TokenHash: secretHash(secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
 	if _, err := database.CreateIdentitySession(ctx, core.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential); err != nil {
 		t.Fatal(err)
 	}

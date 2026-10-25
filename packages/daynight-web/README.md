@@ -22,7 +22,7 @@ development mockup below reuses the real components with a frontend-only fixture
 
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define login, private
-projects, member and invitation management, and personal access tokens. The
+projects, member and invitation management, CLI device authorization, and personal access tokens. The
 `AuthenticatedApp` implements their browser components and API client. Production
 `main.tsx` renders it under the persistent `LocaleProvider`; every business API
 requires a browser session or PAT and current project membership. The Go service
@@ -38,7 +38,7 @@ owns production composition and credential-private acceptance.
 `AuthenticatedApp` runs under the same `LocaleProvider` as the existing
 workspace and owns current-user loading, login navigation and session loss. Both
 complete catalogs provide its `messages.auth` domain, including accessible names,
-validation, notices and already displayed errors. Login, workspace, invitation
+validation, notices and already displayed errors. Login, workspace, invitation, device authorization
 and management dialogs expose the shared language selector; native formatters
 render dates and counts. Language changes retain form inputs, dialog and
 one-time secrets, identity and pending requests without restarting operations.
@@ -131,10 +131,51 @@ user-session 401. Discovery failures and an empty provider set have explicit
 states. The [authentication architecture](../../docs/design/daynight-auth.md#登录方式发现)
 owns the discovery protocol.
 
+The `/device` entry retains its optional `user_code` through browser sign-in and
+shows the current account, authorization code, project permissions, and how to
+manage access. CLI access does not expire automatically. Opening the page reads
+the request without granting access. The
+user must compare the displayed terminal code, select its confirmation checkbox,
+and explicitly approve; denial requires no matching-code confirmation. Both
+operations send the reviewed account ID so the server can refuse a changed
+browser principal before altering the grant. API responses also validate the
+admitted identity against the displayed account. An uncertain decision blocks
+further decisions until inspection confirms the actual state. Inspection never
+replays approval, and a still-pending result requires another explicit decision.
+Identity changes abort requests and remount this page through the shared shell.
+CLI access appears in the account token list, where its expiration can be changed
+or access revoked. The device request's ten-minute approval deadline remains
+independent of the token lifetime.
+
+Token creation defaults to Never expires and optionally accepts a future local
+date and time, serialized as a UTC `expiresAt`. Token metadata requires either a
+UTC timestamp or explicit null; null is displayed as Never expires. The shared
+expiration editor also changes active tokens without changing their secret or
+requiring clients to sign in again. An unchanged editor preserves the original
+timestamp, including seconds and fractional precision, and does not submit.
+Updates send the exact observed `expectedExpiresAt` and displayed account ID.
+Token list and update responses must identify the reviewed account before their
+metadata can be rendered. A conflict refreshes the current expiration for review.
+An unconfirmed update blocks further writes until a token-list read confirms
+the actual state; a failed read retains the displayed metadata and the write
+block. Reads never repeat the update. Expired, revoked, and missing tokens are
+unavailable for editing.
+
 With `pnpm web:dev`, open `/tests/mockups/auth.html` for actual components with
-controlled fetch responses, the same locale Provider and final styles. This fixture validates frontend
-interaction separately from real UniAuth service and upstream-provider login. The [static design prototype](../../docs/design/mockups/auth/index.html)
-retains the broader scenario reference.
+controlled fetch responses, the same locale Provider and final styles. This
+fixture validates frontend interaction separately from real UniAuth service and
+upstream-provider login. The [static design prototype](../../docs/design/mockups/auth/index.html)
+retains the broader scenario reference. Open `/tests/mockups/device.html` for
+the production device page with frontend-only controlled request states. Its
+scenario selector covers manual entry, loading, approval, denial, expiration,
+invalid codes, request failures, rate limiting, uncertain decisions, and long
+account details. Open `/tests/mockups/tokens.html` for the production token panel,
+creation dialog, and expiration editor inside the workspace sidebar-footer layout,
+including its selected account entry and narrow-screen topbar account link.
+The scenario controls cover loading, conflicts, unconfirmed updates,
+reconciliation failures, unavailable tokens, and long names. The shared language
+selector and final responsive styles remain
+interactive without a Go service.
 
 ## Project execution-warning settings
 

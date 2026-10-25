@@ -55,8 +55,8 @@ describe("server configuration projection", () => {
     }
   });
 
-  it.each(["repositories: []", "{}"])("explains missing serverUrl: %s", (source) => {
-    expect(() => parseServerConfiguration(source, paths)).toThrow("serverUrl is not configured");
+  it.each(["repositories: []", "{}", "serverToken: default-secret"])("uses the production origin when serverUrl is omitted: %s", (source) => {
+    expect(parseServerConfiguration(source, paths)).toEqual({ serverUrl: "https://daynight.cc", ...(source.startsWith("serverToken") ? { serverToken: "default-secret" } : {}) });
   });
 
   it.each(["serverURL: http://localhost", "serverUrl: http://localhost\nserverUrl: http://other", "repositories: [{path: a, path: b}]\nserverUrl: http://localhost"])("retains the shared YAML rejection: %s", (source) => {
@@ -69,7 +69,7 @@ describe("server configuration projection", () => {
     const directory = await mkdtemp(path.join(temporary, "server 用户 "));
     directories.push(directory);
     const runtimePaths = resolveConfigurationPaths(directory);
-    await expect(loadServerConfiguration(runtimePaths)).rejects.toMatchObject({ message: `Cannot read configuration file ${runtimePaths.configFile}.`, cause: { code: "ENOENT" } });
+    await expect(loadServerConfiguration(runtimePaths)).resolves.toEqual({ serverUrl: "https://daynight.cc" });
     expect(await readdir(directory)).toEqual([]);
     await mkdir(runtimePaths.stateDirectory);
     await writeFile(runtimePaths.configFile, "serverUrl: http://localhost:8787/\n");

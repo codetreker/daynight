@@ -35,7 +35,7 @@ export class ApiError extends Error {
       : `${server.code}: ${server.message} (requestId=${server.requestId})`;
     const details = server?.details;
     const detailText = details === undefined ? "" : ` details=${JSON.stringify(details)}`;
-    super(`${context.operation}${target} [${phase}]: ${reason}${detailText}${options.status === 401 ? " Configure a personal access token with daynight setup --server-token-stdin (or interactive daynight setup)." : ""}${options.outcomeUnconfirmed === true ? " Remote mutation outcome is unconfirmed; query the target before retrying." : ""}`, { cause: options.cause });
+    super(`${context.operation}${target} [${phase}]: ${reason}${detailText}${options.status === 401 ? " Run daynight login to authenticate." : ""}${options.outcomeUnconfirmed === true ? " Remote mutation outcome is unconfirmed; query the target before retrying." : ""}`, { cause: options.cause });
     this.name = "ApiError";
     this.operation = context.operation;
     this.phase = phase;

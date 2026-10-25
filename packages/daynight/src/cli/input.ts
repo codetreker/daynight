@@ -3,7 +3,7 @@ import { CliCancelledError } from "./cancellation.js";
 
 export const readSecretStdin = async (signal: AbortSignal, input: Readable & { isTTY?: boolean } = process.stdin): Promise<string> => {
   signal.throwIfAborted();
-  if (input.isTTY === true) throw new Error("--server-token-stdin requires piped input; use interactive setup for hidden terminal input.");
+  if (input.isTTY === true) throw new Error("--server-token-stdin requires piped input; run daynight login for interactive authentication.");
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
     let bytes = 0;

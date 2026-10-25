@@ -44,7 +44,7 @@ func scanUser(row pgx.Row) (core.User, error) {
 	return u, err
 }
 
-func (s *Store) CreateIdentitySession(ctx context.Context, user core.User, session core.Credential) (core.User, error) {
+func (s *Store) CreateIdentitySession(ctx context.Context, user core.User, session core.Session) (core.User, error) {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return core.User{}, authQueryError("begin identity session", err)
@@ -77,8 +77,12 @@ func (s *Store) Authenticate(ctx context.Context, kind core.CredentialKind, toke
 	if err != nil {
 		return core.Principal{}, err
 	}
+	expiryPredicate := "c.expires_at>$2"
+	if kind == core.PATCredential {
+		expiryPredicate = "(c.expires_at IS NULL OR c.expires_at>$2)"
+	}
 	p := core.Principal{Kind: kind}
-	err = s.Pool.QueryRow(ctx, `SELECT c.id::text,c.user_id::text FROM `+table+` c JOIN users u ON u.id=c.user_id WHERE c.token_hash=$1 AND c.expires_at>$2`, tokenHash, now).Scan(&p.CredentialID, &p.UserID)
+	err = s.Pool.QueryRow(ctx, `SELECT c.id::text,c.user_id::text FROM `+table+` c JOIN users u ON u.id=c.user_id WHERE c.token_hash=$1 AND `+expiryPredicate, tokenHash, now).Scan(&p.CredentialID, &p.UserID)
 	return p, authQueryError("authenticate", err)
 }
 
@@ -110,7 +114,7 @@ func (s *Store) withSession(ctx context.Context, p core.Principal, now time.Time
 	return authQueryError("session operation", err)
 }
 
-func (s *Store) CreatePAT(ctx context.Context, p core.Principal, c core.Credential) error {
+func (s *Store) CreatePAT(ctx context.Context, p core.Principal, c core.PersonalAccessToken) error {
 	return s.withSession(ctx, p, c.CreatedAt, func(tx pgx.Tx) error {
 		if err := cleanupCredentials(ctx, tx, c.CreatedAt); err != nil {
 			return err
@@ -120,20 +124,19 @@ func (s *Store) CreatePAT(ctx context.Context, p core.Principal, c core.Credenti
 	})
 }
 
-func (s *Store) ListPATs(ctx context.Context, p core.Principal, now time.Time) ([]core.Credential, error) {
-	result := []core.Credential{}
+func (s *Store) ListPATs(ctx context.Context, p core.Principal, now time.Time) ([]core.PersonalAccessToken, error) {
+	result := []core.PersonalAccessToken{}
 	err := s.withSession(ctx, p, now, func(tx pgx.Tx) error {
-		rows, err := tx.Query(ctx, `SELECT id::text,name,created_at,expires_at FROM personal_access_tokens WHERE user_id=$1 AND expires_at>$2 ORDER BY created_at,id`, p.UserID, now)
+		rows, err := tx.Query(ctx, `SELECT `+patFields+` FROM personal_access_tokens WHERE user_id=$1 AND (expires_at IS NULL OR expires_at>$2) ORDER BY created_at,id`, p.UserID, now)
 		if err != nil {
 			return err
 		}
 		defer rows.Close()
 		for rows.Next() {
-			var c core.Credential
-			if err := rows.Scan(&c.ID, &c.Name, &c.CreatedAt, &c.ExpiresAt); err != nil {
+			c, err := scanPAT(rows)
+			if err != nil {
 				return err
 			}
-			c.UserID, c.Kind = p.UserID, core.PATCredential
 			result = append(result, c)
 		}
 		return rows.Err()

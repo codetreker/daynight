@@ -64,7 +64,8 @@ core 保存用户/成员/凭据结构，现有 core/store 拥有迁移和事务�
 
 Principal 形状为 `{UserID, CredentialID, Kind}`，Kind 只有 session/PAT。认证代码
 产生可信身份，handler 传给 service；请求 JSON 不能指定调用者或角色。service 在
-业务边界授权，不提供可信用户捷径。PAT 不能管理个人令牌，会话可以管理自己的 PAT。
+业务边界授权，不提供可信用户捷径。PAT 不能管理个人令牌，会话可以管理自己的 PAT；
+CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理能力。
 
 读取在原 repeatable-read 快照中检查成员再读取资源；写入取得现有项目行锁后重查
 成员/角色/观察版本与领域约束。列表以 membership JOIN 在原 SQL cursor/LIMIT 前
@@ -117,9 +118,32 @@ upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。用
 
 秘密至少 32 随机字节，仅持久化 SHA-256 摘要。生产会话 Cookie 为
 __Host-daynight_session、Path=/、Secure、HttpOnly、SameSite=Lax、无 Domain。
-会话绝对有效期七天，不后台续期；注销删除当前会话。PAT 由 Web 会话创建，名称
-1–100 字符，有效期 1–365 天、默认 30 天；明文只显示一次，列表仅返回 ID、名称和
-创建/到期时间。撤销自己的 PAT 幂等，不影响其他凭据。
+会话绝对有效期七天，不后台续期；注销删除当前会话。Session 的有限到期和 PersonalAccessToken
+的可空到期由独立领域记录表达，Principal 仍区分 session/PAT。PAT 默认永不过期，
+`expiresAt:null` 表示持续有效至撤销；有限值表示对应 UTC 时刻后拒绝新请求。Web 会话可创建名称
+1–100 字符的 PAT，设备授权在明确批准后通过领取事务创建同类型的永不过期 `Daynight CLI` 凭据。
+明文只交付一次，列表返回 ID、名称、创建时间与必填的 nullable expiresAt。
+会话可修改或撤销自己的有效 PAT，CLI 可撤销当前 Bearer 自身，均不影响其他凭据。
+
+POST `/api/v1/me/tokens` 严格接受 `{name,expiresAt:null|UTCtimestamp}`，expiresAt 必填，
+有限值必须在未来，不接受 days。创建与修改的时间输入采用以 Z 结尾的 RFC3339Nano；
+目标值按数据库微秒精度保存，正规化到该精度后仍须在未来。PATCH `/api/v1/me/tokens/{tokenId}` 接受必填
+`{expiresAt,expectedExpiresAt,expectedUserId}`，成功返回完整令牌元数据。目标值与观察值均显式为
+null 或 UTC 时间；服务先核对展示账号与当前 Cookie principal，再在事务内复核有效会话和令牌，
+以观察到的 expiresAt 做条件修改。账号不符返回 403，旧到期值返回 409 version_conflict，
+不存在、已过期或已撤销返回 404。观察值按实际时刻精确比较，不通过截断掩盖差异；
+同值且观察匹配返回 200 原元数据，不更新数据库。修改只改变 expires_at，令牌 ID、秘密散列和创建时间保持，
+现有 CLI 配置继续使用同一凭据。不能通过更新恢复已到期或撤销的凭据。
+
+账户管理器默认选择“永不过期 / Never expires”，选择指定到期后显示本地日期时间输入，按设备时区
+转换为 UTC 提交。编辑显示当前到期，未修改时禁用保存，保留原有秒和微秒精度。
+用户可设置未来到期或恢复永不过期；待提交与未知结果阻止新写入，
+不确定 PATCH 只通过 GET 令牌列表核对，失败时只提供读取重试；读回值供新的明确决定使用，不自动
+重放原写入。身份切换使旧账号请求和编辑状态失效，语言切换保留输入与请求。
+[令牌管理原型](../../packages/daynight-web/tests/mockups/tokens.html)复用正式 TokensPanel、
+TokenExpiryField 和 CSS。运行 `pnpm --filter @codetreker/daynight-web dev` 后访问
+`/tests/mockups/tokens.html`，可交互验证永不过期/指定到期、创建与修改、空/加载/失败、提交中、
+并发冲突、响应丢失后已改变/未改变、核对失败、不可用与长名称；支持切换账号和中英文。
 
 明确的 Authorization 优先；重复、格式错误或无效 Bearer 返回 401，不回退 Cookie。
 PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认端口，使配置值与浏览器
@@ -139,13 +163,18 @@ literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
 |---|---|
 | users | 本地 UUID；唯一 uniauth_id；可空 email/email_verified/name/avatar_url；时间。 |
 | login_transactions | 事务 ID、state_hash、browser_binding_hash、provider、return_path、expires_at。 |
-| sessions | ID、唯一 token_hash、user_id、expires_at；注销删除。 |
-| personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、expires_at；撤销删除。 |
+| sessions | ID、唯一 token_hash、user_id、必填 expires_at；七天到期，注销删除。 |
+| personal_access_tokens | ID、唯一 token_hash、user_id、name、created_at、nullable expires_at；null 永不过期，Web 创建或设备授权领取时生成，撤销删除。 |
+| device_authorizations | ID、设备秘密摘要、唯一短码、状态、到期、轮询时钟/间隔和批准账号；状态转换与领取以行锁保护。 |
+| device_authorization_limits | bucket_hash、attempts、expires_at；创建与短码查询在不同副本共享限制，到期窗口可清理。 |
 | project_members | `(project_id,user_id)` 唯一；role 为 admin/member；bigint version 来自独立 sequence。 |
 | project_invitations | ID、project_id、唯一 token_hash、created_by、expires_at、consumed_by/at、revoked_at。 |
 
-使用既有迁移机制、唯一索引和角色 CHECK，不要求新增 foreign key；关联由业务事务
-验证。旧项目内容保持，不自动分配成员，空成员项目自然不可见，后续手工补齐。
+使用既有迁移机制、唯一索引和角色 CHECK，不要求新增 foreign key；关联由业务事务验证。
+迁移 `018_device_authorization.sql` 建立设备授权和共享限流表，
+`019_optional_token_expiry.sql` 仅让 personal_access_tokens.expires_at 可空，保留既有令牌的
+ID、散列、创建时间和全部有限到期值，不延长旧凭据；sessions.expires_at 保持必填。
+旧项目内容保持，不自动分配成员，空成员项目自然不可见，后续手工补齐。
 
 创建项目和首位 admin 原子提交。成员管理提交观察版本，锁项目后重查 admin/版本，
 真实角色变更与新加入从 project_member_versions sequence 取得新版本，观察值不要求
@@ -177,7 +206,10 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET /api/v1/me | 当前用户最小资料。 |
 | POST /api/v1/auth/logout | 主站会话注销，验证 Origin。 |
-| GET/POST /api/v1/me/tokens、DELETE .../{tokenId} | 主站会话管理自己的 PAT。 |
+| GET/POST /api/v1/me/tokens、PATCH/DELETE .../{tokenId} | 主站会话列出/创建、按账号与到期观察值修改、撤销自己的有效 PAT；Cookie 写校验精确 Origin。 |
+| POST /api/v1/auth/device/code、POST .../token | 公开客户端 form 设备授权与轮询领取；RFC 错误 JSON。 |
+| POST /api/v1/auth/device/inspect、POST .../decision | 仅主站会话及精确 Origin 检查、明确批准或拒绝；Daynight envelope。 |
+| POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
 | PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与三状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
 | GET .../projects/{id}/members | 任一成员读取最小资料和角色/version。 |
@@ -242,24 +274,90 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 处理；401 显示明确错误并引导重新登录，不返回登录 HTML。HTML 继续可信执行，
 主站 API 始终按当前浏览者实际身份授权，不宣称隔离上传代码。
 
-CLI server 投影已实现可选 `serverToken`，为非空 opaque visible ASCII；仅 HTTPS
-或 host 为字面量 `localhost`、`127.0.0.0/8` 内的数值 IPv4、`::1` 的 HTTP 可配置。setup 隐藏
-输入，空回答保留同 origin 令牌或跳过新 origin 的令牌；布尔 `--server-token-stdin`
-读取不超过 1 MiB 的单行非空值，允许单个 LF/CRLF，拒绝空输入、多行和控制字符。
-显式 URL 配置保持不询问；stdin 可复用已有 URL，无 URL 时须显式提供。
+## CLI 设备授权
 
-既有配置锁内共同比较 serverUrl/serverToken，正规化 origin 变化原子清除旧 token，
-同 origin 保留；其他 review 字段的并发完成修改保持。含令牌的文档由共享写入者
-统一保存为 POSIX `0600`，无令牌文档保持既有权限行为，普通文件/符号链接/锁和
-原子替换协议不变。YAML 错误只保留安全类别、代码和位置，不复制标量及原始
-parser cause；通用错误格式化器和其他错误链不承担凭据清洗。
+CLI server 投影在文件或 `serverUrl` 缺省时使用 `https://daynight.cc`；显式地址仅为测试服务覆盖。
+普通 setup 只收集 review 配置。`serverToken` 延续可选 opaque visible ASCII 字段，
+`setup --server-token-stdin` 保留供自动化使用，一行非空、不超过 1 MiB，允许单个 LF/CRLF。
+origin 可以是配置值或生产默认值，仅 HTTPS 或字面量 localhost/numeric loopback HTTP 允许保存凭据。
+本地缺少凭据时业务请求层直接提示 `daynight login`；服务 401 同样提示，业务不自动开始登录。
 
-共享 API 边界向已有项目、任务和文件请求附加 Bearer，保留 manual redirect、
-不转发令牌、二进制 stdout、精确 int64、分页和预算。401 给出 setup 指导，不自动
-匿名回退、登录预检或写入重试；403/404/409 保持。仓库绑定仍只有
-serverUrl/repoIdentity/projectId。review/update/help/version 保留依赖边界；setup
-不访问网络。机制与备选由[CLI 凭据决策](../../.agents/notes/implemented/architecture/2026-10-22-cli-server-credentials.md)
-拥有；Web 令牌管理已在显式挂载的组件中实现，生产启用继续由其任务交付。
+`login` 是独立的公开客户端 `daynight-cli`，不接触 UniAuth App Secret。
+[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
+记录采用现有 PAT 存储与显式登录的理由；协议采用
+[RFC 8628](https://www.rfc-editor.org/rfc/rfc8628)。设备授权与业务操作各自拥有取消和期限，
+登录至多十分钟，正常请求预算仍有界；CLI 不启动常驻监听器或本地 callback 服务。
+
+```mermaid
+sequenceDiagram
+    participant C as CLI
+    participant D as Daynight
+    participant B as 浏览器
+    C->>D: POST device/code (client_id)
+    D-->>C: device_code、短码、验证 URL、期限、间隔
+    C->>B: 打开验证页并显示短码
+    B->>D: 现有登录后 inspect 短码
+    B->>D: 用户核对账号/短码后 approve 或 deny
+    loop 按指定间隔等待
+        C->>D: POST device/token (device_code)
+        D-->>C: pending / slow_down / 终止 / 单次凭据
+    end
+    C->>C: 锁内核对 origin/凭据并原子保存
+```
+
+公开 `POST /api/v1/auth/device/code` 接收 `application/x-www-form-urlencoded`
+`client_id=daynight-cli`，返回 `device_code`、`user_code`、`verification_uri`、
+`verification_uri_complete`、`expires_in:600` 与 `interval:5`。设备秘密至少 32 随机字节，
+仅保存摘要；人类短码为十个辅音字母，展示为 `XXXXX-XXXXX`，唯一约束避免有效码碰撞。
+验证 URL 固定使用已配置主站 origin 与 `/device`，不信任请求 Host 或转发 header。
+CLI 只接受目标服务同源的验证页，设备秘密和访问凭据不放入浏览器 URL。
+
+`POST /api/v1/auth/device/token` 接收相同 form 编码的 `client_id`、`device_code` 和
+`grant_type=urn:ietf:params:oauth:grant-type:device_code`。成功返回 `access_token`、
+`token_type:Bearer`；默认永不过期，省略 `expires_in`，CLI 接受缺省或明确的正整数秒数。
+设备授权的 `expires_in:600` 仍表示十分钟领取窗口，不是凭据寿命。协议错误返回 `{error:...}`；
+`authorization_pending` 按当前间隔继续，过快请求返回 `slow_down` 并把后续间隔增加五秒，
+拒绝、到期和非法/已消费授权分别终止。连接超时降低轮询频率；其他错误不触发无限重试。
+公开端点限制 form 正文和字段，创建、短码查询及轮询限制由持久状态跨副本执行。
+创建每分钟全局至多 120 次、直连来源至多 30 次；来源只取 RemoteAddr，不信任转发 header。
+浏览器 inspect/decision 共用每分钟全局 120 次、每账号 12 次额度。速率窗口从首个尝试固定开始，
+后续请求不延长。每次最多清理 100 个到期窗口；创建时最多清理 100 条已过期至少一小时的授权，
+保留决定结果供不确定写入核对。设备秘密、短码与凭据不写日志，所有响应与方法拒绝 `no-store`。
+
+浏览器 POST `inspect {userCode}` 返回 `{userCode,expiresAt,status}`，status 为 pending、
+approved、denied、expired 或 consumed。POST
+`decision {userCode,decision:approve|deny,expectedUserId}` 成功返回 204，非 pending 状态返回 409。
+expectedUserId 为页面展示账号的 UUID；服务端在修改前与当前 Cookie principal 比较，不匹配返回
+403 且授权保持 pending，防止核对账号 A 后以已切换的账号 B 批准。两个接口都要求当前有效浏览器
+session 和精确 Origin；PAT、过期会话与跨源请求不能决定授权。未知码返回 404，速率限制返回 429。
+检查不改变状态，已决定授权只允许决定账号读取，其他账号返回 404。决定通过条件更新和行锁只允许一次，
+批准绑定已复核有效会话的用户，拒绝后不可领取。
+
+领取在单个事务锁定授权，复核有效期与批准状态，原子创建现有 PAT 并标记已消费。
+凭据名称固定 `Daynight CLI`，expiresAt 为 null，默认永不过期；账户令牌管理器可修改到期时间
+或撤销，修改保持原秘密。授权确认页说明持续访问，不提供期限选择。不增加 credential kind 或 refresh token。并发领取只有一次成功；明文不持久化，领取成功响应丢失
+不能重新取回，用户重新发起登录，遗留凭据可在账户页撤销。现有 PAT 创建接口仍只允许有效浏览器会话。
+
+`/device` 复用 AuthenticatedApp 的登录 returnPath、LocaleProvider 与当前用户请求 gate。
+用户输入或预填短码后核对当前账号、短码、授权范围及到期；GET、自动打开或登录成功不批准。
+批准/拒绝待提交时阻止重复写；未知结果先 inspect 核对，读取失败继续阻止决定，只提供检查重试。
+同用户前台核验保留输入，换号/失效清除旧状态与迟到请求。
+[设备授权原型](../../packages/daynight-web/tests/mockups/device.html)复用正式组件和样式；运行
+`pnpm --filter @codetreker/daynight-web dev` 后访问 `/tests/mockups/device.html`，可切换
+等待、批准、拒绝、过期、未知结果与读取失败等情形。
+
+凭据保存复用现有 YAML 锁与原子替换。在锁内重查开始时观察的有效 origin/token，保留无关 review
+修改，拒绝覆盖另一登录或服务切换。origin 修改同次清除旧凭据，等价 origin 保留。
+含凭据文档统一为 POSIX `0600`，无令牌文档保持既有权限；普通文件、符号链接、锁和错误清洗规则保持。
+
+`POST /api/v1/auth/device/logout` 通过当前 Bearer PAT 验证，原子删除该凭据后返回 204；
+浏览器会话返回 403，已撤销/到期返回 401。CLI 仅在确认 204 或 401 后持锁核对并移除观察到的
+本地凭据，不能删除期间保存的新值。网络或不确定远端结果明确报错，不静默声明远端注销成功。
+浏览器会话与其他凭据保持原生命周期。
+
+共享 API 请求继续附加 Bearer，保持 manual redirect、二进制 stdout、精确 int64、分页与预算。
+401 提示登录，不自动匿名回退、登录预检或重放业务写入。仓库绑定仍只保存
+serverUrl/repoIdentity/projectId，review/update/help/version 不加载登录依赖，setup 不联网。
 
 ## 配置、部署与正式组合
 
@@ -323,8 +421,8 @@ trace 和 capacity override 均关闭；PNG 只在秘密关闭或遮蔽后捕获
 
 ## 可观测性与验证
 
-入口保留 requestId；登录增加非秘密 login transaction ID，身份后关联 userId/
-credentialId，业务关联 projectId，领取关联 UniAuth 返回的 requestId。SDK HTTP、
+入口保留 requestId；网页登录增加非秘密 login transaction ID，设备授权关联非秘密授权记录 ID，
+身份后关联 userId/credentialId，业务关联 projectId，身份领取关联 UniAuth 返回的 requestId。SDK HTTP、
 数据库和文件准入继承 request context/deadline；重定向后的请求以事务或会话记录
 关联。没有新增 detached 执行；监听/资源归属现有运行时，原型请求与监听随组件卸载。
 
@@ -337,7 +435,7 @@ URL query、body、Cookie、Authorization、code、App Secret 或身份 origin p
 docker compose logs --no-log-prefix server | jq -R 'fromjson? | select(.request_id == "REQUEST_ID") | {request_id,user_id,project_id,component,phase,error_code,cause}'
 ```
 
-验证按 AU-V1–AU-V10 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
+验证按 AU-V1–AU-V11 映射，保留真实 PG 并发、实际 SDK/受控 UniAuth、安装 CLI、
 生产浏览器、原生/容器和现有资源/容量预算。[组合验收决策](../../.agents/notes/implemented/testing/2026-10-23-authentication-combined-acceptance.md)
 拥有实际领取结果后 TCP 断连，以及原生/容器各自的浏览器和安装 CLI 同数据、原凭据
 重启、撤销、已准入上传和 socket 中断证明。两目标各有一份额外必需回执，当前

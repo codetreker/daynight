@@ -4,8 +4,6 @@ import type { ApiClient, Operation, OperationLimits } from "../../api/index.js";
 import type { CliContext } from "../../cli/context.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
 import { loadServerConfiguration } from "../../config/server.js";
-import { isMissingConfiguration } from "../../config/errors.js";
-import { guideMissingConfiguration } from "../../config/setup.js";
 
 export type ServerSession = {
   readonly api: ApiClient;
@@ -28,8 +26,7 @@ export const runServerCommand = async (
   options: ServerCommandOptions = {},
 ): Promise<void> => {
   const cancellation = new AbortController();
-  const startOperation = (): Operation => createOperation({ signal: cancellation.signal, ...(options.operationLimits === undefined ? {} : { limits: options.operationLimits }) });
-  let operation: Operation | undefined = startOperation();
+  const operation = createOperation({ signal: cancellation.signal, ...(options.operationLimits === undefined ? {} : { limits: options.operationLimits }) });
   const emitter = options.signalEmitter ?? process;
   const signals: NodeJS.Signals[] = (options.platform ?? process.platform) === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM"];
   const listeners: [NodeJS.Signals, () => void][] = [];
@@ -43,17 +40,10 @@ export const runServerCommand = async (
     }
     operation.check();
     const paths = resolveConfigurationPaths(context.homeDirectory());
-    const { serverUrl, serverToken } = await guideMissingConfiguration(context, "server", async () => {
-      operation ??= startOperation();
-      try { return await loadServerConfiguration(paths, operation.signal); }
-      catch (cause) {
-        if (isMissingConfiguration(cause, "serverUrl")) { operation.dispose(); operation = undefined; }
-        throw cause;
-      }
-    }, cancellation.signal);
-    operation ??= startOperation();
+    const { serverUrl, serverToken } = await loadServerConfiguration(paths, operation.signal);
+    if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
     operation.check();
-    const api = createApiClient({ serverUrl, ...(serverToken === undefined ? {} : { serverToken }), operation, ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
+    const api = createApiClient({ serverUrl, serverToken, operation, ...(options.fetch === undefined ? {} : { fetch: options.fetch }) });
     const output = await command({ api, operation, serverUrl });
     operation.check();
     if (typeof output === "string") context.stdout(output);
@@ -69,7 +59,7 @@ export const runServerCommand = async (
       try { emitter.off(signal, listener); }
       catch (cause) { cleanup.push(cause); }
     }
-    try { operation?.dispose(); }
+    try { operation.dispose(); }
     catch (cause) { cleanup.push(cause); }
     if (cleanup.length !== 0) throw new AggregateError(failed ? [failure, ...cleanup] : cleanup, "Server command or cancellation cleanup failed.");
   }

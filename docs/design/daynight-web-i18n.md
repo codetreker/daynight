@@ -26,7 +26,7 @@ packages/daynight-web/
 隔离的[运行时预览](../../packages/daynight-web/tests/mockups/locale-runtime.html)继续演示多个选择器共享语言与 fixture 状态。实际组件的[任务浏览预览](../../packages/daynight-web/tests/mockups/browsing.html)和[附件预览](../../packages/daynight-web/tests/mockups/attachments.html)均显式挂载 Provider，复用生产组件及样式。这些 fixture 的前端交互不替代真实服务验收。
 
 生产[AuthenticatedApp](daynight-auth.md)使用常驻 LocaleProvider；messages.auth
-的完整英语/简体中文契约拥有登录、账户、项目创建、成员、邀请和令牌文案。
+的完整英语/简体中文契约拥有登录、设备授权、账户、项目创建、成员、邀请和令牌文案。
 入口在绘制前设置当前语言的鉴权加载标题，后续路由和会话状态按当前目录更新。
 身份变化释放用户内容，但不重建语言 Provider。独立鉴权 fixture 仍显式挂载
 Provider，其内存交互验证与真实 UniAuth 生产验收分别保留证据。

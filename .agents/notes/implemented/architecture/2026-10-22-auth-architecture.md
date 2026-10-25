@@ -88,10 +88,11 @@ whole authenticated composition is ready, without an auth-disable flag.
 ## Consequences
 
 The implementation adds local users, memberships, invitations and two ordinary
-credential types, with final-style frontend artifacts. CLI credential transport
-is implemented without a new provider-login flow or credential framework;
-Web token management and App-aware provider discovery are mounted in the
-mandatory composition. The activation decision owns current configuration,
+credential types, with final-style frontend artifacts. The
+[device-login decision](2026-10-25-cli-device-login.md) extends CLI acquisition
+with an explicit browser-approved device flow while reusing PAT authentication,
+expiry and account revocation. Web token management and App-aware provider
+discovery are mounted in the mandatory composition. The activation decision owns current configuration,
 fixture privacy and gate requirements. It reuses the
 existing application origin, file storage, project locks, runtime and deployment topology.
 No preview-specific lifecycle or infrastructure is introduced.

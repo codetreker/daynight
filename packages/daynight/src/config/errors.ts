@@ -6,7 +6,7 @@ export class MissingConfigurationFileError extends Error {
 }
 
 export class MissingConfigurationFieldError extends Error {
-  constructor(readonly field: "serverUrl" | "repositories", message: string) {
+  constructor(readonly field: "repositories", message: string) {
     super(message);
     this.name = "MissingConfigurationFieldError";
   }

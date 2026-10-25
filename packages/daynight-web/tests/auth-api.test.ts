@@ -15,7 +15,7 @@ const invitation = { id: inviteId, projectId, createdBy: userId, createdAt: time
 const project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: "New project", repoUrl: "git@github.com:org/repo.git", createdAt: time, updatedAt: time };
 const signal = () => new AbortController().signal;
 const rawJson = JSON as unknown as { rawJSON: (text: string) => unknown };
-const response = (value: unknown, status = 200): Response => new Response(JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? rawJson.rawJSON(item.toString()) : item), { status, headers: { "Content-Type": "application/json" } });
+const response = (value: unknown, status = 200): Response => new Response(JSON.stringify(value, (_key, item: unknown) => typeof item === "bigint" ? rawJson.rawJSON(item.toString()) : item), { status, headers: { "Content-Type": "application/json", "Daynight-User-ID": userId } });
 const refusal = (status: number, code: string): Response => response({ error: { code, message: "sensitive-token-must-not-escape", requestId: "auth-1", details: { token: "sensitive-token-must-not-escape" } } }, status);
 const mock = (value: Response) => {
   const fetcher = vi.fn().mockResolvedValue(value);
@@ -141,33 +141,33 @@ describe("session and personal credentials API", () => {
 
   it("lists only credential metadata and returns the created secret only from the create response", async () => {
     const fetcher = mock(response({ items: [{ ...pat, token: "unexpected-list-secret" }] }));
-    expect(await listTokens(signal())).toEqual([pat]);
+    expect(await listTokens(signal(), userId, vi.fn())).toEqual([pat]);
     fetcher.mockResolvedValue(response({ ...pat, token: "opaque-created-token" }, 201));
-    expect(await createToken({ name: pat.name, days: 365 }, signal())).toEqual({ ...pat, token: "opaque-created-token" });
+    expect(await createToken({ name: pat.name, expiresAt: time }, signal())).toEqual({ ...pat, token: "opaque-created-token" });
     expect(fetcher.mock.calls[1]).toEqual(["/api/v1/me/tokens", expect.objectContaining({
-      method: "POST", body: JSON.stringify({ name: pat.name, days: 365 }), credentials: "same-origin", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+      method: "POST", body: JSON.stringify({ name: pat.name, expiresAt: time }), credentials: "same-origin", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
     })]);
     fetcher.mockResolvedValue(response({ ...pat, token: "default-lifetime-token" }, 201));
-    await createToken({ name: "Default lifetime" }, signal());
-    expect(fetcher.mock.calls[2]?.[1].body).toBe('{"name":"Default lifetime"}');
+    await createToken({ name: "Default lifetime", expiresAt: null }, signal());
+    expect(fetcher.mock.calls[2]?.[1].body).toBe('{"name":"Default lifetime","expiresAt":null}');
   });
 
   it("accepts names using the server's Unicode code point and control-character rules", async () => {
     const fetcher = mock(response({ ...pat, token: "created-token" }, 201));
     fetcher.mockImplementation(() => Promise.resolve(response({ ...pat, token: "created-token" }, 201)));
     for (const name of ["😀".repeat(100), "line\nname", "tab\tname"]) {
-      await createToken({ name }, signal());
-      expect(fetcher.mock.lastCall?.[1].body).toBe(JSON.stringify({ name }));
+      await createToken({ name, expiresAt: null }, signal());
+      expect(fetcher.mock.lastCall?.[1].body).toBe(JSON.stringify({ name, expiresAt: null }));
     }
   });
 
   it.each([
-    { name: "" }, { name: "   " }, { name: "😀".repeat(101) }, { name: "name\0value" }, { name: "name\ud800value" },
-    ...[0, 366, 1.5, NaN].map((days) => ({ name: "name", days })),
+    ...["", "   ", "😀".repeat(101), "name\0value", "name\ud800value"].map((name) => ({ name, expiresAt: null })),
+    ...["", "invalid", "2026-02-30T00:00:00Z", "2026-11-20T12:34:56+01:00"].map((expiresAt) => ({ name: "name", expiresAt })),
   ])("rejects invalid credential input before network I/O %#", (input) => {
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
-    expect(() => createToken(input, signal())).toThrow(ApiError);
+    expect(() => createToken(input, signal())).toThrow(input.expiresAt === null ? ApiError : /^The server returned an invalid response\.$/);
     expect(fetcher).not.toHaveBeenCalled();
   });
 
@@ -300,12 +300,12 @@ describe("auth API failures", () => {
   it("discards malformed secret-bearing success responses and network diagnostics", async () => {
     const secret = "sensitive-token-must-not-escape";
     const fetcher = mock(response({ ...pat, token: `${secret}\n` }, 201));
-    const failure = await createToken({ name: "name" }, signal()).catch((error: unknown) => error);
+    const failure = await createToken({ name: "name", expiresAt: null }, signal()).catch((error: unknown) => error);
     expect(failure).toMatchObject({ kind: "protocol", status: 201 });
     expect(String(failure)).not.toContain(secret);
     expect(failure).not.toHaveProperty("cause");
     fetcher.mockRejectedValue(new Error(secret));
-    const networkFailure = await createToken({ name: "name" }, signal()).catch((error: unknown) => error);
+    const networkFailure = await createToken({ name: "name", expiresAt: null }, signal()).catch((error: unknown) => error);
     expect(networkFailure).toMatchObject({ kind: "network", status: null });
     expect(networkFailure).not.toHaveProperty("cause");
     expect(fetcher).toHaveBeenCalledTimes(2);
@@ -316,7 +316,7 @@ describe("auth API failures", () => {
     const controller = new AbortController();
     const fetcher = mock(new Response());
     fetcher.mockImplementation(async () => { controller.abort(reason); throw new TypeError("transport detail"); });
-    await expect(createToken({ name: "name" }, controller.signal)).rejects.toBe(reason);
+    await expect(createToken({ name: "name", expiresAt: null }, controller.signal)).rejects.toBe(reason);
   });
 });
 

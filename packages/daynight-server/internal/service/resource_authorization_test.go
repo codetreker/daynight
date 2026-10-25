@@ -246,7 +246,7 @@ func TestRevokedPATCannotAuthenticateForAnotherResourceRequest(t *testing.T) {
 	identity := NewIdentity(f.database, nil, "")
 	identity.now = func() time.Time { return f.now }
 	ctx := context.Background()
-	token, err := identity.CreatePAT(ctx, owner, CreatePAT{Name: "Resource access", Days: 1})
+	token, err := identity.CreatePAT(ctx, owner, CreatePAT{Name: "Resource access"})
 	if err != nil {
 		t.Fatal(err)
 	}

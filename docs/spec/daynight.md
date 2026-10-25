@@ -8,7 +8,7 @@ task 命令、安装产物、真实服务及默认预算验收已完成并通过
 
 Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `daynight` 入口及短命令 `dn`，命令模块
 拥有各自的业务行为、依赖和生命周期。`review` 是 GitHub PR 审查模块；`update` 管理
-整个客户端的 npm 全局安装；`setup` 按能力保存配置；`completion` 生成 Bash 和 zsh
+整个客户端的 npm 全局安装；`login/logout` 管理 CLI 凭据；`setup` 保存 review 配置及显式测试服务覆盖；`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`skill` 安装随包分发的公开 `using-daynight` skill。独立的 Go 服务和浏览器应用保留自己的产品需求
 与生命周期。
 
@@ -40,6 +40,8 @@ daynight -h
 daynight --version
 daynight -v
 daynight update
+daynight login [--no-browser]
+daynight logout
 daynight setup
 daynight setup --server-url <url>
 daynight setup --review-repo <remote> [--review-path <path>]
@@ -72,7 +74,7 @@ daynight task attachment read <task-id> <relative-path> [--project <project-id>]
 daynight task attachment remove <task-id> <relative-path> [--project <project-id>]
 ```
 
-无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `review`、`update`、`setup`、
+无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `review`、`update`、`login`、`logout`、`setup`、
 `completion`、`skill`、`project` 和 `task`。`--version` 与 `-v` 输出当前包版本。裸 `review` 和裸 `completion`
 显示各自帮助；裸 `skill`、`project` 与 `task` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
 该操作。顶层版本选项不继承到子命令。`review ls` 是 `review list` 的别名。
@@ -200,45 +202,43 @@ review 配置或数据库，不访问网络。候选和输入必须作为数据�
 
 ### C6. 按需配置引导
 
-`project` 和 `task` 的有效业务调用只要求服务连接配置；`review run`、`review list`
-及 `review ls` 只要求 review 配置。机器仅使用 project/task 时，可以一直只有
-`serverUrl` 和可选 `serverToken`，无需登记 review 仓库。各能力不共享“初始化完成”
-状态；令牌缺失本身不触发自动引导。
+服务命令在缺少配置文件或 `serverUrl` 时使用 `https://daynight.cc`，无需创建地址配置。
+显式 `serverUrl` 只用于覆盖测试服务，仍须严格校验；非法值和读取错误不得替换成默认值。
+`project/task` 业务调用需要本地凭据，缺少时在网络派发前报错并提示 `daynight login`；
+服务返回 401 时同样提示登录。两种情形均不启动自动登录或重放业务写请求。
 
-当前命令缺少配置文件，或严格解析成功后缺少其必需字段时，若 stdin 与 stderr 均为
-TTY，必须询问所缺配置。服务引导询问 `serverUrl` 及可选隐藏令牌；review 只询问
-一个 GitHub 远程地址及可选本地克隆路径，复用仓库登记规则。隐藏输入不回显令牌，
-空回答保留同一正规化 origin 的现有令牌，或跳过新 origin 的令牌。当前能力已有的无效字段值、review 的
-空仓库列表、共享 YAML 语法或结构错误、重复键、未知字段和读取权限错误仍须显示
-原因；不得通过引导覆盖或修复这些输入。其他能力的业务字段值继续由其独立投影
-校验，不能阻塞当前能力。
-配置修改继续拒绝符号链接和其他非普通文件。配置完整时不询问。
+`daynight login [--no-browser]` 主动发起设备授权，显示验证 URL 和短码；默认尝试打开浏览器，
+无法打开时保留可手工使用的 URL 和短码。`--no-browser` 仅显示这些信息。浏览器核对账号和短码后明确
+批准或拒绝，网页登录本身不批准。CLI 按服务轮询间隔等待，处理 pending、slow_down、拒绝、过期、取消及
+传输失败，最长十分钟；该期限独立于业务命令。批准后自动保存默认永不过期的可撤销凭据，用户无需
+手工创建 PAT；可在网页令牌管理器修改其到期时间，修改保持原凭据有效，不要求重新登录。
+`daynight logout` 撤销当前 CLI 凭据；确认成功或凭据已失效后清除本地值。网络或不确定结果必须可见。
+登录/退出的配置写入在锁内重查 origin 与凭据，不能覆盖期间完成的另一次登录或服务切换。
+完整身份、安全和失败语义由[鉴权需求](daynight-auth.md)拥有。
 
-`daynight setup` 无选项时让操作者选择服务连接、review 或两者，再收集所选值。
-显式 `--server-url <url>`、`--review-repo <remote>` 可单独或同时使用，仅设置选中的
-能力且不询问；`--review-path <path>` 必须与 `--review-repo` 一起使用。远程地址和
-路径语义与 `review add-repo` 相同；服务地址使用 PT2 的校验规则且没有隐含默认值。
-布尔选项 `--server-token-stdin` 从 stdin 接收一行非空令牌，可带一个 LF 或 CRLF；
-拒绝空输入、多行、控制字符及超过 1 MiB 的输入。该选项可同时指定 `--server-url`，
-也可复用已有服务地址；两者都没有时失败。显式地址配置保持不询问。令牌必须是
-opaque visible ASCII，HTTPS 可用，HTTP 仅允许字面量 `localhost`、`127.0.0.0/8` 内的数值 IPv4
-和 `::1`。正规化服务 origin 变化时，旧令牌与地址更新原子清除；origin 相同则保留。
-非交互调用缺少必要配置时，立即以状态码 1 失败，给出可执行的对应 setup 命令。
+`review run`、`review list` 和 `review ls` 只要求 review 配置。配置文件或 `repositories`
+字段缺失且 stdin/stderr 均为 TTY 时，询问一个 GitHub 远程地址及可选本地路径，复用仓库登记规则。
+无选项 `daynight setup` 同样只收集 review 配置。共享 YAML/schema 错误、当前能力的非法值、
+空仓库列表和读取失败保留原错误；其他能力的业务字段由各自投影校验。配置完整时不询问，
+非交互缺少 review 配置时以状态码 1 失败并给出显式 setup 命令。
 
-提示、保存结果和取消诊断只写 stderr，业务结果保留 stdout 的原有格式，包括 JSON。
-必须先收集全部输入，再持配置写锁重新读取文件、合并所选字段、校验并原子保存；
-保留其他能力的字段、YAML 注释和已有仓库路径。含令牌的结果配置在 POSIX 上必须
-以 `0600` 保存，包括其他能力触发的写入；无令牌文件沿用既有权限行为。并发完成
-的无关字段修改必须保留；服务地址与令牌作为共同观察值检查，所选字段在收集输入
-期间变化时，明确报冲突并要求重新设置，不能覆盖。
-已有配置写锁被占用时明确失败。
+显式 `--server-url <url>`、`--review-repo <remote>` 可单独或同时使用，仅保存选中字段且不询问；
+`--review-path <path>` 必须与 `--review-repo` 一起使用。远程地址和路径复用 `review add-repo` 语义。
+布尔 `--server-token-stdin` 保留为自动化入口，从 stdin 接收不超过 1 MiB 的一行非空 opaque visible ASCII，
+允许一个 LF/CRLF，拒绝空输入、多行和控制字符；可使用已配置 origin 或生产默认地址，也可配合显式地址。
+仅 HTTPS 或 host 为字面量 `localhost`、`127.0.0.0/8` 数值 IPv4、`::1` 的 HTTP 允许保存令牌。
+正规化 origin 变化时同次原子清除旧凭据，相同 origin 保留。
 
-输入结束、Ctrl+C、SIGTERM 或 Windows SIGBREAK 取消尚未完成的引导；取消时不保存
-部分输入，也不执行原业务。引导不访问网络、不检查认证、不 clone、不初始化 SQLite
-或审查运行时。配置语法诊断只保留安全类别、代码和位置，不泄露 YAML 标量或原始
-解析器错误链；其他错误继续保留有效原因。自动引导保存成功后，原命令以原参数执行且只执行一次；后续连接或运行
-失败保留已保存的配置。人工输入时间不计入业务命令期限。帮助、版本、补全、自更新及
-无效参数不触发引导。
+提示、保存结果和取消诊断写 stderr，业务结果保留 stdout 格式。先收集全部输入，再持配置锁重读、
+合并、校验并原子保存，保留注释、其他字段、既有仓库路径和无关字段的已完成并发修改。服务 origin
+与令牌作为共同观察值，所选字段变化时明确报冲突。配置锁已占用时明确失败。写入拒绝符号链接和非普通文件；
+含令牌结果在 POSIX 上使用 `0600`，其他能力写入同样遵守，无令牌文件沿用既有权限。
+
+EOF、Ctrl+C、SIGTERM 或 Windows SIGBREAK 取消输入，不保存部分值也不进入原业务。
+配置引导和 setup 不访问网络、不认证、不 clone、不初始化 SQLite 或审查运行时。YAML 诊断只保留
+安全类别、代码和位置，不泄露标量或原始 parser cause；其他有效错误链继续保留。
+review 自动引导保存后以原参数执行原命令一次，后续失败保留配置。人工输入不消耗业务期限；
+帮助、版本、补全、自更新及无效参数不触发引导。
 
 ### C7. 补全启动配置安装
 

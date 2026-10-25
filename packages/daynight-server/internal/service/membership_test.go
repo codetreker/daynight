@@ -33,7 +33,7 @@ func (f *membershipFixture) user(t *testing.T) core.Principal {
 	t.Helper()
 	ctx := context.Background()
 	secret := randomSecret("dnst_")
-	credential := core.Credential{ID: uuid.NewString(), Kind: core.SessionCredential, TokenHash: secretHash(secret), CreatedAt: f.now, ExpiresAt: f.now.Add(SessionLifetime)}
+	credential := core.Session{ID: uuid.NewString(), TokenHash: secretHash(secret), CreatedAt: f.now, ExpiresAt: f.now.Add(SessionLifetime)}
 	_, err := f.database.CreateIdentitySession(ctx, core.User{ID: uuid.NewString(), UniAuthID: uuid.NewString()}, credential)
 	if err != nil {
 		t.Fatal(err)
@@ -415,7 +415,7 @@ func TestMembershipPATAndOperationalFailurePropagation(t *testing.T) {
 	ctx := context.Background()
 	identity := NewIdentity(f.database, nil, "")
 	identity.now = func() time.Time { return f.now }
-	token, err := identity.CreatePAT(ctx, admin, CreatePAT{Name: "Automation", Days: 1})
+	token, err := identity.CreatePAT(ctx, admin, CreatePAT{Name: "Automation"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,10 +11,10 @@ type User struct {
 }
 
 type PersonalAccessToken struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"createdAt"`
-	ExpiresAt time.Time `json:"expiresAt"`
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	CreatedAt time.Time  `json:"createdAt"`
+	ExpiresAt *time.Time `json:"expiresAt"`
 }
 
 type PersonalAccessTokenList struct {
@@ -27,6 +27,12 @@ type CreatedPersonalAccessToken struct {
 }
 
 type CreatePersonalAccessTokenRequest struct {
-	Name string `json:"name"`
-	Days *int   `json:"days,omitempty"`
+	Name      string     `json:"name"`
+	ExpiresAt *time.Time `json:"expiresAt"`
+}
+
+type UpdatePersonalAccessTokenRequest struct {
+	ExpiresAt         *time.Time `json:"expiresAt"`
+	ExpectedExpiresAt *time.Time `json:"expectedExpiresAt"`
+	ExpectedUserID    string     `json:"expectedUserId"`
 }

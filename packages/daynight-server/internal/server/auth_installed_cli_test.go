@@ -204,7 +204,7 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 	repository := "https://example.test/auth-cli/shared.git"
 	_, data := identityRequest(t, bobBrowser, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Bob private project","repoUrl":"`+repository+`"}`, origin, http.StatusCreated)
 	bobProject := identityDecode[api.Project](t, data)
-	_, data = identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Installed CLI acceptance","days":1}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, aliceBrowser, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Installed CLI acceptance","expiresAt":null}`, origin, http.StatusCreated)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	if token.ID == "" || !strings.HasPrefix(token.Token, "dnpat_") {
 		t.Fatal("real browser session did not mint a personal access token")
@@ -249,8 +249,8 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 	before, anonymous, bearer := requests.all.Load(), requests.anonymous.Load(), requests.bearer.Load()
 	unauthorized := requests.unauthorized.Load()
 	stdout, stderr := cli.run(t, "", false, "project", "list", "--json")
-	if stdout != "" || !strings.Contains(stderr, "unauthenticated:") || !strings.Contains(stderr, "daynight setup --server-token-stdin") {
-		t.Fatalf("revoked PAT failure: stdoutEmpty=%t unauthenticatedCode=%t setupGuidance=%t", stdout == "", strings.Contains(stderr, "unauthenticated:"), strings.Contains(stderr, "daynight setup --server-token-stdin"))
+	if stdout != "" || !strings.Contains(stderr, "unauthenticated:") || !strings.Contains(stderr, "daynight login") {
+		t.Fatalf("revoked PAT failure: stdoutEmpty=%t unauthenticatedCode=%t loginGuidance=%t", stdout == "", strings.Contains(stderr, "unauthenticated:"), strings.Contains(stderr, "daynight login"))
 	}
 	if requests.all.Load() != before+1 || requests.bearer.Load() != bearer+1 || requests.anonymous.Load() != anonymous || requests.unauthorized.Load() != unauthorized+1 {
 		t.Fatal("revoked PAT must cause exactly one HTTP 401 bearer request with no anonymous retry")
@@ -260,8 +260,8 @@ func TestAuthenticationInstalledCLIUsesPersonalAccessToken(t *testing.T) {
 	before, anonymous = requests.all.Load(), requests.anonymous.Load()
 	unauthorized = requests.unauthorized.Load()
 	stdout, stderr = unauthenticated.run(t, "", false, "project", "list", "--json")
-	if stdout != "" || !strings.Contains(stderr, "unauthenticated:") || !strings.Contains(stderr, "daynight setup --server-token-stdin") || requests.all.Load() != before+1 || requests.anonymous.Load() != anonymous+1 || requests.unauthorized.Load() != unauthorized+1 {
-		t.Fatal("missing token must produce one HTTP 401 request, unauthenticated error code, and installed CLI setup guidance")
+	if stdout != "" || !strings.Contains(stderr, "daynight login") || requests.all.Load() != before || requests.anonymous.Load() != anonymous || requests.unauthorized.Load() != unauthorized {
+		t.Fatal("missing token must provide installed CLI login guidance before dispatching a request")
 	}
 	for _, secret := range integration.secrets {
 		if secret != "" && integration.logs.contains(secret) {

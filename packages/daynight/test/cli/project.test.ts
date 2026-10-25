@@ -89,7 +89,7 @@ describe("compiled project commands", () => {
       const address = server.address();
       if (address === null || typeof address === "string") throw new Error("Missing native Git HTTP listener.");
       await mkdir(path.join(f.home, ".daynight"), { recursive: true });
-      await writeFile(path.join(f.home, ".daynight/config.yml"), `serverUrl: http://127.0.0.1:${address.port}\n`);
+      await writeFile(path.join(f.home, ".daynight/config.yml"), `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
       const root = await initialize("repository 中文", "fixture:Org/Repo.git");
       git(root, ["config", "url.ssh://git@Git.Example:22/.insteadOf", "fixture:"]);
       git(root, ["config", "remote.origin.pushurl", "https://push.example/Wrong/Repo"]);
@@ -195,7 +195,7 @@ describe("compiled project commands", () => {
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("Missing controlled HTTP listener.");
     await mkdir(path.join(f.home, ".daynight"), { recursive: true });
-    await writeFile(path.join(f.home, ".daynight/config.yml"), `serverUrl: http://127.0.0.1:${address.port}\n`);
+    await writeFile(path.join(f.home, ".daynight/config.yml"), `serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
     const blocked = ["/repository/", "/commands/review/runtime.js", "/commands/review/store.js", "better-sqlite3"];
       const list = await f.invoke(["project", "list", "--json"], blocked);
       expect(list.code, list.stderr).toBe(0);
@@ -244,7 +244,7 @@ describe("compiled project commands", () => {
       expect(failed.stderr).toContain("project-page-failure");
       expect(await readdir(f.caller)).toEqual([]);
       expect(await readdir(path.join(f.home, ".daynight"))).toEqual(["config.yml"]);
-      expect(await readFile(path.join(f.home, ".daynight/config.yml"), "utf8")).toBe(`serverUrl: http://127.0.0.1:${address.port}\n`);
+      expect(await readFile(path.join(f.home, ".daynight/config.yml"), "utf8")).toBe(`serverUrl: http://127.0.0.1:${address.port}\nserverToken: fixture-token\n`);
     } finally {
       server.closeAllConnections();
       if (server.listening) await new Promise<void>((resolve, reject) => { server.close((error) => { if (error) reject(error); else resolve(); }); });

@@ -261,7 +261,7 @@ func TestIdentityCompletionAndSession(t *testing.T) {
 	if result.LoginID != start.ID || result.ReturnPath != "/tasks?view=graph#active" || result.User.UniAuthID != "identity-alice" || result.User.Email == nil || *result.User.Email != "shared@example.com" || result.User.EmailVerified == nil || *result.User.EmailVerified || result.User.AvatarURL != nil || result.User.Name == nil || *result.User.Name != "Display name" {
 		t.Fatalf("identity profile or return path lost: %#v", result)
 	}
-	if !validSecret(result.Secret, "dnst_") || result.Session.Kind != core.SessionCredential || result.Session.UserID != result.User.ID || !result.Session.CreatedAt.Equal(fixture.now) || !result.Session.ExpiresAt.Equal(fixture.now.Add(SessionLifetime)) || !bytes.Equal(result.Session.TokenHash, secretHash(result.Secret)) {
+	if !validSecret(result.Secret, "dnst_") || result.Session.UserID != result.User.ID || !result.Session.CreatedAt.Equal(fixture.now) || !result.Session.ExpiresAt.Equal(fixture.now.Add(SessionLifetime)) || !bytes.Equal(result.Session.TokenHash, secretHash(result.Secret)) {
 		t.Fatalf("issued session: %#v", result.Session)
 	}
 	principal := identityPrincipal(t, fixture, result)
@@ -424,11 +424,11 @@ func TestIdentityPATLifecycleAndOwnerIsolation(t *testing.T) {
 	ctx := context.Background()
 	alice := identityPrincipal(t, fixture, completeIdentityLogin(t, fixture, "alice"))
 	bob := identityPrincipal(t, fixture, completeIdentityLogin(t, fixture, "bob"))
-	minted, err := fixture.identity.CreatePAT(ctx, alice, CreatePAT{Name: " Build agent ", Days: 30})
+	minted, err := fixture.identity.CreatePAT(ctx, alice, CreatePAT{Name: " Build agent ", ExpiresAt: tokenExpiryAt(fixture.now.Add(30 * 24 * time.Hour))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !validSecret(minted.Secret, "dnpat_") || minted.Credential.UserID != alice.UserID || minted.Credential.Kind != core.PATCredential || minted.Credential.Name != " Build agent " || !minted.Credential.CreatedAt.Equal(fixture.now) || !minted.Credential.ExpiresAt.Equal(fixture.now.Add(30*24*time.Hour)) || !bytes.Equal(minted.Credential.TokenHash, secretHash(minted.Secret)) {
+	if !validSecret(minted.Secret, "dnpat_") || minted.Credential.UserID != alice.UserID || minted.Credential.Name != " Build agent " || !minted.Credential.CreatedAt.Equal(fixture.now) || !minted.Credential.ExpiresAt.Equal(fixture.now.Add(30*24*time.Hour)) || !bytes.Equal(minted.Credential.TokenHash, secretHash(minted.Secret)) {
 		t.Fatalf("issued PAT: %#v", minted)
 	}
 	pat, err := fixture.identity.Authenticate(ctx, core.PATCredential, minted.Secret)
@@ -444,7 +444,7 @@ func TestIdentityPATLifecycleAndOwnerIsolation(t *testing.T) {
 			if len(listed) != 0 {
 				t.Fatalf("another user's token was listed: %#v", listed)
 			}
-		} else if len(listed) != 1 || listed[0].ID != minted.Credential.ID || listed[0].TokenHash != nil || listed[0].Name != minted.Credential.Name || listed[0].Kind != core.PATCredential {
+		} else if len(listed) != 1 || listed[0].ID != minted.Credential.ID || listed[0].TokenHash != nil || listed[0].Name != minted.Credential.Name {
 			t.Fatalf("PAT listing disclosed hash or lost fields: %#v", listed)
 		}
 	}
@@ -473,15 +473,15 @@ func TestIdentityPATValidationAndSessionOnlyOperations(t *testing.T) {
 	ctx := context.Background()
 	principal := identityPrincipal(t, fixture, completeIdentityLogin(t, fixture, "alice"))
 	for _, name := range []string{"", " \t\n", "bad\x00name", "bad\xffname", strings.Repeat("界", 101)} {
-		_, err := fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: name, Days: 1})
+		_, err := fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: name, ExpiresAt: tokenExpiryAt(fixture.now.Add(24 * time.Hour))})
 		requireFault(t, err, "invalid_input")
 	}
-	for _, days := range []int{-1, 0, 366} {
-		_, err := fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "Agent", Days: days})
+	for _, days := range []int{-1, 0} {
+		_, err := fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "Agent", ExpiresAt: tokenExpiryAt(fixture.now.Add(time.Duration(days) * 24 * time.Hour))})
 		requireFault(t, err, "invalid_input")
 	}
-	for _, days := range []int{1, 365} {
-		if _, err := fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: strings.Repeat("界", 100), Days: days}); err != nil {
+	for _, days := range []int{1, 365, 3650} {
+		if _, err := fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: strings.Repeat("界", 100), ExpiresAt: tokenExpiryAt(fixture.now.Add(time.Duration(days) * 24 * time.Hour))}); err != nil {
 			t.Fatalf("valid PAT bounds %d: %v", days, err)
 		}
 	}
@@ -491,7 +491,7 @@ func TestIdentityPATValidationAndSessionOnlyOperations(t *testing.T) {
 		requireFault(t, err, "invalid_input")
 	}
 	pat := core.Principal{Kind: core.PATCredential, UserID: principal.UserID, CredentialID: uuid.NewString()}
-	_, err := fixture.identity.CreatePAT(ctx, pat, CreatePAT{Name: "Agent", Days: 1})
+	_, err := fixture.identity.CreatePAT(ctx, pat, CreatePAT{Name: "Agent", ExpiresAt: tokenExpiryAt(fixture.now.Add(24 * time.Hour))})
 	requireFault(t, err, "forbidden")
 	_, err = fixture.identity.ListPATs(ctx, pat)
 	requireFault(t, err, "forbidden")
@@ -514,11 +514,11 @@ func TestIdentityLogoutAndCredentialExpiry(t *testing.T) {
 	ctx := context.Background()
 	login := completeIdentityLogin(t, fixture, "alice")
 	principal := identityPrincipal(t, fixture, login)
-	pat, err := fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "One day", Days: 1})
+	pat, err := fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "One day", ExpiresAt: tokenExpiryAt(fixture.now.Add(24 * time.Hour))})
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.now = pat.Credential.ExpiresAt
+	fixture.now = *pat.Credential.ExpiresAt
 	_, err = fixture.identity.Authenticate(ctx, core.PATCredential, pat.Secret)
 	requireFault(t, err, "unauthenticated")
 	listed, err := fixture.identity.ListPATs(ctx, principal)
@@ -530,7 +530,7 @@ func TestIdentityLogoutAndCredentialExpiry(t *testing.T) {
 	}
 	_, err = fixture.identity.Authenticate(ctx, core.SessionCredential, login.Secret)
 	requireFault(t, err, "unauthenticated")
-	_, err = fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "Stale", Days: 1})
+	_, err = fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "Stale", ExpiresAt: tokenExpiryAt(fixture.now.Add(24 * time.Hour))})
 	requireFault(t, err, "unauthenticated")
 	_, err = fixture.identity.ListPATs(ctx, principal)
 	requireFault(t, err, "unauthenticated")
@@ -556,7 +556,7 @@ func TestIdentityStoreFailuresRemainOperational(t *testing.T) {
 	_, err = fixture.identity.User(ctx, principal)
 	requireIdentityOperationalError(t, err)
 	requireIdentityOperationalError(t, fixture.identity.Logout(ctx, principal))
-	_, err = fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "Agent", Days: 1})
+	_, err = fixture.identity.CreatePAT(ctx, principal, CreatePAT{Name: "Agent", ExpiresAt: tokenExpiryAt(fixture.now.Add(24 * time.Hour))})
 	requireIdentityOperationalError(t, err)
 	_, err = fixture.identity.ListPATs(ctx, principal)
 	requireIdentityOperationalError(t, err)
@@ -745,3 +745,5 @@ func TestIdentityProviderTransportCancellation(t *testing.T) {
 		t.Fatalf("deadline chain: %v", err)
 	}
 }
+
+func tokenExpiryAt(value time.Time) *time.Time { return &value }

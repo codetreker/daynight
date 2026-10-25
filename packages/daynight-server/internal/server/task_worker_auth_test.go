@@ -26,7 +26,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndTransfer(t *testing.T) {
 		t.Fatal("project invitation did not contain an acceptance token")
 	}
 	identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/invitations/accept", invitationBody(link.Fragment), origin, http.StatusOK)
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Worker owner","days":1}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Worker owner","expiresAt":null}`, origin, http.StatusCreated)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	integration.secrets = append(integration.secrets, token.Token)
 	bearer := map[string]string{"Authorization": "Bearer " + token.Token}

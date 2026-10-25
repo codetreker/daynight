@@ -41,10 +41,10 @@ flowchart TB
 
 ## 配置与目录
 
-共享 `config.yml` 增加独立 `worker` mapping；当前 review 根字段保持原义。配置示意：
+共享 `config.yml` 增加独立 `worker` mapping；当前 review 根字段保持原义。服务连接复用 CLI
+默认 `https://daynight.cc` 与已保存凭据，`serverUrl` 只在连接测试服务时显式覆盖。配置示意：
 
 ```yaml
-serverUrl: https://daynight.example.com
 worker:
   stateDirectory: /workspace/automation/.daynight/worker
   maxConcurrentTasks: 2

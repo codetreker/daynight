@@ -46,7 +46,7 @@ func TestTaskLifecycleAuthenticationAndMemberAccess(t *testing.T) {
 	if !task.AllowAgents {
 		t.Fatal("ordinary member could not enable automatic execution")
 	}
-	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Member lifecycle","days":1}`, origin, http.StatusCreated)
+	_, data = identityRequest(t, member, http.MethodPost, integration.server.URL+"/api/v1/me/tokens", `{"name":"Member lifecycle","expiresAt":null}`, origin, http.StatusCreated)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	bearer := map[string]string{"Authorization": "Bearer " + token.Token}
 	integration.secrets = append(integration.secrets, token.Token)

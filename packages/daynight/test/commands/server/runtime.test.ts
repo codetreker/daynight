@@ -26,7 +26,7 @@ afterAll(async () => { await rm(directory, { recursive: true, force: true }); })
 const fixture = async (serverUrl = "http://127.0.0.1:8787"): Promise<CliContext & { stdout: ReturnType<typeof vi.fn<(text: string) => void>>; stderr: ReturnType<typeof vi.fn<(text: string) => void>> }> => {
   const home = await mkdtemp(path.join(directory, "home-"));
   await mkdir(path.join(home, ".daynight"));
-  await writeFile(path.join(home, ".daynight", "config.yml"), `serverUrl: ${serverUrl}\n`);
+  await writeFile(path.join(home, ".daynight", "config.yml"), `serverUrl: ${serverUrl}\nserverToken: fixture-token\n`);
   return {
     version: "0.0.0", packageDirectory: "unused", homeDirectory: () => home,
     workingDirectory: () => { throw new Error("Server runtime must not query cwd"); },
@@ -89,12 +89,12 @@ describe("shared server command runtime", () => {
     expectReleased(signals);
   });
 
-  it("releases cancellation listeners when configuration cannot be read", async () => {
+  it("releases cancellation listeners when credentials are missing", async () => {
     const context = await fixture();
     await rm(path.join(context.homeDirectory(), ".daynight", "config.yml"));
     const signals = new EventEmitter();
     const callback = vi.fn(async () => "unreachable\n");
-    await expect(runServerCommand(context, callback, { signalEmitter: signals })).rejects.toMatchObject({ message: expect.stringContaining("Cannot read configuration file"), cause: { code: "ENOENT" } });
+    await expect(runServerCommand(context, callback, { signalEmitter: signals })).rejects.toMatchObject({ message: expect.stringContaining("daynight login") });
     expect(callback).not.toHaveBeenCalled();
     expect(context.stdout).not.toHaveBeenCalled();
     expectReleased(signals);

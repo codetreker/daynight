@@ -32,7 +32,9 @@ The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
 every project, task, graph and attachment route. The production dashboard mounts
-`AuthenticatedApp`; the CLI uses user PATs. Existing projects are assigned members
+`AuthenticatedApp`; `daynight login` uses Daynight device authorization to obtain
+a nonexpiring `Daynight CLI` Bearer credential. Explicit PAT configuration remains
+available for automation. Existing projects are assigned members
 manually and remain inaccessible while they have no members. Trusted executable
 HTML retains its application origin, relative resources and keyboard behavior.
 The [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
@@ -56,6 +58,70 @@ all incoming ordinary/external references, including deleted-source history,
 updates each affected source version once and marks the target in one transaction.
 The target's own prerequisites remain. Target removal and one epoch rotation are
 atomic, with the task-local `410 task_deleted` response for later access.
+
+## CLI device authorization
+
+The CLI connects to `https://daynight.cc` when `serverUrl` is omitted. An explicit
+server URL supports test deployments. `daynight login` displays a verification
+URL and a ten-letter code; `/device` reuses the ordinary browser login and
+requires explicit approval or denial with the current account. Both browser
+operations require a valid session and exact main-site Origin. A PAT cannot
+approve another device. Decisions bind the reviewed account through required
+`expectedUserId`; a changed browser account is refused before grant mutation.
+`daynight logout` revokes its current Bearer credential.
+
+| Endpoint | Contract |
+|---|---|
+| `POST /api/v1/auth/device/code` | RFC 8628 form request with `client_id=daynight-cli`; returns device and human codes, verification URLs, 600-second lifetime and five-second polling interval |
+| `POST /api/v1/auth/device/token` | Form request with the device grant type, client ID and device code; returns a Bearer credential once |
+| `POST /api/v1/auth/device/inspect` | Browser JSON `{userCode}`; returns canonical code, expiry and pending/approved/denied/expired/consumed status |
+| `POST /api/v1/auth/device/decision` | Browser JSON `{userCode,decision:"approve"|"deny",expectedUserId}`; returns 204 for a new decision |
+| `POST /api/v1/auth/device/logout` | Authenticated Bearer request; deletes only the current credential and returns 204 |
+
+PostgreSQL stores only device-secret and credential hashes. Grant decisions and
+redemption are serialized; consuming one approved grant and inserting one named
+PAT commit atomically. A lost successful token response requires a fresh login;
+consumed grants cannot issue the secret again. The account token page can revoke
+`Daynight CLI` credentials and edit the expiration of an active token without
+changing its secret or requiring another CLI login. `null` means never expires;
+a future UTC timestamp sets an expiration. Existing finite expirations retain
+their original values. Browser sessions keep their fixed seven-day lifetime.
+There is no refresh token.
+
+The persistent polling schedule returns `authorization_pending` while waiting,
+`slow_down` for an early poll with a five-second interval increase,
+`access_denied` after denial, `expired_token` after expiry, and `invalid_grant`
+after consumption. Public endpoints use RFC error JSON; browser endpoints use
+the normal Daynight error envelope. All responses are `no-store`. Nonexpiring token responses omit OAuth
+`expires_in`; the device authorization code still expires after ten minutes.
+
+Persistent one-minute budgets limit creation to 120 requests globally and 30 per
+direct connection source; browser code inspection and decisions share 120 global
+attempts and 12 per user. Forwarded headers do not control the source key.
+Expired rate buckets and grants are cleaned in batches of at most 100. Grants
+remain for one hour after expiry so their approving user can reconcile an
+uncertain decision; another account cannot inspect a decided grant.
+
+## Token expiration management
+
+`POST /api/v1/me/tokens` requires `{name,expiresAt}`, with `expiresAt` explicitly
+`null` for no expiration or a future UTC timestamp ending in `Z`. Legacy `days`
+input is rejected. Token metadata always contains nullable `expiresAt`.
+
+`PATCH /api/v1/me/tokens/{tokenId}` requires
+`{expiresAt,expectedExpiresAt,expectedUserId}` and returns the complete token
+metadata with status 200. The current browser session and exact main-site Origin
+are required. `expectedUserId` binds the reviewed account, and
+`expectedExpiresAt` must equal the observed nullable expiry. A stale observation
+returns 409 `version_conflict`; a changed account returns 403. Missing, revoked,
+and expired tokens return 404 and cannot be restored through this operation.
+
+Updates lock the token row inside the existing session transaction and preserve
+the token ID, name, creation time and hash. A matching unchanged value returns
+200 without a write. An uncertain response is reconciled by reading the token
+list before another decision. Dates are returned in UTC; new finite expirations
+use PostgreSQL microsecond precision. Revocation remains the explicit immediate
+invalidation action. Expiry and revocation affect subsequent credential admission.
 
 ## Layout
 
@@ -183,7 +249,8 @@ The response returns `X-Request-ID`. Successfully authenticated handlers also
 return `Daynight-User-ID` from the admitted principal, including empty mutations
 and later resource errors. Failed authentication does not emit that header;
 caller-supplied values are not echoed. An unmatched route has an empty route template.
-UI and API requests use the same logging wrapper. Exact `/`,
+UI and API requests use the same logging wrapper. Exact `/device`, `/account`,
+`/invitations`, `/`,
 `/projects/{projectId}`, `/projects/{projectId}/members`,
 `/projects/{projectId}/settings`, `/projects/{projectId}/tasks/{taskId}` and
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` page shapes return
@@ -393,9 +460,8 @@ For `T=/api/v1/projects/{projectId}/tasks/{taskId}`, the service provides:
 | `DELETE T/attachments/files/{path...}` | Delete one registered file (204), missing record 404 |
 | `GET T/preview/{path...}` | Inline same-origin content and relative resources |
 
-Log in through the Web workspace, create a PAT and save it using the hidden
-`daynight setup` prompt or its explicit stdin option. With the configured service
-and existing project/task IDs, upload a local document:
+Run `daynight login` and approve its displayed device code in the Web workspace.
+With existing project/task IDs, upload a local document:
 
 ```bash
 daynight task attachment put TASK_ID ./design.md --project PROJECT_ID --path docs/design.md
@@ -750,7 +816,7 @@ remain 500, and cancelled requests write neither response body nor creation
 Location. Parsed project/task IDs and the request ID correlate safe logs; known
 refusals use their domain `error_code` and cause instead of an internal label.
 
-For example, after saving a PAT through setup and obtaining a project ID:
+For example, after running `daynight login` and obtaining a project ID:
 
 ```bash
 daynight task create --project PROJECT_ID --title "Implement API"

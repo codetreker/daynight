@@ -217,7 +217,7 @@ func Login(t testing.TB, browser *http.Client, origin, persona string) {
 
 func CreatePAT(t testing.TB, browser *http.Client, origin string) string {
 	t.Helper()
-	response := request(t, browser, http.MethodPost, origin+"/api/v1/me/tokens", `{"name":"Acceptance fixture","days":1}`, http.StatusCreated)
+	response := request(t, browser, http.MethodPost, origin+"/api/v1/me/tokens", `{"name":"Acceptance fixture","expiresAt":null}`, http.StatusCreated)
 	defer response.Body.Close()
 	var result struct {
 		Token string `json:"token"`
