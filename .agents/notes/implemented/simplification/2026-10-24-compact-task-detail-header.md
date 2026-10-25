@@ -16,10 +16,15 @@ must still leave the dialog controls and reading panels reachable.
 The loaded task's actual title is the common header's h2 and the dialog's
 accessible name. Loading and initial failure use their corresponding state
 titles. The complete task title owns bounded native scrolling and keyboard focus;
-status, new-tab and close controls stay accessible across supported viewport sizes.
-Task details consume the current application locale through the shared
-`LocaleProvider`; the modal header contains the title, current status menu,
-current-state new-tab link and close control. The
+status, fullscreen, action-menu and close controls stay accessible across supported
+viewport sizes. Task details consume the current application locale through the
+shared `LocaleProvider`; the modal header contains the title, current status menu,
+fullscreen toggle, More task actions menu and close control. The `…` trigger sits
+immediately left of Close and groups Open in new tab and Delete task, leaving more
+width for task reading. The standalone page uses the same menu for Delete task.
+The menu retains keyboard navigation, outside dismissal and its own Escape layer.
+Selecting deletion focuses the surviving menu trigger before opening confirmation,
+so cancellation restores that trigger. The
 [standalone-detail decision](../architecture/2026-10-24-standalone-task-detail.md)
 owns that link and shares the same complete content with its page container. The body heading retains status and automation controls. The
 [notification decision](../bug-fix/2026-10-24-task-detail-notifications.md) owns

@@ -70,6 +70,7 @@ export type InspectionMessages = {
   readonly detail: {
     readonly dismissNotice: string;
     readonly showNotice: string;
+    readonly moreActions: string;
     readonly openInNewTab: string;
     readonly returnToProject: string;
     readonly enterFullscreen: string;

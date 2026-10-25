@@ -28,10 +28,10 @@ to the document or browser reader.
 
 At viewport heights up to 500px, fullscreen allocates space through compact
 chrome: narrow headers use title/status and action rows; the complete focusable
-title has a one-line-height scrolling window; existing popout icons retain
-accessible names. The body metadata controls share one row with a shrinkable
-platform select, tabs/panels use tighter spacing, and the informational footer is
-hidden. The attachment preview header keeps path/metadata context and actions in
+title has a one-line-height scrolling window; the task action-menu trigger and
+attachment popout icons retain accessible names. The body metadata controls share
+one row with a shrinkable platform select, tabs/panels use tighter spacing, and
+the informational footer is hidden. The attachment preview header keeps path/metadata context and actions in
 one row; context may ellipsize with its full DOM/title strings preserved, Download
 retains text, and Open in new tab retains its icon and accessible name. These
 fullscreen-only rules preserve nonzero readable Overview and native-preview

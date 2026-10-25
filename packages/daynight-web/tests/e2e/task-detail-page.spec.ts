@@ -155,6 +155,8 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     await expect(modal.locator('.task-detail-title')).toHaveText(title);
     const originalAddress = page.url(); const originalHistory = await page.evaluate(() => history.length);
     const popout = modal.locator('.task-detail-popout');
+    const moreActions = modal.getByRole('button', { name: '更多任务操作', exact: true });
+    await moreActions.click();
     await expect(popout).toHaveAttribute('target', '_blank'); await expect(popout).toHaveAttribute('rel', 'noopener noreferrer');
     const overview = await opened(popout);
     await expectAddress(overview, project.id, task.id, 'overview', null);
@@ -170,6 +172,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
     await openUpload(embeddedAttachments);
     await embeddedAttachments.getByLabel('选择一个文件', { exact: true }).setInputFiles({ name: 'source-draft.txt', mimeType: 'text/plain', buffer: Buffer.from('Source draft') });
     await embeddedAttachments.getByLabel('目标相对路径', { exact: true }).fill('drafts/source.txt');
+    await moreActions.click();
     await expect(popout).toHaveAttribute('href', attachmentPageUrl(project.id, task.id, 'docs/guide.md'));
     await expect(embeddedAttachments.getByRole('link', { name: '在新标签页打开', exact: true })).toHaveAttribute('href', attachmentPageUrl(project.id, task.id, 'docs/guide.md'));
     reader = await opened(popout);

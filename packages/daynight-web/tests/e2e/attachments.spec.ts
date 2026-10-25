@@ -545,11 +545,9 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await page.keyboard.press('Tab');
     await expect(dialog.locator('.task-detail-title-row button[aria-haspopup="menu"]')).toBeFocused();
     await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: '删除任务', exact: true })).toBeFocused();
-    await page.keyboard.press('Tab');
     await expect(dialog.locator('.task-detail-fullscreen-toggle')).toBeFocused();
     await page.keyboard.press('Tab');
-    await expect(dialog.locator('.task-detail-popout')).toBeFocused();
+    await expect(dialog.getByRole('button', { name: '更多任务操作', exact: true })).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(dialog.getByRole('button', { name: '关闭任务详情', exact: true })).toBeFocused();
     await innerButton.focus();
