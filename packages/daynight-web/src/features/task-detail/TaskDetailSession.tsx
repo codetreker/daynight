@@ -35,6 +35,7 @@ type Entry = {
   observedTask: GraphTask | undefined;
   observedVersion: bigint | null;
   observedGeneration: string | null;
+  deletedGeneration: string | null;
   admitted: boolean;
   liveVersion: bigint | null;
   openingGeneration: number;
@@ -105,7 +106,7 @@ export class TaskDetailSessions {
     const key = `${projectId}/${taskId}`;
     let entry = this.entries.get(key);
     if (entry === undefined) {
-      entry = { state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
+      entry = { state: initialState(), generation: 0, read: null, committedVersion: null, queuedRead: null, observedTask: undefined, observedVersion: null, observedGeneration: null, deletedGeneration: null, admitted: false, liveVersion: null, openingGeneration: 0, liveOpeningGeneration: 0, mismatch: null, pending: null, listeners: new Set() };
       this.entries.set(key, entry);
     }
     return entry;
@@ -136,24 +137,26 @@ export class TaskDetailSessions {
     const version = this.summaryVersion(projectId, taskId);
     const cacheGeneration = this.projectGeneration(projectId);
     const lifecycleChanged = entry.observedGeneration !== cacheGeneration;
+    const restored = entry.state.status === "deleted" && admitted && cacheGeneration !== null &&
+      cacheGeneration !== entry.deletedGeneration && version !== null && task !== undefined;
     const removed = admitted && cacheGeneration !== null && entry.observedVersion !== null && version === null && task === undefined;
     if (removed && entry.state.status !== "deleted") {
       this.cancelRead(projectId, taskId);
-      this.markDeleted(projectId, taskId, null, "reconciled");
+      this.markDeleted(projectId, taskId, cacheGeneration, null, "reconciled");
     }
-    if (entry.state.status === "deleted") {
+    if (entry.state.status === "deleted" && !restored) {
       entry.observedGeneration = cacheGeneration; entry.observedVersion = version; entry.observedTask = task; entry.admitted = admitted;
       return false;
     }
-    if (lifecycleChanged) {
+    if (lifecycleChanged || restored) {
       this.cancelRead(projectId, taskId);
-      entry.liveVersion = null; entry.committedVersion = null; entry.pending = null; entry.mismatch = null;
+      entry.liveVersion = null; entry.committedVersion = null; entry.pending = null; entry.mismatch = null; entry.deletedGeneration = null;
       const deniedError = cacheGeneration === null ? entry.state.error : null;
       this.publish(entry, { ...entry.state, detail: null, loadedRevision: null, status: deniedError === null ? "loading" : "error", refreshing: false,
         requiresFreshRead: true, graphMismatch: false, error: deniedError,
-        mutation: { ...entry.state.mutation, reconciling: false, reconciliationError: null } });
+        mutation: restored ? idleMutation() : { ...entry.state.mutation, reconciling: false, reconciliationError: null } });
     }
-    const changed = lifecycleChanged || entry.observedVersion !== version;
+    const changed = lifecycleChanged || restored || entry.observedVersion !== version;
     entry.observedGeneration = cacheGeneration;
     entry.admitted = admitted;
     entry.observedVersion = version;
@@ -259,8 +262,11 @@ export class TaskDetailSessions {
     }
     await this.scope.revokeProject(ticket, signal, true, error);
   }
-  private markDeleted(projectId: string, taskId: string, error: ApiError | null, phase: "confirmed" | "reconciled" = "confirmed"): void {
+  private markDeleted(projectId: string, taskId: string, cacheGeneration: string, error: ApiError | null, phase: "confirmed" | "reconciled" = "confirmed"): void {
+    if (this.scope.isInvalidated) return;
+    if (this.projectGeneration(projectId) !== cacheGeneration) { this.refreshProject(projectId); return; }
     const entry = this.entry(projectId, taskId);
+    entry.deletedGeneration = cacheGeneration;
     entry.liveVersion = null; entry.pending = null; entry.queuedRead = null; entry.mismatch = null;
     const mutation = entry.state.mutation.operation?.action === "delete"
       ? { ...entry.state.mutation, phase, error: phase === "reconciled" ? entry.state.mutation.error : null, reconciling: false, reconciliationError: null }
@@ -364,8 +370,8 @@ export class TaskDetailSessions {
       await this.accept(projectId, taskId, detail, ticket, revision, reconciliation, signal, generation, null, openingGeneration);
     } catch (error) {
       if (signal.aborted || generation !== entry.generation || this.disposed || !retain && !reconciliation && isAbortError(error)) return;
-      if (error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
-        this.markDeleted(projectId, taskId, error, reconciliation ? "reconciled" : "confirmed");
+      if (ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
+        this.markDeleted(projectId, taskId, ticket.cacheGeneration, error, reconciliation ? "reconciled" : "confirmed");
         return;
       }
       const denied = knownTask && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found";
@@ -409,6 +415,30 @@ export class TaskDetailSessions {
     if (!canDeleteTask(state) || state.detail!.version !== version) return;
     this.performMutation(projectId, taskId, { action: "delete", version });
   }
+  private mutationIsCurrent(projectId: string, entry: Entry, operation: TaskMutationOperation, ticket: SyncTicket): boolean {
+    return !this.scope.isInvalidated && entry.state.mutation.operation === operation && this.projectGeneration(projectId) === ticket.cacheGeneration;
+  }
+  private admitMutationOutcome(projectId: string, taskId: string, operation: TaskMutationOperation, ticket: SyncTicket | null, error: unknown = null): boolean {
+    const entry = this.entry(projectId, taskId);
+    if (this.scope.isInvalidated || entry.state.mutation.operation !== operation) return false;
+    if (ticket === null || this.mutationIsCurrent(projectId, entry, operation, ticket)) return true;
+    const project = this.scope.getAuthorizedProject(projectId);
+    if (!this.disposed && project !== null && entry.observedGeneration !== project.manifest.cacheGeneration) {
+      this.observe(projectId, taskId, project.index.nodes.get(taskId), true);
+      if (entry.state.mutation.operation !== operation) return false;
+    }
+    // Another history's receipt cannot establish the current task, even at the same version.
+    const gone = entry.state.status === "deleted";
+    const state: DetailState = { ...entry.state, requiresFreshRead: !gone, refreshing: false,
+      mutation: { operation, phase: gone ? "reconciled" : "unknown", error, reconciling: false, reconciliationError: null } };
+    if (this.disposed) entry.state = state;
+    else {
+      this.publish(entry, state);
+      this.refreshProject(projectId);
+      if (!gone && entry.admitted && this.projectGeneration(projectId) !== null) void this.read(projectId, taskId, entry.state.revision, true, true);
+    }
+    return false;
+  }
   private performMutation(projectId: string, taskId: string, operation: TaskMutationOperation): void {
     const entry = this.entry(projectId, taskId);
     const previous = entry.state.detail!;
@@ -433,13 +463,13 @@ export class TaskDetailSessions {
         const admission = { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch,
           onWriteConfirmed: () => {
             confirmed = true;
-            if (this.projectGeneration(projectId) === requestTicket.cacheGeneration) entry.committedVersion = committedVersion;
+            if (this.mutationIsCurrent(projectId, entry, operation, requestTicket)) entry.committedVersion = committedVersion;
           } };
         submitted = true;
         if (operation.action === "delete") {
           await deleteTask(projectId, taskId, operation.version, signal, admission);
-          if (this.scope.isInvalidated || signal.aborted) return;
-          this.markDeleted(projectId, taskId, null);
+          if (signal.aborted || !this.admitMutationOutcome(projectId, taskId, operation, ticket)) return;
+          this.markDeleted(projectId, taskId, ticket.cacheGeneration, null);
           return;
         }
         const detail = operation.action === "allowAgents"
@@ -447,7 +477,7 @@ export class TaskDetailSessions {
           : operation.action === "requiredPlatform"
             ? await setTaskRequiredPlatform(projectId, taskId, operation.requiredPlatform, operation.version, signal, admission)
             : await setTaskStatus(projectId, taskId, operation.status, operation.version, signal, admission);
-        if (this.scope.isInvalidated || signal.aborted) return;
+        if (signal.aborted || !this.admitMutationOutcome(projectId, taskId, operation, ticket)) return;
         if (this.disposed) {
           entry.state = { ...entry.state, mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } };
           return;
@@ -463,22 +493,25 @@ export class TaskDetailSessions {
         confirmed = true;
         if (this.projectGeneration(projectId) === ticket.cacheGeneration) entry.committedVersion = detail.version;
         await this.accept(projectId, taskId, detail, ticket, entry.state.revision, false, signal, null, operationGeneration);
-        if (this.disposed || this.scope.isInvalidated) return;
+        if (this.disposed || !this.admitMutationOutcome(projectId, taskId, operation, ticket)) return;
         this.publish(entry, { ...entry.state, mutation: { operation, phase: "confirmed", error: null, reconciling: false, reconciliationError: null } });
         this.refreshProject(projectId);
       } catch (error) {
         if (this.scope.isInvalidated) return;
-        if (submitted && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
-          this.markDeleted(projectId, taskId, error);
-          return;
-        }
         // Access withdrawal belongs to the scope even after its observing UI session is disposed.
         if (!confirmed && submitted && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 404 && error.code === "not_found") {
-          const state: DetailState = { ...entry.state, mutation: { operation, phase: "refused", error, reconciling: false, reconciliationError: null } };
-          if (this.disposed) entry.state = state;
-          else this.publish(entry, state);
+          if (entry.state.mutation.operation === operation) {
+            const state: DetailState = { ...entry.state, mutation: { operation, phase: "refused", error, reconciling: false, reconciliationError: null } };
+            if (this.disposed) entry.state = state;
+            else this.publish(entry, state);
+          }
           try { await this.revokeAccess(ticket, error, signal); }
           catch (storageError) { if (!isAbortError(storageError) && !this.disposed && !this.scope.isInvalidated && this.scope.canRevokeProject(ticket)) this.failRead(entry, storageError, false); }
+          return;
+        }
+        if (!this.admitMutationOutcome(projectId, taskId, operation, ticket, error)) return;
+        if (submitted && ticket !== null && error instanceof ApiError && error.kind === "server" && error.status === 410 && error.code === "task_deleted") {
+          this.markDeleted(projectId, taskId, ticket.cacheGeneration, error);
           return;
         }
         if (entry.state.status === "deleted") {

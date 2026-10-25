@@ -58,8 +58,11 @@ observation, cancels old reads/payloads, and resets freshness and committed-vers
 floors. A render-time check hides the old body before observation effects. Equal
 task IDs, business versions and timestamps cannot preserve authority across
 history replacement, even when the new GET stalls or fails. Operation intent and
-confirmed/unknown phase markers survive; canceled reconciliation becomes available
-for explicit GET recovery. Same-generation refreshes retain their successful body. Server-derived disagreement is checked before local
+confirmed/unknown phase markers normally survive; canceled reconciliation becomes
+available for explicit GET recovery. Reopening a deleted entry in a restored
+history resets mutation ownership and requires a fresh GET. Its old intent cannot
+occupy or overwrite the restored history's mutation state, and delayed outcomes
+still require the current operation owner and history admission. Same-generation refreshes retain their successful body. Server-derived disagreement is checked before local
 materialization and kept as stale evidence until the projection/read converges;
 changing a prerequisite need not fetch every successor's intrinsic body.
 
@@ -149,6 +152,13 @@ normal database time. Wall-clock rollback and bypassed maintenance require the
 recovery policy; supported history replacement rotates epochs before service
 resumes. [Task soft deletion](../feature/2026-10-25-task-soft-deletion.md) rotates
 the same epoch inside its write transaction. Its distinct `410 task_deleted`
-response removes only the task and does not revoke project admission. Native browser persistence, network counts, failure and identity evidence
-remain necessary alongside deterministic tests. Attachments retain their
+response removes only the task and does not revoke project admission. Deletion
+terminals obey the project cache generation: supported recovery may restore a
+live task with the same ID, requiring a fresh GET after a later authorized snapshot
+restores both node and summary. All status, permission, platform and deletion
+outcomes share operation-owner and history admission checks. Delayed old-history
+results cannot change restored details, replace a newer mutation's feedback or
+release its shared write lock; existing principal and project-revocation checks
+retain their captured scope/ticket protections. Native browser persistence,
+network counts, failure and identity evidence remain necessary alongside deterministic tests. Attachments retain their
 independent reads, mutations and preview lifetime.

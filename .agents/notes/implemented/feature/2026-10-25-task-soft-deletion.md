@@ -22,7 +22,18 @@ commit atomically. The existing summary protocol then replaces the complete
 project cache, including details, on its next sync. Authorized access to a
 retained deleted task returns `410 task_deleted`; missing tasks and inaccessible
 projects retain `404 not_found`. Web sessions handle deletion locally and keep
-the project's access admission.
+the project's access admission. A deleted terminal belongs to the cache generation
+that established it, preserving the existing supported history-replacement rule.
+After paired database/filesystem recovery and epoch rotation, a later authorized
+snapshot containing both a live node and its summary reopens the same task ID
+through a required live GET. Matching IDs, versions or timestamps cannot reuse
+old detail authority. Every status, permission, platform and deletion outcome
+passes the current operation-owner and history admission checks before updating
+details or mutation state. Late old-history responses cannot delete the restored
+view, replace a newer operation's feedback, or release its shared write lock. This
+includes a late successful non-delete response after a new DELETE has started,
+as well as late DELETE `204` or `410` responses. Existing principal and
+project-revocation checks retain their own scope/ticket protections.
 
 CLI deletion uses the existing exact-version mutation pattern without automatic
 retries. Shared Web details require a destructive confirmation and retain their
@@ -67,7 +78,16 @@ invalidates the whole project cache and causes a full snapshot rather than a sma
 delta. A high deletion rate would justify reconsidering tombstones with measured
 transport and cache costs.
 
-Restore, trash browsing, bulk deletion and cascading relationship edits remain
-separate features. Their later addition must preserve retained task identity,
-explicit reference rules, access checks and cache-generation invalidation; no
-current API exposes deleted task contents or treats the marker as a fourth status.
+The existing [paired backup recovery](../../../../deployment/localhost/README.md#persistence-and-backup)
+continues to replace a project history after epoch rotation, including records that
+were live in the captured history. Terminal deletion state and asynchronous
+operation results therefore obey the same cache-generation boundary as details
+and the current mutation owner. Discarding an old history's view authority cannot
+allow its delayed callback to release a newer operation's exclusion or replace
+that operation's feedback.
+
+Task-level restore, trash browsing, bulk deletion and cascading relationship edits
+remain separate features. Their later addition must preserve retained task
+identity, explicit reference rules, access checks and cache-generation
+invalidation; no current API exposes deleted task contents or treats the marker
+as a fourth status.
