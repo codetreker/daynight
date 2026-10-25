@@ -383,7 +383,7 @@ describe('project overview and task workspace', () => {
   };
   const sectionTab = (section: 'overview' | 'tasks') => within(screen.getByRole('tablist', { name: '项目视图' })).getByRole('tab', { name: section === 'overview' ? '概览' : '任务列表' });
 
-  it('starts on Overview and keeps stored task scroll isolated from overview scrolling', async () => {
+  it('defaults to Overview and restores Tasks directly on remount with its separate scroll position', async () => {
     window.localStorage.setItem(key('task-view-scroll'), JSON.stringify({ chains: 320, standalone: 540 }));
     let scroll = 80;
     vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
@@ -391,6 +391,7 @@ describe('project overview and task workspace', () => {
     mountOverview();
     await screen.findByRole('heading', { name: project });
     expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
+    expect(window.localStorage.getItem(key('project-section'))).toBeNull();
     expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
     expect(screen.queryByRole('tab', { name: '任务链' })).toBeNull();
     expect(screen.queryByTestId('graph-node')).toBeNull();
@@ -415,10 +416,9 @@ describe('project overview and task workspace', () => {
     expect(graphRequest).toHaveBeenCalledOnce();
     cleanup();
     mountOverview();
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
     await screen.findByRole('heading', { name: project });
-    expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
-    expect(scroll).toBe(0);
-    fireEvent.click(sectionTab('tasks'));
+    expect(await screen.findByTestId('graph-node')).toBeVisible();
     expect(scroll).toBe(400);
   });
 
@@ -479,7 +479,7 @@ describe('project overview and task workspace', () => {
     expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
   });
 
-  it('retains both outer navigation choices for an empty project and resets the section on project change', async () => {
+  it('keeps each project selection independent and restores a saved Overview on remount', async () => {
     graphRequest.mockImplementation(async (id) => snapshot([], id));
     const view = mountOverview();
     await screen.findByRole('heading', { name: project });
@@ -491,5 +491,78 @@ describe('project overview and task workspace', () => {
     expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
     expect(screen.queryByRole('heading', { name: '还没有任务' })).toBeNull();
     expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
+    expect(window.localStorage.getItem(key('project-section', otherProject))).toBeNull();
+    view.rerender(<ProjectPage projectId={project} />);
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
+    await screen.findByRole('heading', { name: project });
+    expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
+    fireEvent.click(sectionTab('overview'));
+    expect(window.localStorage.getItem(key('project-section'))).toBe('"overview"');
+    cleanup();
+    mountOverview();
+    expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
+    await screen.findByRole('heading', { name: project });
+    expect(screen.queryByRole('heading', { name: '还没有任务' })).toBeNull();
+  });
+
+  it.each(['"standalone"', 'null', '{}', '["tasks"]', 'tasks'])('rejects invalid outer section %s and remains usable', async (value) => {
+    window.localStorage.setItem(key('project-section'), value);
+    mountOverview();
+    expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText(/^浏览器保存的项目视图无效，已默认显示概览/)).toBeVisible();
+    await screen.findByRole('heading', { name: project });
+    fireEvent.click(sectionTab('tasks'));
+    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(window.localStorage.getItem(key('project-section'))).toBe('"tasks"');
+    cleanup();
+    mountOverview();
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByText(/^浏览器保存的项目视图无效/)).toBeNull();
+    await screen.findByRole('heading', { name: project });
+  });
+
+  it('reports an unreadable outer section and recovers from the next successful read', async () => {
+    window.localStorage.setItem(key('project-section'), '"tasks"');
+    const read = Storage.prototype.getItem;
+    const failedRead = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(function (this: Storage, name) {
+      if (name === key('project-section')) throw new DOMException('Denied', 'SecurityError');
+      return read.call(this, name);
+    });
+    mountOverview();
+    expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByText(/^无法读取浏览器保存的项目视图/)).toBeVisible();
+    await screen.findByRole('heading', { name: project });
+    fireEvent.click(sectionTab('tasks'));
+    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    failedRead.mockRestore();
+    cleanup();
+    mountOverview();
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByText(/^无法读取浏览器保存的项目视图/)).toBeNull();
+    await screen.findByRole('heading', { name: project });
+  });
+
+  it('keeps the current outer section after a failed write and clears its notice after a successful save', async () => {
+    const write = Storage.prototype.setItem;
+    const failedWrite = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, name, value) {
+      if (name === key('project-section')) throw new DOMException('Full', 'QuotaExceededError');
+      write.call(this, name, value);
+    });
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    fireEvent.click(sectionTab('tasks'));
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
+    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(screen.getByText(/^项目视图无法保存到浏览器/)).toBeVisible();
+    expect(window.localStorage.getItem(key('project-section'))).toBeNull();
+    failedWrite.mockRestore();
+    fireEvent.click(sectionTab('overview'));
+    expect(screen.queryByText(/^项目视图无法保存到浏览器/)).toBeNull();
+    expect(window.localStorage.getItem(key('project-section'))).toBe('"overview"');
+    fireEvent.click(sectionTab('tasks'));
+    cleanup();
+    mountOverview();
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
+    await screen.findByRole('heading', { name: project });
   });
 });

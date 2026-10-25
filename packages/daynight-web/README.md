@@ -164,8 +164,11 @@ unavailable for editing.
 With `pnpm web:dev`, open `/tests/mockups/auth.html` for actual components with
 controlled fetch responses, the same locale Provider and final styles. This
 fixture validates frontend interaction separately from real UniAuth service and
-upstream-provider login. The [static design prototype](../../docs/design/mockups/auth/index.html)
-retains the broader scenario reference. Open `/tests/mockups/device.html` for
+upstream-provider login. Use `/tests/mockups/auth.html?scenario=project` for the
+production project sections and their per-project preference restoration. The
+[static design prototype](../../docs/design/mockups/auth/index.html) retains the
+broader scenario reference; its deterministic scenario reset does not represent
+production browsing-preference persistence. Open `/tests/mockups/device.html` for
 the production device page with frontend-only controlled request states. Its
 scenario selector covers manual entry, loading, approval, denial, expiration,
 invalid codes, request failures, rate limiting, uncertain decisions, and long
@@ -459,13 +462,14 @@ The application implements `/`, `/projects/{projectId}`, `/account`,
 `/invitations` and the standalone
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` reader, direct URL
 reload, browser back/forward and a generic not-found page. All resource reads use
-the current authenticated identity. A project first opens Overview, with six
-statistics from the complete snapshot. Its adjacent Task list section contains
-Standalone tasks and Task chains. Desktop section navigation is vertical on the
+the current authenticated identity. A project without a saved section preference
+opens Overview, with six statistics from the complete snapshot. Its adjacent Task
+list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
 left of the selected content; narrow screens use horizontal tabs with matching
-keyboard direction. The outer choice is local to the mounted project and is not
-stored in the URL or browser preferences. Reloading or returning to the project
-starts Overview again. Empty projects retain both section destinations.
+keyboard direction. The outer choice is stored per project in browser
+preferences, so the first render after reload or return already shows the saved
+Overview or Task list selection. It does not change the URL or history. Empty
+projects retain both section destinations.
 
 Both sections use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
@@ -615,9 +619,9 @@ persist. Locale translates controls without adding business reads. The
 [progressive decision](../../.agents/notes/implemented/feature/2026-10-22-progressive-task-graph.md)
 separates topology state from presentation lifetime.
 
-Per-project browser preferences retain the selected inner task category, each
-category's page scroll position and completed-item choice, and the chain's original task witness or
-explicit collapse across reloads and navigation. The existing
+Per-project browser preferences retain the selected outer section and inner task
+category, each category's page scroll position and completed-item choice, and the
+chain's original task witness or explicit collapse across reloads and navigation. The existing
 `{ expandedRootId: string | null }` shape remains: resolve a valid witness to its
 current ordinary component, then display that component's representative.
 A representative change must not overwrite a still-valid original witness.
@@ -625,6 +629,12 @@ Entering Task chains without a saved expansion selects the newest visible chain;
 missing/hidden witnesses use the
 existing visible fallback. No visible chains, loading, failed initial reads or
 empty graphs do not invent explicit collapse. Null remains collapsed on reload.
+The outer section uses the independent `daynight:project-section:${projectId}`
+record with the JSON string `"overview"` or `"tasks"`; a missing record selects
+Overview. It shares the existing named-preference reader and writer without
+changing the inner-category, expansion, filter or scroll records. A read or
+format failure selects Overview with a section-specific notice; a write failure
+retains the current in-memory selection and reports that it was not saved.
 Storage failures leave the current page usable with a visible notice. Both
 stable inner tabpanel wrappers retain their IDs and hide inactive content; returning
 to a chain retains the witness while its canvas initializes again. Task page
@@ -672,8 +682,9 @@ statistics and both task-category lists together. The
 owns the scheduling and scope. With `pnpm web:dev`,
 `/tests/mockups/auto-refresh.html` uses the real project page, styles and controlled
 responses to explore periodic changes, delayed reads and recoverable failures
-without Go or PostgreSQL. It starts on Overview; select Task list to inspect
-task rows and graphs while the same project synchronization continues. The [notification mockup](tests/mockups/notifications.html)
+without Go or PostgreSQL. Without a saved section preference it starts on Overview;
+select Task list to inspect task rows and graphs while the same project
+synchronization continues. Reloading restores the selected section. The [notification mockup](tests/mockups/notifications.html)
 uses the shared detail surface for lock tooltips, success, unknown-write, stale
 snapshot and refresh-error feedback in dialog and page containers. Production
 verification uses the real-service journeys.
@@ -1039,9 +1050,10 @@ use actual services on both runtime targets with source-qualified receipts.
 
 Run `pnpm web:dev` and open `/tests/mockups/browsing.html` on Vite's printed
 origin. The fixture mounts the production project page and CSS with mixed,
-fully completed and empty project graphs. It starts on Overview; select Task
-list to reach the two inner category tabs. It demonstrates the current outer
-section layout, retained task subtree and isolated section scroll ownership,
+fully completed and empty project graphs. Without a saved section preference it
+starts on Overview; select Task list to reach the two inner category tabs.
+Reloading or returning to a project restores the selected outer section. It
+demonstrates the current outer section layout, retained task subtree and isolated section scroll ownership,
 newest-first category lists, topology-based standalone classification,
 cross-chain prerequisites, direct standalone details and per-project tab, scroll,
 expanded/collapsed and independent completed-item preferences across reloads.
@@ -1395,7 +1407,7 @@ scenario annotations validated in each target's report.
 |---|---|
 | W1 | `project-list`: more than 50 projects, cursor requests, unique cards and navigation to a later-page project |
 | W2 | `project-graph`, `deep-links`, `task-attachments`, `task-detail-page`: project entry, direct HTML reload, complete standalone task/tab/file navigation and history without source-tab state; modal selection remains local |
-| W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview-first landing and responsive section navigation, exact statistics, retained canvas/viewport across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/scroll/expansion restoration, dependency reclassification and consistent full refresh |
+| W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained canvas/viewport across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/scroll/expansion restoration, dependency reclassification and consistent full refresh |
 | W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and existing detail/viewport actions |
 | W8, TI12–TI14 | `detail-navigation`, `refresh-staleness`, `task-detail-page`: shared complete dialog/page content and actions, title-bar/attachment popouts, task/tab/file history, query-preserving login, nested confirmations, precise/conflicting/unknown writes, automatic full-detail reads and retained geometry/state |
 | W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, correlated errors, empty/not-found states, delayed request replacement and complete size refusal |

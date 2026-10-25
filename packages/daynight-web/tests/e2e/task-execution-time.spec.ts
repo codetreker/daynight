@@ -178,7 +178,9 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     expect(seeded).toEqual({ ...claimed, startedAt: seeded.startedAt, version: claimed.version + 1n, updatedAt: seeded.updatedAt });
     expect(seeded.startedAt).not.toBe(claimed.startedAt); expect(seeded.updatedAt).not.toBe(claimed.updatedAt);
     await page.reload();
-    await openTimingChain();
+    await expect(page.getByRole('tab', { name: /^(任务列表|Task list)$/, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator(`#task-root-${roots[0]!.id}`)).toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator(`#task-graph-${roots[0]!.id}`)).toBeVisible();
     const ticking = card(page, crossing.id);
     await expect(duration(ticking)).toBeVisible();
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
@@ -292,7 +294,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
       }
     }
     await page.reload();
-    await selectTaskList(page);
+    await expect(page.getByRole('tab', { name: /^(任务列表|Task list)$/, exact: true })).toHaveAttribute('aria-selected', 'true');
     await expect(page.locator(`#standalone-task-${legacy.id}`)).toBeVisible();
     await expect(duration(page.locator(`#standalone-task-${legacy.id}`))).toHaveCount(0);
     const final = parseTaskDetail(parseApiJson(await success(['task', 'show', crossing.id, '--project', project.id, '--json'])), project.id, crossing.id);

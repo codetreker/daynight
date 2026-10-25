@@ -334,11 +334,11 @@ Its data and runtime are independent of the client review module. The
 [server design decision](.agents/notes/implemented/architecture/2026-10-19-daynight-server-task-design.md)
 records the adopted scope and concurrency choices. The development and runtime
 CLI commands below apply to the client; server commands have their own module.
-A project opens its Overview section, with six statistics from one complete
-snapshot. The adjacent Task list section contains the existing Standalone tasks
-and Task chains tabs. Section selection stays local to the current project
-visit; the inner task category, independent completed-item filters, chain
-expansion and task browse positions retain their per-project browser records.
+A project without a saved section preference opens Overview, with six statistics
+from one complete snapshot. The adjacent Task list section contains the existing
+Standalone tasks and Task chains tabs. The section, inner task category,
+independent completed-item filters, chain expansion and task browse positions
+retain their per-project browser records across reloads and navigation.
 The task workspace mounts on its first selection and remains mounted while
 Overview is visible, preserving the graph's viewport and inspection state.
 Standalone rows open details directly. Task chains are ordinary-edge weak

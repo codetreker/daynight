@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { fireEvent, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ProjectSectionTabs, type ProjectSection } from "../src/features/projects/ProjectSectionTabs";
+import { ProjectSectionTabs } from "../src/features/projects/ProjectSectionTabs";
+import type { ProjectSection } from "../src/features/projects/useProjectViewPreferences";
 import { createLocaleRender } from "./helpers/renderWithLocale";
 
 const render = createLocaleRender("zh-CN");
