@@ -31,8 +31,11 @@ Only a fully accepted plan reaches storage mutation. Errors from storage remain
 operational errors; expected domain refusals remain pending until the outer
 transaction has completed successfully.
 
-The project check before writes reuses the project service. There is no deletion
-API, so a valid project cannot disappear through an allowed concurrent operation.
+The project check before writes reuses the project service. Projects have no
+deletion API, so a valid project cannot disappear through an allowed concurrent
+operation. [Task soft deletion](2026-10-25-task-soft-deletion.md) preserves rows and
+refuses undeleted successors under the same project lock; active reference
+validation excludes marked tasks.
 Task reads and lists check project and task data within one read-only snapshot.
 Task cursors reuse the versioned format and bind project, status and readiness.
 

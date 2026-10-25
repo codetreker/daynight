@@ -60,7 +60,7 @@ func (s *Snapshot) Task(ctx context.Context, projectID, id string) (core.Task, e
 func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery) (TaskPage, error) {
 	afterTime, afterID := pageValues(query.Page)
 	rows, err := s.tx.Query(ctx, `SELECT `+taskProjection+` FROM tasks t
-		WHERE t.project_id = $1
+		WHERE t.project_id = $1 AND t.deleted_at IS NULL
 		AND ($2::timestamptz IS NULL OR (t.created_at, t.id) > ($2, $3::uuid))
 		AND ($4::text IS NULL OR t.status = $4)
 		AND ($5::boolean IS NULL OR `+taskReady+` = $5)
@@ -82,8 +82,8 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 }
 
 func readTask(ctx context.Context, tx pgx.Tx, projectID, id string) (core.Task, error) {
-	task, err := scanTask(tx.QueryRow(ctx, `SELECT `+taskProjection+` FROM tasks t
-		WHERE t.project_id = $1 AND t.id = $2`, projectID, id))
+	task, err := scanTask(liveTaskRow{tx.QueryRow(ctx, `SELECT `+taskProjection+`, t.deleted_at FROM tasks t
+		WHERE t.project_id = $1 AND t.id = $2`, projectID, id)})
 	if err != nil {
 		return core.Task{}, queryError("read task", err)
 	}

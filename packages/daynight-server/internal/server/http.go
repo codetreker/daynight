@@ -194,7 +194,7 @@ func writeError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusForbidden
 		case "invalid_input":
 			status = http.StatusBadRequest
-		case "invitation_unavailable":
+		case "invitation_unavailable", "task_deleted":
 			status = http.StatusGone
 		case "not_found":
 			status = http.StatusNotFound

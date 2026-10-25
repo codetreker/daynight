@@ -18,6 +18,9 @@ delta selected by updated_at >= since - overlap, or all rows when since is
 absent for an empty baseline. The server owns a positive Go-duration overlap,
 configured by DAYNIGHT_TASK_SYNC_OVERLAP with default 10s. Normal task writes
 retain their existing business versions and timestamps.
+[Task soft deletion](../feature/2026-10-25-task-soft-deletion.md) excludes marked
+rows and atomically rotates the project epoch, causing a complete replacement
+without changing the summary wire format.
 
 NewTaskSync receives the validated duration at composition and uses one existing
 read-only repeatable-read transaction for membership, Project, epoch, full graph

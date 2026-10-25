@@ -123,3 +123,16 @@ func utcTime(value *time.Time) *time.Time {
 	utc := value.UTC()
 	return &utc
 }
+
+type liveTaskRow struct{ pgx.Row }
+
+func (row liveTaskRow) Scan(destinations ...any) error {
+	var deletedAt *time.Time
+	if err := row.Row.Scan(append(destinations, &deletedAt)...); err != nil {
+		return err
+	}
+	if deletedAt != nil {
+		return core.ErrTaskDeleted
+	}
+	return nil
+}

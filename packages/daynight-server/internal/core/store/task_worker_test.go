@@ -18,7 +18,7 @@ type workerMigrationRow struct {
 
 func workerMigrationRows(t *testing.T, database *Store) []workerMigrationRow {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `SELECT id::text,properties,(to_jsonb(t)-'properties')::text FROM tasks t ORDER BY id`)
+	rows, err := database.Pool.Query(context.Background(), `SELECT id::text,properties,(to_jsonb(t)-'properties'-'deleted_at')::text FROM tasks t ORDER BY id`)
 	if err != nil {
 		t.Fatal(err)
 	}

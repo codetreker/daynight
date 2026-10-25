@@ -1329,6 +1329,7 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(page.locator('#root')).toHaveAttribute('inert', '');
   const taskTitle = dialog.locator('.task-detail-title');
   const statusAction = dialog.getByRole('button', { name: '待处理', exact: true });
+  const deleteTaskAction = dialog.getByRole('button', { name: '删除任务', exact: true });
   const popout = dialog.locator('.task-detail-popout');
   const detailFullscreen = dialog.locator('.task-detail-fullscreen-toggle');
   const automation = dialog.getByRole('switch', { name: '自动执行', exact: true });
@@ -1357,6 +1358,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Shift+Tab');
   await expect(detailFullscreen).toBeFocused();
   await page.keyboard.press('Shift+Tab');
+  await expect(deleteTaskAction).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
   await expect(statusAction).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(taskTitle).toBeFocused();
@@ -1371,6 +1374,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Tab');
   await expect(statusAction).toBeFocused();
   await page.keyboard.press('Tab');
+  await expect(deleteTaskAction).toBeFocused();
+  await page.keyboard.press('Tab');
   await expect(detailFullscreen).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(popout).toBeFocused();
@@ -1381,6 +1386,12 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
     expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
   }
   await detailFullscreen.click();
+  await expect(detailFullscreen).toHaveAttribute('aria-pressed', 'true');
+  await deleteTaskAction.click();
+  await expect(page.getByRole('alertdialog')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+  await expect(deleteTaskAction).toBeFocused();
   await expect(detailFullscreen).toHaveAttribute('aria-pressed', 'true');
   await statusAction.click();
   await page.keyboard.press('Escape');

@@ -130,7 +130,7 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('button', { name: '进入全屏' })).toHaveAttribute('aria-pressed', 'false');
   });
 
-  it('lets status menus and confirmations consume Escape before leaving fullscreen', async () => {
+  it('lets menus, status and deletion confirmations consume Escape before leaving fullscreen', async () => {
     const fetch = vi.fn().mockResolvedValue(response(detail()));
     vi.stubGlobal('fetch', fetch);
     const options = props();
@@ -148,6 +148,16 @@ describe('task detail dialog', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(shell).toHaveClass('task-detail-fullscreen');
+    const deletion = screen.getByRole('button', { name: '删除任务' });
+    deletion.focus();
+    fireEvent.click(deletion);
+    expect(screen.getByRole('alertdialog')).toHaveTextContent('删除任务');
+    expect(shell).toHaveAttribute('inert');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(shell).not.toHaveAttribute('inert');
+    expect(shell).toHaveClass('task-detail-fullscreen');
+    expect(deletion).toHaveFocus();
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(shell).not.toHaveClass('task-detail-fullscreen');
     expect(options.onClose).not.toHaveBeenCalled();
@@ -330,6 +340,8 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('button', { name: '待处理' })).toHaveFocus();
     await user.tab();
+    expect(screen.getByRole('button', { name: '删除任务' })).toHaveFocus();
+    await user.tab();
     expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
@@ -339,6 +351,8 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('link', { name: '在新标签页打开' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: '删除任务' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('button', { name: '待处理' })).toHaveFocus();
     await user.tab({ shift: true });
