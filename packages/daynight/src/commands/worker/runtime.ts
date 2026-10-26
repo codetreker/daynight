@@ -64,6 +64,7 @@ export const runWorker = async (options: {
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   let cleanupLoop: Promise<void> | undefined;
   let cleanupFailure: unknown;
+  const cleanupJobs = new Map<string, Promise<void>>();
   const failures: unknown[] = [];
   try {
     cancellation.signal.throwIfAborted();
@@ -92,22 +93,36 @@ export const runWorker = async (options: {
     const cleanupStore = store;
     cleanupLoop = (async () => {
       while (!cancellation.signal.aborted) {
-        try { await cleanupCoordinator.advanceCommittedCleanups(); }
-        catch (error) {
-          if (cancelled(error, cancellation.signal)) break;
-          emit({ kind: "cleanup-error", message: "Committed cleanup could not advance; its original deadline and responsibility are retained.", error });
+        for (const task of cleanupStore.listUnfinishedTasks()) {
+          if (task.serverOrigin !== serverUrl || task.workerId !== workerId || (task.cleanup === null && task.control === null)) continue;
+          const identity = { serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId };
+          const key = JSON.stringify(identity);
+          if (cleanupJobs.has(key)) continue;
+          const job = (async () => {
+            while (!cancellation.signal.aborted) {
+              try { await cleanupCoordinator.advanceCommittedCleanups(identity); }
+              catch (error) {
+                if (cancelled(error, cancellation.signal)) return;
+                emit({ kind: "cleanup-error", message: "Committed cleanup could not advance; its original deadline and responsibility are retained.", error });
+              }
+              await cleanupDiagnostics.flush();
+              const current = cleanupStore.getTask(identity);
+              if (current === null) throw new Error("The committed cleanup record disappeared.");
+              if (current.status === "done" || (current.cleanup === null && current.control === null)) return;
+              const state = current.cleanup;
+              if (state !== null && state.result !== null && state.agentStopped && state.workspaceClosed && (state.kind === "shutdown" || state.worktreeDeleted)) return;
+              const remaining = state === null ? 0 : state.deadline - Date.now();
+              try { await delay(remaining > 0 ? Math.max(1, Math.min(1_000, remaining)) : 1_000, undefined, { signal: cancellation.signal }); }
+              catch (error) { if (!cancelled(error, cancellation.signal)) throw error; }
+            }
+          })().catch((error: unknown) => { if (cleanupFailure === undefined) cleanupFailure = error; cancellation.abort(error); });
+          cleanupJobs.set(key, job);
+          void job.then(() => { if (cleanupJobs.get(key) === job) cleanupJobs.delete(key); });
         }
-        await cleanupDiagnostics.flush();
-        const observedAt = Date.now();
-        const interval = Math.max(1, cleanupStore.listUnfinishedTasks().reduce((waiting, task) => {
-          if (task.serverOrigin !== serverUrl || task.workerId !== workerId || task.cleanup === null || task.cleanup.result !== null) return waiting;
-          const remaining = task.cleanup.deadline - observedAt;
-          return remaining > 0 ? Math.min(waiting, remaining) : waiting;
-        }, 1_000));
-        try { await delay(interval, undefined, { signal: cancellation.signal }); }
+        try { await delay(1_000, undefined, { signal: cancellation.signal }); }
         catch (error) { if (!cancelled(error, cancellation.signal)) throw error; }
       }
-    })().catch((error: unknown) => { cleanupFailure = error; cancellation.abort(error); });
+    })().catch((error: unknown) => { if (cleanupFailure === undefined) cleanupFailure = error; cancellation.abort(error); });
     emit({ kind: "started", message: `Foreground worker ${workerId} on ${platform}; maxConcurrent=${configuration.maxConcurrent}; pollIntervalMs=${configuration.pollIntervalMs}; logs=${diagnostics.filename}.` });
     for (const repository of configuration.repositories) {
       cancellation.signal.throwIfAborted();
@@ -144,6 +159,7 @@ export const runWorker = async (options: {
   } finally {
     if (!cancellation.signal.aborted) cancellation.abort(new Error("Worker runtime is closing."));
     await cleanupLoop;
+    await Promise.all(cleanupJobs.values());
     if (cleanupFailure !== undefined && !failures.includes(cleanupFailure)) failures.push(cleanupFailure);
     if (coordinator !== undefined && herdr !== undefined) {
       try {

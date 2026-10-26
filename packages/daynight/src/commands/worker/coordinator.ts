@@ -198,10 +198,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   return {
     serializeTask,
-    advanceCommittedCleanups: async (): Promise<void> => {
+    advanceCommittedCleanups: async (identity?: ClaimIdentity): Promise<void> => {
       if (shuttingDown) return;
       normalSignal.throwIfAborted();
-      const committed = localTasks().filter((task) => task.cleanup !== null || task.control !== null);
+      const committed = localTasks().filter((task) => (task.cleanup !== null || task.control !== null) && (identity === undefined || claimKey(task) === claimKey(identity)));
       const results = await Promise.allSettled(committed.map((input) => serializeTask(input, async () => {
         normalSignal.throwIfAborted();
         let task = latest(input);

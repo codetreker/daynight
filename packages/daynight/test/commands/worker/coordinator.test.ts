@@ -467,4 +467,29 @@ describe("worker foreground coordinator", () => {
     await f.coordinator.advanceCommittedCleanups(); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   });
 
+  it("advances one claim deadline while another claim's cleanup input is still awaiting its response", async () => {
+    const f = await fixture(2); await f.coordinator.tick(); const [first, second] = f.store.listTasks() as [LocalTask, LocalTask];
+    f.setCompleteCleanup(false);
+    f.store.beginCleanup(first, { kind: "terminal", deadline: 1500 }, 1000); f.store.beginCleanup(second, { kind: "terminal", deadline: 601000 }, 1000);
+    let rejectInput!: (error: Error) => void; let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const input = new Promise<Awaited<ReturnType<typeof f.tasks.submitPrompt>>>((_resolve, reject) => { rejectInput = reject; });
+    f.tasks.submitPrompt.mockImplementationOnce(async () => { entered(); return input; });
+    const heldSecond = f.coordinator.advanceCommittedCleanups(second); await started;
+    let queuedFinished = false;
+    const queuedSecond = f.coordinator.advanceCommittedCleanups(second).then(() => { queuedFinished = true; });
+    try {
+      f.setTime(1500); await f.coordinator.advanceCommittedCleanups(first);
+      expect(f.store.getTask(first)).toMatchObject({ status: "done", cleanup: { deadline: 1500, result: "timed-out", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+      expect(f.store.getTask(second)).toMatchObject({ status: "active", cleanup: { deadline: 601000, input: "unknown", result: null, agentStopped: false } });
+      expect(f.tasks.forceStop).toHaveBeenCalledOnce(); expect(f.tasks.forceStop.mock.calls[0]![0].claimId).toBe(first.claimId); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(queuedFinished).toBe(false);
+    } finally {
+      rejectInput(new HerdrAgentActionError("cleanup input response lost", "agent.prompt", "unknown", { promptSubmission: "unknown" }));
+      await Promise.all([heldSecond, queuedSecond]);
+    }
+    expect(queuedFinished).toBe(true); expect(f.store.getTask(second)).toMatchObject({ status: "active", cleanup: { deadline: 601000, input: "unknown", agentStopped: false } }); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
+    f.setTime(601000); await f.coordinator.advanceCommittedCleanups(second);
+    expect(f.store.getTask(second)).toMatchObject({ status: "done", cleanup: { deadline: 601000, result: "timed-out" } }); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(f.tasks.start).toHaveBeenCalledTimes(2);
+  });
+
 });

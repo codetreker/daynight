@@ -26,12 +26,13 @@ const daemon = String.raw`#!/usr/bin/env node
 import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
-import { appendFile, mkdir, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 if (process.argv.includes('--version')) { process.stdout.write('herdr 0.9.5\n'); process.exit(0); }
 const require=createRequire(import.meta.url), Database=require(process.env.FIXTURE_SQLITE);
 const events=process.env.FIXTURE_EVENTS;
 const event=async(value)=>appendFile(events,JSON.stringify({timestamp:Date.now(),...value})+'\n');
+const cleanupGate=async(taskId,prompt)=>{if(taskId!==process.env.FIXTURE_HELD_CLEANUP_TASK||prompt.includes('Assignment:'))return;await event({kind:'cleanup-ack-held',taskId});while(true){try{await access(process.env.FIXTURE_CLEANUP_GATE);break;}catch(error){if(error.code!=='ENOENT')throw error;}await new Promise(resolve=>setTimeout(resolve,25));}await event({kind:'cleanup-ack-released',taskId});};
 const db=()=>new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});
 const record=async(kind,taskId,extra={})=>{const sql=db();try{await event({kind,taskId,row:sql.prepare('SELECT status,configuration FROM tasks WHERE task_id=?').get(taskId),projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,...extra});}finally{sql.close();}};
 const directory=path.join(process.env.XDG_CONFIG_HOME,'herdr','sessions','w');await mkdir(directory,{recursive:true});
@@ -49,7 +50,7 @@ case 'session.snapshot':result={type:'session_snapshot',snapshot:snapshot()};bre
 case 'integration.list':result={type:'integration_list',integrations:[{target:'codex',state:'current'}]};break;
 case 'workspace.create':{const id=String(++next),workspace={workspace_id:'w'+id,label:p.label},pane={workspace_id:workspace.workspace_id,pane_id:'p'+id,terminal_id:'t'+id,cwd:p.cwd,agent_status:'idle',launch_pending:false,interactive_ready:false},tab={workspace_id:workspace.workspace_id,tab_id:'tab'+id};workspaces.push(workspace);panes.push(pane);tabs.push(tab);await record('workspace',owner(pane).taskId,{binding:pane});result={type:'workspace_created',workspace,root_pane:pane,tab};break;}
 case 'agent.start':{const pane=panes.find(item=>item.pane_id===p.pane_id);const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject)});children.set(p.pane_id,child);const agent={...pane,agent:p.kind,name:p.name,agent_status:'idle',interactive_ready:true,launch_pending:false,state_change_seq:1,completion_seq:0};agents.push(agent);const argv=[p.kind,...p.args];await record('native-start',owner(pane).taskId,{argv});result={type:'agent_started',agent,argv};break;}
-case 'agent.prompt':{const agent=agents.find(item=>item.pane_id===p.target),pane=panes.find(item=>item.pane_id===p.target);const receipt=clone(agent);const identity=owner(pane);await event({kind:'prompt',taskId:identity.taskId,text:p.text});if(!agent.agent_session){const id='00000000-0000-4000-8000-'+String(++next).padStart(12,'0');agent.agent_session={source:'herdr:codex',agent:'codex',kind:'id',value:id};const history=path.join(process.env.CODEX_HOME,'sessions');await mkdir(history,{recursive:true});await writeFile(path.join(history,'rollout-'+id+'.jsonl'),JSON.stringify({type:'session_meta',payload:{id,cwd:pane.cwd}})+'\n');}agent.state_change_seq+=2;agent.completion_seq+=1;agent.agent_status='idle';result={type:'agent_prompted',agent:receipt};break;}
+case 'agent.prompt':{const agent=agents.find(item=>item.pane_id===p.target),pane=panes.find(item=>item.pane_id===p.target);const receipt=clone(agent);const identity=owner(pane);await event({kind:'prompt',taskId:identity.taskId,text:p.text});await cleanupGate(identity.taskId,p.text);if(!agent.agent_session){const id='00000000-0000-4000-8000-'+String(++next).padStart(12,'0');agent.agent_session={source:'herdr:codex',agent:'codex',kind:'id',value:id};const history=path.join(process.env.CODEX_HOME,'sessions');await mkdir(history,{recursive:true});await writeFile(path.join(history,'rollout-'+id+'.jsonl'),JSON.stringify({type:'session_meta',payload:{id,cwd:pane.cwd}})+'\n');}agent.state_change_seq+=2;agent.completion_seq+=1;agent.agent_status='idle';result={type:'agent_prompted',agent:receipt};break;}
 case 'pane.process_info':{const pane=panes.find(item=>item.pane_id===p.pane_id),child=children.get(p.pane_id);result={type:'pane_process_info',process_info:{pane_id:p.pane_id,shell_pid:process.pid,foreground_process_group_id:child?child.pid:process.pid,foreground_processes:child?[{pid:child.pid,name:'codex',argv0:'codex'}]:[]}};break;}
 case 'tab.create':{const id=String(++next),pane={workspace_id:p.workspace_id,pane_id:'p'+id,terminal_id:'t'+id,cwd:p.cwd,agent_status:'idle',launch_pending:false,interactive_ready:false},tab={workspace_id:p.workspace_id,tab_id:'tab'+id,label:p.label};panes.push(pane);tabs.push(tab);result={type:'tab_created',tab,root_pane:pane};break;}
 case 'pane.close':{const pane=panes.find(item=>item.pane_id===p.pane_id);await event({kind:'native-stop',taskId:owner(pane).taskId});await stop(p.pane_id);for(const items of [panes,agents]){const index=items.findIndex(item=>item.pane_id===p.pane_id);if(index>=0)items.splice(index,1);}result={type:'ok'};break;}
@@ -72,15 +73,18 @@ else if(args.includes('features'))process.stdout.write('hooks stable true\n');
 else throw new Error('Only metadata commands are permitted in this fixture');
 `;
 
-it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline"] as const)("runs the installed worker through claim, managed launch and %s after a crash", async (scenario) => {
-  const committedDeadline = scenario === "committed-cleanup-deadline";
+it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline", "independent-cleanup-deadlines"] as const)("runs the installed worker through claim, managed launch and %s after a crash", async (scenario) => {
+  const parallelDeadlines = scenario === "independent-cleanup-deadlines";
+  const committedDeadline = scenario !== "startup-interrupt";
   const scratch = path.join(primary, ".tmp");
   await mkdir(scratch, { recursive: true });
   const home = await mkdtemp(path.join(scratch, "w"));
   const eventsFile = path.join(home, "events.jsonl");
   const databaseFile = path.join(home, ".daynight/worker/state.sqlite");
-  const evidenceFile = path.join(workspace, committedDeadline ? ".tmp/installed-worker-committed-deadline.json" : ".tmp/installed-worker-acceptance.json");
-  const cleanupEvidenceFile = path.join(workspace, committedDeadline ? ".tmp/installed-worker-committed-deadline-cleanup.json" : ".tmp/installed-worker-cleanup.json");
+  const evidenceName = parallelDeadlines ? "installed-worker-independent-deadlines" : committedDeadline ? "installed-worker-committed-deadline" : "installed-worker-acceptance";
+  const evidenceFile = path.join(workspace, ".tmp", `${evidenceName}.json`);
+  const cleanupEvidenceFile = path.join(workspace, ".tmp", scenario === "startup-interrupt" ? "installed-worker-cleanup.json" : `${evidenceName}-cleanup.json`);
+  const cleanupGateFile = path.join(home, "cleanup-ack-gate");
   const logs: string[] = [];
   const requests: { method: string; path: string; taskId?: string }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
@@ -90,7 +94,9 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
   let heldProjectReads = 0;
   let failInventoryReads = false;
   let seededCleanup: CleanupState | null = null;
+  let peerCleanup: CleanupState | null = null;
   let cleanupCompletedAt: number | null = null;
+  let peerPendingWitness: { timestamp: number; status: string; input: string; nativeProcessIds: number[] } | null = null;
   const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
   const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: true, requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
   const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json" }); response.end(stringifyApiJson(value)); };
@@ -170,6 +176,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     const environment: NodeJS.ProcessEnv = { ...process.env };
     for (const key of Object.keys(environment)) if (/^(?:GIT_|GH_|GITHUB_|COPILOT_|CODEX_|HERDR_|DAYNIGHT_|NODE_OPTIONS$)/i.test(key)) delete environment[key];
     Object.assign(environment, { HOME: home, USERPROFILE: home, CODEX_HOME: codex, PATH: `${bin}${path.delimiter}${process.env.PATH!}`, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(home, "git-global"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1", FIXTURE_EVENTS: eventsFile, FIXTURE_SQLITE: createRequire(import.meta.url).resolve("better-sqlite3") });
+    if (parallelDeadlines) Object.assign(environment, { FIXTURE_HELD_CLEANUP_TASK: tasks[1]!.id, FIXTURE_CLEANUP_GATE: cleanupGateFile });
     for (const [index, repository] of repositoryPaths.entries()) {
       await mkdir(repository);
       const git = (args: string[]) => execFileSync("git", args, { cwd: repository, env: environment, stdio: "pipe", timeout: 10_000 });
@@ -180,7 +187,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       git(["add", "README.md"]); git(["commit", "-m", "Create fixture"]);
     }
     await mkdir(path.join(home, ".daynight"));
-    await writeFile(path.join(home, ".daynight/config.yml"), yaml({ serverUrl: `http://127.0.0.1:${address.port}`, serverToken: "worker-fixture-token", worker: { agent: "codex", model: "fixture-model", args: ["--search"], maxConcurrent: 1, pollIntervalMs: 50, repositories: projects.map((project, index) => ({ remote: project.repoUrl, path: repositoryPaths[index], projectId: project.id })) } }));
+    await writeFile(path.join(home, ".daynight/config.yml"), yaml({ serverUrl: `http://127.0.0.1:${address.port}`, serverToken: "worker-fixture-token", worker: { agent: "codex", model: "fixture-model", args: ["--search"], maxConcurrent: parallelDeadlines ? 2 : 1, pollIntervalMs: 50, repositories: projects.map((project, index) => ({ remote: project.repoUrl, path: repositoryPaths[index], projectId: project.id })) } }));
     const start = () => {
       const child = crossSpawn(installed!.receipt.launcherPath, ["worker", "run"], { cwd: home, env: environment, stdio: ["ignore", "pipe", "pipe"], detached: true });
       child.stdout!.on("data", (value: Buffer) => { logs.push(value.toString()); });
@@ -193,13 +200,16 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     await waitFor("first managed prompt", async () => (await events()).some((event) => event.kind === "prompt" && event.taskId === tasks[0]!.id));
     await waitFor("first prompt journal", () => JSON.parse(row(tasks[0]!.id).native_execution).promptSubmission === "submitted");
     const first = tasks[0]!;
-    first.status = "done"; first.ready = false; first.completedAt = time; first.version += 1n;
-    first.properties = { ...first.properties, worker: { ...first.properties.worker!, state: "completed" } };
-    await waitFor("first cleanup and second managed prompt", async () => row(first.id).status === "done" && (await events()).some((event) => event.kind === "prompt" && event.taskId === tasks[1]!.id));
+    if (!parallelDeadlines) {
+      first.status = "done"; first.ready = false; first.completedAt = time; first.version += 1n;
+      first.properties = { ...first.properties, worker: { ...first.properties.worker!, state: "completed" } };
+    }
+    await waitFor("second managed prompt", async () => (parallelDeadlines || row(first.id).status === "done") && (await events()).some((event) => event.kind === "prompt" && event.taskId === tasks[1]!.id));
     await waitFor("second prompt and original native process journal", () => {
       const execution = JSON.parse(row(tasks[1]!.id).native_execution);
       return execution.promptSubmission === "submitted" && execution.stopObservation !== null;
     });
+    if (parallelDeadlines) await waitFor("first original native process journal", () => JSON.parse(row(first.id).native_execution).stopObservation !== null);
     expect(originalWorker.child.kill("SIGKILL")).toBe(true);
     expect(await originalWorker.closed).toBeNull();
     expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(0);
@@ -208,30 +218,51 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     if (committedDeadline) {
       const deadline = Date.now() + 2_000;
       seededCleanup = { kind: "terminal", startedAt: deadline - 600_000, deadline, input: "unknown", baseline: null, result: null, error: "Controlled SQL injection of a previously committed terminal intent with an uncertain cleanup input.", agentStopped: false, workspaceClosed: false, worktreeDeleted: false };
+      if (parallelDeadlines) peerCleanup = { ...seededCleanup, startedAt: deadline - 582_000, deadline: deadline + 18_000, input: "not-submitted", error: null };
       const sql = new Database(databaseFile);
-      try { expect(sql.prepare("UPDATE tasks SET cleanup=? WHERE task_id=? AND claim_id=? AND status='active'").run(JSON.stringify(seededCleanup), tasks[1]!.id, tasks[1]!.properties.worker!.claimId).changes).toBe(1); }
+      try {
+        const target = parallelDeadlines ? first : tasks[1]!;
+        expect(sql.prepare("UPDATE tasks SET cleanup=? WHERE task_id=? AND claim_id=? AND status='active'").run(JSON.stringify(seededCleanup), target.id, target.properties.worker!.claimId).changes).toBe(1);
+        if (parallelDeadlines) expect(sql.prepare("UPDATE tasks SET cleanup=? WHERE task_id=? AND claim_id=? AND status='active'").run(JSON.stringify(peerCleanup), tasks[1]!.id, tasks[1]!.properties.worker!.claimId).changes).toBe(1);
+      }
       finally { sql.close(); }
       const configFile = path.join(home, ".daynight/config.yml");
       const configuration = parseYaml(await readFile(configFile, "utf8")) as { worker: { pollIntervalMs: number } };
       configuration.worker.pollIntervalMs = 3_600_000;
       await writeFile(configFile, yaml(configuration));
       failInventoryReads = true;
-      const second = tasks[1]!;
-      second.status = "done"; second.ready = false; second.completedAt = time; second.version += 1n;
-      second.properties = { ...second.properties, worker: { ...second.properties.worker!, state: "completed" } };
+      for (const task of parallelDeadlines ? tasks : [tasks[1]!]) {
+        task.status = "done"; task.ready = false; task.completedAt = time; task.version += 1n;
+        task.properties = { ...task.properties, worker: { ...task.properties.worker!, state: "completed" } };
+      }
     }
     const restartedWorker = start();
     await waitFor("restarted worker held during project discovery", () => heldProjectReads > 0);
     if (committedDeadline) {
-      await waitFor("committed terminal cleanup despite blocked startup and one-hour polling", () => row(tasks[1]!.id).status === "done", 8_000);
+      const deadlineTask = parallelDeadlines ? first : tasks[1]!;
+      if (parallelDeadlines) await waitFor("peer cleanup acknowledgement held", async () => (await events()).some((event) => event.kind === "cleanup-ack-held" && event.taskId === tasks[1]!.id));
+      await waitFor("committed terminal cleanup despite blocked startup and one-hour polling", () => row(deadlineTask.id).status === "done", 8_000);
       cleanupCompletedAt = Date.now();
       expect(cleanupCompletedAt).toBeLessThanOrEqual(seededCleanup!.deadline + 5_000);
-      const stop = (await events()).find((event) => event.kind === "native-stop" && event.taskId === tasks[1]!.id)!;
+      const stop = (await events()).find((event) => event.kind === "native-stop" && event.taskId === deadlineTask.id)!;
       expect(stop.timestamp).toBeGreaterThanOrEqual(seededCleanup!.deadline);
       expect(stop.timestamp).toBeLessThanOrEqual(seededCleanup!.deadline + 5_000);
       expect(requests.slice(restartRequestOffset).some((request) => request.path.includes("workerId="))).toBe(false);
-      expect((await events()).filter((event) => event.kind === "prompt" && event.taskId === tasks[1]!.id)).toHaveLength(1);
+      expect((await events()).filter((event) => event.kind === "prompt" && event.taskId === deadlineTask.id)).toHaveLength(1);
       expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(0);
+      if (parallelDeadlines) {
+        const held = (await events()).find((event) => event.kind === "cleanup-ack-held" && event.taskId === tasks[1]!.id)!;
+        expect(held.timestamp).toBeLessThan(stop.timestamp);
+        const peer = row(tasks[1]!.id);
+        const nativeProcessIds = JSON.parse(peer.native_execution).stopObservation.processIds as number[];
+        peerPendingWitness = { timestamp: Date.now(), status: peer.status, input: JSON.parse(peer.cleanup).input as string, nativeProcessIds };
+        expect(peerPendingWitness).toMatchObject({ status: "active", input: "unknown" });
+        expect(nativeProcessIds.length).toBeGreaterThan(0);
+        for (const pid of nativeProcessIds) expect(() => process.kill(pid, 0)).not.toThrow();
+        expect((await events()).some((event) => event.taskId === tasks[1]!.id && (event.kind === "native-stop" || event.kind === "cleanup-ack-released"))).toBe(false);
+        await writeFile(cleanupGateFile, "release original cleanup acknowledgement\n");
+        await waitFor("peer cleanup after its original acknowledgement is released", () => row(tasks[1]!.id).status === "done", 8_000);
+      }
     }
     expect(restartedWorker.child.kill("SIGINT")).toBe(true);
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -262,13 +293,14 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
         branch: `daynight/${task.id}`, platform: "linux", nativeSession: null,
         configuration: { agent: "codex", model: "fixture-model", args: ["--search"], recoveryLimit: 3 },
       });
-      expect(observed.filter((event) => event.kind === "prompt" && event.taskId === task.id)).toHaveLength(committedDeadline && index === 1 ? 1 : 2);
+      const unknownInput = committedDeadline && index === (parallelDeadlines ? 0 : 1);
+      expect(observed.filter((event) => event.kind === "prompt" && event.taskId === task.id)).toHaveLength(unknownInput ? 1 : 2);
     }
     expect(observed.filter((event) => event.kind === "daemon-start")).toHaveLength(1);
     expect(observed.filter((event) => event.kind === "daemon-stop")).toHaveLength(1);
     expect(observed.filter((event) => event.kind === "native-stop")).toHaveLength(2);
     expect(observed.filter((event) => event.kind === "workspace-close")).toHaveLength(2);
-    expect(observed.findIndex((event) => event.kind === "native-start" && event.taskId === tasks[1]!.id)).toBeGreaterThan(observed.findIndex((event) => event.kind === "workspace-close" && event.taskId === first.id));
+    if (!parallelDeadlines) expect(observed.findIndex((event) => event.kind === "native-start" && event.taskId === tasks[1]!.id)).toBeGreaterThan(observed.findIndex((event) => event.kind === "workspace-close" && event.taskId === first.id));
     expect(requests.filter((request) => request.method === "POST").map((request) => request.taskId)).toEqual(tasks.map((task) => task.id));
     expect(requests.some((request) => request.method === "GET" && /^\/api\/v1\/projects\/[^/]+\/tasks\/[^/?]+$/.test(request.path))).toBe(false);
     expect(row(first.id).status).toBe("done");
@@ -276,7 +308,9 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     const unfinished = row(tasks[1]!.id);
     if (committedDeadline) {
       expect(unfinished.status).toBe("done");
-      expect(JSON.parse(unfinished.cleanup)).toMatchObject({ ...seededCleanup, result: "timed-out", agentStopped: true, workspaceClosed: true, worktreeDeleted: true, error: expect.any(String) });
+      const deadlineRow = parallelDeadlines ? row(first.id) : unfinished;
+      expect(JSON.parse(deadlineRow.cleanup)).toMatchObject({ ...seededCleanup, result: "timed-out", agentStopped: true, workspaceClosed: true, worktreeDeleted: true, error: expect.any(String) });
+      if (parallelDeadlines) expect(JSON.parse(unfinished.cleanup)).toMatchObject({ ...peerCleanup, input: "submitted", baseline: expect.any(Object), result: "completed", agentStopped: true, workspaceClosed: true, worktreeDeleted: true });
       await expect(readFile(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id, "README.md"))).rejects.toMatchObject({ code: "ENOENT" });
     } else {
       expect(unfinished.status).toBe("active");
@@ -287,7 +321,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     expect(originalNativeId).toMatch(/^[0-9a-f-]{36}$/);
     expect(await readFile(path.join(codex, "sessions", `rollout-${originalNativeId}.jsonl`), "utf8")).toContain(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id));
     expect(tasks[1]!.properties.worker!.state).toBe(committedDeadline ? "completed" : "active");
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, events: observed, first: row(first.id), unfinished, ...(seededCleanup === null ? {} : { injection: { method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision", cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: true, inventoryFaultEnabled: failInventoryReads, inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length, cleanupCompletedAt, processingAllowanceMs: 5_000 } }), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, events: observed, first: row(first.id), unfinished, ...(seededCleanup === null ? {} : { injection: { method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision", cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: true, inventoryFaultEnabled: failInventoryReads, inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length, cleanupCompletedAt, processingAllowanceMs: 5_000, ...(peerCleanup === null ? {} : { peerCleanup, peerPendingWitness }) } }), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });

@@ -74,22 +74,25 @@ done. Live reconnection does not repeat startup input. The [Herdr
 adapter](2026-10-26-worker-herdr-adapter.md) owns transport and resource
 observations, and its receipt/stop gates remain authoritative.
 
-Cleanup retains its first deadline and input provenance. One concrete async loop
-inside the foreground process advances only previously persisted cleanup or
-source-control intents independently of inventory/acquisition polling and
-startup repository requests. Its timer waits at most one second, shortened to
-the nearest original deadline; bounded resource operations still use the shared
-per-task serial boundary. A failed read creates no new absence decision, but
-cannot withdraw an already committed cleanup responsibility. No new table,
-ledger, public configuration or OS daemon is introduced.
+Cleanup retains its first deadline and input provenance. A lightweight discovery
+loop inside the foreground process starts one transient job per complete
+origin/project/task/claim identity with persisted cleanup or source-control
+intent. Each job calls advanceCommittedCleanups(identity) and independently
+waits at most one second, shortened to its nearest original deadline. A held
+resource request for one task does not make other tasks wait for the whole batch
+before their next advance. Same-task resource operations still share the serial
+boundary. These jobs operate independently of server acquisition polling and
+startup repository requests, without a persisted queue, table, ledger, public
+configuration or OS daemon. A failed read creates no new absence decision and
+cannot withdraw an already committed cleanup responsibility.
 
 The driver requests attributable outside-worktree cleanup, observes a fresh
 completion boundary or fixed deadline, confirms original stop, closes the
 workspace and deletes the original Git worktree before local done. Unknown
 cleanup input is not replayed. Ctrl+C cancels and joins the normal committed
-cleanup loop before the independent bounded shutdown scope and shared exit
-deadline. The private Herdr instance stops last, after original agents are
-confirmed stopped.
+cleanup discovery loop and all per-claim jobs before the independent bounded
+shutdown scope and shared exit deadline. The private Herdr instance stops last,
+after original agents are confirmed stopped.
 
 Consuming completed interrupted shutdown invalidates its old Herdr snapshot;
 ordinary execution first enumerates current resources again. Proven
@@ -139,6 +142,12 @@ that was already accepted and persisted. A narrow foreground cleanup loop keeps
 that commitment progressing without obtaining new termination authority or
 creating another resource controller.
 
+**Wait for all tasks in each cleanup batch.** Even when calls within a batch run
+concurrently, joining the entire batch before the next round makes one held task
+request delay another task's deadline. Independent per-claim jobs retain each
+original timing commitment; they are joined together only when the foreground
+process stops.
+
 **Reset any stopped execution to first launch after shutdown.** Process stop and
 workspace closure do not identify the original conversation. When a launch may
 have happened without its native ID being retained, clearing old provenance can
@@ -147,11 +156,11 @@ preserves that boundary until the exact identity is recovered.
 
 ## Consequences
 
-The command and its async cleanup loop remain one foreground process rather than
-another server or OS background service. Configuration defaults and repository
-overrides have one strict owner; startup reload affects new assignments while
-existing ones keep their snapshots. Fixed paths and a stable worker identity
-give restarts the same record/resource scope.
+The command, discovery loop and transient cleanup jobs remain one foreground
+process rather than another server or OS background service. Configuration
+defaults and repository overrides have one strict owner; startup reload affects
+new assignments while existing ones keep their snapshots. Fixed paths and a
+stable worker identity give restarts the same record/resource scope.
 
 An unresolved project acquisition or missing original native proof can require
 inspection while other eligible work continues within available capacity.

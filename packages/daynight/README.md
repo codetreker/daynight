@@ -858,13 +858,15 @@ the original agent stopped, close its workspace, delete its worktree and retain
 local history. Failures keep responsibility and resume cleanup after restart.
 A failed or incomplete inventory cannot authorize a new terminal-cleanup
 decision. Already persisted cleanup/control intents continue in the same
-foreground process through a separate asynchronous loop, even during server
-read failures or startup repository requests. Its wait is bounded by one second
-and the nearest original deadline, independently of pollIntervalMs; per-task
-serialization still prevents overlapping resource operations.
+foreground process through a lightweight discovery loop and one transient
+asynchronous job per full claim, even during server read failures or startup
+repository requests. Each job waits at most one second or its nearer original
+deadline, independently of pollIntervalMs. One task's held RPC does not postpone
+another task's next cleanup advance; per-task serialization still prevents
+overlapping operations on the same execution. There is no persisted job queue.
 
 Ctrl+C stops acquisition and ordinary input, cancels and joins the ordinary
-cleanup loop, then runs original-task shutdown with a separate bounded
+cleanup discovery loop and all per-claim jobs, then runs original-task shutdown with a separate bounded
 cancellation scope and a shared exit deadline. Unfinished
 claims, worktrees and native history remain; the private instance stops only
 after original agents are confirmed stopped. Stop uncertainty is reported and
