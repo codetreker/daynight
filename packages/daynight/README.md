@@ -136,7 +136,16 @@ records module ownership and the preserved data layout.
 
 ## Agent skill installation
 
-Install the public `using-daynight` skill through an interactive terminal:
+The public `using-daynight` skill provides task creation, handoff review and
+execution of one specified task. Ordinary execution reads `run-task.md`.
+Worker-started agents use `execute-task-in-managed` only when their startup
+prompt explicitly names the `worker-managed` environment, the `using-daynight`
+skill and that mode, together with their assignment. `SKILL.md` routes to the
+selected instructions; ordinary execution does not load managed task rules.
+Shared task inputs, delivery and acceptance rules retain one owner in the bundle.
+The worker runtime remains under development.
+
+Install the skill through an interactive terminal:
 
 ```bash
 daynight skill install

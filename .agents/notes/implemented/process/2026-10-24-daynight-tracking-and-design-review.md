@@ -38,7 +38,10 @@ standing creation permission for necessary tasks within the user's confirmed
 scope. Existing suitable tasks are reused. This partially supersedes the
 [mode decision](../architecture/2026-10-21-using-daynight-modes.md)'s creation
 permission and task eligibility rules while preserving their rationale and
-separate approval, execution, autopilot and delivery gates. Availability is
+separate execution, automatic-selection permission and delivery gates. The
+[managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
+removes the ordinary skill's continuous scheduling mode while retaining these
+authorization boundaries. Availability is
 established through the actual CLI,
 configured service and intended project; failed writes retain their actual cause
 and do not establish readable review material.

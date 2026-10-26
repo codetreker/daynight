@@ -3,8 +3,9 @@
 Read this reference when starting or registering a Goal, discussing one of its
 stages, or advancing its authorized scope. Use [create-task](create-task.md) for
 registration, [the task content standard](task-content.md) for the shared six
-content requirements, [run-task](run-task.md) for task execution, and
-[the handbook](handbook.md) for CLI semantics. A Goal uses existing tasks,
+content requirements, [shared task execution](task-execution.md) for input,
+delivery, and acceptance rules, and [the handbook](handbook.md) for CLI semantics.
+The selected execution mode owns task lifecycle and return behavior. A Goal uses existing tasks,
 attachments, complete `dependsOn` relationships, their `externalDependsOn`
 classification, and PR properties. It adds no resource, command, or status.
 
@@ -27,8 +28,9 @@ permission.
 
 A request to start a Goal discussion authorizes creating and starting
 that discussion task so it becomes `in_progress`. A registration-only request
-creates only the current discussion task in `todo` and returns without execution. A generic run request, Goal registration, or autopilot
-activation does not supply discussion-start or delivery execution authorization.
+creates only the current discussion task in `todo` and returns without execution.
+Goal registration alone does not supply discussion-start or delivery execution
+authorization.
 
 ## Start requirements discussion
 
@@ -80,8 +82,8 @@ such as `Architecture discussion: <outcome>`, and an ordinary prerequisite on th
 completed requirements task. The user's direction to start this discussion
 provides its scoped execution authorization. Prepare its stage brief,
 read its current version, set in_progress through the same lifecycle, and
-confirm `in_progress`. This user-directed transition does not require autopilot
-and does not authorize selection of another unrelated task.
+confirm `in_progress`. This user-directed transition is available to ordinary
+execution only; it does not authorize selection of another unrelated task.
 
 ## Execute the appropriate stage
 
@@ -123,8 +125,8 @@ steps into tasks. The combined scope must cover the confirmed Goal, rather than 
 vague placeholder.
 
 Create new delivery tasks in `todo`. Solution confirmation authorizes the
-confirmed breakdown's registration, not implementation, autopilot,
-automatic-execution permission, publishing, deployment, or merge. Apply any
+confirmed breakdown's registration, not implementation, automatic-execution
+permission, publishing, deployment, or merge. Apply any
 separate explicit authorization only within its stated scope. New tasks have
 `allowAgents=false`; registration does not enable it. Only a separately explicit
 [handoff](handoff.md) may review and enable permission; it does not supply delivery
@@ -224,26 +226,21 @@ new decision. Readiness and `in_progress` provide no ownership lock or lease.
 
 ## Advance and accept the whole Goal
 
-Automatic delivery discovery requires actual-runtime platform compatibility.
-Use autopilot's platform-filtered queries and preserve automatic-selection context
-for run-task's full-task recheck before setting in_progress. A user-specified fixed
-Goal queue keeps its manual path and existing execution scope across ready successors;
-it does not enable automatic discovery permission or bypass stage confirmation.
+Ordinary execution processes one specified task and returns after completion or
+external wait. A user-directed requirements-to-solution transition follows the
+confirmation protocol above and the ordinary execution mode. Neither discussion
+completion nor breakdown registration starts delivery or selects later work.
+Existing execution authorization for a fixed Goal scope remains within that
+scope, but does not make the skill discover or continuously select successors.
+CI, review, and merge waits stay with the current delivery task. Other execution
+modes preserve their own return boundary when reading this stage protocol.
 
-A user-directed requirements-to-solution transition follows the confirmation
-protocol above. Ordinary `run-task` otherwise returns after its specified task
-completes or needs external intervention. Neither discussion completion nor
-breakdown registration activates autopilot or starts delivery. Only explicitly
-active autopilot selects later delivery work, and only with the existing readiness, input, and execution requirements. Automatic discovery
-requires `allowAgents=true`; an explicitly selected task or fixed Goal queue
-uses the manual execution path regardless of that flag. CI, review, and merge
-waits stay with the current delivery task.
-
-Delivery tasks follow normal run-task completion: accepted outcomes, required
+Delivery tasks satisfy [shared acceptance readiness](task-execution.md#confirm-acceptance-readiness)
+and complete through their selected execution mode: accepted outcomes, required
 review, all necessary authorized PR merges, and readable evidence. To report the
 whole Goal complete, inspect the full confirmed delivery scope, every delivery
-task's completion, all required delivery PR merges, and the original
-whole-Goal requirements with their confirmed changes. Apply
+task's completion, all required delivery PR merges, and the original whole-Goal
+requirements with their confirmed changes. Apply
 [Final acceptance](../SKILL.md#final-acceptance) to the combined delivery and its
 evidence; completing or passing temporary helpers does not establish that the
 Goal is complete.

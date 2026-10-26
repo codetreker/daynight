@@ -166,9 +166,11 @@ daynight task set-status <task-id> <status> \
 
 status 使用既有 positional choices 三值，Bash/Zsh 补全由 schema 派生。--claim-id 是仅限 done 的显式 UUID：参数阶段规范化并拒绝其他目标，带入时调用 completeWorkerTask 发送 version/status/claimId；不带时继续普通 setTaskStatus。不会从任务读取或环境推断 claim，也不在拒绝后回退普通完成。沿用 origin 项目发现、dn、lossless int64/BigInt、完整 Task 输出和请求序列化。带 --if-version 直接用审阅版本；省略时立即读后提交，但不能保护更早决策。写入不自动重试。
 
-随包 SKILL.md 与五份 reference 整体改为三状态：创建普通任务和 Goal 各阶段均为 todo，登记本身不开始执行；从用户已授权范围内选择 ready todo，并检查实际阶段资料；设置 in_progress 后执行，验收和必要授权交付后设置 done。现有执行范围持续覆盖其就绪后继，不要求逐任务审批或重建另一种批准字段。状态与 ready 不扩大既有范围。明确 worker-managed 上下文复用已在执行中的 claim 和系统 worktree，agent 完成全部条件后最后显式 claim-bound done；不再次 set-status in_progress，不选择下一任务或清理系统工作区。
+随包技能使用相同三状态，但入口拥有各自执行生命周期。普通 run-task 只处理一个明确指定任务：创建普通任务和 Goal 各阶段均为 todo，登记本身不开始执行；指定 ready todo 满足实际阶段资料后设置 in_progress，验收和必要授权交付后设置 done。既有执行授权的范围持续有效，但状态、ready 或完成本任务不会让普通技能自动选择后继，也不重建另一种批准字段。
 
-allowAgents 仍默认 false，只控制自动发现选择。用户明确安排的任务/确定队列可用手工执行路径，agent 不自行开启许可。PR 审查批准、必要合并权限与任务审批不是同一概念，继续遵守现有交付规则。同状态响应只确认当前事实，不提供新执行权、归属或完成证据。
+Worker 的启动 prompt 显式指定 worker-managed 环境、using-daynight 技能和 execute-task-in-managed 模式，并提供原 project/task/claim/worktreeId、实际工作区/branch 和冻结配置。SKILL.md 据此路由到 references/execute-task-in-managed.md；普通执行读取 run-task.md，不加载 managed 详细规则。两种入口共用 references/task-execution.md 的资料、范围、交付、验收和证据要求，普通开始/重开/done 与 managed 原 claim 完成分别保留。Managed agent 复用已在执行中的 claim 和系统 worktree，完成全部条件后最后显式 claim-bound done；不再次 set-status in_progress，不选择下一任务或清理系统工作区。不能从任务 worker 属性、cwd 或环境变量自行推断 managed，显式上下文缺失或不匹配时等待。
+
+allowAgents 仍默认 false，只控制自动发现选择。用户明确安排的任务可用手工状态操作，worker 拥有连续调度，agent 不自行开启许可。PR 审查批准、必要合并权限与任务审批不是同一概念，继续遵守现有交付规则。同状态响应只确认当前事实，不提供新执行权、归属或完成证据。
 
 ## Web 组件与会话
 

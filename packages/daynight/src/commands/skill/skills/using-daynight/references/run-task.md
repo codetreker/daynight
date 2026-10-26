@@ -2,230 +2,65 @@
 
 Execute exactly one specified task ID within the user's authorized scope. Read
 [the handbook](handbook.md) for CLI operations, data semantics, and failures.
-This mode owns execution and completion; it returns without choosing a successor
-or activating autopilot. An explicit user-directed requirements-to-solution
-discussion transition follows the Goal protocol after current-task completion,
-unless the task has a worker-managed assignment as described below.
+This mode owns the ordinary task lifecycle. It returns without choosing a
+successor, except for the explicit user-directed requirements-to-solution
+transition under [the Goal protocol](goal.md).
 
-## Worker-managed assignment
+## Establish the task
 
-A worker controller can explicitly assign an already-claimed execution with
-`projectId`, `taskId`, `claimId`, its worktree path and branch, and frozen
-execution configuration. Use this context only when the caller supplied it;
-finding `properties.worker` on a task does not establish an assignment or
-execution authorization. If an invocation is presented as worker-managed but
-context is missing or mismatched, return waiting without task or business writes.
-Do not fall back to ordinary task selection, claiming, or starting.
+Read the complete task with `daynight task show <task-id> --json`. Preserve the
+requested task ID through recovery and waiting. Read and apply
+[shared task execution](task-execution.md) for its required inputs,
+prerequisites, confirmed scope, work, evidence, and acceptance.
 
-Read the latest complete task using the supplied project and task IDs. Verify
-its `projectId` and `id`, `status=in_progress`, and
-`properties.worker.state=active` with the supplied `claimId`. Verify the actual
-working directory and Git branch match the supplied worktree, and use the
-supplied frozen execution configuration without replacing it from current
-defaults. If the same claim is already `completed` and the task is `done`,
-report the existing completion and return without reexecuting it. Any other
-state or identity mismatch leaves execution waiting; a changed claim requires
-stopping business writes immediately.
-
-The controller has already claimed and started this task. Do not claim it,
-set it to `in_progress`, select candidates, or rerun automatic candidate
-qualification. Still read all required task and stage inputs below and verify
-current prerequisites. A missing input or unmet prerequisite keeps this
-assignment waiting in `in_progress`; it does not authorize another task.
-Before resuming interrupted work or making task writes, refresh the task and
-check the same active claim. Retain the explicit claim ID through recovery and
-uncertain-write reconciliation; never substitute a claim read from the task.
-
-Use the supplied worktree and branch for authorized edits, commits, pushes, and
-merges. Do not create, switch, or remove the system-managed worktree or branch.
-Avoid merge options such as `gh pr merge --delete-branch` that may switch the
-checkout or delete its branch. The worker owns resource cleanup after execution;
-do not delete its worktree or close its workspace. Follow a cleanup request for
-attributable temporary resources outside the worktree within its stated scope.
-
-The normal task acceptance, evidence, delivery, PR, and human-confirmation gates
-below still apply. When they are satisfied, reread the complete task, verify the
-same active claim, and finish with
-`daynight task set-status <task-id> done --project <project-id> --claim-id <claim-id> --if-version <observed-version>`.
-This is the final task mutation. Confirm `done`, `properties.worker.state=completed`,
-and the original claim ID in the service result. A refused or unconfirmed write
-never falls back to ordinary completion or automatic replay: read the actual
-task and reconcile only the original claim. An unreadable result remains
-unconfirmed; an observed claim change stops further business writes.
-
-Return after this task completes or requires external intervention. Do not
-choose a successor or advance a Goal stage, even when an outer autopilot is
-active; the controller decides subsequent work. Preserve the assignment when
-waiting for a human gate, an unmerged required PR, or unmet acceptance.
-
-## Establish the task and stage
-
-Read the complete task with `daynight task show <task-id> --json`. Its Markdown
-description must identify the concrete current work, responsibility, and content
-sources. Read it and its actual required references under
-[the task content standard](task-content.md), including the solution, acceptance
-criteria, and explicit task-owned confirmation/evidence location. Complete inline
-content needs no primary attachment; document-owned and mixed organization are
-valid when the combined contents satisfy the same six requirements.
-Resolve description-relative links and images from the current task's attachment
-root; links inside a Markdown attachment use its own directory. Resolve real
-shared input references using the owning task ID and description/sections,
-complete paths for actual attachments, or a verified immutable repository
-reference. Read source descriptions through `task show --json` and actual
-attachment contents through the attachment commands; a task read does not load
-attachment inventory or bytes.
-
-For a Goal stage or delivery task, read [the Goal protocol](goal.md) and identify
-its role from the actual task content and context. Apply that stage's input and
-output requirements. Requirements and solution discussions start from their stage briefs;
-the completed requirements, applicable UI prototype, and architecture are outputs
-of the stages that produce them. Delivery tasks require the delivered design and
-applicable prototype. Before implementation, read every required architecture
-source listed in the delivery task's description: the owning architecture task's
-inline description and applicable sections, full paths for actual attachment
-documents, or verified immutable repository references. This also applies when
-the architecture task is only an indirect prerequisite. Confirm the
-description's references satisfy the Goal protocol. When a prototype is a required
-input, view and exercise it with its resources. An unfinished output of the current
-stage is not a missing input.
-
-The following manual and automatic selection rules apply outside a worker-managed
-assignment. An explicitly user-selected task may use the manual execution path
-regardless of `allowAgents` or platform compatibility; a fixed queue explicitly
-selected by the user has the same manual path. These conditions gate automatic selection, not
-explicit assignment. Automated task selection requires true and must not enable
-the flag itself. An automatically selected ID passed here remains automatic
-selection, even though run-task receives a concrete ID. Carry its actual runtime
-platform from autopilot and wait if unsupported or unknown. Immediately before
-setting in_progress, reread the full task and recheck `todo`, ready,
-`allowAgents=true`, and `requiredPlatform` either null or equal to that same actual
-platform. A changed or incompatible requirement prevents starting and requires a
-new selection decision; a changed execution environment requires fresh runtime
-identification and candidate queries. Use the exact version from this full-task
-recheck with `--if-version`; an earlier candidate page does not authorize the
-manual exception after automatic eligibility changes.
-
-Check state, every direct prerequisite, authorized scope, and required stage
-inputs. Read `dependsOn` and its `externalDependsOn` subset: ordinary edges
-express same-chain prerequisites, external marks distinguish verified cross-chain
-ownership. Both kinds must be done before entering in_progress or done. Classification
-never grants permission to execute a prerequisite, enable automatic
-execution, or remove a blocker.
-Missing required content, an unreadable required source, or a missing required
-architecture reference or input leaves execution unready. Resolve it within
-existing authorization or return the concrete issue. Do not infer requirements
-from a title or silently invent acceptance criteria. Do not execute prerequisites
-as an implicit expansion of the requested task.
+An explicitly user-selected task may use this execution path regardless of
+`allowAgents` or platform compatibility. These conditions gate automatic worker
+selection, not an explicit task assignment. They do not remove dependencies,
+stage inputs, or execution and delivery authorization. This mode does not select
+candidates or automatically advance a fixed task queue.
 
 Creation leaves a task `todo` and does not execute it. An explicit request to
 start the current Goal discussion, or the user-directed transition that starts
-solution discussion, authorizes entering in_progress for that discussion under
+solution discussion, authorizes entering `in_progress` for that discussion under
 the Goal protocol; registration alone does not. Existing execution authorization
-may cover the stated task or fixed Goal queue and its ready successors. Task
-status never expands implementation or delivery authorization.
+remains limited to its stated scope. Task status never expands implementation
+or delivery authorization.
 
-The following start and ordinary recovery rules apply outside a worker-managed
-assignment. For ready `todo`, begin only when dependencies are done, required
-stage inputs are complete and the work is authorized. Use
-`task set-status <task-id> in_progress` with the exact version observed for that
-decision and confirm in_progress before starting. A stale version or
-changed prerequisite requires rereading and reconsidering, with no automatic
-mutation retry. For `in_progress`, recover existing work and coordinate using the
-project's established mechanisms; the state is not an assignee lock or lease.
-A task already `done` is reported as such unless reopening is within the explicit requested scope; use the same versioned status setter and dependency protection.
-Preserve the requested task ID through recovery and waiting.
+## Start or resume the task
 
-## Execute and maintain continuity
+For ready `todo`, begin only when dependencies are done, required stage inputs
+are complete, and the work is authorized. Use
+`task set-status <task-id> in_progress --if-version <observed-version>` with the
+exact version observed for that decision and confirm `in_progress` before
+starting. A stale version or changed prerequisite requires rereading and
+reconsidering, with no automatic mutation retry.
 
-Before analysis, questions, or proposals, establish this task's confirmed scope
-and acceptance criteria and apply the [shared scope constraint](../SKILL.md#shared-constraints)
-to execution and discussion.
+For `in_progress`, recover existing work and coordinate using the project's
+established mechanisms; the state is not an assignee lock or lease. A task
+already `done` is reported as such unless reopening is within the explicit
+requested scope. An authorized reopening uses the same versioned status setter
+and dependency protection.
 
-Identify [final acceptance](../SKILL.md#final-acceptance) from the task's confirmed
-outcome before applying a development or PR delivery lifecycle. Read the complete
-requirements and actual deliveries for the task or Goal being assessed, and apply
-the shared rule to verification methods, temporary helpers, and result ownership.
+Perform the authorized work and establish acceptance readiness under
+[shared task execution](task-execution.md). Starting a task is not evidence that
+its delivery or acceptance is complete.
 
-Follow the target repository's instructions for worktrees, implementation,
-review, validation, and delivery. Use the task's stage-appropriate solution and
-acceptance criteria, including applicable final-style prototype interactions.
-Requirements discussion defines the problem without architecture decisions or
-production implementation. Only user-confirmed requirements and direction to
-continue permit completing that discussion and starting solution discussion.
-Solution discussion keeps the draft architecture and breakdown in its owning
-task. Only explicit user confirmation of the current solution permits registering
-and verifying the actual delivery tasks. Do not start delivery from either
-discussion. Keep the discussion in_progress while its user-confirmation gate is
-unmet; a material revision after confirmation needs renewed user confirmation.
+## Complete or return waiting
 
-Resolve material changes to the agreed solution or acceptance within the current
-authorization. Rewrite the owning artifact and affected task summaries and input
-references coherently. Preserve requirements; do not silently weaken acceptance.
-Descriptions remain self-contained Markdown task summaries. Preserve valid
-syntax, original content, and actual resource references during full-field
-updates; confirm new or replaced resources before linking them. Dependency edits
-must follow the handbook's CLI replacement contract: read full D/E, retain needed
-ordinary D−E and external E declarations, submit their intended complete sets
-with the observed version, and read back both. Omit all dependency options for
-unrelated metadata updates. Keep detailed content at its identified owner and
-confirmations and evidence at their explicit task-owned location; shared inputs
-remain at their verified source.
+When all task acceptance and delivery conditions are satisfied and its evidence
+is readable, reread the complete in-progress task and use
+`task set-status <task-id> done --if-version <observed-version>` with its exact
+observed version. Only service confirmation establishes the status update;
+reconcile uncertain results before reporting success. Do not replay an
+unconfirmed mutation automatically.
 
-Advance only this task. Subagents collaborate on it, and waiting for CI, review,
-approval, or merge remains part of it. Keep all required delivery PR URLs and
-titles in the complete `properties.pullRequests` list, preserving existing
-entries. Record acceptance results and necessary delivery evidence, including
-merge commits, at this task's identified evidence location against the
-corresponding acceptance criteria.
-Rewrite current evidence coherently rather than accumulating an execution log.
-Keep operational progress, blockers, waiting items, and next action in the
-conversation or existing execution checkpoint, retaining the task ID and needed
-PR and workspace references.
+For Goal discussions, completion follows the confirmation gates and accepted
+materials in the Goal protocol. After requirements completion is confirmed, an
+explicit user direction can start the specified solution discussion under that
+protocol. It grants no automatic successor selection or delivery authorization.
+Whole-Goal acceptance follows the Goal protocol.
 
-## Confirm completion or return waiting
-
-Goal requirements and solution discussion tasks use the user-confirmed material
-and stage acceptance in the Goal protocol. A generic repository PR rule does not
-add a PR-merge prerequisite to these Daynight discussions. If particular
-repository artifacts or PR delivery are explicitly part of that discussion
-task's acceptance, honor that requirement under the delivery rules below.
-Unconfirmed discussion material keeps its discussion task in_progress.
-
-Development tasks and design or documentation delivery tasks with PRs remain
-`in_progress` until the hosting platform confirms **every necessary delivery PR
-is merged** and all stage acceptance criteria are satisfied. Code completion,
-passing CI, approved review, and an open PR do not satisfy this condition. Verify
-actual merge state through the host's native client or API; do not assume a
-particular host.
-
-Completion rules grant no merge, deployment, external communication, or mainline
-push permission. Follow existing authorization without asking again for actions
-it covers. If the user requests an open PR for review or forbids merging, deliver
-the reviewable PR, preserve `in_progress` and the waiting checkpoint, and return
-its URL and required user action. Do not enable auto-merge. Missing permission,
-unavailable merge visibility, or an unmet merge check likewise keeps completion
-pending and successors blocked.
-
-For tasks without a development or PR delivery path, use their stated stage
-acceptance. For [final acceptance](../SKILL.md#final-acceptance), also apply the
-shared whole-task or whole-Goal completion rule. In every case, confirm required
-evidence is recorded and readable. For ordinary execution, reread the complete
-in-progress task and use `task set-status <task-id> done` with its exact
-observed version. Worker-managed assignments use the claim-bound final operation
-above. For Goal discussions, use their confirmation gates and verified
-accepted materials; for delivery tasks, use their acceptance and required authorized PR
-merges.
-Only service confirmation establishes the status update; reconcile uncertain
-results before reporting success. A Goal requirements discussion task's completion
-means requirements are confirmed; solution discussion completion means the user-confirmed solution and
-actual verified breakdown are delivered. Neither establishes whole-Goal completion.
-
-Continue ordinary CI and review waits as this task. When progress requires
-external intervention, preserve the target, actual state, concrete blocker,
-existing work, and next action in the checkpoint, then return the waiting result.
-Unstarted work stays `todo`; active work stays `in_progress`. Do not declare
-completion or select other work to bypass a wait. After completion, return
-without selecting a successor, except for an explicit user-directed discussion
-transition under the Goal protocol outside a worker-managed assignment. That
-transition does not activate autopilot or authorize delivery. Whole-Goal
-acceptance follows the Goal protocol.
+Otherwise return after this task completes or needs external intervention.
+Unstarted work stays `todo`; active work stays `in_progress`. Keep the target and
+waiting checkpoint when necessary PR merges, human confirmation, permission, or
+acceptance remain pending; do not select another task to bypass the wait.

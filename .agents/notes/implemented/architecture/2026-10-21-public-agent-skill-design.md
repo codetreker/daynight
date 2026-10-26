@@ -17,7 +17,8 @@ and an interactive `daynight skill install` command. The
 [mode and attachment decision](2026-10-21-using-daynight-modes.md) partially
 supersedes its public name and task-protocol ownership. The current bundle is
 `using-daynight` under `src/commands/skill/skills/using-daynight/`, with an
-entrypoint, five mode references, shared task-content standard and the
+entrypoint, ordinary and managed execution references, neutral task-execution
+guidance, shared task-content standard and the
 [shared Goal protocol](../process/2026-10-22-goal-workflow-design.md). The
 [requirements](../../../../docs/spec/daynight-agent-skill.md) and
 [design](../../../../docs/design/daynight-agent-skill.md) own the current contract.
@@ -45,13 +46,18 @@ replaced its graph-first recovery policy with bounded ready queries, while
 preserving show for full details and graph or complete lists when needed.
 Selecting one task most related to authorized work and retaining it through
 CI/review/merge waits prevented candidates from becoming an implicit batch.
-The replacement mode decision assigns that selection to explicitly requested
-autopilot and assigns designated-task completion to run-task. Observed versions and
-readiness without ownership remain required. The later
+The replacement mode decision originally assigned next-work selection to
+explicitly requested autopilot and designated-task completion to run-task. The
+[managed execution decision](2026-10-26-managed-task-skill.md) removes that
+agent-side scheduling mode and separates ordinary execution from explicitly
+worker-selected managed instructions. Observed versions and readiness without
+ownership remain required. The later
 [status assignment decision](2026-10-24-task-status-assignment.md) replaces the
 historical approval actions with todo registration and versioned set-status.
-Registration does not execute work; existing scope covers ready successors, while
-automatic discovery requires permission and explicit queues retain the manual path.
+Registration does not execute work. Ordinary execution handles one specified
+task and managed execution handles one assigned claim; automatic worker
+discovery still requires its permission and eligibility checks. Existing
+authorization remains separate from the skill's control over task selection.
 Execution and delivery permission boundaries remain independent of state.
 
 Development and PR-delivered design/documentation tasks remain in progress while

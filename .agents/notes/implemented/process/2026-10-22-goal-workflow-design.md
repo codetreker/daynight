@@ -28,7 +28,10 @@ from its dependent protocol implementation and independent consumer acceptance.
 The [mode decision](../architecture/2026-10-21-using-daynight-modes.md) continues to
 own the current entrypoint and authorization rules. The
 [task-content and handoff decision](2026-10-25-task-content-handoff.md) replaces
-mandatory primary-attachment ownership while retaining stage and shared-source rules.
+mandatory primary-attachment ownership while retaining stage and shared-source
+rules. The [managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
+subsequently removes the ordinary skill's scheduling mode and separates
+worker-selected execution; the original control-flow rationale remains below.
 
 A Goal uses existing tasks, attachments and dependsOn. The original registration
 created a Goal description task titled `[Goal]<outcome>` and a dependent
@@ -98,6 +101,10 @@ stage and user-confirmed material for discussion completion. The adopted
 removes task approval, registers todo without execution and uses versioned status
 setting within the existing execution scope. Actual delivery retains its
 execution/merge authorization. Requirements completion does not complete a Goal.
+The managed execution decision removes autopilot successor selection from the
+current skill. Ordinary run-task still performs one specified stage and its
+explicit user-directed discussion transition; managed execution returns after
+its one assignment without advancing the Goal.
 
 ## Alternatives
 

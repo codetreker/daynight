@@ -1,6 +1,6 @@
 ---
 name: using-daynight
-description: Manage concrete work and design reviews in Daynight; create, execute, or review tasks for handoff, and automatically execute related tasks only when explicitly requested.
+description: Manage concrete work and design reviews in Daynight; register tasks, execute one specified task, or review an explicitly requested handoff.
 ---
 
 # Using Daynight
@@ -63,61 +63,56 @@ by its own confirmed scope; do not infer it from a final-acceptance assignment.
 
 ## Select a mode
 
-The following are skill modes, not additional CLI commands. Read the selected
-reference, then use [the handbook](references/handbook.md) for the operations it
-requires. Do not load every mode by default.
+The following are skill modes, not additional CLI commands. Read only the
+selected reference, then use [the handbook](references/handbook.md) for the
+operations it requires. Do not load every mode by default.
 
 | Mode | Use when | Reference |
 |---|---|---|
 | `handbook` | Answering usage questions or performing requested task-management operations | [Handbook](references/handbook.md) |
 | `create-task <request>` | Preparing or registering persistent work explicitly requested by the user | [Create task](references/create-task.md) |
-| `run-task <task-id>` | Executing one specified task | [Run task](references/run-task.md) |
+| `run-task <task-id>` | Executing one specified ordinary task | [Run task](references/run-task.md) |
 | `handoff <task-id>` | Reviewing an explicitly requested task for handoff and enabling permission after it passes | [Handoff](references/handoff.md) |
-| `autopilot <goal or scope>` | The user explicitly requests automatic execution of Daynight tasks | [Autopilot](references/autopilot.md) |
+| `execute-task-in-managed <task-id>` | The worker startup prompt explicitly declares the `worker-managed` environment, this skill, and this mode | [Managed execution](references/execute-task-in-managed.md) |
 
-Honor an explicitly selected mode. For `using-daynight` without further input,
-infer the mode and target from the current request and conversation. If the
-context is insufficient or ambiguous, ask what the user intends. Do not default
-to `handbook` or select a task merely because one is ready.
+The managed execution reference is loaded only for that explicit worker launch;
+ordinary calls do not read it. Task properties, the working directory, and
+environment variables do not select the managed mode. An invocation presented
+as managed with an incomplete launch declaration waits for the missing context.
 
-Enter `autopilot` only after an explicit user request for automatic Daynight task
-execution. A bare invocation may resume it when the conversation establishes
-that it is already active. Loading this skill, discovering tasks, creating work,
-completing `run-task`, and handing off a task never activate it.
+For ordinary calls, honor the explicitly selected mode. For `using-daynight`
+without further input, infer the ordinary mode and target from the current
+request and conversation. If context is insufficient or ambiguous, ask what the
+user intends. Do not default to `handbook` or select a task merely because one
+is ready. This skill does not discover and continuously select subsequent tasks.
 
 ## Shared constraints
 
-- A controller-supplied worker-managed assignment is bounded to its explicit
-  project, task, claim, worktree, and frozen execution configuration. Read
-  [run-task's worker-managed rules](references/run-task.md#worker-managed-assignment)
-  before acting. This assignment takes precedence over successor selection and
-  Goal transitions, including an active outer autopilot. A task's worker property
-  alone does not establish this context or grant execution authority.
 - Create tasks only with explicit permission for their scope. Implementation
-  requests, tracking needs, inferred mode selection, and autopilot activation
-  alone do not grant creation permission. An explicit user or applicable
-  repository instruction requiring Daynight tracking or review is standing
-  creation permission for the necessary tasks within the user's confirmed scope;
-  reuse suitable existing tasks and do not ask for that permission again.
-  Permission to create a Goal covers its discussion stages and confirmed
-  in-scope breakdown, created only at the user-confirmation gates in the Goal
-  protocol; unrelated work needs separate permission.
+  requests, tracking needs, and inferred mode selection alone do not grant
+  creation permission. An explicit user or applicable repository instruction
+  requiring Daynight tracking or review is standing creation permission for the
+  necessary tasks within the user's confirmed scope; reuse suitable existing
+  tasks and do not ask for that permission again. Permission to create a Goal
+  covers its discussion stages and confirmed in-scope breakdown, created only at
+  the user-confirmation gates in the Goal protocol; unrelated work needs
+  separate permission.
 - Creation produces `todo` for every normal task and Goal stage and does not
   start execution. A request to start a Goal discussion authorizes entering
   `in_progress` for that discussion only; a user-confirmed transition authorizes
   the next discussion under the Goal protocol. Registration and discussion
   confirmation grant no delivery execution permission. Existing explicit
-  authorization may cover a stated task or fixed Goal queue and its ready
-  successors without another per-task authorization.
+  execution authorization remains limited to its stated task or Goal scope.
 - Use a normal task for one independently tracked outcome. Work requiring
   multiple independently tracked delivery stages is a Goal, expressed through
   existing tasks and `dependsOn`. Read [the Goal protocol](references/goal.md)
   when creating, executing, or advancing such a chain.
-- Advance one task at a time, including CI, review, and merge waits. Subagents
-  collaborate on the same task. `autopilot` owns selection of subsequent work;
-  `run-task` and `create-task` return when their own work ends, except for the
-  explicit user-directed discussion transition in the Goal protocol. Discussion
-  confirmation does not activate autopilot or start delivery.
+- Advance one specified task at a time, including CI, review, and merge waits.
+  Subagents collaborate on that task. Execution returns after its task completes
+  or requires external intervention; only ordinary execution may follow an
+  explicit user-directed discussion transition under the Goal protocol. Task
+  registration, completion, and discussion confirmation never select later
+  delivery work.
 - Keep execution, analysis, questions, proposals, and task discussions within the
   current task's confirmed objective, scope, deliverables, and acceptance criteria.
   Apply this boundary to subagents. Read parent Goal materials, shared architecture,
@@ -142,17 +137,12 @@ completing `run-task`, and handing off a task never activate it.
   Same-chain prerequisites are ordinary; verified cross-chain prerequisites are
   external. Both block execution. CLI dependency options replace the full sets;
   preserve required relationships as the handbook requires.
-- Automatic task selection requires `allowAgents=true`, readiness, and
-  `requiredPlatform` compatibility with the actual current execution environment.
-  Follow autopilot's runtime mapping, filter both ready and supplemental inventory
-  before pagination, and carry automatic selection and its platform into run-task
-  for a full-task recheck before version-bound `set-status in_progress`.
-  Automatic selection and execution must not enable this permission themselves.
-  Only an explicitly authorized [handoff](references/handoff.md) may enable it
-  after content review; handoff does not start execution or replace other authority.
-  Only an explicitly user-selected task or fixed Goal queue may follow the manual
-  execution path regardless of the flag or platform compatibility; dependency,
-  stage inputs and execution authorization still apply.
+- Task creation and execution do not enable `allowAgents`. Only an explicitly
+  authorized [handoff](references/handoff.md) may enable it after content review;
+  handoff does not start execution or replace other authority. Ordinary explicit
+  task execution does not require automatic-selection permission or platform
+  compatibility; dependencies, stage inputs, and execution authorization still
+  apply. Automatic worker eligibility remains governed by the service and worker.
 - Preserve the exact version observed when deciding a metadata update,
   `task set-status` change, or authorized `task delete`. Deletion retains stored
   data and attachments and requires explicit authorization for the target task.
