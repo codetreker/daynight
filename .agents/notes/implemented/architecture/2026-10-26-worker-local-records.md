@@ -35,11 +35,21 @@ introduced no preclaim task or extra acquisition registry. The [foreground
 runtime decision](2026-10-27-foreground-worker-runtime.md) partially supersedes
 the memory-only part: projects now retain one concrete unresolved claimAttempt,
 including original IDs, authenticated userId, exact version and decision
-configuration, before the outbound mutation. Matching actual ownership
-atomically materializes pending and clears that attempt. Unknown requests remain
-fenced; absence alone does not clear them. Transfer still persists its target
-identity in source control intent. The two business tables and actual-claim-only
-task rows remain.
+configuration, before the outbound mutation. Positive verified ownership that
+fully matches the request is acknowledged before filesystem classification;
+pending, saved configuration, verified userId and attempt clear commit in one
+transaction. Known configuration does not manufacture native provenance: later
+phase/runtime evidence materializes recovered unknown launch history. Unknown
+requests remain fenced; absence alone does not clear them. Transfer still
+persists its target identity in source control intent. The two business tables
+and actual-claim-only task rows remain.
+
+registerPending takes an explicit fourth verifiedUserId argument. Omitting it or
+passing null means unknown scope for that call, including orphan evidence; it
+does not default to the current principal. Identity/configuration mismatch and
+retrospective binding of unknown terminal/control rows remain refused.
+Registration does not clear a matching request and leave UID to a later write,
+so a crash followed by claim completion cannot lose the known original scope.
 
 Each task row corresponds to an actual claim, retains its immutable original
 authenticated userId and original repository binding, frozen configuration,

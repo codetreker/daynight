@@ -965,4 +965,91 @@ describe("worker foreground coordinator", () => {
     expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "active", configuration: frozen, nativeExecution: { promptSubmission: "submitted" } }); expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
   });
 
+  it.each(["observed", "crash-after-observation", "never-observed"] as const)("retains an observed grant durably before predecessor removal can hide it (%s)", async (observation) => {
+    const observed = observation !== "never-observed";
+    const f = await fixture(); await f.coordinator.tick(); const predecessor = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(predecessor.projectId, []); await f.coordinator.tick(); await mkdir(predecessor.resources.worktree!.worktreePath, { recursive: true });
+    const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1120) }; f.store.registerProject(project);
+    const first = remoteTask(project.projectId, predecessor.taskId); const next = remoteTask(project.projectId, uuid(1121));
+    const claimedConfiguration = { ...configuration, model: "configuration-saved-with-original-claim" };
+    const restartConfiguration = { ...configuration, model: "configuration-after-restart" };
+    let actual: Task | undefined; let mode: "first" | "none" | "next" = "first";
+    const otherRemote: WorkerRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => actual === undefined ? [] : [actual]),
+      candidates: vi.fn(async function* () { if (mode === "first" && actual === undefined) yield first; if (mode === "next" && actual?.id !== next.id) yield next; }),
+      claim: vi.fn(async (candidate, descriptor) => {
+        const granted: Task = { ...candidate, version: candidate.version + 1n, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { ...descriptor, userId: uuid(2), phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+        actual = granted;
+        if (candidate.id === first.id) throw new ApiError({ operation: "claim" }, "request", { cause: new Error("Successful claim response was lost."), outcomeUnconfirmed: true });
+        return granted;
+      }) };
+    const changed = { ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: claimedConfiguration }], maxConcurrent: 2 };
+    const controller = createWorkerCoordinator(changed); await controller.tick();
+    const attempt = f.store.getClaimAttempt(project)!; const identity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: first.id, claimId: attempt.claimId };
+    expect(attempt.configuration).toEqual(claimedConfiguration); expect(f.store.getTask(identity)).toBeNull();
+    const committedOwners: (string | null)[] = []; const register = f.store.registerPending; const interrupted = new Error("Process stopped immediately after pending commit.");
+    vi.spyOn(f.store, "registerPending").mockImplementation((claim, registration, now, verifiedUserId) => {
+      const task = register(claim, registration, now, verifiedUserId);
+      if (claim.claimId === attempt.claimId) { committedOwners.push(task.userId); if (observation === "crash-after-observation") throw interrupted; }
+      return task;
+    });
+    if (observation === "crash-after-observation") await expect(controller.tick()).rejects.toBe(interrupted);
+    else if (observed) await controller.tick();
+    const afterObservation = f.store.getTask(identity); const fenceAfterObservation = f.store.getClaimAttempt(project);
+    actual = undefined; mode = "none"; await controller.tick();
+    f.setTime(f.store.getTask(predecessor)!.cleanup!.deadline); await controller.advanceCommittedCleanups(predecessor);
+    mode = "next"; const restarted = createWorkerCoordinator({ ...changed, repositories: [{ project, configuration: restartConfiguration }] }); await restarted.tick();
+    expect(f.store.getTask(predecessor)?.status).toBe("done");
+    if (observed) {
+      expect({ attempt: f.store.getClaimAttempt(project), unfinished: f.store.listUnfinishedTasks().map(({ taskId, status }) => ({ taskId, status })) }).toEqual({ attempt: null, unfinished: [{ taskId: next.id, status: "active" }] });
+      expect(committedOwners).toEqual([uuid(2)]);
+      expect(afterObservation).toMatchObject({ status: "pending", userId: uuid(2), configuration: claimedConfiguration, nativeExecution: { launchSubmission: "never-submitted" }, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(fenceAfterObservation).toBeNull();
+      expect(f.store.getTask(identity)).toMatchObject({ status: "done", configuration: claimedConfiguration, resources: { worktree: null, herdr: null, nativeSession: null } });
+      expect(f.store.listUnfinishedTasks()).toEqual([expect.objectContaining({ taskId: next.id, configuration: restartConfiguration, status: "active" })]); expect(otherRemote.claim).toHaveBeenCalledTimes(2);
+    } else {
+      expect(f.store.getClaimAttempt(project)).toEqual(attempt); expect(f.store.listUnfinishedTasks()).toEqual([]); expect(otherRemote.claim).toHaveBeenCalledOnce();
+    }
+    expect(vi.mocked(otherRemote.claim).mock.calls.filter(([candidate]) => candidate.id === first.id)).toHaveLength(1);
+  });
+
+  it("retains the saved attempt configuration without fresh-launch provenance when a positive grant already has execution traces", async () => {
+    const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
+    const attempt = { taskId: candidate.id, claimId: uuid(1130), worktreeId: uuid(1131), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration: { ...configuration, model: "saved-attempt-configuration" } }; f.store.beginClaimAttempt(project, attempt);
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "previous-execution", paneId: "previous-pane" }, nativeSessionId: uuid(1132), claimedAt: "2026-10-27T00:00:00Z" } } };
+    f.granted.set(attempt.claimId, actual); await f.coordinator.tick();
+    const stored = f.store.getTask({ serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: attempt.claimId })!;
+    expect(f.store.getClaimAttempt(project)).toBeNull(); expect(stored).toMatchObject({ configuration: attempt.configuration, nativeExecution: null, resources: { worktree: null, herdr: null, nativeSession: null } });
+    expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.tasks.prepareWorkspace).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges an observed attempt before the existing orphan-row return without replacing native facts", async () => {
+    const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
+    const attempt = { taskId: candidate.id, claimId: uuid(1140), worktreeId: uuid(1141), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration: { ...configuration, model: "original-orphan-configuration" } }; f.store.beginClaimAttempt(project, attempt);
+    const identity = { serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: attempt.claimId, workerId, worktreeId: attempt.worktreeId };
+    f.store.registerPending(identity, { kind: "recovered", configuration: null }, 1000, null); f.store.activatePausedRecovery(identity, "Original history requires intervention.", 1000);
+    const worktree = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", candidate.id), branch: `daynight/${candidate.id}` }; f.store.bindWorktree(identity, worktree, 1000);
+    const binding = { session: "w", workspaceId: "orphan-original", paneId: "orphan-pane", terminalId: "orphan-terminal" }; f.store.bindHerdrExecution(identity, binding, null, 1000); f.store.bindNativeSession(identity, { source: "herdr", sessionId: uuid(1142) }, 1000);
+    const original = f.store.getTask(identity)!; const register = f.store.registerPending; let acknowledged: LocalTask | undefined;
+    vi.spyOn(f.store, "registerPending").mockImplementation((claim, registration, now, verifiedUserId) => { const task = register(claim, registration, now, verifiedUserId); if (claim.claimId === attempt.claimId) acknowledged = task; return task; });
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId }, nativeSessionId: uuid(1142), claimedAt: "2026-10-27T00:00:00Z" } } };
+    f.granted.set(attempt.claimId, actual); await f.coordinator.tick();
+    expect(f.store.getClaimAttempt(project)).toBeNull(); expect(acknowledged).toMatchObject({ userId: uuid(2), configuration: attempt.configuration, status: original.status, nativeExecution: original.nativeExecution, resources: original.resources, recovery: original.recovery });
+    expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.store.getTask(identity)?.recovery.pauseReason).toBe(original.recovery.pauseReason);
+  });
+
+  it("counts recovered known-configuration execution responsibility before applying a lowered fresh-task limit", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const running = f.store.listTasks()[0]!; const project = f.projects[0]!; const candidate = remoteTask(project.projectId, uuid(1150));
+    const attempt = { taskId: candidate.id, claimId: uuid(1151), worktreeId: uuid(1152), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration }; f.store.beginClaimAttempt(project, attempt);
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "existing-unavailable", paneId: "existing-pane" }, nativeSessionId: uuid(1153), claimedAt: "2026-10-27T00:00:00Z" } } };
+    f.granted.set(attempt.claimId, actual); await f.coordinator.tick();
+    expect(f.store.listUnfinishedTasks().filter(({ status }) => status === "active")).toHaveLength(2); expect(f.store.getTask({ ...running, taskId: candidate.id, claimId: attempt.claimId })).toMatchObject({ configuration, nativeExecution: null, recovery: { pauseReason: expect.stringContaining("native session ID is missing") } });
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce(); expect(f.store.getClaimAttempt(project)).toBeNull();
+  });
+
+  it("does not acknowledge an observed claim that differs from the original frozen agent", async () => {
+    const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
+    const attempt = { taskId: candidate.id, claimId: uuid(1160), worktreeId: uuid(1161), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration }; f.store.beginClaimAttempt(project, attempt);
+    f.granted.set(attempt.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "copilot", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    await expect(f.coordinator.tick()).rejects.toThrow("does not match the original claim request and frozen agent"); expect(f.store.getClaimAttempt(project)).toEqual(attempt); expect(f.store.listTasks()).toEqual([]); expect(f.tasks.start).not.toHaveBeenCalled();
+  });
+
 });

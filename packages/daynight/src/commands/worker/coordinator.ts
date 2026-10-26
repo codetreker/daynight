@@ -124,23 +124,29 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const worker = remoteTask.properties.worker!;
     const identity = { serverOrigin: options.serverOrigin, projectId: remoteTask.projectId, taskId: remoteTask.id, claimId: worker.claimId, workerId: worker.workerId, worktreeId: worker.worktreeId };
     const present = options.store.getTask(identity);
+    const project = options.store.getProject(identity);
+    if (project === null) throw new Error(`The original project binding for recovered claim ${worker.claimId} is unavailable.`);
+    const attempt = options.store.getClaimAttempt(identity);
+    const runtimeTrace = worker.herdr !== null || worker.nativeSessionId !== null || resources.some(({ owner }) => owner.serverOrigin === identity.serverOrigin && owner.projectId === identity.projectId && owner.taskId === identity.taskId && owner.claimId === identity.claimId);
+    if (attempt !== null && attempt.claimId === worker.claimId) {
+      if (attempt.userId !== authenticatedUserId || worker.userId !== authenticatedUserId) throw new Error("The original claim request belongs to another authenticated user; its scope cannot be replaced.");
+      if (attempt.taskId !== remoteTask.id || attempt.workerId !== worker.workerId || attempt.worktreeId !== worker.worktreeId || attempt.configuration.agent !== worker.agent) throw new Error("The observed grant does not match the original claim request and frozen agent.");
+      const fresh = present === null && !runtimeTrace && worker.phase === "preparing";
+      const task = options.store.registerPending(identity, { kind: fresh ? "new" : "recovered", configuration: attempt.configuration }, now(), authenticatedUserId);
+      options.emit({ kind: "pending-recovered", task, message: "The original claim grant and saved configuration were committed locally before resource preparation." });
+      return task;
+    }
     if (present !== null) {
       const originalIdentityMatches = present.workerId === worker.workerId && present.worktreeId === worker.worktreeId && (present.configuration === null || present.configuration.agent === worker.agent);
       if (present.userId === null && originalIdentityMatches && present.control === null && present.cleanup?.kind !== "terminal") return options.store.bindUserScope(present, authenticatedUserId, now());
       return present;
     }
-    const project = options.store.getProject(identity);
-    if (project === null) throw new Error(`The original project binding for recovered claim ${worker.claimId} is unavailable.`);
-    const attempt = options.store.getClaimAttempt(identity);
-    if (attempt !== null && attempt.claimId === worker.claimId && attempt.userId !== authenticatedUserId) throw new Error("The original claim request belongs to another authenticated user; its scope cannot be replaced.");
-    const matchingAttempt = attempt !== null && attempt.userId === authenticatedUserId && attempt.taskId === remoteTask.id && attempt.claimId === worker.claimId && attempt.workerId === worker.workerId && attempt.worktreeId === worker.worktreeId;
     const configured = options.repositories.find(({ project: selected }) => selected.serverOrigin === identity.serverOrigin && selected.projectId === identity.projectId);
     // Capture original identities before filesystem reads: cleanup may finish while
     // these reads are in flight, and Git creation may precede the binding commit.
     const predecessors = workerLocalTasks().filter((task) => task.taskId === identity.taskId && claimKey(task) !== claimKey(identity))
       .map((task) => ({ task, worktreePath: task.resources.worktree?.worktreePath ?? path.join(task.repositoryPath, ".worktrees", "daynight", task.taskId) }));
     const fixedPath = path.join(project.localPath, ".worktrees", "daynight", identity.taskId);
-    const runtimeTrace = worker.herdr !== null || worker.nativeSessionId !== null || resources.some(({ owner }) => owner.serverOrigin === identity.serverOrigin && owner.projectId === identity.projectId && owner.taskId === identity.taskId && owner.claimId === identity.claimId);
     const prospectiveFresh = !runtimeTrace && worker.phase === "preparing";
     const matchingPredecessors: LocalTask[] = [];
     const deferForRemoval = (): boolean => {
@@ -183,10 +189,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     // No filesystem await may separate this boundary check from materialization.
     if (prospectiveFresh && deferForRemoval()) return null;
     const trace = runtimeTrace || pathTrace;
-    const configuration = matchingAttempt ? attempt.configuration : configured?.configuration;
+    const configuration = configured?.configuration;
     const fresh = !trace && configuration !== undefined && configuration.agent === worker.agent && worker.phase === "preparing";
-    const pending = options.store.registerPending(identity, fresh ? { kind: "new", configuration } : { kind: "recovered", configuration: null }, now());
-    const task = options.store.bindUserScope(pending, authenticatedUserId, now());
+    const task = options.store.registerPending(identity, fresh ? { kind: "new", configuration } : { kind: "recovered", configuration: null }, now(), authenticatedUserId);
     options.emit({ kind: fresh ? "pending-recovered" : "recovery-paused", task, message: fresh ? "Recovered the actual remote claim before resource creation and froze its effective configuration." : "Recovered an existing claim without its original frozen configuration; execution is paused." });
     return task;
   };
@@ -234,6 +239,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         return;
       }
       if (task.recovery.pauseReason !== null && scopePauseReasons.has(task.recovery.pauseReason)) task = options.store.clearPause(task, now());
+      if (task.status === "pending" && task.nativeExecution === null) task = task.recovery.pauseReason === null
+        ? options.store.activateTask(task, now())
+        : options.store.activatePausedRecovery(task, task.recovery.pauseReason, now());
       if (task.status === "pending") {
         if (capacity() >= options.maxConcurrent || workerLocalTasks().some((other) => other.status === "active" && other.taskId === task.taskId)) return;
         task = options.store.activateTask(task, now());
@@ -275,8 +283,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
       const worker = granted.properties.worker;
       if (worker === null || worker.userId !== authenticatedUserId) throw new Error("The granted claim does not match the verified authenticated user.");
-      const pending = options.store.registerPending({ serverOrigin: options.serverOrigin, projectId: granted.projectId, taskId: granted.id, claimId: descriptor.claimId, workerId: options.workerId, worktreeId: descriptor.worktreeId }, { kind: "new", configuration: repository.configuration }, now());
-      const task = options.store.bindUserScope(pending, authenticatedUserId, now());
+      const task = options.store.registerPending({ serverOrigin: options.serverOrigin, projectId: granted.projectId, taskId: granted.id, claimId: descriptor.claimId, workerId: options.workerId, worktreeId: descriptor.worktreeId }, { kind: "new", configuration: repository.configuration }, now(), authenticatedUserId);
       options.emit({ kind: "pending", task, message: "Actual remote claim committed locally before activating or creating resources." });
       await reconcileTask(task, granted, resources, authenticatedUserId);
       return true;
@@ -342,7 +349,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             options.emit({ kind: "orphan-unattributed", message: `Owned workspace ${workspace.workspaceId} has no persisted project binding; its resources were retained.` });
             continue;
           }
-          options.store.registerPending({ ...owner, workerId: options.workerId }, { kind: "recovered", configuration: null }, now());
+          options.store.registerPending({ ...owner, workerId: options.workerId }, { kind: "recovered", configuration: null }, now(), null);
         }
         const existing = currentOriginTasks().sort((left, right) => Number(right.status === "active") - Number(left.status === "active"));
         for (const task of existing) {

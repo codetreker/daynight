@@ -180,17 +180,110 @@ describe("durable claim acquisition uncertainty", () => {
 
   it("clears only the exact confirmed grant atomically with its original frozen pending row", () => {
     const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
-    expect(() => f.store.registerPending(claim, { kind: "new", configuration: { ...configuration, model: "changed-after-crash" } }, 10)).toThrow("original claim attempt");
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration: { ...configuration, model: "changed-after-crash" } }, 10, userId)).toThrow("original claim attempt");
     expect(f.store.getClaimAttempt(project)).toEqual(attempt);
     expect(f.store.getTask(claim)).toBeNull();
     const sql = connect(f.file);
     sql.exec("CREATE TRIGGER reject_pending BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT, 'pending refused'); END;");
-    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 10)).toThrow("pending refused");
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 10, userId)).toThrow("pending refused");
     expect(f.store.getClaimAttempt(project)).toEqual(attempt);
     sql.exec("DROP TRIGGER reject_pending");
-    expect(f.store.registerPending(claim, { kind: "new", configuration }, 10)).toMatchObject({ status: "pending", configuration, nativeExecution: { launchSubmission: "never-submitted" } });
+    expect(f.store.registerPending(claim, { kind: "new", configuration }, 10, userId)).toMatchObject({ status: "pending", userId, configuration, nativeExecution: { launchSubmission: "never-submitted" } });
     expect(f.store.getClaimAttempt(project)).toBeNull();
     expect(f.store.listClaimAttempts()).toEqual([]);
+  });
+
+  it.each(["new", "recovered"] as const)("persists a verified %s grant's original owner and configuration before clearing its attempt", (kind) => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    const sql = connect(f.file);
+    sql.exec("CREATE TRIGGER require_pending_owner BEFORE INSERT ON tasks WHEN NEW.user_id IS NULL BEGIN SELECT RAISE(ABORT, 'owner must be present at insertion'); END;");
+    const pending = f.store.registerPending(claim, { kind, configuration }, 10, userId);
+    expect(pending).toMatchObject({ status: "pending", userId, configuration, resources: { worktree: null, herdr: null, nativeSession: null } });
+    expect(pending.nativeExecution === null).toBe(kind === "recovered");
+    expect(f.store.getClaimAttempt(project)).toBeNull();
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)).toEqual(pending);
+    expect(reopened.getClaimAttempt(project)).toBeNull();
+    if (kind === "new") expect(reopened.completeUnstartedPending(claim, { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId }, 11).status).toBe("done");
+    else expect(isUnstartedPending(pending)).toBe(false);
+  });
+
+  it("keeps an unverified registration unknown and rolls back an existing-row owner bind with its attempt clear", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    const unknown = f.store.registerPending(claim, { kind: "new", configuration }, 10, null);
+    expect(unknown.userId).toBeNull(); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    close(f.store);
+    const reopened = open(f.file);
+    const sql = connect(f.file);
+    sql.exec("CREATE TRIGGER reject_owner_binding BEFORE UPDATE OF user_id ON tasks WHEN NEW.user_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'owner binding refused'); END;");
+    expect(() => reopened.registerPending(claim, { kind: "new", configuration }, 11, userId)).toThrow("owner binding refused");
+    expect(reopened.getTask(claim)).toEqual(unknown); expect(reopened.getClaimAttempt(project)).toEqual(attempt);
+    sql.exec("DROP TRIGGER reject_owner_binding");
+    const known = reopened.registerPending(claim, { kind: "new", configuration }, 12, userId);
+    expect(known).toMatchObject({ userId, configuration, createdAt: 10, updatedAt: 12 });
+    expect(reopened.getClaimAttempt(project)).toBeNull();
+    close(reopened);
+    expect(open(f.file).getTask(claim)).toEqual(known);
+  });
+
+  it("restores only the positively verified attempt snapshot and owner while preserving existing execution provenance", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    f.store.registerPending(claim, { kind: "recovered", configuration: null }, 10, null);
+    f.store.activatePausedRecovery(claim, "Keep the original manual pause", 11); f.bind();
+    const binding = { session: "w", workspaceId: "workspace-original", paneId: "pane-original", terminalId: "original-terminal" };
+    f.store.bindHerdrExecution(claim, binding, null, 24);
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET recovery = ? WHERE claim_id = ?").run(JSON.stringify({ count: 2, pauseReason: "Keep the original manual pause", retryAuthorized: true }), claim.claimId);
+    const original = f.store.getTask(claim)!;
+    expect(original).toMatchObject({ userId: null, configuration: null, nativeExecution: { launchSubmission: "unknown", promptSubmission: "unknown" } });
+    expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    sql.exec("CREATE TRIGGER reject_snapshot_restore BEFORE UPDATE OF configuration ON tasks WHEN NEW.configuration IS NOT NULL BEGIN SELECT RAISE(ABORT, 'snapshot restore refused'); END;");
+    expect(() => f.store.registerPending(claim, { kind: "recovered", configuration }, 25, userId)).toThrow("snapshot restore refused");
+    expect(f.store.getTask(claim)).toEqual(original); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    sql.exec("DROP TRIGGER reject_snapshot_restore");
+    const restored = f.store.registerPending(claim, { kind: "recovered", configuration }, 26, userId);
+    expect(restored).toEqual({ ...original, userId, configuration, updatedAt: 26 });
+    expect(isUnstartedPending(restored)).toBe(false); expect(f.store.getClaimAttempt(project)).toBeNull();
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)).toEqual(restored); expect(reopened.getClaimAttempt(project)).toBeNull();
+  });
+
+  it("never replaces a stored nonnull snapshot with an attempt or uses current defaults for an orphan", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    const original = f.store.registerPending(claim, { kind: "new", configuration: { ...configuration, model: "different-original" } }, 10, null);
+    f.store.beginClaimAttempt(project, attempt);
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 11, userId)).toThrow("original claim attempt and frozen configuration");
+    expect(f.store.getTask(claim)).toEqual(original); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    const orphan = fixture(); orphan.store.registerProject(orphan.mapping);
+    const unknown = orphan.store.registerPending(claim, { kind: "recovered", configuration: null }, 10, null);
+    const scoped = orphan.store.registerPending(claim, { kind: "new", configuration }, 11, userId);
+    expect(scoped).toEqual({ ...unknown, userId, updatedAt: 11 });
+    expect(scoped.configuration).toBeNull(); expect(scoped.nativeExecution).toBeNull();
+  });
+
+  it("does not consume an attempt for mismatched identity or authenticated owner", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    for (const changed of [{ ...claim, taskId: uuid(70) }, { ...claim, workerId: uuid(71) }, { ...claim, worktreeId: uuid(72) }]) {
+      expect(() => f.store.registerPending(changed, { kind: "new", configuration }, 10, userId)).toThrow("original claim attempt");
+      expect(f.store.listTasks()).toEqual([]); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    }
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 10, uuid(73))).toThrow("original authenticated claim attempt owner");
+    expect(f.store.listTasks()).toEqual([]); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    const known = f.store.registerPending(claim, { kind: "new", configuration }, 11, userId);
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 12, uuid(73))).toThrow("original authenticated claim owner cannot be replaced");
+    expect(f.store.getTask(claim)).toEqual(known);
+  });
+
+  it.each(["terminal", "control"] as const)("does not retroactively bind an unknown %s decision while resolving a matching attempt", (kind) => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    f.store.registerPending(claim, { kind: "new", configuration }, 10, null);
+    if (kind === "terminal") f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_020 }, 20);
+    else f.store.recordControlIntent(claim, release, 20);
+    const original = f.store.getTask(claim);
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 21, userId)).toThrow("unknown authenticated scope");
+    expect(f.store.getTask(claim)).toEqual(original); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
   });
 
   it("requires definite rejection of the original attempt and keeps unrelated actual grants separate", () => {

@@ -118,6 +118,12 @@ const parseNativeExecution = (value: unknown): NativeExecutionState => {
 };
 const freshNativeExecution = (): NativeExecutionState => ({ terminalId: null, workspaceSubmission: "not-submitted", workspaceEvidence: null, launchEvidence: null, launchSubmission: "never-submitted", promptSubmission: "not-submitted", stopObservation: null, summary: null });
 const unknownNativeExecution = (): NativeExecutionState => ({ ...freshNativeExecution(), workspaceSubmission: "unknown", launchSubmission: "unknown", promptSubmission: "unknown" });
+const withUserScope = (task: LocalTask, userId: string): LocalTask => {
+  const owner = id(userId, "Claim user ID");
+  if (task.userId !== null && task.userId !== owner) throw new Error("The original authenticated claim owner cannot be replaced.");
+  if (task.userId === null && (task.cleanup?.kind === "terminal" || task.control !== null)) throw new Error("An existing terminal or control intent with unknown authenticated scope cannot acquire an inferred owner.");
+  return { ...task, userId: owner };
+};
 export const isUnstartedPending = (task: LocalTask): boolean => {
   const native = task.nativeExecution;
   return task.status === "pending" && task.cleanup === null && task.control === null && task.resources.worktree === null && task.resources.herdr === null && task.resources.nativeSession === null
@@ -338,39 +344,43 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     getTask,
     listTasks: (): LocalTask[] => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY created_at, server_origin, project_id, task_id, claim_id`).all() as TaskRow[]).map(asTask),
     listUnfinishedTasks: (): LocalTask[] => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE status <> 'done' ORDER BY created_at, server_origin, project_id, task_id, claim_id`).all() as TaskRow[]).map(asTask),
-    registerPending: (claim: PendingClaim, input: PendingConfiguration, now: number): LocalTask => atomic(() => {
+    registerPending: (claim: PendingClaim, input: PendingConfiguration, now: number, verifiedUserId: string | null = null): LocalTask => atomic(() => {
       const key = { ...claimKey(claim), workerId: id(claim.workerId, "Worker ID"), worktreeId: id(claim.worktreeId, "Worktree ID") };
+      const owner = verifiedUserId === null ? null : id(verifiedUserId, "Verified claim user ID");
       integer(now, "Task creation time");
       oneOf(input.kind, ["new", "recovered"], "Pending registration kind");
       if (input.kind === "new" && input.configuration === null) throw new Error("A new execution requires its frozen configuration.");
       const configuration = input.configuration === null ? null : parseConfiguration(input.configuration);
       const project = getProject(key);
       if (project === null) throw new Error("The project repository binding must be persisted before claiming a task.");
-      const confirmAttempt = (originalConfiguration: FrozenExecutionConfiguration | null): void => {
+      const confirmAttempt = (originalConfiguration: FrozenExecutionConfiguration | null): FrozenExecutionConfiguration | null => {
         const attempt = project.claimAttempt;
-        if (attempt === null || attempt.claimId !== key.claimId) return;
-        if (attempt.taskId !== key.taskId || attempt.worktreeId !== key.worktreeId || attempt.workerId !== key.workerId || !same(attempt.configuration, originalConfiguration)) throw new Error("The actual granted claim does not preserve its original claim attempt and frozen configuration.");
+        if (attempt === null || attempt.claimId !== key.claimId) return originalConfiguration;
+        if (attempt.taskId !== key.taskId || attempt.worktreeId !== key.worktreeId || attempt.workerId !== key.workerId || (originalConfiguration !== null && !same(attempt.configuration, originalConfiguration))) throw new Error("The actual granted claim does not preserve its original claim attempt and frozen configuration.");
+        if (owner === null) return originalConfiguration;
+        if (attempt.userId !== owner) throw new Error("The actual granted claim does not preserve its original authenticated claim attempt owner.");
         db.prepare("UPDATE projects SET claim_attempt = NULL WHERE server_origin = @serverOrigin AND project_id = @projectId").run(projectKey(key));
+        return originalConfiguration === null ? attempt.configuration : originalConfiguration;
       };
       const existing = getTask(key);
       if (existing !== null) {
         if (existing.workerId !== key.workerId || existing.worktreeId !== key.worktreeId) throw new Error("The claim is already bound to a different worker or worktree identity.");
-        confirmAttempt(existing.configuration);
+        const scoped = owner === null ? existing : withUserScope(existing, owner);
+        const originalConfiguration = confirmAttempt(existing.configuration);
+        if (scoped.userId !== existing.userId || originalConfiguration !== existing.configuration) {
+          if (existing.status === "done") throw new Error("The local execution is already done; its unknown authenticated scope cannot be replaced.");
+          return writeTask({ ...scoped, configuration: originalConfiguration, updatedAt: now });
+        }
         return existing;
       }
-      confirmAttempt(configuration);
-      const values = { ...key, configuration: configuration === null ? null : JSON.stringify(configuration), repoUrl: project.repoUrl, repositoryPath: project.localPath,
-        resources: JSON.stringify({ worktree: null, herdr: null, nativeSession: null }), nativeExecution: input.kind === "new" ? JSON.stringify(freshNativeExecution()) : null, recovery: JSON.stringify({ count: 0, pauseReason: configuration === null ? "Original frozen execution configuration is missing." : null, retryAuthorized: false }), now };
-      db.prepare(`INSERT INTO tasks(server_origin, project_id, task_id, claim_id, worker_id, worktree_id, status, repo_url, repository_path, configuration, resources, native_execution, recovery, created_at, updated_at)
-        VALUES (@serverOrigin, @projectId, @taskId, @claimId, @workerId, @worktreeId, 'pending', @repoUrl, @repositoryPath, @configuration, @resources, @nativeExecution, @recovery, @now, @now)`).run(values);
+      const originalConfiguration = confirmAttempt(configuration);
+      const values = { ...key, userId: owner, configuration: originalConfiguration === null ? null : JSON.stringify(originalConfiguration), repoUrl: project.repoUrl, repositoryPath: project.localPath,
+        resources: JSON.stringify({ worktree: null, herdr: null, nativeSession: null }), nativeExecution: input.kind === "new" ? JSON.stringify(freshNativeExecution()) : null, recovery: JSON.stringify({ count: 0, pauseReason: originalConfiguration === null ? "Original frozen execution configuration is missing." : null, retryAuthorized: false }), now };
+      db.prepare(`INSERT INTO tasks(server_origin, project_id, task_id, claim_id, worker_id, worktree_id, user_id, status, repo_url, repository_path, configuration, resources, native_execution, recovery, created_at, updated_at)
+        VALUES (@serverOrigin, @projectId, @taskId, @claimId, @workerId, @worktreeId, @userId, 'pending', @repoUrl, @repositoryPath, @configuration, @resources, @nativeExecution, @recovery, @now, @now)`).run(values);
       return needTask(key);
     }),
-    bindUserScope: (identity: ClaimIdentity, userId: string, now: number): LocalTask => change(identity, now, (task) => {
-      const owner = id(userId, "Claim user ID");
-      if (task.userId !== null && task.userId !== owner) throw new Error("The original authenticated claim owner cannot be replaced.");
-      if (task.userId === null && (task.cleanup?.kind === "terminal" || task.control !== null)) throw new Error("An existing terminal or control intent with unknown authenticated scope cannot acquire an inferred owner.");
-      return { ...task, userId: owner };
-    }),
+    bindUserScope: (identity: ClaimIdentity, userId: string, now: number): LocalTask => change(identity, now, (task) => withUserScope(task, userId)),
     restoreOriginalConfiguration: (identity: ClaimIdentity, configuration: FrozenExecutionConfiguration, now: number): LocalTask => change(identity, now, (task) => {
       const original = parseConfiguration(configuration);
       if (task.configuration !== null && !same(task.configuration, original)) throw new Error("The frozen execution configuration cannot be replaced.");

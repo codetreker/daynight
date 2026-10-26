@@ -57,16 +57,26 @@ contact the old API with new credentials or query that record against the new
 service. Full origin/project/task/claim scope remains intact, without a
 credential registry or multi-service acquisition mechanism.
 
-A current-service preparing claim with no local row or own Herdr/native trace is
-classified only across a stable predecessor handoff boundary. Relevant persisted
-origin/project/task/claim/worktree identities, original repository URL/path and
-optional worktree bindings are captured before filesystem awaits. A stored
-binding is not required for candidate eligibility: Git may have created the
-marked leaf before SQLite saved its result. Candidates must match the same
-physical canonical path. That identifies a handoff to defer, not ownership to
-adopt. Stable read-only attribution still requires full claim, root/common/leaf,
-exact Git pointer and branch proof; neither path presence nor a shared task UUID
-grants attribution.
+A verified own claim matching its immutable project claimAttempt is acknowledged
+before any filesystem wait or existing-row shortcut. The original saved
+configuration is used, and pending/configuration, verified userId and attempt
+clear commit atomically. Preparing with no own runtime trace can receive new
+native provenance; runtime traces or a later phase retain recovered/unknown
+native provenance even though configuration is known. A committed grant must not
+be lost behind predecessor removal or early claim completion. Acknowledgment
+settles ownership/request scope only: existing native provenance and real pauses
+remain, and activation still obeys predecessor and resource-ownership gates.
+
+Only an unmatched, unmaterialized prospective-fresh preparing claim without own
+Herdr/native traces enters filesystem classification across a stable predecessor
+handoff boundary. Relevant persisted origin/project/task/claim/worktree
+identities, original repository URL/path and optional worktree bindings are
+captured before filesystem awaits. A stored binding is not required for
+candidate eligibility: Git may have created the marked leaf before SQLite saved
+its result. Candidates must match the same physical canonical path. That
+identifies a handoff to defer, not ownership to adopt. Stable read-only
+attribution still requires full claim, root/common/leaf, exact Git pointer and
+branch proof; neither path presence nor a shared task UUID grants attribution.
 
 If a captured or current predecessor owes terminal/control worktree removal, or
 that removal boundary changes during asynchronous checks, classification of the
@@ -77,8 +87,8 @@ claim after stability. A final synchronous check immediately precedes pending
 insertion, with no intervening await, so old path and newer local observations
 cannot be combined into false evidence that the successor already executed.
 Existing pending records keep their frozen configuration and are not classified
-again. Deferral preserves matching claim-attempt decision provenance instead of
-replacing or clearing it. Other tasks and independent cleanup deadlines
+again. Matching attempt ownership uses the earlier atomic acknowledgment and
+never enters this deferral path. Other tasks and independent cleanup deadlines
 continue; no state, queue or lock is added.
 
 A stable ordinary active predecessor can still be attributed strictly, allowing
@@ -101,10 +111,14 @@ claimAttempt to each project and nativeExecution facts to each task, with an
 explicit migration that leaves absent original evidence and user scope unknown.
 ClaimAttempt records one unresolved task/claim/worktree/worker/user request,
 exact version and decision configuration before HTTP. An actual matching claim
-materializes pending and clears the attempt atomically. Definite rejection or
-proven non-submission can clear it; an unknown request cannot be replayed,
-replaced or cleared because an inventory temporarily lacks it. No task row
-exists before grant, and no new table or acquisition queue is introduced.
+materializes pending with the saved configuration and verified principal while
+clearing the attempt in that same transaction. registerPending accepts the
+verified UID explicitly; omitted/null means unknown, not current login. This
+prevents a crash between clearing the request and writing scope from stranding a
+claim that subsequently ends. Definite rejection or proven non-submission can
+clear it; an unknown request cannot be replayed, replaced or cleared because an
+inventory temporarily lacks it. No task row exists before grant, and no new
+table or acquisition queue is introduced.
 
 NativeExecution records the actual terminal, workspace submission, verified
 workspace/launch receipts, launch/prompt submission facts, immutable original
