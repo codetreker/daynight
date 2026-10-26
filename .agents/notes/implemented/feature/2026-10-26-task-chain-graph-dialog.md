@@ -8,7 +8,9 @@ Expanding a dependency graph inside a task-chain row changes the list height
 and gives larger graphs a canvas constrained by the surrounding page. Persisted
 inline expansion also opens a graph on entry without a new viewing action.
 Graph reading needs a predictable area while preserving the list's position,
-task inspection, fullscreen viewing and access to task details.
+task inspection, fullscreen viewing and access to task details. Clicking graph
+content must retain keyboard dismissal and focus containment even when that
+content has no interactive control.
 
 ## Decision
 
@@ -36,6 +38,12 @@ mounted dialog and graph, preserving nodes, layout, inspection, visible tasks,
 zoom and pan. It does not establish a second graph modal lifecycle. Closing the
 dialog releases the canvas; opening it again initializes a new view. The graph's
 existing bounded projection, expansion/reset and rendering remain unchanged.
+
+The dialog section has `tabIndex={-1}` so pointer focus on a heading, legend or
+blank canvas lands on the dialog instead of falling back to the document body.
+Escape remains local to the dialog. Its container is outside sequential Tab
+navigation; forward Tab enters the first visible control and reverse Tab enters
+the last, preserving containment after a content click.
 
 Task details keep their body portal above the graph dialog. Escape handles one
 applicable layer per press: detail child menu or confirmation, detail fullscreen,

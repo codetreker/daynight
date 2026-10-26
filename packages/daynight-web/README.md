@@ -796,9 +796,11 @@ The canvas supports pan, zoom and fit while editing and connection controls stay
 disabled. The toolbar offers Fullscreen viewing, which fills the browser viewport with
 the same mounted dialog and canvas. Exit fullscreen or Escape returns to the
 80% dialog without resetting pan, zoom or nodes. One graph-dialog owner isolates
-background controls and cycles Tab through its visible controls in either mode;
-leaving fullscreen restores focus to its toggle. Task details remain available
-above the graph. Escape handles one applicable layer at a time: nested menu or
+background controls and cycles Tab through its visible controls in either mode.
+Clicking a heading, legend or blank canvas keeps focus on the dialog so Escape
+continues to work. From that container, Tab enters the first visible control and
+Shift+Tab enters the last. Leaving fullscreen restores focus to its toggle. Task
+details remain available above the graph. Escape handles one applicable layer at a time: nested menu or
 confirmation, detail fullscreen, details, graph fullscreen, then the graph
 dialog. Graph and detail dialogs share a counted body scroll lock so either
 unmount order restores the original scrolling state. Neither dialog opening nor
