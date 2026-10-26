@@ -94,10 +94,12 @@ For example, an upload protocol may define a required multipart `file`, a
 that permits user-initiated retry. Provider and consumer tasks reference the same
 protocol and state their own delivery locations and availability.
 
-Actual prerequisites remain in the complete `dependsOn` set and its
-`externalDependsOn` subset. Contract source identities do not form a second
-complete dependency list, and a source reference does not create an execution
-dependency. Use [the handbook](handbook.md) for relationship semantics.
+Necessary direct prerequisites remain in the complete `dependsOn` set and its
+`externalDependsOn` subset, following
+[the handbook's dependency reduction rule](handbook.md#dependency-reduction).
+Contract source identities do not form a second complete dependency list, and a
+source reference does not create an execution dependency. Use
+[the handbook](handbook.md) for relationship semantics.
 
 ## Apply the current stage
 
