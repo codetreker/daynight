@@ -17,9 +17,11 @@ execution.
 The [adapter entry](../../../../packages/daynight/src/commands/worker/herdr.ts)
 composes private-instance lifecycle, bounded IPC, native preflight and concrete
 task operations. One worker uses one private named session `w`, with independent
-task workspaces/panes. The controller retains scheduling, claims, recovery
-budget, cleanup deadline and business completion under the [worker
-responsibility decision](2026-10-22-worker-design.md).
+task workspaces/panes. The [foreground
+coordinator](2026-10-27-foreground-worker-runtime.md) retains scheduling,
+claims, recovery budget and cleanup deadline; the agent retains business
+completion under the [worker responsibility
+decision](2026-10-22-worker-design.md).
 
 Private Herdr data stays below the fixed worker h/ root. The daemon's private
 XDG config/state homes and HERDR_CONFIG_PATH isolate endpoints, snapshots and
@@ -130,8 +132,19 @@ agentStopped:true to existing closeWorkspace and rebind safely. Creation ACK
 loss or cold restore before first native launch uses the same producer. Null
 references, an empty current pane or this invocation's not-submitted result do
 not create the historical fact. Any prior unknown launch forbids this path and
-requires original process proof or a pause. The adapter adds no separate proof
-API, cache or registry; the coordinator owns the storage ordering.
+requires original process proof or a pause. The foreground consumer uses
+confirmEmptyPane only for current noNativeProcess observation; its durable
+never-submitted history remains separate. Concrete stop-only operations also
+prove a missing original workspace or an attributable plain replacement using
+unchanged old process evidence. No cache or registry supplies historical launch
+facts; the coordinator owns storage ordering.
+
+Before dispatch, local argument/preflight failure or queue cancellation can be
+reported as definitely not-submitted with the original cause. That result is
+about this invocation: an earlier acknowledged launch or deferred input keeps
+its existing evidence. The caller may restore a proven undispatched current
+attempt, while an earlier unknown launch cannot become never-submitted merely
+because a later call was refused.
 
 Preflight verifies the native executable and required capabilities, current
 installed official integration, effective SessionStart command and its runtime.
@@ -309,6 +322,7 @@ zero writes. The guarantee depends on Linux Bash honoring inherited HISTFILE,
 not universal isolation of custom rc files, other shells or APPDATA.
 
 These source adapters and targeted Linux observations do not establish the
-foreground coordinator, business managed-prompt composition, management-protocol
-revisions or three-platform whole-Goal acceptance. The earlier Herdr 0.8.2
+foreground runtime's complete behavior, management-protocol revisions or
+three-platform whole-Goal acceptance. The foreground runtime independently owns
+managed-prompt construction and composition evidence. The earlier Herdr 0.8.2
 shell-only smoke remains evidence only for its original version and environment.

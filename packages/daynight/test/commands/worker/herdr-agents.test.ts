@@ -1,11 +1,13 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
+import { createServer } from "node:net";
+import type { Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
-import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
+import { createHerdrRpcClient, HerdrRpcError, herdrIpcAddress } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 
 type Entry = Record<string, unknown>;
@@ -115,6 +117,12 @@ describe("task workspace ownership and native input", () => {
     expect(f.calls.filter((value) => value.method === "workspace.create")).toHaveLength(1);
     expect(herdrExecutionAgentName(f.context)).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
   });
+  it("reports workspace preparation failure as definitely not submitted before any create request", async () => {
+    const f = await fixture(); await rm(f.context.cwd, { recursive: true });
+    await expect(f.manager.prepareWorkspace(f.context, operation())).rejects.toMatchObject({ action: "workspace.create", submission: "not-submitted", cause: { code: "ENOENT" } });
+    expect(f.calls).toEqual([]); await mkdir(f.context.cwd);
+    expect((await f.manager.prepareWorkspace(f.context, operation())).workspaceEvidence).not.toBeNull(); expect(f.calls.filter((call) => call.method === "workspace.create")).toHaveLength(1);
+  });
   it("requires environment proof for a restored empty pane even when no native reference exists", async () => {
     const f = await fixture(); const created = await f.manager.prepareWorkspace(f.context, operation());
     f.panes[0]!.terminal_id = "cold-restored-empty-terminal";
@@ -217,6 +225,28 @@ describe("task workspace ownership and native input", () => {
     expect(f.calls.findIndex((value) => value.method === "agent.start")).toBeLessThan(f.calls.findIndex((value) => value.method === "agent.prompt"));
     expect(f.calls.find((value) => value.method === "agent.prompt")!.params.target).toBe(binding.paneId);
     expect(f.calls.find((value) => value.method === "agent.start")!.params.args).not.toContain(prompt);
+  });
+  it("reports native argv and preflight failures as definitely not submitted before agent.start", async () => {
+    const f = await fixture(); const prepared = await f.manager.prepareWorkspace(f.context, operation());
+    const badArguments = await f.manager.start(f.context, prepared.binding, { configuration: { ...configuration, args: ["--model", "owned"] }, prompt: "not sent", workspaceEvidence: prepared.workspaceEvidence }, operation()).catch((error: unknown) => error);
+    expect(badArguments).toMatchObject({ action: "agent.start", submission: "not-submitted", promptSubmission: "not-submitted", cause: expect.any(TypeError) });
+    const missingHook = new Error("The official hook is disabled");
+    const failed = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => { throw missingHook; } }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } });
+    await expect(failed.start(f.context, prepared.binding, { configuration, prompt: "not sent", workspaceEvidence: prepared.workspaceEvidence }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", promptSubmission: "not-submitted", launchEvidence: null, cause: missingHook });
+    expect(f.calls.some((call) => call.method === "agent.start" || call.method === "agent.prompt")).toBe(false);
+    expect((await f.manager.start(f.context, prepared.binding, { configuration, prompt: "after correction", workspaceEvidence: prepared.workspaceEvidence }, operation())).kind).toBe("started");
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual(["after correction"]);
+  });
+  it("retains acknowledged launch facts when deferred input preflight fails without another native launch", async () => {
+    const f = await fixture(); const prepared = await f.manager.prepareWorkspace(f.context, operation());
+    f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: [f.context.agent, ...params.args as string[]] }; });
+    const waiting = await f.manager.start(f.context, prepared.binding, { configuration, prompt: "not yet", workspaceEvidence: prepared.workspaceEvidence }, operation());
+    if (waiting.launchEvidence === null) throw new Error("Expected acknowledged launch facts.");
+    f.agents[0]!.agent_status = "unknown"; const missingHook = new Error("Hook configuration changed");
+    const failed = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => { throw missingHook; } }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } });
+    await expect(failed.start(f.context, prepared.binding, { configuration, prompt: "do not send", initialPromptNotSubmitted: true, launchEvidence: waiting.launchEvidence }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", promptSubmission: "not-submitted", launchEvidence: waiting.launchEvidence, cause: missingHook });
+    await expect(failed.start(f.context, prepared.binding, { configuration: { ...configuration, args: ["--model", "owned"] }, prompt: "do not send", initialPromptNotSubmitted: true, launchEvidence: waiting.launchEvidence }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "not-submitted", promptSubmission: "not-submitted", launchEvidence: waiting.launchEvidence, cause: expect.any(TypeError) });
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual([]);
   });
   it("reconnects a live native agent without resubmitting startup input", async () => {
     const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
@@ -416,6 +446,55 @@ describe("task workspace ownership and native input", () => {
 });
 
 describe("native stop evidence and workspace closure", () => {
+  it("checks empty-pane facts over the actual newline JSON IPC transport", async () => {
+    const f = await fixture(); const { binding } = await f.manager.prepareWorkspace(f.context, operation());
+    const endpoint = path.join(f.context.cwd, "e.sock"); const connections = new Set<Socket>(); const errors: Error[] = []; const methods: string[] = []; let foreground = false;
+    const server = createServer((socket) => {
+      connections.add(socket); socket.once("close", () => connections.delete(socket)); socket.on("error", (error) => errors.push(error)); socket.setEncoding("utf8");
+      let input = "";
+      socket.on("data", (chunk: string) => {
+        input += chunk; if (!input.includes("\n")) return;
+        try {
+          const request = JSON.parse(input.slice(0, input.indexOf("\n"))) as { id: string; method: string };
+          methods.push(request.method);
+          const result: HerdrRpcResult = request.method === "session.snapshot" ? f.snapshot() : { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: [{ pid: 100, name: "shell" }, ...(foreground ? [{ pid: 200, name: "native" }] : [])] } };
+          socket.end(`${JSON.stringify({ id: request.id, result })}\n`);
+        } catch (cause) { socket.destroy(cause instanceof Error ? cause : new Error("Invalid test request")); }
+      });
+    });
+    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(herdrIpcAddress(endpoint), resolve); });
+    try {
+      const manager = createHerdrAgentManager({ rpc: createHerdrRpcClient(endpoint), session: "w", preflight: { verifyStart: async () => undefined }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } });
+      expect(await manager.confirmEmptyPane(f.context, binding, operation(2000))).toEqual({ noNativeProcess: true });
+      foreground = true; await expect(manager.confirmEmptyPane(f.context, binding, operation(2000))).rejects.toThrow("still hosts foreground work");
+      await expect(manager.confirmEmptyPane(f.context, { ...binding, terminalId: "wrong" }, operation(2000))).rejects.toThrow("identity has changed");
+      expect(methods.every((method) => method === "session.snapshot" || method === "pane.process_info")).toBe(true); expect(errors).toEqual([]);
+    } finally {
+      for (const socket of connections) socket.destroy();
+      await new Promise<void>((resolve, reject) => { server.close((error) => error === undefined ? resolve() : reject(error)); });
+    }
+  });
+  it("observes an exact owned fresh or cold-before-native shell without inferring historical launch state", async () => {
+    const f = await fixture(); const { binding } = await f.manager.prepareWorkspace(f.context, operation());
+    expect(await f.manager.confirmEmptyPane(f.context, binding, operation())).toEqual({ noNativeProcess: true });
+    f.panes[0]!.terminal_id = "cold-before-native-terminal";
+    const restored = { ...binding, terminalId: "cold-before-native-terminal" };
+    expect(await f.manager.confirmEmptyPane(f.context, restored, operation())).toEqual({ noNativeProcess: true });
+    expect(f.calls.some((call) => call.method === "agent.start" || call.method === "agent.prompt" || call.method === "pane.close" || call.method === "workspace.close")).toBe(false);
+  });
+  it("refuses empty-shell facts for wrong identity, pending/native metadata or foreground work", async () => {
+    const f = await fixture(); const { binding } = await f.manager.prepareWorkspace(f.context, operation());
+    await expect(f.manager.confirmEmptyPane(f.context, { ...binding, terminalId: "different" }, operation())).rejects.toThrow("identity has changed");
+    const agent = f.launch({ pane_id: binding.paneId, name: herdrExecutionAgentName(f.context) });
+    await expect(f.manager.confirmEmptyPane(f.context, binding, operation())).rejects.toThrow("not an unlaunched plain shell");
+    delete agent.agent; delete agent.name; delete agent.agent_session; agent.interactive_ready = false; agent.launch_pending = true;
+    await expect(f.manager.confirmEmptyPane(f.context, binding, operation())).rejects.toThrow("not an unlaunched plain shell");
+    f.agents.splice(0); f.processes.set(binding.paneId, [100, 201]);
+    await expect(f.manager.confirmEmptyPane(f.context, binding, operation())).rejects.toThrow("still hosts foreground work");
+    f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 100, foreground_process_group_id: 201, foreground_processes: [] } } : undefined);
+    await expect(f.manager.confirmEmptyPane(f.context, binding, operation())).rejects.toThrow("different foreground process group");
+    expect(f.calls.some((call) => call.method === "pane.close" || call.method === "workspace.close")).toBe(false);
+  });
   it("captures a folder-trust-blocked pending Copilot launch with concrete foreground native PIDs", async () => {
     const f = await fixture("copilot"); const binding = await launch(f); f.agents[0]!.agent_status = "blocked"; f.agents[0]!.launch_pending = true; f.agents[0]!.interactive_ready = false; delete f.agents[0]!.agent_session;
     f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 830500, foreground_process_group_id: 830816, foreground_processes: [
@@ -440,6 +519,45 @@ describe("native stop evidence and workspace closure", () => {
     expect(await f.manager.confirmStopped(f.context, binding, evidence, operation())).toEqual({ agentStopped: true });
     expect(await f.manager.closeWorkspace(f.context, binding, { agentStopped: true }, operation())).toEqual({ workspaceClosed: true });
     expect(await f.manager.closeWorkspace(f.context, binding, { agentStopped: true }, operation())).toEqual({ workspaceClosed: true });
+  });
+  it("confirms missing-workspace stop from immutable original evidence after a lost close acknowledgement", async () => {
+    const f = await fixture(); const binding = await launch(f); const evidence = await f.manager.captureStop(f.context, binding, operation()); const saved = structuredClone(evidence);
+    f.executing.delete(200); await f.rpc.request("workspace.close", { workspace_id: binding.workspaceId, close_group: false }, operation()); f.agents.splice(0);
+    const before = f.calls.length;
+    expect(await f.manager.confirmMissingWorkspaceStopped(f.context, binding, evidence, operation())).toEqual({ agentStopped: true });
+    expect(evidence).toEqual(saved); expect(f.calls.slice(before).every((call) => call.method === "session.snapshot")).toBe(true);
+  });
+  it("does not infer stopped from missing workspace metadata while original processes or a rebound label remain", async () => {
+    const f = await fixture(); const binding = await launch(f); const evidence = await f.manager.captureStop(f.context, binding, operation());
+    await f.rpc.request("workspace.close", { workspace_id: binding.workspaceId, close_group: false }, operation()); f.agents.splice(0);
+    await expect(f.manager.confirmMissingWorkspaceStopped(f.context, binding, evidence, operation())).rejects.toThrow("original native process is still executing");
+    f.executing.delete(200); f.executing.add(100);
+    await expect(f.manager.confirmMissingWorkspaceStopped(f.context, binding, evidence, operation())).rejects.toThrow("original task shell is still executing");
+    f.executing.delete(100); f.workspaces.push({ workspace_id: "rebound", label: herdrExecutionLabel(f.context) });
+    await expect(f.manager.confirmMissingWorkspaceStopped(f.context, binding, evidence, operation())).rejects.toThrow("label identifies another resource");
+    f.workspaces.splice(0); f.panes.push({ pane_id: binding.paneId, terminal_id: binding.terminalId, workspace_id: "foreign", cwd: f.context.cwd, agent_status: "unknown" });
+    await expect(f.manager.confirmMissingWorkspaceStopped(f.context, binding, evidence, operation())).rejects.toThrow("pane, terminal or agent is still present");
+    await expect(f.manager.confirmMissingWorkspaceStopped(f.context, { ...binding, session: "foreign" }, { ...evidence, binding: { ...binding, session: "foreign" } }, operation())).rejects.toThrow("another Herdr session");
+  });
+  it("confirms an owned plain replacement after old workspace removal and an unrecorded create result", async () => {
+    const f = await fixture(); const original = await launch(f); const evidence = await f.manager.captureStop(f.context, original, operation()); const saved = structuredClone(evidence);
+    f.executing.delete(200); await f.rpc.request("workspace.close", { workspace_id: original.workspaceId, close_group: false }, operation()); f.agents.splice(0);
+    const replacement = await f.manager.prepareWorkspace(f.context, operation()); const before = f.calls.length;
+    expect(await f.manager.confirmReplacedStop(f.context, original, replacement.binding, evidence, operation())).toEqual({ agentStopped: true, binding: replacement.binding });
+    expect(evidence).toEqual(saved); expect(f.calls.slice(before).every((call) => call.method === "session.snapshot" || call.method === "pane.process_info")).toBe(true);
+    await expect(f.manager.confirmMissingWorkspaceStopped(f.context, original, evidence, operation())).rejects.toThrow("label identifies another resource");
+    await expect(f.manager.confirmRestoredStop(f.context, original, replacement.binding, evidence, operation())).rejects.toThrow("original task workspace and pane association");
+  });
+  it("rejects replacement proof when the original lives or the actual replacement has native work", async () => {
+    const f = await fixture(); const original = await launch(f); const evidence = await f.manager.captureStop(f.context, original, operation());
+    await f.rpc.request("workspace.close", { workspace_id: original.workspaceId, close_group: false }, operation()); f.agents.splice(0);
+    const replacement = await f.manager.prepareWorkspace(f.context, operation());
+    await expect(f.manager.confirmReplacedStop(f.context, original, replacement.binding, evidence, operation())).rejects.toThrow("original native process is still executing");
+    f.executing.delete(200); f.executing.add(100);
+    await expect(f.manager.confirmReplacedStop(f.context, original, replacement.binding, evidence, operation())).rejects.toThrow("original task shell is still executing");
+    f.executing.delete(100); f.panes[0]!.agent = "codex";
+    await expect(f.manager.confirmReplacedStop(f.context, original, replacement.binding, evidence, operation())).rejects.toThrow("not an unlaunched plain shell");
+    expect(f.calls.filter((call) => call.method === "pane.close")).toEqual([]);
   });
   it("confirms a new empty restored shell only after original native and shell processes are absent", async () => {
     const f = await fixture(); const binding = await launch(f); const evidence = await f.manager.captureStop(f.context, binding, operation());

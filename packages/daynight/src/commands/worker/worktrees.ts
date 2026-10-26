@@ -197,6 +197,13 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (result.leaf === null || result.registration === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
       return result.binding;
     },
+    findWorktree: async (task: LocalTask, operation: Operation): Promise<WorktreeBinding | null> => {
+      const repository = await inspectRepository(projectFor(task), operation);
+      const result = await inspectWorktree(task, repository, operation, task.cleanup !== null || task.control !== null);
+      if (result.registration === null) return null;
+      if (result.leaf === null) throw new Error("The original task worktree is missing; its ownership registration was retained.");
+      return result.binding;
+    },
     removeWorktree: async (task: LocalTask, proof: WorktreeRemovalProof, operation: Operation): Promise<void> => {
       if (proof.terminal !== true || proof.agentStopped !== true || proof.workspaceClosed !== true) throw new Error("Worktree removal requires terminal cleanup, confirmed agent stop and workspace closure.");
       const repository = await inspectRepository(projectFor(task), operation);

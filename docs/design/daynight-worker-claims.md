@@ -1,6 +1,6 @@
 # Worker 任务认领与执行归属
 
-状态：服务端认领、归属更新、释放、移交、人工接续及 CLI/Web 读取模型已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 worker、人工管理命令和完整运行时验收仍独立于本协议交付。
+状态：服务端认领、归属更新、释放、移交、人工接续及 CLI/Web 读取模型已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 [worker run](daynight-worker.md)组合这些能力；人工管理命令与完整运行时验收仍独立于本协议交付。
 
 ## 资源和属性所有权
 
@@ -31,7 +31,7 @@
 
 ## HTTP 操作
 
-以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动初次认领为请求在内存生成新 ID；稳定 workerId 与原服务范围/项目仓库映射先持久保存，实际远端 claim 确认后才登记本机 pending，不预建任务行或额外台账。Transfer 则在 source 管理意图中先持久保存新 targetClaimId，再调用远端。
+以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动初次认领生成新 ID；稳定 workerId、原服务范围/项目仓库映射及 projects 中具体未决 claimAttempt 先持久保存。实际远端 claim 确认后才登记本机 pending，不预建 task 行或新增表；未知请求被原标识约束，不自动重放。Transfer 则在 source 管理意图中先持久保存新 targetClaimId，再调用远端。
 
 | 方法和后缀 | 输入与结果 |
 |---|---|
@@ -114,4 +114,4 @@ jq 'select(.task_id == "<task-id>" and .request_id == "<request-id>")' server.js
 
 服务基础验证包括真实 PostgreSQL 同版本竞争、权限/目标成员、许可/平台变化、所有状态旁路、旧 claim、释放/移交/接续、事务回滚，以及属性迁移的 NUL/Unicode 保全。客户端验证覆盖完整读取、写保护类型、200 操作、精确 int64、未知结果不重发和候选游标推进。
 
-这些检查证明服务端和 typed client 的归属基础，不代替本机 SQLite、Git 或原生 agent 的独立证据。当前资源适配的 Linux 针对性结果及限制由[运行时验证边界](daynight-worker.md#验证与当前证据)拥有；前台协调、人工管理和完整三平台交付仍须各自验收。
+这些检查证明服务端和 typed client 的归属基础，不代替本机 SQLite、Git 或原生 agent 的独立证据。当前资源适配的 Linux 针对性结果及限制由[运行时验证边界](daynight-worker.md#验证与当前证据)拥有；前台协调与人工管理各有自己的验收，完整三平台交付仍须最终验证。

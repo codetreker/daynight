@@ -289,6 +289,10 @@ def scenarios():
         ("root logout", "daynight logo\t", ["logout"]),
         ("login no browser option", "daynight login --no-b\t", ["login", "--no-browser"]),
         ("root update", "daynight upd\t", ["update"]),
+        ("root worker", "daynight wor\t", ["worker"]),
+        ("short root worker", "dn wor\t", ["worker"]),
+        ("worker run", "daynight worker ru\t", ["worker", "run"]),
+        ("short worker run", "dn worker ru\t", ["worker", "run"]),
         ("root completion", "daynight comp\t", ["completion"]),
         ("root project and local directory collision", "daynight pro\t", ["project"]),
         ("project create", "daynight project cre\t", ["project", "create"]),
@@ -560,8 +564,8 @@ def run_shell(label, binary, kind, script, directory, evidence, zsh_root):
                 raise AssertionError(f"{label}: {name}: expected unchanged {line!r}, received {actual!r}, terminal={output!r}")
             print(f"PASS {label}: {name}", flush=True)
         for name, line, candidates in [
-            ("empty root prefix", "daynight ", ["login", "logout", "review", "update", "completion", "project", "task"]),
-            ("empty short root prefix", "dn ", ["login", "logout", "review", "update", "completion", "project", "task"]),
+            ("empty root prefix", "daynight ", ["login", "logout", "review", "worker", "update", "completion", "project", "task"]),
+            ("empty short root prefix", "dn ", ["login", "logout", "review", "worker", "update", "completion", "project", "task"]),
             ("empty review prefix", "daynight review ", ["run", "list", "ls", "add-repo"]),
             ("empty project prefix", "daynight project ", ["create", "list", "show"]),
             ("empty project create prefix", "daynight project create ", ["--repo"]),

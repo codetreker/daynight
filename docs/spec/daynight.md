@@ -2,18 +2,20 @@
 
 状态：客户端入口、review、自更新、shell 补全、project 命令及配置、HTTP、仓库关联基础已实现；
 task 命令、安装产物、真实服务及默认预算验收已完成并通过托管验证；
+worker 已提供独立前台入口，完整行为和后续管理/平台验收由其专属需求拥有；
 集成状态见[PR #55](https://github.com/codetreker/daynight/pull/55)。
 可用命令和验证入口见[仓库 README](../../README.md)，完整交付范围见
 [project/task 需求](daynight-project-task.md)。
 
 Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `daynight` 入口及短命令 `dn`，命令模块
-拥有各自的业务行为、依赖和生命周期。`review` 是 GitHub PR 审查模块；`update` 管理
+拥有各自的业务行为、依赖和生命周期。`review` 是 GitHub PR 审查模块，`worker` 是按自有 claim 对账的前台任务执行模块；`update` 管理
 整个客户端的 npm 全局安装；`login/logout` 管理 CLI 凭据；review 自行拥有仓库配置和首次引导；`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`skill` 安装随包分发的公开 `using-daynight` skill。独立的 Go 服务和浏览器应用保留自己的产品需求
 与生命周期。
 
 本文档负责客户端入口、命令组合、按需配置引导、自更新和 shell 补全的必需行为；
-[review 需求](daynight-review.md)负责审查、review 配置字段和持久化状态。
+[review 需求](daynight-review.md)负责审查、review 配置字段和持久化状态；
+[worker 需求](daynight-worker.md)负责前台领取、资源、恢复和清理。
 [project/task 需求](daynight-project-task.md)负责已确认的 server 连接配置、仓库关联
 发现和远端项目任务命令。客户端机制见[架构设计](../design/daynight.md)，补全机制见
 [补全设计](../design/daynight-completion.md)。公开 skill 的分发、交互安装和任务工作流
@@ -45,6 +47,8 @@ daynight -v
 daynight update
 daynight login [--no-browser]
 daynight logout
+daynight worker
+daynight worker run
 daynight review
 daynight review run
 daynight review list
@@ -74,8 +78,8 @@ daynight task attachment read <task-id> <relative-path> [--project <project-id>]
 daynight task attachment remove <task-id> <relative-path> [--project <project-id>]
 ```
 
-无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `review`、`update`、`login`、`logout`、
-`completion`、`skill`、`project` 和 `task`。`--version` 与 `-v` 输出当前包版本。裸 `review` 和裸 `completion`
+无参数、`--help` 或 `-h` 显示顶层帮助并成功退出；帮助列出 `worker`、`review`、`update`、`login`、`logout`、
+`completion`、`skill`、`project` 和 `task`。`--version` 与 `-v` 输出当前包版本。裸 `worker`、裸 `review` 和裸 `completion`
 显示各自帮助；裸 `skill`、`project` 与 `task` 同样显示组帮助。组和操作在该层唯一参数为 `--help` 或 `-h` 时显示帮助，且不得执行
 该操作。顶层版本选项不继承到子命令。`review ls` 是 `review list` 的别名。
 
@@ -107,6 +111,8 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 不加载 SQLite，也不启动 Git、GitHub CLI、Copilot 或更新操作。补全生成还不得查询
 工作目录、获取实例锁、读取审查状态或执行 npm 和网络请求。生成的脚本在按 Tab 时
 遵守 C5 的本地执行要求。
+
+`worker run` 在参数分派后才加载前台配置、SQLite、Git、Herdr 与协调循环，读取固定状态根及启动时配置，不触发 review 配置引导。独立有界请求与常驻命令生命周期分开，取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
 
 `review add-repo` 与 review 首次引导只写配置。按 C6 完成必要的配置引导后，
 `review list` 与 `review ls` 只读取配置及已存数据库，

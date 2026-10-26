@@ -30,26 +30,28 @@ source owner/admin actor and a separately validated current target member.
 
 Callers generate a fresh claim UUID for each acquisition or transfer and never
 reuse it. The service rejects the latest ID's reuse and requires the current
-claim plus an exact task version for subsequent writes. The foundation originally
-required persisting that ID before either operation. The
-[local-records decision](2026-10-26-worker-local-records.md) partially supersedes
-that ordering: initial automatic acquisition generates its request ID in memory
-after durable worker identity and project mapping, then registers pending only
-for an actual remote claim. Complete own-claim inventory recovers an unknown
-acquisition without replay. Transfer still persists its target claim ID in the
-source control intent before the remote write.
-Claim IDs are public correlation and fencing identifiers, not secret machine
-credentials. There is no historical claim registry or additional generation
-counter. Released/completed records retain the last execution information.
+claim plus an exact task version for subsequent writes. The foundation
+originally required persisting that ID before either operation; the
+[local-records decision](2026-10-26-worker-local-records.md) separated actual
+task registration from acquisition intent and initially kept request identity in
+memory. The [foreground runtime](2026-10-27-foreground-worker-runtime.md) now
+persists one concrete unresolved claimAttempt in the project before HTTP while
+still creating no preclaim task or extra table. Complete own-claim inventory
+recovers actual ownership without replay. Transfer retains its target identity
+in source control intent before the remote write. Claim IDs are public
+correlation and fencing identifiers, not secret machine credentials. There is no
+historical claim registry or additional generation counter. Released/completed
+records retain the last execution information.
 
-The typed in-process API client owns HTTP operations and response parsing.
-The foundation originally used known task IDs persisted locally or explicitly
-imported for transfer. The [current-claim inventory decision](2026-10-26-worker-claim-inventory.md)
-partially supersedes that discovery choice: the project task list now selects
-the authenticated user/worker active claims. Known-task reads still reconcile
-explicit writes, while complete workerId-only project traversals supply the
-current ownership set. Candidate pagination remains separate from inventory;
-no projection or claim table is introduced.
+The typed in-process API client owns HTTP operations and response parsing. The
+foundation originally used known task IDs persisted locally or explicitly
+imported for transfer. The [current-claim inventory
+decision](2026-10-26-worker-claim-inventory.md) partially supersedes that
+discovery choice: the project task list now selects the authenticated
+user/worker active claims. Known-task reads still reconcile explicit writes,
+while complete workerId-only project traversals supply the current ownership
+set. Candidate pagination remains separate from inventory; no projection or
+claim table is introduced.
 
 The [worker responsibility decision](2026-10-22-worker-design.md) remains the
 owner of scheduling, resource management and agent delivery boundaries. This
@@ -71,9 +73,10 @@ types preserve the existing PR replacement contract.
 **Add a claim generation or historical claim table.** These would enforce a
 larger historical identity protocol and require another persisted counter or
 unbounded identity retention. The worker protocol instead requires fresh UUIDs,
-checks the latest claim and uses the existing exact task version for concurrency.
-Reconsider historical receipts only if a concrete consumer must prove the order
-of superseded operations rather than determine current ownership.
+checks the latest claim and uses the existing exact task version for
+concurrency. Reconsider historical receipts only if a concrete consumer must
+prove the order of superseded operations rather than determine current
+ownership.
 
 **Discover owned tasks through server-side reverse indexes.** Losing SQLite also
 loses frozen configuration and original resource associations. Rediscovering an
@@ -87,18 +90,18 @@ unconfirmed-write classification directly.
 
 ## Consequences
 
-State, ownership, timing and version commit together. Release clears task timing;
-transfer preserves the ongoing interval and records a new acquisition time.
-Source authorization cannot be inferred from the target's credentials. Explicit
-manual resume requires continuity before a new owner can continue released work.
+State, ownership, timing and version commit together. Release clears task
+timing; transfer preserves the ongoing interval and records a new acquisition
+time. Source authorization cannot be inferred from the target's credentials.
+Explicit manual resume requires continuity before a new owner can continue
+released work.
 
 The service validates identities and confirmations, not remote process death or
 Git/native-history contents. Fencing does not revoke external credentials.
 Callers must preserve original resources while the same claim remains valid.
-Latest-record GET
-can establish current ownership but is not a historical operation receipt after
-later writers replace that record. Uncertain writes remain visible and are not
-automatically replayed.
+Latest-record GET can establish current ownership but is not a historical
+operation receipt after later writers replace that record. Uncertain writes
+remain visible and are not automatically replayed.
 
 Runtime stopping, SQLite recovery, native sessions, management commands and
 cross-platform delivery still require their own implementation and source-bound
