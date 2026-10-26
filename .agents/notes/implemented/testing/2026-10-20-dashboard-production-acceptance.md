@@ -186,8 +186,11 @@ profiles fail recovery. A separate recovery result preserves the original
 acceptance outcome and does not convert failed measurements into success.
 Recovery accepts only top-level schema 2 evidence and validates stage command
 identities/groups. It visits browser phases in reverse order: native capacity,
-container, native functional. The CI outer recovery step and both artifact
-uploads are tied to every attempted unified acceptance invocation.
+container, native functional. Browser CI outer recovery and its acceptance
+artifact upload are tied to every attempted core invocation. The
+[quality isolation decision](2026-10-26-web-quality-job-isolation.md) moves raw
+coverage artifacts to the independent quality attempt without changing browser
+recovery ownership.
 
 The pinned Dagre optimization is validated separately from browser timing.
 Exact differential checks in both ESM and CJS compare complete geometry with the

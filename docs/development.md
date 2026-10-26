@@ -441,33 +441,39 @@ Selected jobs keep their complete checks, coverage thresholds, acceptance suites
 timeouts and cleanup requirements. The Go job still builds real web assets and
 exercises the installed CLI; the web job still builds and exercises the Go
 service and production deployment. Selecting one module does not split these
-existing integration suites. The Ubuntu shell-completion and Web jobs select the
+existing integration suites. The same Web selector enables quality and browser
+jobs; both are required by the final gate. The Ubuntu shell-completion and Web
+browser jobs select the
 official HTTPS Ubuntu archive and security services before package preparation.
 Their shared command changes only the runner's referenced mirror list; signed
 source stanzas and package indices remain intact. An unexpected source layout
 fails explicitly. The [mirror decision](../.agents/notes/implemented/testing/2026-10-22-ubuntu-package-mirrors.md)
 records the provisioning failure and the retained acceptance limits.
-Native CLI jobs typecheck and build once before
-running ordinary and installed tests against the same output. After deployment
-fixture checks, the web job uses one acceptance pipeline. Test preparation,
-native UI/Go/PostgreSQL preparation and the normal dev-ci source build start
-concurrently. Test preparation runs the Web Node harness, awaits its lazy
-`waitForPreparations()` gate, then runs the complete Vitest/V8 suite and strict
-statement checker. The gate waits for native preparation and the validated
-container prepared record, racing container exit; it does not wait for full
-container acceptance or grant browser permission. Only callers that request the
-gate add this dependency, so default local acceptance retains its schedule.
-The two quality commands each retain a 180-second deadline. Pinned Chromium and
-Linux dependency installation starts only after both commands pass and retains
-its 600-second deadline. The container permission wait remains 900 seconds and
-the web job 20 minutes; a nonzero exit or timeout fails acceptance.
-The [coverage admission decision](../.agents/notes/implemented/testing/2026-10-26-web-coverage-resource-admission.md)
-records the explicit resource condition without claiming a measured contention
-cause or a universal runtime improvement.
-Only the Vitest/coverage subprocess uses two workers through its copied child
-environment, retaining its `forks` pool and file isolation. Native functional checks
-and their browser cleanup precede the container browser checks; full container cleanup
-and all preparation/check commands finish before the native capacity phase.
+Native CLI jobs typecheck and build once before running ordinary and installed
+tests against the same output. Web quality and browser acceptance run in parallel
+jobs, `verify-web-quality` and `verify-web`, each with a 20-minute bound. The final
+`checks` job requires both and every other selected module; shared workflow
+changes retain all-module selection.
+
+The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness
+and the complete Vitest/V8 suite with its strict statement checker serially,
+each with a 180-second deadline. Only the coverage subprocess uses two workers
+through its copied environment, retaining the `forks` pool and file isolation.
+The `browser` mode installs pinned Chromium and Linux dependencies under the
+existing 600-second bound, then invokes ordinary core acceptance after the job's
+deployment fixture checks. The wrapper checks that each command's owned process
+group stopped after settlement, preserving both command and cleanup failures.
+
+The core has no quality/browser preparation callbacks or readiness-admission
+observer. Local acceptance uses its existing installed browser. Native and
+container preparation still overlap; native functional checks and browser cleanup
+precede the container browser permission release. The permission wait remains
+900 seconds. Core preparation, functional phases, full container cleanup and
+browser recovery finish before native capacity. Independent quality checks run
+on their own runner and do not add empty core phases or split browser scenarios.
+The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
+records the responsibility and budget boundaries without claiming a measured
+CPU/I/O cause or guaranteed hosted speedup.
 Both Go-consuming jobs restore module and compiler caches keyed by the server
 `go.sum`, while the server check expires test results before database/race/
 coverage validation. The web pipeline retains the full production build and

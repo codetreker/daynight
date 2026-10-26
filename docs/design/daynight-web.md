@@ -704,51 +704,53 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 
 ### CI 构建归属
 
-`verify-web` 和 `verify-server` 被选中时，都使用固定 Node/pnpm，在干净 checkout
-从锁文件安装依赖并构建真实 UI。Go 检查调用共享构建后继续负责 build/vet/race/go-cov；
-web job 在统一验收前执行 dev-ci 生命周期 fixture，随后仅调用 `scripts/ci.mts`。
-workflow 先选择官方 Ubuntu package archives，再启动统一验收；该镜像源变更由
-[PR #148](https://github.com/codetreker/daynight/pull/148) 交付。
-入口把固定 Chromium 的 `install --with-deps chromium` 与测试准备 callback 交给共享 runner。
-runner 同时启动测试 callback、原生 UI/Go/PostgreSQL 准备、容器 callback 与正常 dev-ci
-源码构建/启动。CI 先执行包内 `test:harness`，与准备过程保持重叠，再调用惰性的
-`waitForPreparations()`，等原生准备完成及 `containerPrepared()` 验证现有原子
-`container/ready.json` 后，才启动完整 `test:coverage`。runner 的
-`waitForContainerPreparation()` 校验 run/source 及已登记、仍存活的 callback，记录
-`container-preparation` 阶段，并与容器退出竞争；只在调用方请求时观察准备状态，不增加
-producer 协议。
-默认本地 acceptance 不请求此 gate，保持既有调度。准备完成只准入覆盖率，不授予容器
-浏览器执行权；不能等待容器完整结束，否则会与原生功能后的浏览器许可形成依赖环。
+同一个 Web 模块选择结果并行启用 `verify-web-quality` 与 `verify-web`，两个 job 各保留
+20 分钟上限，最终 `checks` 同时依赖二者及其他已选择模块。共享 workflow 变更仍按原有
+规则选择全部模块，不改变路径分类、合并结果验证或未选择 job 的 `skipped` 语义。
 
-两个质量命令分别限时 180 秒，harness 和等待准备的耗时不占用 Vitest 命令的预算，
-全部 Node harness、Vitest 文件和严格覆盖率检查仍必需。仅 `test:coverage` 子进程设置
-`VITEST_MAX_WORKERS=2`，保留 `forks` pool 和文件隔离。两段命令通过后才启动浏览器
-安装，避免 apt 与 Chromium 下载争用 5 秒 UI 测试时限；安装含 Linux 依赖限时 600 秒。
-失败和取消唤醒准入等待并排空所有已启动阶段。容器执行许可等待保持 900 秒，web job
-总上限保持 20 分钟。官方包源下载时间仍会波动，命令超时继续使验收失败。dev-ci 仍拥有
-本次唯一镜像及运行镜像身份校验和完整 shell 清理。
-[覆盖率资源准入决策](../../.agents/notes/implemented/testing/2026-10-26-web-coverage-resource-admission.md)
-拥有这一准备条件及证据边界；调度明确不等于已测得 CPU/I/O 原因或保证 hosted 运行更快。
+质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行完整 `test:harness` 和
+`test:coverage`，每个命令分别限时 180 秒。后者保留全部 Vitest/V8 文件与严格语句覆盖率
+检查；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=2`，`forks` pool 和文件隔离不变。
+仅测试文件逐项通过不足以证明 V8 报告和严格 checker 完成。质量 job 归档原始覆盖率及
+完整源码清单摘要。
 
-原生功能阶段只等待原生服务和浏览器就绪；其二十九个场景及浏览器回收成功后，runner
-原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器执行许可。
-容器 callback 已登记身份后等待该许可，通过后才记录浏览器 inventory 并执行
-二十九个功能场景。完整 dev-ci 退出清理、容器浏览器回收和全部准备/覆盖率命令结束
-后，才在仍存活的原生 Go/PostgreSQL 上执行五个容量/超限场景。任一失败取消并
-等待已启动的所有任务；原生进程意外退出同样取消其他任务。容量阶段保持单浏览器
-worker，并与构建、单元测试、功能测试及容器清理隔离。
+浏览器 job 和 `verify-server` 继续使用固定 Node/pnpm，在干净 checkout 从锁文件安装
+依赖并构建真实 UI。Go gate 仍负责 build/vet/race/go-cov。浏览器 job 运行原有 dev-ci
+生命周期 fixture；workflow 选择官方 Ubuntu package archives，随后通过 `scripts/ci.mts`
+的 `browser` 模式安装固定 Chromium 及 Linux 依赖，保留 600 秒命令上限，再调用普通
+core acceptance。镜像源选择由 [PR #148](https://github.com/codetreker/daynight/pull/148)
+拥有；命令或 job 超时仍使检查失败。
 
-两个 job 复用以 server `go.sum` 为依赖身份的 Go 模块/编译缓存；Go gate 仍先
-失效测试结果缓存。workflow 的恢复和两组产物归档都绑定同一个统一验收步骤。
+CI 命令包装保留进程组所有权：命令结束后由 `requireGroupStopped` 确认其所属进程组已停止，
+不能仅凭 leader 退出认定清理完成。命令错误、取消和清理错误均传播，同时失败时保留
+完整原因。core 不再拥有质量/浏览器准备 callback、空成功阶段或覆盖率准入观察器。
+本地 acceptance 继续使用已安装浏览器，不因 CI 拆分增加质量命令或准备等待。
+
+core 并行准备原生 UI/Go/PostgreSQL 和正常 dev-ci 源码构建/启动。dev-ci 继续拥有本次
+唯一镜像、运行镜像身份校验与完整 shell 清理。原生功能阶段及其浏览器回收通过后，
+runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器执行许可。
+容器 callback 登记身份后等待并验证该许可，保留 900 秒等待上限，再记录浏览器 inventory
+并执行原有全部功能场景。`ready.json` 保留准备时间的诊断用途，不授予浏览器执行权。
+
+原生准备、功能阶段、完整 dev-ci 退出清理与容器浏览器回收结束后，才在仍存活的原生
+Go/PostgreSQL 上执行全部容量/超限场景。任一 core 失败取消并排空所有已启动任务；
+原生进程意外退出同样取消其他任务。容量保留单浏览器 worker、零 retries、固定输入、
+几何与时间门槛，并与本 runner 的构建、功能检查和清理隔离。质量命令位于另一个 runner，
+不分片浏览器场景，也不为容量增加跨 job 准入协议。
+
+两个 Go-consuming job 继续复用以 server `go.sum` 为依赖身份的 Go 模块/编译缓存；
+Go gate 仍先失效测试结果缓存。浏览器 job 的恢复与产物归档绑定同一个实际验收步骤。
 [流水线决策](../../.agents/notes/implemented/testing/2026-10-21-web-acceptance-pipeline.md)
-拥有调度、替代方案和阶段证据取舍。完整 Web run 只准备一次已安装 CLI，在原生与
-容器的附件功能场景中复用。生产浏览器与恢复结束后，Ubuntu web job 再执行一次
-既有 `deployment/dev-ci/tests/attachments.mts`，将其附件卷和配套备份恢复回执归档到
-同一部署证据产物；容量测试继续与构建、功能检查及清理隔离。
-PR 按[仓库 CI 路由](../../README.md#ci-selection)选择模块，main push 执行全量检查。
-最终 `checks` 汇总路由、Go、web、CLI 原生矩阵和独立 Linux shell completion job 的
-结果，只接受 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job
-为 `skipped`。
+拥有 core 的阶段、目标和恢复；
+[质量 job 隔离决策](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
+拥有两类 job 的职责、命令边界和替代方案。拆分不证明先前超时的 CPU/I/O 原因，也不保证
+hosted 运行更快；实际结果绑定被测源码、工作量和 runner。
+
+完整 core run 只准备一次已安装 CLI，在原生与容器附件功能场景中复用。生产浏览器与
+恢复结束后，Ubuntu 浏览器 job 继续执行既有 `deployment/dev-ci/tests/attachments.mts`，
+将附件卷和配套备份恢复回执归档到同一部署证据产物。质量与浏览器产物分别保留其身份和
+既有留存期限。最终 `checks` 只接受所有前置 job 的 `success` 或 `skipped`；失败、取消
+及其他结果使汇总失败。PR 路由和 main push 全量规则由[仓库 CI 路由](../../README.md#ci-selection)拥有。
 
 ## 执行耗时与提醒
 
@@ -958,7 +960,8 @@ Markdown 复用渲染器，分别使用任务根与文档目录；其他附件�
 `scripts/acceptance/runner.mts` 拥有新建运行的源码身份、构建、原生 PostgreSQL/
 服务进程、Playwright、dev-ci 调用与恢复；模块导入不注册信号或启动工作。
 `packages/daynight-web/scripts/acceptance.mts` 是解析命令及显式传入取消控制器的
-CLI，`scripts/ci.mts` 调用同一 runner 并提供浏览器/覆盖率准备 callback。
+CLI。`scripts/ci.mts` 的 browser 模式完成浏览器安装后调用同一普通 runner，quality
+模式独立执行完整质量命令；core 没有准备 hook 或空质量阶段。
 `pipeline.mts` 只表达本验收的固定阶段依赖，`permission.mts` 拥有绑定运行和源码的
 原子许可；没有新增部署环境接口或旧二进制交接路径。`tests/e2e/` 拥有功能流程、
 API 数据和固定图集。

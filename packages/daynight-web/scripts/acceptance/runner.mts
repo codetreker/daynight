@@ -1,10 +1,9 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, rename, rm, rmdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { setTimeout as delay } from 'node:timers/promises';
 import { command, type CommandOptions } from './process.mts';
 import { aggregateScenarios, readReport, type Scenario } from './report.mts';
 import { validatePerformance } from './performance.mts';
@@ -39,73 +38,8 @@ const json = async (path: string, value: unknown): Promise<void> => {
   await rename(`${path}.next`, path);
 };
 const readJson = async (path: string): Promise<unknown> => JSON.parse(await readFile(path, 'utf8'));
-const optionalJson = async (path: string): Promise<unknown | undefined> => {
-  try { return await readJson(path); }
-  catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
-    throw error;
-  }
-};
 export type AcceptanceCommand = (file: string, args: readonly string[], options?: Omit<CommandOptions, 'cwd'> & { cwd?: string }) => Promise<string>;
 export type AcceptanceOptions = { allowApfsImage?: boolean };
-export type AcceptancePreparations = {
-  browser: (run: AcceptanceCommand) => Promise<void>;
-  coverage: (run: AcceptanceCommand, waitForPreparations: () => Promise<void>) => Promise<void>;
-};
-
-const validIdentity = (value: unknown): ProcessIdentity => {
-  if (value === null || typeof value !== 'object') throw new Error('Missing recorded process identity.');
-  const identity = value as ProcessIdentity;
-  if (identity.platform !== process.platform || !['linux', 'darwin'].includes(identity.platform) || !Number.isSafeInteger(identity.pid) || identity.pid <= 1 || typeof identity.executable !== 'string'
-    || !identity.executable.startsWith('/') || typeof identity.startTicks !== 'string' || !/^\d+$/.test(identity.startTicks)
-    || !Number.isSafeInteger(identity.group) || identity.group <= 0) {
-    throw new Error('Invalid recorded process identity.');
-  }
-  return identity;
-};
-
-export const waitForContainerPreparation = async (directory: string, options: {
-  acceptanceRunId: string; sourceGitSha: string; devCiRunId(): string | undefined; signal: AbortSignal;
-}): Promise<void> => {
-  if (!isAbsolute(directory) || basename(directory) !== 'container' || basename(dirname(directory)) !== options.acceptanceRunId
-    || !/^\d{14}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(options.acceptanceRunId)
-    || !/^[a-f0-9]{40}$/.test(options.sourceGitSha)) {
-    throw new Error('Invalid container preparation ownership.');
-  }
-  try {
-    // The owned container command's deadline cancels this waiter; readiness does not grant browser permission.
-    for (;;) {
-      options.signal.throwIfAborted();
-      const devCiRunId = options.devCiRunId();
-      if (devCiRunId !== undefined) {
-        if (!/^\d{14}-[1-9]\d*-\d{5}$/.test(devCiRunId)) throw new Error('Invalid announced dev-ci preparation run.');
-        const value = await optionalJson(join(directory, 'ready.json'));
-        options.signal.throwIfAborted();
-        if (value !== undefined) {
-          if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid container preparation receipt.');
-          const ready = value as Record<string, unknown>;
-          const keys = ['acceptanceRunId', 'devCiRunId', 'sourceGitSha', 'callback', 'readyAt'];
-          if (Object.keys(ready).length !== keys.length || !keys.every((key) => Object.hasOwn(ready, key))
-            || typeof ready.readyAt !== 'string' || !Number.isFinite(Date.parse(ready.readyAt))) throw new Error('Invalid container preparation receipt.');
-          if (ready.acceptanceRunId !== options.acceptanceRunId || ready.devCiRunId !== devCiRunId || ready.sourceGitSha !== options.sourceGitSha) {
-            throw new Error('Container preparation belongs to a different run or source.');
-          }
-          const callback = validIdentity(ready.callback);
-          const recorded = validIdentity(await readJson(join(directory, 'callback.json')));
-          if (!sameProcess(callback, recorded) || !sameProcess(callback, await processIdentity(callback.pid))) {
-            throw new Error('Container preparation callback differs from its recorded live process.');
-          }
-          options.signal.throwIfAborted();
-          return;
-        }
-      }
-      await delay(25, undefined, { signal: options.signal });
-    }
-  } catch (error) {
-    options.signal.throwIfAborted();
-    throw error;
-  }
-};
 
 type InstalledPreparation = { receipt: InstalledCliReceipt; receiptPath: string; cleanup(): Promise<void> };
 type InstalledFactoryOptions = { signal: AbortSignal; temporaryRoot: string; rootDirectory: string; onSpawn(child: ChildProcess): Promise<void> };
@@ -569,6 +503,17 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     }
   };
 
+  const validIdentity = (value: unknown): ProcessIdentity => {
+    if (value === null || typeof value !== 'object') throw new Error('Missing recorded process identity.');
+    const identity = value as ProcessIdentity;
+    if (identity.platform !== process.platform || !['linux', 'darwin'].includes(identity.platform) || !Number.isSafeInteger(identity.pid) || identity.pid <= 1 || typeof identity.executable !== 'string'
+      || !identity.executable.startsWith('/') || typeof identity.startTicks !== 'string' || !/^\d+$/.test(identity.startTicks)
+      || !Number.isSafeInteger(identity.group) || identity.group <= 0) {
+      throw new Error('Invalid recorded process identity.');
+    }
+    return identity;
+  };
+
   const recoverProcess = async (owned: { processPid?: number; processIdentity?: ProcessIdentity; binary: string; binarySha256?: string }): Promise<{ result: string; forced?: boolean }> => {
     if (owned.processIdentity === undefined) {
       if (owned.processPid !== undefined && await processIdentity(owned.processPid) !== null) throw new Error('Owned process lacks enough identity evidence for recovery.');
@@ -596,6 +541,14 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     }
     if (sameProcess(identity, await processIdentity(identity.pid))) throw new Error('Verified owned process remains after bounded recovery.');
     return forced ? { result: 'stopped', forced } : { result: 'stopped' };
+  };
+
+  const optionalJson = async (path: string): Promise<unknown | undefined> => {
+    try { return await readJson(path); }
+    catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return undefined;
+      throw error;
+    }
   };
 
   const recoverBrowserDirectory = async (directory: string, sourceGitSha: string): Promise<void> => {
@@ -726,7 +679,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     console.log(`Web acceptance recovery ${evidence.runId}: passed.`);
   };
 
-  const main = async (preparations?: AcceptancePreparations): Promise<void> => {
+  const main = async (): Promise<void> => {
     const compose = await readFile(join(repositoryRoot, 'deployment/dev-ci/compose.yaml'), 'utf8');
     const images = [...compose.matchAll(/^\s+image:\s+(postgres:18\.6-bookworm@sha256:[a-f0-9]{64})\s*$/gm)];
     if (images.length !== 1) throw new Error('Dev-ci must declare exactly one pinned PostgreSQL 18.6 image.');
@@ -828,12 +781,6 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     await save();
     try {
       await runPipeline(cancellation, {
-        browser: () => stage('browser-preparation', async (ownedRun) => { if (preparations !== undefined) await preparations.browser(ownedRun); }),
-        coverage: (waitForPreparations) => stage('coverage', async (ownedRun) => { if (preparations !== undefined) await preparations.coverage(ownedRun, waitForPreparations); }),
-        containerPrepared: () => stage('container-preparation', async () => {
-          await waitForContainerPreparation(containerDirectory, { acceptanceRunId: runId, sourceGitSha: evidence.source.gitSha,
-            devCiRunId: () => devCiRunId, signal: cancellation.signal });
-        }),
         nativePreparation: () => stage('native-preparation', async (ownedRun, register) => {
           console.log(`Web acceptance ${runId}: building production assets and native Go executable.`);
           await ownedRun('pnpm', ['build'], { timeoutMs: 180_000 });
@@ -1052,7 +999,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
   return { main, containerCallback, recover };
 };
 
-export const runAcceptance = async (cancellation: AbortController, preparations?: AcceptancePreparations, options?: AcceptanceOptions): Promise<void> =>
-  createRunner(cancellation, options).main(preparations);
+export const runAcceptance = async (cancellation: AbortController, options?: AcceptanceOptions): Promise<void> =>
+  createRunner(cancellation, options).main();
 export const runContainerCallback = async (cancellation: AbortController): Promise<void> => createRunner(cancellation).containerCallback();
 export const recoverAcceptance = async (cancellation: AbortController, runId?: string): Promise<void> => createRunner(cancellation).recover(runId);

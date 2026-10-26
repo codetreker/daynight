@@ -1236,55 +1236,56 @@ under this package's `.tmp/` and are removed after classification. Typechecking
 remains a separate mandatory check; classification is not a substitute for it.
 
 PR CI selects affected modules using the [repository routing rules](../../README.md#ci-selection);
-main pushes run the full suite. The final `checks` job accepts only `success` or
-`skipped` from every preceding job; failures, cancellations and other results fail
-the gate. Deliberately unselected jobs report `skipped`. When selected,
-`verify-web` retains its complete workload, including real embedded Go
-builds and production-browser acceptance. The CI entry
-`node packages/daynight-web/scripts/ci.mts` uses the same acceptance runner as
-`pnpm web:acceptance`. CI supplies pinned Chromium installation, including Linux
-dependencies, and the canonical `test:harness` / `test:coverage` commands through
-its coverage callback. The harness overlaps native and dev-ci preparation. Before
-starting Vitest/V8, CI invokes the callback's lazy `waitForPreparations()` gate:
-native preparation must finish and `containerPrepared()` must validate the existing
-atomic `container/ready.json` against run/source/process ownership. The wait races
-container exit; it never waits for the entire container browser lifecycle.
-Readiness admits coverage, not browser execution. Callbacks that do not invoke
-the gate retain their prior schedule, including default local acceptance.
-Both test commands must finish successfully before browser installation starts,
-so apt and Chromium downloads do not compete with the 5-second UI-test deadline. The CI
-workflow selects official Ubuntu package archives before this step, as delivered
-in [PR #148](https://github.com/codetreker/daynight/pull/148). The Node harness and
-Vitest/strict-checker commands each have a separate 180-second deadline and run
-serially inside test preparation. Separate bounds keep harness duration from
-consuming the Vitest/coverage phase's budget; they do not omit files or checks.
-Only the `test:coverage` child receives `VITEST_MAX_WORKERS=2`, retaining its `forks`
-pool and per-file isolation. Browser installation, including Linux dependencies
-and Chromium, has a 600-second command deadline. A failure or timeout in any of
-these commands fails acceptance. Native preparation and one normal dev-ci source
-build/start still begin concurrently. The dev-ci runner remains the owner of the
-built/running image identity and full cleanup; the container browser retains its
-900-second permission wait and the job retains its 20-minute overall bound.
-Admission failure or cancellation wakes waiting stages and drains all started
-work. The [coverage admission decision](../../.agents/notes/implemented/testing/2026-10-26-web-coverage-resource-admission.md)
-owns the resource condition and its evidence limits.
+main pushes run the full suite. The Web result enables two parallel jobs,
+`verify-web-quality` and `verify-web`, each bounded at 20 minutes. The final
+`checks` job depends on both, alongside all other selected jobs, and accepts only
+`success` or deliberately unselected `skipped` results. Failures, cancellations
+and other results fail the gate. Shared workflow changes retain the existing
+all-module selection rule.
+
+`node packages/daynight-web/scripts/ci.mts quality` runs `test:harness` and the complete
+`test:coverage` command serially. Each retains a separate 180-second deadline,
+so harness duration cannot consume the coverage command's budget. Only the
+Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=2`, retaining
+its `forks` pool, per-file isolation, full product manifest and strict statement
+gate. No file or assertion is omitted.
+
+`node packages/daynight-web/scripts/ci.mts browser` installs pinned Chromium and
+Linux dependencies under the
+existing 600-second bound, then calls the same ordinary core acceptance runner
+as `pnpm web:acceptance`. This job retains real embedded Go builds, the complete
+native/container/capacity journey, dev-ci lifecycle fixtures, persistence checks
+and recovery. Browser installation precedes core preparation; the core has no
+quality/browser preparation hooks, empty success phases or readiness gate. Local
+acceptance keeps its preinstalled-browser behavior.
+
+The CI command wrapper requires its owned process group to stop after settlement,
+not merely its leader to exit. Command, cancellation and cleanup failures remain
+failures, including combined errors. The container browser keeps its 900-second
+permission wait and source/run-bound release. The normal dev-ci runner continues
+to own the built/running image identity and full stack cleanup. The
+[quality isolation decision](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
+owns the responsibility split and evidence limits. The browser job selects the
+official Ubuntu archives before installation, as delivered in
+[PR #148](https://github.com/codetreker/daynight/pull/148).
 
 Native functional checks start after the native process and browser are ready.
 Their browser cleanup must pass before an atomic, run/source-bound permission
 releases the container's twenty-nine functional checks. Capacity runs last, after all
-preparation and coverage commands, container checks, full dev-ci cleanup and
-container browser recovery have finished. Every browser phase retains one
-worker and zero retries. CI runs controlled deployment fixtures before the
-unified pipeline, and keys outer recovery and both artifact uploads to that
-pipeline's attempted execution. After the pipeline and recorded recovery, the
-Ubuntu web job runs `node deployment/dev-ci/tests/attachments.mts` once for real
+its preparation commands, container checks, full dev-ci cleanup and container
+browser recovery have finished. Every browser phase retains one
+worker and zero retries. Browser CI runs controlled deployment fixtures before
+core acceptance and keys outer recovery and its acceptance artifact upload to
+that attempt. The quality artifact upload follows the quality command attempt.
+After core acceptance and recorded recovery, the Ubuntu browser job runs `node deployment/dev-ci/tests/attachments.mts` once for real
 volume/recreation/isolation and paired-backup proof. Its
 `.tmp/attachment-deployment-*/` receipts join the existing deployment artifact.
 Go module/compiler caches remain reusable.
 The [pipeline decision](../../.agents/notes/implemented/testing/2026-10-21-web-acceptance-pipeline.md)
-records the scheduling and ownership constraints. The web job uploads
-`coverage-final.json` and `summary.json`, which records exact counts and the relative product-source
-manifest. Coverage and acceptance artifacts are retained for 30 days. The
+records the scheduling and ownership constraints. The quality job uploads
+`coverage-final.json` and `summary.json`, which records exact counts and the relative
+product-source manifest; the browser job uploads acceptance and deployment
+evidence. Both artifact families are retained for 30 days. The
 [deployment decision](../../.agents/notes/implemented/architecture/2026-10-20-embedded-dashboard-deployment.md)
 records embedded HTTP/container smoke checks and concurrent dev-ci isolation;
 the [production acceptance decision](../../.agents/notes/implemented/testing/2026-10-20-dashboard-production-acceptance.md)
