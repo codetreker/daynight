@@ -40,13 +40,16 @@ action. That action focuses the persistent
 checkbox before the empty-state button disappears.
 
 ChainList receives visible representatives alongside the complete immutable
-GraphIndex and opens a graph only after a row action. The
-[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces the original
-inline default selection and persisted expansion. Its temporary original task
-witness resolves the current component; changed representatives do not overwrite
-a valid witness. A missing, standalone or hidden witness closes the dialog.
-First visits, reloads and returns leave it closed. The independent filters and
-page positions retain the [browsing preference ownership](2026-10-21-task-browsing-preferences.md).
+GraphIndex. Its representative row now discloses a compact list under the
+[Goal-list decision](2026-10-26-goal-task-lists.md); the sibling
+dependency-graph control alone opens the graph. The [graph-dialog
+decision](2026-10-26-task-chain-graph-dialog.md) replaces the original inline
+default selection and persisted expansion. Its temporary original task witness
+resolves the current component; changed representatives do not overwrite a
+valid witness. A missing, standalone or hidden witness closes the dialog. First
+visits, reloads and returns leave it closed. The independent filters and page
+positions retain the [browsing preference
+ownership](2026-10-21-task-browsing-preferences.md).
 
 Graph projection, progress and API order retain the responsibilities in the
 [projection decision](2026-10-20-task-graph-projection.md). Every displayed graph
@@ -58,12 +61,13 @@ open when its graph disappears but the task still exists; closing restores a
 surviving trigger or a control in the active task view. The task view decision
 owns active-category fallback when a trigger is no longer visible.
 
-Representative buttons use a 62px minimum height, compact padding and 7px list
-gaps. Single-line bordered rows are about 64px; long titles grow naturally.
-Titles retain 13px desktop and 12px narrow-screen text, with metadata and status
-at 11px/10px. The progress area narrows with the viewport. Native row actions,
-focus outlines and complete status/progress remain present. Task-node and canvas
-geometry keep their existing dimensions.
+The original density adjustment established compact representative buttons, 7px
+list gaps and naturally growing long titles. Goal headers retain those list
+gaps and 13px desktop / 12px narrow-screen titles while separating disclosure
+from the graph action. The progress area narrows with the viewport, and the
+graph control can wrap on narrow screens. Compact child rows show individual
+task status. Native actions, focus outlines and complete aggregate progress
+remain present. Task-node and canvas geometry keep their existing dimensions.
 
 ## Alternatives
 

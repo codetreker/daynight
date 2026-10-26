@@ -94,7 +94,7 @@ const mount = async () => {
 };
 const openGraph = async () => {
   if (document.querySelector('.task-chain-dialog') !== null) return;
-  fireEvent.click(await screen.findByRole('button', { name: /^Task 1/ }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Task 1, View dependencies' }));
 };
 const closeGraph = () => { fireEvent.click(screen.getByRole('button', { name: 'Close dependency graph' })); };
 const detailDialog = () => document.querySelector<HTMLElement>('.task-detail-dialog')!;

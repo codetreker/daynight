@@ -48,12 +48,14 @@ const expectUnfinishedCounts = (chains: number, standalone: number) => {
 };
 const row = (id: string) => document.getElementById(`standalone-task-${id}`)!;
 const chainRow = (id = canonicalTask(1)) => document.getElementById(`task-root-${id}`)!;
+const chainGraphButton = (id = canonicalTask(1)) => document.getElementById(`task-chain-graph-${id}`)!;
 const findChainRow = async (id = canonicalTask(1)) => {
   await waitFor(() => expect(chainRow(id)).toBeVisible());
   return chainRow(id);
 };
 const openChain = async (id = canonicalTask(1)) => {
-  fireEvent.click(await findChainRow(id));
+  await findChainRow(id);
+  fireEvent.click(chainGraphButton(id));
   return screen.findByTestId('graph-node');
 };
 const closeChain = () => fireEvent.click(document.querySelector<HTMLButtonElement>('.task-chain-close')!);
@@ -104,6 +106,34 @@ const openStandalone = async (id: string) => {
 };
 
 describe('project task views', () => {
+  it('opens child and Goal details from the expanded list and preserves disclosure and focus on return', async () => {
+    mount();
+    const goal = await findChainRow();
+    fireEvent.click(goal);
+    expect(goal).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByTestId('graph-node')).toBeNull();
+    const child = document.getElementById(`chain-task-${canonicalTask(1)}-${canonicalTask(2)}`)!;
+    child.focus();
+    fireEvent.click(child);
+    let dialog = screen.getByRole('dialog');
+    await within(dialog).findByRole('heading', { name: `任务 ${canonicalTask(2)}` });
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => expect(child).toHaveFocus());
+    expect(goal).toHaveAttribute('aria-expanded', 'true');
+    const goalDetails = document.querySelector<HTMLButtonElement>('.goal-detail-link')!;
+    goalDetails.focus();
+    fireEvent.click(goalDetails);
+    dialog = screen.getByRole('dialog');
+    await within(dialog).findByRole('heading', { name: `任务 ${canonicalTask(1)}` });
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => expect(goalDetails).toHaveFocus());
+    expect(goal).toHaveAttribute('aria-expanded', 'true');
+    expect(goal.querySelector('.root-status')).toHaveTextContent('进行中');
+    fireEvent.click(tab('standalone'));
+    fireEvent.click(tab('chains'));
+    expect(chainRow()).toHaveAttribute('aria-expanded', 'false');
+  });
+
   it('shows waiting tasks in unfinished counts, chain summaries, statistics and standalone rows', async () => {
     graphRequest.mockResolvedValue(snapshot([
       seed('00000000-0000-4000-8000-000000000001', 'todo'), seed('00000000-0000-4000-8000-000000000002', 'todo', ['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000003']), seed('00000000-0000-4000-8000-000000000003'), seed('00000000-0000-4000-8000-000000000004', 'todo'),
@@ -327,7 +357,7 @@ describe('project task views', () => {
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     await waitFor(() => expect(tab('standalone')).toHaveFocus());
     fireEvent.click(tab('chains'));
-    expect(chainRow(canonicalTask(3))).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(chainGraphButton(canonicalTask(3))).toHaveAttribute('aria-haspopup', 'dialog');
     expect(screen.queryByTestId('graph-node')).toBeNull();
   });
 

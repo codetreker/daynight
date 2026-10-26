@@ -43,7 +43,7 @@ const graph: TaskGraphData = { observedAt: "2026-10-20T12:00:00Z",
 };
 const index = buildGraphIndex(graph);
 const noop = () => {};
-const nodeButton = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}，(?!详情$)`) });
+const nodeButton = (name: string) => screen.getByRole('button', { name: new RegExp(`^${name}，(?:已完成|待处理|进行中)`) });
 const detailsButton = (name: string) => screen.getByRole('button', { name: `${name}，详情` });
 const nodeShell = (name: string) => nodeButton(name).closest<HTMLElement>('.task-node')!;
 const viewport = (container: HTMLElement) => container.querySelector<HTMLElement>('.react-flow__viewport')!;
@@ -1091,40 +1091,48 @@ describe('task chain dialog entries', () => {
     expect(view.container.querySelectorAll('.root-toggle')[2]).toBe(originalRoots[2]);
   });
 
-  it('opens one graph from a static chain row and closes it without changing list identity', async () => {
+  it('opens one graph through its explicit action while preserving the task disclosure and list identity', async () => {
     const Wrapper = () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
       return <ChainList showCompleted={true} onShowCompletedChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)} onOpenTask={noop} />;
     };
     const { container } = render(<Wrapper />);
     const roots = container.querySelectorAll<HTMLButtonElement>('.root-toggle');
+    const graphButtons = container.querySelectorAll<HTMLButtonElement>('.goal-graph-button');
     expect(roots).toHaveLength(4);
     expect(roots[0]!.id).toBe('task-root-A');
     expect(roots[0]!.textContent).toContain('1/3 已完成');
     expect(roots[0]!.querySelector('.root-status')).toHaveTextContent('进行中');
     for (const root of roots) {
-      expect(root).toHaveAttribute('aria-haspopup', 'dialog');
-      expect(root).not.toHaveAttribute('aria-expanded');
+      expect(root).not.toHaveAttribute('aria-haspopup');
+      expect(root).toHaveAttribute('aria-expanded', 'false');
     }
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(container.querySelector('.task-graph-canvas')).toBeNull();
     fireEvent.click(roots[0]!);
+    expect(roots[0]!).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(container.querySelector('#chain-task-A-C')).toBeVisible();
+    fireEvent.click(graphButtons[0]!);
     await ready(container);
     expect(nodeShell('基础 API')).toHaveClass('task-node-done');
-    expect(roots[0]!).toHaveAttribute('aria-controls', 'task-graph-A');
+    expect(graphButtons[0]!).toHaveAttribute('aria-controls', 'task-graph-A');
     const firstCanvas = container.querySelector('.task-graph-canvas');
     fireEvent.click(container.querySelector('.task-chain-close')!);
     expect(container.querySelector('.task-graph-canvas')).toBeNull();
-    expect(roots[0]!).toHaveFocus();
-    fireEvent.click(roots[1]!);
+    expect(graphButtons[0]!).toHaveFocus();
+    expect(roots[0]!).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(graphButtons[1]!);
     expect((performance.getEntriesByName('daynight:task-layout') as PerformanceMeasure[]).map((entry) => entry.detail)).toEqual([{ rootId: 'B' }]);
-    expect(roots[0]!).not.toHaveAttribute('aria-controls');
-    expect(roots[1]!).toHaveAttribute('aria-controls', 'task-graph-B');
+    expect(graphButtons[0]!).not.toHaveAttribute('aria-controls');
+    expect(graphButtons[1]!).toHaveAttribute('aria-controls', 'task-graph-B');
+    expect(roots[1]!).toHaveAttribute('aria-expanded', 'false');
     expect(firstCanvas?.isConnected).toBe(false);
     expect(container.querySelectorAll('.task-graph-canvas')).toHaveLength(1);
     fireEvent.keyDown(container.querySelector('.task-chain-close')!, { key: 'Escape' });
     expect(container.querySelectorAll('.task-graph-canvas')).toHaveLength(0);
-    expect(roots[1]!).toHaveFocus();
+    expect(graphButtons[1]!).toHaveFocus();
+    expect(roots[0]!).toHaveAttribute('aria-expanded', 'true');
     expect([...container.querySelectorAll('.root-toggle')]).toEqual([...roots]);
   });
 

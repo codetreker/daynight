@@ -67,7 +67,8 @@ it('resets membership visibility and inspection while retaining fullscreen and a
     .mockResolvedValue({ ...detached, projectId, title: detached.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: 2n });
   const view = render(<ProjectPage projectId={projectId} />, { container: root });
   await selectTaskList();
-  fireEvent.click(await screen.findByRole('button', { name: /^Root/ }));
+  await screen.findByRole('button', { name: /Root.*查看依赖关系/ });
+  fireEvent.click(document.getElementById(`task-chain-graph-${A}`)!);
   await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(4));
   fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const fullscreen = view.container.querySelector<HTMLElement>('.task-chain-dialog-fullscreen')!;
@@ -112,5 +113,5 @@ it('resets membership visibility and inspection while retaining fullscreen and a
   fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
   expect(view.container.querySelector('.task-chain-dialog')).toBeNull();
   expect(document.body.style.overflow).toBe('scroll');
-  expect(document.getElementById(`task-root-${A}`)).toHaveFocus();
+  expect(document.getElementById(`task-chain-graph-${A}`)).toHaveFocus();
 });
