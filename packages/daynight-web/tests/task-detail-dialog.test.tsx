@@ -87,6 +87,51 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('copies the complete title independently of the ID and reports a localized failure with retry', async () => {
+    const reviewed = detail(1, { title: `${'完整标题 & <文本> 🧩 '.repeat(30)}\n结尾` });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));
+    const writeText = vi.fn().mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError')).mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const view = await open(props({ snapshot: snapshot([reviewed]) }), 'en');
+    const copy = await screen.findByRole('button', { name: 'Copy task title' });
+    expect(copy.closest('.task-detail-title-row')).toContainElement(screen.getByRole('heading', { level: 2 }));
+    expect(copy).toHaveAttribute('title', 'Copy task title');
+    fireEvent.click(copy);
+    expect(await screen.findByText('Could not copy the task title. Select and copy it manually.')).toBeVisible();
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(reviewed.title);
+    expect(screen.getByRole('heading', { level: 2 })).toHaveAttribute('title', reviewed.title);
+    view.setLocale('zh-CN');
+    expect(screen.getByText('无法复制任务标题，请选中并手动复制。')).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '复制任务标题' }));
+    expect(await screen.findByText('已复制')).toBeVisible();
+    expect(writeText).toHaveBeenLastCalledWith(reviewed.title);
+    fireEvent.click(screen.getByRole('button', { name: '复制任务 ID' }));
+    await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(reviewed.id));
+  });
+
+  it('hides title copy during loading and discards a pending result after task navigation', async () => {
+    const read = deferred<Response>();
+    const copied = deferred<void>();
+    const fetch = vi.fn().mockReturnValueOnce(read.promise).mockResolvedValue(response(detail(2)));
+    vi.stubGlobal('fetch', fetch);
+    const writeText = vi.fn().mockReturnValue(copied.promise);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const options = props();
+    const view = await open(options);
+    expect(screen.queryByRole('button', { name: '复制任务标题' })).toBeNull();
+    read.resolve(response(detail()));
+    const copy = await screen.findByRole('button', { name: '复制任务标题' });
+    fireEvent.click(copy);
+    fireEvent.click(copy);
+    expect(copy).toBeDisabled();
+    expect(writeText).toHaveBeenCalledExactlyOnceWith('任务 1');
+    await view.rerender(<TaskDetailDialog {...options} taskId={id(2)} snapshot={snapshot([detail(2)], 2)} />);
+    await screen.findByRole('heading', { name: '任务 2' });
+    await act(async () => copied.resolve());
+    expect(screen.queryByText('已复制')).toBeNull();
+    expect(screen.getByRole('button', { name: '复制任务标题' })).toBeEnabled();
+  });
+
   it('resizes the same reading workspace, preserves drafts and offsets, and dismisses one layer per Escape', async () => {
     const fetch = vi.fn().mockResolvedValue(response(detail()));
     vi.stubGlobal('fetch', fetch);
@@ -355,6 +400,8 @@ describe('task detail dialog', () => {
     await user.tab();
     expect(screen.getByRole('heading', { name: '任务 1' })).toHaveFocus();
     await user.tab();
+    expect(screen.getByRole('button', { name: '复制任务标题' })).toHaveFocus();
+    await user.tab();
     expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
     await user.tab();
     expect(screen.getByRole('button', { name: '更多任务操作' })).toHaveFocus();
@@ -364,6 +411,8 @@ describe('task detail dialog', () => {
     expect(screen.getByRole('button', { name: '更多任务操作' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('button', { name: '进入全屏' })).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(screen.getByRole('button', { name: '复制任务标题' })).toHaveFocus();
     await user.tab({ shift: true });
     expect(screen.getByRole('heading', { name: '任务 1' })).toHaveFocus();
     await user.tab({ shift: true });

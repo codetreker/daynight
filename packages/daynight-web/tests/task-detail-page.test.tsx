@@ -56,6 +56,19 @@ const moveHistory = async (direction: 'back' | 'forward') => {
 };
 
 describe('standalone full task details', () => {
+  it('copies the title from the shared header while reading an attachment', async () => {
+    const { first } = installed();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    window.history.replaceState(null, '', address('attachments', 'docs/guide.md'));
+    render(<App />);
+    await screen.findByText('方案正文');
+    fireEvent.click(screen.getByRole('button', { name: '复制任务标题' }));
+    expect(await screen.findByText('已复制')).toBeVisible();
+    expect(writeText).toHaveBeenCalledExactlyOnceWith(first.title);
+    expect(location.pathname + location.search).toBe(address('attachments', 'docs/guide.md'));
+  });
+
   it('focuses the same page without history changes or refetch and keeps ordinary Escape native', async () => {
     const { fetcher } = installed();
     window.history.replaceState(null, '', address('attachments', 'docs/guide.md'));

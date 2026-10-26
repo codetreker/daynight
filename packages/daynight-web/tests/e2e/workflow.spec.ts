@@ -1572,6 +1572,7 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(close).toBeFocused();
   await expect(page.locator('#root')).toHaveAttribute('inert', '');
   const taskTitle = dialog.locator('.task-detail-title');
+  const copyTaskTitle = dialog.getByRole('button', { name: '复制任务标题', exact: true });
   const statusAction = dialog.getByRole('button', { name: '待处理', exact: true });
   const moreActions = dialog.getByRole('button', { name: '更多任务操作', exact: true });
   const deleteTaskAction = dialog.getByRole('menuitem', { name: '删除任务', exact: true });
@@ -1606,6 +1607,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Shift+Tab');
   await expect(detailFullscreen).toBeFocused();
   await page.keyboard.press('Shift+Tab');
+  await expect(copyTaskTitle).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
   await expect(taskTitle).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(copyTaskId).toBeFocused();
@@ -1615,6 +1618,8 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(copyTaskId).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(taskTitle).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(copyTaskTitle).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(detailFullscreen).toBeFocused();
   await page.keyboard.press('Tab');

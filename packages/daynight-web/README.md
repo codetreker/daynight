@@ -488,8 +488,8 @@ navigation and language changes; the public introduction also updates descriptio
 and share copy. The top bar and graph-dialog header
 expose selectors in both dialog modes using the same saved language. Task details consume the current
 application locale through the same Provider; their header contains the task
-title, fullscreen toggle, More task actions menu and close control. The status
-menu sits beside platform selection in the state row below the title. The `…` menu sits immediately left of Close and contains Open in new tab
+title with an adjacent copy icon, fullscreen toggle, More task actions menu and
+close control. The status menu sits beside platform selection in the state row below the title. The `…` menu sits immediately left of Close and contains Open in new tab
 and Delete task; the standalone page retains only Delete task in that menu.
 
 `LocaleProvider` requires an explicit initial locale result. `useI18n()` reads
@@ -643,8 +643,9 @@ counts: total, todo, inProgress, done, ready and blocked. They satisfy
 All-done chains are done; any done or in-progress member makes an unfinished
 chain in progress; other chains are todo. External context does not affect progress.
 
-The actual task title is the common dialog header and accessible name; ID/copy
-belongs to Overview. The three-item status menu begins the shared state row, immediately before the
+The actual task title is the common dialog header and accessible name, with a
+copy icon immediately to its right. The ID and its copy control belong to Overview.
+The three-item status menu begins the shared state row, immediately before the
 platform selector, with readiness after both and automatic execution at the right.
 Status and platform controls share a compact 24px height; the left group can wrap
 on narrow screens. The menu remains available on both tabs, marks the current
@@ -978,13 +979,16 @@ scenario. This entry and `/tests/mockups/attachments.html` share
 
 Task details opened from the project list or graph start on Overview, which
 retains descriptions, PR associations, relationships and metadata. Standalone
-addresses initialize the tab and attachment selection from their navigation state. The complete task ID appears only in
-its metadata row, beside a localized Copy button. This writes the exact ID with
-`navigator.clipboard.writeText` and exposes success or a recoverable failure; the
-ID remains selectable when browser clipboard access fails. Copy feedback belongs
-to the displayed task, uses timed bubbles and is cleared when that identity
-changes. The separate
-Attachments tab places the path-addressed file tree, refresh and upload on the
+addresses initialize the tab and attachment selection from their navigation state.
+The complete task ID appears only in its metadata row, beside the same overlapping
+squares copy icon used immediately after the loaded title. Both buttons retain
+localized accessible names, hover titles and native keyboard activation. The shared
+`TaskCopyButton` writes the exact complete title or ID with
+`navigator.clipboard.writeText`, disables its button while pending and exposes
+success or a recoverable failure through timed bubbles. The original text remains
+selectable after a failure. The title button is scoped to project/task and title
+value, and the ID button to its complete ID; unmount invalidates late results.
+The separate Attachments tab places the path-addressed file tree, refresh and upload on the
 left and the selected file's preview on the right. A vertical divider separates independently
 scrollable panes; narrow layouts retain this left/right placement. The
 [split-view decision](../../.agents/notes/implemented/architecture/2026-10-22-task-attachment-split-view.md)
