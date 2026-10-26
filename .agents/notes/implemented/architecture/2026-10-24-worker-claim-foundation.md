@@ -36,10 +36,13 @@ credentials. There is no historical claim registry or additional generation
 counter. Released/completed records retain the last execution information.
 
 The typed in-process API client owns HTTP operations and response parsing.
-Recovery reads known task IDs persisted in SQLite or explicitly imported for
-transfer. Candidate pagination retains cursors so unavailable released resources
-do not conceal later eligible work. No user/worker reverse inventory, storage
-projections, indexes or claim table are required for recovery.
+The foundation originally used known task IDs persisted locally or explicitly
+imported for transfer. The [current-claim inventory decision](2026-10-26-worker-claim-inventory.md)
+partially supersedes that discovery choice: the project task list now selects
+the authenticated user/worker active claims. Known-task reads still reconcile
+explicit writes, while complete workerId-only project traversals supply the
+current ownership set. Candidate pagination remains separate from inventory;
+no projection or claim table is introduced.
 
 The [worker responsibility decision](2026-10-22-worker-design.md) remains the
 owner of scheduling, resource management and agent delivery boundaries. This

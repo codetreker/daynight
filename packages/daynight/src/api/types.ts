@@ -150,7 +150,13 @@ export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
   readonly previousClaimId: string;
   readonly continuityConfirmed: true;
 };
-export type TaskFilters = { readonly status?: TaskStatus; readonly ready?: boolean; readonly allowAgents?: boolean; readonly compatiblePlatform?: TaskPlatform };
+export type TaskFilters = {
+  readonly status?: TaskStatus;
+  readonly ready?: boolean;
+  readonly allowAgents?: boolean;
+  readonly compatiblePlatform?: TaskPlatform;
+  readonly workerId?: string;
+};
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };
 export type ReadyTaskFilters = Pick<TaskFilters, "allowAgents" | "compatiblePlatform">;
 export type ErrorDetails = {

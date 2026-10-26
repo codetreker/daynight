@@ -190,7 +190,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 }
 
 func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
-	values, err := queryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform")
+	values, err := queryValues(request, "limit", "cursor", "status", "ready", "allowAgents", "compatiblePlatform", "workerId")
 	if err != nil {
 		return service.TaskListRequest{}, err
 	}
@@ -220,6 +220,9 @@ func taskListRequest(request *http.Request) (service.TaskListRequest, error) {
 	if value, exists := values["compatiblePlatform"]; exists {
 		platform := core.TaskPlatform(value[0])
 		result.CompatiblePlatform = &platform
+	}
+	if value, exists := values["workerId"]; exists {
+		result.WorkerID = &value[0]
 	}
 	return result, nil
 }

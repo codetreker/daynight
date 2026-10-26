@@ -689,9 +689,12 @@ remain significant. Readiness changes do not advance dependent task revisions.
 Expected refusals are returned only after the lock-only transaction succeeds;
 transaction/cleanup failures preserve operational errors. Reads use an RR snapshot.
 Task cursors bind project and optional status/ready/allowAgents/compatiblePlatform
-filters, retaining absent/false and absent/each-enum distinctions. Compatibility
-includes unrestricted and exact-platform tasks; all filters run in SQL before
-ordering, limit and lookahead, so a bounded page cannot hide later compatible work.
+filters, retaining absent/false and absent/each-enum distinctions. Optional UUID
+workerId also binds the implicit authenticated user ID and matches only that
+user/worker active claim. Ordinary eligibility filters remain SQL predicates;
+worker ownership is matched through the existing decoded TEXT properties before
+collecting the final limit+1 matching rows. No bounded output page hides later
+matches, and opaque PR strings are not converted through PostgreSQL JSON types.
 
 ## Complete task graph
 
@@ -809,13 +812,17 @@ UTC creation/update timestamps, explicit nullable execution timestamps
 project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 
-Lists support `limit`, `cursor`, `status`, `ready`, `allowAgents` and
-`compatiblePlatform`, once each.
+Lists support `limit`, `cursor`, `status`, `ready`, `allowAgents`,
+`compatiblePlatform` and UUID `workerId`, once each.
 Both boolean filters accept literal `true` or `false`; compatibility accepts
 `windows`, `linux` or `macos` and includes null requirements and exact matches.
-Filters combine with AND before ordering, pagination and lookahead and remain bound to the
-cursor's canonical project scope. HTTP input uses the same strict JSON and
-query rules as project operations.
+Explicit filters combine with AND before final pagination and lookahead and stay
+bound to the cursor's canonical project scope. workerId includes only current
+active claims for the authenticated user and that worker; it adds no implicit
+status, readiness, permission or platform eligibility condition. Only a workerId-only
+query aggregated successfully across all relevant projects/pages supplies a complete
+ownership inventory. Partial pages, additional filters and failed traversals cannot
+authorize cleanup by absence. HTTP input retains strict query validation.
 
 Lifecycle POST bodies require only the positive int64 expected version, as a
 JSON number. Missing, null, fractional, nonpositive and out-of-range versions fail.

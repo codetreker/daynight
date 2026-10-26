@@ -152,6 +152,92 @@ describe("in-process worker task API", () => {
     expect(urls[1]!.searchParams.get("cursor")).toBe("next+/=");
   });
 
+  it("reads every worker inventory page without adding candidate eligibility filters", async () => {
+    const canonicalWorkerId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const first = { ...task({ ...claim(), workerId: canonicalWorkerId }), allowAgents: false, requiredPlatform: "windows" } as const;
+    const second = { ...first, id: newClaimId, properties: { ...first.properties, pullRequests: [{ url: "opaque\0url", title: "\ud800" }] } };
+    const urls: URL[] = [];
+    const origin = await listen((request, response) => {
+      const url = new URL(request.url!, "http://localhost");
+      urls.push(url);
+      respond(response, url.searchParams.has("cursor") ? { items: [second], nextCursor: null } : { items: [first], nextCursor: "inventory cursor+/=" });
+    });
+
+    await expect(api(origin).listTasks(projectId, { workerId: canonicalWorkerId.toUpperCase() })).resolves.toEqual([first, second]);
+    expect(urls.map((url) => Object.fromEntries(url.searchParams))).toEqual([
+      { workerId: canonicalWorkerId, limit: "100" },
+      { workerId: canonicalWorkerId, limit: "100", cursor: "inventory cursor+/=" },
+    ]);
+  });
+
+  it("keeps a bounded worker page explicit and combines only caller-supplied filters", async () => {
+    const value = { ...task(claim()), allowAgents: false, requiredPlatform: "windows" } as const;
+    const urls: URL[] = [];
+    const origin = await listen((request, response) => {
+      urls.push(new URL(request.url!, "http://localhost"));
+      respond(response, { items: [value], nextCursor: "partial inventory" });
+    });
+
+    await expect(api(origin).listTaskPage(projectId, { workerId, status: "in_progress", ready: false, allowAgents: false, compatiblePlatform: "windows", limit: 1 })).resolves.toEqual({ items: [value], nextCursor: "partial inventory" });
+    expect(urls.map((url) => Object.fromEntries(url.searchParams))).toEqual([
+      { status: "in_progress", ready: "false", allowAgents: "false", compatiblePlatform: "windows", workerId, limit: "1" },
+    ]);
+  });
+
+  it.each([
+    { name: "no claim", value: task(null) },
+    { name: "released claim", value: task(claim("released")) },
+    { name: "completed claim", value: task(claim("completed")) },
+    { name: "another worker", value: task({ ...claim(), workerId: newClaimId }) },
+    { name: "malformed worker ID", value: { ...task(claim()), properties: { pullRequests: [], worker: { ...claim(), workerId: "not-a-worker-id" } } } },
+  ])("rejects a worker-filtered response containing $name", async ({ value }) => {
+    let count = 0;
+    const origin = await listen((_request, response) => {
+      count++;
+      respond(response, { items: [value], nextCursor: null });
+    });
+    const client = api(origin);
+
+    await expect(client.listTasks(projectId, { workerId })).rejects.toMatchObject({ operation: "task.list", phase: "protocol", projectId, outcomeUnconfirmed: false });
+    await expect(client.listTaskPage(projectId, { workerId, limit: 1 })).rejects.toMatchObject({ operation: "task.list-page", phase: "protocol", projectId, outcomeUnconfirmed: false });
+    expect(count).toBe(2);
+  });
+
+  it.each(["cursor loop", "duplicate task", "later failure", "later wrong worker"])("rejects an inventory %s without returning earlier pages", async (failure) => {
+    const first = task(claim());
+    const second = { ...first, id: newClaimId };
+    const urls: URL[] = [];
+    const origin = await listen((request, response) => {
+      const url = new URL(request.url!, "http://localhost");
+      urls.push(url);
+      if (!url.searchParams.has("cursor")) {
+        respond(response, { items: [first], nextCursor: "inventory-next" });
+        return;
+      }
+      if (failure === "later failure") {
+        respond(response, { error: { code: "internal_error", message: "Inventory unavailable.", requestId: "inventory-failure" } }, 500);
+        return;
+      }
+      const value = failure === "duplicate task" ? first : failure === "later wrong worker" ? { ...second, properties: { ...second.properties, worker: { ...claim(), workerId: newClaimId } } } : second;
+      respond(response, { items: [value], nextCursor: failure === "cursor loop" ? "inventory-next" : null });
+    });
+
+    await expect(api(origin).listTasks(projectId, { workerId })).rejects.toMatchObject({ operation: "task.list", projectId, outcomeUnconfirmed: false });
+    expect(urls).toHaveLength(2);
+    expect(urls.every((url) => url.searchParams.get("workerId") === workerId)).toBe(true);
+  });
+
+  it.each(["", "invalid", "44444444444444444444444444444444", ` ${workerId}`, null, false, 1, {}, []])("rejects invalid worker inventory filter %s before dispatch", (invalidWorkerId) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+
+    expect(() => client.listTasks(projectId, { workerId: invalidWorkerId } as never)).toThrow("Worker ID filter must be a hyphenated UUID.");
+    expect(() => client.listTaskPage(projectId, { workerId: invalidWorkerId, limit: 1 } as never)).toThrow("Worker ID filter must be a hyphenated UUID.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("rejects a candidate page that violates its filters or requested bound", async () => {
     const origin = await listen((_request, response) => respond(response, { items: [task(claim())], nextCursor: null }));
     await expect(api(origin).listTaskPage(projectId, { limit: 1, ready: true })).rejects.toMatchObject({ phase: "protocol" });

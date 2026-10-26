@@ -90,7 +90,11 @@ Worker 直接调用 CLI 进程内 typed ApiClient。claimWorkerTask、updateWork
 
 listTaskPage 保留 nextCursor，供运行时有界推进候选；许可、ready 和实际平台在服务端排序和分页前组合。active 记录对应 in_progress，天然不属于 ready todo。遇到缺少原成果的 released 候选时，执行方须继续后续游标，不能据此把仓库判为空。
 
-认领前把 server origin、projectId、taskId、新 claimId 及 pending action 持久化。恢复和未知结果使用 SQLite 原记录或显式导入记录中的已知 taskId，直接 getTask 核对 claim、用户、worker 与工作区绑定。它不依赖按 userId/workerId 反查。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方读取核对，不能自动重发。
+`GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定游标；不附加 status/ready/allowAgents/compatiblePlatform 才是该项目完整归属查询。服务端在既有 TEXT 解码后筛选，匹配先于最终分页，不新增 claim 表或投影。
+
+Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 workerId；listTasks 成功读到末页才返回完整数组，后页失败、重复身份或游标循环抛出错误，不返回部分成功。listTaskPage 仍是显式分页接口；响应不匹配 active/workerId 时拒绝协议，不本地丢项。调用者汇总全部项目后按原 claimId 是否在清单对账，不读取 task 状态分类缺席原因。
+
+显式管理的精确版本及未知写入结果仍按具体 taskId 读取核对。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
 
 每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建/更新输入仅暴露可写的 PR 属性。
 

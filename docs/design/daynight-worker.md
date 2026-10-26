@@ -155,9 +155,11 @@ claiming → preparing → executing → verifying → completing → cleaning �
 
 等待原因、暂停与恢复时间是当前 phase 的字段，不创建第二套 task 生命周期。claiming 结果不确定也暂占名额；preparing 到 completing、等待及暂停占名额；远端完成确认后 cleaning 不占交付名额，清理只需单独重试。降低并发不抢占已有执行。
 
-启动顺序为锁/SQLite → 核对已有执行 → 专用 Herdr → 调度。已有执行取自 SQLite 的原记录或显式移交导入记录，按已保存的 server origin、projectId、taskId 逐个读取任务详情，核对 claim、归属与工作区绑定。新任务调度查询满足许可、ready、平台且没有有效 claim 的候选，再由服务端事务原子认领；并发失败方不启动执行资源。
+启动顺序为锁/SQLite → 完整自有 claim 清单对账 → 专用 Herdr 实际资源核对 → 调度。当前用户/worker 的清单通过 task list workerId 条件逐项目读完分页，不附加候选资格筛选；原 claimId 不在成功完整清单就触发同一清理，不 GET 单 task 解释状态原因。同 task 新 claim 不能保护旧执行，清单失败或部分页不能用于删除。新任务仍按资格和仓库顺序原子认领，并发失败方不启动资源。
 
-恢复及未知认领结果核对使用已持久化的 taskId，不要求按 userId/workerId 反查已认领任务，也不为此新增服务端投影列、索引或 claim 表。认领请求发出前先保存 taskId、claimId 与 pending_action；SQLite 或原执行资料缺失时报告恢复问题，保留现状交由人工处理。每次轮询、claim、更新和核验直接调用进程内 ApiClient，使用新的有界 REST Operation，挂到统一取消信号；不能把整个常驻命令套进现有五分钟总期限。
+归属查询的 workerId 与隐式认证 userId 绑定 cursor 范围，store 在既有 TEXT codec 解码后、最终 limit/lookahead 前匹配，无需投影列或 claim 表。Typed ApiClient listTasks 成功穷尽所有页后才返回，失败不返回部分集合；listTaskPage 是显式部分页。新领取在本轮清单对账之后登记，避免旧清单清理新 claim。
+
+同一执行的恢复仍需要原 worktree、会话及冻结配置，清单只恢复身份；缺原资料时暂停。显式管理写入的版本和未知结果可读具体 taskId，不作为自动清理分类。每次请求直接调用进程内 ApiClient、独立有界并参与取消，常驻命令不套普通五分钟总期限。
 
 稳定分支和目录由 task 身份决定，不由 attempt 决定。创建前持久化预期路径/worktreeId，Git 所有权标记关联它；恢复核对实际 Git common directory、分支及持有标记，禁止套用 review 的 reset/clean。删除前必须确认执行已停、归属正确且交付完成。
 

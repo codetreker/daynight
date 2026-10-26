@@ -318,11 +318,24 @@ export const createApiClient = (options: {
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
-    return { ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }) };
+    let workerId: string | undefined;
+    if (filters.workerId !== undefined) {
+      if (typeof filters.workerId !== "string") throw new Error("Worker ID filter must be a hyphenated UUID.");
+      const parsed = canonicalId(filters.workerId);
+      if (parsed === null) throw new Error("Worker ID filter must be a hyphenated UUID.");
+      workerId = parsed;
+    }
+    return { ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(workerId === undefined ? {} : { workerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters): Task => {
     const task = parseTask(value, project);
-    if ((filters.status !== undefined && task.status !== filters.status) || (filters.ready !== undefined && task.ready !== filters.ready) || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents) || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)) throw new ProtocolError("Task does not match the requested filters.");
+    if (
+      (filters.status !== undefined && task.status !== filters.status)
+      || (filters.ready !== undefined && task.ready !== filters.ready)
+      || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents)
+      || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)
+      || (filters.workerId !== undefined && (task.properties.worker === null || task.properties.worker.state !== "active" || task.properties.worker.workerId !== canonicalId(filters.workerId)))
+    ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
   };
   const writableProperties = (properties: WritableTaskProperties | undefined): void => {
