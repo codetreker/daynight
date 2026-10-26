@@ -490,6 +490,17 @@ def scenarios():
             (f"task {action} status has no candidate", f"daynight task {action} task-id done --sta"),
             (f"task {action} terminal help stops completion", f"daynight task {action} --help --pro"),
         ])
+    claim_id = "aaaaaaaa-1111-4222-8333-123456789abc"
+    cases.extend([
+        ("task explicit claim option", "daynight task set-status task-id done --claim-\t", ["task", "set-status", "task-id", "done", "--claim-id"]),
+        ("task separate claim before version", f"daynight task set-status task-id done --claim-id {claim_id} --if-ver\t", ["task", "set-status", "task-id", "done", "--claim-id", claim_id, "--if-version"]),
+        ("task inline claim before version", f"daynight task set-status task-id done --claim-id={claim_id} --if-ver\t", ["task", "set-status", "task-id", "done", f"--claim-id={claim_id}", "--if-version"]),
+    ])
+    unchanged.extend([
+        ("task claim has no file fallback", "daynight task set-status task-id done --claim-id nor"),
+        ("task inline claim has no file fallback", "daynight task set-status task-id done --claim-id=nor"),
+        ("task used claim option is hidden", f"daynight task set-status task-id done --claim-id {claim_id} --claim-"),
+    ])
     lifecycle_commands = ("task set-status",)
     lifecycle_choices = set()
     lifecycle_rejections = {

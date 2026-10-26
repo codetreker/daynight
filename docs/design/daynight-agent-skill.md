@@ -236,6 +236,8 @@ run-task 的输入是明确 ID。它刷新正文、必需引用、任务证据�
 创建和执行授权规则；扩大当前任务范围须用户明确确认。Goal 级讨论或整体验收的当前
 任务可以覆盖其已确认的整个 Goal 范围。
 
+显式 controller 上下文走 run-task 的 worker-managed 路径：核对 project/task/claim、in_progress/active、实际 worktree/branch 和冻结配置后复用原执行，不再认领/开始或选候选。字段缺失或不匹配保持等待，不降级普通路径。系统 worktree/branch 及后续任务选择由 controller 拥有；agent 只按已有授权完成当前任务并最终携显式 claimId 与观察版本 done。普通人验、PR 和未确认写入规则仍适用，未知结果只核对原 claim、不回退。
+
 澄清和设计使用 stage brief，未来阶段输出不充当输入。ready todo 在已有明确执行
 范围、前置与阶段资料齐备后，以观察版本 set-status in_progress 开始。已有 in_progress
 核对工作和检查点后恢复；done 的重开须属于明确工作范围并受依赖保护。状态不提供
@@ -246,7 +248,7 @@ Goal 讨论以用户确认与阶段验收为完成条件。没有用户确认时
 用户明确纳入讨论验收的 PR 交付，必须等所有必要 PR 平台确认合并并验收后，保留属性
 与证据，用观察版本 set-status done。CI、review 和交付等待继续属于当前任务；subagents
 协作同一任务。Goal 的明确用户转场由共享协议开始下一指定讨论，不启动 autopilot；
-其他 run-task 完成后返回，不自行选择后继。
+其他 run-task 完成后返回，不自行选择后继。worker-managed 指派还禁止外层 autopilot 或 Goal 转场选择后继，只把本任务完成/等待交还 controller。
 
 autopilot 只在用户明确要求后运行。当前任务由已有检查点关联并刷新，`in_progress`
 清单只是恢复线索，不是所有权。无当前任务时读取有界 `task ready --allow-agents true --json`，按问题、范围、方案、验收和依赖选择与已授权目标最相关的一个许可开启且属于授权范围的 ready todo，再调用 run-task。补充候选 list 同样携带 true 筛选，在服务端排序与分页前应用。

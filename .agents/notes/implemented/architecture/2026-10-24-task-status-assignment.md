@@ -30,7 +30,10 @@ preserves historical timing rather than invoking that runtime reset.
 
 The task workflow has no approval stage. Existing user execution scope,
 independent automatic selection permission and PR delivery rules remain; no field
-recreates the approval barrier. Future worker ownership stays separate from status.
+recreates the approval barrier. Worker ownership stays separate from ordinary
+status; the [explicit completion decision](2026-10-26-worker-managed-completion.md)
+adds a done-only claim argument that reuses the protected completion API without
+changing normal setter semantics.
 
 The earlier [approval lifecycle](../feature/2026-10-22-task-approval-lifecycle.md)
 and [withdrawal decision](../feature/2026-10-23-task-unapprove.md) retain their

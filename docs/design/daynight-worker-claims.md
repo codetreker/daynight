@@ -86,7 +86,7 @@ Transfer 要求原 owner/admin 和当前目标成员，重新核验自动许可�
 
 ## 进程内客户端、候选和恢复
 
-Worker 直接调用 CLI 进程内 typed ApiClient。claimWorkerTask、updateWorkerClaim、releaseWorkerClaim、transferWorkerClaim、resumeWorkerTask 和 completeWorkerTask 使用各自明确的 200 响应校验；completeWorkerTask 通过现有 PUT status 提交 done 与 claimId。普通 setTaskStatus 保持 version/status 输入。任务操作不调用 daynight 子进程，也不解析命令输出。
+Worker 直接调用 CLI 进程内 typed ApiClient。claimWorkerTask、updateWorkerClaim、releaseWorkerClaim、transferWorkerClaim、resumeWorkerTask 和 completeWorkerTask 使用各自明确的 200 响应校验；completeWorkerTask 通过现有 PUT status 提交 done 与 claimId。普通 setTaskStatus 保持 version/status 输入。公开 CLI 的 task set-status done --claim-id <claim-id> 显式选择 completeWorkerTask，并保留精确 --if-version 和同一结果校验；不从 task/environment 推断 claim，不在失败后回退普通 setter。Worker 自身调用 typed API，不启动 daynight 子进程；原生 agent 可使用这一公开完成入口。
 
 listTaskPage 保留 nextCursor，供运行时有界推进候选；许可、ready 和实际平台在服务端排序和分页前组合。active 记录对应 in_progress，天然不属于 ready todo。遇到缺少原成果的 released 候选时，执行方须继续后续游标，不能据此把仓库判为空。
 

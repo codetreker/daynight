@@ -4,8 +4,59 @@ Execute exactly one specified task ID within the user's authorized scope. Read
 [the handbook](handbook.md) for CLI operations, data semantics, and failures.
 This mode owns execution and completion; it returns without choosing a successor
 or activating autopilot. An explicit user-directed requirements-to-solution
-discussion transition follows the Goal protocol after current-task completion;
-it is not automatic backlog selection.
+discussion transition follows the Goal protocol after current-task completion,
+unless the task has a worker-managed assignment as described below.
+
+## Worker-managed assignment
+
+A worker controller can explicitly assign an already-claimed execution with
+`projectId`, `taskId`, `claimId`, its worktree path and branch, and frozen
+execution configuration. Use this context only when the caller supplied it;
+finding `properties.worker` on a task does not establish an assignment or
+execution authorization. If an invocation is presented as worker-managed but
+context is missing or mismatched, return waiting without task or business writes.
+Do not fall back to ordinary task selection, claiming, or starting.
+
+Read the latest complete task using the supplied project and task IDs. Verify
+its `projectId` and `id`, `status=in_progress`, and
+`properties.worker.state=active` with the supplied `claimId`. Verify the actual
+working directory and Git branch match the supplied worktree, and use the
+supplied frozen execution configuration without replacing it from current
+defaults. If the same claim is already `completed` and the task is `done`,
+report the existing completion and return without reexecuting it. Any other
+state or identity mismatch leaves execution waiting; a changed claim requires
+stopping business writes immediately.
+
+The controller has already claimed and started this task. Do not claim it,
+set it to `in_progress`, select candidates, or rerun automatic candidate
+qualification. Still read all required task and stage inputs below and verify
+current prerequisites. A missing input or unmet prerequisite keeps this
+assignment waiting in `in_progress`; it does not authorize another task.
+Before resuming interrupted work or making task writes, refresh the task and
+check the same active claim. Retain the explicit claim ID through recovery and
+uncertain-write reconciliation; never substitute a claim read from the task.
+
+Use the supplied worktree and branch for authorized edits, commits, pushes, and
+merges. Do not create, switch, or remove the system-managed worktree or branch.
+Avoid merge options such as `gh pr merge --delete-branch` that may switch the
+checkout or delete its branch. The worker owns resource cleanup after execution;
+do not delete its worktree or close its workspace. Follow a cleanup request for
+attributable temporary resources outside the worktree within its stated scope.
+
+The normal task acceptance, evidence, delivery, PR, and human-confirmation gates
+below still apply. When they are satisfied, reread the complete task, verify the
+same active claim, and finish with
+`daynight task set-status <task-id> done --project <project-id> --claim-id <claim-id> --if-version <observed-version>`.
+This is the final task mutation. Confirm `done`, `properties.worker.state=completed`,
+and the original claim ID in the service result. A refused or unconfirmed write
+never falls back to ordinary completion or automatic replay: read the actual
+task and reconcile only the original claim. An unreadable result remains
+unconfirmed; an observed claim change stops further business writes.
+
+Return after this task completes or requires external intervention. Do not
+choose a successor or advance a Goal stage, even when an outer autopilot is
+active; the controller decides subsequent work. Preserve the assignment when
+waiting for a human gate, an unmerged required PR, or unmet acceptance.
 
 ## Establish the task and stage
 
@@ -38,9 +89,10 @@ description's references satisfy the Goal protocol. When a prototype is a requir
 input, view and exercise it with its resources. An unfinished output of the current
 stage is not a missing input.
 
-An explicitly user-selected task may use the manual execution path regardless of
-`allowAgents` or platform compatibility; a fixed queue explicitly selected by the
-user has the same manual path. These conditions gate automatic selection, not
+The following manual and automatic selection rules apply outside a worker-managed
+assignment. An explicitly user-selected task may use the manual execution path
+regardless of `allowAgents` or platform compatibility; a fixed queue explicitly
+selected by the user has the same manual path. These conditions gate automatic selection, not
 explicit assignment. Automated task selection requires true and must not enable
 the flag itself. An automatically selected ID passed here remains automatic
 selection, even though run-task receives a concrete ID. Carry its actual runtime
@@ -72,9 +124,11 @@ the Goal protocol; registration alone does not. Existing execution authorization
 may cover the stated task or fixed Goal queue and its ready successors. Task
 status never expands implementation or delivery authorization.
 
-For ready `todo`, begin only when dependencies are done, required stage inputs are complete
-and the work is authorized. Use `task set-status <task-id> in_progress` with the exact version observed for
-that decision and confirm in_progress before starting. A stale version or
+The following start and ordinary recovery rules apply outside a worker-managed
+assignment. For ready `todo`, begin only when dependencies are done, required
+stage inputs are complete and the work is authorized. Use
+`task set-status <task-id> in_progress` with the exact version observed for that
+decision and confirm in_progress before starting. A stale version or
 changed prerequisite requires rereading and reconsidering, with no automatic
 mutation retry. For `in_progress`, recover existing work and coordinate using the
 project's established mechanisms; the state is not an assignee lock or lease.
@@ -155,9 +209,10 @@ pending and successors blocked.
 For tasks without a development or PR delivery path, use their stated stage
 acceptance. For [final acceptance](../SKILL.md#final-acceptance), also apply the
 shared whole-task or whole-Goal completion rule. In every case, confirm required
-evidence is recorded and readable, then reread the complete in-progress
-task and use `task set-status <task-id> done` with its exact
-observed version. For Goal discussions, use their confirmation gates and verified
+evidence is recorded and readable. For ordinary execution, reread the complete
+in-progress task and use `task set-status <task-id> done` with its exact
+observed version. Worker-managed assignments use the claim-bound final operation
+above. For Goal discussions, use their confirmation gates and verified
 accepted materials; for delivery tasks, use their acceptance and required authorized PR
 merges.
 Only service confirmation establishes the status update; reconcile uncertain
@@ -171,5 +226,6 @@ existing work, and next action in the checkpoint, then return the waiting result
 Unstarted work stays `todo`; active work stays `in_progress`. Do not declare
 completion or select other work to bypass a wait. After completion, return
 without selecting a successor, except for an explicit user-directed discussion
-transition under the Goal protocol. That transition does not activate autopilot
-or authorize delivery. Whole-Goal acceptance follows the Goal protocol.
+transition under the Goal protocol outside a worker-managed assignment. That
+transition does not activate autopilot or authorize delivery. Whole-Goal
+acceptance follows the Goal protocol.

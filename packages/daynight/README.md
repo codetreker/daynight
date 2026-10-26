@@ -113,7 +113,7 @@ daynight task list [--all | --status <status>] [--ready] [--json] [--project <pr
 daynight task ready [--limit <N>] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
 daynight task update <task-id> [options]
-daynight task set-status <task-id> <status> [--if-version <version>] [--project <project-id>]
+daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
 daynight task graph [--json] [--project <project-id>]
 daynight task attachment
@@ -447,7 +447,7 @@ daynight task update <task-id> --allow-agents true --if-version <version>
 daynight task create --title "Check Windows build" --required-platform windows
 daynight task update <task-id> --required-platform macos --if-version <version>
 daynight task update <task-id> --clear-required-platform --if-version <version>
-daynight task set-status <task-id> <status> [--if-version <version>] [--project <project-id>]
+daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task update <task-id> --depends-on <task-a> --depends-on <task-b>
 daynight task update <task-id> --clear-dependencies
 daynight task graph --json
@@ -467,12 +467,18 @@ Creation starts in `todo` with `allowAgents=false` and unrestricted
 `requiredPlatform=null` unless explicitly set. `task set-status <id> <status>`
 sets `todo`, `in_progress` or `done`, including reopening and direct completion.
 Every project member may use ordinary status setting. Active worker completion
-requires the current owner and matching claim ID through the typed completion
-operation; release and continuation of released work use their protected
+requires the current owner and an explicit `--claim-id <claim-id>` with target
+`done`; the CLI uses the existing typed completion operation. The option is
+validated before configuration or network access, is rejected for other targets,
+and is never inferred from a task or environment. Without it, ordinary status
+setting is unchanged. Release and continuation of released work use their protected
 operations. Status does not grant execution or delivery authority. Generic updates cannot write status; old lifecycle commands and routes
 are removed without aliases. `--if-version` uses the exact reviewed int64 value;
 without it, the CLI reads once immediately before submitting. No write retries
-occur. Version is checked before same-state handling: current same-state keeps
+occur. A controller-bounded worker assignment executes its supplied claim in the
+provided worktree, finishes with the explicit claim ID after delivery, and leaves
+system worktree cleanup and next-task selection to its controller. Version is
+checked before same-state handling: current same-state keeps
 version, update time and timing unchanged; actual changes increment once.
 
 Entering in_progress or done requires all direct prerequisites, ordinary and

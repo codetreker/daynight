@@ -161,12 +161,12 @@ startedAt/completedAt 描述当前执行区间，不是不可变尝试历史：
 
 ```bash
 daynight task set-status <task-id> <status> \
-  [--if-version <version>] [--project <project-id>]
+  [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 ```
 
-status 使用既有 positional choices 三值，Bash/Zsh 补全由 schema 派生。沿用 origin 项目发现、dn、lossless int64/BigInt、完整 Task 输出和请求序列化。带 --if-version 直接用审阅版本；省略时立即读后提交，但不能保护更早决策。写入不自动重试。
+status 使用既有 positional choices 三值，Bash/Zsh 补全由 schema 派生。--claim-id 是仅限 done 的显式 UUID：参数阶段规范化并拒绝其他目标，带入时调用 completeWorkerTask 发送 version/status/claimId；不带时继续普通 setTaskStatus。不会从任务读取或环境推断 claim，也不在拒绝后回退普通完成。沿用 origin 项目发现、dn、lossless int64/BigInt、完整 Task 输出和请求序列化。带 --if-version 直接用审阅版本；省略时立即读后提交，但不能保护更早决策。写入不自动重试。
 
-随包 SKILL.md 与五份 reference 整体改为三状态：创建普通任务和 Goal 各阶段均为 todo，登记本身不开始执行；从用户已授权范围内选择 ready todo，并检查实际阶段资料；设置 in_progress 后执行，验收和必要授权交付后设置 done。现有执行范围持续覆盖其就绪后继，不要求逐任务审批或重建另一种批准字段。状态与 ready 不扩大既有范围。
+随包 SKILL.md 与五份 reference 整体改为三状态：创建普通任务和 Goal 各阶段均为 todo，登记本身不开始执行；从用户已授权范围内选择 ready todo，并检查实际阶段资料；设置 in_progress 后执行，验收和必要授权交付后设置 done。现有执行范围持续覆盖其就绪后继，不要求逐任务审批或重建另一种批准字段。状态与 ready 不扩大既有范围。明确 worker-managed 上下文复用已在执行中的 claim 和系统 worktree，agent 完成全部条件后最后显式 claim-bound done；不再次 set-status in_progress，不选择下一任务或清理系统工作区。
 
 allowAgents 仍默认 false，只控制自动发现选择。用户明确安排的任务/确定队列可用手工执行路径，agent 不自行开启许可。PR 审查批准、必要合并权限与任务审批不是同一概念，继续遵守现有交付规则。同状态响应只确认当前事实，不提供新执行权、归属或完成证据。
 

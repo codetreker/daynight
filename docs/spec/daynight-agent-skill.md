@@ -66,7 +66,7 @@ autopilot 本身都不构成创建许可。
 需求讨论或确认需求并要求方案讨论，只启动指定讨论，阶段确认要求保留。
 allowAgents 只约束自动发现选择，明确指定的任务或确定队列可用任一许可值；创建、
 拆分、执行和调度不自行开启许可。明确授权的 handoff 按 AS11 审查后启用。
-状态不扩展实现或交付权限，PR 审查批准及必要平台授权继续独立。
+状态不扩展实现或交付权限，PR 审查批准及必要平台授权继续独立。明确由 controller 提供的 worker-managed 上下文限定 project/task/claim、worktree/branch 和冻结配置；不能仅凭 worker 属性推断指派或权限，具体已认领执行规则由 AS5 拥有。
 
 执行、分析、提问、方案提议和任务讨论均以当前任务已确认的目标、范围、交付物与
 验收条件为边界，subagents 遵守同一边界。上层 Goal、共享架构、兄弟和后续任务可以
@@ -203,6 +203,8 @@ UI Goal 的描述阶段产出最终视觉样式、可纯前端交互的 mock UI�
 
 ## AS5. run-task 的执行与完成
 
+明确 worker-managed 指派先核对提供的 project/task/claim 与最新 in_progress/active 归属、实际 worktree/branch 和冻结配置；缺失或不匹配时等待，不能回退普通认领/开始。已被 controller 开始的执行不重跑候选资格或 set-status in_progress，仍读取全部任务/阶段资料并核对当前前置。复用系统工作区，允许范围内编辑、提交、推送和授权合并，但不创建、切换、删除系统 worktree/branch。
+
 run-task 接收指定 ID，读取正文及其必需引用、当前任务证据位置和真实共享输入，按所属阶段判断
 必需资料；适用原型已经是输入时查看和操作。开始分析、提问或提出方案前，明确当前
 任务已确认的范围和验收条件，执行与讨论共同遵守 AS2 的范围约束。澄清与设计以阶段
@@ -224,14 +226,14 @@ Goal 讨论阶段按用户确认和自身阶段验收完成；确认前保持 in
 授权和正常交付要求。必需结果仍未满足或未验证时，不得报告整个任务或 Goal 已验收。
 
 完成前将用户确认、结果与必要证据写入本任务指定的正文或附件位置；实际 PR 交付保留 merge
-commit 引用。再读取 task，以实际版本 set-status done 并核验服务结果。必要交付 PR 仍打开
+commit 引用。普通执行再读取 task，以实际版本 set-status done 并核验服务结果。worker-managed 执行保留明确给定的 claimId，最终重读核对原 active claim，用 --claim-id 与观察 --if-version 完成；这是最后一次 task mutation。拒绝或未知结果不回退、不重放，只读核对原 claim；同 claim 已完成可报告现有结果，claim 已换停止业务写入。必要交付 PR 仍打开
 或未满足明确的阶段 PR 验收时保持 in_progress，保存等待事项和下一步。no-merge 指令
 继续约束实际交付，不能用讨论 done 冒充仓库交付完成；完成规则不授予合并权限。
 
 run-task 一次处理指定任务。普通 CI、review 或合并等待仍属于当前任务；subagents
 协作同一任务。需要外部介入时保留实际状态并返回。Goal 中用户明确确认需求并要求
 下一讨论时，共享协议可完成当前阶段并开始指定的方案讨论；这不启动 autopilot，也不
-选择任意后继。其他完成后返回调用方。身份来自已有检查点，任意 in_progress 项不
+选择任意后继。worker-managed 指派无论外层是否 autopilot 都只执行当前任务，完成或等待后返回 controller，不进入下一 task/Goal 阶段；controller 管资源清理和后续调度。其他完成后返回调用方。身份来自已有检查点，任意 in_progress 项不
 代表归本会话所有。
 
 ## AS6. autopilot 的串行调度

@@ -4,7 +4,7 @@
 
 ## 目标与当前基础
 
-`daynight worker run` 是一个前台常驻 CLI：通过 REST 领取多仓库中允许 Agent 执行的任务，使用系统管理的稳定 worktree 与专用 Herdr 执行，持久化状态并完成恢复和清理。Agent 负责完整交付循环，worker 负责归属、资源和完成核验。
+`daynight worker run` 是一个前台常驻 CLI：通过 REST 领取多仓库中允许 Agent 执行的任务，使用系统管理的稳定 worktree 与专用 Herdr 执行，持久化状态并完成恢复和清理。Agent 负责完整交付、验收和最终 claim-bound done，worker 负责归属清单对账、资源与恢复。
 
 设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，认领基础由[归属架构](daynight-worker-claims.md)拥有，worker 运行时仍待实现。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
 
@@ -33,8 +33,8 @@ flowchart TB
 | 组件 | 唯一职责 |
 |---|---|
 | 服务端 | 任务自动执行许可/平台、ready、认证权限、原子 claim、归属更新、完成与移交。 |
-| Worker | 轮转与名额、worktree、Herdr 启停、状态观察、恢复、证据核验及清理。 |
-| Agent | 实现、测试、提交、PR、CI/review 修复、合并和任务验收；维护正常 task 资料。 |
+| Worker | 轮转与名额、worktree、Herdr 启停、状态观察、恢复、自有 claim 清单对账及清理。 |
+| Agent | 实现、测试、提交、PR、CI/review 修复、授权合并、任务验收及最终 claim-bound done；维护正常 task 资料。 |
 | Herdr | PTY、agent 启动/输入/状态及原生会话引用。 |
 
 不增加 agent report 命令、结果文件、callback 服务、报告事件流或通用开发流程引擎。Worker 读取 Herdr 最新状态与现有 task PR/验收资料。Review 保留自己的 PR revision、publication 和 coordinator；只在第二个真实调用方需要时提取窄的共享原语。
@@ -179,15 +179,15 @@ claiming → preparing → executing → verifying → completing → cleaning �
 
 API 是本地换行分隔 JSON；Unix 使用 domain socket，Windows 使用 named pipe。启动前校验 API 和 client 两个实际端点的字节长度/平台约束，路径过长要求缩短 stateDirectory，不静默切换目录。
 
-Worker 同一时刻只向一个 task 的同一已就绪 agent 提交一轮输入。超时/断连不证明输入未送达，先观察已有执行和 task 资料；不得盲目重发工作。Herdr idle/done 仅触发核验，blocked 展示人工入口，unknown/不可达先核对并按恢复策略处理。
+Worker 同一时刻只向一个 task 的同一已就绪 agent 提交一轮输入。超时/断连不证明输入未送达，先观察已有执行和 task 资料；不得盲目重发工作。Herdr idle/done 只表示执行观察，blocked 展示人工入口，unknown/不可达先核对并按恢复策略处理。
 
-Prompt 加载随包 `using-daynight` 的阶段和交付规则，传入 task/claim/worktree/session 与冻结配置；worker-managed 上下文明确由 worker 控制领取、最终完成和资源生命周期。Agent 继续维护现有 PR 属性和任务明确指定的验收证据位置，不输出新报告协议。
+Prompt 加载随包 using-daynight，传入明确 project/task/claim、worktree/branch/session 与冻结配置。Worker 控制领取、资源和下一任务选择；agent 验证给定上下文后复用已开始执行，不重认领或重建工作区，完整交付和验收后最后显式 claim-bound done。Agent 维护既有 PR/证据，不输出新报告协议，等待时仍保留原任务。
 
-## 完成核验与人工操作
+## Agent 完成与人工操作
 
-Worker 核验当前 claim、task 与必需引用可读、引用 PR 的仓库/提交/真实合并及必要检查、工作树成果整合和任务指定的验收证据引用。验收语义由 task 及 agent 执行负责；文字声明不是任意自然语言条件的独立证明。明确的人验要求、缺失/冲突证据或当前适配器无法核实的事实保持未完成，在原会话请求人工处理；不增加通用验收表达式/Markdown 解析引擎。
+业务完成由 agent 按任务及仓库规则验证和记录。它满足全部必要交付、人验和授权条件后，最终重读原 task/claim/version，通过公开 CLI 显式 --claim-id 的 done 提交当前执行完成；未满足时在原任务/会话等待，不选下一任务或删除系统工作区。普通手工任务仍沿用原 setter。
 
-原生托管检查复用当前 GitHub/gh 读取能力；不能核实的托管结果不得仅凭 URL 或文字当作已合并。额外托管适配不是领取/归属模型的前提，完成检查接口保持具体结果和错误，遇到缺少适配则等待人工核验。
+Worker 不再核对 PR 合并、解析业务验收或再次 done。它仅按原 claimId 是否还在成功完整自有清单中决定资源收尾；缺席不分类 task 状态，部分/失败清单不用于删除。原生托管验证、完整验收和证据由 agent 负责，不增加报告或验收解释器。
 
 服务端和 typed client 已提供受控 claim 管理；运行时计划提供以下人工命令和资源准备流程：
 
@@ -245,7 +245,7 @@ Agent 的模型入口使用随包 `using-daynight` 与既有 task CLI；Worker �
 
 | 真正比较过的方案 | 选择理由 |
 |---|---|
-| Agent 交付循环，worker 管资源/核验 | 保留任务现有流程，明确单一生命周期所有者。 |
+| Agent 交付/验收并最终 done，worker 管资源/对账 | 保留任务现有流程，明确单一生命周期所有者。 |
 | Worker 编排完整 PR/CI/review 引擎 | 需要重复每个仓库开发流程和非代码任务规则，未采用。 |
 | report CLI/SQLite inbox 或结果文件 | 需要新消息、去重和恢复协议；现有状态与 task 资料足以承载观察，未采用。 |
 | 共用 review coordinator/store | PR revision/发布与长任务的名额和恢复语义不同，采用窄基础原语复用。 |

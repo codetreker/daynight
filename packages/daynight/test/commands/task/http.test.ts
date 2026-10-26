@@ -5,16 +5,18 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../../src/api/index.js";
-import type { Task, TaskGraph } from "../../../src/api/index.js";
+import type { Task, TaskGraph, WorkerClaim } from "../../../src/api/index.js";
 import { runTaskCommand } from "../../../src/commands/task/command.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
 
 const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const taskId = "abcdefab-2222-4222-8333-123456789abc";
 const otherId = "abcdefab-3333-4222-8333-123456789abc";
+const claimId = "abcdefab-4444-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const worker: WorkerClaim = { claimId, state: "active", userId: projectId, workerId: otherId, machine: { id: otherId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId: otherId, phase: "executing", herdr: { session: "w", workspaceId: "task-workspace", paneId: "task-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
 type Request = { readonly method: string; readonly path: string; readonly query: URLSearchParams; readonly body: string };
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
@@ -126,6 +128,61 @@ describe("task commands over HTTP", () => {
   it("reports an unconfirmed status write after dispatch without retrying", async () => {
     const f = await fixture((_request, _response, raw) => { raw.socket.destroy(); });
     await expect(f.run(["set-status", taskId, "done", "--if-version", "1"])).rejects.toMatchObject({ operation: "task.set-status", projectId, taskId, outcomeUnconfirmed: true });
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "9223372036854775807"])("completes an explicit claim once with version %s and retained execution history", async (versionArgument) => {
+    const active = { ...task, status: "in_progress", ready: false, startedAt: time, properties: { worker, pullRequests: [{ url: "opaque\0url", title: "Delivery" }] } } as const;
+    const f = await fixture((request, response) => {
+      if (request.method === "GET") { respond(response, active); return; }
+      const input = parseApiJson(request.body) as { version: bigint; status: string; claimId: string };
+      const version = versionArgument === undefined ? input.version + 1n : input.version;
+      respond(response, { ...active, version, status: "done", completedAt: time, properties: { ...active.properties, worker: { ...worker, state: "completed" } } });
+    });
+
+    await f.run(["set-status", taskId.toUpperCase(), "done", `--claim-id=${claimId.toUpperCase()}`, ...(versionArgument === undefined ? [] : ["--if-version", versionArgument])]);
+
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", ...(versionArgument === undefined ? ["GET"] : []), "PUT"]);
+    expect(f.requests.at(-1)!.path).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}/status`);
+    expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: versionArgument === undefined ? task.version : 9_223_372_036_854_775_807n, status: "done", claimId });
+    expect(f.context.stdout).toHaveBeenCalledOnce();
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("Status: done");
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("opaque\\u0000url");
+  });
+
+  it.each([
+    { code: "claim_conflict", status: 409 },
+    { code: "version_conflict", status: 409 },
+    { code: "forbidden", status: 403 },
+    { code: "dependency_unsatisfied", status: 409 },
+  ])("preserves worker completion refusal $code without fallback or replay", async ({ code, status }) => {
+    const f = await fixture((_request, response) => respond(response, { error: { code, message: "Completion refused.", requestId: "claim-completion-refused" } }, status));
+
+    await expect(f.run(["set-status", taskId, "done", "--claim-id", claimId, "--if-version", "9007199254740993"])).rejects.toMatchObject({ operation: "worker.complete", projectId, taskId, status, code, confirmedRefusal: true, outcomeUnconfirmed: false });
+
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(parseApiJson(f.requests.at(-1)!.body)).toEqual({ version: task.version, status: "done", claimId });
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it.each(["disconnect", "server failure"])("keeps worker completion %s unconfirmed without a retry", async (failure) => {
+    const f = await fixture((_request, response, raw) => {
+      if (failure === "disconnect") raw.socket.destroy();
+      else respond(response, { error: { code: "internal_error", message: "Completion outcome unavailable.", requestId: "claim-completion-unknown" } }, 500);
+    });
+
+    await expect(f.run(["set-status", taskId, "done", "--claim-id", claimId, "--if-version", "1"])).rejects.toMatchObject({ operation: "worker.complete", projectId, taskId, outcomeUnconfirmed: true });
+
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("rejects a completion response for a different claim as an unknown outcome", async () => {
+    const f = await fixture((_request, response) => respond(response, { ...task, version: 2n, status: "done", ready: false, completedAt: time, properties: { worker: { ...worker, claimId: otherId, state: "completed" }, pullRequests: [] } }));
+
+    await expect(f.run(["set-status", taskId, "done", "--claim-id", claimId, "--if-version", "1"])).rejects.toMatchObject({ operation: "worker.complete", phase: "protocol", outcomeUnconfirmed: true });
+
     expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
     expect(f.context.stdout).not.toHaveBeenCalled();
   });

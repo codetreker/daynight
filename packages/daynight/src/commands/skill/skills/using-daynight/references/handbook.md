@@ -80,7 +80,19 @@ individual task reads.
 
 **Task status.** Creation starts in `todo` with no task approval stage and does
 not start execution. `task set-status <task-id> <status> --if-version <version>`
-sets any of `todo`, `in_progress`, or `done`. The service checks the exact version
+sets any of `todo`, `in_progress`, or `done` through ordinary status setting.
+To finish an explicitly supplied active worker claim, use
+`task set-status <task-id> done --claim-id <claim-id> --if-version <version>`.
+The claim ID must be a UUID and is valid only with `done`; the CLI never infers
+it from task data or the environment. This path uses the existing worker
+completion operation: a real completion requires the current owner, active
+claim, in-progress task, and exact version, and retains worker history with
+`state=completed`. Omit `--claim-id` for ordinary status setting; refusal never
+causes fallback between these operations. See
+[run-task](run-task.md#worker-managed-assignment) for managed execution and
+claim-aware reconciliation.
+
+The service checks the exact version
 before a same-status no-op; it preserves all fields for a current-version no-op
 and refuses stale versions. A real change increments the version once. Generic
 metadata updates cannot write status. Status, materials, and readiness grant no
@@ -92,7 +104,7 @@ done; successors are never changed automatically. Entering in_progress starts a
 new execution interval and clears completion; returning to todo clears both
 endpoints. In_progress to done retains the nullable start and records completion.
 Todo to done records only completion, with unknown duration. Same-status and
-metadata updates preserve timing. State changes provide no process ownership,
+metadata updates preserve timing. Ordinary status changes provide no process ownership,
 release, transfer, stop, or lease semantics. The Web confirms every status choice,
 including the current status; cancel and Escape submit no request.
 

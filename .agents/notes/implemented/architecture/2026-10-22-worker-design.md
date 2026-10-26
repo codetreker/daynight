@@ -16,9 +16,11 @@ recovery dependent on unrelated execution behavior.
 The adopted [requirements](../../../../docs/spec/daynight-worker.md) and
 [architecture](../../../../docs/design/daynight-worker.md) define a foreground
 worker with four responsibilities: the service owns eligibility and
-exclusive claims; the worker owns scheduling, resources, recovery and completion
-verification; Herdr owns agent terminals and sessions; the agent owns the task's
-delivery loop. This note records the delivered design decision. The worker
+exclusive claims; the worker owns scheduling, resources and recovery; Herdr owns
+agent terminals and sessions; the agent owns task delivery, acceptance and final
+claim-bound completion under the [explicit completion decision](2026-10-26-worker-managed-completion.md). The original design assigned an independent
+completion-verification step to the worker; that portion is superseded by the
+agent-owned completion and claim-inventory reconciliation boundaries. This note records the delivered design decision. The worker
 runtime remains implementation work. The [claim foundation decision](2026-10-24-worker-claim-foundation.md)
 owns implemented service/client ownership, status fencing and protected-property
 operations; it does not establish resource startup or recovery.
@@ -46,8 +48,10 @@ The worker retains one worktree for each unfinished task, starts a dedicated
 Herdr instance and keeps only current execution state and necessary recovery
 checkpoints in SQLite. New worker resources use an explicitly configured,
 workspace-owned state directory; existing shared configuration paths stay with
-their current owners. It reads the latest Herdr status and verifies delivery
-against existing task PR properties, remote results and acceptance attachments.
+their current owners. It reads the latest Herdr status for execution observations. The agent validates
+delivery against task requirements, PR facts and acceptance evidence, then submits
+the same claim's final done. Complete current-claim inventory governs worker
+resource reconciliation rather than a second business-acceptance verifier.
 Uncertain external results are reconciled before actions are repeated. Waiting
 and paused tasks retain their claims, worktrees and global concurrency slots.
 

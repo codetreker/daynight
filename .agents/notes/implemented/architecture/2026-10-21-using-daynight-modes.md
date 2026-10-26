@@ -111,6 +111,13 @@ and finishes only after acceptance and required delivery. The same scope may
 cover ready successors without task approval. Explicit discussion starts still
 apply only to the current user-confirmed Goal stage.
 
+An explicitly controller-supplied worker assignment follows the
+[worker-managed completion decision](2026-10-26-worker-managed-completion.md):
+it executes its already-claimed task in the supplied worktree, preserves all
+delivery gates, and finishes with an explicit claim ID. It never selects a
+successor or performs system-worktree cleanup, even under an outer autopilot.
+Ordinary mode selection and execution remain unchanged.
+
 Necessary direct dependencies remain in dependsOn, with externalDependsOn as
 its explicit external subset. The handbook owns dependency reduction: creation
 and Goal registration omit direct edges already supplied by other retained paths

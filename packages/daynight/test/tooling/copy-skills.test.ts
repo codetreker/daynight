@@ -101,6 +101,29 @@ describe("packaged skill resource copy", () => {
     }
   });
 
+  it("detects managed assignment, claim fencing and controller ownership regressions in copied instructions", async () => {
+    const f = fixture();
+    const copied = f.run();
+    expect(copied.status, copied.stderr).toBe(0);
+    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
+    const mutations = [
+      { scenario: "worker-managed-context", resource: "references/run-task.md", before: "context is missing or mismatched, return waiting without task or business writes", after: "context is missing or mismatched, use ordinary task selection" },
+      { scenario: "worker-managed-context", resource: "references/run-task.md", before: "`properties.worker.state=active` with the supplied `claimId`", after: "`properties.worker.state=active` with any available `claimId`" },
+      { scenario: "worker-managed-existing-execution", resource: "references/run-task.md", before: "Do not create, switch, or remove the system-managed worktree or branch", after: "Create a fresh worktree and branch for the task" },
+      { scenario: "worker-managed-claim-completion", resource: "references/run-task.md", before: "--project <project-id> --claim-id <claim-id> --if-version <observed-version>", after: "--project <project-id> --if-version <observed-version>" },
+      { scenario: "worker-managed-claim-completion", resource: "references/run-task.md", before: "never falls back to ordinary completion or automatic replay", after: "falls back to ordinary completion after a refusal" },
+      { scenario: "worker-managed-bounded-wait", resource: "references/autopilot.md", before: "Do not select a successor or advance a Goal stage", after: "Select the next ready successor" },
+    ];
+    for (const mutation of mutations) {
+      const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
+      const documents = new Map(bundle.documents);
+      const original = documents.get(mutation.resource)!.replaceAll(/\s+/g, " ");
+      expect(original).toContain(mutation.before);
+      documents.set(mutation.resource, documents.get(mutation.resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
+      expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario)).toThrow();
+    }
+  });
+
   it("copies the two complete allowlisted bundles byte-for-byte from an unrelated cwd", () => {
     const f = fixture();
     const publicBundle = bundles[1];
