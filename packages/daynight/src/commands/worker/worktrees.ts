@@ -1,5 +1,5 @@
 import path from "node:path";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import { normalizeServerUrl } from "../../config/server.js";
@@ -121,7 +121,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     }
     return result;
   };
-  const inspectWorktree = async (task: LocalTask, repository: WorkerRepository, operation: Operation, allowPartial: boolean) => {
+  const inspectWorktree = async (task: LocalTask, repository: WorkerRepository, operation: Operation, terminal: boolean) => {
     const binding = bindingFor(task, repository);
     validateBinding(task, binding);
     for (const parent of [path.join(repository.root, ".worktrees"), path.join(repository.root, ".worktrees", "daynight")]) {
@@ -138,19 +138,17 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     if (registration.marker === null) throw new Error("The task worktree has no ownership marker; it was retained.");
     const owner = markerOwner(registration.marker);
     if (!sameCoordinates(owner, task) || owner.root !== repository.rootIdentity || owner.common !== repository.commonIdentity || await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree ownership marker or repository identity does not match this claim.");
-    if (leaf !== null && owner.leaf !== leaf) throw new Error("The original task worktree directory was replaced; it was retained.");
     if (leaf !== null) {
       const pointer = await ordinaryFile(path.join(binding.worktreePath, ".git"));
-      if (pointer === null) { if (!allowPartial) throw new Error("The original worktree Git pointer is missing."); }
-      else {
-        if (!pointer.startsWith("gitdir: ") || path.resolve(binding.worktreePath, pointer.slice(8)) !== registration.directory) throw new Error("The original worktree Git pointer has changed.");
-        const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
-        if (await directory(common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
-        if (!allowPartial) await validateOrigin(binding.worktreePath, task.repoUrl, operation);
-      }
+      if (pointer === null) throw new Error("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
+      if (owner.leaf !== leaf) throw new Error("The original task worktree directory was replaced; it was retained.");
+      if (!pointer.startsWith("gitdir: ") || path.resolve(binding.worktreePath, pointer.slice(8)) !== registration.directory) throw new Error("The original worktree Git pointer has changed.");
+      const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
+      if (await directory(common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
+      if (!terminal) await validateOrigin(binding.worktreePath, task.repoUrl, operation);
     }
-    const branch = await ordinaryFile(path.join(registration.directory, "HEAD"));
-    if (branch !== `ref: refs/heads/${binding.branch}`) throw new Error("The task worktree no longer uses its original task branch.");
+    const branch = await git(repository.root, [`--git-dir=${registration.directory}`, "symbolic-ref", "--quiet", "HEAD"], operation);
+    if (branch !== `refs/heads/${binding.branch}`) throw new Error("The task worktree no longer uses its original task branch.");
     return { binding, leaf, registration };
   };
   return {
@@ -204,11 +202,17 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       const repository = await inspectRepository(projectFor(task), operation);
       let result = await inspectWorktree(task, repository, operation, true);
       if (result.registration === null) return;
-      // Git can discard its administrative ownership marker even when recursive removal fails.
-      // We retain that marker until the fingerprinted leaf is absent so interrupted cleanup stays attributable.
+      // Device/inode values can be reused after deletion, so the Git pointer must survive recursive cleanup.
+      // Its final unlink and nonrecursive rmdir may leave an ambiguous empty leaf, which is retained on retry.
       if (result.leaf !== null) {
+        for (const name of await readdir(result.binding.worktreePath)) {
+          if (name === ".git") continue;
+          operation.check();
+          await removeDirectory(path.join(result.binding.worktreePath, name), { recursive: true });
+        }
         operation.check();
-        await removeDirectory(result.binding.worktreePath, { recursive: true });
+        await rm(path.join(result.binding.worktreePath, ".git"));
+        await rmdir(result.binding.worktreePath);
       }
       operation.check();
       result = await inspectWorktree(task, repository, operation, true);

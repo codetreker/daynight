@@ -20,11 +20,11 @@ const manager = (root: string, options: Partial<Parameters<typeof createWorkerGi
 };
 const remote = "https://example.com/organization/repository.git";
 const ids = { projectId: "11111111-1111-4111-8111-111111111111", taskId: "22222222-2222-4222-8222-222222222222", claimId: "33333333-3333-4333-8333-333333333333", workerId: "44444444-4444-4444-8444-444444444444", worktreeId: "55555555-5555-4555-8555-555555555555" };
-const fixture = async () => {
+const fixture = async (refFormat: "files" | "reftable" = "files") => {
   await mkdir(scratch, { recursive: true });
   const root = await mkdtemp(path.join(scratch, "Git 用户 ")); directories.push(root);
   const repository = path.join(root, "repository"); await mkdir(repository);
-  git(repository, ["init", "--initial-branch=main"]);
+  git(repository, ["init", "--initial-branch=main", ...(refFormat === "reftable" ? ["--ref-format=reftable"] : [])]);
   git(repository, ["config", "user.name", "Fixture"]); git(repository, ["config", "user.email", "fixture@example.com"]);
   // Checkout bytes remain stable under native core.autocrlf settings; dirty-work assertions stay exact.
   await writeFile(path.join(repository, ".gitattributes"), "* text eol=lf\n");
@@ -130,21 +130,42 @@ describe("worker repositories and task worktrees", () => {
     await adapter.removeWorktree(f.task, proof, operation());
   });
 
-  it("continues partial leaf deletion with the native marker even after .git disappeared", async () => {
+  it("continues partial content deletion while preserving the original Git pointer", async () => {
     const f = await fixture(); const failure = new Error("controlled partial filesystem removal"); let partial = true;
-    const adapter = manager(f.root, { removeDirectory: async (target, options) => { if (partial) { partial = false; await rm(path.join(String(target), ".git")); throw failure; } return rm(target, options); } });
+    const adapter = manager(f.root, { removeDirectory: async (target, options) => { await rm(target, options); if (partial) { partial = false; throw failure; } } });
     const binding = await adapter.prepareWorktree(f.task, operation()); const admin = administrativeDirectory(binding.worktreePath);
+    const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
     await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toBe(failure);
     expect(await readFile(path.join(admin, "locked"), "utf8")).toContain(ids.claimId);
-    await expect(adapter.verifyWorktree({ ...f.task, resources: { ...f.task.resources, worktree: binding } }, operation())).rejects.toThrow("Git pointer is missing");
+    expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toBe(pointer);
+    expect(await adapter.verifyWorktree({ ...f.task, resources: { ...f.task.resources, worktree: binding } }, operation())).toEqual(binding);
     await adapter.removeWorktree(f.task, proof, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
-  it("retains a replaced leaf after partial cleanup instead of deleting its new contents", async () => {
-    const f = await fixture(); const adapter = manager(f.root, { removeDirectory: async (target) => { await rm(path.join(String(target), ".git")); throw new Error("partial removal"); } });
-    const binding = await adapter.prepareWorktree(f.task, operation()); await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("partial removal");
+  it("retains a pointerless leaf and a replacement instead of recursively deleting either", async () => {
+    const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.task, operation());
+    await rm(path.join(binding.worktreePath, ".git"));
+    await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("Git pointer is missing"); expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
     await rename(binding.worktreePath, `${binding.worktreePath}-original`); await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "must survive\n");
-    await expect(manager(f.root).removeWorktree(f.task, proof, operation())).rejects.toThrow("directory was replaced"); expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive\n");
+    await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("Git pointer is missing"); expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive\n");
+  });
+
+  it("retains delete-and-recreate replacements after leaf deletion but before administrative cleanup", async () => {
+    const f = await fixture(); const interrupted = new Error("interrupted before administrative removal");
+    const adapter = manager(f.root, { runGit: async (cwd, args, op, options) => { if (args.includes("worktree") && args.includes("remove")) throw interrupted; return runRepositoryGit(cwd, args, op, options); } });
+    const binding = await adapter.prepareWorktree(f.task, operation()); const admin = administrativeDirectory(binding.worktreePath);
+    await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toBe(interrupted); await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+    await mkdir(binding.worktreePath); await writeFile(path.join(binding.worktreePath, "foreign"), "must survive inode reuse\n");
+    const second = manager(f.root); await expect(second.removeWorktree(f.task, proof, operation())).rejects.toThrow("Git pointer is missing");
+    expect(await readFile(path.join(binding.worktreePath, "foreign"), "utf8")).toBe("must survive inode reuse\n"); expect(await readFile(path.join(admin, "locked"), "utf8")).toContain(ids.claimId);
+    await rm(binding.worktreePath, { recursive: true }); await second.removeWorktree(f.task, proof, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
+  });
+
+  it("retains an empty ambiguous directory after the final pointer unlink interruption", async () => {
+    const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.task, operation());
+    for (const name of await readdir(binding.worktreePath)) await rm(path.join(binding.worktreePath, name), { recursive: true });
+    await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("Git pointer is missing"); expect(await readdir(binding.worktreePath)).toEqual([]);
+    await rm(binding.worktreePath, { recursive: true }); await adapter.removeWorktree(f.task, proof, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
   it("reconciles a lost successful administrative removal and rejects a new claim at the old path", async () => {
@@ -241,5 +262,21 @@ describe("worker repositories and task worktrees", () => {
     await expect(adapter.verifyWorktree(task, operation())).rejects.toThrow("origin does not match");
     await expect(adapter.prepareWorktree(task, operation())).rejects.toThrow("origin does not match");
     await adapter.removeWorktree(task, proof, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
+  });
+
+  it("uses backend-aware reftable HEAD for creation, dirty recovery and missing-leaf cleanup", async () => {
+    const f = await fixture("reftable"); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.task, operation());
+    expect(git(f.repository, ["rev-parse", "--show-ref-format"])).toBe("reftable");
+    const task = { ...f.task, resources: { ...f.task.resources, worktree: binding } }; await writeFile(path.join(binding.worktreePath, "tracked.txt"), "dirty reftable\n");
+    expect(await adapter.verifyWorktree(task, operation())).toEqual(binding); expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("dirty reftable\n");
+    await rm(binding.worktreePath, { recursive: true }); await adapter.removeWorktree(task, proof, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
+  });
+
+  it("refuses foreign and detached reftable HEAD without deleting the owned leaf", async () => {
+    const f = await fixture("reftable"); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.task, operation());
+    git(binding.worktreePath, ["checkout", "-b", "foreign-reftable-branch"]);
+    await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("original task branch");
+    git(binding.worktreePath, ["checkout", "--detach", "HEAD"]);
+    await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("Git command failed"); expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   });
 });

@@ -182,11 +182,15 @@ Pending 表示已经取得或找回的 claim 等待名额与启动确认；activ
 
 分支 `daynight/<taskId>` 与目录 `.worktrees/daynight/<taskId>` 由 task 身份确定。首次分支从仓库当前 HEAD 创建；已有保留分支从原 tip 创建新工作区，不 reset 分支。同一有效 claim 的中断恢复使用原 worktreeId、分支和 dirty 成果，不执行 review 的 reset/clean。新 claim 使用新的 worktreeId 和 native 会话；规范路径仍被旧 claim 或外来目录占用时明确冲突，不复用或擅删。
 
-创建先独占预留空 leaf，记录其 device/inode，再通过 `git worktree add --lock --reason` 在 Git 自己的 linked-worktree 管理目录中持久保存 `daynight-worker:` JSON 标记。标记包含 serverOrigin/projectId/taskId/claimId/worktreeId 及 leaf/root/common 的 device/inode。每次操作核对原服务和执行身份、root/common 物理身份、确定的分支、leaf 身份、`.git` 指针与注册 backpointer；缺标记、注册歧义、符号链接或替换目录都拒绝。
+创建先独占预留空 leaf，记录其 device/inode，再通过 `git worktree add --lock --reason` 在 Git 自己的 linked-worktree 管理目录中持久保存 `daynight-worker:` JSON 标记。标记包含 serverOrigin/projectId/taskId/claimId/worktreeId 及 leaf/root/common 的 device/inode。每次操作核对原服务和执行身份、root/common 物理绑定、leaf 辅助指纹、精确 `.git` 指针及注册 backpointer；缺标记、注册歧义、符号链接或不匹配指针都拒绝。Device/inode 只能辅助核对，不能单独证明仍是原目录；任何仍存在的 leaf 都必须保留指向其原管理注册的精确 `.git` 普通文件，包括终止清理。
 
-Git 创建成功而 SQLite 尚未保存 binding 时，可凭完整原标记核对同一次执行；仅有预留空目录而 Git 尚未写标记时，没有足够归属证明，保留目录并报告冲突。已知原执行目录丢失时不 clone 或新建 worktree 掩盖。Clone 失败或取消后的部分目录保留并显示实际错误，不把现有内容当作空路径重试。
+分支通过已验证 linked administrative directory 的 `git --git-dir=<admin> symbolic-ref --quiet HEAD` 核对，交由 Git 解释 refs backend。不能直接把管理目录的 HEAD 文件当作 loose symbolic ref；reftable 的存储布局也须支持。即使 leaf 已删除，仍可从该管理注册核对原分支；detached 或其他分支均拒绝。
 
-终止清理仍核对原仓库、完整所有权与物理绑定，但不要求 task-local origin 保持不变；仅改变任务工作区的 remote 不撤销原清理责任。删除先保留 Git 注册和标记，对仍匹配原 inode 的 leaf 执行递归删除；部分删除失败仍保留管理标记，下一次只续原清理。确认 leaf 已不存在后才定点移除该条 locked Git 注册，不运行全局 prune。删除成功但结果未记回 SQLite 时，目录和注册均无可确认已完成；任何同路径的新目录、不同标记或不同 inode 都阻止旧清理。分支和历史保留，done/release/transfer 使用相同规则。
+Git 创建成功而 SQLite 尚未保存 binding 时，可凭完整原标记和指针核对同一次执行；仅有预留空目录而 Git 尚未写标记时，没有足够归属证明，保留目录并报告冲突。已知原执行目录丢失时不 clone 或新建 worktree 掩盖。Clone 失败或取消后的部分目录保留并显示实际错误，不把现有内容当作空路径重试。
+
+终止清理仍核对原仓库、完整所有权与物理绑定，但不要求 task-local origin 保持不变；仅改变任务工作区的 remote 不撤销原清理责任。删除先保留 Git 注册、标记和 leaf 内精确 `.git` 指针，递归删除其余内容；内容删除失败时保留指针，下一次重新核对后继续原清理。其余内容删除完成后，最后删除 `.git` 并以非递归 rmdir 移除 leaf。确认 leaf 已不存在后才定点移除该条 locked Git 注册，不运行全局 prune。
+
+若在最后删除 `.git` 与 rmdir 之间中断，仍存在的目录已经没有足够归属证明，即使它为空且 device/inode 匹配，也必须拒绝破坏性重试并保留 active/错误，交由操作者检查处理；原目录经核实移除后，下次可完成注册清理。相同拒绝适用于同路径无指针的替换目录。目录和注册均不存在时，可确认删除成功但结果尚未记回 SQLite 的窗口。分支和历史保留，done/release/transfer 使用相同终止规则。
 
 所有 Git 子进程继承调用者的有界 `Operation`，复用进程组停止和错误链。Worker 的设置操作清除继承的仓库选择器、命令配置与 trace 注入，使用自己空 hooks 目录，clone 使用空 template，并关闭自动 submodule 递归；正常全局认证和传输配置仍继承。共享 runner 的环境与期限覆盖按调用传入，普通仓库发现调用保持原有默认行为。临时目录只属于该管理器，不能改写用户全局 Git/agent 配置。
 
