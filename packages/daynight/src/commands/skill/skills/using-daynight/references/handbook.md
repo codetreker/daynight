@@ -191,6 +191,25 @@ for verified prerequisites owned by another chain. Confirm task content and
 ownership; done status, a similar title, current graph roots or the displayed
 component do not establish the classification.
 
+### Dependency reduction
+
+When creating tasks or registering a Goal breakdown, keep only necessary direct
+prerequisites. Read the relevant dependency paths before writing. In
+`A → B → C`, arrows run from prerequisite to successor: C declares B, not both A
+and B. Omit `A → C` because the retained path already supplies A. Keep independent
+prerequisites that have no alternative path.
+
+An ordinary edge is redundant only when another path made entirely of ordinary
+edges supplies the same prerequisite; this preserves chain ownership and the
+Goal's ordinary design gate. An external edge may be supplied by an alternative
+path containing either kind. Preserve the classification of every retained edge.
+Check the retained graph as a whole, and read it back after registration to verify
+that required paths remain and no redundant direct edges were added. Source
+references do not require additional execution dependencies. This registration
+rule does not authorize cleanup of unrelated existing relationships.
+
+### Relationship and content writes
+
 **CLI relationship replacement.** `--depends-on` declares ordinary prerequisites;
 `--external-depends-on` declares external ones. Supplying either option compiles
 their full union as `dependsOn` and the exact external set as `externalDependsOn`.

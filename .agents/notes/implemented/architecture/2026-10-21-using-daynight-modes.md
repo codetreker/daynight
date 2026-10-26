@@ -11,7 +11,10 @@ plans, acceptance and progress together in task descriptions also makes stable
 requirements harder to distinguish from the current execution position. Serial
 execution alone leaves discussion scope ambiguous: a designated subtask can still
 absorb proposals for its parent Goal, siblings or successors without changing its
-task ID.
+task ID. Registering every transitive prerequisite as a direct edge also obscures
+the immediate work order without adding a prerequisite; reducing those edges
+without considering their ordinary or external classification can change chain
+ownership.
 
 ## Decision
 
@@ -108,8 +111,17 @@ and finishes only after acceptance and required delivery. The same scope may
 cover ready successors without task approval. Explicit discussion starts still
 apply only to the current user-confirmed Goal stage.
 
-Dependencies remain in dependsOn; PR URLs and titles remain in
-properties.pullRequests. Results and merge references belong at the task's
+Necessary direct dependencies remain in dependsOn, with externalDependsOn as
+its explicit external subset. The handbook owns dependency reduction: creation
+and Goal registration omit direct edges already supplied by other retained paths
+and verify necessary paths and absence of redundancy on readback. Ordinary edges
+require an alternative path made entirely of ordinary edges, preserving chain
+ownership and the Goal's ordinary design gate; external edges may be supplied by
+either kind. Independent prerequisites and retained edge classifications remain.
+Direct architecture source references do not require extra execution edges. The
+rule constrains registration within its authorized scope and does not add server
+normalization or authorize unrelated existing-graph cleanup. PR URLs and titles
+remain in properties.pullRequests. Results and merge references belong at the task's
 designated evidence location, associated with its acceptance items. Execution position, blockers and next steps use
 an existing checkpoint. Registration is complete only after necessary task-owned
 artifacts and shared inputs are read back. Partial registration retains IDs;
@@ -188,6 +200,12 @@ explicit, but creates multiple copies whose exceptions and permission boundaries
 can diverge. The entrypoint owns the shared rule, with a linked reminder where
 run-task begins analysis and execution.
 
+**Reduce dependencies using reachability alone.** An alternative path containing
+external edges still supplies execution ordering, but cannot replace an ordinary
+edge's chain ownership or ordinary design gate. Restricting ordinary reduction to
+all-ordinary paths preserves those meanings while omitting redundant blocking
+edges.
+
 **Delete the legacy entry before publishing the new bundle.** This reduces the
 period with two names but can remove working guidance before replacement succeeds.
 Publishing first preserves the new bundle even if legacy cleanup fails, at the
@@ -208,7 +226,11 @@ becomes an execution input; a complete body needs no attachment. Create-task mus
 reconcile partial registration and cannot claim readiness from an existing task ID alone. A task's confirmed scope also bounds
 its discussion content, while broader inputs remain readable and Goal-level
 discussions and acceptance retain their agreed scope. Cross-task discoveries remain
-visible without silently adding work to the current delivery.
+visible without silently adding work to the current delivery. Dependency graphs
+express immediate prerequisites without redundant transitive shortcuts, while ordinary
+chain membership and design gates remain explicit. This requires reading the
+relevant paths before registration and checking the retained graph afterward;
+the service does not automatically normalize supplied relationships.
 
 The instructions constrain agents but do not add a server lock or guarantee model
 compliance. Static bundle checks and independent scenario review cover content;

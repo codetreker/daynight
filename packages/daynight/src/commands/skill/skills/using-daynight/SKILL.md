@@ -130,7 +130,9 @@ completing `run-task`, and handing off a task never activate it.
   identifies the architecture task and every required source location, including
   inline description sections and full paths for actual attachment documents,
   even for indirect successors, under the Goal protocol's readback rules. Express
-  prerequisites through complete `dependsOn` and its `externalDependsOn` subset.
+  necessary direct prerequisites through complete `dependsOn` and its
+  `externalDependsOn` subset. Omit redundant transitive dependencies under
+  [the handbook's reduction rule](references/handbook.md#dependency-reduction).
   Same-chain prerequisites are ordinary; verified cross-chain prerequisites are
   external. Both block execution. CLI dependency options replace the full sets;
   preserve required relationships as the handbook requires.
