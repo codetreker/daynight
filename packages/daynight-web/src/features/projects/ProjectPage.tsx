@@ -7,7 +7,7 @@ import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
-import { useCompletedChainVisibility, useProjectSection, useProjectViewPreferences, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
+import { useCompletedChainVisibility, useProjectSection, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
 import "../../styles/project.css";
@@ -37,7 +37,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
-  const expandedRoot = useRef<string | null>(null);
+  const openChain = useRef<string | null>(null);
+  const [openChainWitness, setOpenChainWitness] = useState<string | null>(null);
   const currentView = useRef<TaskView>("chains");
   const currentSection = useRef<ProjectSection>(section);
   currentSection.current = section;
@@ -77,8 +78,17 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   }), [snapshot, categories, showCompleted]);
   const standaloneIds = useMemo(() => snapshot === null || categories === null ? [] : categories.standalone.filter((id) =>
     showCompletedStandalone || snapshot.index.nodes.get(id)!.status !== "done"), [snapshot, categories, showCompletedStandalone]);
-  const { expandedRootId, setExpandedRootId, issue: preferenceIssue } = useProjectViewPreferences(projectId, rootIds, snapshot?.index.componentByTask ?? null);
-  expandedRoot.current = expandedRootId;
+  const representative = openChainWitness === null ? undefined : snapshot?.index.componentByTask.get(openChainWitness);
+  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && rootIds?.includes(representative) ? representative : null;
+  openChain.current = openChainId;
+  useLayoutEffect(() => {
+    if (openChainWitness === null || openChainId !== null) return;
+    setOpenChainWitness(null);
+    if (section !== "tasks") focusVisible(document.getElementById(`project-section-tab-${section}`));
+    else if (activeView !== "chains") focusVisible(document.getElementById(`project-task-tab-${activeView}`));
+  }, [openChainWitness, openChainId, section, activeView]);
+  const onOpenChain = useCallback((id: string) => { setOpenChainWitness(id); }, []);
+  const onCloseChain = useCallback(() => { setOpenChainWitness(null); }, []);
   const detailTaskId = detailSelection !== null && snapshot !== null &&
     (detailSelection.revision === snapshot.revision || snapshot.index.nodes.has(detailSelection.id)) ? detailSelection.id : null;
 
@@ -101,10 +111,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const onClose = useCallback(() => { setDetailSelection(null); }, []);
   const restoreFocus = useCallback(() => {
     if (focusVisible(originalTrigger.current)) return;
-    const fullscreenToggle = currentView.current !== "chains" || expandedRoot.current === null ? null : document.getElementById(`task-graph-${expandedRoot.current}`)
-      ?.querySelector<HTMLButtonElement>('.task-graph-fullscreen .graph-fullscreen-toggle');
-    if (focusVisible(fullscreenToggle)) return;
-    const root = currentView.current !== "chains" || expandedRoot.current === null ? null : document.getElementById(`task-root-${expandedRoot.current}`);
+    const chainClose = currentView.current !== "chains" || openChain.current === null ? null : document.getElementById(`task-graph-${openChain.current}`)
+      ?.querySelector<HTMLButtonElement>('.task-chain-close');
+    if (focusVisible(chainClose)) return;
+    const root = currentView.current !== "chains" ? null : document.querySelector<HTMLButtonElement>('.root-toggle');
     if (focusVisible(root)) return;
     const standalone = currentView.current === "standalone" ? document.querySelector<HTMLButtonElement>(".standalone-row") : null;
     if (focusVisible(standalone)) return;
@@ -147,7 +157,6 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
         <ProjectSectionTabs section={section} onChange={selectSection} />
         <div className="project-section-content">
           {sectionIssue !== null && <p className="snapshot-notice" role="status">{preferences.section[sectionIssue.kind]}</p>}
-          {preferenceIssue !== null && <p className="snapshot-notice" role="status">{preferences.expanded[preferenceIssue.kind]}</p>}
           {visibilityIssue !== null && <p className="snapshot-notice" role="status">{preferences.completedChains[visibilityIssue.kind]}</p>}
           {tabIssue !== null && <p className="snapshot-notice" role="status">{preferences.tab[tabIssue.kind]}</p>}
           {standaloneIssue !== null && <p className="snapshot-notice" role="status">{preferences.standalone[standaloneIssue.kind]}</p>}
@@ -179,7 +188,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot}
               activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
               unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView}
-              chains={{ representativeIds: rootIds!, allRepresentativeIds: categories!.chains, expandedRootId, onExpand: setExpandedRootId,
+              chains={{ representativeIds: rootIds!, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain,
                 onOpenTask, showCompleted, onShowCompletedChange }}
               standalone={{ taskIds: standaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
                 showCompleted: showCompletedStandalone, onShowCompletedChange: onStandaloneVisibilityChange }} />}

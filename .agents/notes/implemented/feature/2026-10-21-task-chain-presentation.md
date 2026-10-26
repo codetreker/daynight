@@ -7,9 +7,9 @@ Status: implemented
 A project accumulates independent task chains over time. Showing the oldest
 roots first pushes recent work below historical chains. Fully completed chains
 also occupy the same list as unfinished work, but a completed root can still
-have unfinished descendants. Ordering and visibility control the initially
-expanded graph and its replacement; inconsistent choices would open a different
-chain from the first visible row. Database creation timestamps can distinguish
+have unfinished descendants. The original inline view also used ordering and visibility to choose its
+initially expanded graph, so inconsistent choices could open a different chain
+from the first visible row. Database creation timestamps can distinguish
 tasks within one JavaScript millisecond. Generous row padding also limits how
 much work fits in one viewport, especially with long titles.
 
@@ -40,12 +40,13 @@ action. That action focuses the persistent
 checkbox before the empty-state button disappears.
 
 ChainList receives visible representatives alongside the complete immutable
-GraphIndex. List rendering and the [preference hook](2026-10-21-task-browsing-preferences.md)
-consume the same newest-first sequence. The hook stores an original task witness
-and resolves its current component; changed representatives do not overwrite a
-valid witness. First visits and missing/hidden components use the current first
-visible chain. No visible chains retain the witness or explicit collapse for
-later reveal, and null stays collapsed on reload.
+GraphIndex and opens a graph only after a row action. The
+[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces the original
+inline default selection and persisted expansion. Its temporary original task
+witness resolves the current component; changed representatives do not overwrite
+a valid witness. A missing, standalone or hidden witness closes the dialog.
+First visits, reloads and returns leave it closed. The independent filters and
+page positions retain the [browsing preference ownership](2026-10-21-task-browsing-preferences.md).
 
 Graph projection, progress and API order retain the responsibilities in the
 [projection decision](2026-10-20-task-graph-projection.md). Every displayed graph
@@ -57,7 +58,7 @@ open when its graph disappears but the task still exists; closing restores a
 surviving trigger or a control in the active task view. The task view decision
 owns active-category fallback when a trigger is no longer visible.
 
-Collapsed representative buttons use a 62px minimum height, compact padding and 7px list
+Representative buttons use a 62px minimum height, compact padding and 7px list
 gaps. Single-line bordered rows are about 64px; long titles grow naturally.
 Titles retain 13px desktop and 12px narrow-screen text, with metadata and status
 at 11px/10px. The progress area narrows with the viewport. Native row actions,
@@ -98,10 +99,8 @@ content and a full-row click target. Recent unfinished chains appear first while
 historical completed work remains one explicit control away. Presentation arrays are bounded by the project node
 limit; completed-chain classification uses component progress and
 never duplicates graph nodes or changes project totals. Task topology determines
-category before completion filtering. Visibility and expansion are local
-per-project preferences, extended by the task view decision with independent
-standalone visibility, selected tab and page browse positions. Hiding an expanded
-complete row selects the
-newest remaining row; hiding every row preserves its saved expansion intent for
-later reveal. A task actually removed from the snapshot retains the existing
+category before completion filtering. Visibility, selected section/category and
+page browse positions are independent local per-project preferences. Graph
+opening is temporary; hiding its chain closes the dialog without opening a
+replacement, and revealing rows again does not reopen it. A task actually removed from the snapshot retains the existing
 detail-close notice and focus behavior.

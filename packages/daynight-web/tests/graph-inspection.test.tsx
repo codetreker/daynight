@@ -148,7 +148,7 @@ describe('graph-local prerequisite inspection', () => {
     const removed = buildGraphIndex({ ...graph, tasks: graph.tasks.filter((task) => task.id !== 'D'), summary: { ...graph.summary, total: 4, todo: 1, ready: 1 } });
     view.rerender(<TaskGraph index={removed} rootId="A" onOpenTask={noop} />);
     await ready(view.container, 1);
-    expect(screen.getByRole('button', { name: '全屏查看' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: '收起到概览' })).toHaveFocus();
     view.rerender(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await ready(view.container);
     expect(body(view.container, 'A')).toHaveAttribute('aria-pressed', 'false');

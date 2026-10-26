@@ -97,7 +97,7 @@ delivery reviewable and responsible for its own observable acceptance.
 
 ## Consequences
 
-Complete ancestry can make one expanded chain approach the complete-project
+Complete ancestry can make one open chain graph approach the complete-project
 limit, so the existing capacity matrix and performance budgets remain required.
 Many nodes and edges may change style during selection; the former two-node
 selection cost assumption no longer establishes feedback time. Curved dash
@@ -113,6 +113,8 @@ The [projection](../feature/2026-10-20-task-graph-projection.md) note retains th
 original direct-boundary rationale and links its replacement. The existing
 [paint repair](../bug-fix/2026-10-20-long-dashed-dependency-paint.md) and
 [fullscreen](../feature/2026-10-22-task-graph-fullscreen.md) notes remain current
-for the retained rendering and modal ownership; the centered detail decision
-extends the fullscreen and detail composition without changing those lifecycles. The standalone prototype proves its own
+for retained rendering and layered-detail rationale. The
+[graph-dialog decision](../feature/2026-10-26-task-chain-graph-dialog.md) replaces
+inline entry with a click-only modal and unifies normal/fullscreen ownership;
+the centered detail composition keeps its portal and reading lifecycle. The standalone prototype proves its own
 interaction, not production behavior or capacity.

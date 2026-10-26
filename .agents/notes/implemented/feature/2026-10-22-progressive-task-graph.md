@@ -40,15 +40,17 @@ the initial fifty/one-hundred limits. Each task ID appears once.
 
 `projectVisibleTasks(P, S)` retains membership and every real dependency with
 both endpoints in S. No shortcut edges, aggregate cards or synthetic links are
-introduced. One compact toolbar row combines main/external membership, visible/
+introduced. The compact toolbar combines main/external membership, visible/
 total tasks and dependencies, hidden-upstream status and fullscreen/reset controls.
 It has no persistent explanatory paragraphs or reserved empty status block.
-The action group stays fully visible at the right edge without shrinking. The
-left text group takes the remaining width and truncates overflow with an ellipsis;
-neither the toolbar nor the page scrolls horizontally. Narrow fullscreen controls
-use compact padding and a visually hidden locale label whose accessible name
-remains available. Locale preference failures appear below the selector without
-widening the action group or clipping the retry control. Native canvas controls
+The original inline toolbar kept one line and truncated its left text to preserve
+canvas height. The [graph-dialog decision](2026-10-26-task-chain-graph-dialog.md)
+replaces that presentation with a viewport-sized reading area: summary and actions
+can wrap, narrow layouts place them on separate lines, and complete action
+controls remain accessible without horizontal scrolling. The dialog header owns
+the locale selector in both modes, with compact narrow controls and a visually
+hidden label whose accessible name remains available. Locale preference failures
+appear below that selector without clipping the retry control. Native canvas controls
 stay at bottom-left, separate from the top-right locale notice and bottom-right
 attribution, so a persistent storage failure leaves zoom and fit accessible. The underlying counts
 remain complete when only part of the graph is visible. The original
@@ -75,9 +77,11 @@ connected visible subset without adding a baseline or newly arrived tasks.
 GraphVisibility owns projection, the ordered-member topology key, visible IDs,
 inspection and viewport action. Membership changes with the same representative
 reset that topology state and reinitialize InitialViewport, while TaskCanvas,
-ReactFlow and the fullscreen owner remain mounted. Fullscreen, active Details
-and their inert/scroll locks therefore survive the topology reset. Only a
-representative change replaces the row/graph as a chain switch. Explicit reset
+ReactFlow and the graph-dialog owner remain mounted. Fullscreen, active Details
+and their inert/scroll locks therefore survive the topology reset. A valid
+opening witness follows its current component; a representative change
+initializes that graph while its dialog remains open, as owned by the
+[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md). Explicit reset
 also computes a new baseline. Failure preserves old data only within the current
 identity/project/auth scope. Refresh does not steal dialog focus; locale only
 translates controls and counts without changing S or adding requests.
@@ -126,7 +130,9 @@ mechanisms.
 
 **Wrap the toolbar on narrow screens.** This keeps all labels visible at once,
 but gives the header variable height and takes space from the graph. A single
-row with truncated text preserves canvas height and keeps actions in place.
+row with truncated text preserved canvas height and kept actions in place for
+the inline layout. The graph-dialog decision later accepts controlled wrapping
+inside its larger viewport-relative area to keep labels and actions available.
 
 **Offset the notice below top-right canvas controls.** This couples the notice
 position to the controls' height and margin. The existing public bottom-left

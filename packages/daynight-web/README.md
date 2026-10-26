@@ -448,8 +448,8 @@ cached native Intl formatters, initial resolution, a Provider and the shared
 native selector under `src/i18n/`. Production `main.tsx` resolves language and
 sets HTML `lang` and the authentication loading title before React renders.
 `AuthenticatedApp` and the workspace update document
-metadata on navigation and language changes. The top bar and fullscreen graph
-expose selectors using the same saved language. Task details consume the current
+metadata on navigation and language changes. The top bar and graph-dialog header
+expose selectors in both dialog modes using the same saved language. Task details consume the current
 application locale through the same Provider; their header contains the task
 title, fullscreen toggle, More task actions menu and close control. The status
 menu sits beside platform selection in the state row below the title. The `…` menu sits immediately left of Close and contains Open in new tab
@@ -527,16 +527,17 @@ projects retain both section destinations.
 
 Both sections use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
-inert on Overview, preserving the current graph viewport, inspection and expanded
-chain. It does not start another cache, index or refresh loop. Task details remain
-outside either section panel. The original inner Standalone tasks/Task chains
-mount policy remains: inactive category contents unmount, so returning to Task
-chains initializes its canvas while restoring the retained chain witness.
+inert on Overview. Leaving Task list or its Task chains category closes the
+current graph dialog and clears its temporary opening state; returning shows
+the list without reopening it. The retained task subtree does not start another
+cache, index or refresh loop. Task details remain outside either section panel.
+Inactive inner-category contents unmount while their associated tabpanel IDs
+remain stable.
 
 Within Task list, an absent category preference selects Task chains; later
 visits restore the project's last inner category. Both badges count unfinished
 tasks (pending and in progress) from the complete snapshot, independently of
-completed-item visibility, outer/inner selection and expanded chain. Their sum
+completed-item visibility, outer/inner selection and the open graph dialog. Their sum
 equals the project's unfinished total; toolbars report visible/total entries.
 
 Chain membership is an ordinary-edge weak component: `dependsOn` contains all
@@ -560,15 +561,15 @@ can recur as context while its actual component membership remains unique.
 
 Each category retains its own completed visibility and scroll position. Chain
 ordering uses its representative's exact `(created_at,id)` service order,
-reversed for newest first without lossy JavaScript timestamp conversion. Expanded
-preferences retain the original task witness in `{expandedRootId}` and resolve
-its current component after merges or splits, rather than overwriting it with a
-new representative. Explicit null stays collapsed on reload. Existing missing or
-hidden-entry fallback and storage-error notices remain. Membership changes
-initialize a new bounded overview and framing without remounting a same-representative
-fullscreen canvas or active Details. A representative change is a chain switch.
-Ordinary status and clock refreshes retain visible S, viewport and inspection
-under normal reconciliation.
+reversed for newest first without lossy JavaScript timestamp conversion. The
+open graph dialog keeps an original task witness only for the current reading
+session and resolves its component after merges or splits without overwriting
+a valid witness with a new representative. A removed, standalone or hidden
+witness closes the dialog. Membership changes initialize a new bounded overview
+and framing without remounting a same-representative canvas or active Details.
+A representative change initializes the newly represented graph within the
+current dialog. Ordinary status and clock refreshes retain visible S, viewport
+and inspection under normal reconciliation.
 The [task view decision](../../.agents/notes/implemented/feature/2026-10-22-project-task-views.md)
 and [chain status decision](../../.agents/notes/implemented/bug-fix/2026-10-22-task-chain-status.md)
 record their current rules and original rationale.
@@ -630,7 +631,12 @@ minimum height and 7px row gaps; a single-line bordered row is about 64px.
 Desktop titles stay 13px and narrow-screen titles 12px, with readable
 metadata/status sizes of 11px/10px.
 
-Rows open one horizontal graph at a time. Complete P contains every ordinary
+Rows open one centered horizontal-graph dialog at a time. Desktop geometry is
+`80vw × 80dvh`; at widths of 740px or less the dialog fills the viewport except
+for 12px gutters. The title shows the chain name, status and progress. Closing
+with the explicit button, backdrop or Escape restores the original list trigger
+or an available list control without changing the list height or page position.
+Complete P contains every ordinary
 component member and every required ancestor through all dependency kinds,
 without unrelated successors of context tasks. Main progress counts component
 members only, and project counters count each project task once. Actual visible
@@ -666,10 +672,10 @@ visible IDs still in new P plus the representative, prunes to its connected
 visible subset and preserves the viewport. It does not add a new baseline or
 newly arrived tasks. With the same representative, changed membership resets
 only visible S, inspection and pending viewport actions; a topology-keyed
-InitialViewport frames the new overview. TaskCanvas, ReactFlow and the fullscreen
+InitialViewport frames the new overview. TaskCanvas, ReactFlow and the graph-dialog
 owner stay mounted, preserving fullscreen, active Details and their inert/scroll
-locks. A changed representative is an ordinary chain switch and replaces its
-row and graph. Reset computes a new baseline. Ordinary failure retains old
+locks. A changed representative initializes the corresponding graph within the
+same open dialog. Reset computes a new baseline. Ordinary failure retains old
 content only in the same identity/project/auth scope; current401 and resource
 invalidation still unmount private content. Local S and inspection do not
 persist. Locale translates controls without adding business reads. The
@@ -677,32 +683,26 @@ persist. Locale translates controls without adding business reads. The
 separates topology state from presentation lifetime.
 
 Per-project browser preferences retain the selected outer section and inner task
-category, each category's page scroll position and completed-item choice, and the
-chain's original task witness or explicit collapse across reloads and navigation. The existing
-`{ expandedRootId: string | null }` shape remains: resolve a valid witness to its
-current ordinary component, then display that component's representative.
-A representative change must not overwrite a still-valid original witness.
-Entering Task chains without a saved expansion selects the newest visible chain;
-missing/hidden witnesses use the
-existing visible fallback. No visible chains, loading, failed initial reads or
-empty graphs do not invent explicit collapse. Null remains collapsed on reload.
-The outer section uses the independent `daynight:project-section:${projectId}`
-record with the JSON string `"overview"` or `"tasks"`; a missing record selects
-Overview. It shares the existing named-preference reader and writer without
-changing the inner-category, expansion, filter or scroll records. A read or
-format failure selects Overview with a section-specific notice; a write failure
-retains the current in-memory selection and reports that it was not saved.
-Storage failures leave the current page usable with a visible notice. Both
-stable inner tabpanel wrappers retain their IDs and hide inactive content; returning
-to a chain retains the witness while its canvas initializes again. Task page
-scroll restoration and scroll/pagehide listeners are active only when Task list
-is selected and a snapshot is available. Leaving Tasks saves its current inner
-position before Overview can restore its own per-mount memory position. Overview
-starts at zero and never reads or overwrites the persisted task offsets. Outer
-switches retain the already visited task subtree; inner switches retain their
-existing remount behavior. Page positions do not persist details, coordinates,
-zoom or pan. Section/category switching, filtering and scroll restoration make
-no API requests and do not alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/implemented/feature/2026-10-21-task-browsing-preferences.md)
+category, each category's page scroll position and completed-item choice. Graph
+dialog opening, witness, fullscreen, details and graph viewport are temporary;
+the former `daynight:project-view:${projectId}` expansion record is not read or
+written. The outer section uses the independent
+`daynight:project-section:${projectId}` record with the JSON string `"overview"`
+or `"tasks"`; a missing record selects Overview. A read or format failure selects
+Overview with a section-specific notice; a write failure retains the current
+in-memory selection and reports that it was not saved. Other preference errors
+likewise leave the current page usable with visible feedback.
+
+Both stable inner tabpanel wrappers retain their IDs and hide inactive content.
+Task page scroll restoration and scroll/pagehide listeners are active only when
+Task list is selected and a snapshot is available. Leaving Tasks saves its
+current inner position before Overview can restore its own per-mount memory
+position. Overview starts at zero and never reads or overwrites the persisted
+task offsets. Outer switches retain the already visited task subtree; inner
+switches retain their conditional-content mounting. Graph dialogs close on
+either departure and open only after a new row action. Section/category
+switching, filtering and scroll restoration make no API requests and do not
+alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/implemented/feature/2026-10-21-task-browsing-preferences.md)
 records the persistence rules.
 
 The detail decoder requires `properties.pullRequests` with string `url` and
@@ -776,16 +776,19 @@ Reopening or refreshing details reads current PR associations; an attribute
 update changes the task timestamp and uses the same stale-snapshot prompt.
 
 The canvas supports pan, zoom and fit while editing and connection controls stay
-disabled. The toolbar offers Fullscreen viewing, which fills the browser viewport
-with the same mounted canvas. Exit fullscreen or Escape returns to the inline
-graph without resetting pan, zoom or nodes. Fullscreen isolates background
-controls and cycles Tab through its visible controls; exit restores focus to the
-fullscreen button. Task details remain available above the graph, and Escape
-first leaves detail fullscreen, then closes details, then exits graph fullscreen, after nested menus or confirmations have handled their own layer. Both views share a counted body scroll
-lock so either unmount order restores the original scrolling state. Fullscreen
-is local to the mounted graph and is not saved as a browsing preference. The
-[fullscreen decision](../../.agents/notes/implemented/feature/2026-10-22-task-graph-fullscreen.md)
-records the modal and viewport ownership. Each node has sibling native inspection, Details and direction controls. A long graph starts with its
+disabled. The toolbar offers Fullscreen viewing, which fills the browser viewport with
+the same mounted dialog and canvas. Exit fullscreen or Escape returns to the
+80% dialog without resetting pan, zoom or nodes. One graph-dialog owner isolates
+background controls and cycles Tab through its visible controls in either mode;
+leaving fullscreen restores focus to its toggle. Task details remain available
+above the graph. Escape handles one applicable layer at a time: nested menu or
+confirmation, detail fullscreen, details, graph fullscreen, then the graph
+dialog. Graph and detail dialogs share a counted body scroll lock so either
+unmount order restores the original scrolling state. Neither dialog opening nor
+fullscreen is saved as a browsing preference. The
+[graph-dialog decision](../../.agents/notes/implemented/feature/2026-10-26-task-chain-graph-dialog.md)
+owns presentation and preserves the original
+[fullscreen rationale](../../.agents/notes/implemented/feature/2026-10-22-task-graph-fullscreen.md). Each node has sibling native inspection, Details and direction controls. A long graph starts with its
 root visible at readable zoom; keyboard focus brings offscreen nodes into view.
 In normal mode, the centered body-portal dialog has a 960px maximum width, 24px viewport gutters
 (12px at 600px and below), and a maximum height of
@@ -1127,11 +1130,12 @@ Reloading or returning to a project restores the selected outer section. It
 demonstrates the current outer section layout, retained task subtree and isolated section scroll ownership,
 newest-first category lists, topology-based standalone classification,
 cross-chain prerequisites, direct standalone details and per-project tab, scroll,
-expanded/collapsed and independent completed-item preferences across reloads.
-It uses the final compact row CSS directly, including naturally growing long
-titles and complete status/progress fields. Each expanded graph provides the
-production fullscreen controls, retained pan/zoom, keyboard focus isolation and
-task details above the fullscreen canvas, including on narrow screens. It distinguishes hidden all-complete
+independent completed-item preferences across reloads. Graph dialogs start
+closed and open through a task-chain row action. The fixture uses the production
+compact row and dialog CSS directly, including naturally growing long titles,
+complete status/progress fields, 80% desktop geometry and narrow-screen gutters.
+Each graph dialog provides fullscreen controls, retained pan/zoom, keyboard
+focus isolation and task details above its canvas. It distinguishes hidden all-complete
 items from an empty category and a truly empty project and
 preserves focus when the reveal action disappears. The self-contained
 [task view mockup](../../docs/design/mockups/task-views.html) preserves the earlier
@@ -1485,8 +1489,8 @@ scenario annotations validated in each target's report.
 |---|---|
 | W1 | `project-list`: more than 50 projects, cursor requests, unique cards and navigation to a later-page project |
 | W2 | `project-graph`, `deep-links`, `task-attachments`, `task-detail-page`: project entry, direct HTML reload, complete standalone task/tab/file navigation and history without source-tab state; modal selection remains local |
-| W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained canvas/viewport across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/scroll/expansion restoration, dependency reclassification and consistent full refresh |
-| W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and existing detail/viewport actions |
+| W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained task-list subtree and closed graph dialog across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/scroll restoration and temporary graph-dialog opening, dependency reclassification and consistent full refresh |
+| W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: click-only 80% graph dialog and narrow-screen gutters, list/focus/scroll restoration, complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and detail/viewport actions |
 | W8, TI12–TI14 | `detail-navigation`, `refresh-staleness`, `task-detail-page`: shared complete dialog/page content and actions, title-bar/attachment popouts, task/tab/file history, query-preserving login, nested confirmations, precise/conflicting/unknown writes, automatic full-detail reads and retained geometry/state |
 | W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, correlated errors, empty/not-found states, delayed request replacement and complete size refusal |
 | W10 | Native and container functional targets, exact image identity and dev-ci cleanup receipt |
@@ -1699,8 +1703,8 @@ leftmost rank at 0.8 zoom. The root remains vertically centered when already
 leftmost; otherwise the topmost upstream node starts at a 32px canvas inset.
 Dependency geometry does not require connection-port DOM or per-edge endpoint readiness.
 Graph-local inspection Context supplies presentation roles while controlled node
-geometry/data and memoized content retain stable references. Memoized collapsed
-root rows keep their existing detail-selection behavior until expanded. Changed snapshot indexes
+geometry/data and memoized content retain stable references. Memoized chain rows retain stable props while graph inspection and details change
+inside the separately mounted dialog. Changed snapshot indexes
 refresh all rows; equivalent graph responses retain the existing index. The one-time initial viewport policy is separate
 from explicit fit controls and does not run again on selection or pan.
 

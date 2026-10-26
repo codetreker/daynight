@@ -31,8 +31,10 @@ navigation bar, task details and fullscreen graph so modal users could change
 language while the underlying application was inert. The
 [compact-header decision](../simplification/2026-10-24-compact-task-detail-header.md)
 removes the duplicate task-detail selector; details consume the same current
-application locale through the persistent Provider. Navigation and fullscreen
-graphs continue to expose `LanguageSelector`. The
+application locale through the persistent Provider. Navigation and graph-dialog
+headers expose `LanguageSelector` in normal and fullscreen modes; the
+[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) preserves that
+access while the page is inert. The
 [standalone complete details](../architecture/2026-10-24-standalone-task-detail.md)
 use that same Provider and selector outside the workspace shell, with its own
 localized route title and ordinary browser keyboard behavior.

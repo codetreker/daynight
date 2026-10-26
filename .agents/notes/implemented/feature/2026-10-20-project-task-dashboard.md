@@ -34,12 +34,13 @@ unmount while their hidden wrappers retain stable tabpanel IDs. The
 [project section decision](2026-10-25-project-overview-task-sections.md) keeps the
 visited Task list subtree mounted across outer Overview switches and isolates
 its page scroll ownership. The project
-restores the expanded root or
-an explicitly collapsed list from per-project browser storage; the
-[browsing preference decision](2026-10-21-task-browsing-preferences.md) owns its
-persistence, reconciliation and failure behavior. The project view shares one
-newest-first visible root sequence between list rendering and default-root selection;
-the [presentation decision](2026-10-21-task-chain-presentation.md) owns that order
+opens one graph dialog after an explicit chain-row action; the
+[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces inline
+expansion and persisted opening while retaining one mounted graph. Independent
+section, category, filter and page-position records remain with the
+[browsing preference decision](2026-10-21-task-browsing-preferences.md). The
+[presentation decision](2026-10-21-task-chain-presentation.md) owns newest-first
+visible chain order
 while the complete graph index retains its API order. React Flow owns 220px-wide
 task cards, 96px high without expansion controls and 136px with them, following
 the [conditional footer decision](../bug-fix/2026-10-22-task-card-expansion-footer.md),
@@ -92,9 +93,9 @@ and complete-capacity assertions. Component tests check the changed-node renderi
 counts for open, switch and close transitions. This structure keeps detail-opening
 work proportional to changed styling while retaining the full graph.
 
-Each root row is memoized. Collapsed rows receive a stable null selection, so
-opening or switching task details does not rerender every unrelated root. Expanded
-state, callback and index changes still invalidate the relevant rows; a changed
+Each chain row is memoized. Graph inspection and task-detail selection live
+outside the static row rendering, so those changes do not rerender unrelated
+rows. Callback and index changes still invalidate the relevant rows; a changed
 snapshot index refreshes every row and its statistics. Equivalent responses
 retain the existing index while advancing the successful receipt revision.
 

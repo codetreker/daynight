@@ -115,10 +115,10 @@ existing root placement when the root is already leftmost.
 
 ## Consequences
 
-A single expanded chain can approach the complete-project limit of 1,000 tasks
+A single open chain graph can approach the complete-project limit of 1,000 tasks
 and 5,000 dependencies. Closure and projection use visited sets and iterative
 traversal, remain linear in project nodes plus edges, and avoid deep recursive
-call stacks. Only the expanded chain's current visible induced graph is laid out; component progress
+call stacks. Only the open chain's current visible induced graph is laid out; component progress
 calculation remains based on main sets.
 
 Independent counts prevent external ancestors from changing chain completion,

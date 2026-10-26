@@ -28,15 +28,18 @@ so the existing visible-page synchronization continues in either section. The
 detail dialog is outside both section panels and retains its existing lifetime.
 
 Task list mounts on first use and then stays mounted behind `hidden` and `inert`
-while Overview is visible. This preserves the same graph, inspection and
-viewport across outer section switches. The
-[inner category decision](2026-10-22-project-task-views.md) still owns its original
-conditional content mounting: switching between Standalone tasks and Task chains
-can recreate the canvas while retaining the stored chain witness and category
-page position. Outer retention does not change that existing inner contract.
+while Overview is visible. The original section decision kept the inline graph,
+inspection and viewport across outer switches. The
+[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces inline
+expansion: leaving Task list or its Task chains category closes the dialog and
+clears temporary opening state, so returning does not reopen it. The retained
+subtree continues to preserve list and preference ownership. The
+[inner category decision](2026-10-22-project-task-views.md) retains conditional
+content mounting and independent category page positions.
 
-The [browsing preference records](2026-10-21-task-browsing-preferences.md) keep
-their exact shapes and project scope. Task page scroll ownership is active only
+The independent section, category, filter and scroll
+[browsing preference records](2026-10-21-task-browsing-preferences.md) keep their
+shapes and project scope; the former expansion record is no longer read or written. Task page scroll ownership is active only
 when Task list is selected and a snapshot is available. Leaving Tasks saves the
 current category position and releases its scroll/pagehide listeners during the
 layout boundary; returning restores after the panel becomes visible. Overview
@@ -45,10 +48,10 @@ snapshot arrival never read or overwrite the task offsets. A connected element
 inside hidden Tasks is not a valid detail-close focus target; restoration uses
 an available control in the visible section or the project heading.
 
-Task workspace canvases use `scroll-margin-block: 12px` for native scroll-into-view
-clearance. Browser scrolling can round fractional layout coordinates differently
-from the canvas bounds; block-axis clearance keeps the complete canvas within
-the viewport without changing its box geometry or graph transform.
+The original inline workspace used `scroll-margin-block: 12px` to absorb native
+scroll-into-view rounding without changing canvas geometry. The graph dialog
+now owns a fixed viewport-relative area and restores its list trigger with
+`preventScroll`, preserving the background page position directly.
 
 The [Web specification](../../../../docs/spec/daynight-web.md) owns required
 behavior, and the [Web design](../../../../docs/design/daynight-web.md) owns the

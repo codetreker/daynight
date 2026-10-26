@@ -45,6 +45,16 @@ const expectUnfinishedCounts = (chains: number, standalone: number) => {
   expect(tab('standalone').querySelector('.graph-count-pill')).toHaveTextContent(new RegExp(`^${standalone}$`));
 };
 const row = (id: string) => document.getElementById(`standalone-task-${id}`)!;
+const chainRow = (id = canonicalTask(1)) => document.getElementById(`task-root-${id}`)!;
+const findChainRow = async (id = canonicalTask(1)) => {
+  await waitFor(() => expect(chainRow(id)).toBeVisible());
+  return chainRow(id);
+};
+const openChain = async (id = canonicalTask(1)) => {
+  fireEvent.click(await findChainRow(id));
+  return screen.findByTestId('graph-node');
+};
+const closeChain = () => fireEvent.click(document.querySelector<HTMLButtonElement>('.task-chain-close')!);
 const key = (kind: string, id = project) => `daynight:${kind}:${id}`;
 let root: HTMLDivElement;
 
@@ -253,9 +263,10 @@ describe('project task views', () => {
     expect(graphRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('remembers each filter, selected view and explicit chain collapse across remounts and project navigation', async () => {
+  it('remembers filters and selected view while chain graphs reopen only after a click', async () => {
     let view = mount(); await screen.findByRole('tab', { name: '任务链' });
-    fireEvent.click(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')!);
+    await openChain();
+    closeChain();
     fireEvent.click(screen.getByRole('checkbox', { name: /^显示已完成任务链/ }));
     fireEvent.click(tab('standalone')); fireEvent.click(screen.getByRole('checkbox', { name: /^显示已完成独立任务/ }));
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
@@ -263,7 +274,7 @@ describe('project task views', () => {
     expect(tab('standalone')).toHaveAttribute('aria-selected', 'true'); expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     fireEvent.click(tab('chains')); expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(screen.getByRole('checkbox', { name: /^显示已完成任务链/ })).toBeChecked();
-    expect(JSON.parse(window.localStorage.getItem(key('project-view'))!)).toEqual({ expandedRootId: null });
+    expect(window.localStorage.getItem(key('project-view'))).toBeNull();
     expect(window.localStorage.getItem(key('completed-chains'))).toBe('true');
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks(); await screen.findByRole('heading', { name: otherProject });
     expect(tab('chains')).toHaveAttribute('aria-selected', 'true');
@@ -313,14 +324,18 @@ describe('project task views', () => {
     expect(getTask).toHaveBeenCalledOnce();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     await waitFor(() => expect(tab('standalone')).toHaveFocus());
-    fireEvent.click(tab('chains')); expect(document.getElementById(`task-root-${canonicalTask(3)}`)).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(tab('chains'));
+    expect(chainRow(canonicalTask(3))).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(screen.queryByTestId('graph-node')).toBeNull();
   });
 
   it('keeps details while refresh removes an edge and falls back to the still-active chain tab', async () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     graphRequest.mockResolvedValueOnce(snapshot([seed(canonicalTask(1)), seed(canonicalTask(2), 'todo', [canonicalTask(1)])])).mockResolvedValueOnce(snapshot([seed(canonicalTask(1)), seed(canonicalTask(2))]));
-    mount(); fireEvent.click(await screen.findByTestId('graph-node'));
-    const dialog = await screen.findByRole('dialog'); await within(dialog).findByRole('heading', { name: `任务 ${canonicalTask(1)}` });
+    mount(); fireEvent.click(await openChain());
+    await waitFor(() => expect(document.querySelector('.task-detail-dialog')).toBeVisible());
+    const dialog = document.querySelector<HTMLElement>('.task-detail-dialog')!;
+    await within(dialog).findByRole('heading', { name: `任务 ${canonicalTask(1)}` });
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     await screen.findByRole('heading', { name: '暂无任务链' }); expect(dialog).toBeVisible();
     expectUnfinishedCounts(0, 2);
@@ -399,18 +414,19 @@ describe('project overview and task workspace', () => {
     scroll = 90; fireEvent.scroll(window); fireEvent(window, new Event('pagehide'));
     expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 320, standalone: 540 });
     fireEvent.click(sectionTab('tasks'));
-    const graph = await screen.findByTestId('graph-node');
+    const chain = await findChainRow();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(scroll).toBe(320);
     scroll = 400; fireEvent.scroll(window);
     fireEvent.click(sectionTab('overview'));
     expect(scroll).toBe(90);
-    expect(graph.isConnected).toBe(true);
-    expect(graph).not.toBeVisible();
+    expect(chain.isConnected).toBe(true);
+    expect(chain).not.toBeVisible();
     expect(document.getElementById('project-section-panel-tasks')).toHaveAttribute('inert');
     scroll = 120; fireEvent.scroll(window); fireEvent(window, new Event('pagehide'));
     expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 400, standalone: 540 });
     fireEvent.click(sectionTab('tasks'));
-    expect(await screen.findByTestId('graph-node')).toBe(graph);
+    expect(await findChainRow()).toBe(chain);
     expect(scroll).toBe(400);
     fireEvent.click(sectionTab('tasks'));
     expect(graphRequest).toHaveBeenCalledOnce();
@@ -418,7 +434,8 @@ describe('project overview and task workspace', () => {
     mountOverview();
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
     await screen.findByRole('heading', { name: project });
-    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(await findChainRow()).toBeVisible();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(scroll).toBe(400);
   });
 
@@ -437,7 +454,8 @@ describe('project overview and task workspace', () => {
     expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(screen.queryByRole('tab', { name: '任务链', hidden: true })).toBeNull();
     fireEvent.click(sectionTab('tasks'));
-    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(await findChainRow()).toBeVisible();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(graphRequest).toHaveBeenCalledOnce();
   });
 
@@ -447,22 +465,24 @@ describe('project overview and task workspace', () => {
     mountOverview();
     await screen.findByRole('heading', { name: project });
     fireEvent.click(sectionTab('tasks'));
-    const graph = await screen.findByTestId('graph-node');
+    const chain = await findChainRow();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
     fireEvent.click(sectionTab('overview'));
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(screen.getByRole('region', { name: '项目任务统计' }).querySelector('.stat-number')).toHaveTextContent('6'));
-    expect(screen.getByTestId('graph-node')).toBe(graph);
-    expect(graph).not.toBeVisible();
+    expect(chainRow()).toBe(chain);
+    expect(chain).not.toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '项目不存在' });
-    expect(graph.isConnected).toBe(false);
+    expect(chain.isConnected).toBe(false);
     expect(screen.queryByRole('tab', { name: '任务链', hidden: true })).toBeNull();
     expect(screen.queryByRole('region', { name: '项目任务统计', hidden: true })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '重试' }));
     await screen.findByRole('heading', { name: project });
     expect(screen.queryByTestId('graph-node')).toBeNull();
     fireEvent.click(sectionTab('tasks'));
-    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(await findChainRow()).toBeVisible();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(graphRequest).toHaveBeenCalledTimes(4);
   });
 
@@ -512,7 +532,8 @@ describe('project overview and task workspace', () => {
     expect(screen.getByText(/^浏览器保存的项目视图无效，已默认显示概览/)).toBeVisible();
     await screen.findByRole('heading', { name: project });
     fireEvent.click(sectionTab('tasks'));
-    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(await findChainRow()).toBeVisible();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(window.localStorage.getItem(key('project-section'))).toBe('"tasks"');
     cleanup();
     mountOverview();
@@ -533,7 +554,8 @@ describe('project overview and task workspace', () => {
     expect(screen.getByText(/^无法读取浏览器保存的项目视图/)).toBeVisible();
     await screen.findByRole('heading', { name: project });
     fireEvent.click(sectionTab('tasks'));
-    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(await findChainRow()).toBeVisible();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
     failedRead.mockRestore();
     cleanup();
     mountOverview();
@@ -552,7 +574,8 @@ describe('project overview and task workspace', () => {
     await screen.findByRole('heading', { name: project });
     fireEvent.click(sectionTab('tasks'));
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
-    expect(await screen.findByTestId('graph-node')).toBeVisible();
+    expect(await findChainRow()).toBeVisible();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(screen.getByText(/^项目视图无法保存到浏览器/)).toBeVisible();
     expect(window.localStorage.getItem(key('project-section'))).toBeNull();
     failedWrite.mockRestore();

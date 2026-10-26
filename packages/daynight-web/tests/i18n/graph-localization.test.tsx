@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskGraph as GraphData } from '../../src/api/types';
 import { ChainList } from '../../src/features/task-graph/ChainList';
 import { TaskGraph } from '../../src/features/task-graph/TaskGraph';
+import { TaskChainDialog } from '../../src/features/task-graph/TaskChainDialog';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
 import * as layoutModule from '../../src/features/task-graph/layout';
 import { LanguageSelector } from '../../src/i18n/LanguageSelector';
@@ -49,8 +50,8 @@ describe('localized task graph presentation', () => {
       ],
     };
     const waitingIndex = buildGraphIndex(waitingGraph);
-    const view = renderWithLocale(<><LanguageSelector /><ChainList index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
-      expandedRootId="A" onExpand={noop} onOpenTask={noop} showCompleted={false} onShowCompletedChange={noop} /></>, { locale: 'en' });
+    const view = renderWithLocale(<ChainList index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
+      openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} showCompleted={false} onShowCompletedChange={noop} />, { locale: 'en' });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
     expect(view.container.querySelector('#task-root-A .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('#task-root-A .root-progress-label')).toHaveTextContent('0/2 completed');
@@ -66,11 +67,11 @@ describe('localized task graph presentation', () => {
     const user = userEvent.setup();
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const select = vi.fn();
-    const view = renderWithLocale(<><LanguageSelector /><ChainList index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
-      expandedRootId="A" onExpand={noop} onOpenTask={select} showCompleted={false} onShowCompletedChange={noop} /></>, { locale: 'en' });
+    const view = renderWithLocale(<ChainList index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
+      openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} showCompleted={false} onShowCompletedChange={noop} />, { locale: 'en' });
     await ready(view.container);
-    expect(screen.getByRole('region', { name: 'Task dependency graph for 基础 API' })).toBeTruthy();
-    expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(1);
+    expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
+    expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(2);
     expect(screen.getByRole('checkbox', { name: 'Show completed task chains (1)' })).not.toBeChecked();
     expect(screen.getByText('Chain 3 · External 2 · Tasks 5/5 · Dependencies 4/4')).toBeTruthy();
     const selected = screen.getByRole('button', { name: '合流实现…, In progress' });
@@ -91,8 +92,8 @@ describe('localized task graph presentation', () => {
     const canvas = view.container.querySelector('.task-graph-canvas');
     await user.selectOptions(screen.getByRole('combobox'), 'zh-CN');
     expect(screen.getByRole('combobox')).toHaveFocus();
-    expect(screen.getByRole('region', { name: '基础 API 的任务依赖图' })).toBeTruthy();
-    expect(screen.getAllByText('3 个任务 · 2 个未完成')).toHaveLength(1);
+    expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
+    expect(screen.getAllByText('3 个任务 · 2 个未完成')).toHaveLength(2);
     expect(screen.getByRole('checkbox', { name: '显示已完成任务链（1）' })).not.toBeChecked();
     expect(screen.getByRole('button', { name: '合流实现…，进行中，已选中' })).toBe(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
@@ -165,44 +166,43 @@ describe('localized task graph presentation', () => {
       .toBe('展开后续 1 个任务、1 条依赖，剩余 1 个后续未展开');
   });
 
-  it('switches within fullscreen and preserves keyboard trapping, background inertness, canvas identity and restored focus', async () => {
+  it('switches language inside the fullscreen modal while retaining focus, graph identity and its default size', async () => {
     const user = userEvent.setup();
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
-    const view = renderWithLocale(<><button type="button">Background</button><TaskGraph index={index} rootId="A" onOpenTask={noop} /></>, { locale: 'en' });
+    const onClose = vi.fn();
+    const view = renderWithLocale(<><button type="button">Background</button><TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>, { locale: 'en' });
     await ready(view.container);
-    expect(screen.queryByRole('combobox')).toBeNull();
+    const dialog = screen.getByRole('dialog');
     const toggle = screen.getByRole('button', { name: 'View fullscreen' });
     const canvas = view.container.querySelector('.task-graph-canvas');
     const transform = viewport(view.container).style.transform;
+    expect(screen.getByRole('button', { name: 'Background', hidden: true })).toHaveAttribute('inert');
     fireEvent.click(toggle);
     expect(toggle).toHaveFocus();
-    expect(screen.getByRole('button', { name: 'Background', hidden: true })).toHaveAttribute('inert');
-    const dialog = screen.getByRole('dialog', { name: 'Task dependency graph fullscreen view' });
-    await user.tab();
+    expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
     const selector = within(dialog).getByRole('combobox', { name: '语言 / Language' });
-    expect(selector).toHaveFocus();
     await user.selectOptions(selector, 'zh-CN');
     expect(selector).toHaveFocus();
-    expect(screen.getByRole('dialog', { name: '任务依赖图全屏查看' })).toBe(dialog);
+    expect(screen.getByRole('dialog')).toBe(dialog);
     expect(screen.getByRole('button', { name: '退出全屏' })).toBe(toggle);
     expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);
     expect(viewport(view.container).style.transform).toBe(transform);
-    await user.tab({ shift: true });
-    expect(toggle).toHaveFocus();
-    await user.tab({ shift: true });
-    const last = document.activeElement as HTMLElement;
-    expect(last).not.toBe(toggle);
-    expect(dialog).toContainElement(last);
-    await user.tab();
-    expect(toggle).toHaveFocus();
+    for (let step = 0; step < 18; step++) {
+      await user.tab();
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    }
     fireEvent.keyDown(toggle, { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
+    expect(within(dialog).getByRole('combobox')).toBe(selector);
     expect(toggle).toHaveAccessibleName('全屏查看');
     expect(toggle).toHaveFocus();
-    expect(screen.getByRole('button', { name: 'Background' })).not.toHaveAttribute('inert');
+    expect(screen.getByRole('button', { name: 'Background', hidden: true })).toHaveAttribute('inert');
     expect(viewport(view.container).style.transform).toBe(transform);
     expect(layout).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(toggle, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('retranslates an existing layout failure without repeating the failed layout', async () => {
@@ -219,8 +219,8 @@ describe('localized task graph presentation', () => {
   });
 
   it('renders empty and hidden-completed chain states in the chosen language', () => {
-    const props = { index, allRepresentativeIds: [], representativeIds: [], expandedRootId: null,
-      onExpand: noop, onOpenTask: noop, showCompleted: false, onShowCompletedChange: noop };
+    const props = { index, allRepresentativeIds: [], representativeIds: [], openChainId: null,
+      onOpenChain: noop, onCloseChain: noop, onOpenTask: noop, showCompleted: false, onShowCompletedChange: noop };
     const view = renderWithLocale(<ChainList {...props} />, { locale: 'en' });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');

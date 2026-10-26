@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TaskGraph as TaskGraphData } from '../src/api/types';
 import { ChainList } from '../src/features/task-graph/ChainList';
 import { getInitialTaskViewport, TaskGraph } from '../src/features/task-graph/TaskGraph';
+import { TaskChainDialog } from '../src/features/task-graph/TaskChainDialog';
 import { buildGraphIndex, projectChain } from '../src/features/task-graph/model';
 import * as layoutModule from '../src/features/task-graph/layout';
 import { browsingProjects } from './mockups/browsing-fixture';
@@ -86,10 +87,15 @@ describe('task dependency canvas', () => {
     expect(within(external).queryByText('被阻塞')).toBeNull();
   });
 
-  it('expands the existing canvas and restores its toolbar focus without changing the user viewport or layout', async () => {
+  it('switches the same modal canvas to fullscreen and back without changing its viewport or layout', async () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
-    const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
+    const onClose = vi.fn();
+    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
     await ready(view.container);
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAttribute('aria-modal', 'true');
+    expect(dialog).toHaveClass('task-chain-dialog');
+    expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
     const initialZoom = zoom(view.container);
     fireEvent.click(screen.getByRole('button', { name: '放大' }));
     await waitFor(() => { expect(zoom(view.container)).toBeGreaterThan(initialZoom); });
@@ -100,9 +106,7 @@ describe('task dependency canvas', () => {
     const transform = viewport(view.container).style.transform;
     const enter = screen.getByRole('button', { name: '全屏查看' });
     fireEvent.click(enter);
-    const dialog = screen.getByRole('dialog', { name: '任务依赖图全屏查看' });
-    expect(dialog).toHaveAttribute('aria-modal', 'true');
-    expect(dialog).toHaveClass('task-graph-fullscreen');
+    expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
     expect(screen.getByRole('button', { name: '退出全屏' })).toBe(enter);
     expect(enter).toHaveFocus();
     expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);
@@ -112,71 +116,131 @@ describe('task dependency canvas', () => {
     expect(viewport(view.container).style.transform).toBe(transform);
     nodeButton('基础 API').focus();
     fireEvent.keyDown(nodeButton('基础 API'), { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
     expect(enter).toHaveAccessibleName('全屏查看');
     expect(enter).toHaveFocus();
     expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);
     expect(viewport(view.container).style.transform).toBe(transform);
     expect(layout).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
     fireEvent.click(enter);
     fireEvent.click(screen.getByRole('button', { name: '退出全屏' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
     expect(viewport(view.container).style.transform).toBe(transform);
+    fireEvent.keyDown(enter, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledExactlyOnceWith();
   });
 
-  it('wraps keyboard focus inside fullscreen and leaves Escape outside the graph alone', async () => {
+  it('contains keyboard focus in the modal and handles only local Escape one layer at a time', async () => {
     const user = userEvent.setup();
-    const view = render(<><button type="button">图外按钮</button><TaskGraph index={index} rootId="A" onOpenTask={noop} /></>);
+    const onClose = vi.fn();
+    const view = render(<><button type="button">图外按钮</button><TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} /></>);
     await ready(view.container);
+    const dialog = screen.getByRole('dialog');
+    expect(view.container.querySelector('.task-chain-close')).toHaveFocus();
+    for (let step = 0; step < 20; step++) {
+      await user.tab();
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    }
+    for (let step = 0; step < 20; step++) {
+      await user.tab({ shift: true });
+      expect(dialog).toContainElement(document.activeElement as HTMLElement);
+    }
     fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
     const exit = screen.getByRole('button', { name: '退出全屏' });
-    await user.tab({ shift: true });
-    const last = document.activeElement;
-    expect(last).not.toBe(exit);
-    expect(view.container.querySelector('.task-graph')).toContainElement(last as HTMLElement);
-    await user.tab();
-    expect(exit).toHaveFocus();
-    await user.tab();
-    expect(within(screen.getByRole('dialog')).getByRole('combobox', { name: '语言 / Language' })).toHaveFocus();
-    await user.tab();
-    expect(screen.getByRole('button', { name: '收起到概览' })).toHaveFocus();
-    await user.tab();
-    expect(nodeButton('基础 API')).toHaveFocus();
-    (last as HTMLElement).focus();
-    await user.tab();
-    expect(exit).toHaveFocus();
     fireEvent.keyDown(document.body, { key: 'Escape' });
-    expect(screen.getByRole('dialog', { name: '任务依赖图全屏查看' })).toBeTruthy();
+    expect(dialog).toHaveClass('task-chain-dialog-fullscreen');
     fireEvent.keyDown(exit, { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.keyDown(exit, { key: 'Escape' });
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it('inerts background ancestors and restores their original state on exit and unmount without touching body portals', async () => {
+  it('inerts background ancestors for the whole modal and restores their original state without touching body portals', async () => {
     document.body.style.overflow = 'scroll';
     const portal = document.createElement('div');
     portal.textContent = 'body portal';
     document.body.append(portal);
-    const view = render(<><button type="button" data-testid="outer-background">项目导航</button><section><div data-testid="preexisting-inert" inert={true} /><TaskGraph index={index} rootId="A" onOpenTask={noop} /><button type="button" data-testid="inner-background">任务链</button></section></>);
-    await ready(view.container);
+    const Wrapper = () => {
+      const [opened, setOpened] = useState(false);
+      return <><button type="button" data-testid="outer-background" onClick={() => setOpened(true)}>项目导航</button><section><div data-testid="preexisting-inert" inert={true} />{opened && <TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={() => setOpened(false)} onRestoreFocus={noop} />}<button type="button" data-testid="inner-background">任务链</button></section></>;
+    };
+    const view = render(<Wrapper />);
     const background = [screen.getByTestId('outer-background'), screen.getByTestId('inner-background')];
     const existing = screen.getByTestId('preexisting-inert');
     existing.setAttribute('inert', 'preserve-this-value');
-    const enter = screen.getByRole('button', { name: '全屏查看' });
-    fireEvent.click(enter);
+    fireEvent.click(background[0]!);
+    await ready(view.container);
     background.forEach((element) => { expect(element).toHaveAttribute('inert'); });
     expect(document.body.style.overflow).toBe('hidden');
     expect(portal).not.toHaveAttribute('inert');
+    fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
     fireEvent.click(screen.getByRole('button', { name: '退出全屏' }));
+    background.forEach((element) => { expect(element).toHaveAttribute('inert'); });
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.click(view.container.querySelector('.task-chain-close')!);
     background.forEach((element) => { expect(element).not.toHaveAttribute('inert'); });
     expect(existing).toHaveAttribute('inert', 'preserve-this-value');
     expect(document.body.style.overflow).toBe('scroll');
-    fireEvent.click(enter);
+    fireEvent.click(background[0]!);
+    await ready(view.container);
     view.unmount();
     background.forEach((element) => { expect(element).not.toHaveAttribute('inert'); });
     expect(existing).toHaveAttribute('inert', 'preserve-this-value');
     expect(document.body.style.overflow).toBe('scroll');
     portal.remove();
     document.body.style.overflow = '';
+  });
+
+  it('closes from the backdrop and close button while preserving graph clicks and handled child Escape', async () => {
+    const onClose = vi.fn();
+    const originalRestore = vi.fn();
+    const latestRestore = vi.fn();
+    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={originalRestore} />);
+    await ready(view.container);
+    const dialog = screen.getByRole('dialog');
+    fireEvent.click(dialog);
+    fireEvent.click(view.container.querySelector('.task-graph-canvas')!);
+    const handledEscape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    handledEscape.preventDefault();
+    fireEvent(nodeButton('基础 API'), handledEscape);
+    expect(onClose).not.toHaveBeenCalled();
+    const backdrop = view.container.querySelector('.task-chain-backdrop')!;
+    fireEvent.pointerDown(view.container.querySelector('.task-graph-canvas')!);
+    fireEvent.click(backdrop);
+    expect(onClose).not.toHaveBeenCalled();
+    fireEvent.pointerDown(backdrop);
+    fireEvent.click(backdrop);
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(view.container.querySelector('.task-chain-close')!);
+    expect(onClose).toHaveBeenCalledTimes(2);
+    view.rerender(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={latestRestore} />);
+    view.unmount();
+    expect(originalRestore).not.toHaveBeenCalled();
+    expect(latestRestore).toHaveBeenCalledOnce();
+  });
+
+  it('wraps both keyboard boundaries and recovers focus entering from outside the modal', async () => {
+    const user = userEvent.setup();
+    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    await ready(view.container);
+    const dialog = screen.getByRole('dialog');
+    const first = within(dialog).getByRole('combobox', { name: '语言 / Language' });
+    first.focus();
+    await user.tab({ shift: true });
+    const last = document.activeElement as HTMLElement;
+    expect(last).not.toBe(first);
+    expect(dialog).toContainElement(last);
+    await user.tab();
+    expect(first).toHaveFocus();
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    outside.focus();
+    fireEvent.keyDown(dialog, { key: 'Tab' });
+    expect(first).toHaveFocus();
+    outside.remove();
   });
 
   it('renders all dependency paths without endpoint measurements and still observes the task nodes', () => {
@@ -761,7 +825,7 @@ describe('progressive task visibility', () => {
     const refreshed = buildGraphIndex({ ...fixture, tasks, summary: { ...fixture.summary, total: 100, done: 39 } });
     view.rerender(<TaskGraph index={refreshed} rootId={rootId} onOpenTask={noop} />);
     await rendered(view.container, 69, 68);
-    expect(scope.getByRole('button', { name: '全屏查看' })).toHaveFocus();
+    expect(scope.getByRole('button', { name: '收起到概览' })).toHaveFocus();
   });
 
   it('reveals an offscreen expansion control using intended viewport coordinates before native scroll resets', async () => {
@@ -861,7 +925,7 @@ describe('initial task viewport policy', () => {
   });
 });
 
-describe('root task accordion', () => {
+describe('task chain dialog entries', () => {
   const mergingGraphs = () => {
     const tasks: TaskGraphData['tasks'] = ['A', 'B', 'C', 'D', ...Array.from({ length: 55 }, (_, position) => `leaf-${position}`)].map((id) => {
       const dependsOn = id === 'C' ? ['A'] : id === 'D' ? ['B'] : id.startsWith('leaf-') ? ['D'] : [];
@@ -872,10 +936,10 @@ describe('root task accordion', () => {
     return { before: buildGraphIndex(before), after: buildGraphIndex(after) };
   };
 
-  it.each(['body', 'footer', 'fullscreen'] as const)('restores %s focus to the surviving heading when a merge changes the representative', async (control) => {
+  it.each(['body', 'footer', 'fullscreen'] as const)('keeps %s focus inside the modal when a merge changes the representative', async (control) => {
     const { before, after } = mergingGraphs();
-    const list = (index: typeof before, expandedRootId: string) => <ChainList showCompleted={true} onShowCompletedChange={noop} index={index}
-      allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} expandedRootId={expandedRootId} onExpand={noop} onOpenTask={noop} />;
+    const list = (index: typeof before, openChainId: string) => <ChainList showCompleted={true} onShowCompletedChange={noop} index={index}
+      allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50));
     const card = view.container.querySelector<HTMLElement>('.react-flow__node[data-id="D"]')!;
@@ -885,11 +949,11 @@ describe('root task accordion', () => {
     focused.focus();
     expect(focused).toHaveFocus();
     view.rerender(list(after, 'A'));
-    await waitFor(() => expect(view.container.querySelector('#task-root-A')).toHaveFocus());
-    expect(focused.isConnected).toBe(false);
+    await waitFor(() => expect(screen.getByRole('dialog')).toContainElement(document.activeElement as HTMLElement));
+    if (control !== 'fullscreen') expect(focused.isConnected).toBe(false);
     expect(view.container.querySelector('#task-root-B')).toBeNull();
     expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50);
-    expect(screen.queryByRole('dialog', { name: '任务依赖图全屏查看' })).toBeNull();
+    expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
   });
 
   it('recovers focus to the labeled empty list when the final ordinary edge becomes external', async () => {
@@ -899,35 +963,39 @@ describe('root task accordion', () => {
     const after = buildGraphIndex({ ...graph, tasks: tasks.map((task) => task.id === 'B' ? { ...task, externalDependsOn: ['A'] } : task),
       summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 } });
     const view = render(<ChainList showCompleted={false} onShowCompletedChange={noop} index={before} allRepresentativeIds={['A']}
-      representativeIds={['A']} expandedRootId="A" onExpand={noop} onOpenTask={noop} />);
+      representativeIds={['A']} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(2));
     const focused = view.container.querySelector<HTMLButtonElement>('.react-flow__node[data-id="B"] .task-node-body')!;
     focused.focus();
     view.rerender(<ChainList showCompleted={false} onShowCompletedChange={noop} index={after} allRepresentativeIds={[]}
-      representativeIds={[]} expandedRootId={null} onExpand={noop} onOpenTask={noop} />);
+      representativeIds={[]} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(screen.getByRole('heading', { name: '暂无任务链' })).toBeVisible();
     expect(view.container.querySelector('.completed-chain-control')).toBeNull();
     expect(focused.isConnected).toBe(false);
     await waitFor(() => expect(screen.getByRole('region', { name: '任务链列表' })).toHaveFocus());
   });
 
-  it('preserves outside focus when a merge replaces the expanded representative row', async () => {
+  it('preserves focus in a body-portaled detail when a merge replaces the open representative', async () => {
     const { before, after } = mergingGraphs();
-    const list = (index: typeof before, expandedRootId: string) => <><button type="button">画布外控件</button><ChainList showCompleted={true} onShowCompletedChange={noop} index={index}
-      allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} expandedRootId={expandedRootId} onExpand={noop} onOpenTask={noop} /></>;
+    const outside = document.createElement('button');
+    outside.textContent = '详情关闭控件';
+    document.body.append(outside);
+    const list = (index: typeof before, openChainId: string) => <ChainList showCompleted={true} onShowCompletedChange={noop} index={index}
+      allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />;
     const view = render(list(before, 'B'));
     await waitFor(() => expect(view.container.querySelectorAll('.react-flow__node')).toHaveLength(50));
     view.container.querySelector<HTMLButtonElement>('.react-flow__node[data-id="D"] .task-node-body')!.focus();
-    const outside = screen.getByRole('button', { name: '画布外控件' });
     outside.focus();
     view.rerender(list(after, 'A'));
     await waitFor(() => expect(view.container.querySelector('#task-root-B')).toBeNull());
     expect(outside).toHaveFocus();
+    view.unmount();
+    outside.remove();
   });
 
   it('renders the presented root order without changing the complete graph index', () => {
     const representativeIds = index.representativeIds.toReversed();
-    const view = render(<ChainList showCompleted={true} onShowCompletedChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} expandedRootId={null} onExpand={noop} onOpenTask={noop} />);
+    const view = render(<ChainList showCompleted={true} onShowCompletedChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={representativeIds} openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect([...view.container.querySelectorAll('.root-toggle')].map((root) => root.id)).toEqual(['task-root-F', 'task-root-E', 'task-root-B', 'task-root-A']);
     expect(index.representativeIds).toEqual(['A', 'B', 'E', 'F']);
     expect(index.successors.get('A')).toEqual(['C']);
@@ -937,7 +1005,7 @@ describe('root task accordion', () => {
 
   it('retains collapsed root renders during selection and still applies their new snapshot progress', async () => {
     const progressReads = vi.spyOn(index.components, 'get');
-    const view = render(<ChainList showCompleted={true} onShowCompletedChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} expandedRootId="A" onExpand={noop} onOpenTask={noop} />);
+    const view = render(<ChainList showCompleted={true} onShowCompletedChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     await ready(view.container);
     const originalRoots = [...view.container.querySelectorAll('.root-toggle')];
     const originalCanvas = view.container.querySelector('.task-graph-canvas');
@@ -966,7 +1034,7 @@ describe('root task accordion', () => {
       tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })),
       summary: { total: 6, todo: 0, inProgress: 0, done: 6, ready: 0, blocked: 0 },
     });
-    view.rerender(<ChainList showCompleted={true} onShowCompletedChange={noop} index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} expandedRootId="A" onExpand={noop} onOpenTask={noop} />);
+    view.rerender(<ChainList showCompleted={true} onShowCompletedChange={noop} index={refreshed} allRepresentativeIds={refreshed.representativeIds} representativeIds={refreshed.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
     expect(originalRoots[2]!.querySelector('.root-progress-label')).toHaveTextContent('1/1 已完成');
     expect(originalRoots[2]!.querySelector('.root-status')).toHaveTextContent('已完成');
     expect(originalRoots[0]!.querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
@@ -976,10 +1044,10 @@ describe('root task accordion', () => {
     expect(view.container.querySelectorAll('.root-toggle')[2]).toBe(originalRoots[2]);
   });
 
-  it('shows aggregate chain status and unmounts all but the expanded graph', async () => {
+  it('opens one graph from a static chain row and closes it without changing list identity', async () => {
     const Wrapper = () => {
-      const [expandedRootId, onExpand] = useState<string | null>('A');
-      return <ChainList showCompleted={true} onShowCompletedChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} expandedRootId={expandedRootId} onExpand={onExpand} onOpenTask={noop} />;
+      const [openChainId, setOpenChainId] = useState<string | null>(null);
+      return <ChainList showCompleted={true} onShowCompletedChange={noop} index={index} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)} onOpenTask={noop} />;
     };
     const { container } = render(<Wrapper />);
     const roots = container.querySelectorAll<HTMLButtonElement>('.root-toggle');
@@ -987,29 +1055,37 @@ describe('root task accordion', () => {
     expect(roots[0]!.id).toBe('task-root-A');
     expect(roots[0]!.textContent).toContain('1/3 已完成');
     expect(roots[0]!.querySelector('.root-status')).toHaveTextContent('进行中');
+    for (const root of roots) {
+      expect(root).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(root).not.toHaveAttribute('aria-expanded');
+    }
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(container.querySelector('.task-graph-canvas')).toBeNull();
+    fireEvent.click(roots[0]!);
+    await ready(container);
     expect(nodeShell('基础 API')).toHaveClass('task-node-done');
-    expect(roots[0]!.getAttribute('aria-expanded')).toBe('true');
-    expect(container.querySelectorAll('.task-graph-canvas')).toHaveLength(1);
+    expect(roots[0]!).toHaveAttribute('aria-controls', 'task-graph-A');
     const firstCanvas = container.querySelector('.task-graph-canvas');
+    fireEvent.click(container.querySelector('.task-chain-close')!);
+    expect(container.querySelector('.task-graph-canvas')).toBeNull();
+    expect(roots[0]!).toHaveFocus();
     fireEvent.click(roots[1]!);
     expect((performance.getEntriesByName('daynight:task-layout') as PerformanceMeasure[]).map((entry) => entry.detail)).toEqual([{ rootId: 'B' }]);
-    expect(roots[0]!.getAttribute('aria-expanded')).toBe('false');
-    expect(roots[1]!.getAttribute('aria-expanded')).toBe('true');
+    expect(roots[0]!).not.toHaveAttribute('aria-controls');
+    expect(roots[1]!).toHaveAttribute('aria-controls', 'task-graph-B');
     expect(firstCanvas?.isConnected).toBe(false);
     expect(container.querySelectorAll('.task-graph-canvas')).toHaveLength(1);
-    fireEvent.click(roots[1]!);
+    fireEvent.keyDown(container.querySelector('.task-chain-close')!, { key: 'Escape' });
     expect(container.querySelectorAll('.task-graph-canvas')).toHaveLength(0);
-    fireEvent.click(roots[2]!);
-    await waitFor(() => { expect(container.querySelectorAll('.react-flow__node')).toHaveLength(1); });
-    expect(roots[2]!.textContent).toContain('独立任务');
-    expect(roots[2]!.textContent).toContain('0/1 已完成');
+    expect(roots[1]!).toHaveFocus();
+    expect([...container.querySelectorAll('.root-toggle')]).toEqual([...roots]);
   });
 
-  it('renders task previews as plain text in both the accordion and nodes', () => {
+  it('renders task previews as plain text in the list, modal title and graph nodes', () => {
     const untrusted = '<img src=x onerror=alert(1)>'.repeat(6);
     const snapshot = { ...graph, tasks: graph.tasks.map((task) => task.id === 'A' ? { ...task, titlePreview: untrusted, titleTruncated: true } : task) };
-    const { container } = render(<ChainList showCompleted={true} onShowCompletedChange={noop} index={buildGraphIndex(snapshot)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} expandedRootId="A" onExpand={noop} onOpenTask={noop} />);
-    expect(screen.getAllByText(`${untrusted}…`)).toHaveLength(2);
+    const { container } = render(<ChainList showCompleted={true} onShowCompletedChange={noop} index={buildGraphIndex(snapshot)} allRepresentativeIds={index.representativeIds} representativeIds={index.representativeIds} openChainId="A" onOpenChain={noop} onCloseChain={noop} onOpenTask={noop} />);
+    expect(screen.getAllByText(`${untrusted}…`)).toHaveLength(3);
     expect(container.querySelector('img')).toBeNull();
     expect(container.querySelector('script')).toBeNull();
   });

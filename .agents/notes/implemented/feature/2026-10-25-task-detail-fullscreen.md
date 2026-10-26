@@ -53,7 +53,9 @@ Existing modal inertness, focus containment and counted body scroll ownership
 remain attached to the dialog lifetime and are not reacquired for its mode switch.
 Menus and confirmations retain their own keyboard layer. Graph fullscreen stays
 below the detail portal: Escape handles child, detail fullscreen, detail dialog,
-then graph fullscreen in that order.
+then graph fullscreen and the graph dialog in that order. The
+[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) adds the final layer
+while retaining the detail-owned precedence.
 
 `AttachmentKeyboardOwner`, exported by `AttachmentPreview`, carries the active
 reading `root` and `onEscape` through Reading and the attachment panel. Dialogs

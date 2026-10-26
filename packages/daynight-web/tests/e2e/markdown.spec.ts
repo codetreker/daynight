@@ -1,3 +1,4 @@
+import { openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
 import { decodeTaskGraphJson } from '../../src/api/project-json';
 import { randomUUID } from 'node:crypto';
@@ -362,7 +363,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
       await page.goto(`/projects/${project.id}`);
       await selectTaskList(page);
       await page.getByRole('tab', { name: '任务链', exact: true }).click();
-      await expect(page.locator(`#task-root-${ancestor.id}`)).toHaveAttribute('aria-expanded', 'true');
+      await openChain(page, ancestor.id);
       const graph = page.locator('.task-graph');
       await expect(graph).toHaveAttribute('data-visible-task-count', String(expected.nodes.length));
       await expect(graph).toHaveAttribute('data-total-task-count', String(expected.nodes.length));

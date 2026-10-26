@@ -173,7 +173,7 @@ const AutoRefreshMockup = () => {
       <main className="content" id="main-content" tabIndex={-1}>
         <section className="snapshot-notice" aria-label="自动更新预览控制" style={{ margin: '0 0 24px' }}>
           <p><strong>任务状态自动更新 · 交互预览</strong></p>
-          <p>服务端变更会在下一次自动请求后出现。每 5 秒读取任务快照；切换到其他页签再返回，可检查立即刷新。展开任务链、打开详情或附件后，也可以继续观察同步效果。</p>
+          <p>服务端变更会在下一次自动请求后出现。每 5 秒读取任务快照；切换到其他页签再返回，可检查立即刷新。点击任务链打开依赖图浮层、打开详情或附件后，也可以继续观察同步效果。</p>
           <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 12 }}>
             <button className="button" type="button" onClick={() => change(() => {
               fixture.status = fixture.status === 'in_progress' ? 'done' : fixture.status === 'done' ? 'todo' : 'in_progress';
