@@ -20,11 +20,16 @@ the ordinary-dependency component. A singleton remains a standalone task even
 if its title contains `[Goal]`.
 
 The row body toggles a compact task list with `aria-expanded` and an associated
-`aria-controls` target. The list follows complete snapshot order and contains
-every component member except the representative exactly once. Other starting
-tasks and merged descendants are included; chain-external context remains in
-the graph. Child rows show individual task status and applicable ready or
-blocked markers. They open the existing task-detail dialog, and the list heading
+`aria-controls` target. The list contains every component member except the
+representative exactly once, ordered by status: `in_progress`, then `todo`,
+then `done`. Equal-status tasks retain complete snapshot order. This priority
+applies only to children; top-level Goals retain their existing newest-first
+ordering. Other starting tasks and merged descendants are included;
+chain-external context remains in the graph. The list retains `done`, `in_progress` and `todo` children, including
+completed tasks. The chain-level Show completed control hides or reveals whole
+completed Goals only; it never filters child rows. Standalone completion
+filtering retains its existing individual-task behavior. Child rows show
+individual task status and applicable ready or blocked markers. They open the existing task-detail dialog, and the list heading
 offers the representative task's own details. Aggregate progress still counts
 that representative, so the child count is one less than the aggregate total.
 

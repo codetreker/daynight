@@ -1,8 +1,11 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { TaskStatus } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import type { GraphIndex } from './model';
 import { TaskChainDialog } from './TaskChainDialog';
 import '../../styles/graph.css';
+
+const statusOrder: Readonly<Record<TaskStatus, number>> = { in_progress: 0, todo: 1, done: 2 };
 
 type ChainListProps = {
   readonly index: GraphIndex;
@@ -30,7 +33,8 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
-    return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id));
+    return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
+      .toSorted((left, right) => statusOrder[left.status] - statusOrder[right.status]);
   }, [index, rootId]);
   return <li className="root-row goal-row" data-chain-id={rootId}>
     <div className="goal-header">

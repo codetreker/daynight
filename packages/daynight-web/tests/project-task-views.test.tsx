@@ -106,6 +106,38 @@ const openStandalone = async (id: string) => {
 };
 
 describe('project task views', () => {
+  it('shows completed children of an unfinished Goal while completed-chain visibility is off', async () => {
+    graphRequest.mockResolvedValue(snapshot([
+      seed(canonicalTask(1), 'done'),
+      seed(canonicalTask(2), 'done', [canonicalTask(1)]),
+      seed(canonicalTask(3), 'in_progress', [canonicalTask(1)]),
+      seed(canonicalTask(4), 'todo', [canonicalTask(3)]),
+    ]));
+    mount();
+    const goal = await findChainRow();
+    const showCompleted = screen.getByRole('checkbox', { name: '显示已完成任务链（0）' });
+    expect(showCompleted).not.toBeChecked();
+    fireEvent.click(goal);
+    const list = document.getElementById(`goal-children-${canonicalTask(1)}`)!;
+    const childRows = list.querySelectorAll<HTMLButtonElement>('.goal-task-row');
+    expect(childRows).toHaveLength(3);
+    for (const [position, status] of ['进行中', '待处理', '已完成'].entries()) {
+      expect(childRows[position]).toBeVisible();
+      expect(childRows[position]!.querySelector('.root-status')).toHaveTextContent(status);
+    }
+    expect(goal.querySelector('.root-status')).toHaveTextContent('进行中');
+    const completedChild = childRows[2]!;
+    completedChild.focus();
+    fireEvent.click(completedChild);
+    const dialog = screen.getByRole('dialog');
+    await within(dialog).findByRole('heading', { name: `任务 ${canonicalTask(2)}` });
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => expect(completedChild).toHaveFocus());
+    expect(completedChild).toBeVisible();
+    expect(goal).toHaveAttribute('aria-expanded', 'true');
+    expect(showCompleted).not.toBeChecked();
+  });
+
   it('opens child and Goal details from the expanded list and preserves disclosure and focus on return', async () => {
     mount();
     const goal = await findChainRow();

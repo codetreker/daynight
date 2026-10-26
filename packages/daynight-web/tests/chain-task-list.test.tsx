@@ -53,14 +53,29 @@ describe('Goal task lists', () => {
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
     expect(disclosure()).toHaveAttribute('aria-controls', children().id);
     const rows = within(children()).getAllByRole('button', { name: /已完成|进行中|待处理/ });
-    expect(rows.map((row) => row.querySelector('.root-title')!.textContent)).toEqual(['Other root', 'Implementation', 'Acceptance']);
-    expect(rows.map((row) => row.querySelector('.root-status')!.textContent)).toEqual(['已完成', '进行中', '待处理']);
-    expect(rows[2]).toHaveTextContent('被阻塞');
+    expect(rows.map((row) => row.querySelector('.root-title')!.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
+    expect(rows.map((row) => row.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
+    expect(rows[1]).toHaveTextContent('被阻塞');
     expect(within(children()).queryByText('External')).toBeNull();
     expect(within(children()).queryByText('Standalone')).toBeNull();
     expect(disclosure().querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');
     expect(children()).toHaveTextContent('子任务 · 3');
     expect(document.querySelector('button button')).toBeNull();
+  });
+
+  it('orders children by status while retaining snapshot order within each status', () => {
+    const index = indexOf([
+      task('Goal', 'done'), task('Done first', 'done', ['Goal']), task('Todo first', 'todo', ['Goal']),
+      task('Active first', 'in_progress', ['Goal']), task('Done second', 'done', ['Goal']),
+      task('Active second', 'in_progress', ['Goal']), task('Todo second', 'todo', ['Goal']),
+    ]);
+    const snapshotOrder = [...index.nodes.keys()];
+    render(list(index));
+    fireEvent.click(disclosure());
+    expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual([
+      'Active first', 'Active second', 'Todo first', 'Todo second', 'Done first', 'Done second',
+    ]);
+    expect([...index.nodes.keys()]).toEqual(snapshotOrder);
   });
 
   it('opens graphs independently from keyboard disclosure and passes the correct task and trigger to details', async () => {
@@ -112,6 +127,7 @@ describe('Goal task lists', () => {
     expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
     expect(within(children()).getAllByRole('button')).toHaveLength(3);
     expect(screen.getByRole('button', { name: /Implementation\s*已完成/ })).toBeVisible();
+    expect([...children().querySelectorAll('.goal-task-row .root-title')].map((title) => title.textContent)).toEqual(['Other root', 'Implementation']);
     expect(disclosure().querySelector('.root-progress-label')).toHaveTextContent('3/3 已完成');
   });
 

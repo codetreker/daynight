@@ -230,7 +230,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expect(goal).toHaveAttribute('aria-expanded', 'true');
     await expect(members).toBeVisible();
     expect(await members.locator('.goal-task-row').evaluateAll((rows) => rows.map((row) => row.querySelector('.root-title')!.textContent))).toEqual(
-      [b, c, d, e, f, g].map((task) => task.title),
+      [b, f, g, c, d, e].map((task) => task.title),
     );
     await expect(members.locator('.goal-task-row')).toHaveCount(6);
     const taskRow = page.locator(`#chain-task-${a.id}-${b.id}`);

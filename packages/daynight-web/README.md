@@ -573,10 +573,14 @@ status, ID, creation time, automation permission and known execution timing. An
 unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. A Goal row
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
-ordinary-component member exactly once in snapshot order, including other
-starting tasks in a merge and excluding external prerequisite context. Child
-rows show their own status and applicable ready/blocked markers and open the
-shared task dialog. The expanded heading offers the representative task's own
+ordinary-component member exactly once, with `in_progress` first, then `todo`,
+then `done`; tasks with the same status retain snapshot order. This child
+priority preserves top-level Goal ordering. Other starting tasks in a merge are
+included, while external prerequisite context is excluded. The
+list always retains `done`, `in_progress` and `todo` children; completed tasks
+remain visible. The chain-level Show completed control applies only to whole
+completed Goals and never filters children. Child rows show their own status
+and applicable ready/blocked markers and open the shared task dialog. The expanded heading offers the representative task's own
 details. Aggregate progress still includes that representative. Chain rows
 aggregate only component members: all done means done; otherwise any done or
 in-progress member means in progress; otherwise any todo member means pending;
@@ -647,8 +651,10 @@ separately proves HTTP, database and persistence behavior.
 
 Both lists use newest creation first, with descending IDs breaking equal-time
 ties. Presentation reverses the exact API sequence without reducing timestamp
-precision; updates do not move older tasks. Completed items are hidden by
-default in each category. Each tab has its own completed-count checkbox,
+precision; updates do not move older tasks. Completed standalone tasks and
+whole completed Goal chains are hidden by default in their respective
+categories. Expanded child lists include all task statuses independently of
+that filter. Each tab has its own completed-count checkbox,
 visible/total count and per-project visibility preference. An empty category,
 hidden all-complete items and a truly empty project have distinct states.
 Revealing completed items focuses the persistent checkbox before the
