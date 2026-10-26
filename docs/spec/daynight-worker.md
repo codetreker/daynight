@@ -1,10 +1,10 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选及唯一认领的服务端/typed client 基础已实现；前台运行、SQLite、Herdr、人工管理命令和完整交付仍须运行时验收。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
+本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录已实现；前台运行、Git 工作区、Herdr、人工管理命令和完整交付仍须运行时验收。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
 
 ## 目标与范围
 
-Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓库中可由 Agent 执行的 ready task，使用专用 Herdr 服务运行 Copilot 或 Codex，持续完成任务交付。每个未完成 task 保留自己的 worktree，进程或机器重启后继续原工作。
+Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓库中可由 Agent 执行的 ready task，使用专用 Herdr 服务运行 Copilot 或 Codex，持续完成任务交付。同一有效 claim 保留自己的 worktree，进程或机器重启后继续原工作；原 claim 结束后统一清理，新 claim 使用新工作区与原生会话。
 
 服务端拥有任务资格、身份权限及唯一 claim；worker 拥有调度、执行资源、恢复和按自有 claim 清单对账清理；agent 完成任务要求的交付、验收并最后提交 claim-bound done；Herdr 拥有 agent 终端和会话。认证与三状态设置是独立前置，不由 worker 再实现一套。
 
@@ -14,8 +14,9 @@ Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓�
 
 - `daynight worker run` 与现有 `review run` 一样在前台运行，支持 Linux、macOS 和 Windows。
 - 配置支持多个仓库的地址与本地路径；路径不存在时由系统克隆准备，已存在路径须核对仓库身份并保留已有工作。冲突或身份不明确时显示错误。
-- 配置包含覆盖全部仓库的最大并发，以及全局默认 agent、模型、参数和仓库覆盖值。Worker 在启动或重启时加载配置，不进行热重载。领取时冻结有效执行配置；继续、重试及重启恢复沿用该配置，重新加载的配置作用于后续新领取任务。
-- 配置明确指定工作区或项目内的绝对 `worker.stateDirectory`，保存本 worker 的 SQLite、锁、日志、Herdr 数据和临时资源。启动前校验实际 Herdr 端点路径；路径长度等条件不满足时提示修正配置，不静默改用用户目录。
+- 配置包含覆盖全部仓库的最大并发，以及全局默认 agent、模型、参数和仓库覆盖值。Worker 在启动或重启时加载配置，不进行热重载。实际取得 claim 后，首次 pending 物化时持久冻结有效执行配置；继续、重试及重启恢复沿用该配置，重新加载的配置作用于后续新 claim。已开始执行却缺原配置时暂停核对，不替换为新默认值。
+- 首次启动随机生成稳定 `workerId`，使用共享配置锁与原子替换保存至 `~/.daynight/config.yml`；已有合法身份重启复用，非法值明确拒绝。身份持久化后才允许 claim。
+- 每个用户环境一个 worker，固定 `~/.daynight/worker/` 保存独立 SQLite、实例锁、日志、Herdr 数据和临时资源，不提供状态根覆盖入口。存活的第二实例明确拒绝；失效 worker 锁不证明原生 agent 已停。启动前校验实际 Herdr 端点，路径等条件不满足时明确报告。
 - 实际平台使用 `windows`、`linux`、`macos`。WSL 中的 Linux worker、Herdr 和 agent 属于 `linux`，不允许通过配置冒充其他平台。
 
 ### W-02：Agent 自动执行许可
@@ -50,10 +51,10 @@ AND no active claim
 ```
 
 - 服务端在同一事务中重新核验当前自动执行许可、平台、状态、依赖、精确版本与归属，覆盖查询和领取之间的变化。
-- 同一 task 跨用户、机器和 worker 只有一个有效 agent claim。竞争失败方不得启动执行；请求结果不确定时按已持久化 taskId 读取该任务的实际归属。调用者在每次认领/移交前生成并持久化新的 claimId，并且从不复用旧 ID；服务端保存最后归属并拒绝重复使用其 ID。
+- 同一 task 跨用户、机器和 worker 只有一个有效 agent claim。竞争失败方不得启动执行。自动初次认领在请求内存中生成新的 claimId；稳定 workerId 与 origin/project/repo/path 先持久保存，实际 claim 确认后才登记 pending，不预建任务行或领取台账。未知认领不重放；成功完整的自己 claim 清单找回实际归属后再登记。Transfer 的新 targetClaimId 在 source 管理意图中先持久保存。所有新 claimId 均不复用，服务端保存最后归属并拒绝其 ID 再次使用。
 - 任务使用受保护的 properties 保存当前执行用户、稳定机器 ID 与名称、实际平台、worker/claim 标识、agent 类型、Herdr session/workspace/pane 及原生 agent session ID。尚未取得的会话信息与已取得信息区分，取得后补全。
 - 初始认领/人工接续用户以服务端认证身份为准，移交目标由服务端验证为当前项目成员。完整 properties 必须包含 worker:null 或 active/released/completed 的归属记录；普通 create/PATCH 即使原样或以 null 提供 worker 也拒绝，PR 等其他属性更新保留 worker。
-- 会话补全、执行更新、移交与完成均核验当前 claim 与精确任务版本，旧执行方不能覆盖新归属或完成新执行方的任务。普通状态修改不能释放 active claim，或开始/完成 released 的未完成成果；原 owner/admin 可通过显式人工 resume 确认原工作区连续性后接续，保留人工执行不受自动许可/平台过滤的规则。
+- 会话补全、执行更新、移交与完成均核验当前 claim 与精确任务版本，旧执行方不能覆盖新归属或完成新执行方的任务。普通状态修改不能释放 active claim，或开始/完成 released 的未完成成果；显式人工 resume 保留原 owner/admin、previousClaimId 与版本核对，人工执行不受自动许可/平台过滤。现有服务的连续性约束及目标修订见 W-08。
 - Worker 的任务查询、认领、归属更新、完成及管理操作直接调用 CLI 进程内 typed ApiClient，不启动 daynight 子进程；每次 HTTP 操作独立有界，未知结果读取核对而不自动重发。
 
 ### W-05：调度与全局并发
@@ -65,13 +66,13 @@ AND no active claim
 
 ### W-06：稳定的 task worktree
 
-- Worktree 由系统创建和销毁，每 task 一个。同一未完成 task 的继续、重试和恢复始终使用原 worktree、分支和成果。
-- 退出、失败和崩溃保留未完成 worktree；资源缺失或身份不一致时保留现场并报告，不能新建空目录掩盖恢复失败。
-- 完成交付后删除 worktree，保留执行历史和交付引用。清理只能作用于本 task 所拥有的资源。
+- Worktree 由系统创建和销毁，每 task 一个，分支为 `daynight/<taskId>`，目录为 `.worktrees/daynight/<taskId>`。同一仍有效 claim 的继续、重试和恢复始终使用原 worktreeId、分支和成果。
+- 普通退出、失败和崩溃保留仍归属执行的 worktree/native history/config；资源缺失或身份不一致时保留现场并报告，不能新建空目录掩盖恢复失败。
+- 原 claim 终止后统一删除本次 worktree，保留分支、执行历史和交付引用。新 claim 使用新 worktreeId 和原生会话；规范路径仍被旧 claim 占用时等待或报告冲突。创建/删除均核对实际仓库与 claim/worktreeId 标记，只操作本次执行资源。
 
 ### W-07：专用 Herdr 与 agent 执行
 
-- Worker 自动启动和管理自己的专用 Herdr 实例，通过 Herdr API 启动、输入和观察 Copilot / Codex；不干扰人工或其他 worker 的实例。
+- 每个 worker 自动启动和管理一个专用 Herdr 实例，每 task 使用其中独立的 workspace/pane/agent，通过 Herdr API 启动、输入和观察 Copilot / Codex；不干扰人工或其他 worker 的实例。私有 `[session] resume_agents_on_restore=false`，worker 是原生 agent 唯一启动/恢复者。
 - Herdr 与原生 agent 的会话关联可持久化，重启时核对并继续原执行，不要求人工重复输入已取得的标识。
 - 启动和恢复前校验官方 Herdr/native agent 会话集成，以及恢复所需的原生历史是否可用；不满足时显示具体问题和修正方法并暂停该任务。Worker 不自动全局安装集成或修改全局 agent 配置。
 - 开发 task 的 agent 负责实现、验证、提交、工作分支推送、PR、CI/review 反馈、合并和合并后验收，并遵守仓库权限、门禁与授权要求。其他允许 Agent 自动执行的 task 遵守其阶段和验收条件。
@@ -80,24 +81,28 @@ AND no active claim
 ### W-08：人工介入与显式移交
 
 - 需要人工输入或授权时保留自动执行许可、平台、claim、worktree、原会话和并发名额，前台显示等待原因及原会话入口；人工通过 Herdr 处理后继续。
-- 原执行用户或项目管理员可显式移交，并受项目访问权限约束。授权提交者与目标分别校验，目标必须是当前项目成员；接收者身份不自动授予替换原归属的权限。移交前须确认旧 agent 已停止，且原 worktree 成果和执行关联可继续使用。
-- 无法确认停止、无法取得成果或执行平台不合格时保持暂停和原归属。跨机器移交必须先取得可继续的原成果，不能静默重新开始。
-- 移交保持唯一有效 claim，使旧 claim 失去更新能力；保留任务 in_progress 与执行计时，重新记录目标认领时间。释放返回 todo 并清空执行时间，保留原资源绑定；重新认领或人工 resume 使用原 worktreeId/agent 与连续性确认，开始新的执行区间。
+- 原执行用户或项目管理员可显式 release/transfer，并受项目访问权限约束。授权提交者与目标分别校验，目标必须是当前项目成员；接收者身份不自动授予替换原归属的权限。
+- 主动管理先持久保存具体意图，抑制普通恢复，完成原 agent 停止、workspace 关闭和 worktree 删除后，才绑定用户决定的精确版本提交远端变更。停止或删除失败保留原责任；未知远端结果先核对，不重放、不重建旧业务资源。
+- Transfer 保持唯一有效 claim，使旧 claim 失去更新能力；保留任务 in_progress 与执行计时，重新记录目标认领时间。Release 返回 todo 并清空执行时间。两者的本地退出与 done 使用相同终止清理。
+- Transfer target 与 released task 的显式 resume 都使用新 claimId/worktreeId、自己的冻结配置和新原生会话，不依赖源 worktree/native history 连续，不使用 SQLite 快照传输或未授予的目标 pending。普通 daemon 不立即重领 released task，由显式 resume 再启动。
+- 既有服务端 continuityConfirmed、同 worktreeId/agent 的原成果接续约束仍由[归属架构](../design/daynight-worker-claims.md)描述；人工管理协议交付须修订这些约束，保留权限、精确版本、停止确认与 fencing。本机存储交付不代表这些服务修订已完成。
 
 ### W-09：SQLite、退出与恢复
 
-- SQLite 保存当前执行状态与恢复所需检查点：worker 身份、仓库轮转位置、claim、冻结配置、worktree/分支、会话关联、最新状态、交付引用、失败原因、恢复次数、暂停与待清理事项。
+- 固定状态根仅有一份 SQLite，业务表仅为 projects 与 tasks。Projects 保存 origin/project/repo/path；tasks 每行对应一个实际 claim，保存 pending/active/done、冻结配置、实际资源绑定、恢复次数/暂停/授权、原清理截止与输入/结果、source 管理意图及远端提交结果。结束行保留，不另建任务台账或通用动作引擎。
+- 项目映射在远端 claim 前保存；取得实际 claim 后先 pending，确认启动条件并提交 active 后才创建资源。同一 origin/project/task 至多一条 active，未收尾执行期间项目绑定不变；服务范围与当次仓库路径随任务保留，不能因换服或改映射而误认资源。
 - 启动和持续对账通过既有 task list 的 workerId 筛选，成功汇总当前认证用户/worker 全部项目与分页的有效 active claim；不附加候选资格条件，不把失败或部分清单当成空集合。原 claimId 不在完整清单就触发相同本地清理，不按 task 状态或单 task GET 分类原因。同 task 新 claim 不保护旧 claim，完成本轮对账后才登记新领取。
 - 同一仍归属执行的恢复核对 SQLite、Git 和 Herdr 的原资源与冻结配置；新发现 claim 先登记 pending。显式写入的版本和未知结果仍可按 taskId 读取核对，不确定的外部动作不能按“未发生”重做。
-- Worker 崩溃或机器失联不自动释放 claim，由原 worker 恢复或人工移交。worker 死亡不证明 agent 或工具已停止；无法确认原执行是否停止时暂停，避免重复 agent。
-- Ctrl+C 停止新领取、当前 agent 与专用 Herdr，保存可恢复状态并保留未完成 claim/worktree。重启继续原任务。
-- 异常退出或基础设施故障在原 worktree/会话上按配置上限恢复；计数、原因及暂停状态持久化，重启不清零。超限保留资源与名额，等待人工处理或明确恢复操作。
+- Worker 崩溃或机器失联不自动释放 claim，由原 worker 恢复或人工结束/移交。Worker 死亡不证明 agent 或工具已停止；无法确认原执行是否停止时暂停，避免重复 agent。
+- Ctrl+C 停止新领取，以独立且受原截止约束的清理取消范围记录 shutdown 并给原 agent 清理外部资源的机会，确认 agent 停止和 workspace 关闭后关闭专用实例，保留 claim/worktree/native/config。正常重启不消耗故障恢复预算，不清除原暂停或重试授权；旧 shutdown 的停止确认不能应用于新启动的 agent。
+- 异常退出或基础设施故障在原 worktree/会话上按配置上限恢复；计数、原因及暂停状态持久化，重启不清零。超限保留资源与名额，等待人工处理或明确恢复操作。已存在 cleanup/control 意图时只推进其收尾，不进行普通恢复。
 
 ### W-10：Agent 完成与资源清理
 
 - 明确 worker-managed 上下文传入 project/task/claim、worktree/branch 和冻结配置；agent 复用已认领执行，完成全部任务交付、验收与证据后，最后使用 CLI set-status done 的显式 --claim-id 与观察版本提交既有 PUT status。开发任务仍满足必要 PR、检查/审查、授权合并和验收。worker 不独立解释业务验收或再次提交 done，只按成功完整自有 claim 清单对账。
 - Agent 负责执行并记录任务验收；其验收文字是执行方声明，不是任意自然语言条件的独立证明。证据缺失、相互冲突或任务明确要求人工验收时保持 task 未完成，在原会话请求处理；不要求通用 Markdown 验收解析器或形式化证明。
-- 完成后停止本 task 执行资源并删除 worktree，保留 SQLite 执行记录、PR/交付引用及 claim/session 标识。完成后修改自动执行许可或平台不能改写历史归属和实际平台。
+- 原 claim 从自己成功完整清单退出后，统一持久保存最多十分钟的固定截止，通知原 agent 清理 worktree 外明确归属的临时文件/进程；清理结束或原截止到达后，确认 agent 停止、关闭任务 workspace/pane、删除 worktree，最后置本机 done。Done/release/transfer 不保留源 worktree。历史、分支、task 交付引用及 claim/session 标识保留。
+- 清理重启沿用原截止和提交结果，不重发未知输入，不创建新清理 agent；清理期间继续占并发名额。完成后修改自动执行许可或平台不能改写历史归属和实际平台。
 - 删除失败记录具体错误和待清理状态，重启后只继续清理，不能重新执行已完成任务。清理不能影响其他任务或人工 Herdr。
 
 ### W-11：可观察性与交付验收
@@ -114,9 +119,9 @@ AND no active claim
 | W-02、W-03 | 验证旧任务迁移、新任务默认值、开关双向确认及取消/失败/未知结果、平台清除；覆盖自动执行许可、ready 与全部要求平台/worker 平台组合；不合格任务不会遮住后续合格候选或启动资源。 |
 | W-04 | 多用户/机器/worker 竞争只出现一个有效 claim；覆盖查询后资格变化、旧版本、未知结果及旧 claim 更新；任务属性保留 PR 和实际会话关联。 |
 | W-05 | 多仓库持续有任务时轮流获得机会；空与不兼容仓库被跳过；CI/review、人工等待及超限暂停均计入全局上限。 |
-| W-06、W-08 | 继续和恢复使用原 worktree；人工进入原会话后继续；授权移交确认停止和成果连续性；越权、平台不合格或资源缺失保持拒绝或暂停。 |
+| W-06、W-08 | 继续和恢复使用原 worktree；人工进入原会话后继续；显式结束统一删除旧 worktree，新 claim 创建新工作区；越权、平台不合格或有效 claim 的资源缺失保持拒绝或暂停。 |
 | W-09 | Ctrl+C、强制结束 worker、Herdr 重启及机器重启后不产生第二个执行 agent；在外部动作结果落库前后注入中断，正确核对实际结果；恢复预算和暂停跨重启保持。 |
-| W-10 | 已核验的开发任务合并并完成合并后验收，task 完成后删除 worktree且历史仍在；交付证据不足时不完成；清理失败跨重启只重试清理。 |
+| W-10 | 已核验的开发任务合并并完成合并后验收，原 claim 退出自己清单后删除 worktree 且历史仍在；agent 交付证据不足时不完成；清理失败跨重启只重试清理。 |
 | W-11 | 前台和自动执行许可/平台 UI 展示与真实状态一致；错误、未知结果和人工处理入口可观察；各验收结果能关联到实际源代码、平台与运行环境。 |
 
 完整运行时验收要求实际门禁及端到端验收通过，文档不能替代运行时证据。
