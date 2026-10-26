@@ -80,8 +80,8 @@ const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment
   return { context, manager, workspaces, panes, agents, tabs, calls, prompts, processes, executing, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
-  const binding = await f.manager.prepareWorkspace(f.context, operation());
-  const result = await f.manager.start(f.context, binding, { configuration: { ...configuration, agent: f.context.agent, args: f.context.agent === "codex" ? configuration.args : ["--allow-all-tools"] }, prompt: "initial" }, operation());
+  const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
+  const result = await f.manager.start(f.context, binding, { workspaceEvidence, configuration: { ...configuration, agent: f.context.agent, args: f.context.agent === "codex" ? configuration.args : ["--allow-all-tools"] }, prompt: "initial" }, operation());
   expect(result.kind).toBe("started"); return binding;
 };
 
@@ -108,11 +108,44 @@ describe("native argument ownership", () => {
 
 describe("task workspace ownership and native input", () => {
   it("creates and reconciles one full-identity workspace without mutating other workspaces", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     expect(f.workspaces[0]!.label).toBe(herdrExecutionLabel(f.context));
-    expect(await f.manager.prepareWorkspace(f.context, operation())).toEqual(binding);
+    expect(workspaceEvidence).toEqual({ binding, ownerLabel: herdrExecutionLabel(f.context), environment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } });
+    expect(await f.manager.prepareWorkspace(f.context, operation())).toEqual({ binding, workspaceEvidence: null });
     expect(f.calls.filter((value) => value.method === "workspace.create")).toHaveLength(1);
     expect(herdrExecutionAgentName(f.context)).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
+  });
+  it("requires environment proof for a restored empty pane even when no native reference exists", async () => {
+    const f = await fixture(); const created = await f.manager.prepareWorkspace(f.context, operation());
+    f.panes[0]!.terminal_id = "cold-restored-empty-terminal";
+    const adopted = await f.manager.prepareWorkspace(f.context, operation());
+    expect(adopted.workspaceEvidence).toBeNull(); expect(adopted.binding.terminalId).not.toBe(created.binding.terminalId);
+    const start = await f.manager.start(f.context, adopted.binding, { configuration, prompt: "must not run with daemon XDG", workspaceEvidence: created.workspaceEvidence }, operation());
+    expect(start).toMatchObject({ kind: "rebind-required", reason: "unverified-workspace-environment", promptSubmission: "not-submitted" });
+    const missing = await f.manager.start(f.context, adopted.binding, { configuration, prompt: "no receipt", workspaceEvidence: adopted.workspaceEvidence }, operation());
+    expect(missing.kind).toBe("rebind-required"); expect(f.preflights()).toBe(0);
+    expect(f.calls.some((value) => value.method === "agent.start" || value.method === "agent.prompt")).toBe(false);
+  });
+  it("reuses a persisted creation receipt after worker restart only for the same daemon terminal", async () => {
+    const f = await fixture(); const created = await f.manager.prepareWorkspace(f.context, operation());
+    const restarted = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => undefined }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } });
+    const adopted = await restarted.prepareWorkspace(f.context, operation()); expect(adopted.workspaceEvidence).toBeNull();
+    expect((await restarted.start(f.context, adopted.binding, { configuration, prompt: "unknown environment" }, operation())).kind).toBe("rebind-required");
+    const started = await restarted.start(f.context, adopted.binding, { configuration, prompt: "known original environment", workspaceEvidence: created.workspaceEvidence }, operation());
+    expect(started.kind).toBe("started"); expect(f.prompts).toEqual(["known original environment"]);
+  });
+  it("does not infer environment from a same-daemon resource after a lost create acknowledgement", async () => {
+    const f = await fixture(); const lost: HerdrRpcClient = { request: async (method, params, op) => {
+      const result = await f.rpc.request(method, params, op);
+      if (method === "workspace.create") throw new HerdrRpcError("lost create ACK", { method, requestId: "lost-create", submission: "unknown" });
+      return result;
+    } };
+    const creator = createHerdrAgentManager({ rpc: lost, session: "w", preflight: { verifyStart: async () => undefined }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } });
+    await expect(creator.prepareWorkspace(f.context, operation())).rejects.toMatchObject({ action: "workspace.create", submission: "unknown" });
+    const adopted = await f.manager.prepareWorkspace(f.context, operation()); expect(adopted.workspaceEvidence).toBeNull();
+    expect((await f.manager.start(f.context, adopted.binding, { configuration, prompt: "do not guess", workspaceEvidence: adopted.workspaceEvidence }, operation())).kind).toBe("rebind-required");
+    expect(f.calls.filter((value) => value.method === "workspace.create")).toHaveLength(1);
+    expect(f.calls.some((value) => value.method === "agent.start" || value.method === "agent.prompt")).toBe(false);
   });
   it("snapshots and forwards only caller XDG roots to new workspaces and force-stop anchors", async () => {
     const original = { XDG_CONFIG_HOME: "/caller/config", XDG_STATE_HOME: "/caller/state" }; const f = await fixture("codex", original);
@@ -134,12 +167,12 @@ describe("task workspace ownership and native input", () => {
     expect(f.calls).toEqual([]);
   });
   it("enumerates typed owned resources and restored shells without interpreting lifecycle", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.workspaces.push({ workspace_id: "human", label: "" });
     const resources = await f.manager.listResources(operation());
     expect(resources).toEqual([{ owner: { serverOrigin: f.context.serverOrigin, projectId, taskId, claimId, worktreeId }, workspaceId: binding.workspaceId, panes: [{ binding, cwd: f.context.cwd, kind: null, status: "unknown", launchPending: false, interactiveReady: false, nativeSession: null, stateChangeSeq: null, completionSeq: null }] }]);
     expect(parseHerdrExecutionLabel("ordinary label")).toBeNull();
-    await f.manager.start(f.context, binding, { configuration, prompt: "first" }, operation());
+    await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "first" }, operation());
     expect((await f.manager.listResources(operation()))[0]!.panes[0]!.nativeSession?.sessionId).toBe(nativeId);
   });
   it("exposes native activity counters and rejects missing, negative or imprecise observations", async () => {
@@ -163,7 +196,7 @@ describe("task workspace ownership and native input", () => {
     await expect(f.manager.listResources(operation())).rejects.toThrow("unassociated native agent");
   });
   it("rejects duplicate labels, foreign cwd/terminal identity and a new claim at an occupied cwd", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.workspaces.push({ ...f.workspaces[0], workspace_id: "duplicate" });
     await expect(f.manager.observe(f.context, binding, operation())).rejects.toThrow("duplicated"); f.workspaces.pop();
     await expect(f.manager.observe(f.context, { ...binding, terminalId: "foreign" }, operation())).rejects.toThrow("identity has changed");
@@ -174,12 +207,12 @@ describe("task workspace ownership and native input", () => {
   it("does not resolve unrelated missing worktrees while preparing another task", async () => {
     const f = await fixture(); f.workspaces.push({ workspace_id: "other", label: "ordinary" });
     f.panes.push({ workspace_id: "other", pane_id: "other-pane", terminal_id: "other-terminal", cwd: path.join(f.context.cwd, "missing unrelated task"), agent_status: "unknown" });
-    expect((await f.manager.prepareWorkspace(f.context, operation())).paneId).toBe("pane-1");
+    expect((await f.manager.prepareWorkspace(f.context, operation())).binding.paneId).toBe("pane-1");
   });
   it.each(["codex", "copilot"] as const)("submits the caller's exact multiline %s prompt after readiness", async (kind) => {
-    const f = await fixture(kind); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(kind); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     const prompt = "调用方内容\n\nline two\twith space  \n";
-    const result = await f.manager.start(f.context, binding, { configuration: { agent: kind, model: "fixed-model", args: [] }, prompt }, operation());
+    const result = await f.manager.start(f.context, binding, { workspaceEvidence, configuration: { agent: kind, model: "fixed-model", args: [] }, prompt }, operation());
     expect(result.kind).toBe("started"); expect(f.prompts).toEqual([prompt]); expect(f.preflights()).toBe(1);
     expect(f.calls.findIndex((value) => value.method === "agent.start")).toBeLessThan(f.calls.findIndex((value) => value.method === "agent.prompt"));
     expect(f.calls.find((value) => value.method === "agent.prompt")!.params.target).toBe(binding.paneId);
@@ -191,16 +224,22 @@ describe("task workspace ownership and native input", () => {
     expect(result.kind).toBe("reconnected"); expect(f.prompts).toEqual([]); expect(f.preflights()).toBe(1);
     expect(f.calls.filter((value) => value.method === "agent.start")).toHaveLength(1);
   });
+  it("does not rewrite a live agent's environment when the reconnecting caller has different XDG roots", async () => {
+    const f = await fixture(); const binding = await launch(f); const before = f.calls.length;
+    const restarted = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => { throw new Error("A reconnect must not preflight a new launch."); } }, workspaceEnvironment: { XDG_CONFIG_HOME: "/different/config", XDG_STATE_HOME: "/different/state" } });
+    expect((await restarted.start(f.context, binding, { configuration, prompt: "do not resend" }, operation())).kind).toBe("reconnected");
+    expect(f.calls.slice(before).every((value) => value.method === "session.snapshot")).toBe(true); expect(f.prompts).toEqual(["initial"]);
+  });
   it("allows readiness established by the official native report without heuristic agent text", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); delete agent.agent; return { type: "agent_started", agent, argv: [f.context.agent, ...params.args as string[]] }; });
-    const result = await f.manager.start(f.context, binding, { configuration, prompt: "opaque" }, operation());
+    const result = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "opaque" }, operation());
     expect(result.kind).toBe("started"); expect(f.prompts).toEqual(["opaque"]);
-    expect((await f.manager.start(f.context, binding, { configuration, prompt: "never resend" }, operation())).kind).toBe("reconnected");
+    expect((await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "never resend" }, operation())).kind).toBe("reconnected");
     expect(f.calls.filter((value) => value.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual(["opaque"]);
   });
   it.each([false, true])("delivers one first prompt before lazy SessionStart identity (resume=%s)", async (resume) => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => {
       if (method === "agent.start") {
         const agent = f.launch(params); delete agent.agent_session;
@@ -214,12 +253,12 @@ describe("task workspace ownership and native input", () => {
       }
       return undefined;
     });
-    const result = await f.manager.start(f.context, binding, { configuration, prompt: "first\ncaller prompt", ...(resume ? { resumeSessionId: nativeId } : {}) }, operation());
+    const result = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "first\ncaller prompt", ...(resume ? { resumeSessionId: nativeId } : {}) }, operation());
     expect(result.kind).toBe("started"); expect(result.promptSubmission).toBe("submitted"); expect(result.observation.nativeSession?.sessionId).toBe(nativeId); expect(f.prompts).toEqual(["first\ncaller prompt"]);
     expect(f.calls.find((value) => value.method === "agent.start")!.params.args).toEqual(buildHerdrAgentArguments(configuration, resume ? nativeId : undefined));
   });
   it("requires explicit never-submitted evidence to deliver first input after blocked readiness", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => {
       if (method === "agent.start") {
         const agent = f.launch(params); delete agent.agent_session; agent.agent_status = "blocked";
@@ -231,45 +270,45 @@ describe("task workspace ownership and native input", () => {
       }
       return undefined;
     });
-    const waiting = await f.manager.start(f.context, binding, { configuration, prompt: "only once" }, operation()); expect(waiting.kind).toBe("waiting"); expect(waiting.promptSubmission).toBe("not-submitted");
+    const waiting = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "only once" }, operation()); expect(waiting.kind).toBe("waiting"); expect(waiting.promptSubmission).toBe("not-submitted");
     if (waiting.launchEvidence === null) throw new Error("Expected the verified launch receipt.");
     f.agents[0]!.agent_status = "unknown";
-    expect((await f.manager.start(f.context, binding, { configuration, prompt: "not permission to resend" }, operation())).kind).toBe("reconnected"); expect(f.prompts).toEqual([]);
-    expect((await f.manager.start(f.context, binding, { configuration, prompt: "flag alone is insufficient", initialPromptNotSubmitted: true }, operation())).kind).toBe("rebind-required"); expect(f.prompts).toEqual([]);
-    const continued = await f.manager.start(f.context, binding, { configuration, prompt: "only once", initialPromptNotSubmitted: true, launchEvidence: waiting.launchEvidence }, operation());
+    expect((await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "not permission to resend" }, operation())).kind).toBe("reconnected"); expect(f.prompts).toEqual([]);
+    expect((await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "flag alone is insufficient", initialPromptNotSubmitted: true }, operation())).kind).toBe("rebind-required"); expect(f.prompts).toEqual([]);
+    const continued = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "only once", initialPromptNotSubmitted: true, launchEvidence: waiting.launchEvidence }, operation());
     expect(continued.kind).toBe("started"); expect(f.prompts).toEqual(["only once"]); expect(f.calls.filter((value) => value.method === "agent.start")).toHaveLength(1);
   });
   it("preserves submitted input fact when subsequent official identity observation is cancelled", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
     f.hook(async (method, params) => {
       if (method === "agent.start") { const agent = f.launch(params); delete agent.agent_session; return { type: "agent_started", agent, argv: [f.context.agent, ...params.args as string[]] }; }
       if (method === "agent.prompt") { f.prompts.push(String(params.text)); setTimeout(() => controller.abort(new Error("stop identity observation")), 5); return { type: "agent_prompted", agent: f.agents[0] }; }
       return undefined;
     });
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "submitted before identity" }, op)).rejects.toMatchObject({ action: "agent.start", submission: "unknown", promptSubmission: "submitted", launchEvidence: { binding, referenceBaseline: "empty", argv: ["codex", ...buildHerdrAgentArguments(configuration)] } });
+    await expect(f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "submitted before identity" }, op)).rejects.toMatchObject({ action: "agent.start", submission: "unknown", promptSubmission: "submitted", launchEvidence: { binding, referenceBaseline: "empty", argv: ["codex", ...buildHerdrAgentArguments(configuration)] } });
     expect(f.prompts).toEqual(["submitted before identity"]);
-    expect((await f.manager.start(f.context, binding, { configuration, prompt: "must not resend" }, operation())).kind).toBe("reconnected"); expect(f.prompts).toHaveLength(1);
+    expect((await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "must not resend" }, operation())).kind).toBe("reconnected"); expect(f.prompts).toHaveLength(1);
   });
   it("refuses a different post-input resume identity without marking the recovery restored", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => {
       if (method === "agent.start") { const agent = f.launch(params); delete agent.agent_session; return { type: "agent_started", agent, argv: [f.context.agent, ...params.args as string[]] }; }
       if (method === "agent.prompt") { f.prompts.push(String(params.text)); setTimeout(() => { f.agents[0]!.agent_session = { source: "herdr:codex", agent: "codex", kind: "id", value: worktreeId }; }, 5); return { type: "agent_prompted", agent: f.agents[0] }; }
       return undefined;
     });
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "recovery once", resumeSessionId: nativeId }, operation())).rejects.toMatchObject({ submission: "unknown", promptSubmission: "submitted" });
+    await expect(f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "recovery once", resumeSessionId: nativeId }, operation())).rejects.toMatchObject({ submission: "unknown", promptSubmission: "submitted" });
     expect(f.prompts).toEqual(["recovery once"]);
   });
   it("returns blocked without submitting input and refuses a different resumed native ID", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: [f.context.agent, ...params.args as string[]] }; });
-    const waiting = await f.manager.start(f.context, binding, { configuration, prompt: "do not submit" }, operation()); expect(waiting.kind).toBe("waiting"); expect(f.prompts).toEqual([]);
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "recover", resumeSessionId: worktreeId }, operation())).rejects.toThrow("differs");
+    const waiting = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "do not submit" }, operation()); expect(waiting.kind).toBe("waiting"); expect(f.prompts).toEqual([]);
+    await expect(f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "recover", resumeSessionId: worktreeId }, operation())).rejects.toThrow("differs");
   });
   it("restarts the exact original session with frozen model and args before caller recovery text", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
-    await f.manager.start(f.context, binding, { configuration, prompt: "original recovery\ncontext", resumeSessionId: nativeId }, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
+    await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "original recovery\ncontext", resumeSessionId: nativeId }, operation());
     expect(f.calls.find((value) => value.method === "agent.start")!.params.args).toEqual(buildHerdrAgentArguments(configuration, nativeId));
     expect(f.prompts).toEqual(["original recovery\ncontext"]);
   });
@@ -282,44 +321,68 @@ describe("task workspace ownership and native input", () => {
     expect(f.calls.filter((value) => value.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual(["initial"]);
     f.executing.delete(200); await f.manager.closeWorkspace(f.context, binding, { agentStopped: true }, operation());
     const fresh = await f.manager.prepareWorkspace(f.context, operation());
-    const resumed = await f.manager.start(f.context, fresh, { configuration, prompt: "resume original", resumeSessionId: nativeId }, operation());
+    const resumed = await f.manager.start(f.context, fresh.binding, { workspaceEvidence: fresh.workspaceEvidence, configuration, prompt: "resume original", resumeSessionId: nativeId }, operation());
     expect(resumed.kind).toBe("started"); expect(f.calls.filter((value) => value.method === "agent.start")).toHaveLength(2);
     expect(f.prompts.at(-1)).toBe("resume original");
   });
   it("does not bless an existing reference with missing or mismatched continuation launch evidence", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: [f.context.agent, ...params.args as string[]] }; });
-    const waiting = await f.manager.start(f.context, binding, { configuration, prompt: "not yet" }, operation());
+    const waiting = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "not yet" }, operation());
     if (waiting.launchEvidence === null) throw new Error("Expected verified clean-baseline launch evidence.");
-    expect(waiting.launchEvidence).toEqual({ binding, ownerLabel: herdrExecutionLabel(f.context), agent: "codex", argv: ["codex", ...buildHerdrAgentArguments(configuration)], referenceBaseline: "empty" });
+    expect(waiting.launchEvidence).toEqual({ binding, ownerLabel: herdrExecutionLabel(f.context), agent: "codex", argv: ["codex", ...buildHerdrAgentArguments(configuration)], referenceBaseline: "empty", workspaceEvidence });
     f.agents[0]!.agent_status = "unknown";
     const calls = f.calls.length;
-    const missing = await f.manager.start(f.context, binding, { configuration, prompt: "must not send", initialPromptNotSubmitted: true }, operation());
+    const missing = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "must not send", initialPromptNotSubmitted: true }, operation());
     expect(missing).toMatchObject({ kind: "rebind-required", reason: "unverified-launch", promptSubmission: "not-submitted" });
-    const mismatched = await f.manager.start(f.context, binding, { configuration, prompt: "must not send", initialPromptNotSubmitted: true, launchEvidence: { ...waiting.launchEvidence, binding: { ...binding, terminalId: "different" } } }, operation());
+    const mismatched = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "must not send", initialPromptNotSubmitted: true, launchEvidence: { ...waiting.launchEvidence, binding: { ...binding, terminalId: "different" } } }, operation());
     expect(mismatched.kind).toBe("rebind-required");
-    const wrongArgs = await f.manager.start(f.context, binding, { configuration, prompt: "must not send", initialPromptNotSubmitted: true, launchEvidence: { ...waiting.launchEvidence, argv: ["codex", "--model", "different"] } }, operation());
+    const wrongArgs = await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "must not send", initialPromptNotSubmitted: true, launchEvidence: { ...waiting.launchEvidence, argv: ["codex", "--model", "different"] } }, operation());
     expect(wrongArgs.kind).toBe("rebind-required");
     expect(f.calls.slice(calls).some((value) => value.method === "agent.start" || value.method === "agent.prompt")).toBe(false); expect(f.prompts).toEqual([]);
   });
+  it("rejects conflicting direct and launch-embedded workspace environment receipts", async () => {
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
+    if (workspaceEvidence === null) throw new Error("Expected fresh workspace evidence.");
+    f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: [f.context.agent, ...params.args as string[]] }; });
+    const waiting = await f.manager.start(f.context, binding, { configuration, prompt: "not yet", workspaceEvidence }, operation());
+    if (waiting.launchEvidence === null) throw new Error("Expected fresh launch evidence.");
+    f.agents[0]!.agent_status = "unknown";
+    const wrong = { ...workspaceEvidence, environment: { XDG_CONFIG_HOME: "/daemon/private/config", XDG_STATE_HOME: "/daemon/private/state" } };
+    const direct = await f.manager.start(f.context, binding, { configuration, prompt: "do not send", initialPromptNotSubmitted: true, launchEvidence: waiting.launchEvidence, workspaceEvidence: wrong }, operation());
+    expect(direct).toMatchObject({ kind: "rebind-required", reason: "unverified-workspace-environment" });
+    const embedded = await f.manager.start(f.context, binding, { configuration, prompt: "do not send", initialPromptNotSubmitted: true, launchEvidence: { ...waiting.launchEvidence, workspaceEvidence: wrong }, workspaceEvidence }, operation());
+    expect(embedded).toMatchObject({ kind: "rebind-required", reason: "unverified-workspace-environment" }); expect(f.prompts).toEqual([]);
+  });
+  it("uses persisted launch environment evidence for a same-daemon never-submitted continuation", async () => {
+    const f = await fixture(); const prepared = await f.manager.prepareWorkspace(f.context, operation());
+    f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: [f.context.agent, ...params.args as string[]] }; });
+    const waiting = await f.manager.start(f.context, prepared.binding, { configuration, prompt: "not yet", workspaceEvidence: prepared.workspaceEvidence }, operation());
+    if (waiting.launchEvidence === null) throw new Error("Expected the original verified launch receipt.");
+    const restarted = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => undefined }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } });
+    const adopted = await restarted.prepareWorkspace(f.context, operation()); expect(adopted.workspaceEvidence).toBeNull();
+    f.agents[0]!.agent_status = "unknown";
+    const continued = await restarted.start(f.context, adopted.binding, { configuration, prompt: "once after blocked", initialPromptNotSubmitted: true, launchEvidence: waiting.launchEvidence, workspaceEvidence: adopted.workspaceEvidence }, operation());
+    expect(continued.kind).toBe("started"); expect(f.prompts).toEqual(["once after blocked"]);
+  });
   it("does not submit caller input after a launch acknowledgement changes target or frozen args", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => { if (method !== "agent.start") return undefined; return { type: "agent_started", agent: f.launch(params), argv: [f.context.agent, "--model", "changed"] }; });
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "must not submit" }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "unknown" });
+    await expect(f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "must not submit" }, operation())).rejects.toMatchObject({ action: "agent.start", submission: "unknown" });
     expect(f.prompts).toEqual([]);
   });
   it("does not replay a start or prompt after an unknown submission", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => { if (method !== "agent.start") return undefined; f.launch(params); throw new HerdrRpcError("lost start", { method, requestId: "fixture", submission: "unknown" }); });
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "original" }, operation())).rejects.toMatchObject({ submission: "unknown" });
-    f.hook(undefined); expect((await f.manager.start(f.context, binding, { configuration, prompt: "never replay" }, operation())).kind).toBe("reconnected"); expect(f.prompts).toEqual([]);
+    await expect(f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "original" }, operation())).rejects.toMatchObject({ submission: "unknown" });
+    f.hook(undefined); expect((await f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "never replay" }, operation())).kind).toBe("reconnected"); expect(f.prompts).toEqual([]);
     f.hook(async (method, params) => { if (method !== "agent.prompt") return undefined; f.prompts.push(String(params.text)); throw new HerdrRpcError("lost prompt", { method, requestId: "fixture", submission: "unknown", code: "agent_prompt_failed", apiMessage: "PTY failure" }); });
     await expect(f.manager.submitPrompt(f.context, binding, "once", operation())).rejects.toMatchObject({ submission: "unknown" }); expect(f.prompts).toEqual(["once"]);
   });
   it("keeps malformed prompt acknowledgements unknown after startup delivery", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     f.hook(async (method, params) => { if (method !== "agent.prompt") return undefined; f.prompts.push(String(params.text)); return { type: "ok" }; });
-    await expect(f.manager.start(f.context, binding, { configuration, prompt: "once despite bad ack" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "unknown", promptSubmission: "unknown" });
+    await expect(f.manager.start(f.context, binding, { workspaceEvidence, configuration, prompt: "once despite bad ack" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "unknown", promptSubmission: "unknown" });
     expect(f.prompts).toEqual(["once despite bad ack"]);
   });
   it("classifies only method-specific preflight rejection as definite and preserves original errors", async () => {

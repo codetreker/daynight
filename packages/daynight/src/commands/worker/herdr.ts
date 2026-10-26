@@ -8,6 +8,8 @@ export type {
   HerdrExecutionOwner,
   HerdrOwnedWorkspace,
   HerdrTaskBinding,
+  HerdrWorkspaceEvidence,
+  HerdrPreparedWorkspace,
   HerdrAgentConfiguration,
   HerdrAgentObservation,
   HerdrNativeReference,

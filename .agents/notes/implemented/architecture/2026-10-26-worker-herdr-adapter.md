@@ -21,14 +21,31 @@ task workspaces/panes. The controller retains scheduling, claims, recovery
 budget, cleanup deadline and business completion under the [worker
 responsibility decision](2026-10-22-worker-design.md).
 
-Private Herdr data stays below the fixed worker `h/` root. Child-only XDG config
-and state homes plus HERDR_CONFIG_PATH isolate endpoints, snapshots and config.
-Managed config disables onboarding and automatic native-agent restore; existing
-modified config is refused. Herdr routing identities and parent Codex invocation
-IDs are removed, while native homes, history roots and authentication remain
-with their existing owners. The structured attachment descriptor contains only
-required routing/native-home overrides and identity removals, not a full copy of
-authentication environment values.
+Private Herdr data stays below the fixed worker h/ root. The daemon's private
+XDG config/state homes and HERDR_CONFIG_PATH isolate endpoints, snapshots and
+config. Managed config disables onboarding and automatic native-agent restore;
+existing modified config is refused. Herdr routing identities and parent Codex
+invocation IDs are removed. Native homes, provider data and authentication keep
+their existing owners.
+
+The facade snapshots the original XDG set/unset values before deriving daemon
+environment. Native preflight OS commands restore those original values. Task
+workspace and stop-anchor creation forward only the original XDG_CONFIG_HOME and
+XDG_STATE_HOME strings, not a complete original environment. Herdr cannot remove
+keys from its workspace map, so an originally unset XDG variable is sent as an
+empty string, which the [XDG
+specification](https://specifications.freedesktop.org/basedir/latest/) defines
+as the default-directory case. Private routing, provider-home settings and
+HISTFILE remain inherited from the sanitized daemon environment; original
+credentials and parent invocation IDs are not copied into the map. Existing live
+workspace reconnection is read-only.
+
+HISTFILE points to h/shell.history for daemon children and manual attachment.
+Bash/Zsh that honor it write their history there. This does not sandbox shell
+profiles: custom rc files may override it, and other shells or APPDATA-based
+history are not universally redirected. The structured attachment descriptor
+contains required routing/native-home/history overrides and identity removals,
+not a full copy of authentication environment values.
 
 Instance readiness checks compatible Herdr version/protocol, a restored snapshot
 and both endpoints. An incompatible or uncertain existing server is retained. A
@@ -44,6 +61,23 @@ identity/type, bounded bytes and one operation deadline. Request IDs correlate;
 they do not deduplicate. A write may have reached Herdr even when the reply is
 lost. Method-specific errors distinguish definite rejection only when that
 method's preflight semantics establish it. Unknown mutations are not replayed.
+
+prepareWorkspace returns HerdrPreparedWorkspace with binding and nullable
+workspaceEvidence. Only a verified workspace.create acknowledgement produces
+HerdrWorkspaceEvidence bound to session/workspace/pane/terminal, ownerLabel and
+the exact two-field XDG map. Reconnecting to existing resources or adopting a
+creation whose acknowledgement was lost returns no receipt; labels, cwd and
+absence of a native reference cannot reconstruct one. Persisted evidence can be
+reused after a worker restart only when the same daemon binding and expected map
+still match.
+
+Herdr 0.9.5 restores workspace.env as empty, including panes that never launched
+a native agent. A restored terminal can therefore inherit private daemon XDG
+instead of the task's original authentication locations. Every new native launch
+requires its current workspace receipt before preflight or agent.start; missing,
+stale-terminal or mismatched map evidence returns rebind-required with
+unverified-workspace-environment and performs no launch/input. There is no
+receipt cache, environment rename or shell-export adoption protocol.
 
 Task labels persist origin/project/task/claim/worktree identity and are joined
 to actual workspace/pane/terminal IDs and cwd. Duplicate or ambiguous resources
@@ -62,16 +96,18 @@ preserves multiline content and never infers task mode or builds business
 instructions. Reconnecting to a live original agent does not resubmit startup
 input. A launch starts only from an empty native-reference baseline and returns
 HerdrLaunchEvidence after exact target/argv acknowledgement. That evidence binds
-the pane, owner, provider, frozen argv and empty baseline. A blocked launch can
-continue its initial input only with both matching persisted evidence and the
-caller's durable initialPromptNotSubmitted:true fact; a bare flag, reconnect or
-unknown submission cannot produce that authorization. A genuinely restarted
-same-claim agent uses exact original native history and frozen model/arguments;
-a new claim starts a new native session. Verified argv transmission does not
-establish that an arbitrary model is available or effective. Native fallback for
-an unavailable model is not preservation evidence; effective configuration
-observations remain qualified by native version and an actually available model.
-Later identity-observation failure preserves a separate promptSubmission fact,
+the pane, owner, provider, frozen argv and empty baseline, and embeds the
+verified workspaceEvidence. A blocked launch can continue its initial input only
+with both matching persisted evidence and the caller's durable
+initialPromptNotSubmitted:true fact; a bare flag, reconnect or unknown
+submission cannot produce that authorization. Conflicting direct and embedded
+workspace evidence is rejected. A genuinely restarted same-claim agent uses
+exact original native history and frozen model/arguments; a new claim starts a
+new native session. Verified argv transmission does not establish that an
+arbitrary model is available or effective. Native fallback for an unavailable
+model is not preservation evidence; effective configuration observations remain
+qualified by native version and an actually available model. Later
+identity-observation failure preserves a separate promptSubmission fact,
 including submitted or unknown, so it cannot authorize replay as never sent.
 Ordinary submitPrompt still requires an official native ID; the first-input
 exception is confined to verified startup/recovery.
@@ -84,17 +120,41 @@ operations while retaining worktree, native ID and frozen configuration. The
 adapter neither fabricates nor clears metadata to make an old reference appear
 fresh. Launch results and later errors retain evidence beside promptSubmission.
 
+The exact before-native window has a caller-owned stop-proof producer. Before
+any possible native launch, the coordinator must durably retain that launch has
+NEVER been submitted for the concrete claim/workspace, and revoke that fact
+before any operation that could submit one. With the worker as sole native
+starter and an actually owned plain pane without pending/native/foreground work,
+that durable fact establishes that no agent existed; the caller can then supply
+agentStopped:true to existing closeWorkspace and rebind safely. Creation ACK
+loss or cold restore before first native launch uses the same producer. Null
+references, an empty current pane or this invocation's not-submitted result do
+not create the historical fact. Any prior unknown launch forbids this path and
+requires original process proof or a pause. The adapter adds no separate proof
+API, cache or registry; the coordinator owns the storage ordering.
+
 Preflight verifies the native executable and required capabilities, current
 installed official integration, effective SessionStart command and its runtime.
-It does not install integrations, alter global configuration or silently bypass
-hook trust. Current/static integration checks are prerequisites, not proof that
-a hook ran. Resume additionally checks an exact readable native manifest ID and
-physical cwd. Compressed or ambiguous Codex manifests are refused explicitly.
-Native provider databases remain the providers' responsibility; preflight does
-not build a history/schema engine or prove full historical context. Actual start
-must report the expected official native ID after the authorized first input,
-and native qualification separately checks original memory and effective
-configuration.
+Every metadata OS command runs with the actual task cwd. Codex feature
+inspection retains the frozen -c/--config, --enable, --disable and -p/--profile
+tokens and values in their original order, rather than checking unrelated host
+defaults. It does not install integrations, alter global configuration or
+silently bypass hook trust. Current/static integration checks are prerequisites,
+not proof that a hook ran. Resume additionally checks an exact readable native
+manifest ID and physical cwd. Compressed or ambiguous Codex manifests are
+refused explicitly. Native provider databases remain the providers'
+responsibility; preflight does not build a history/schema engine or prove full
+historical context. Actual start must report the expected official native ID
+after the authorized first input, and native qualification separately checks
+original memory and effective configuration.
+
+Codex 0.164.0 does not accept profile selection for its read-only features
+command. When the selected profile cannot be inspected, preflight reports a
+capability error with the original cause and explicit supported-setting advice.
+It never drops the profile to query defaults or introduces a TOML parser, MCP,
+app-server or SDK configuration engine. Like unsupported compressed manifests,
+this is an explicit inspection limit, not a promise that every native argument
+can be validated.
 
 Codex launch uses the system-owned --no-daemon flag to isolate shared human
 daemon execution. Its full argv also avoids Herdr's [shorthand resume
@@ -183,6 +243,20 @@ the resource needed to retain attribution before stop proof. One temporary empty
 anchor in the same workspace allows original-pane closure and process inspection
 before final workspace closure, without another instance or native agent.
 
+**Treat labels or an empty restored pane as environment proof.** Herdr 0.9.5
+does not preserve workspace.env during restoration. Even a pre-native pane with
+no session reference can lose original XDG auth discovery. A creation receipt
+bound to the actual terminal proves which environment was supplied; missing or
+stale proof requires safe close/rebind, not inferred adoption.
+
+**Inspect metadata from host cwd or omit unsupported frozen selection.** Task
+cwd can select native project configuration and feature/config flags change the
+settings actually used at launch. Dropping a profile that features inspection
+cannot accept would validate another configuration. The pinned [Codex feature
+command](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/cli/src/main.rs#L1977-L2003)
+exposes that capability boundary. A diagnostic preserves the request and cause
+without a second configuration interpretation engine.
+
 ## Consequences
 
 The adapter exposes concrete submission and resource facts without a reporting
@@ -216,6 +290,23 @@ bytes; native history representation is a separate boundary from opaque
 transport. Native/provider authentication prerequisites must actually be
 available; copying a primary auth file alone does not prove an isolated provider
 can authenticate.
+
+Actual shell-only regression verified fresh workspace environment receipt and gh
+auth status 0. Cold restoration lost workspace.env and produced gh status 1;
+adoption had no receipt, and stale or absent proof refused new launch with zero
+native launch/prompt attempts or sends. The coordinator's immutable never-launch
+fact was saved before workspace creation. With the actually owned plain pane it
+authorized safe closure, followed by a fresh receipt, gh status 0 and private
+HISTFILE. Read-only CLI regression separately verified task cwd and frozen
+feature/config effects, including explicit unsupported profile inspection. No
+provider database or configuration interpretation engine was added.
+
+The initial native audit retained three task-owned launch entries appended to
+default Bash history without rewriting earlier entries. Current shell-only
+qualification observed the unique marker once in private history and zero times
+in default history; this does not retroactively turn the initial footprint into
+zero writes. The guarantee depends on Linux Bash honoring inherited HISTFILE,
+not universal isolation of custom rc files, other shells or APPDATA.
 
 These source adapters and targeted Linux observations do not establish the
 foreground coordinator, business managed-prompt composition, management-protocol

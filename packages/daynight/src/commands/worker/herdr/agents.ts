@@ -15,7 +15,9 @@ export { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./argumen
 export type HerdrExecutionContext = { serverOrigin: string; projectId: string; taskId: string; claimId: string; worktreeId: string; cwd: string; agent: WorkerAgent };
 export type HerdrExecutionOwner = Pick<HerdrExecutionContext, "serverOrigin" | "projectId" | "taskId" | "claimId" | "worktreeId">;
 export type HerdrTaskBinding = { session: string; workspaceId: string; paneId: string; terminalId: string };
-export type HerdrLaunchEvidence = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; argv: readonly string[]; referenceBaseline: "empty" };
+export type HerdrWorkspaceEvidence = { binding: HerdrTaskBinding; ownerLabel: string; environment: HerdrWorkspaceEnvironment };
+export type HerdrPreparedWorkspace = { binding: HerdrTaskBinding; workspaceEvidence: HerdrWorkspaceEvidence | null };
+export type HerdrLaunchEvidence = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; argv: readonly string[]; referenceBaseline: "empty"; workspaceEvidence: HerdrWorkspaceEvidence };
 export type HerdrNativeReference = { source: string; agent: WorkerAgent; sessionId: string };
 export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | null; name: string | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null };
 export type HerdrStopObservation = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; nativeSessionId: string | null; shellPid: number; processIds: readonly number[]; observedAt: number };
@@ -104,6 +106,13 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const xdgFields = ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const;
   if (Object.keys(suppliedEnvironment).length !== xdgFields.length || xdgFields.some((field) => !Object.hasOwn(suppliedEnvironment, field) || typeof suppliedEnvironment[field] !== "string" || suppliedEnvironment[field].includes("\0"))) throw new TypeError("Task workspace environment must contain only XDG_CONFIG_HOME and XDG_STATE_HOME string values without NUL.");
   const workspaceEnvironment = { XDG_CONFIG_HOME: suppliedEnvironment.XDG_CONFIG_HOME as string, XDG_STATE_HOME: suppliedEnvironment.XDG_STATE_HOME as string };
+  const validWorkspaceEvidence = (context: HerdrExecutionContext, binding: HerdrTaskBinding, evidence: HerdrWorkspaceEvidence | null | undefined): evidence is HerdrWorkspaceEvidence => {
+    if (evidence === undefined || evidence === null || typeof evidence.binding !== "object" || evidence.binding === null || !sameBinding(evidence.binding, binding) || evidence.ownerLabel !== herdrExecutionLabel(context)) return false;
+    const environment: unknown = evidence.environment;
+    if (typeof environment !== "object" || environment === null || Array.isArray(environment)) return false;
+    const values = environment as Record<string, unknown>;
+    return Object.keys(values).length === xdgFields.length && xdgFields.every((field) => Object.hasOwn(values, field) && values[field] === workspaceEnvironment[field]);
+  };
   const isExecuting = options.processExecuting === undefined ? processExecuting : options.processExecuting;
   const pollInterval = options.pollIntervalMs === undefined ? 100 : options.pollIntervalMs;
   if (!Number.isSafeInteger(pollInterval) || pollInterval <= 0 || pollInterval > 1000) throw new TypeError("The Herdr observation interval must be between 1 and 1000 milliseconds.");
@@ -254,7 +263,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
       return result;
     },
-    prepareWorkspace: async (context: HerdrExecutionContext, operation: Operation): Promise<HerdrTaskBinding> => {
+    prepareWorkspace: async (context: HerdrExecutionContext, operation: Operation): Promise<HerdrPreparedWorkspace> => {
       const label = herdrExecutionLabel(context);
       await realpath(context.cwd);
       const data = await snapshot(operation);
@@ -267,7 +276,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const pane = panes[0]!;
         const binding = { session, workspaceId, paneId: text(pane.pane_id, "Task pane ID"), terminalId: text(pane.terminal_id, "Task terminal ID") };
         await readOwned(context, binding, operation);
-        return binding;
+        return { binding, workspaceEvidence: null };
       }
       const expectedCwd = path.normalize(await realpath(context.cwd));
       for (const pane of data.panes) {
@@ -281,20 +290,21 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const pane = object(result.root_pane, "Created task pane");
         const binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };
         await readOwned(context, binding, operation);
-        return binding;
+        return { binding, workspaceEvidence: { binding: { ...binding }, ownerLabel: label, environment: { ...workspaceEnvironment } } };
       } catch (cause) { throw new HerdrAgentActionError("The created task workspace could not be verified.", "workspace.create", "unknown", { cause }); }
     },
     observe: observation,
-    start: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: { configuration: HerdrAgentConfiguration; prompt: string; resumeSessionId?: string; initialPromptNotSubmitted?: true; launchEvidence?: HerdrLaunchEvidence }, operation: Operation) => serialized(binding.paneId, operation, async () => {
+    start: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: { configuration: HerdrAgentConfiguration; prompt: string; resumeSessionId?: string; initialPromptNotSubmitted?: true; launchEvidence?: HerdrLaunchEvidence; workspaceEvidence?: HerdrWorkspaceEvidence | null }, operation: Operation) => serialized(binding.paneId, operation, async () => {
       if (input.configuration.agent !== context.agent) throw new TypeError("The frozen agent configuration differs from the execution identity.");
       const args = buildHerdrAgentArguments(input.configuration, input.resumeSessionId);
       if (typeof input.prompt !== "string" || input.prompt.length === 0) throw new TypeError("The caller startup prompt must be nonempty text.");
       const before = await observation(context, binding, operation);
       const existing = before.kind !== null || before.name !== null || before.launchPending || before.interactiveReady;
       if (input.resumeSessionId !== undefined && before.nativeSession !== null && before.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new Error("The retained native session differs from the original recovery session.");
-      const rebind = (reason: "retained-native-reference" | "unverified-launch") => ({ kind: "rebind-required" as const, reason, observation: before, promptSubmission: "not-submitted" as const, launchEvidence: null });
+      const rebind = (reason: "retained-native-reference" | "unverified-launch" | "unverified-workspace-environment") => ({ kind: "rebind-required" as const, reason, observation: before, promptSubmission: "not-submitted" as const, launchEvidence: null });
       if (!before.launchPending && !before.interactiveReady && before.kind === null && before.nativeSession !== null) return rebind("retained-native-reference");
       let launchEvidence: HerdrLaunchEvidence | null = null;
+      let workspaceEvidence: HerdrWorkspaceEvidence;
       if (existing) {
         // A reconnect observes the existing input history. Only the caller's persisted
         // never-submitted fact and verified empty-reference launch can authorize deferred first input.
@@ -302,11 +312,17 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const evidence = input.launchEvidence;
         const expectedArgv = [context.agent, ...args];
         if (evidence === undefined || evidence.referenceBaseline !== "empty" || evidence.ownerLabel !== herdrExecutionLabel(context) || evidence.agent !== context.agent || !sameBinding(evidence.binding, binding) || !Array.isArray(evidence.argv) || evidence.argv.length !== expectedArgv.length || evidence.argv.some((value, index) => value !== expectedArgv[index])) return rebind("unverified-launch");
+        if (!validWorkspaceEvidence(context, binding, evidence.workspaceEvidence) || (input.workspaceEvidence !== undefined && input.workspaceEvidence !== null && !validWorkspaceEvidence(context, binding, input.workspaceEvidence))) return rebind("unverified-workspace-environment");
+        workspaceEvidence = evidence.workspaceEvidence;
         launchEvidence = evidence;
       } else if (input.initialPromptNotSubmitted === true) {
         return rebind("unverified-launch");
       } else if (before.nativeSession !== null) {
         return rebind("retained-native-reference");
+      } else {
+        if (!validWorkspaceEvidence(context, binding, input.workspaceEvidence)) return rebind("unverified-workspace-environment");
+        if (input.launchEvidence !== undefined && !validWorkspaceEvidence(context, binding, input.launchEvidence.workspaceEvidence)) return rebind("unverified-workspace-environment");
+        workspaceEvidence = input.workspaceEvidence;
       }
       await options.preflight.verifyStart({ context, configuration: input.configuration, ...(input.resumeSessionId === undefined ? {} : { resumeSessionId: input.resumeSessionId }) }, operation);
       let promptSubmission: "not-submitted" | "submitted" = "not-submitted";
@@ -319,7 +335,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           const argv = array(started.argv, "Native launch arguments");
           const expectedArgv = [context.agent, ...args];
           if (acknowledged.pane_id !== binding.paneId || acknowledged.terminal_id !== binding.terminalId || acknowledged.workspace_id !== binding.workspaceId || argv.length !== expectedArgv.length || argv.some((value, index) => value !== expectedArgv[index])) throw new Error("The native launch receipt does not preserve its original target and frozen arguments.");
-          launchEvidence = { binding: { ...binding }, ownerLabel: herdrExecutionLabel(context), agent: context.agent, argv: [...expectedArgv], referenceBaseline: "empty" };
+          launchEvidence = { binding: { ...binding }, ownerLabel: herdrExecutionLabel(context), agent: context.agent, argv: [...expectedArgv], referenceBaseline: "empty", workspaceEvidence };
         }
         while (true) {
           const current = await observation(context, binding, operation);

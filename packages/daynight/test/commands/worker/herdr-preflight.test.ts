@@ -30,14 +30,14 @@ const fixture = async () => {
     if (command.file === "powershell") return { stdout: "5.1.0\n", stderr: "" };
     if (command.args[0] === "--version") return { stdout: command.file === "codex" ? "codex-cli 0.164.0\n" : "GitHub Copilot CLI 1.0.103.\n", stderr: "" };
     if (command.args[0] === "--help") return { stdout: "--no-daemon   Run without the shared background server\n", stderr: "" };
-    if (command.args[0] === "features") return { stdout: "hooks\tstable\ttrue\n", stderr: "" };
+    if (command.args.at(-2) === "features" && command.args.at(-1) === "list") return { stdout: "hooks\tstable\ttrue\n", stderr: "" };
     return { stdout: JSON.stringify(hooks), stderr: "" };
   });
   const integrations = [{ target: "codex", available: true, state: "current" }, { target: "copilot", available: true, state: "current" }];
   const rpc = { request: vi.fn(async () => ({ type: "integration_list", integrations })) };
   const environment: NodeJS.ProcessEnv = {};
   const preflight = createHerdrPreflight({ rpc, homeDirectory: home, environment, platform: "linux", runCommand });
-  const input = (agent: "codex" | "copilot", resumeSessionId?: string) => ({ context: { cwd }, configuration: { agent, model: "frozen-model", args: [] }, ...(resumeSessionId === undefined ? {} : { resumeSessionId }) });
+  const input = (agent: "codex" | "copilot", resumeSessionId?: string) => ({ context: { cwd }, configuration: { agent, model: "frozen-model", args: [] as string[] }, ...(resumeSessionId === undefined ? {} : { resumeSessionId }) });
   const codexHistory = async (payload: Record<string, unknown> = { id, cwd }, suffix = ".jsonl") => {
     const directory = path.join(codex, "sessions", "2026", "10", "26"); await mkdir(directory, { recursive: true });
     const file = path.join(directory, `rollout-2026-10-26-${id}${suffix}`); await writeFile(file, `${JSON.stringify({ type: "session_meta", payload })}\n${"sensitive later turn".repeat(10)}\n`); return file;
@@ -63,6 +63,62 @@ describe("Herdr native prerequisites", () => {
     expect(f.runCommand.mock.calls.map(([command]) => [command.file, command.args])).toEqual([["codex", ["--version"]], ["bash", ["--version"]], ["python3", ["--version"]], ["codex", ["--help"]], ["codex", ["features", "list"]]]);
     expect(JSON.parse(await readFile(path.join(f.codex, "hooks.json"), "utf8"))).toEqual(f.codexHooks);
     expect(f.rpc.request).toHaveBeenCalledWith("integration.list", {}, expect.anything());
+    expect(f.runCommand.mock.calls.every(([command]) => command.cwd === f.cwd)).toBe(true);
+  });
+
+  it.each([undefined, id])("uses explicit frozen feature overrides for new and resumed starts (%s)", async (resume) => {
+    const f = await fixture(); if (resume !== undefined) await f.codexHistory();
+    const original = f.runCommand.getMockImplementation()!;
+    f.runCommand.mockImplementation(async (command) => command.args.at(-2) === "features" ? { stdout: `hooks stable ${command.args.includes("--enable=hooks")}\n`, stderr: "" } : original(command));
+    const input = f.input("codex", resume);
+    input.configuration.args = ["--config", "model_reasoning_effort=\"high\"", "--sandbox", "workspace-write", "--enable=hooks", "--dangerously-bypass-hook-trust"];
+    expect((await f.preflight.verifyStart(input, operation())).integrationConfigured).toBe(true);
+    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0]).toMatchObject({ cwd: f.cwd, args: ["--config", "model_reasoning_effort=\"high\"", "--enable=hooks", "features", "list"] });
+  });
+
+  it("retains configuration and feature override order while excluding runtime modes", async () => {
+    const f = await fixture(); const input = f.input("codex");
+    input.configuration.args = ["--disable", "search", "-c", "features.hooks=false", "--enable", "hooks", "--config=features.other=true", "--no-alt-screen"];
+    await f.preflight.verifyStart(input, operation());
+    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0].args).toEqual(["--disable", "search", "-c", "features.hooks=false", "--enable", "hooks", "--config=features.other=true", "features", "list"]);
+  });
+
+  it("checks an explicit config override against the effective native feature result", async () => {
+    const f = await fixture(); const original = f.runCommand.getMockImplementation()!; const input = f.input("codex"); input.configuration.args = ["--config=features.hooks=true"];
+    f.runCommand.mockImplementation(async (command) => command.args.at(-2) === "features" ? { stdout: `hooks stable ${command.args.includes("--config=features.hooks=true")}\n`, stderr: "" } : original(command));
+    await expect(f.preflight.verifyStart(input, operation())).resolves.toMatchObject({ integrationConfigured: true });
+    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0].args).toEqual(["--config=features.hooks=true", "features", "list"]);
+  });
+
+  it("rejects an explicitly disabled effective hook feature", async () => {
+    const f = await fixture(); const original = f.runCommand.getMockImplementation()!; const input = f.input("codex"); input.configuration.args = ["--disable", "hooks"];
+    f.runCommand.mockImplementation(async (command) => command.args.at(-2) === "features" ? { stdout: "hooks stable false\n", stderr: "" } : original(command));
+    await expect(f.preflight.verifyStart(input, operation())).rejects.toThrow("hooks are disabled");
+    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0].args).toEqual(["--disable", "hooks", "features", "list"]);
+  });
+
+  it("uses the task cwd for effective task-local configuration checks", async () => {
+    const f = await fixture(); const original = f.runCommand.getMockImplementation()!;
+    f.runCommand.mockImplementation(async (command) => command.args.at(-2) === "features" ? { stdout: `hooks stable ${command.cwd === f.cwd}\n`, stderr: "" } : original(command));
+    await expect(f.preflight.verifyStart(f.input("codex"), operation())).resolves.toMatchObject({ integrationConfigured: true });
+    await f.preflight.verifyStart(f.input("copilot"), operation());
+    expect(f.runCommand.mock.calls.every(([command]) => command.cwd === f.cwd)).toBe(true);
+  });
+
+  it.each([undefined, id])("reports unsupported read-only profile inspection for new and resumed starts (%s)", async (resume) => {
+    const f = await fixture(); const original = f.runCommand.getMockImplementation()!; const failure = new Error("selected profile rejected by native features list");
+    f.runCommand.mockImplementation(async (command) => { if (command.args.at(-2) === "features") throw failure; return original(command); });
+    const input = f.input("codex", resume); input.configuration.args = ["--config", "features.other=true", "--profile=work", "--enable", "hooks", "--sandbox", "workspace-write"];
+    await expect(f.preflight.verifyStart(input, operation())).rejects.toMatchObject({ message: expect.stringContaining("selected profile"), cause: failure });
+    const checks = f.runCommand.mock.calls.filter(([command]) => command.args.at(-2) === "features");
+    expect(checks).toHaveLength(1); expect(checks[0]![0]).toMatchObject({ cwd: f.cwd, args: ["--config", "features.other=true", "--profile=work", "--enable", "hooks", "features", "list"] });
+    expect(f.runCommand.mock.calls.some(([command]) => command.args.includes("mcp"))).toBe(false);
+  });
+
+  it("accepts native profile inspection when the CLI genuinely supports the same query", async () => {
+    const f = await fixture(); const input = f.input("codex"); input.configuration.args = ["-p", "work", "--enable", "hooks"];
+    expect((await f.preflight.verifyStart(input, operation())).integrationConfigured).toBe(true);
+    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0].args).toEqual(["-p", "work", "--enable", "hooks", "features", "list"]);
   });
 
   it("checks Copilot's effective normalized hooks rather than treating asset installation as sufficient", async () => {

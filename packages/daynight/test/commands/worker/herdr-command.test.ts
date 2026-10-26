@@ -41,6 +41,19 @@ describe("bounded Herdr prerequisite commands", () => {
     expect(result).toEqual({ stdout: "调用方", stderr: "diagnostic" }); expect(environment.HERDR_FIXTURE_VALUE).toBe("调用方"); expect(process.env.HERDR_FIXTURE_VALUE).toBeUndefined();
   });
 
+  it("runs a metadata command from its explicit task working directory", async () => {
+    const directory = await root();
+    const result = await runHerdrCommand({ ...command("process.stdout.write(process.cwd());"), cwd: directory }, operation(), start);
+    expect(path.normalize(result.stdout)).toBe(path.normalize(directory));
+    expect(process.cwd()).not.toBe(directory);
+  });
+
+  it("rejects ambiguous command working directories before spawning", async () => {
+    for (const cwd of ["relative", "/invalid\0directory"]) {
+      await expect(runHerdrCommand({ ...command(""), cwd }, operation(), () => { throw new Error("must not spawn"); })).rejects.toThrow("working directory must be absolute");
+    }
+  });
+
   it("preserves nonzero status and diagnostics without putting possible secrets into the message", async () => {
     const error: unknown = await runHerdrCommand(command("process.stderr.write('sensitive-config-value');process.exit(7);"), operation(), start).catch((failure: unknown) => failure);
     expect(error).toBeInstanceOf(HerdrCommandError); expect(error).toMatchObject({ exitCode: 7, signal: null, stderr: "sensitive-config-value" }); expect((error as Error).message).not.toContain("sensitive-config-value");

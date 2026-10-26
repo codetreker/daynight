@@ -7,7 +7,7 @@ import type { Operation } from "../../../api/operation.js";
 
 export type HerdrSpawn = (file: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
 export const spawnHerdrProcess: HerdrSpawn = (file, args, options) => crossSpawn(file, [...args], options);
-export type HerdrCommand = { file: string; args: readonly string[]; environment: NodeJS.ProcessEnv };
+export type HerdrCommand = { file: string; args: readonly string[]; environment: NodeJS.ProcessEnv; cwd?: string };
 export type HerdrCommandResult = { stdout: string; stderr: string };
 
 export class HerdrCommandError extends Error {
@@ -34,8 +34,9 @@ export const runHerdrCommand = async (
   start: HerdrSpawn = spawnHerdrProcess,
 ): Promise<HerdrCommandResult> => {
   operation.check();
+  if (command.cwd !== undefined && (!path.isAbsolute(command.cwd) || /[\0\r\n]/.test(command.cwd))) throw new TypeError("A Herdr prerequisite command working directory must be absolute and contain no control separators.");
   const timeout = Math.max(1, Math.ceil(Math.min(10_000, operation.remainingMs(), operation.limits.requestMs)));
-  const child = start(command.file, command.args, { env: command.environment, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  const child = start(command.file, command.args, { env: command.environment, ...(command.cwd === undefined ? {} : { cwd: command.cwd }), detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   let closed = false;
   let exitCode: number | null = null;
   let exitSignal: NodeJS.Signals | null = null;

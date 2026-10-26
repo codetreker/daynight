@@ -3,6 +3,7 @@ import { open, readdir, realpath } from "node:fs/promises";
 import { parse as parseYaml } from "yaml";
 import type { Operation } from "../../../api/operation.js";
 import { canonicalId } from "../../../api/parse.js";
+import { validateHerdrAgentArguments } from "./arguments.js";
 import { runHerdrCommand } from "./command.js";
 import type { HerdrCommand, HerdrCommandResult } from "./command.js";
 import type { HerdrRpcClient } from "./rpc.js";
@@ -139,6 +140,22 @@ const configuredHook = (hooks: Record<string, unknown>, expected: string, agent:
   });
 };
 
+const codexConfigurationArguments = (args: readonly string[]): { arguments: string[]; profile: boolean } => {
+  const relevant = new Set(["-c", "--config", "--enable", "--disable", "-p", "--profile"]);
+  const selected: string[] = [];
+  let profile = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const argument = args[index]!;
+    const equals = argument.indexOf("=");
+    const option = equals < 0 ? argument : argument.slice(0, equals);
+    if (!relevant.has(option)) continue;
+    profile ||= option === "-p" || option === "--profile";
+    selected.push(argument);
+    if (equals < 0) selected.push(args[++index]!);
+  }
+  return { arguments: selected, profile };
+};
+
 export const createHerdrPreflight = (options: {
   rpc: Pick<HerdrRpcClient, "request">;
   environment: NodeJS.ProcessEnv;
@@ -157,9 +174,10 @@ export const createHerdrPreflight = (options: {
       const agent = input.configuration.agent;
       if (agent !== "codex" && agent !== "copilot") throw new Error("The native agent must be codex or copilot.");
       const cwd = absolute(input.context.cwd, "Native working directory");
+      validateHerdrAgentArguments(agent, input.configuration.args);
       const root = nativeHome(agent, environment, home);
       const sqliteHome = agent === "codex" ? environment.CODEX_SQLITE_HOME === undefined ? root : absolute(environment.CODEX_SQLITE_HOME, "CODEX_SQLITE_HOME") : null;
-      const versionText = (await runCommand({ file: agent, args: ["--version"], environment }, operation)).stdout;
+      const versionText = (await runCommand({ file: agent, args: ["--version"], environment, cwd }, operation)).stdout;
       const versionMatch = agent === "codex" ? /^codex-cli (\d+\.\d+\.\d+)(?:\s|$)/m.exec(versionText) : /^GitHub Copilot CLI (\d+\.\d+\.\d+)(?:[.\s]|$)/m.exec(versionText);
       if (versionMatch === null) throw new Error(`Cannot identify the installed ${agent} executable version.`);
       const integrations = await options.rpc.request("integration.list", {}, operation);
@@ -171,7 +189,7 @@ export const createHerdrPreflight = (options: {
         : [{ file: "bash", args: ["--version"], version: /^GNU bash, version /m }, { file: "python3", args: ["--version"], version: /^Python 3\./m }];
       for (const runtime of runtimes) {
         let output: string;
-        try { output = (await runCommand({ file: runtime.file, args: runtime.args, environment }, operation)).stdout; }
+        try { output = (await runCommand({ file: runtime.file, args: runtime.args, environment, cwd }, operation)).stdout; }
         catch (cause) { operation.check(); throw new Error(`The official ${agent} Herdr hook requires the ${runtime.file} runtime to be available.`, { cause }); }
         if (!runtime.version.test(output)) throw new Error(`Cannot identify the ${runtime.file} runtime required by the official ${agent} Herdr hook.`);
       }
@@ -179,14 +197,23 @@ export const createHerdrPreflight = (options: {
       await readMetadata(asset, operation);
       const expected = hookCommand(asset, agent, platform);
       if (agent === "codex") {
-        const help = (await runCommand({ file: agent, args: ["--help"], environment }, operation)).stdout;
+        const help = (await runCommand({ file: agent, args: ["--help"], environment, cwd }, operation)).stdout;
         if (!help.includes("--no-daemon")) throw new Error("This Codex executable lacks --no-daemon; a worker requires isolated native execution without a shared human daemon.");
-        const features = (await runCommand({ file: agent, args: ["features", "list"], environment }, operation)).stdout;
+        const config = codexConfigurationArguments(input.configuration.args);
+        let features: string;
+        try { features = (await runCommand({ file: agent, args: [...config.arguments, "features", "list"], environment, cwd }, operation)).stdout; }
+        catch (cause) {
+          operation.check();
+          // Codex 0.164 rejects profile selection for this read-only command; checking its unrelated default configuration would be incorrect.
+          // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/cli/src/main.rs#L1977-L2003
+          if (config.profile) throw new Error("Codex cannot verify effective hook configuration for the selected profile with its read-only features command; use supported explicit --config/--enable/--disable settings or a CLI with profile-aware feature inspection.", { cause });
+          throw cause;
+        }
         if (!features.split(/\r?\n/).some((line) => /^hooks\s+\S+\s+true\s*$/.test(line))) throw new Error("Codex hooks are disabled; enable the official SessionStart integration explicitly before running the worker.");
         const file = json(await readMetadata(path.join(root, "hooks.json"), operation), "Codex hooks configuration");
         if (!configuredHook(mapping(file.hooks, "Codex hooks configuration hooks"), expected, agent, platform)) throw new Error("Codex SessionStart does not invoke the installed official Herdr hook; configure and trust that hook explicitly.");
       } else {
-        const effective = json((await runCommand({ file: agent, args: ["config", "hooks"], environment }, operation)).stdout, "Copilot effective hooks configuration");
+        const effective = json((await runCommand({ file: agent, args: ["config", "hooks"], environment, cwd }, operation)).stdout, "Copilot effective hooks configuration");
         if (!configuredHook(effective, expected, agent, platform)) throw new Error("Copilot SessionStart does not invoke the installed official Herdr hook; configure it explicitly.");
       }
       let history: NativeHistoryEvidence | null = null;
