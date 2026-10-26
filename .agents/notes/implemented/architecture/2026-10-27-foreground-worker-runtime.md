@@ -30,6 +30,25 @@ not classify exits. Explicit source control and irreversible terminal intent
 precede ordinary recovery. A new claim never protects an old claim with the same
 task ID.
 
+The runtime reuses the existing GET /api/v1/me for the frozen startup credential
+before project or inventory requests. Its user ID pins subsequent successful
+responses through the existing Daynight-User-ID header, including empty list
+pages. The typed client adds a current-user projection and optional expected
+user-ID admission, not a new server endpoint, account registry or credential
+fingerprint. LocalTask.userId retains the immutable actual claim principal;
+claimAttempt carries the same principal. A stable workerId identifies the OS
+worker environment, not the Daynight account.
+
+Schema 1 migrates original user scope to null rather than assigning the current
+login. Unknown ordinary/shutdown scope may be learned only from a fully matching
+actual own claim. Unknown terminal/control intent cannot acquire retrospective
+authority from current login or later matching. A new automatic absence decision
+or recovery requires original userId to equal inventory principal: account B's
+empty inventory cannot end account A's local work in the same OS environment.
+Those records remain preserved/paused. Previously committed cleanup with known
+original scope retains its authority and can progress before /me or project
+network requests; unknown-scope intents remain preserved.
+
 Actual claims become pending before activation and resources. Active
 preparation, waiting, paused recovery and cleanup retain capacity; lowering the
 limit does not preempt existing work. Rediscovered original resources with
@@ -39,13 +58,13 @@ configuration. One private Herdr instance serves all task workspaces.
 
 The local store keeps only projects and tasks. Schema 2 adds a concrete nullable
 claimAttempt to each project and nativeExecution facts to each task, with an
-explicit migration that leaves absent original evidence unknown. ClaimAttempt
-records one unresolved task/claim/worktree/worker request, exact version and
-decision configuration before HTTP. An actual matching claim materializes
-pending and clears the attempt atomically. Definite rejection or proven
-non-submission can clear it; an unknown request cannot be replayed, replaced or
-cleared because an inventory temporarily lacks it. No task row exists before
-grant, and no new table or acquisition queue is introduced.
+explicit migration that leaves absent original evidence and user scope unknown.
+ClaimAttempt records one unresolved task/claim/worktree/worker/user request,
+exact version and decision configuration before HTTP. An actual matching claim
+materializes pending and clears the attempt atomically. Definite rejection or
+proven non-submission can clear it; an unknown request cannot be replayed,
+replaced or cleared because an inventory temporarily lacks it. No task row
+exists before grant, and no new table or acquisition queue is introduced.
 
 NativeExecution records the actual terminal, workspace submission, verified
 workspace/launch receipts, launch/prompt submission facts, immutable original
@@ -104,6 +123,16 @@ original bindings, launch/prompt provenance and PID evidence are retained and
 execution pauses. That uncertainty is not reset to never-submitted or an empty
 conversation.
 
+Strictly proven never-started pending successors remain pending on normal exit:
+no cleanup/control, worktree/Herdr/native resources, possible workspace/launch
+submission or original native evidence may exist. They are not promoted to
+active merely to shut down. After a successful complete inventory from the
+matching original principal confirms absence, this resource-free claim can move
+directly pending to done without a Git scan or touching an old claim's path.
+Other tasks' shutdown initialization is isolated so one record's failure does
+not prevent known agents stopping. Untracked resources or unconfirmed scope keep
+the private instance when its safe stop cannot be established.
+
 The public attachment descriptor is advertised only after complete inventory and
 managed private-instance/snapshot readiness. It applies routing variables only
 to the attach client. It does not change the existing task pane's original
@@ -153,6 +182,19 @@ workspace closure do not identify the original conversation. When a launch may
 have happened without its native ID being retained, clearing old provenance can
 start a new conversation under the old claim. Pausing with the original evidence
 preserves that boundary until the exact identity is recovered.
+
+**Use worker identity or credential bytes as account scope.** The same OS worker
+survives a Daynight login change, so workerId alone cannot prove whose absence
+list was read. Credential rotation can also preserve the same principal.
+Existing /me and response-principal headers provide authenticated identity
+without persisting tokens, fingerprints or another account registry.
+
+**Promote every pending record for normal-exit cleanup.** A never-started
+successor has no resources to remove and can share a task's fixed path with an
+older active claim. Promotion can collide with the active uniqueness rule and
+stop unrelated shutdown initialization, while scanning the path risks the older
+claim's files. Keeping strict unstarted pending state and isolating other
+initialization failures preserves both responsibilities.
 
 ## Consequences
 

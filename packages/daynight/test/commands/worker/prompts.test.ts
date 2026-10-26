@@ -17,7 +17,7 @@ const fixture = async () => {
   const repositoryPath = path.join(directory, "repository");
   const task: LocalTask = {
     serverOrigin: "https://daynight.example", projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5),
-    status: "active", repoUrl: "https://github.com/owner/repo.git", repositoryPath,
+    status: "active", userId: null, repoUrl: "https://github.com/owner/repo.git", repositoryPath,
     configuration: { agent: "codex", model: "explicit-model", args: ["-c", "model_reasoning_effort=high"], recoveryLimit: 2 },
     resources: { worktree: { repositoryPath, commonDirectory: path.join(repositoryPath, ".git"), worktreePath: path.join(repositoryPath, ".worktrees/daynight", uuid(2)), branch: `daynight/${uuid(2)}` }, herdr: null, nativeSession: null },
     nativeExecution: null, recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null,

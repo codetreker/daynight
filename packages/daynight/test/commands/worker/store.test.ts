@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { isUnstartedPending, openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { ControlIntent, FrozenExecutionConfiguration, PendingClaim } from "../../../src/commands/worker/types.js";
 import type { HerdrLaunchEvidence, HerdrStopObservation, HerdrTaskBinding, HerdrWorkspaceEvidence } from "../../../src/commands/worker/herdr/agents.js";
@@ -17,6 +17,7 @@ const connections = new Set<Database.Database>();
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const project = { serverOrigin: "https://daynight.example", projectId: uuid(1) };
 const claim: PendingClaim = { ...project, taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5) };
+const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const configuration: FrozenExecutionConfiguration = { agent: "codex", model: null, args: ["--search"], recoveryLimit: 2 };
 const release: ControlIntent = { kind: "release", sourceClaimId: claim.claimId, version: "9223372036854775806" };
 const open = (file: string): WorkerStore => { const store = openWorkerStore(file); stores.add(store); return store; };
@@ -109,14 +110,15 @@ describe("worker SQLite schema and project bindings", () => {
 
   it("migrates schema one transactionally without inventing launch provenance", () => {
     const f = fixture(); f.start(); f.bind();
+    f.store.bindUserScope(claim, userId, 24);
     f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
     const original = f.store.getTask(claim)!;
     close(f.store);
     const sql = connect(f.file);
-    sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; ALTER TABLE projects DROP COLUMN claim_attempt; UPDATE tasks SET cleanup = json_remove(cleanup, '$.baseline'); PRAGMA user_version = 1;");
+    sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; ALTER TABLE tasks DROP COLUMN user_id; ALTER TABLE projects DROP COLUMN claim_attempt; UPDATE tasks SET cleanup = json_remove(cleanup, '$.baseline'); PRAGMA user_version = 1;");
     const migrated = open(f.file);
     expect(sql.pragma("user_version", { simple: true })).toBe(2);
-    expect(migrated.getTask(claim)).toEqual({ ...original, nativeExecution: null });
+    expect(migrated.getTask(claim)).toEqual({ ...original, userId: null, nativeExecution: null });
     expect(migrated.getProject(project)).toEqual({ ...f.mapping, claimAttempt: null });
     expect(sql.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
   });
@@ -124,10 +126,11 @@ describe("worker SQLite schema and project bindings", () => {
   it("rolls back both schema one migrations and their version on invalid existing structure", () => {
     const f = fixture(); f.register(); close(f.store);
     const sql = connect(f.file);
-    sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; PRAGMA user_version = 1;");
+    sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; ALTER TABLE tasks DROP COLUMN user_id; PRAGMA user_version = 1;");
     expect(() => open(f.file)).toThrow("duplicate column name");
     expect(sql.pragma("user_version", { simple: true })).toBe(1);
     expect(sql.prepare("SELECT name FROM pragma_table_info('tasks') WHERE name = 'native_execution'").get()).toBeUndefined();
+    expect(sql.prepare("SELECT name FROM pragma_table_info('tasks') WHERE name = 'user_id'").get()).toBeUndefined();
     expect(sql.prepare("SELECT claim_id FROM tasks").get()).toEqual({ claim_id: claim.claimId });
   });
 
@@ -146,7 +149,7 @@ describe("worker SQLite schema and project bindings", () => {
 });
 
 describe("durable claim acquisition uncertainty", () => {
-  const attempt = { taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId, workerId: claim.workerId, expectedVersion: "9223372036854775806", configuration };
+  const attempt = { taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId, workerId: claim.workerId, userId, expectedVersion: "9223372036854775806", configuration };
 
   it("persists the original attempted assignment without registering a preclaim task", () => {
     const f = fixture(); f.store.registerProject(f.mapping);
@@ -160,6 +163,19 @@ describe("durable claim acquisition uncertainty", () => {
     expect(reopened.getClaimAttempt(project)).toEqual(attempt);
     expect(reopened.listClaimAttempts()).toEqual([{ ...project, attempt }]);
     expect(reopened.listUnfinishedTasks()).toEqual([]);
+  });
+
+  it("requires and preserves the original authenticated user of an unresolved claim attempt", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    const { userId: _userId, ...missingUser } = attempt;
+    expect(() => f.store.beginClaimAttempt(project, missingUser as never)).toThrow("Claim attempt has invalid fields");
+    expect(() => f.store.beginClaimAttempt(project, { ...attempt, userId: "not-a-user-id" })).toThrow("Attempt user ID must be a UUID");
+    f.store.beginClaimAttempt(project, attempt);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getClaimAttempt(project)?.userId).toBe(userId);
+    expect(() => reopened.beginClaimAttempt(project, { ...attempt, userId: uuid(91) })).toThrow("cannot be replayed or replaced");
+    expect(reopened.getClaimAttempt(project)).toEqual(attempt);
   });
 
   it("clears only the exact confirmed grant atomically with its original frozen pending row", () => {
@@ -491,7 +507,123 @@ describe("native launch receipts and process provenance", () => {
   });
 });
 
+describe("immutable authenticated claim scope", () => {
+  it("keeps newly registered scope unknown until an actual matching claim establishes its immutable owner", () => {
+    const f = fixture(); f.register();
+    expect(f.store.getTask(claim)?.userId).toBeNull();
+    expect(isUnstartedPending(f.store.getTask(claim)!)).toBe(true);
+    const owned = f.store.bindUserScope(claim, userId.toUpperCase(), 11);
+    expect(owned.userId).toBe(userId);
+    expect(f.store.bindUserScope(claim, userId, 12).userId).toBe(userId);
+    const before = f.store.getTask(claim)!;
+    expect(() => f.store.bindUserScope(claim, uuid(91), 13)).toThrow("original authenticated claim owner cannot be replaced");
+    expect(f.store.getTask(claim)).toEqual(before);
+    close(f.store);
+    expect(open(f.file).getTask(claim)?.userId).toBe(userId);
+  });
+
+  it("learns unknown scope for ordinary/shutdown claims while fencing terminal and source-control decisions", () => {
+    const ordinary = fixture(); ordinary.start();
+    expect(ordinary.store.bindUserScope(claim, userId, 25).userId).toBe(userId);
+    const shutdown = fixture(); shutdown.start();
+    shutdown.store.beginCleanup(claim, { kind: "shutdown", deadline: 600_030 }, 30);
+    expect(shutdown.store.bindUserScope(claim, userId, 31).userId).toBe(userId);
+    const terminal = fixture(); terminal.start();
+    terminal.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
+    const originalTerminal = terminal.store.getTask(claim)!;
+    expect(() => terminal.store.bindUserScope(claim, userId, 31)).toThrow("unknown authenticated scope");
+    expect(terminal.store.getTask(claim)).toEqual(originalTerminal);
+    const controlled = fixture(); controlled.start();
+    controlled.store.recordControlIntent(claim, release, 30);
+    const originalControl = controlled.store.getTask(claim)!;
+    expect(() => controlled.store.bindUserScope(claim, userId, 31)).toThrow("unknown authenticated scope");
+    expect(controlled.store.getTask(claim)).toEqual(originalControl);
+  });
+
+  it("permits already bound terminal/control owners without changing their original authorization", () => {
+    const f = fixture(); f.start(); f.store.bindUserScope(claim, userId, 25);
+    f.store.recordControlIntent(claim, release, 30);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_031 }, 31);
+    expect(f.store.bindUserScope(claim, userId, 32).userId).toBe(userId);
+    expect(() => f.store.bindUserScope(claim, uuid(91), 33)).toThrow("cannot be replaced");
+  });
+
+  it("requires original authenticated scope for direct pending completion while shutdown classification remains owner agnostic", () => {
+    const f = fixture(); f.register();
+    const proof = { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId } as const;
+    const pending = f.store.getTask(claim)!;
+    expect(isUnstartedPending(pending)).toBe(true);
+    expect(() => f.store.completeUnstartedPending(claim, proof, 11)).toThrow("original authenticated claim owner");
+    expect(f.store.getTask(claim)).toEqual(pending);
+    f.store.bindUserScope(claim, userId, 12);
+    const owned = f.store.getTask(claim)!;
+    expect(() => f.store.completeUnstartedPending(claim, { ...proof, authenticatedUserId: uuid(91) }, 13)).toThrow("original authenticated claim owner");
+    expect(f.store.getTask(claim)).toEqual(owned);
+    expect(f.store.completeUnstartedPending(claim, proof, 14)).toMatchObject({ status: "done", userId });
+  });
+});
+
 describe("claim history and frozen configuration", () => {
+  it("completes a proven unstarted successor directly without disturbing the old active execution", () => {
+    const f = fixture(); f.start();
+    const original = f.store.getTask(claim)!;
+    const successor = { ...claim, claimId: uuid(30), worktreeId: uuid(31) };
+    f.store.registerPending(successor, { kind: "new", configuration }, 25);
+    const pending = f.store.bindUserScope(successor, userId, 25);
+    expect(isUnstartedPending(pending)).toBe(true);
+    expect(() => f.store.completeUnstartedPending(successor, { completeOwnClaimInventory: false, claimAbsent: true } as never, 26)).toThrow("successful complete own-claim inventory");
+    expect(() => f.store.completeUnstartedPending(successor, { completeOwnClaimInventory: true, claimAbsent: false } as never, 26)).toThrow("successful complete own-claim inventory");
+    expect(f.store.getTask(successor)).toEqual(pending);
+    const completed = f.store.completeUnstartedPending(successor, { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId }, 27);
+    expect(completed).toMatchObject({ status: "done", resources: { worktree: null, herdr: null, nativeSession: null }, cleanup: { kind: "terminal", startedAt: 27, deadline: 27, input: "unavailable", result: "completed", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+    expect(f.store.getTask(claim)).toEqual(original);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(successor)).toEqual(completed);
+    expect(reopened.listUnfinishedTasks()).toEqual([original]);
+  });
+
+  it("requires every unstarted pending fact before treating a record as resource-free", () => {
+    const f = fixture(); f.register();
+    const pending = f.store.getTask(claim)!;
+    expect(isUnstartedPending(pending)).toBe(true);
+    expect(isUnstartedPending({ ...pending, status: "active" })).toBe(false);
+    expect(isUnstartedPending({ ...pending, status: "done" })).toBe(false);
+    expect(isUnstartedPending({ ...pending, control: { intent: release, requestedAt: 11, submission: "not-submitted", submittedAt: null, outcome: null, resultVersion: null, error: null } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, cleanup: { kind: "shutdown", startedAt: 11, deadline: 12, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: false } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, worktree: { repositoryPath: f.mapping.localPath, commonDirectory: path.join(f.mapping.localPath, ".git"), worktreePath: path.join(f.mapping.localPath, ".worktrees", "daynight", claim.taskId), branch: `daynight/${claim.taskId}` } } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, herdr: { session: "w", workspaceId: "ws", paneId: "pane" } } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, nativeSession: { sessionId: uuid(80), source: "herdr" } } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, nativeExecution: null })).toBe(false);
+    const binding = { session: "w", workspaceId: "ws", paneId: "pane", terminalId: "terminal" };
+    const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;
+    const workspaceEvidence = { binding, ownerLabel, environment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } };
+    const native = pending.nativeExecution!;
+    const mutations = [
+      { terminalId: binding.terminalId }, { workspaceSubmission: "unknown" as const }, { workspaceSubmission: "acknowledged" as const }, { workspaceEvidence },
+      { launchSubmission: "unknown" as const }, { launchSubmission: "acknowledged" as const },
+      { launchEvidence: { binding, ownerLabel, agent: "codex" as const, argv: ["codex"], referenceBaseline: "empty" as const, workspaceEvidence } },
+      { promptSubmission: "unknown" as const }, { promptSubmission: "submitted" as const },
+      { stopObservation: { binding, ownerLabel, agent: "codex" as const, nativeSessionId: null, shellPid: 100, processIds: [101], observedAt: 10 } },
+      { summary: { version: "11", herdr: null, nativeSessionId: null, phase: "preparing" as const, submission: "unknown" as const } },
+    ];
+    for (const mutation of mutations) expect(isUnstartedPending({ ...pending, nativeExecution: { ...native, ...mutation } })).toBe(false);
+  });
+
+  it("rejects direct completion for recovered, active or management-owned executions", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    f.store.registerPending(claim, { kind: "recovered", configuration }, 10);
+    const proof = { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId } as const;
+    expect(() => f.store.completeUnstartedPending(claim, proof, 11)).toThrow("proven unstarted pending");
+    f.store.activateTask(claim, 12);
+    expect(() => f.store.completeUnstartedPending(claim, proof, 13)).toThrow("proven unstarted pending");
+    const successor = { ...claim, claimId: uuid(30), worktreeId: uuid(31) };
+    f.store.registerPending(successor, { kind: "new", configuration }, 14);
+    f.store.recordControlIntent(successor, { kind: "release", sourceClaimId: successor.claimId, version: "11" }, 15);
+    expect(() => f.store.completeUnstartedPending(successor, proof, 16)).toThrow("proven unstarted pending");
+    expect(f.store.listTasks().map(({ status }) => status)).toEqual(["active", "pending"]);
+  });
+
   it("counts recovered configless responsibility as active without authorizing execution or spending recovery budget", () => {
     const f = fixture(); f.store.registerProject(f.mapping);
     f.store.registerPending(claim, { kind: "recovered", configuration: null }, 10);

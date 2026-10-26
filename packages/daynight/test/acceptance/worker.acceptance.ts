@@ -19,7 +19,7 @@ const workspace = path.resolve(import.meta.dirname, "../../../..");
 const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.resolve(workspace, "../..") : workspace;
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const time = "2026-10-26T00:00:00Z";
-type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: { status: string; configuration: string }; projectCount?: number; binding?: unknown; argv?: string[] };
+type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: { status: string; configuration: string; userId: string | null }; projectCount?: number; binding?: unknown; argv?: string[] };
 type FixtureTask = { -readonly [Key in keyof Task]: Task[Key] };
 
 const daemon = String.raw`#!/usr/bin/env node
@@ -34,7 +34,7 @@ const events=process.env.FIXTURE_EVENTS;
 const event=async(value)=>appendFile(events,JSON.stringify({timestamp:Date.now(),...value})+'\n');
 const cleanupGate=async(taskId,prompt)=>{if(taskId!==process.env.FIXTURE_HELD_CLEANUP_TASK||prompt.includes('Assignment:'))return;await event({kind:'cleanup-ack-held',taskId});while(true){try{await access(process.env.FIXTURE_CLEANUP_GATE);break;}catch(error){if(error.code!=='ENOENT')throw error;}await new Promise(resolve=>setTimeout(resolve,25));}await event({kind:'cleanup-ack-released',taskId});};
 const db=()=>new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});
-const record=async(kind,taskId,extra={})=>{const sql=db();try{await event({kind,taskId,row:sql.prepare('SELECT status,configuration FROM tasks WHERE task_id=?').get(taskId),projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,...extra});}finally{sql.close();}};
+const record=async(kind,taskId,extra={})=>{const sql=db();try{await event({kind,taskId,row:sql.prepare('SELECT status,configuration,user_id AS userId FROM tasks WHERE task_id=?').get(taskId),projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,...extra});}finally{sql.close();}};
 const directory=path.join(process.env.XDG_CONFIG_HOME,'herdr','sessions','w');await mkdir(directory,{recursive:true});
 const workspaces=[],panes=[],agents=[],tabs=[],children=new Map();let next=0;
 const clone=(value)=>JSON.parse(JSON.stringify(value));
@@ -73,20 +73,22 @@ else if(args.includes('features'))process.stdout.write('hooks stable true\n');
 else throw new Error('Only metadata commands are permitted in this fixture');
 `;
 
-it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline", "independent-cleanup-deadlines"] as const)("runs the installed worker through claim, managed launch and %s after a crash", async (scenario) => {
+it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline", "independent-cleanup-deadlines", "account-scope"] as const)("runs the installed worker through claim, managed launch and %s", async (scenario) => {
+  const accountScope = scenario === "account-scope";
   const parallelDeadlines = scenario === "independent-cleanup-deadlines";
-  const committedDeadline = scenario !== "startup-interrupt";
+  const committedDeadline = scenario === "committed-cleanup-deadline" || parallelDeadlines;
   const scratch = path.join(primary, ".tmp");
   await mkdir(scratch, { recursive: true });
   const home = await mkdtemp(path.join(scratch, "w"));
   const eventsFile = path.join(home, "events.jsonl");
   const databaseFile = path.join(home, ".daynight/worker/state.sqlite");
-  const evidenceName = parallelDeadlines ? "installed-worker-independent-deadlines" : committedDeadline ? "installed-worker-committed-deadline" : "installed-worker-acceptance";
+  const evidenceName = accountScope ? "installed-worker-account-scope" : parallelDeadlines ? "installed-worker-independent-deadlines" : committedDeadline ? "installed-worker-committed-deadline" : "installed-worker-acceptance";
   const evidenceFile = path.join(workspace, ".tmp", `${evidenceName}.json`);
   const cleanupEvidenceFile = path.join(workspace, ".tmp", scenario === "startup-interrupt" ? "installed-worker-cleanup.json" : `${evidenceName}-cleanup.json`);
   const cleanupGateFile = path.join(home, "cleanup-ack-gate");
   const logs: string[] = [];
-  const requests: { method: string; path: string; taskId?: string }[] = [];
+  const requests: { method: string; path: string; userId: string; taskId?: string }[] = [];
+  const inventoryResponses: { userId: string; projectId: string; itemCount: number; status: number }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
   let installed: Awaited<ReturnType<typeof createInstalledCli>> | undefined;
   let failure: unknown;
@@ -97,9 +99,11 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
   let peerCleanup: CleanupState | null = null;
   let cleanupCompletedAt: number | null = null;
   let peerPendingWitness: { timestamp: number; status: string; input: string; nativeProcessIds: number[] } | null = null;
+  let principal = uuid(100);
+  let accountScopeWitness: { originalUserId: string | null; switchedUserId: string; originalClaimId: string; originalConfiguration: string; originalResources: string; sentinel: string; nativeStartsBeforeSwitch: number; successfulEmptyInventoryProjects: string[] } | null = null;
   const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
   const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: true, requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
-  const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json" }); response.end(stringifyApiJson(value)); };
+  const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json", ...(status >= 200 && status < 300 ? { "Daynight-User-ID": principal } : {}) }); response.end(stringifyApiJson(value)); };
   const refusal = (response: ServerResponse): void => send(response, { error: { code: "version_conflict", message: "Fixture version conflict", requestId: "worker-fixture" } }, 409);
   const server = createServer(async (request, response) => {
     try {
@@ -110,7 +114,10 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       const parts = url.pathname.split("/");
       const project = projects.find((item) => item.id === parts[4]);
       const task = tasks.find((item) => item.id === parts[6]);
-      requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, ...(task === undefined ? {} : { taskId: task.id }) });
+      const authenticatedUser = request.headers.authorization === "Bearer worker-fixture-token" ? uuid(100) : request.headers.authorization === "Bearer worker-fixture-token-b" ? uuid(101) : null;
+      if (authenticatedUser !== principal) { send(response, { error: { code: "unauthorized", message: "Fixture authentication mismatch", requestId: "worker-auth-fixture" } }, 401); return; }
+      requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, userId: authenticatedUser, ...(task === undefined ? {} : { taskId: task.id }) });
+      if (url.pathname === "/api/v1/me" && request.method === "GET") { send(response, { id: principal, email: null, emailVerified: null, name: null, avatarUrl: null }); return; }
       if (project !== undefined && parts.length === 5 && request.method === "GET") {
         if (holdProjectReads) { heldProjectReads++; return; }
         send(response, project); return;
@@ -118,19 +125,20 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       if (project !== undefined && parts.length === 6 && request.method === "GET") {
         const inventory = url.searchParams.get("workerId");
         if (inventory !== null && failInventoryReads) { send(response, { error: { code: "internal_error", message: "Injected unavailable inventory", requestId: "worker-inventory-fault" } }, 500); return; }
-        const items = tasks.filter((item) => item.projectId === project.id && (inventory === null ? item.ready && item.allowAgents : item.properties.worker?.state === "active" && item.properties.worker.workerId === inventory));
+        const items = tasks.filter((item) => item.projectId === project.id && (inventory === null ? item.ready && item.allowAgents : item.properties.worker?.state === "active" && item.properties.worker.workerId === inventory && item.properties.worker.userId === principal));
+        if (inventory !== null) inventoryResponses.push({ userId: principal, projectId: project.id, itemCount: items.length, status: 200 });
         send(response, { items, nextCursor: null }); return;
       }
       if (task !== undefined && parts[7] === "worker-claim" && request.method === "POST") {
         const input = body as WorkerClaimDescriptor & { version: bigint };
         if (input.version !== task.version || !task.ready || task.properties.worker?.state === "active") { refusal(response); return; }
-        task.properties = { ...task.properties, worker: { claimId: input.claimId, workerId: input.workerId, machine: input.machine, platform: input.platform, agent: input.agent, worktreeId: input.worktreeId, state: "active", userId: uuid(100), phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time } };
+        task.properties = { ...task.properties, worker: { claimId: input.claimId, workerId: input.workerId, machine: input.machine, platform: input.platform, agent: input.agent, worktreeId: input.worktreeId, state: "active", userId: principal, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time } };
         task.status = "in_progress"; task.ready = false; task.startedAt = time; task.version += 1n;
         send(response, task); return;
       }
       if (task !== undefined && parts[7] === "worker-claim" && request.method === "PATCH") {
         const input = body as UpdateWorkerClaimInput;
-        if (input.version !== task.version || task.properties.worker?.state !== "active" || task.properties.worker.claimId !== input.claimId) { refusal(response); return; }
+        if (input.version !== task.version || task.properties.worker?.state !== "active" || task.properties.worker.claimId !== input.claimId || task.properties.worker.userId !== principal) { refusal(response); return; }
         task.properties = { ...task.properties, worker: { ...task.properties.worker, ...(input.herdr === undefined ? {} : { herdr: input.herdr }), ...(input.nativeSessionId === undefined ? {} : { nativeSessionId: input.nativeSessionId }), ...(input.phase === undefined ? {} : { phase: input.phase }) } };
         task.version += 1n;
         send(response, task); return;
@@ -149,7 +157,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
   };
   const row = (taskId: string) => {
     const db = new Database(databaseFile, { readonly: true });
-    try { return db.prepare("SELECT * FROM tasks WHERE task_id=?").get(taskId) as { status: string; native_execution: string; cleanup: string; resources: string }; }
+    try { return db.prepare("SELECT * FROM tasks WHERE task_id=?").get(taskId) as { status: string; user_id: string | null; configuration: string; recovery: string; native_execution: string; cleanup: string; resources: string }; }
     finally { db.close(); }
   };
   const waitFor = async (label: string, condition: () => boolean | Promise<boolean>, timeout = 20_000): Promise<void> => {
@@ -158,6 +166,11 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       if (Date.now() >= deadline) throw new Error(`Installed worker did not reach ${label}.\n${logs.join("")}\n${JSON.stringify(await events())}`);
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
     }
+  };
+  const expectNormalExit = async (closed: Promise<number | null>): Promise<void> => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const code = await Promise.race([closed, new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error(`Installed worker shutdown timed out.\n${logs.join("")}`)), 20_000); })]).finally(() => { if (timeout !== undefined) clearTimeout(timeout); });
+    expect(code, logs.join("")).toBe(0);
   };
   try {
     installed = await createInstalledCli();
@@ -210,10 +223,27 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       return execution.promptSubmission === "submitted" && execution.stopObservation !== null;
     });
     if (parallelDeadlines) await waitFor("first original native process journal", () => JSON.parse(row(first.id).native_execution).stopObservation !== null);
-    expect(originalWorker.child.kill("SIGKILL")).toBe(true);
-    expect(await originalWorker.closed).toBeNull();
-    expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(0);
-    holdProjectReads = true;
+    const sentinelFile = path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id, "uncommitted-a.txt");
+    if (accountScope) {
+      await writeFile(sentinelFile, "Uncommitted result belonging to authenticated user A.\n");
+      expect(originalWorker.child.kill("SIGINT")).toBe(true);
+      await expectNormalExit(originalWorker.closed);
+      const original = row(tasks[1]!.id);
+      expect(original.user_id).toBe(uuid(100));
+      expect(original.status).toBe("active");
+      expect(JSON.parse(original.cleanup)).toMatchObject({ kind: "shutdown", agentStopped: true, workspaceClosed: true, worktreeDeleted: false });
+      accountScopeWitness = { originalUserId: original.user_id, switchedUserId: uuid(101), originalClaimId: tasks[1]!.properties.worker!.claimId, originalConfiguration: original.configuration, originalResources: original.resources, sentinel: await readFile(sentinelFile, "utf8"), nativeStartsBeforeSwitch: (await events()).filter((event) => event.kind === "native-start").length, successfulEmptyInventoryProjects: [] };
+      const configFile = path.join(home, ".daynight/config.yml");
+      const configuration = parseYaml(await readFile(configFile, "utf8")) as { serverToken: string };
+      configuration.serverToken = "worker-fixture-token-b";
+      await writeFile(configFile, yaml(configuration));
+      principal = uuid(101);
+    } else {
+      expect(originalWorker.child.kill("SIGKILL")).toBe(true);
+      expect(await originalWorker.closed).toBeNull();
+    }
+    expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(accountScope ? 1 : 0);
+    holdProjectReads = !accountScope;
     const restartRequestOffset = requests.length;
     if (committedDeadline) {
       const deadline = Date.now() + 2_000;
@@ -237,7 +267,18 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       }
     }
     const restartedWorker = start();
-    await waitFor("restarted worker held during project discovery", () => heldProjectReads > 0);
+    if (accountScope) {
+      await waitFor("successful empty user B inventory and original-owner scope pause", () => new Set(inventoryResponses.filter((response) => response.userId === principal && response.status === 200 && response.itemCount === 0).map((response) => response.projectId)).size === 2 && logs.some((line) => line.includes("scope-paused")));
+      accountScopeWitness!.successfulEmptyInventoryProjects = [...new Set(inventoryResponses.filter((response) => response.userId === principal && response.status === 200 && response.itemCount === 0).map((response) => response.projectId))];
+      const retained = row(tasks[1]!.id);
+      expect(retained).toMatchObject({ user_id: uuid(100), status: "active", configuration: accountScopeWitness!.originalConfiguration, resources: accountScopeWitness!.originalResources });
+      expect(JSON.parse(retained.recovery).pauseReason).toContain("current authenticated user does not match");
+      expect(JSON.parse(retained.cleanup)).toMatchObject({ kind: "shutdown", worktreeDeleted: false });
+      expect(await readFile(sentinelFile, "utf8")).toBe(accountScopeWitness!.sentinel);
+      expect((await events()).filter((event) => event.kind === "native-start")).toHaveLength(accountScopeWitness!.nativeStartsBeforeSwitch);
+      expect(tasks[1]!.properties.worker).toMatchObject({ state: "active", userId: uuid(100), claimId: accountScopeWitness!.originalClaimId });
+      expect(requests.slice(restartRequestOffset).every((request) => request.userId === principal && request.method === "GET")).toBe(true);
+    } else await waitFor("restarted worker held during project discovery", () => heldProjectReads > 0);
     if (committedDeadline) {
       const deadlineTask = parallelDeadlines ? first : tasks[1]!;
       if (parallelDeadlines) await waitFor("peer cleanup acknowledgement held", async () => (await events()).some((event) => event.kind === "cleanup-ack-held" && event.taskId === tasks[1]!.id));
@@ -265,14 +306,13 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       }
     }
     expect(restartedWorker.child.kill("SIGINT")).toBe(true);
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    const code = await Promise.race([restartedWorker.closed, new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error(`Installed worker shutdown timed out.\n${logs.join("")}`)), 20_000); })]).finally(() => { if (timeout !== undefined) clearTimeout(timeout); });
-    expect(code, logs.join("")).toBe(0);
+    await expectNormalExit(restartedWorker.closed);
     const observed = await events();
     expect(observed.filter((event) => event.kind === "fixture-error")).toEqual([]);
     expect(observed.filter((event) => event.kind === "native-start").map((event) => event.taskId)).toEqual(tasks.map((task) => task.id));
     for (const event of observed.filter((item) => item.kind === "workspace" || item.kind === "native-start")) {
       expect(event.row?.status).toBe("active");
+      expect(event.row?.userId).toBe(uuid(100));
       expect(JSON.parse(event.row!.configuration)).toEqual({ agent: "codex", model: "fixture-model", args: ["--search"], recoveryLimit: 3 });
       expect(event.projectCount).toBe(2);
     }
@@ -296,8 +336,13 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       const unknownInput = committedDeadline && index === (parallelDeadlines ? 0 : 1);
       expect(observed.filter((event) => event.kind === "prompt" && event.taskId === task.id)).toHaveLength(unknownInput ? 1 : 2);
     }
-    expect(observed.filter((event) => event.kind === "daemon-start")).toHaveLength(1);
-    expect(observed.filter((event) => event.kind === "daemon-stop")).toHaveLength(1);
+    expect(observed.filter((event) => event.kind === "daemon-start")).toHaveLength(accountScope ? 2 : 1);
+    expect(observed.filter((event) => event.kind === "daemon-stop")).toHaveLength(accountScope ? 2 : 1);
+    if (accountScope) {
+      const daemonStarts = observed.filter((event) => event.kind === "daemon-start");
+      const firstStop = observed.find((event) => event.kind === "daemon-stop")!;
+      expect(daemonStarts[1]!.timestamp).toBeGreaterThanOrEqual(firstStop.timestamp);
+    }
     expect(observed.filter((event) => event.kind === "native-stop")).toHaveLength(2);
     expect(observed.filter((event) => event.kind === "workspace-close")).toHaveLength(2);
     if (!parallelDeadlines) expect(observed.findIndex((event) => event.kind === "native-start" && event.taskId === tasks[1]!.id)).toBeGreaterThan(observed.findIndex((event) => event.kind === "workspace-close" && event.taskId === first.id));
@@ -316,12 +361,16 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       expect(unfinished.status).toBe("active");
       expect(JSON.parse(unfinished.cleanup)).toMatchObject({ kind: "shutdown", agentStopped: true, workspaceClosed: true, worktreeDeleted: false });
       expect(await readFile(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id, "README.md"), "utf8")).toContain("Worker integration fixture");
+      if (accountScope) {
+        expect(unfinished).toMatchObject({ user_id: uuid(100), configuration: accountScopeWitness!.originalConfiguration, resources: accountScopeWitness!.originalResources });
+        expect(await readFile(sentinelFile, "utf8")).toBe(accountScopeWitness!.sentinel);
+      }
     }
     const originalNativeId = JSON.parse(unfinished.resources).nativeSession.sessionId as string;
     expect(originalNativeId).toMatch(/^[0-9a-f-]{36}$/);
     expect(await readFile(path.join(codex, "sessions", `rollout-${originalNativeId}.jsonl`), "utf8")).toContain(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id));
     expect(tasks[1]!.properties.worker!.state).toBe(committedDeadline ? "completed" : "active");
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, events: observed, first: row(first.id), unfinished, ...(seededCleanup === null ? {} : { injection: { method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision", cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: true, inventoryFaultEnabled: failInventoryReads, inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length, cleanupCompletedAt, processingAllowanceMs: 5_000, ...(peerCleanup === null ? {} : { peerCleanup, peerPendingWitness }) } }), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: accountScope ? "Installed public launcher, real Git/SQLite/HTTP; normal user A shutdown then user B authentication with successful empty own inventory and scope pause" : "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, inventoryResponses, events: observed, first: row(first.id), unfinished, ...(accountScopeWitness === null ? {} : { accountScopeWitness }), ...(seededCleanup === null ? {} : { injection: { method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision", cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: true, inventoryFaultEnabled: failInventoryReads, inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length, cleanupCompletedAt, processingAllowanceMs: 5_000, ...(peerCleanup === null ? {} : { peerCleanup, peerPendingWitness }) } }), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });

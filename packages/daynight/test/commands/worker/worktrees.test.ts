@@ -31,7 +31,7 @@ const fixture = async (refFormat: "files" | "reftable" = "files") => {
   await writeFile(path.join(repository, "tracked.txt"), "original\n"); git(repository, ["add", ".gitattributes", "tracked.txt"]); git(repository, ["commit", "-m", "fixture"]);
   git(repository, ["remote", "add", "origin", remote]);
   const project: WorkerProject = { serverOrigin: "https://daynight.example", projectId: ids.projectId, repoUrl: remote, localPath: repository };
-  const task: LocalTask = { ...ids, serverOrigin: project.serverOrigin, status: "active", repoUrl: remote, repositoryPath: repository, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 3 }, resources: { worktree: null, herdr: null, nativeSession: null }, nativeExecution: null, recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null, createdAt: 1, updatedAt: 1 };
+  const task: LocalTask = { ...ids, serverOrigin: project.serverOrigin, status: "active", userId: null, repoUrl: remote, repositoryPath: repository, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 3 }, resources: { worktree: null, herdr: null, nativeSession: null }, nativeExecution: null, recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null, createdAt: 1, updatedAt: 1 };
   return { root, repository, project, task };
 };
 const proof = { terminal: true, agentStopped: true, workspaceClosed: true } as const;

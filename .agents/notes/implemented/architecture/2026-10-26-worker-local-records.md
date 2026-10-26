@@ -34,18 +34,20 @@ relied on complete own-claim inventory before pending registration. It
 introduced no preclaim task or extra acquisition registry. The [foreground
 runtime decision](2026-10-27-foreground-worker-runtime.md) partially supersedes
 the memory-only part: projects now retain one concrete unresolved claimAttempt,
-including original IDs, exact version and decision configuration, before the
-outbound mutation. Matching actual ownership atomically materializes pending and
-clears that attempt. Unknown requests remain fenced; absence alone does not
-clear them. Transfer still persists its target identity in source control
-intent. The two business tables and actual-claim-only task rows remain.
+including original IDs, authenticated userId, exact version and decision
+configuration, before the outbound mutation. Matching actual ownership
+atomically materializes pending and clears that attempt. Unknown requests remain
+fenced; absence alone does not clear them. Transfer still persists its target
+identity in source control intent. The two business tables and actual-claim-only
+task rows remain.
 
-Each task row corresponds to an actual claim and retains its original repository
-binding, frozen configuration, resource associations, concrete nativeExecution
-provenance, recovery state, cleanup and source control intent. Status is
-pending, active or done. A partial unique index permits at most one active claim
-per origin/project/task. Completed rows remain history; no event table or
-alternate execution registry is introduced.
+Each task row corresponds to an actual claim, retains its immutable original
+authenticated userId and original repository binding, frozen configuration,
+resource associations, concrete nativeExecution provenance, recovery state,
+cleanup and source control intent. Status is pending, active or done. A partial
+unique index permits at most one active claim per origin/project/task. Completed
+rows remain history; no event table or alternate execution registry is
+introduced.
 
 First pending materialization freezes effective agent/model/args/recovery limit.
 A recovered execution missing its original snapshot pauses until that original
@@ -118,6 +120,10 @@ observations and returns bindings to this same store. Existing service
 resume/transfer continuity checks still need the management-protocol delivery
 before fresh target execution is available. This local schema does not claim
 that protocol change, native-agent recovery or Windows/macOS runtime acceptance.
-Schema 1 migrates explicitly to schema 2; missing original native evidence stays
-unknown rather than receiving never-submitted defaults. Unsupported or
-inconsistent schemas fail visibly.
+Schema 1 migrates explicitly to schema 2; original userId becomes null and
+missing native evidence stays unknown rather than receiving current-login or
+never-submitted defaults. Unknown terminal/control scope cannot be granted
+retrospectively; ordinary/shutdown scope needs the actual fully matching own
+claim. Strict unstarted pending state remains pending on normal exit, with no
+resource cleanup or active promotion. Unsupported or inconsistent schemas fail
+visibly.

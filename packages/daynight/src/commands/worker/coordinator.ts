@@ -9,6 +9,7 @@ import type { ExecutionDependencies, WorkerEvent, WorkerGitManager } from "./exe
 import { HerdrAgentActionError } from "./herdr.js";
 import type { HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
 import type { WorkerRemote } from "./remote.js";
+import { isUnstartedPending } from "./store.js";
 import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, CleanupState, FrozenExecutionConfiguration, LocalTask, WorkerProject } from "./types.js";
 
@@ -38,6 +39,10 @@ const exists = async (target: string): Promise<boolean> => {
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
 };
 const sleep = (milliseconds: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, milliseconds); });
+const unknownUserScope = "The original authenticated execution owner is unknown; only an exact current own claim can establish it.";
+const changedUserScope = "The current authenticated user does not match the original execution owner.";
+const unscopedCleanup = "The original authenticated owner of this committed cleanup is unknown; cleanup remains paused.";
+const scopePauseReasons = new Set([unknownUserScope, changedUserScope, unscopedCleanup]);
 
 export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const now = options.now === undefined ? Date.now : options.now;
@@ -67,10 +72,19 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const capacity = (): number => options.store.listUnfinishedTasks().filter((task) => task.status === "active").length;
   const localTasks = (): LocalTask[] => options.store.listUnfinishedTasks().filter((task) => task.serverOrigin === options.serverOrigin && task.workerId === options.workerId);
-  const completeTerminal = (task: LocalTask, absent: boolean): LocalTask => {
+  const pauseForScope = (task: LocalTask, reason: string): LocalTask => {
+    const originalReason = task.recovery.pauseReason;
+    const retainedReason = originalReason !== null && !scopePauseReasons.has(originalReason) ? originalReason : reason;
+    if (task.status === "pending" && !isUnstartedPending(task)) task = options.store.activatePausedRecovery(task, retainedReason, now());
+    else if (originalReason !== retainedReason) task = options.store.pauseTask(task, retainedReason, now());
+    options.emit({ kind: "scope-paused", task, message: reason });
+    return task;
+  };
+  const completeTerminal = (task: LocalTask, absent: boolean, authenticatedUserId?: string): LocalTask => {
+    if (task.userId === null) return task;
     if (task.cleanup?.kind !== "terminal" || !task.cleanup.agentStopped || !task.cleanup.workspaceClosed || !task.cleanup.worktreeDeleted || task.cleanup.result === null) return task;
     if (task.control !== null && task.control.submission !== "confirmed") {
-      if (!absent) return task;
+      if (!absent || authenticatedUserId !== task.userId) return task;
       task = options.store.confirmControlOwnershipEnded(task, { completeOwnClaimInventory: true, claimAbsent: true }, now());
     }
     return options.store.completeTask(task, now());
@@ -98,15 +112,20 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       options.emit({ kind: "summary-error", task: latest(task), message: "The execution summary was not confirmed; an uncertain write will not be replayed.", error });
     }
   };
-  const recordRecovered = async (remoteTask: Task, resources: readonly HerdrOwnedWorkspace[]): Promise<LocalTask> => {
+  const recordRecovered = async (remoteTask: Task, resources: readonly HerdrOwnedWorkspace[], authenticatedUserId: string): Promise<LocalTask> => {
     const worker = remoteTask.properties.worker!;
     const identity = { serverOrigin: options.serverOrigin, projectId: remoteTask.projectId, taskId: remoteTask.id, claimId: worker.claimId, workerId: worker.workerId, worktreeId: worker.worktreeId };
     const present = options.store.getTask(identity);
-    if (present !== null) return present;
+    if (present !== null) {
+      const originalIdentityMatches = present.workerId === worker.workerId && present.worktreeId === worker.worktreeId && (present.configuration === null || present.configuration.agent === worker.agent);
+      if (present.userId === null && originalIdentityMatches && present.control === null && present.cleanup?.kind !== "terminal") return options.store.bindUserScope(present, authenticatedUserId, now());
+      return present;
+    }
     const project = options.store.getProject(identity);
     if (project === null) throw new Error(`The original project binding for recovered claim ${worker.claimId} is unavailable.`);
     const attempt = options.store.getClaimAttempt(identity);
-    const matchingAttempt = attempt !== null && attempt.taskId === remoteTask.id && attempt.claimId === worker.claimId && attempt.workerId === worker.workerId && attempt.worktreeId === worker.worktreeId;
+    if (attempt !== null && attempt.claimId === worker.claimId && attempt.userId !== authenticatedUserId) throw new Error("The original claim request belongs to another authenticated user; its scope cannot be replaced.");
+    const matchingAttempt = attempt !== null && attempt.userId === authenticatedUserId && attempt.taskId === remoteTask.id && attempt.claimId === worker.claimId && attempt.workerId === worker.workerId && attempt.worktreeId === worker.worktreeId;
     const configured = options.repositories.find(({ project: selected }) => selected.serverOrigin === identity.serverOrigin && selected.projectId === identity.projectId);
     const fixedPath = path.join(project.localPath, ".worktrees", "daynight", identity.taskId);
     let pathTrace = await exists(fixedPath);
@@ -120,18 +139,35 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const trace = worker.herdr !== null || worker.nativeSessionId !== null || resources.some(({ owner }) => owner.serverOrigin === identity.serverOrigin && owner.projectId === identity.projectId && owner.taskId === identity.taskId && owner.claimId === identity.claimId) || pathTrace;
     const configuration = matchingAttempt ? attempt.configuration : configured?.configuration;
     const fresh = !trace && configuration !== undefined && configuration.agent === worker.agent && worker.phase === "preparing";
-    const task = options.store.registerPending(identity, fresh ? { kind: "new", configuration } : { kind: "recovered", configuration: null }, now());
+    const pending = options.store.registerPending(identity, fresh ? { kind: "new", configuration } : { kind: "recovered", configuration: null }, now());
+    const task = options.store.bindUserScope(pending, authenticatedUserId, now());
     options.emit({ kind: fresh ? "pending-recovered" : "recovery-paused", task, message: fresh ? "Recovered the actual remote claim before resource creation and froze its effective configuration." : "Recovered an existing claim without its original frozen configuration; execution is paused." });
     return task;
   };
-  const reconcileTask = async (input: LocalTask, remoteTask: Task | undefined, resources: readonly HerdrOwnedWorkspace[]): Promise<void> => {
+  const reconcileTask = async (input: LocalTask, remoteTask: Task | undefined, resources: readonly HerdrOwnedWorkspace[], authenticatedUserId: string): Promise<void> => {
     await serializeTask(input, async () => {
       let task = latest(input);
       let currentResources = resources;
       if (task.status === "done") return;
-      if (remoteTask === undefined || task.control !== null || task.cleanup?.kind === "terminal") {
+      if (task.control !== null || task.cleanup?.kind === "terminal") {
+        if (task.userId === null) { pauseForScope(task, unscopedCleanup); return; }
         task = await cleanup.advance(task, resources, "terminal", now() + 600_000, normalSignal);
-        completeTerminal(task, remoteTask === undefined);
+        completeTerminal(task, remoteTask === undefined, authenticatedUserId);
+        return;
+      }
+      if (task.userId === null || task.userId !== authenticatedUserId) {
+        pauseForScope(task, task.userId === null ? unknownUserScope : changedUserScope);
+        return;
+      }
+      if (remoteTask === undefined && isUnstartedPending(task)) {
+        if (ownedWorkspace(task, resources) !== undefined) throw new Error("The pending execution has unexpected Herdr resources; its unstarted state cannot authorize cleanup completion.");
+        task = options.store.completeUnstartedPending(task, { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId }, now());
+        options.emit({ kind: "done-unstarted", task, message: "The claim ended before activation or resource creation; local responsibility is complete." });
+        return;
+      }
+      if (remoteTask === undefined) {
+        task = await cleanup.advance(task, resources, "terminal", now() + 600_000, normalSignal);
+        completeTerminal(task, true, authenticatedUserId);
         return;
       }
       if (task.cleanup?.kind === "shutdown") {
@@ -151,6 +187,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         options.emit({ kind: "paused", task, message: task.recovery.pauseReason ?? "The original frozen execution configuration is missing." });
         return;
       }
+      if (task.recovery.pauseReason !== null && scopePauseReasons.has(task.recovery.pauseReason)) task = options.store.clearPause(task, now());
       if (task.status === "pending") {
         if (capacity() >= options.maxConcurrent || options.store.listUnfinishedTasks().some((other) => other.status === "active" && taskKey(other) === taskKey(task))) return;
         task = options.store.activateTask(task, now());
@@ -168,7 +205,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await publishSummary(latest(task), remoteTask);
     });
   };
-  const claimOne = async (repository: WorkerRepositoryAssignment, resources: readonly HerdrOwnedWorkspace[]): Promise<boolean> => {
+  const claimOne = async (repository: WorkerRepositoryAssignment, resources: readonly HerdrOwnedWorkspace[], authenticatedUserId: string): Promise<boolean> => {
     if (options.store.getClaimAttempt(repository.project) !== null) {
       options.emit({ kind: "claim-unknown", message: `Project ${repository.project.projectId} has an unresolved original claim request; no claim is replayed.` });
       return false;
@@ -177,7 +214,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (shuttingDown || capacity() >= options.maxConcurrent) return false;
       if (options.store.listUnfinishedTasks().some((task) => task.serverOrigin === options.serverOrigin && task.projectId === candidate.projectId && task.taskId === candidate.id)) continue;
       const descriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent };
-      options.store.beginClaimAttempt(repository.project, { taskId: candidate.id, claimId: descriptor.claimId, workerId: options.workerId, worktreeId: descriptor.worktreeId, expectedVersion: candidate.version.toString(), configuration: repository.configuration });
+      options.store.beginClaimAttempt(repository.project, { taskId: candidate.id, claimId: descriptor.claimId, workerId: options.workerId, worktreeId: descriptor.worktreeId, userId: authenticatedUserId, expectedVersion: candidate.version.toString(), configuration: repository.configuration });
       let granted: Task;
       try { granted = await options.remote.claim(candidate, descriptor, normalSignal); }
       catch (error) {
@@ -189,9 +226,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         options.emit({ kind: "claim-unknown", message: `Claim outcome unknown for project ${candidate.projectId}, task ${candidate.id}, claim ${descriptor.claimId}; the original request is durably fenced.`, error });
         return false;
       }
-      const task = options.store.registerPending({ serverOrigin: options.serverOrigin, projectId: granted.projectId, taskId: granted.id, claimId: descriptor.claimId, workerId: options.workerId, worktreeId: descriptor.worktreeId }, { kind: "new", configuration: repository.configuration }, now());
+      const worker = granted.properties.worker;
+      if (worker === null || worker.userId !== authenticatedUserId) throw new Error("The granted claim does not match the verified authenticated user.");
+      const pending = options.store.registerPending({ serverOrigin: options.serverOrigin, projectId: granted.projectId, taskId: granted.id, claimId: descriptor.claimId, workerId: options.workerId, worktreeId: descriptor.worktreeId }, { kind: "new", configuration: repository.configuration }, now());
+      const task = options.store.bindUserScope(pending, authenticatedUserId, now());
       options.emit({ kind: "pending", task, message: "Actual remote claim committed locally before activating or creating resources." });
-      await reconcileTask(task, granted, resources);
+      await reconcileTask(task, granted, resources, authenticatedUserId);
       return true;
     }
     return false;
@@ -206,6 +246,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         normalSignal.throwIfAborted();
         let task = latest(input);
         if (task.status === "done" || (task.cleanup === null && task.control === null)) return;
+        if (task.userId === null && (task.control !== null || task.cleanup?.kind === "terminal")) { pauseForScope(task, unscopedCleanup); return; }
         if (task.cleanup?.result !== null && task.cleanup?.agentStopped && task.cleanup.workspaceClosed && (task.cleanup.kind === "shutdown" || task.cleanup.worktreeDeleted)) {
           completeTerminal(task, false);
           return;
@@ -229,7 +270,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     cleanupTask: async (identity: ClaimIdentity, kind: CleanupState["kind"] = "terminal"): Promise<LocalTask> => serializeTask(identity, async () => {
       await workerOperation((operation) => options.herdr.ensureInstance(operation));
       const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
-      return cleanup.advance(latest(identity), resources, kind, now() + 600_000);
+      const task = latest(identity);
+      if (task.userId === null && (kind === "terminal" || task.control !== null || task.cleanup?.kind === "terminal")) return pauseForScope(task, unscopedCleanup);
+      return cleanup.advance(task, resources, kind, now() + 600_000);
     }),
     tick: async (): Promise<void> => {
       if (shuttingDown) return;
@@ -237,12 +280,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       ticking = true;
       try {
         normalSignal.throwIfAborted();
+        const authenticatedUserId = await options.remote.currentUserId(normalSignal);
         const projects = options.store.listProjects().filter((project) => project.serverOrigin === options.serverOrigin);
         const inventory = await options.remote.ownInventory(projects, options.workerId, normalSignal);
+        if (inventory.some((task) => task.properties.worker === null || task.properties.worker.userId !== authenticatedUserId || task.properties.worker.workerId !== options.workerId)) throw new Error("The own-claim inventory does not match its verified authenticated user and worker scope.");
         const byClaim = new Map(inventory.map((task) => [claimKey({ serverOrigin: options.serverOrigin, projectId: task.projectId, taskId: task.id, claimId: task.properties.worker!.claimId }), task]));
         await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
         let resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
-        for (const task of inventory) await recordRecovered(task, resources);
+        for (const task of inventory) await recordRecovered(task, resources, authenticatedUserId);
         for (const workspace of resources) {
           const owner = workspace.owner;
           if (owner.serverOrigin !== options.serverOrigin || options.store.getTask(owner) !== null) continue;
@@ -254,7 +299,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
         const existing = localTasks().sort((left, right) => Number(right.status === "active") - Number(left.status === "active"));
         for (const task of existing) {
-          try { await reconcileTask(task, byClaim.get(claimKey(task)), resources); }
+          try { await reconcileTask(task, byClaim.get(claimKey(task)), resources, authenticatedUserId); }
           catch (error) { options.emit({ kind: "reconciliation-error", task: latest(task), message: "The original execution remains owned locally; reconciliation will preserve its recorded progress.", error }); }
         }
         resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
@@ -263,7 +308,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           normalSignal.throwIfAborted();
           const repository = options.repositories[nextRepository % options.repositories.length]!;
           nextRepository = (nextRepository + 1) % options.repositories.length;
-          const claimed = await claimOne(repository, resources);
+          const claimed = await claimOne(repository, resources, authenticatedUserId);
           misses = claimed ? 0 : misses + 1;
         }
       } finally { ticking = false; }
@@ -271,28 +316,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     shutdown: async (): Promise<boolean> => {
       shuttingDown = true;
       await Promise.all([...tails.values()]);
-      const tasks = localTasks();
+      const tasks = localTasks().filter((task) => !isUnstartedPending(task));
       const deadline = now() + 600_000;
-      for (const task of tasks) options.store.beginCleanup(task, { kind: task.control !== null || task.cleanup?.kind === "terminal" ? "terminal" : "shutdown", deadline }, now());
-      let initialResources: readonly HerdrOwnedWorkspace[];
-      try {
-        await workerOperation((operation) => options.herdr.ensureInstance(operation));
-        initialResources = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
-      } catch (error) {
-        options.emit({ kind: "shutdown-error", message: "The private Herdr instance cannot be inspected; original stop is not confirmed.", error });
-        return false;
-      }
-      if (initialResources.some((workspace) => !tasks.some((task) => ownedWorkspace(task, [workspace]) !== undefined))) {
-        options.emit({ kind: "shutdown-error", message: "The private Herdr instance contains resources without an unfinished local execution; stop cannot be confirmed." });
-        return false;
-      }
-      if (tasks.length === 0) return true;
       const results = await Promise.allSettled(tasks.map((input) => serializeTask(input, async () => {
         let task = latest(input);
+        if (task.status === "done" || isUnstartedPending(task)) return;
+        if (task.userId === null && (task.control !== null || task.cleanup?.kind === "terminal")) { pauseForScope(task, unscopedCleanup); throw new Error(unscopedCleanup); }
+        task = options.store.beginCleanup(task, { kind: task.control !== null || task.cleanup?.kind === "terminal" ? "terminal" : "shutdown", deadline }, now());
+        await workerOperation((operation) => options.herdr.ensureInstance(operation));
         while (true) {
           const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
           task = await cleanup.advance(task, resources, task.cleanup!.kind, task.cleanup!.deadline);
-          if (task.cleanup!.agentStopped && task.cleanup!.workspaceClosed) { completeTerminal(task, false); return true; }
+          if (task.cleanup!.agentStopped && task.cleanup!.workspaceClosed) { completeTerminal(task, false); return; }
           await sleep(Math.max(1, Math.min(250, task.cleanup!.deadline - now())));
         }
       })));
@@ -300,6 +335,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       for (let index = 0; index < results.length; index += 1) {
         const result = results[index]!;
         if (result.status === "rejected") { stopped = false; options.emit({ kind: "shutdown-error", task: latest(tasks[index]!), message: "Original agent stop could not be confirmed; its resources were retained.", error: result.reason }); }
+      }
+      try {
+        await workerOperation((operation) => options.herdr.ensureInstance(operation));
+        const remaining = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
+        if (remaining.length > 0) {
+          stopped = false;
+          options.emit({ kind: "shutdown-error", message: "The private Herdr instance still contains task resources, including any resources without an unfinished local execution; stop cannot be confirmed." });
+        }
+      } catch (error) {
+        stopped = false;
+        options.emit({ kind: "shutdown-error", message: "The private Herdr instance cannot be inspected; original stop is not confirmed.", error });
       }
       return stopped;
     },

@@ -1,5 +1,5 @@
 import { isNonemptyText, isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, User, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
 
 export class ProtocolError extends Error {
   constructor(message = "The server returned an invalid response.") { super(message); this.name = "ProtocolError"; }
@@ -86,6 +86,14 @@ const fields = (value: unknown, names: readonly string[]): Record<string, unknow
   const data = record(value);
   if (Object.keys(data).some((key) => !names.includes(key))) return malformed();
   return data;
+};
+export const parseUser = (value: unknown): User => {
+  const data = fields(value, ["id", "email", "emailVerified", "name", "avatarUrl"]);
+  return {
+    id: id(data.id), email: data.email === null ? null : text(data.email),
+    emailVerified: data.emailVerified === null ? null : bool(data.emailVerified),
+    name: data.name === null ? null : text(data.name), avatarUrl: data.avatarUrl === null ? null : text(data.avatarUrl),
+  };
 };
 const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
 const workerHerdr = (value: unknown): WorkerHerdr | null => {

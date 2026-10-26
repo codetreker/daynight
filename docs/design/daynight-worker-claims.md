@@ -88,6 +88,8 @@ Transfer 要求原 owner/admin 和当前目标成员，重新核验自动许可�
 
 Worker 直接调用 CLI 进程内 typed ApiClient。claimWorkerTask、updateWorkerClaim、releaseWorkerClaim、transferWorkerClaim、resumeWorkerTask 和 completeWorkerTask 使用各自明确的 200 响应校验；completeWorkerTask 通过现有 PUT status 提交 done 与 claimId。普通 setTaskStatus 保持 version/status 输入。公开 CLI 的 task set-status done --claim-id <claim-id> 显式选择 completeWorkerTask，并保留精确 --if-version 和同一结果校验；不从 task/environment 推断 claim，不在失败后回退普通 setter。Worker 自身调用 typed API，不启动 daynight 子进程；原生 agent 可使用这一公开完成入口。
 
+Typed ApiClient 的 `getCurrentUser()` 复用既有 GET /api/v1/me，解码 User 的 id、email、emailVerified、name、avatarUrl 五字段；它不增加服务端 API。可选 expectedUserId 在成功响应正文准入前核对既有 Daynight-User-ID，空分页同样受约束。Worker 在读取项目/清单前固定启动凭据的认证 UID，并将实际 claim 的原 userId 保存在本机任务及未决请求；只有匹配原账号的完整清单能授权新的缺席清理/恢复。换号不改变 workerId，也不能把另一账号的空结果当作原账号归属结束；未知范围和已提交收尾的规则由[运行时设计](daynight-worker.md#前台循环与-worktree)拥有。
+
 listTaskPage 保留 nextCursor，供运行时有界推进候选；许可、ready 和实际平台在服务端排序和分页前组合。active 记录对应 in_progress，天然不属于 ready todo。遇到缺少原成果的 released 候选时，执行方须继续后续游标，不能据此把仓库判为空。
 
 `GET /api/v1/projects/{projectId}/tasks?workerId=<uuid>` 提供当前认证用户及指定 worker 的有效 active claim，历史记录不属于清单。UUID 规范化后与隐式 userId 一起绑定游标；不附加 status/ready/allowAgents/compatiblePlatform 才是该项目完整归属查询。服务端在既有 TEXT 解码后筛选，匹配先于最终分页，不新增 claim 表或投影。

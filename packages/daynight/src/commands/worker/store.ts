@@ -56,8 +56,8 @@ const parseConfiguration = (value: unknown): FrozenExecutionConfiguration => {
     args: data.args.map((entry) => text(entry, "Agent argument", true)), recoveryLimit: integer(data.recoveryLimit, "Recovery limit") };
 };
 const parseClaimAttempt = (value: unknown): ClaimAttempt => {
-  const data = record(value, ["taskId", "claimId", "worktreeId", "workerId", "expectedVersion", "configuration"], "Claim attempt");
-  return { taskId: id(data.taskId, "Attempt task ID"), claimId: id(data.claimId, "Attempt claim ID"), worktreeId: id(data.worktreeId, "Attempt worktree ID"), workerId: id(data.workerId, "Attempt worker ID"), expectedVersion: version(data.expectedVersion), configuration: parseConfiguration(data.configuration) };
+  const data = record(value, ["taskId", "claimId", "worktreeId", "workerId", "userId", "expectedVersion", "configuration"], "Claim attempt");
+  return { taskId: id(data.taskId, "Attempt task ID"), claimId: id(data.claimId, "Attempt claim ID"), worktreeId: id(data.worktreeId, "Attempt worktree ID"), workerId: id(data.workerId, "Attempt worker ID"), userId: id(data.userId, "Attempt user ID"), expectedVersion: version(data.expectedVersion), configuration: parseConfiguration(data.configuration) };
 };
 const parseWorktree = (value: unknown): WorktreeBinding => {
   const data = record(value, ["repositoryPath", "commonDirectory", "worktreePath", "branch"], "Worktree binding");
@@ -118,6 +118,12 @@ const parseNativeExecution = (value: unknown): NativeExecutionState => {
 };
 const freshNativeExecution = (): NativeExecutionState => ({ terminalId: null, workspaceSubmission: "not-submitted", workspaceEvidence: null, launchEvidence: null, launchSubmission: "never-submitted", promptSubmission: "not-submitted", stopObservation: null, summary: null });
 const unknownNativeExecution = (): NativeExecutionState => ({ ...freshNativeExecution(), workspaceSubmission: "unknown", launchSubmission: "unknown", promptSubmission: "unknown" });
+export const isUnstartedPending = (task: LocalTask): boolean => {
+  const native = task.nativeExecution;
+  return task.status === "pending" && task.cleanup === null && task.control === null && task.resources.worktree === null && task.resources.herdr === null && task.resources.nativeSession === null
+    && native !== null && native.terminalId === null && native.workspaceSubmission === "not-submitted" && native.workspaceEvidence === null
+    && native.launchSubmission === "never-submitted" && native.launchEvidence === null && native.promptSubmission === "not-submitted" && native.stopObservation === null && native.summary === null;
+};
 const parseRecovery = (value: unknown): RecoveryState => {
   const data = record(value, ["count", "pauseReason", "retryAuthorized"], "Recovery state");
   return { count: integer(data.count, "Recovery count"), pauseReason: nullable(data.pauseReason, (entry) => text(entry, "Pause reason")), retryAuthorized: bool(data.retryAuthorized, "Recovery retry authorization") };
@@ -192,12 +198,13 @@ const projectColumns = "server_origin AS serverOrigin, project_id AS projectId, 
 type ProjectRow = WorkerProject & { claimAttempt: string | null };
 const asProject = (row: ProjectRow): WorkerProjectRecord => ({ ...row, claimAttempt: row.claimAttempt === null ? null : parseClaimAttempt(JSON.parse(row.claimAttempt) as unknown) });
 const taskColumns = `server_origin AS serverOrigin, project_id AS projectId, task_id AS taskId, claim_id AS claimId,
-  worker_id AS workerId, worktree_id AS worktreeId, status, repo_url AS repoUrl, repository_path AS repositoryPath,
+  worker_id AS workerId, worktree_id AS worktreeId, user_id AS userId, status, repo_url AS repoUrl, repository_path AS repositoryPath,
   configuration, resources, native_execution AS nativeExecution, recovery, cleanup, control, created_at AS createdAt, updated_at AS updatedAt`;
 type TaskRow = Omit<LocalTask, "configuration" | "resources" | "nativeExecution" | "recovery" | "cleanup" | "control"> & {
   configuration: string | null; resources: string; nativeExecution: string | null; recovery: string; cleanup: string | null; control: string | null;
 };
 const asTask = (row: TaskRow): LocalTask => validateNativeExecution({ ...row,
+  userId: row.userId === null ? null : id(row.userId, "Claim user ID"),
   configuration: row.configuration === null ? null : parseConfiguration(JSON.parse(row.configuration) as unknown),
   nativeExecution: row.nativeExecution === null ? null : parseNativeExecution(JSON.parse(row.nativeExecution) as unknown),
   resources: parseResources(JSON.parse(row.resources) as unknown), recovery: parseRecovery(JSON.parse(row.recovery) as unknown),
@@ -210,7 +217,7 @@ const schema = `
   ) STRICT;
   CREATE TABLE tasks (
     server_origin TEXT NOT NULL, project_id TEXT NOT NULL, task_id TEXT NOT NULL, claim_id TEXT NOT NULL,
-    worker_id TEXT NOT NULL, worktree_id TEXT NOT NULL,
+    worker_id TEXT NOT NULL, worktree_id TEXT NOT NULL, user_id TEXT,
     status TEXT NOT NULL CHECK(status IN ('pending', 'active', 'done')),
     repo_url TEXT NOT NULL, repository_path TEXT NOT NULL,
     configuration TEXT CHECK(configuration IS NULL OR json_valid(configuration)),
@@ -241,7 +248,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
         if (tables.length !== 0) throw new Error("An unversioned worker database must not contain existing tables.");
         db.exec(schema);
       } else if (!same(tables.map(({ name }) => name), ["projects", "tasks"])) throw new Error("The worker database does not contain its projects/tasks schema.");
-      if (currentVersion === 1) db.exec("ALTER TABLE tasks ADD COLUMN native_execution TEXT CHECK(native_execution IS NULL OR json_valid(native_execution)); ALTER TABLE projects ADD COLUMN claim_attempt TEXT CHECK(claim_attempt IS NULL OR json_valid(claim_attempt)); UPDATE tasks SET cleanup = json_set(cleanup, '$.baseline', json('null')) WHERE cleanup IS NOT NULL; PRAGMA user_version = 2;");
+      if (currentVersion === 1) db.exec("ALTER TABLE tasks ADD COLUMN native_execution TEXT CHECK(native_execution IS NULL OR json_valid(native_execution)); ALTER TABLE tasks ADD COLUMN user_id TEXT; ALTER TABLE projects ADD COLUMN claim_attempt TEXT CHECK(claim_attempt IS NULL OR json_valid(claim_attempt)); UPDATE tasks SET cleanup = json_set(cleanup, '$.baseline', json('null')) WHERE cleanup IS NOT NULL; PRAGMA user_version = 2;");
       db.prepare(`SELECT ${projectColumns} FROM projects LIMIT 0`).all();
       db.prepare(`SELECT ${taskColumns} FROM tasks LIMIT 0`).all();
     }).immediate();
@@ -267,7 +274,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     validateNativeExecution(task);
     const values = { ...task, configuration: task.configuration === null ? null : JSON.stringify(parseConfiguration(task.configuration)), resources: JSON.stringify(parseResources(task.resources)), nativeExecution: task.nativeExecution === null ? null : JSON.stringify(parseNativeExecution(task.nativeExecution)), recovery: JSON.stringify(parseRecovery(task.recovery)),
       cleanup: task.cleanup === null ? null : JSON.stringify(parseCleanup(task.cleanup)), control: task.control === null ? null : JSON.stringify(parseControl(task.control)) };
-    db.prepare(`UPDATE tasks SET status = @status, configuration = @configuration, resources = @resources, native_execution = @nativeExecution, recovery = @recovery,
+    db.prepare(`UPDATE tasks SET user_id = @userId, status = @status, configuration = @configuration, resources = @resources, native_execution = @nativeExecution, recovery = @recovery,
       cleanup = @cleanup, control = @control, updated_at = @updatedAt
       WHERE server_origin = @serverOrigin AND project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).run(values);
     return needTask(task);
@@ -357,6 +364,12 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       db.prepare(`INSERT INTO tasks(server_origin, project_id, task_id, claim_id, worker_id, worktree_id, status, repo_url, repository_path, configuration, resources, native_execution, recovery, created_at, updated_at)
         VALUES (@serverOrigin, @projectId, @taskId, @claimId, @workerId, @worktreeId, 'pending', @repoUrl, @repositoryPath, @configuration, @resources, @nativeExecution, @recovery, @now, @now)`).run(values);
       return needTask(key);
+    }),
+    bindUserScope: (identity: ClaimIdentity, userId: string, now: number): LocalTask => change(identity, now, (task) => {
+      const owner = id(userId, "Claim user ID");
+      if (task.userId !== null && task.userId !== owner) throw new Error("The original authenticated claim owner cannot be replaced.");
+      if (task.userId === null && (task.cleanup?.kind === "terminal" || task.control !== null)) throw new Error("An existing terminal or control intent with unknown authenticated scope cannot acquire an inferred owner.");
+      return { ...task, userId: owner };
     }),
     restoreOriginalConfiguration: (identity: ClaimIdentity, configuration: FrozenExecutionConfiguration, now: number): LocalTask => change(identity, now, (task) => {
       const original = parseConfiguration(configuration);
@@ -619,6 +632,14 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       fullyCleaned(task);
       if (task.control !== null && task.control.submission !== "confirmed") throw new Error("The source control outcome must be reconciled before local completion.");
       return { ...task, status: "done" };
+    }),
+    completeUnstartedPending: (identity: ClaimIdentity, proof: { completeOwnClaimInventory: true; claimAbsent: true; authenticatedUserId: string }, now: number): LocalTask => change(identity, now, (task) => {
+      if (proof.completeOwnClaimInventory !== true || proof.claimAbsent !== true) throw new Error("Completing an unstarted pending claim requires its absence from a successful complete own-claim inventory.");
+      if (!isUnstartedPending(task)) throw new Error("Only a proven unstarted pending execution with no resources or outstanding actions can complete directly.");
+      if (task.userId === null || task.userId !== id(proof.authenticatedUserId, "Authenticated user ID")) throw new Error("The complete own-claim inventory must belong to the original authenticated claim owner.");
+      const completed: LocalTask = { ...task, status: "done", cleanup: { kind: "terminal", startedAt: now, deadline: now, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: true } };
+      fullyCleaned(completed);
+      return completed;
     }),
   };
 };

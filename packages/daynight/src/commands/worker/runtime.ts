@@ -124,6 +124,7 @@ export const runWorker = async (options: {
       }
     })().catch((error: unknown) => { if (cleanupFailure === undefined) cleanupFailure = error; cancellation.abort(error); });
     emit({ kind: "started", message: `Foreground worker ${workerId} on ${platform}; maxConcurrent=${configuration.maxConcurrent}; pollIntervalMs=${configuration.pollIntervalMs}; logs=${diagnostics.filename}.` });
+    await remote.currentUserId(cancellation.signal);
     for (const repository of configuration.repositories) {
       cancellation.signal.throwIfAborted();
       const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, cancellation.signal);

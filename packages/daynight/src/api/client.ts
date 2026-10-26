@@ -3,8 +3,8 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, TransferWorkerClaimInput, UpdateWorkerClaimInput, WorkerClaim, WorkerClaimDescriptor, WritableTaskProperties, WorkerHerdr, Page, TaskPageQuery } from "./types.js";
+import { canonicalId, parsePage, parseProject, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, TransferWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WritableTaskProperties, WorkerHerdr, Page, TaskPageQuery } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
@@ -50,6 +50,7 @@ export class ApiError extends Error {
 }
 
 export type ApiClient = {
+  getCurrentUser(): Promise<User>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
   listProjects(): Promise<readonly Project[]>;
@@ -86,12 +87,14 @@ const encodeAttachmentPath = (path: string): string => path.split("/").map(encod
 export const createApiClient = (options: {
   readonly serverUrl: string;
   readonly serverToken?: string;
+  readonly expectedUserId?: string;
   readonly operation: Operation;
   readonly fetch?: typeof globalThis.fetch;
 }): ApiClient => {
   const origin = new URL(options.serverUrl);
   if (!/^https?:$/.test(origin.protocol) || origin.username !== "" || origin.password !== "" || origin.pathname !== "/" || origin.search !== "" || origin.hash !== "") throw new Error("serverUrl must be an HTTP(S) service origin without credentials, path, query or fragment.");
   const serverToken = options.serverToken === undefined ? undefined : validateServerToken(options.serverToken);
+  const expectedUserId = options.expectedUserId === undefined ? undefined : resourceId(options.expectedUserId);
   if (serverToken !== undefined) validateTokenTransport(origin.origin);
   const operation = options.operation;
   const fetch = options.fetch ?? globalThis.fetch;
@@ -199,6 +202,14 @@ export const createApiClient = (options: {
         reader = response.body.getReader();
         // Cancelling an already errored stream repeats its existing failure, rather than introducing a cleanup failure.
         void reader.closed.catch((error: unknown) => { bodyFailure = error; });
+      }
+      if (success && expectedUserId !== undefined) {
+        phase = "protocol";
+        const principal = response.headers.get("Daynight-User-ID");
+        if (principal === null || canonicalId(principal) !== expectedUserId) throw new ProtocolError("The authenticated response principal does not match the expected user.");
+        phase = "response";
+      }
+      if (reader !== undefined) {
         while (true) {
           checkRequest();
           const chunk = await Promise.race([reader.read(), aborted]);
@@ -358,6 +369,7 @@ export const createApiClient = (options: {
   };
 
   return {
+    getCurrentUser: () => exchange({ operation: "auth.me" }, "/me", "GET", { kind: "json", parse: parseUser }, [200], undefined, true),
     createProject: (input) => request({ operation: "project.create" }, "/projects", "POST", (value) => parseProject(value), { name: input.name, repoUrl: input.repoUrl }),
     getProject: (projectId) => {
       const project = resourceId(projectId);

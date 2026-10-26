@@ -21,6 +21,7 @@ afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose(
 const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
+    getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>(),
     createProject: vi.fn<ApiClient["createProject"]>(), listProjects: vi.fn<ApiClient["listProjects"]>(),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),
     createTask: vi.fn<ApiClient["createTask"]>().mockResolvedValue(task), getTask: vi.fn<ApiClient["getTask"]>().mockResolvedValue(task),

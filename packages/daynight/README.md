@@ -834,6 +834,15 @@ state-path override. Each task uses `daynight/<task-id>` and
 work, native history and configuration; a new claim has a fresh execution
 identity and conversation.
 
+The worker verifies the startup credential through the existing current-user
+API and pins successful response identity, including empty pages. Each local
+claim retains its original Daynight user ID. If another account is logged in on
+the same OS account, the stable workerId stays the same, but that account's empty
+inventory cannot terminate or resume the previous account's work. Scope-paused
+records need the original account/identity inspected; do not remove local state
+or regenerate workerId to make the mismatch disappear. The running process
+keeps its startup credential; restart after an intended account change.
+
 The foreground stderr output and JSONL logs identify project/task/claim, platform,
 waiting, pause and cleanup errors. The log path is printed at startup. An
 unconfirmed claim request, native launch or input is retained for observation;
@@ -851,32 +860,45 @@ pane keeps its original native XDG and private HISTFILE. The descriptor contains
 routing and native-home paths, not a dump of authentication values. Continue in
 the original task pane so the worker can observe the same execution.
 
-On successful complete own-claim inventory, the original claim's absence causes
+For started executions, a successful complete own-claim inventory from the
+original account makes the original claim's absence cause
 the same terminal cleanup for done, release and transfer: request attributable
 outside-worktree cleanup for at most the original ten-minute deadline, confirm
 the original agent stopped, close its workspace, delete its worktree and retain
 local history. Failures keep responsibility and resume cleanup after restart.
-A failed or incomplete inventory cannot authorize a new terminal-cleanup
-decision. Already persisted cleanup/control intents continue in the same
-foreground process through a lightweight discovery loop and one transient
-asynchronous job per full claim, even during server read failures or startup
-repository requests. Each job waits at most one second or its nearer original
-deadline, independently of pollIntervalMs. One task's held RPC does not postpone
-another task's next cleanup advance; per-task serialization still prevents
-overlapping operations on the same execution. There is no persisted job queue.
+A failed, incomplete or differently scoped inventory cannot authorize a new
+terminal-cleanup decision. Already persisted cleanup/control intents continue in
+the same foreground process through a lightweight discovery loop and one
+transient asynchronous job per full claim, before current-user/project network
+requests and even during server read failures. Only already authorized intents
+with known original account scope advance; unknown-scope terminal/control
+intents remain preserved. Each job waits at most one second or its nearer
+original deadline, independently of pollIntervalMs. One task's held RPC does not
+postpone another task's next cleanup advance; per-task serialization still
+prevents overlapping operations on the same execution. There is no persisted job
+queue.
 
 Ctrl+C stops acquisition and ordinary input, cancels and joins the ordinary
-cleanup discovery loop and all per-claim jobs, then runs original-task shutdown with a separate bounded
-cancellation scope and a shared exit deadline. Unfinished
-claims, worktrees and native history remain; the private instance stops only
-after original agents are confirmed stopped. Stop uncertainty is reported and
-retains the instance/resources for inspection. Restart the command to reconcile
-with the same worker identity and original state. After consuming interrupted
-shutdown, the worker refreshes Herdr resources before ordinary execution. If a
-native launch may have occurred but its exact original session ID is missing,
-shutdown preserves its old binding, launch and PID evidence and pauses; it does
-not turn that execution into a first launch. Proven never-started work and
-executions with a known original native ID retain their normal recovery path.
+cleanup discovery loop and all per-claim jobs, then runs original-task shutdown
+with a separate bounded cancellation scope and a shared exit deadline.
+Unfinished claims, worktrees and native history remain; the private instance
+stops only after original agents are confirmed stopped. Stop uncertainty is
+reported and retains the instance/resources for inspection. Restart the command
+to reconcile with the same worker identity and original state. After consuming
+interrupted shutdown, the worker refreshes Herdr resources before ordinary
+execution. If a native launch may have occurred but its exact original session
+ID is missing, shutdown preserves its old binding, launch and PID evidence and
+pauses; it does not turn that execution into a first launch. Proven
+never-started work and executions with a known original native ID retain their
+normal recovery path.
+
+Pending successors whose resources, workspace and native launch are proven
+never started stay pending on normal exit. A successful complete inventory from
+the same original account can complete an absent unstarted claim directly,
+without activating it or touching an older claim's fixed Git path. Other tasks'
+shutdown initialization is isolated so one bad record does not prevent known
+agents stopping. Untracked resources or unknown scope keep the private instance
+when its stop cannot be confirmed.
 
 Public worker release/transfer/resume/retry commands and the service's terminal
 management-protocol revision remain pending. Linux, Windows and macOS complete

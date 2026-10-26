@@ -1,4 +1,4 @@
-import { createApiClient } from "../../api/client.js";
+import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
 import { canonicalId, ProtocolError } from "../../api/parse.js";
@@ -10,6 +10,7 @@ import type { ProjectIdentity } from "./types.js";
 
 export type WorkerRemote = {
   readonly serverOrigin: string;
+  currentUserId(signal: AbortSignal): Promise<string>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
   ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal): Promise<readonly Task[]>;
   candidates(projectId: string, platform: TaskPlatform, signal: AbortSignal): AsyncGenerator<Task>;
@@ -21,13 +22,19 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
   const serverOrigin = normalizeServerUrl(options.serverUrl);
   const serverToken = options.serverToken === undefined ? undefined : validateServerToken(options.serverToken);
   if (serverToken !== undefined) validateTokenTransport(serverOrigin);
+  let principal: string | null = null;
 
-  const request = async <T>(signal: AbortSignal, action: (api: ApiClient) => Promise<T>): Promise<T> => {
+  const query = async <T>(signal: AbortSignal, action: (api: ApiClient) => Promise<T>, expectedUserId?: string): Promise<T> => {
     const operation = createOperation({ signal });
     try {
-      return await action(createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), operation }));
+      return await action(createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), ...(expectedUserId === undefined ? {} : { expectedUserId }), operation }));
     } finally { operation.dispose(); }
   };
+  const verifiedUserId = (): string => {
+    if (principal === null) throw new Error("The worker must verify its authenticated user before accessing project ownership.");
+    return principal;
+  };
+  const request = <T>(signal: AbortSignal, action: (api: ApiClient) => Promise<T>): Promise<T> => query(signal, action, verifiedUserId());
 
   const pages = async function* <T extends { readonly id: string }>(
     signal: AbortSignal,
@@ -58,6 +65,14 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
 
   return {
     serverOrigin,
+    currentUserId: async (signal) => {
+      signal.throwIfAborted();
+      if (principal !== null) return principal;
+      const user = await query(signal, (api) => api.getCurrentUser());
+      if (principal !== null && principal !== user.id) throw new ProtocolError("The worker's authenticated user changed during identity verification.");
+      principal = user.id;
+      return principal;
+    },
     resolveProject: async (repository, signal) => {
       const expected = repositoryIdentity(repository.repoUrl);
       let project: Project;
@@ -76,6 +91,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       return project;
     },
     ownInventory: async (projects, workerId, signal) => {
+      const owner = verifiedUserId();
       const selected = new Map<string, ProjectIdentity>();
       for (const project of projects) {
         if (normalizeServerUrl(project.serverOrigin) !== serverOrigin) throw new Error(`Worker project ${project.projectId} belongs to a different service origin.`);
@@ -85,7 +101,10 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       }
       const result: Task[] = [];
       for (const projectId of selected.keys()) {
-        for await (const task of taskPages(projectId, { workerId }, signal)) result.push(task);
+        for await (const task of taskPages(projectId, { workerId }, signal)) {
+          if (task.properties.worker?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
+          result.push(task);
+        }
       }
       signal.throwIfAborted();
       return result;
@@ -97,10 +116,16 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
         yield task;
       }
     },
-    claim: (candidate, descriptor, signal) => request(signal, (api) => api.claimWorkerTask(candidate.projectId, candidate.id, { ...descriptor, version: candidate.version })),
+    claim: async (candidate, descriptor, signal) => {
+      const claimed = await request(signal, (api) => api.claimWorkerTask(candidate.projectId, candidate.id, { ...descriptor, version: candidate.version }));
+      if (claimed.properties.worker?.userId !== verifiedUserId()) throw new ApiError({ operation: "worker.claim", projectId: candidate.projectId, taskId: candidate.id }, "protocol", {
+        cause: new ProtocolError("The granted worker claim belongs to a different authenticated user."), outcomeUnconfirmed: true,
+      });
+      return claimed;
+    },
     update: (task, input, signal) => {
       const worker = task.properties.worker;
-      if (worker === null || worker.state !== "active") throw new Error("Worker summary update requires the original active claim.");
+      if (worker === null || worker.state !== "active" || worker.userId !== verifiedUserId()) throw new Error("Worker summary update requires the original active claim and authenticated user.");
       return request(signal, (api) => api.updateWorkerClaim(task.projectId, task.id, { ...input, version: task.version, claimId: worker.claimId }));
     },
   };

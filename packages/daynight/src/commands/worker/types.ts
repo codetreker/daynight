@@ -2,7 +2,7 @@ import type { TaskPlatform, WorkerAgent, WorkerHerdr, WorkerMachine, WorkerPhase
 import type { HerdrLaunchEvidence, HerdrStopObservation, HerdrWorkspaceEvidence } from "./herdr/agents.js";
 
 export type ProjectIdentity = { serverOrigin: string; projectId: string };
-export type ClaimAttempt = { taskId: string; claimId: string; worktreeId: string; workerId: string; expectedVersion: string; configuration: FrozenExecutionConfiguration };
+export type ClaimAttempt = { taskId: string; claimId: string; worktreeId: string; workerId: string; userId: string; expectedVersion: string; configuration: FrozenExecutionConfiguration };
 export type WorkerProject = ProjectIdentity & { repoUrl: string; localPath: string };
 export type WorkerProjectRecord = WorkerProject & { claimAttempt: ClaimAttempt | null };
 export type ClaimIdentity = ProjectIdentity & { taskId: string; claimId: string };
@@ -61,6 +61,7 @@ export type ControlState = {
   error: string | null;
 };
 export type LocalTask = PendingClaim & {
+  userId: string | null;
   status: "pending" | "active" | "done";
   repoUrl: string;
   repositoryPath: string;
