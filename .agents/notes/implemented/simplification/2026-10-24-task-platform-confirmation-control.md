@@ -14,8 +14,13 @@ version review, deliberate submission, request ownership and keyboard access.
 
 Task details use one compact select immediately after the status menu in the
 left status group for the confirmed platform and its operation. Both controls
-use a 24px height; readiness follows the pair. The select offers Any platform,
-Windows, Linux and macOS; Any platform represents the existing null requirement. The former detail badge
+share a 24px height, 4px corners, muted background, border, typography and
+right-side arrow spacing, with no button shadow. Shared disabled opacity and
+focus treatment keep their visual weight consistent; the platform retains its
+native select behavior, and status retains its color dot and menu. The status
+trigger uses normal line height to match native select text metrics; the
+platform's authored line height remains 1.55. Readiness follows the pair. The select offers Any platform, Windows, Linux and macOS;
+Any platform represents the existing null requirement. The former detail badge
 and Overview editor are removed. List and graph platform badges stay read-only.
 The control remains available on either detail tab. The left group can wrap at
 narrow widths while the automatic-execution control remains right aligned with
