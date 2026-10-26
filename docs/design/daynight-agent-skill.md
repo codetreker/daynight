@@ -132,7 +132,12 @@ Web 复用附件的 CommonMark/GFM 阅读能力；API、CLI 和 Agent 仍读写�
 [任务阅读设计](daynight-task-inspection.md#markdown-与附件链接)及
 [附件设计](daynight-task-attachments.md)拥有。
 
-完整依赖由 dependsOn、明确外部子集由 externalDependsOn 维护；同链普通，核验过的其他同项目链前置为外部。
+完整的必要直接依赖由 dependsOn、明确外部子集由 externalDependsOn 维护；同链普通，
+核验过的其他同项目链前置为外部。handbook 的 Dependency reduction 拥有传递去冗余
+规则与 `A → B → C` 示例，入口、创建任务、Goal 拆分和共享内容标准引用该规则。
+创建及拆分登记前读取相关路径，省略已有其他保留路径覆盖的直接边，并在读回时核验
+必要路径和无冗余。普通边只可由全普通路径替代，避免改变链归属及普通设计门禁；
+外部边可由任一类边构成的路径替代，保留边的性质不变，独立前置继续保留。
 CLI 的普通/外部声明编译完整并集和精确外部子集，更新先读取并保留仍需关系。外部不免除阻塞，
 不按状态、标题或当前投影猜测分类，也不扩大执行范围。PR URL/title 由 `properties.pullRequests` 维护；执行位置、
 阻塞、等待和下一步属于既有检查点。

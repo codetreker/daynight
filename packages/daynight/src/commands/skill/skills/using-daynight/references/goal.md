@@ -135,8 +135,11 @@ without another ordinary implementation prerequisite depends directly on the
 solution discussion, so each delivery path includes confirmed design completion.
 Mark verified prerequisites owned by another same-project chain as external;
 external prerequisites remain real blockers and do not replace that ordinary
-design gate. Preserve the complete relationship sets under the handbook's CLI
-replacement semantics. Do not create dependencies merely to group cards.
+design gate. Apply [the handbook's dependency reduction rule](handbook.md#dependency-reduction)
+before registering the breakdown: successors inherit prerequisites through
+retained paths and do not repeat those direct edges. Preserve the complete
+necessary relationship sets under the handbook's CLI replacement semantics.
+Do not create dependencies merely to group cards.
 
 Upload needed task-owned resources when their content uses attachments. Keep
 shared requirements with the requirements task and the solution and breakdown with the
@@ -155,16 +158,18 @@ These input references do not add execution dependencies or duplicate shared
 documents.
 
 Read back every task, required attachment, shared input, and dependency before
-reporting the breakdown registered. Check each delivery task's description,
-including indirect successors, for the architecture task ID and every required
+reporting the breakdown registered. Verify required paths and the absence of
+redundant direct edges under the handbook's reduction rule. Check each delivery
+task's description, including indirect successors, for the architecture task ID and every required
 document reference; confirm that each reference resolves to the intended readable
 content. Keep the solution discussion `in_progress` when registration is incomplete.
 If the accepted solution materially changes, obtain renewed user confirmation
 before registering or advancing the changed work.
 
 For an illustrative `architecture → A → B` chain, A delivers the upload API and B
-delivers its retry controls. B depends on A and directly names the architecture
-inputs in its description. The following task ID and paths are hypothetical;
+delivers its retry controls. B depends only on A, inherits the architecture
+prerequisite through A, and directly names the architecture inputs in its
+description. The following task ID and paths are hypothetical;
 replace them with verified sources when registering real work:
 
 ```markdown

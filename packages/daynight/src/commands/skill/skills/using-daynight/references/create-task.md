@@ -91,11 +91,14 @@ other resources with working relative references. A static sketch or simplified
 styling does not satisfy this requirement. For a UI Goal, this prototype is
 produced by the Goal description stage and referenced by later tasks.
 
-Use established task IDs for real prerequisites. Confirmed same-chain stages
-use `--depends-on`; a verified prerequisite owned by another same-project chain uses
-`--external-depends-on`. The CLI sends their complete union and explicit external
-subset. Do not infer ownership from status, title, graph roots or array order,
-and do not add a dependency only to make tasks appear together. Resolve unclear
+Use established task IDs for necessary direct prerequisites. Before registration,
+apply [the handbook's dependency reduction rule](handbook.md#dependency-reduction)
+to omit relationships already supplied by another retained path. Confirmed
+same-chain stages use `--depends-on`; a verified prerequisite owned by another
+same-project chain uses `--external-depends-on`. The CLI sends their complete
+union and explicit external subset. Do not infer ownership from status, title,
+graph roots or array order, and do not add a dependency only to make tasks appear
+together. Resolve unclear
 ownership before registering the relationship. A top-level task has no ordinary
 prerequisites; it may still have real external prerequisites that block execution.
 Do not add a Dependencies section or duplicate the relationship lists in task
@@ -169,8 +172,9 @@ already readable shared inputs at their source. Do not present planned uploads a
 Read back each complete task, its attachment inventory and required contents,
 and its referenced shared inputs. Verify self-contained Markdown descriptions,
 valid links and images, all six content requirements, the explicit task-owned
-evidence location, real source identities, complete prerequisites and their
-intended external subset, and applicable mock UI resources and interaction. For a
+evidence location, real source identities, complete necessary direct prerequisites
+and their intended external subset, absence of redundant dependencies under the
+handbook's reduction rule, and applicable mock UI resources and interaction. For a
 Goal, verify only the current discussion stage and its brief;
 verify later stages and delivery tasks when their confirmation gate permits
 registration. When registering delivery work, check every task's description,
