@@ -29,6 +29,7 @@ export type HerdrInstancePaths = {
   configurationFile: string;
   configHome: string;
   stateHome: string;
+  shellHistoryFile: string;
   sessionDirectory: string;
   apiEndpoint: string;
   clientEndpoint: string;
@@ -58,7 +59,7 @@ export const resolveHerdrInstancePaths = (
       if (Buffer.byteLength(endpoint, "utf8") > maximum) throw new Error(`The private Herdr socket exceeds ${maximum} UTF-8 bytes: ${endpoint}.`);
     }
   }
-  return { privateDirectory, configurationFile: paths.join(privateDirectory, "config.toml"), configHome: paths.join(privateDirectory, "c"), stateHome: paths.join(privateDirectory, "s"), sessionDirectory, apiEndpoint, clientEndpoint,
+  return { privateDirectory, configurationFile: paths.join(privateDirectory, "config.toml"), configHome: paths.join(privateDirectory, "c"), stateHome: paths.join(privateDirectory, "s"), shellHistoryFile: paths.join(privateDirectory, "shell.history"), sessionDirectory, apiEndpoint, clientEndpoint,
     stdoutLogFile: paths.join(worker.logsDirectory, "herdr.stdout.log"), stderrLogFile: paths.join(worker.logsDirectory, "herdr.stderr.log") };
 };
 
@@ -67,6 +68,7 @@ export const createHerdrEnvironment = (paths: HerdrInstancePaths, inherited: Nod
   XDG_CONFIG_HOME: paths.configHome,
   XDG_STATE_HOME: paths.stateHome,
   HERDR_CONFIG_PATH: paths.configurationFile,
+  HISTFILE: paths.shellHistoryFile,
 });
 
 const bounded = (parent: Operation, maximumMs: number) => {
@@ -169,7 +171,7 @@ export const createHerdrInstance = (options: {
   const executable = options.executable === undefined ? "herdr" : options.executable;
   if (executable.trim() === "" || /[\r\n\0]/.test(executable)) throw new Error("The Herdr executable must be nonempty without line breaks or NUL.");
   const environment = createHerdrEnvironment(paths, options.environment === undefined ? process.env : options.environment);
-  const attachmentEnvironment: NodeJS.ProcessEnv = { XDG_CONFIG_HOME: paths.configHome, XDG_STATE_HOME: paths.stateHome, HERDR_CONFIG_PATH: paths.configurationFile };
+  const attachmentEnvironment: NodeJS.ProcessEnv = { XDG_CONFIG_HOME: paths.configHome, XDG_STATE_HOME: paths.stateHome, HERDR_CONFIG_PATH: paths.configurationFile, HISTFILE: paths.shellHistoryFile };
   for (const key of ["HOME", "USERPROFILE", "CODEX_HOME", "CODEX_SQLITE_HOME", "COPILOT_HOME"]) {
     if (environment[key] !== undefined) attachmentEnvironment[key] = environment[key];
   }

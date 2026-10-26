@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
-import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrTaskBinding } from "../../../src/commands/worker/herdr/agents.js";
+import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 
@@ -21,7 +21,7 @@ const worktreeId = "44444444-4444-4444-8444-444444444444";
 const nativeId = "55555555-5555-4555-8555-555555555555";
 const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a", args: ["--config", "model_reasoning_effort=low", "--no-alt-screen"] };
 
-const fixture = async (kind: "codex" | "copilot" = "codex") => {
+const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
   const cwd = await mkdtemp(path.join(scratch, "task-")); directories.push(cwd);
   const context: HerdrExecutionContext = { serverOrigin: "https://daynight.example", projectId, taskId, claimId, worktreeId, cwd, agent: kind };
@@ -76,7 +76,7 @@ const fixture = async (kind: "codex" | "copilot" = "codex") => {
     }
     throw new Error(`Unexpected fixture method ${method}`);
   } };
-  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
+  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
   return { context, manager, workspaces, panes, agents, tabs, calls, prompts, processes, executing, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
@@ -113,6 +113,25 @@ describe("task workspace ownership and native input", () => {
     expect(await f.manager.prepareWorkspace(f.context, operation())).toEqual(binding);
     expect(f.calls.filter((value) => value.method === "workspace.create")).toHaveLength(1);
     expect(herdrExecutionAgentName(f.context)).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
+  });
+  it("snapshots and forwards only caller XDG roots to new workspaces and force-stop anchors", async () => {
+    const original = { XDG_CONFIG_HOME: "/caller/config", XDG_STATE_HOME: "/caller/state" }; const f = await fixture("codex", original);
+    original.XDG_CONFIG_HOME = "/changed after construction";
+    f.hook(async (method, params) => { if (method === "workspace.create") (params.env as Entry).XDG_CONFIG_HOME = "/changed by RPC executor"; return undefined; });
+    const binding = await launch(f); const expected = { XDG_CONFIG_HOME: "/caller/config", XDG_STATE_HOME: "/caller/state" };
+    expect(f.calls.find((value) => value.method === "workspace.create")!.params.env).toEqual(expected);
+    const beforeReconnect = f.calls.length; await f.manager.prepareWorkspace(f.context, operation());
+    expect(f.calls.slice(beforeReconnect).every((value) => value.method === "session.snapshot")).toBe(true);
+    const evidence = await f.manager.captureStop(f.context, binding, operation()); f.executing.delete(200);
+    await f.manager.forceStop(f.context, binding, evidence, operation());
+    expect(f.calls.find((value) => value.method === "tab.create")!.params.env).toEqual(expected);
+  });
+  it("rejects workspace environment payloads that contain routing, credentials or incomplete XDG state", async () => {
+    const f = await fixture();
+    for (const workspaceEnvironment of [{ XDG_CONFIG_HOME: "" }, { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", HERDR_SOCKET_PATH: "/foreign/socket" }, { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", GITHUB_TOKEN: "synthetic" }, { XDG_CONFIG_HOME: "bad\0path", XDG_STATE_HOME: "" }]) {
+      expect(() => createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => undefined }, workspaceEnvironment: workspaceEnvironment as unknown as HerdrWorkspaceEnvironment })).toThrow("only XDG_CONFIG_HOME and XDG_STATE_HOME");
+    }
+    expect(f.calls).toEqual([]);
   });
   it("enumerates typed owned resources and restored shells without interpreting lifecycle", async () => {
     const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
@@ -413,7 +432,7 @@ describe("native stop evidence and workspace closure", () => {
   });
   it("does not treat reused or permission-denied PIDs as stopped and never kills them", async () => {
     const f = await fixture(); const binding = await launch(f); const evidence = await f.manager.captureStop(f.context, binding, operation());
-    const denied = new Error("permission denied"); const manager = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => undefined }, processExecuting: async () => { throw denied; } });
+    const denied = new Error("permission denied"); const manager = createHerdrAgentManager({ rpc: f.rpc, session: "w", preflight: { verifyStart: async () => undefined }, workspaceEnvironment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, processExecuting: async () => { throw denied; } });
     await expect(manager.confirmStopped(f.context, binding, evidence, operation())).rejects.toBe(denied);
     await expect(f.manager.confirmStopped(f.context, binding, evidence, operation())).rejects.toThrow("still executing");
     expect(f.calls.some((value) => value.method === "workspace.close")).toBe(false);

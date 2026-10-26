@@ -1,6 +1,6 @@
 # Worker 任务认领与执行归属
 
-状态：服务端认领、归属更新、释放、移交、人工接续及 CLI/Web 读取模型已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree；前台 worker、Herdr 运行和人工管理命令仍由运行时交付，不由本协议启动。
+状态：服务端认领、归属更新、释放、移交、人工接续及 CLI/Web 读取模型已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 worker、人工管理命令和完整运行时验收仍独立于本协议交付。
 
 ## 资源和属性所有权
 
@@ -114,4 +114,4 @@ jq 'select(.task_id == "<task-id>" and .request_id == "<request-id>")' server.js
 
 服务基础验证包括真实 PostgreSQL 同版本竞争、权限/目标成员、许可/平台变化、所有状态旁路、旧 claim、释放/移交/接续、事务回滚，以及属性迁移的 NUL/Unicode 保全。客户端验证覆盖完整读取、写保护类型、200 操作、精确 int64、未知结果不重发和候选游标推进。
 
-这些检查证明服务端和 typed client 的归属基础。真实资源启动、SQLite 崩溃恢复、两种原生 agent、三平台 Herdr、人工管理命令和完整交付验收仍由 Worker 运行时验证。
+这些检查证明服务端和 typed client 的归属基础，不代替本机 SQLite、Git 或原生 agent 的独立证据。当前资源适配的 Linux 针对性结果及限制由[运行时验证边界](daynight-worker.md#验证与当前证据)拥有；前台协调、人工管理和完整三平台交付仍须各自验收。

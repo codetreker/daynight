@@ -23,13 +23,24 @@ export const createWorkerHerdr = (options: {
   executable?: string;
   environment?: NodeJS.ProcessEnv;
 }) => {
-  const instance = createHerdrInstance(options);
+  const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
+  const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
+  const nativeEnvironment = { ...instance.environment };
+  const workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" };
+  for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const) {
+    const value = inheritedEnvironment[key];
+    if (value === undefined) delete nativeEnvironment[key];
+    else nativeEnvironment[key] = value;
+    // Herdr's workspace map cannot remove keys; empty XDG values select the user's defaults.
+    // https://specifications.freedesktop.org/basedir/latest/
+    workspaceEnvironment[key] = value === undefined ? "" : value;
+  }
   const preflight = createHerdrPreflight({
     rpc: instance.rpc,
-    environment: instance.environment,
+    environment: nativeEnvironment,
     homeDirectory: options.homeDirectory,
   });
-  const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight });
+  const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight, workspaceEnvironment });
   return {
     ensureInstance: instance.ensure,
     stopInstance: instance.stop,

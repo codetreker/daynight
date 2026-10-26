@@ -33,7 +33,7 @@ const directory=path.join(root,'herdr','sessions','w'); await mkdir(directory,{r
 const address=(name)=>process.platform==='win32'?'\\\\\\\\.\\\\pipe\\\\'+name:name;
 const api=path.join(directory,'herdr.sock'),client=path.join(directory,'herdr-client.sock');
 const events=process.env.FIXTURE_EVENTS;
-await appendFile(events,JSON.stringify({kind:'start',pid:process.pid,env:{HERDR_CONFIG_PATH:process.env.HERDR_CONFIG_PATH,HOME:process.env.HOME,CODEX_HOME:process.env.CODEX_HOME,CODEX_THREAD_ID:process.env.CODEX_THREAD_ID}})+'\\n');
+await appendFile(events,JSON.stringify({kind:'start',pid:process.pid,env:{HERDR_CONFIG_PATH:process.env.HERDR_CONFIG_PATH,HISTFILE:process.env.HISTFILE,HOME:process.env.HOME,CODEX_HOME:process.env.CODEX_HOME,CODEX_THREAD_ID:process.env.CODEX_THREAD_ID}})+'\\n');
 const sockets=new Set();
 const waitFile=async(file)=>{if(!file)return;while(true){try{await access(file);return;}catch(error){if(error.code!=='ENOENT')throw error;}await new Promise(resolve=>setTimeout(resolve,10));}};
 let stopped=false;
@@ -93,12 +93,12 @@ describe("private Herdr instance", () => {
 
   it("isolates Herdr routing while preserving native homes and clearing caller session identities", () => {
     const paths = resolveHerdrInstancePaths({ herdrDirectory: "/private/h", logsDirectory: "/private/l" }, "linux");
-    const original = { HOME: "/user", USERPROFILE: "C:\\user", CODEX_HOME: "/codex", COPILOT_HOME: "/copilot", CODEX_SQLITE_HOME: "/sqlite",
+    const original = { HOME: "/user", USERPROFILE: "C:\\user", CODEX_HOME: "/codex", COPILOT_HOME: "/copilot", CODEX_SQLITE_HOME: "/sqlite", HISTFILE: "/user/.bash_history",
       HERDR_SOCKET_PATH: "/human", HERDR_CLIENT_SOCKET_PATH: "/human-client", HERDR_SESSION: "human", HERDR_ACTIVE_PANE_ID: "old", CODEX_THREAD_ID: "old", CODEX_SESSION_ID: "old", CODEX_TOOL_CALL_ID: "old", AUTH_SETTING: "preserved" };
     const env = createHerdrEnvironment(paths, original);
-    expect(env).toMatchObject({ HOME: "/user", USERPROFILE: "C:\\user", CODEX_HOME: "/codex", COPILOT_HOME: "/copilot", CODEX_SQLITE_HOME: "/sqlite", AUTH_SETTING: "preserved", XDG_CONFIG_HOME: "/private/h/c", XDG_STATE_HOME: "/private/h/s", HERDR_CONFIG_PATH: "/private/h/config.toml" });
+    expect(env).toMatchObject({ HOME: "/user", USERPROFILE: "C:\\user", CODEX_HOME: "/codex", COPILOT_HOME: "/copilot", CODEX_SQLITE_HOME: "/sqlite", AUTH_SETTING: "preserved", XDG_CONFIG_HOME: "/private/h/c", XDG_STATE_HOME: "/private/h/s", HERDR_CONFIG_PATH: "/private/h/config.toml", HISTFILE: "/private/h/shell.history" });
     for (const key of ["HERDR_SOCKET_PATH", "HERDR_CLIENT_SOCKET_PATH", "HERDR_SESSION", "HERDR_ACTIVE_PANE_ID", "CODEX_THREAD_ID", "CODEX_SESSION_ID", "CODEX_TOOL_CALL_ID"]) expect(env).not.toHaveProperty(key);
-    expect(original.CODEX_THREAD_ID).toBe("old");
+    expect(original.CODEX_THREAD_ID).toBe("old"); expect(original.HISTFILE).toBe("/user/.bash_history");
   });
 
   it("creates false-restore configuration, uses detached direct log descriptors and reconnects without spawning", async () => {
@@ -110,9 +110,9 @@ describe("private Herdr instance", () => {
     const other = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("Must reconnect without spawning"); } });
     expect(await other.ensure(operation())).toMatchObject({ reconnected: true });
     const event = JSON.parse((await readFile(f.events, "utf8")).split("\n")[0]!);
-    expect(event.env).toMatchObject({ CODEX_HOME: "/preserved-native-home", HERDR_CONFIG_PATH: f.instance.paths.configurationFile }); expect(event.env).not.toHaveProperty("CODEX_THREAD_ID");
-    expect(other.attachment).toMatchObject({ arguments: ["--session", "w"], environment: { HERDR_CONFIG_PATH: f.instance.paths.configurationFile } });
-    expect(Object.keys(other.attachment.environment).every((key) => ["HOME", "USERPROFILE", "CODEX_HOME", "CODEX_SQLITE_HOME", "COPILOT_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "HERDR_CONFIG_PATH"].includes(key))).toBe(true);
+    expect(event.env).toMatchObject({ CODEX_HOME: "/preserved-native-home", HERDR_CONFIG_PATH: f.instance.paths.configurationFile, HISTFILE: f.instance.paths.shellHistoryFile }); expect(event.env).not.toHaveProperty("CODEX_THREAD_ID");
+    expect(other.attachment).toMatchObject({ arguments: ["--session", "w"], environment: { HERDR_CONFIG_PATH: f.instance.paths.configurationFile, HISTFILE: f.instance.paths.shellHistoryFile } });
+    expect(Object.keys(other.attachment.environment).every((key) => ["HOME", "USERPROFILE", "CODEX_HOME", "CODEX_SQLITE_HOME", "COPILOT_HOME", "XDG_CONFIG_HOME", "XDG_STATE_HOME", "HERDR_CONFIG_PATH", "HISTFILE"].includes(key))).toBe(true);
     expect(await other.stop(operation())).toEqual({ apiClosed: true, clientClosed: true, ownedChildClosed: null });
     expect(await f.instance.stop(operation())).toEqual({ apiClosed: true, clientClosed: true, ownedChildClosed: true });
   });

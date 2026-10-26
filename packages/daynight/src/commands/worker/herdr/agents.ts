@@ -21,6 +21,7 @@ export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | 
 export type HerdrStopObservation = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; nativeSessionId: string | null; shellPid: number; processIds: readonly number[]; observedAt: number };
 export type HerdrOwnedWorkspace = { owner: HerdrExecutionOwner; workspaceId: string; panes: { binding: HerdrTaskBinding; cwd: string | null; kind: WorkerAgent | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null }[] };
 export type HerdrAgentPreflight = { verifyStart(input: { context: HerdrExecutionContext; configuration: HerdrAgentConfiguration; resumeSessionId?: string }, operation: Operation): Promise<unknown> };
+export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string }>;
 
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown, name: string): RecordValue => {
@@ -97,8 +98,12 @@ const processExecuting = async (processId: number): Promise<boolean> => {
   catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") return false; throw cause; }
 };
 
-export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
+export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
   const session = text(options.session, "Herdr session");
+  const suppliedEnvironment = object(options.workspaceEnvironment, "Task workspace environment");
+  const xdgFields = ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const;
+  if (Object.keys(suppliedEnvironment).length !== xdgFields.length || xdgFields.some((field) => !Object.hasOwn(suppliedEnvironment, field) || typeof suppliedEnvironment[field] !== "string" || suppliedEnvironment[field].includes("\0"))) throw new TypeError("Task workspace environment must contain only XDG_CONFIG_HOME and XDG_STATE_HOME string values without NUL.");
+  const workspaceEnvironment = { XDG_CONFIG_HOME: suppliedEnvironment.XDG_CONFIG_HOME as string, XDG_STATE_HOME: suppliedEnvironment.XDG_STATE_HOME as string };
   const isExecuting = options.processExecuting === undefined ? processExecuting : options.processExecuting;
   const pollInterval = options.pollIntervalMs === undefined ? 100 : options.pollIntervalMs;
   if (!Number.isSafeInteger(pollInterval) || pollInterval <= 0 || pollInterval > 1000) throw new TypeError("The Herdr observation interval must be between 1 and 1000 milliseconds.");
@@ -270,7 +275,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const reportedCwd = path.normalize(path.resolve(pane.cwd));
         if (reportedCwd === expectedCwd || reportedCwd === path.normalize(path.resolve(context.cwd))) throw new Error("The requested task cwd already belongs to a different Herdr workspace.");
       }
-      const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: {} }, "workspace_created", operation);
+      const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment } }, "workspace_created", operation);
       try {
         const workspace = object(result.workspace, "Created workspace");
         const pane = object(result.root_pane, "Created task pane");
@@ -409,7 +414,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const guards = data.tabs.filter((tab) => tab.workspace_id === binding.workspaceId && tab.label === guardLabel);
         if (guards.length > 1) throw new Error("The task stop anchor is duplicated.");
         if (guards.length === 0) {
-          const result = await mutation("tab.create", { workspace_id: binding.workspaceId, cwd: context.cwd, focus: false, label: guardLabel, env: {} }, "tab_created", operation);
+          const result = await mutation("tab.create", { workspace_id: binding.workspaceId, cwd: context.cwd, focus: false, label: guardLabel, env: { ...workspaceEnvironment } }, "tab_created", operation);
           const tab = object(result.tab, "Created stop anchor tab");
           const root = object(result.root_pane, "Created stop anchor pane");
           if (tab.workspace_id !== binding.workspaceId || tab.label !== guardLabel || root.workspace_id !== binding.workspaceId || root.pane_id === binding.paneId || root.agent !== undefined) throw new HerdrAgentActionError("The stop anchor does not identify an empty task-owned pane.", "tab.create", "unknown");

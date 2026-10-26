@@ -1,12 +1,12 @@
 # Worker 架构设计
 
-状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录和 Git 工作区管理已实现；前台 worker、Herdr 和人工管理命令仍待运行时交付。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
+状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker 与人工管理命令仍待运行时交付。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
 
 ## 目标与当前基础
 
 `daynight worker run` 是一个前台常驻 CLI：通过 REST 领取多仓库中允许 Agent 执行的任务，使用系统管理的稳定 worktree 与专用 Herdr 执行，持久化状态并完成恢复和清理。Agent 负责完整交付、验收和最终 claim-bound done，worker 负责归属清单对账、资源与恢复。
 
-设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，认领基础由[归属架构](daynight-worker-claims.md)拥有，worker 的调度及 Herdr 运行时仍待实现。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
+设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，认领基础由[归属架构](daynight-worker-claims.md)拥有，worker 的前台组合调度及人工管理命令仍待实现。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
 
 | 当前基础 | 复用点 |
 |---|---|
@@ -229,7 +229,9 @@ Unix 使用 domain socket，两个路径分别校验 Linux 107、macOS 103 个 U
 | `start` | 消费冻结 agent/model/args、调用方 prompt 和可选原 sessionId。已存在原执行默认只重连；新启动或确需恢复时先预检并核对启动 argv/目标，实际 interactiveReady 后递交一次原 prompt，再绑定官方原生 ID。恢复报告的 ID 须与原 ID 相同。返回 waiting/started 或后续错误时保留 launchEvidence 和输入提交事实；需要新 pane 的情况返回 rebind-required，不启动或输入。 |
 | `submitPrompt` | 同 pane 输入串行，按调用方原内容通过 agent.prompt 递交多行文本。成功只表示 PTY 文本加 Enter 已受理，不是模型语义回执；失败可能已经提交。 |
 | `captureStop` / `requestGracefulStop` | 返回原执行/原生 ID、shell、非空原 processIds 和观察时间；正常退出使用 `/exit`，其输入回执不能证明停止。 |
-| `confirmStopped` / `forceStop` / `closeWorkspace` | 用原进程观察核对停止，确认后才关原 workspace；具体条件见下文。 |
+| `confirmStopped` / `forceStop` | 固定原 binding，用原进程观察核对停止；forceStop 不接受改写的旧观察。 |
+| `confirmRestoredStop` | 分别接收原 binding、实际观察到的 restored binding 和不可变的原停止观察；只核对冷恢复后的停止事实，返回绑定 restored resource 的证明，不输入、关闭或 kill。 |
+| `closeWorkspace` | 使用核验后的当前 binding 和 agentStopped 证明关闭原 workspace，再读取确认；已缺席时核对原 owner 未指向另一个 workspace。 |
 
 启动 argv 与 prompt 分开：Herdr 的 agent.start 只排队启动命令，多行 prompt 不能塞进参数；ready 后使用 agent.prompt。冻结配置的模型和允许参数在新启动与显式 resume 时逐次传入，并核对启动回显的 argv；这证明参数传输，不证明任意模型实际可用或已经生效。原生 CLI 对不可用模型的选择/回退不构成冻结模型保持证据，有效配置接续需限定 native 版本和实际可用模型单独验证。Worker 拥有 cwd/session/model/mode 的调用位置，非法或不支持参数在启动前拒绝。Codex 的系统参数 `--no-daemon` 隔离共享的人工作业 daemon；构建的完整 argv 也不走 Herdr 仅按简写 resume 参数预记 native ID 的路径。新绑定要求实际官方 hook 报告，不自动附加信任绕过或修改原生配置。
 
@@ -239,7 +241,7 @@ Unix 使用 domain socket，两个路径分别校验 Linux 107、macOS 103 个 U
 
 ### Prompt 所有权与停止顺序
 
-单一 `using-daynight` 的 SKILL.md 只做简短入口路由。普通任务读取 run-task.md；worker 启动 prompt 显式指定上述环境、技能与模式后，agent 才读取 references/execute-task-in-managed.md。任务 worker 属性、cwd 和环境变量不能自行激活 managed。专属指令核对原 claim、实际工作区及冻结配置，缺失或不匹配时保持等待，不改走普通认领、开始或完成。两种入口复用 references/task-execution.md 中的任务输入、范围、交付、验收和证据规则，普通开始/重开/done 与 managed 原 claim 生命周期分别由对应入口拥有。
+单一 `using-daynight` 的 SKILL.md 只做简短入口路由。普通任务读取 run-task.md；worker 启动 prompt 显式指定 `worker-managed` 环境、`using-daynight` 技能及 `execute-task-in-managed` 模式后，agent 才读取 references/execute-task-in-managed.md。任务 worker 属性、cwd 和环境变量不能自行激活 managed。专属指令核对原 claim、实际工作区及冻结配置，缺失或不匹配时保持等待，不改走普通认领、开始或完成。两种入口复用 references/task-execution.md 中的任务输入、范围、交付、验收和证据规则，普通开始/重开/done 与 managed 原 claim 生命周期分别由对应入口拥有。
 
 协调循环负责首次启动和同 claim 确需重新启动 agent 时的完整 prompt：确认所需技能可用，显式声明 `worker-managed` 运行环境、`using-daynight` 技能与 `execute-task-in-managed` 模式，并传入 projectId/taskId/claimId、worktreeId、实际 worktree/branch、原会话关联及该执行冻结配置。Prompt 不含认证凭据；具体业务指令由协调循环和技能入口拥有。Herdr 适配层只向指定执行递交调用方给出的不透明文本，不解析任务、推断模式或重新组装内容。重连仍存活 agent 只恢复观察，不重新递交启动 prompt；未知启动或输入先观察原 pane，不盲目重发或启动第二个 agent。
 
@@ -251,12 +253,15 @@ Codex 的新执行和 resume 可直到首个用户 turn 才运行 SessionStart h
 
 协调循环拥有清理指令、原截止和输入提交状态，适配层提供相同的串行输入与观察操作；旧工作轮次变 idle、prompt ACK 或 `/exit` ACK 都不能证明清理轮次已完成或原 agent 已停。原始十分钟截止不能因重启重新计算。
 
-停止前先捕获原进程观察，调用方必须在同一 claim 的持久记录中保存后才能强制关闭。launchPending 不表示尚无进程：Copilot 的目录信任界面可保持 pending，但已启动原生 wrapper/binary；只有匹配原 managed 身份且实际 argv 可归属原生执行的非空前台 PID 证据才能用于该路径，不能凭空列表或无关前台推断已停，也不为清理而改变目录信任或全局配置。正常退出需核对原 processIds 已不再执行及原 shell/当前前台状态。冷恢复后 shell PID 已变化时，还须证明旧 shell 也不再执行、当前 pane 只有 shell 而无其他前台工作，并继续固定原 owner/terminal/cwd 身份；新空 shell 本身不证明旧 agent 已停。缺观察、拒绝查询、仍存活或身份不匹配均不能返回 stopped。必要的强制停止在同一 owned workspace 创建一个临时空 tab/pane 作为 anchor，关闭原 agent pane，再确认原 processIds 不再执行，最后才允许关闭 workspace。该 anchor 不启动 agent、不创建第二实例，保留任务工作区直到停止核实完成；中断后沿原绑定及已保存观察续核对。不会用裸持久 PID 直接发 kill，也不声称已证明每个可能逃逸的临时工具都结束。
+停止前先捕获原进程观察，调用方必须在同一 claim 的持久记录中保存后才能强制关闭。launchPending 不表示尚无进程：Copilot 的目录信任界面可保持 pending，但已启动原生 wrapper/binary；只有匹配原 managed 身份且实际 argv 可归属原生执行的非空前台 PID 证据才能用于该路径，不能凭空列表或无关前台推断已停，也不为清理而改变目录信任或全局配置。常规 `confirmStopped` 固定原 binding，核对原 processIds 已不执行及原 shell/当前前台状态；原 shell PID 变化时旧 shell 也必须不再执行。
+
+Herdr 冷恢复可保留 workspace/pane，却重新创建 terminal 和 shell。`confirmRestoredStop(context, originalBinding, restoredBinding, originalStopObservation, operation)` 保留原观察与旧 binding 不变，单独核对实际 restored binding；session/workspace/pane 必须仍相同，允许 terminal 不同，owner/cwd 仍须匹配。原 native PIDs 和旧 shell 均已不执行、当前为无 pending/native 执行和非 shell 前台工作的空 shell，且保留的 native 引用未指向别的会话，才能返回 `{agentStopped:true,binding:restoredBinding}`。该操作只提供绑定当前资源的停止事实，不发输入、不关闭、不 kill。新空 shell 本身不证明旧 agent 已停，也不能通过重写旧观察使旧 PID 与新 terminal 拼成证明。
+
+缺观察、拒绝查询、仍存活或身份不匹配均不能返回 stopped。必要的强制停止仍严格针对原 binding：在同一 owned workspace 创建一个临时空 tab/pane 作为 anchor，关闭原 agent pane，再确认原 processIds 不再执行，最后才允许关闭 workspace。该 anchor 不启动 agent、不创建第二实例，保留任务工作区直到停止核实完成；中断后沿原绑定及已保存观察续核对。不会用裸持久 PID 直接发 kill，也不声称已证明每个可能逃逸的临时工具都结束。
 
 整个 worker 的退出在各任务停止后调用 `stopInstance`。server.stop ACK 只表示请求收到；仍须核对 API/client 实际关闭，并在本调用持有 live child handle 时等待其 close。重连实例没有 child handle 时返回 ownedChildClosed:null，不能伪称取得进程退出事件。服务不确定结果只继续观察，不重发 stop 或按持久 PID 杀进程。
 
 Agent 按显式 assignment 和技能规则复用已开始执行，不重认领或重建工作区，完整交付和验收后最后显式 claim-bound done；等待时保留原任务。适配层输入能力不等于 managed 业务指令、协调循环或完整 Goal 已交付。原生停止/恢复的来源、实际平台与限制遵循下方验证边界。
-
 
 ## Agent 完成与人工操作
 
@@ -310,11 +315,21 @@ Release/transfer 先记录原 claim 和精确版本的管理意图，抑制普�
 
 ## 验证与当前证据
 
-Linux 本地 Herdr 0.8.2 的隔离无原生 agent 冒烟已验证：原始 JSON API、headless workspace 创建、人工模拟 working/idle、普通 shell/子进程关闭和 shell 工作区重启恢复。发现 134 字节 client socket 路径启动失败，缩短后 API/client 路径分别 100/107 字节成功。这些是该平台和版本的观察，107 不是三平台通用限制。
+历史 Linux Herdr 0.8.2 的隔离无原生 agent 冒烟验证了原始 JSON API、headless workspace 创建、人工模拟 working/idle、普通 shell/子进程关闭和 shell 工作区重启恢复。134 字节 client socket 路径启动失败，缩短后 API/client 路径分别 100/107 字节成功。这些只解释该次平台和版本；当时未运行 Copilot/Codex，也未验证原生检测、native history、脱离子进程或 macOS/Windows。
 
-该次 0.8.2 冒烟没有运行 Copilot/Codex、没有验证原生检测、native history 恢复、原生 agent 脱离子进程或 macOS/Windows，不能作为后续原生能力证明。
+当前适配层的真实针对性验证环境为 Linux、Herdr 0.9.5、Codex 0.164.0、Copilot 1.0.103。有效配置观察限定于实际可用的 `gpt-6.1-sol`，Codex reasoning effort 为 high、Copilot 为 low；不能从 argv 回显推断其他模型/版本同样生效。
 
-Linux 的 Herdr 0.9.5 针对性验证已观察到：目录信任界面仍为 launchPending 的 Copilot 可用原 managed 身份及具体原生进程证据停止；原 pane 关闭后，独立检查原进程已不存在，只留下同一 workspace 的空 anchor，随后 workspace 关闭成功。另一 Codex 的原 pane/terminal/native ID 与存活状态保持。该结果证明这个版本/平台的具体停止路径，不代表双 agent 的完整历史/有效配置接续、前台协调循环或三平台 Goal 验收完成。运行时交付继续受以下独立门禁约束。
+| 已观察路径 | 实际结果与边界 |
+|---|---|
+| 首次输入、重连与普通恢复 | 实际 native 输入保留执行标识和内部多行 payload；官方 ID 可绑定。重连不增加原生输入历史，同 claim 显式恢复维持原 native ID、记忆和所测有效配置；历史反例被拒绝。 |
+| 冷重启与新资源关联 | daemon、旧 shell 和原生进程实际停止后，关闭自动 native restore 的实例只恢复新空 shell 与旧引用，terminal ID 已变化。对该缓存引用直接 start 返回 rebind-required 且不输入；confirmRestoredStop 保持旧 binding/观察不可变，返回实际新 terminal 的停止事实。关闭旧 workspace 后在空 native-reference 基线创建新 pane，显式 resume 原 ID。 |
+| 双 agent 的冷恢复历史 | 两个 agent 都在输入后重新报告原官方 ID，保持上述 model/effort，并返回原历史中的确切 nonce。对应最新原生工具记录只有结果写入、没有读取原 nonce 文件；这提供了同会话历史延续的证据，launchEvidence 同时保留空基线和实际 argv。 |
+| 单任务强制停止 | 目录信任界面仍为 launchPending 的 Copilot 可用原 managed 身份和具体原生 PID 证据停止；原 pane 关闭后，独立检查原进程已不存在，仅留下同一 workspace 的空 anchor，随后 workspace 关闭成功。另一 Codex 的原 pane/terminal/native ID 与存活状态保持。 |
+| 新 claim | 新 Codex claim 启动得到区别于旧执行的 native ID；不把旧会话引用作为新执行。 |
+
+实际原生边界仍需明确：Codex 0.164.0 的所测 firstUserMessage 记录归一化了一个末尾提交 LF，内部 payload 的独立 receipt 字节保持一致；不能把原生历史的表示与传输文本混为一谈。Copilot 对不可用 `gpt-5.4` 的原生选择/回退是负例，不计入冻结模型保持证明。验证使用可用的 native/provider 认证；隔离认证 fixture 需要当前 provider 所依赖的辅助资料，主认证文件和集成配置可读不等于推理认证成功。适配层不搬运认证或建设 provider 数据库/认证引擎。
+
+这些观察证明所测 Linux/版本/模型组合的具体能力；受控 IPC/进程夹具另行验证错误和父进程崩溃窗口，不能代替真实 native 结果。它们仍不代表前台协调循环、业务 managed prompt 组合、管理协议或完整三平台 Goal 已验收。运行时交付继续受以下独立门禁约束。
 
 | 门禁 | 必须证明 |
 |---|---|
