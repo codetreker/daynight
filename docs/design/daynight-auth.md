@@ -205,7 +205,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET /api/v1/auth/login?provider=... | 创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET /api/v1/me | 当前用户最小资料。 |
-| GET /setup | 交付同一内嵌页面，AuthenticatedApp 登录后显示静态使用引导；登录返回保留该路径。 |
+| GET /setup | 交付同一内嵌页面，在认证组件之外显示公开静态使用引导，不发起身份或其他 API 请求。 |
 | POST /api/v1/auth/logout | 主站会话注销，验证 Origin。 |
 | GET/POST /api/v1/me/tokens、PATCH/DELETE .../{tokenId} | 主站会话列出/创建、按账号与到期观察值修改、撤销自己的有效 PAT；Cookie 写校验精确 Origin。 |
 | POST /api/v1/auth/device/code、POST .../token | 公开客户端 form 设备授权与轮询领取；RFC 错误 JSON。 |

@@ -240,8 +240,8 @@ starting the server. Login return loops are rejected before a login transaction
 is created. Only the configured callback path is routed; there is no fixed-path alias or authentication-disable
 mode. The two HTTP exceptions control different origins and do not imply each
 other. The exact `/setup` page uses the normal embedded HTML GET/HEAD handler,
-no-store policy, 405/Allow response and request logging. Its guide is displayed
-after the existing browser authentication flow and does not add a business API.
+no-store policy, 405/Allow response and request logging. Its public static guide mounts
+outside the browser authentication flow and makes no API requests.
 `/healthz` and `/readyz` are public GET/HEAD endpoints; readiness checks
 only PostgreSQL, so it does not establish UniAuth connectivity or login success.
 Port `0` requests an ephemeral loopback port; the bound address appears

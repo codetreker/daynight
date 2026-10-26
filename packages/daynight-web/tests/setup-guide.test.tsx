@@ -10,7 +10,7 @@ const clipboard = (writeText = vi.fn().mockResolvedValue(undefined)) => {
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
   return writeText;
 };
-const renderGuide = () => renderWithLocale(<SetupGuidePage onFollowLink={vi.fn()} />, { locale: "zh-CN" });
+const renderGuide = () => renderWithLocale(<SetupGuidePage />, { locale: "zh-CN" });
 
 describe("daily setup guide", () => {
   it("presents five expanded steps and exact commands without requesting service data", () => {

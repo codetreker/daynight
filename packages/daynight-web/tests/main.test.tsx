@@ -23,6 +23,8 @@ describe('application bootstrap', () => {
 
   it.each([
     { locale: 'en', path: '/', title: 'Checking sign-in · Daynight' },
+    { locale: 'en', path: '/setup/', title: 'Checking sign-in · Daynight' },
+    { locale: 'en', path: '/setup/elsewhere', title: 'Checking sign-in · Daynight' },
     { locale: 'zh-CN', path: '/projects/00000000-0000-4000-8000-000000000001', title: '正在确认登录 · Daynight' },
   ])('resolves $locale before creating one React root with the authenticated application', async ({ locale, path, title }) => {
     window.localStorage.setItem('daynight.web.locale', locale);
@@ -36,6 +38,25 @@ describe('application bootstrap', () => {
     expect(element.type).toHaveProperty('name', 'LocaleProvider');
     expect(element.props.initial).toEqual({ locale, issue: null });
     expect((element.props.children as ReactElement).type).toHaveProperty('name', 'AuthenticatedApp');
+  });
+
+  it.each([
+    { locale: 'en', path: '/setup', title: 'Setup guide · Daynight' },
+    { locale: 'zh-CN', path: '/setup?ref=welcome', title: '使用引导 · Daynight' },
+  ])('boots $locale public guide directly without an authenticated root', async ({ locale, path, title }) => {
+    window.localStorage.setItem('daynight.web.locale', locale);
+    window.history.replaceState(null, '', path);
+    document.body.innerHTML = '<div id="root"></div>';
+    const fetcher = vi.fn(() => { throw new Error('The public guide must not request any API'); });
+    vi.stubGlobal('fetch', fetcher);
+    await import('../src/main');
+    expect(createRoot).toHaveBeenCalledExactlyOnceWith(document.getElementById('root'));
+    expect(rootMetadata).toEqual([{ language: locale, title }]);
+    const element = render.mock.calls[0]?.[0] as ReactElement<LocaleProviderProps>;
+    expect(element.type).toHaveProperty('name', 'LocaleProvider');
+    expect(element.props.initial).toEqual({ locale, issue: null });
+    expect((element.props.children as ReactElement).type).toHaveProperty('name', 'SetupGuideShell');
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   it('fails clearly when the HTML root element is missing', async () => {

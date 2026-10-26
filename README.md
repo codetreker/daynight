@@ -80,7 +80,7 @@ The [deletion design](docs/design/daynight-task-deletion.md) owns these rules.
 |---|---|---|---|
 | `daynight` | `packages/daynight/` | Implemented `review`, npm global `update`, device-code `login/logout`, production-default service access, review configuration guidance, Bash/zsh `completion` generation and setup, the public task-management skill bundle and interactive Agent installation, shared configuration, server HTTP and repository binding foundations plus project, task and single-file attachment commands; native installed service and resource-budget acceptance implemented | [Client requirements](docs/spec/daynight.md), [client design](docs/design/daynight.md), [completion design](docs/design/daynight-completion.md), [review requirements](docs/spec/daynight-review.md), [review design](docs/design/daynight-review.md), [project/task requirements](docs/spec/daynight-project-task.md), [design](docs/design/daynight-project-task.md) |
 | `daynight-server` | `packages/daynight-server/` | Project/task/graph and time-window summary APIs, mandatory UniAuth/session/PAT authentication, project memberships, PostgreSQL transactions and embedded browser assets implemented | [Requirements](docs/spec/daynight-server.md), [design](docs/design/daynight-server.md) |
-| `daynight-web` | `packages/daynight-web/` | Project browsing, statistics, read-only task graphs with complete prerequisite context and task details, attachment management/preview, embedded delivery, graph production acceptance and strict coverage delivered; English/Simplified Chinese interface, locale persistence and authenticated five-step setup guide implemented | [Requirements](docs/spec/daynight-web.md), [architecture](docs/design/daynight-web.md), [language requirements](docs/spec/daynight-web-i18n.md), [language design](docs/design/daynight-web-i18n.md), [preview](docs/design/mockups/task-dashboard.html) |
+| `daynight-web` | `packages/daynight-web/` | Project browsing, statistics, read-only task graphs with complete prerequisite context and task details, attachment management/preview, embedded delivery, graph production acceptance and strict coverage delivered; English/Simplified Chinese interface, locale persistence and public five-step setup guide implemented | [Requirements](docs/spec/daynight-web.md), [architecture](docs/design/daynight-web.md), [language requirements](docs/spec/daynight-web-i18n.md), [language design](docs/design/daynight-web-i18n.md), [preview](docs/design/mockups/task-dashboard.html) |
 
 The adopted [task attachment requirements](docs/spec/daynight-task-attachments.md) and
 [architecture](docs/design/daynight-task-attachments.md) define reusable
@@ -643,12 +643,13 @@ saved language preference. Navigation, the centered detail dialog and fullscreen
 graph share one language choice while preserving browsing and pending attachment
 state. The [bilingual requirements](docs/spec/daynight-web-i18n.md) own the full
 outcome. The header's book icon and visible Setup guide link, immediately before
-the language selector, open `/setup`. Its expanded bilingual steps cover CLI
+the language selector, open public `/setup` in a new tab. Its expanded bilingual steps cover CLI
 installation, device login, repository project discovery or creation, Agent skill
 installation and registering a first task. Commands stay selectable and provide
-copy feedback; the current origin is informational. The static guide makes no
-project, task or token requests, while the existing shell still verifies identity.
-The [guide decision](.agents/notes/implemented/feature/2026-10-25-web-setup-guide.md)
+copy feedback; the current origin is informational. The guide mounts outside the
+authenticated shell and makes no API requests, including identity or provider
+discovery, on direct access, reload, language changes or foreground return.
+The [guide decision](.agents/notes/implemented/architecture/2026-10-26-public-setup-guide.md)
 owns its boundaries; [Web requirements](docs/spec/daynight-web.md#日常使用引导)
 own the complete outcomes. With the Go API running on loopback, use:
 
