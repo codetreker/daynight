@@ -13,8 +13,9 @@
 
 [鉴权架构](daynight-auth.md)拥有 UniAuth 登录、项目权限、成员与邀请及个人访问
 令牌；`AuthenticatedApp` 和 API 客户端已接入生产入口。
-[需求](../spec/daynight-auth.md)拥有完整行为。生产 `main.tsx` 在常驻 LocaleProvider 中渲染 `AuthenticatedApp`，复用
-messages.auth 的英语/简体中文目录及同一语言偏好。后端使用升级后的公开 UniAuth
+[需求](../spec/daynight-auth.md)拥有完整行为。生产 `Application` 在常驻 LocaleProvider 中按
+当前地址组合公开推广页、公开指南和 `AuthenticatedApp`；后者复用 messages.auth 的英语/简体中文目录
+及同一语言偏好。[公开入口设计](daynight-landing.md)拥有分流、介绍、演示和元数据。后端使用升级后的公开 UniAuth
 SDK 提供 App-aware provider discovery；发现失败与用户会话失效分开呈现。新壳
 复用现有任务页签、渐进图和居中 `TaskDetailDialog`，保留可信同源 frame、相对资源及键盘机制。
 [Web 鉴权决策](../../.agents/notes/implemented/feature/2026-10-22-web-auth-workspace.md)
@@ -92,7 +93,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 拥有状态、错误与身份边界的取舍；[账户导航决策](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
 保留底部入口布局的原始理由。
 
-### 项目列表 `/`
+### 项目列表 `/projects`
 
 - 页首显示“项目”和刷新按钮。
 - 卡片显示项目名称、仓库地址、创建日期和“查看任务”。长名称、地址允许换行，仓库地址按普通文本展示。
@@ -449,12 +450,13 @@ React Flow 12.12.0保留220px宽、96px或136px高的可见卡片、原生测量
 ## 日常使用引导页
 
 `features/setup/SetupGuidePage.tsx` 与 `styles/setup.css` 拥有静态五步指南。
-`main.tsx` 在挂载认证组件前将精确 `/setup` 分流到公开静态外壳，query 不影响匹配。
+`Application` 响应当前地址，将精确 `/setup` 分流到公开静态外壳，query 不影响匹配；
+公开首页和认证页面分别由[公开入口设计](daynight-landing.md)定义。
 该外壳保留本地语言 Provider、语言选择器、面包屑、标题、跳过导航和正文聚焦，
 不挂载 `AuthenticatedApp` 的身份、provider、邀请、任务缓存或前台认证重检生命周期。
 工作空间顶栏语言选择器前的书本图标与文字链接使用 `target="_blank"`、
 `rel="noopener noreferrer"`，不拦截点击。引导页中的项目链接采用完整页面导航，
-离开指南后由正常应用入口处理认证。
+项目链接进入 `/projects`，离开指南后由正常应用入口处理认证。
 
 `messages.setup` 的类型化目录拥有五步标题、前置条件、成功标志、自然语言示例、
 复制与导航文案。终端命令以完整字符串呈现和复制，多行使用真实换行，不从 HTML 或
@@ -601,7 +603,9 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 
 | 路径 | 行为 |
 |---|---|
-| `GET /{$}` | 精确根路径，返回 SPA index；`GET /` 不能替代精确匹配 |
+| `GET /{$}` | 精确根路径，返回 index 并显示公开推广页；`GET /` 不能替代精确匹配 |
+| `GET /login` | 返回同一个 index，由现有认证生命周期显示独立登录页 |
+| `GET /projects` | 返回同一个 index，认证后显示项目列表 |
 | `GET /projects/{projectId}` | 返回同一个 index，资源存在性由图 API 决定 |
 | `GET /setup` | 返回同一个 index，由公开静态入口显示日常使用指南，不发起任何 API 请求 |
 | `GET /projects/{projectId}/tasks/{taskId}/attachments/{path...}` | 返回同一个 index，前端在工作空间外打开独立阅读页；文件存在性由完整附件清单决定 |

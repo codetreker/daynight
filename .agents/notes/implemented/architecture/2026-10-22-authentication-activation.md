@@ -29,8 +29,10 @@ validates exact version, target and dependencies. Member/admin task-write rights
 remain equal. Create defaults to todo, metadata PATCH rejects status and the
 status PUT/405 paths retain Require, Cookie Origin and no-store handling.
 
-Production `main.tsx` mounts `AuthenticatedApp` under the persistent
-`LocaleProvider`. Existing task and attachment tabs, progressive task graphs,
+Production `main.tsx` mounts a reactive application entry under the persistent
+`LocaleProvider`. The [public product entry decision](2026-10-26-public-product-entry.md)
+owns public introduction and guide selection; `AuthenticatedApp` owns explicit
+login and protected pages. Existing task and attachment tabs, progressive task graphs,
 bilingual presentation, centered detail dialogs and browsing formats retain their
 own state and behavior. TaskDetailSessionProvider lives inside the current
 identity/generation boundary, preserving pending task status/permission writes across dialog

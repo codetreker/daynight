@@ -23,8 +23,10 @@ The production entry resolves the initial locale before React rendering, sets
 the initial document language and route title, and mounts one persistent
 `LocaleProvider`. The initial interface used `App`; the
 [authentication activation](../architecture/2026-10-22-authentication-activation.md)
-now mounts `AuthenticatedApp` under that same Provider and updates document
-metadata on language or route changes.
+provides the authenticated branch under that same Provider. The
+[public product entry decision](../architecture/2026-10-26-public-product-entry.md)
+adds the public introduction and reactive branch selection; all page owners update
+document metadata on language or route changes.
 Navigation focus remains dependent on the route, so changing a language does
 not refocus the page. The original integration placed the shared selector in the
 navigation bar, task details and fullscreen graph so modal users could change

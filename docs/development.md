@@ -254,7 +254,10 @@ Chinese across the shipped interface, native Intl formatting and an independent
 saved language preference. Navigation, the centered detail dialog and fullscreen
 graph share one language choice while preserving browsing and pending attachment
 state. The [bilingual requirements](../docs/spec/daynight-web-i18n.md) own the full
-outcome. The header's book icon and visible Setup guide link, immediately before
+outcome. The public `/` introduction and local example use that same language
+state. `/login` owns authentication and `/projects` is the workspace index; the
+[public entry design](design/daynight-landing.md) owns route composition,
+public navigation hints and metadata. The header's book icon and visible Setup guide link, immediately before
 the language selector, open public `/setup` in a new tab. Its expanded bilingual steps cover CLI
 installation, device login, repository project discovery or creation, Agent skill
 installation and registering a first task. Commands stay selectable and provide

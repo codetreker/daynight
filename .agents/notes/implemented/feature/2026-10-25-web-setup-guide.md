@@ -24,7 +24,9 @@ the session lifecycle.
 The guide is static content shipped with the Web build. It displays the current
 origin as information and uses the published CLI's normal production-default
 login flow. It reads no credentials, projects, tasks, tokens or completion state.
-The public guide makes no API requests. CLI, project discovery and
+The public guide makes no API requests. Its workspace links use `/projects`; the
+[public product entry decision](../architecture/2026-10-26-public-product-entry.md)
+owns the root introduction and reactive public/private selection. CLI, project discovery and
 skill installation keep their existing owners and are not reimplemented in the
 page.
 

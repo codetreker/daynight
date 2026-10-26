@@ -6,8 +6,9 @@ browser dashboard for understanding progress and a command-line client for
 managing tasks. The CLI also provides automated GitHub pull request review
 through Copilot CLI.
 
-Use the Web app at **[daynight.cc](https://daynight.cc)**, or run your own service.
-The interface supports English and Simplified Chinese.
+Explore Daynight and its interactive example at **[daynight.cc](https://daynight.cc)**.
+Open the **[workspace](https://daynight.cc/projects)** to continue your projects,
+or run your own service. The interface supports English and Simplified Chinese.
 
 ## What you can do
 
@@ -40,8 +41,9 @@ The planned autonomous worker runtime is still under development; its
 
 ## Get started
 
-The public **[setup guide](https://daynight.cc/setup)** walks through installation
-and agent setup. Use Node.js 24 LTS, then install the CLI and sign in:
+The public introduction explains the product before sign-in; its example can be
+used without an account. The **[setup guide](https://daynight.cc/setup)** walks
+through installation and agent setup. Use Node.js 24 LTS, then install the CLI and sign in:
 
 ```bash
 npm install --global @codetreker/daynight

@@ -1,6 +1,7 @@
 # daynight-web
 
-The private React/TypeScript workspace implements project browsing, cursor
+The React/TypeScript Web app provides a public product introduction and a private
+workspace. The workspace implements project browsing, cursor
 pagination, request cancellation, runtime API decoding, native browser routing
 and a pure dependency graph model with horizontal layout. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
@@ -24,9 +25,10 @@ The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define login, private
 projects, member and invitation management, CLI device authorization, and personal access tokens. The
 `AuthenticatedApp` implements their browser components and API client. Production
-`main.tsx` renders the public setup guide or `AuthenticatedApp` under the persistent
-`LocaleProvider`, selecting the exact `/setup` pathname before mounting any session
-lifecycle; every business API
+`Application` responds to browser location under the persistent `LocaleProvider`: `/`
+shows the public introduction, `/setup` selects the zero-API guide, and other pages
+use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
+the workspace index; every business API
 requires a browser session or PAT and current project membership. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources
 and keyboard behavior remain unchanged.
@@ -34,6 +36,26 @@ The [Web workspace decision](../../.agents/notes/implemented/feature/2026-10-22-
 owns the frontend lifecycle choices; the
 [activation decision](../../.agents/notes/implemented/architecture/2026-10-22-authentication-activation.md)
 owns production composition and credential-private acceptance.
+
+## Public product entry
+
+The public `/` page explains the shared work layer for developers, teams and their
+coding agents. Its primary action opens a local interactive example; onboarding
+continues through `/setup`. The introduction remains available when signed in.
+A cancellable, read-only identity hint changes only the login/workspace navigation;
+loading or failure does not block the public content or authorize private data.
+
+`features/landing/` owns the page, bounded example data and interaction. Typed
+English and Simplified Chinese messages cover copy, example documents, FAQ,
+identity status and metadata; changing language preserves example selections.
+Styles are scoped beneath `.landing-page`. The production page contains no
+prototype controls or simulated account state. Default HTML share metadata and
+locale-aware page metadata use the existing Vite-to-Go asset pipeline.
+
+The [requirements](../../docs/spec/daynight-landing.md),
+[design](../../docs/design/daynight-landing.md) and
+[decision](../../.agents/notes/implemented/architecture/2026-10-26-public-product-entry.md)
+own the complete visitor journey and public/private ownership.
 
 ## Daily setup guide
 
@@ -53,7 +75,7 @@ the current origin as information; the CLI's default login service remains
 `https://daynight.cc`. Direct access, reloads, copying, locale changes and
 focus/visibility restoration make zero API requests. No identity, provider, task
 cache or business-resource lifecycle mounts. Return-to-project links load a new
-document at `/`, where the normal authentication workflow starts.
+document at `/projects`, where the normal authentication workflow starts.
 
 Command blocks retain selectable source text, exact newlines and argument quotes.
 One current copy operation disables the copy buttons until it settles. A floating
@@ -70,8 +92,16 @@ own the behavior, mechanisms and trade-offs.
 
 ## Authenticated workspace
 
-`AuthenticatedApp` runs under the same `LocaleProvider` as the existing
-workspace and owns current-user loading, login navigation and session loss. Both
+`AuthenticatedApp` runs under the persistent `LocaleProvider` and owns current-user
+loading, the independent `/login` page, login continuation and session loss.
+An absent `returnPath` defaults to `/projects`; supplied invalid targets produce
+an explicit error. Anonymous protected links enter login with the actual task,
+file and query destination. Existing sessions and completed authentication use
+replacement navigation so history does not loop through login. Known callback
+failures retain their validated destination. Invitation and device flows preserve
+their secret/code context through login and account switching; ordinary logout
+returns to the public homepage only after confirmed success. Failed logout stays
+visible and retryable. Both
 complete catalogs provide its `messages.auth` domain, including accessible names,
 validation, notices and already displayed errors. Login, workspace, invitation, device authorization
 and management dialogs expose the shared language selector; native formatters
@@ -451,9 +481,11 @@ implemented English and Simplified Chinese interface. The
 [language design](../../docs/design/daynight-web-i18n.md) owns typed catalogs,
 cached native Intl formatters, initial resolution, a Provider and the shared
 native selector under `src/i18n/`. Production `main.tsx` resolves language and
-sets HTML `lang` and the authentication loading title before React renders.
-`AuthenticatedApp` and the workspace update document
-metadata on navigation and language changes. The top bar and graph-dialog header
+sets HTML `lang` and the route-appropriate introduction, guide or authentication
+loading title before React renders.
+The public page, guide and `AuthenticatedApp` update their document metadata on
+navigation and language changes; the public introduction also updates description
+and share copy. The top bar and graph-dialog header
 expose selectors in both dialog modes using the same saved language. Task details consume the current
 application locale through the same Provider; their header contains the task
 title, fullscreen toggle, More task actions menu and close control. The status
@@ -517,7 +549,8 @@ The project list requests 50 items per page, preserves
 server order, and follows `nextCursor` through Load more. Repeated IDs count once.
 Refresh discards old pages and cursors; late responses cannot repopulate them.
 
-The application implements `/`, `/projects/{projectId}`, `/account`,
+The application implements public `/`, explicit `/login`, the `/projects` index,
+`/projects/{projectId}`, `/account`,
 `/invitations` and the standalone
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` reader, direct URL
 reload, browser back/forward and a generic not-found page. All resource reads use
