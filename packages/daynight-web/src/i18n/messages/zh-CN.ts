@@ -6,6 +6,7 @@ import { inspection } from "./zh-CN/inspection";
 import { execution } from "./zh-CN/execution";
 import { auth } from "./zh-CN/auth";
 import { setup } from "./zh-CN/setup";
+import { landing } from "./zh-CN/landing";
 import type { Messages } from "../messages";
 
 export const zhCN: Messages = {
@@ -16,6 +17,7 @@ export const zhCN: Messages = {
   platform,
   auth,
   setup,
+  landing,
   execution,
   common: {
     retrySave: "重试保存语言",

@@ -7,6 +7,7 @@ import type { InspectionMessages } from "./messages/inspection";
 import type { ExecutionMessages } from "./messages/execution";
 import type { AuthMessages } from "./messages/auth";
 import type { SetupMessages } from "./messages/setup";
+import type { LandingMessages } from "./messages/landing";
 import type { Locale, LocaleIssue } from "./locale";
 import { en } from "./messages/en";
 import { zhCN } from "./messages/zh-CN";
@@ -24,6 +25,7 @@ export type Messages = {
   readonly platform: PlatformMessages;
   readonly auth: AuthMessages;
   readonly setup: SetupMessages;
+  readonly landing: LandingMessages;
   readonly execution: ExecutionMessages;
   readonly language: {
     readonly label: string;
