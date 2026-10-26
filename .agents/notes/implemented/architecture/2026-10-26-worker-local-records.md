@@ -104,7 +104,9 @@ partial claim inventory cannot authorize deletion. The original claim's absence
 from a successful complete own-current inventory is the automatic cleanup rule.
 
 The storage and identity primitives are delivered independently of the foreground
-scheduler, Git/Herdr adapters and management commands. Existing service
+scheduler, Herdr adapter and management commands. The
+[Git workspace manager](2026-10-26-worker-git-workspaces.md) supplies concrete
+worktree observations and returns bindings to this same store. Existing service
 resume/transfer continuity checks still need the management-protocol delivery
 before fresh target execution is available. This local schema does not claim
 that protocol change, native-agent recovery or Windows/macOS runtime acceptance.

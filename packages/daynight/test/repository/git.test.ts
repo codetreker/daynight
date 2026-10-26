@@ -105,6 +105,46 @@ describe("repository Git discovery", () => {
     expect((await discoverRepository(root, operation())).identity).toBe("git.example/Org/Repo");
   });
 
+  it("applies per-command environment overrides before repository selector isolation", async () => {
+    const root = await repository();
+    vi.stubEnv("GIT_CONFIG_COUNT", "1"); vi.stubEnv("GIT_CONFIG_KEY_0", "fixture.value"); vi.stubEnv("GIT_CONFIG_VALUE_0", "injected");
+    expect((await runRepositoryGit(root, ["config", "--get", "fixture.value"], operation())).stdout.trim()).toBe("injected");
+    const environment = { GIT_CONFIG_VALUE_0: "per-command" };
+    expect((await runRepositoryGit(root, ["config", "--get", "fixture.value"], operation(), { environment })).stdout.trim()).toBe("per-command");
+    expect(environment).toEqual({ GIT_CONFIG_VALUE_0: "per-command" });
+    expect(process.env.GIT_CONFIG_VALUE_0).toBe("injected");
+    const result = await runRepositoryGit(root, ["config", "--get", "fixture.value"], operation(), {
+      allowExitOne: true,
+      environment: { GIT_CONFIG_COUNT: undefined, GIT_CONFIG_KEY_0: undefined, GIT_CONFIG_VALUE_0: undefined, GIT_DIR: path.join(root, "wrong git directory") },
+    });
+    expect(result.exitCode).toBe(1); expect(result.stdout).toBe(""); expect(process.env.GIT_CONFIG_COUNT).toBe("1");
+    expect((await runRepositoryGit(root, ["config", "--get", "fixture.value"], operation())).stdout.trim()).toBe("injected");
+    expect(path.normalize((await runRepositoryGit(root, ["rev-parse", "--show-toplevel"], operation(), { environment: { GIT_WORK_TREE: "wrong" } })).stdout.trim())).toBe(root);
+  });
+
+  it("selects per-command Git configuration without changing later default URL rewrites", async () => {
+    const root = await repository("https://rewrite.invalid/Org/Repo.git");
+    const inherited = path.join(root, "inherited config");
+    const overridden = path.join(root, "per-command config");
+    await writeFile(inherited, '[url "ssh://git@github.com/"]\n\tinsteadOf = https://rewrite.invalid/\n');
+    await writeFile(overridden, '[url "ssh://git@git.example/"]\n\tinsteadOf = https://rewrite.invalid/\n');
+    vi.stubEnv("GIT_CONFIG_GLOBAL", inherited);
+    expect((await runRepositoryGit(root, ["remote", "get-url", "origin"], operation(), { environment: { GIT_CONFIG_GLOBAL: overridden } })).stdout.trim()).toBe("ssh://git@git.example/Org/Repo.git");
+    expect(process.env.GIT_CONFIG_GLOBAL).toBe(inherited);
+    expect((await discoverRepository(root, operation())).identity).toBe("github.com/Org/Repo");
+  });
+
+  it("sanitizes per-command trace destinations after applying overrides", async () => {
+    const root = await repository();
+    const trace = path.join(root, "per-command trace");
+    await runRepositoryGit(root, ["version"], operation(), { environment: { GIT_TRACE: trace, GIT_TRACE2_EVENT: trace } });
+    await expect(readFile(trace)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648])("rejects invalid per-command timeout %s", async (timeoutMs) => {
+    await expect(runRepositoryGit(await directory(), ["version"], operation(), { timeoutMs })).rejects.toThrow("Git command timeout");
+  });
+
   it("keeps linked-worktree roots and worktree-specific origin configuration", async () => {
     const root = await repository();
     seedCommit(root);
@@ -297,7 +337,7 @@ describe("repository Git discovery", () => {
     });
   });
 
-  it("cancels a real Git alias and terminates its owned Node descendant on every platform", async () => {
+  it.each(["cancellation", "per-command deadline"] as const)("terminates a real Git alias and its owned Node descendant after %s on every platform", async (stopReason) => {
     const root = await repository();
     const marker = path.join(root, "alias started.json");
     const ticks = path.join(root, "alias ticks");
@@ -306,7 +346,7 @@ describe("repository Git discovery", () => {
     git(root, ["config", "alias.daynight-block", `!${JSON.stringify(process.execPath.replaceAll("\\", "/"))} ${JSON.stringify(block.replaceAll("\\", "/"))}`]);
     const controller = new AbortController();
     const op = operation({ signal: controller.signal, limits: { totalMs: 8000 } });
-    const pending = runRepositoryGit(root, ["daynight-block"], op).catch((error: unknown) => error);
+    const pending = runRepositoryGit(root, ["daynight-block"], op, stopReason === "per-command deadline" ? { timeoutMs: 1500 } : {}).catch((error: unknown) => error);
     let ownedPid: number | undefined;
     try {
       const markerDeadline = performance.now() + 4000;
@@ -321,12 +361,21 @@ describe("repository Git discovery", () => {
       }
       expect(ownedPid).toBeTypeOf("number");
       const cancelled = performance.now();
-      controller.abort(new Error("Cancel the owned Git alias"));
+      if (stopReason === "cancellation") controller.abort(new Error("Cancel the owned Git alias"));
       const error: unknown = await pending;
+      const assertPrimary = (failure: unknown): void => {
+        if (stopReason === "cancellation") expect(failure).toBe(op.signal.reason);
+        else {
+          expect(failure).toBeInstanceOf(RepositoryGitError);
+          expect((failure as Error).message).toContain("Repository Git command deadline exceeded");
+          expect(op.signal.aborted).toBe(false);
+          expect(() => op.check()).not.toThrow();
+        }
+      };
       if (process.platform === "win32") {
         expect(nativeTaskkill.outcomes).toHaveLength(1);
         const outcome = nativeTaskkill.outcomes[0]!;
-        if (outcome.returned) expect(error).toBe(op.signal.reason);
+        if (outcome.returned) assertPrimary(error);
         else {
           expect(outcome.error).toBeInstanceOf(Error);
           const nativeError = outcome.error as Error & { status?: number; signal?: NodeJS.Signals | null; code?: string };
@@ -338,9 +387,9 @@ describe("repository Git discovery", () => {
           expect(error).toBeInstanceOf(AggregateError);
           expect((error as AggregateError).errors).toEqual([nativeError]);
           expect((error as AggregateError).errors[0]).toBe(nativeError);
-          expect((error as AggregateError).cause).toBe(op.signal.reason);
+          assertPrimary((error as AggregateError).cause);
         }
-      } else expect(error).toBe(op.signal.reason);
+      } else assertPrimary(error);
       expect(performance.now() - cancelled).toBeLessThan(2500);
       const stopped = await readFile(ticks, "utf8").catch((error: unknown) => {
         if (error instanceof Error && "code" in error && error.code === "ENOENT") return "";

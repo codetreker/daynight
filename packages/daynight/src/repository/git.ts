@@ -14,10 +14,10 @@ const repositorySelectors = new Set([
   "GIT_IMPLICIT_WORK_TREE", "GIT_QUARANTINE_PATH",
 ]);
 
-const gitEnvironment = (): NodeJS.ProcessEnv => ({
-  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => {
+const gitEnvironment = (overrides: Readonly<Record<string, string | undefined>> = {}): NodeJS.ProcessEnv => ({
+  ...Object.fromEntries(Object.entries({ ...process.env, ...overrides }).filter(([name, value]) => {
     const key = name.toUpperCase();
-    return !repositorySelectors.has(key) && !key.startsWith("GIT_TRACE");
+    return value !== undefined && !repositorySelectors.has(key) && !key.startsWith("GIT_TRACE");
   })),
   GIT_OPTIONAL_LOCKS: "0",
   GIT_TERMINAL_PROMPT: "0",
@@ -52,6 +52,8 @@ export type RepositoryGitOptions = {
   readonly allowExitOne?: boolean;
   /** Inherited groups require an outer supervisor to terminate descendants after this operation exits. */
   readonly processGroup?: "own" | "inherit";
+  readonly environment?: Readonly<Record<string, string | undefined>>;
+  readonly timeoutMs?: number;
 };
 
 export const runRepositoryGit = async (
@@ -61,11 +63,13 @@ export const runRepositoryGit = async (
   options: RepositoryGitOptions = {},
 ): Promise<RepositoryGitResult> => {
   operation.check();
-  const timeoutMs = Math.max(1, Math.ceil(Math.min(maxGitMs, operation.remainingMs())));
+  const commandMs = options.timeoutMs === undefined ? maxGitMs : options.timeoutMs;
+  if (!Number.isSafeInteger(commandMs) || commandMs <= 0 || commandMs > 2_147_483_647) throw new RangeError("Git command timeout must be a positive supported integer.");
+  const timeoutMs = Math.max(1, Math.ceil(Math.min(commandMs, operation.remainingMs())));
   return new Promise((resolve, reject) => {
     // Index reads do not need an external fsmonitor; its inherited pipes can outlive Git.
     const child = spawn("git", ["--no-pager", "-c", "core.fsmonitor=false", ...args], {
-      cwd, env: gitEnvironment(), windowsHide: true, detached: process.platform !== "win32" && options.processGroup !== "inherit", stdio: ["ignore", "pipe", "pipe"],
+      cwd, env: gitEnvironment(options.environment), windowsHide: true, detached: process.platform !== "win32" && options.processGroup !== "inherit", stdio: ["ignore", "pipe", "pipe"],
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];

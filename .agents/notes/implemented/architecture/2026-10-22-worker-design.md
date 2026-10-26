@@ -52,8 +52,9 @@ worker_state/executions schema. The initial choice gave new resources an explici
 workspace owner and tracked external-action uncertainty. Stable workerId now
 lives in shared configuration; fixed per-user worker resources and the concrete
 projects/tasks schema provide that identity, exclusion and recovery ownership.
-The source primitives exist; foreground scheduling and resource adapters remain
-runtime implementation work.
+Identity, storage and the [owned Git workspaces](2026-10-26-worker-git-workspaces.md)
+are delivered as concrete primitives. Foreground scheduling and Herdr resource
+adapters remain runtime implementation work.
 
 The worker reads the latest Herdr status for execution observations. The agent
 validates delivery against task requirements, PR facts and acceptance evidence,
