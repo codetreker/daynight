@@ -522,7 +522,19 @@ The application implements `/`, `/projects/{projectId}`, `/account`,
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` reader, direct URL
 reload, browser back/forward and a generic not-found page. All resource reads use
 the current authenticated identity. A project without a saved section preference
-opens Overview, with six statistics from the complete snapshot. Its adjacent Task
+opens Overview, with six statistics and an overall progress list from the complete
+snapshot. Unfinished ordinary task-chain components each have one row with title,
+completed/total count and a floored integer percentage. The final standalone row
+counts completions within the rolling last seven days; its denominator adds all
+unfinished standalone tasks. Older and unknown completion times are excluded
+from that recent count. The row remains visible while standalone work is
+unfinished. Neither statistic cards nor the task lists change their existing
+full-history semantics. Clicking a progress row selects Task list and the matching
+category, scrolls and focuses the chain row or standalone list, and briefly
+highlights that destination. Explicit positioning wins over the saved category
+scroll for that activation; ordinary later switches retain their usual memory.
+The [progress decision](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)
+owns timing and navigation trade-offs. Its adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
 left of the selected content; narrow screens use horizontal tabs with matching
 keyboard direction. The outer choice is stored per project in browser

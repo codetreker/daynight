@@ -12,7 +12,7 @@ positions must also remain independent of scrolling through project statistics.
 ## Decision
 
 A project without a saved section preference opens Overview, which presents its
-six statistics. Task list holds the existing Standalone tasks and Task chains
+six statistics and the [overall progress list](2026-10-26-project-overview-progress.md). Task list holds the existing Standalone tasks and Task chains
 categories. Desktop section tabs are vertical beside the selected content;
 narrow layouts use horizontal tabs with matching keyboard direction. Empty
 projects retain both section destinations. The original section decision kept
@@ -80,7 +80,9 @@ the URL and existing record formats remain unchanged.
 ## Consequences
 
 Statistics and task browsing have clear destinations with one data owner. Outer
-switches do not add requests, caches, index construction or timers. A retained
+switches do not add requests, caches or index construction. The original section
+split introduced no display timers; the overall-progress extension owns a
+deadline timer only while its recent-completion window is visible. A retained
 hidden task subtree keeps its existing task-clock subscriptions; that is the
 deliberate runtime cost of preserving interaction state. Authentication changes and project unmount retain their existing owner cleanup.
 Snapshot invalidation clears private task children rather than retaining stale

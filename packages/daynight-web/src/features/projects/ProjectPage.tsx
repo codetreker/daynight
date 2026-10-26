@@ -5,6 +5,7 @@ import { useI18n } from "../../i18n/LocaleProvider";
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail/TaskDetailSession";
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
 import { ProjectOverview } from "./ProjectOverview";
+import type { OverviewTaskTarget } from "./overview-progress";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
 import { useCompletedChainVisibility, useProjectSection, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
@@ -18,7 +19,7 @@ const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
   navigate("/");
 };
 
-type ProjectNotice = { readonly kind: "selected-task-removed" };
+type ProjectNotice = { readonly kind: "selected-task-removed" | "overview-target-unavailable" };
 
 const focusVisible = (element: HTMLElement | null | undefined) => {
   if (element == null || !element.isConnected || element.closest('[hidden], [inert]') !== null) return false;
@@ -30,11 +31,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const graph = useTaskGraph(projectId);
   const sessions = useTaskDetailSessions();
   useEffect(() => sessions.subscribeProject(projectId, graph.refresh), [sessions, projectId, graph.refresh]);
-  const { messages: { workspace: { project: m, projects, app, preferences } }, format } = useI18n();
+  const { messages: { workspace: { project: m, projects, app, preferences, overview } }, format } = useI18n();
   const { section, onSectionChange, issue: sectionIssue } = useProjectSection(projectId);
   const [tasksMounted, setTasksMounted] = useState(false);
   const [detailSelection, setDetailSelection] = useState<{ readonly id: string; readonly revision: number } | null>(null);
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
+  const [overviewTarget, setOverviewTarget] = useState<OverviewTaskTarget | null>(null);
+  const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const originalTrigger = useRef<HTMLElement | null>(null);
   const openChain = useRef<string | null>(null);
@@ -136,7 +139,44 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     onSectionChange(next);
   }, [section, savePosition, snapshotReady, onSectionChange]);
 
-  const summary = snapshot?.graph.summary;
+  const clearTargetHighlight = useCallback(() => {
+    if (highlightedTarget.current === null) return;
+    clearTimeout(highlightedTarget.current.timer);
+    highlightedTarget.current.element.classList.remove("overview-progress-target");
+    highlightedTarget.current = null;
+  }, []);
+  useEffect(() => clearTargetHighlight, [clearTargetHighlight]);
+
+  const onOverviewNavigate = useCallback((target: OverviewTaskTarget) => {
+    setNotice(null);
+    setOverviewTarget(target);
+    selectView(target.kind === "chain" ? "chains" : "standalone");
+    selectSection("tasks");
+  }, [selectSection, selectView]);
+
+  useLayoutEffect(() => {
+    if (overviewTarget === null || section !== "tasks") return;
+    const view = overviewTarget.kind === "chain" ? "chains" : "standalone";
+    if (activeView !== view) return;
+    setOverviewTarget(null);
+    clearTargetHighlight();
+    const representative = overviewTarget.kind === "chain" ? snapshot?.index.componentByTask.get(overviewTarget.taskId) : undefined;
+    const target = overviewTarget.kind === "standalone" ? document.getElementById("project-task-panel-standalone")
+      : representative !== undefined && rootIds?.includes(representative)
+        ? document.getElementById(`task-root-${representative}`) : null;
+    if (target === null) {
+      setNotice({ kind: "overview-target-unavailable" });
+      if (!focusVisible(document.getElementById(`project-task-tab-${view}`))) focusVisible(document.getElementById("project-section-tab-tasks"));
+      return;
+    }
+    // Explicit overview navigation runs after the task view restores its saved position.
+    target.scrollIntoView({ block: overviewTarget.kind === "chain" ? "center" : "start", behavior: "instant" });
+    target.focus({ preventScroll: true });
+    savePosition();
+    target.classList.add("overview-progress-target");
+    highlightedTarget.current = { element: target, timer: setTimeout(clearTargetHighlight, 2_200) };
+  }, [overviewTarget, section, activeView, snapshot, rootIds, savePosition, clearTargetHighlight]);
+
   return (
     <>
       <div className="project-navigation">
@@ -178,10 +218,11 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
               <button className="button" type="button" onClick={graph.refresh}>{m.retryRefresh}</button>
             </section>
           )}
-          {snapshot !== null && notice !== null && <p className="snapshot-notice" role="status">{m.selectedTaskRemoved}</p>}
+          {snapshot !== null && notice !== null && <p className="snapshot-notice" role="status">{notice.kind === "selected-task-removed" ? m.selectedTaskRemoved : overview.targetUnavailable}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
-            {summary !== undefined && <ProjectOverview summary={summary} />}
+            {snapshot !== null && <ProjectOverview snapshot={snapshot} chainIds={categories!.chains} standaloneIds={categories!.standalone}
+              active={section === "overview"} onNavigate={onOverviewNavigate} />}
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>

@@ -367,7 +367,14 @@ Its data and runtime are independent of the client review module. The
 records the adopted scope and concurrency choices. The development and runtime
 CLI commands below apply to the client; server commands have their own module.
 A project without a saved section preference opens Overview, with six statistics
-from one complete snapshot. The adjacent Task list section contains the existing
+and an overall progress list from one complete snapshot. Each unfinished task
+chain has one progress row; standalone tasks share a final row whose completed
+count covers the rolling last seven days and whose total adds all unfinished
+standalone tasks. Completed standalone tasks with an unknown completion time do
+not enter that recent count. Rows navigate to the matching Task list category
+and focus its chain row or standalone list without opening a graph. The
+[progress requirements](docs/spec/daynight-web.md#项目整体进度) own the complete
+counting, timing and navigation rules. The adjacent Task list section contains the existing
 Standalone tasks and Task chains tabs. The section, inner task category,
 independent completed-item filters and task browse positions retain their
 per-project browser records across reloads and navigation. Task-chain rows open

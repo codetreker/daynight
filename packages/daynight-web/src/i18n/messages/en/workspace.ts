@@ -25,6 +25,12 @@ export const workspace: WorkspaceMessages = {
     refreshFailed: "Refresh failed", showingSnapshot: "Showing the last successfully loaded data.", retryRefresh: "Retry refresh", selectedTaskRemoved: "The selected task is no longer in the updated task graph. Its details have been closed.",
     statistics: "Project task statistics", totalTasks: "Total tasks", uniqueTasks: "Unique task IDs", completion: ({ percent }) => `${number(percent)}% complete`, waiting: "Waiting to start", advancing: "Work in progress", ready: "Ready", blocked: "Blocked", todoSubset: "A subset of to-do tasks", empty: "No tasks yet", emptyDetail: "Project tasks will appear here. Create a task, then refresh to see it.", chains: "Task dependency chains",
   },
+  overview: {
+    heading: "Overall progress", standalone: "Standalone tasks", standaloneScope: "All unfinished tasks + tasks completed in the last 7 days",
+    allCompleted: "All tasks are complete", allCompletedDetail: "There are no unfinished task chains or standalone tasks.",
+    targetUnavailable: "That task group is no longer visible. Choose a task from the task list.",
+    rowLabel: ({ title, done, total, percent }) => `${title}, ${number(done)} / ${number(total)} complete, ${number(percent)}%, view task list`,
+  },
   standalone: {
     list: "Standalone task list", showCompletedCount: ({ count }) => `Show completed standalone tasks (${number(count)})`,
     summary: ({ visible, total }) => `Newest first · ${number(visible)} / ${number(total)} standalone ${total === 1 ? "task" : "tasks"}`,
