@@ -15,6 +15,7 @@ const platformChoices = ["windows", "linux", "macos"] as const;
 const requiredPlatformOption: CommandOption = { names: ["--required-platform"], description: "Required execution platform", value: { name: "platform", kind: "text", choices: platformChoices } };
 const compatiblePlatformOption: CommandOption = { names: ["--compatible-platform"], description: "Include unrestricted tasks and tasks requiring this execution platform", value: { name: "platform", kind: "text", choices: platformChoices } };
 const versionOption: CommandOption = { names: ["--if-version"], description: "Use this expected task version without reading a newer version", value: { name: "version", kind: "text" } };
+const claimOption: CommandOption = { names: ["--claim-id"], description: "Complete this active worker claim; valid only with done", value: { name: "claim-id", kind: "text" } };
 const pullRequestOptions: readonly CommandOption[] = [
   { names: ["--pull-request-url"], description: "PR URL text; repeat for the complete list", value: { name: "text", kind: "text", allowEmpty: true }, repeatable: true },
   { names: ["--pull-request-title"], description: "PR title text; pair by position with each URL", value: { name: "text", kind: "text", allowEmpty: true }, repeatable: true },
@@ -66,8 +67,8 @@ export const taskDefinition: CommandDefinition = {
       name: "set-status",
       description: "Set a task to todo, in_progress, or done",
       arguments: [taskArgument, { name: "status", description: "Target task status", choices: ["todo", "in_progress", "done"] }],
-      options: [versionOption, projectOption, helpOption],
-      details: "Every direct prerequisite must be done when entering in_progress or done. Reopening done work is refused while a direct successor is in_progress or done.\nA current-version same-status request preserves all stored fields; a stale version still conflicts. Entering in_progress starts a new execution interval; returning to todo clears it; direct todo to done records an unknown duration.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried.",
+      options: [claimOption, versionOption, projectOption, helpOption],
+      details: "Every direct prerequisite must be done when entering in_progress or done. Reopening done work is refused while a direct successor is in_progress or done.\nA current-version same-status request preserves all stored fields; a stale version still conflicts. Entering in_progress starts a new execution interval; returning to todo clears it; direct todo to done records an unknown duration.\nUse --claim-id with done to complete an explicitly identified active worker claim as its current owner. The claim is never inferred from the task or environment. Without --claim-id, use ordinary task status setting.\nWithout --if-version, read the current version immediately before submitting. With --if-version, submit exactly that version without reading the task. Conflicts and mutations are not retried.",
     },
     {
       name: "delete",

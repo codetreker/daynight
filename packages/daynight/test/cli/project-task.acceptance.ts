@@ -10,7 +10,7 @@ import crossSpawn from "cross-spawn";
 import { parse } from "yaml";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
-import type { Project, Task } from "../../src/api/types.js";
+import type { Project, Task, WorkerClaim } from "../../src/api/types.js";
 import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
@@ -20,7 +20,9 @@ const unrelatedId = "a1b2c3d4-1111-4222-8333-123456789abe";
 const taskId = "b1b2c3d4-1111-4222-8333-123456789abc";
 const ordinaryId = "c1b2c3d4-1111-4222-8333-123456789abc";
 const externalId = "d1b2c3d4-1111-4222-8333-123456789abc";
+const claimId = "e1b2c3d4-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
+const workerClaim: WorkerClaim = { claimId, state: "active", userId: alternateId, workerId: unrelatedId, machine: { id: alternateId, name: "Worker machine" }, platform: "linux", agent: "codex", worktreeId: ordinaryId, phase: "executing", herdr: { session: "w", workspaceId: "original-workspace", paneId: "original-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
 const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time });
 const task = (projectId = id): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
@@ -57,7 +59,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
   let allowAgents = false;
   let requiredPlatform: Task["requiredPlatform"] = null;
   let dependencies: Pick<Task, "dependsOn" | "externalDependsOn"> = { dependsOn: [], externalDependsOn: [] };
-  let broken: "none" | "page" | "json" | "dependency" | "write" | "hold" | "conflict" = "none";
+  let broken: "none" | "page" | "json" | "dependency" | "write" | "hold" | "conflict" | "forbidden" = "none";
   let readyPage: { items: readonly Task[]; nextCursor: string | null } | undefined;
   let listResponseTask: Task | undefined;
   let received: (() => void) | undefined;
@@ -88,10 +90,19 @@ it("runs the actual installed launcher through native project/task discovery, pe
           if (broken === "write") { response.socket!.destroy(); return; }
           if (broken === "hold") { response.writeHead(201, { "Content-Type": "application/json" }); response.write('{"id":'); received?.(); return; }
           if (broken === "conflict") { fault(response, "version_conflict", "native-version-conflict", 409); return; }
+          if (broken === "forbidden") { fault(response, "forbidden", "native-worker-owner-refusal", 403); return; }
           if (broken === "dependency") { fault(response, "dependency_unsatisfied", "native-dependency-refusal", 409, { taskIds: [taskId] }); return; }
           if (parts.length === 8) {
-            const status = (body as { status: Task["status"] }).status;
-            send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, status, ready: status === "todo", version: (body as { version: bigint }).version + 1n }); return;
+            const input = body as { status: Task["status"]; version: bigint; claimId?: string };
+            const status = input.status;
+            if (input.claimId !== undefined) {
+              const worker = properties.worker;
+              if (worker === null || worker.claimId !== input.claimId) { fault(response, "claim_conflict", "native-worker-claim-refusal", 409); return; }
+              const sameState = worker.state === "completed";
+              properties = { ...properties, worker: { ...worker, state: "completed" } };
+              send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, status: "done", ready: false, startedAt: time, completedAt: time, version: input.version + (sameState ? 0n : 1n) }); return;
+            }
+            send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, status, ready: status === "todo", version: input.version + 1n }); return;
           }
           if (request.method === "PATCH" && typeof body === "object" && body !== null && "allowAgents" in body && typeof body.allowAgents === "boolean") allowAgents = body.allowAgents;
           if (request.method === "POST") requiredPlatform = null;
@@ -103,7 +114,10 @@ it("runs the actual installed launcher through native project/task discovery, pe
           send(response, { ...task(projectId), ...dependencies, description, requiredPlatform, ...(request.method === "PATCH" ? { allowAgents } : {}), ...(body as object), ...((body as { properties?: unknown }).properties === undefined ? {} : { properties: { ...(body as { properties: object }).properties, worker: null } }), ...(request.method === "POST" ? { status: "todo", ready: true } : {}), version: request.method === "PATCH" ? 9_007_199_254_740_994n : 1n }, request.method === "POST" ? 201 : 200); return;
         }
         if (parts[5] === "task-graph") { send(response, { observedAt: time, project: project(projectId), summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 }, tasks: [] }); return; }
-        if (parts.length === 7) { send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, version: 9_007_199_254_740_993n }); return; }
+        if (parts.length === 7) {
+          const status = properties.worker?.state === "active" ? "in_progress" : properties.worker?.state === "completed" ? "done" : "todo";
+          send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, status, ready: status === "todo", ...(properties.worker === null ? {} : { startedAt: time, completedAt: status === "done" ? time : null }), version: 9_007_199_254_740_993n }); return;
+        }
         if (readyPage !== undefined && url.searchParams.get("ready") === "true") { send(response, readyPage); return; }
         if (broken === "page" && url.searchParams.has("cursor")) { fault(response, "internal_error", "native-later-page", 500); return; }
         send(response, { items: [listResponseTask ?? { ...task(projectId), ...dependencies, properties, allowAgents, requiredPlatform }], nextCursor: broken === "page" ? "native later page" : null });
@@ -157,6 +171,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
     await mkdir(outside); await mkdir(home);
     await writeFile(path.join(receipt.root, "isolation.mjs"), `import {registerHooks} from 'node:module';registerHooks({resolve(specifier,context,nextResolve){const result=nextResolve(specifier,context);if(['/repository/git.js','/repository/binding.js','/repository/context.js','/commands/review/runtime.js','better-sqlite3','node:child_process'].some(value=>specifier.includes(value)||result.url.includes(value)))throw new Error('Unexpected business import: '+specifier);return result;}});`);
     expect((await invoke(["task", "--help"], outside, 0, true)).stdout).toContain("Usage: daynight task");
+    expect((await invoke(["task", "set-status", "--help"], outside, 0, true)).stdout).toContain("--claim-id <claim-id>");
     await invoke(["task", "set-status", taskId, "done", "--if-version", "9223372036854775808"], outside, 2, true);
     for (const args of [
       ["create", "--title", "Title", "--pull-request-url="],
@@ -166,6 +181,9 @@ it("runs the actual installed launcher through native project/task discovery, pe
       ["update", taskId, "--status", "done"],
       ["create", "--title", "Title", "--allow-agents", "true"],
       ["update", taskId, "--allow-agents", "yes"],
+      ["set-status", taskId, "todo", "--claim-id", claimId],
+      ["set-status", taskId, "done", "--claim-id=invalid"],
+      ["set-status", taskId, "done", "--claim-id", claimId, `--claim-id=${claimId}`],
       ["ready", "--allow-agents=TRUE"],
       ["create", "--title", "Title", "--required-platform", "darwin"],
       ["update", taskId, "--required-platform", "linux", "--clear-required-platform"],
@@ -200,6 +218,38 @@ it("runs the actual installed launcher through native project/task discovery, pe
       }
     }
     scenarios.push("installed-set-status-observed-and-explicit-lossless-versions");
+    const workerProperties = { worker: workerClaim, pullRequests: [{ url: "opaque\0delivery", title: "Worker evidence" }] };
+    for (const explicitVersion of [false, true]) {
+      properties = workerProperties;
+      const before = requests.length;
+      const result = await invoke(["task", "set-status", taskId.toUpperCase(), "done", "--claim-id", claimId.toUpperCase(), ...(explicitVersion ? ["--if-version", "9007199254740993"] : []), ...explicit], outside, 0, true);
+      expect(result.stdout).toContain("Status: done");
+      expect(result.stdout).toContain("Version: 9007199254740994");
+      expect(requests.slice(before).map(({ method, path: pathname }) => `${method} ${pathname}`)).toEqual([`GET /api/v1/projects/${id}`, ...(explicitVersion ? [] : [`GET /api/v1/projects/${id}/tasks/${taskId}`]), `PUT /api/v1/projects/${id}/tasks/${taskId}/status`]);
+      expect(requests.at(-1)!.body).toEqual({ version: 9_007_199_254_740_993n, claimId, status: "done" });
+      expect(parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout)).toMatchObject({ status: "done", properties: { ...workerProperties, worker: { ...workerClaim, state: "completed" } } });
+    }
+    const noopBefore = requests.length;
+    expect((await invoke(["task", "set-status", taskId, "done", `--claim-id=${claimId}`, "--if-version", "9223372036854775807", ...explicit], outside, 0, true)).stdout).toContain("Version: 9223372036854775807");
+    expect(requests.slice(noopBefore).map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, claimId, status: "done" });
+    properties = workerProperties;
+    for (const refusal of [
+      { mode: "none", inputClaimId: ordinaryId, code: "claim_conflict" },
+      { mode: "forbidden", inputClaimId: claimId, code: "forbidden" },
+      { mode: "conflict", inputClaimId: claimId, code: "version_conflict" },
+      { mode: "write", inputClaimId: claimId, code: "unconfirmed" },
+    ] as const) {
+      broken = refusal.mode;
+      const before = requests.length;
+      const result = await invoke(["task", "set-status", taskId, "done", "--claim-id", refusal.inputClaimId, "--if-version", "9007199254740993", ...explicit], outside, 1, true);
+      expect(result.stderr).toContain("worker.complete");
+      expect(result.stderr).toContain(refusal.code);
+      expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    }
+    broken = "none";
+    properties = { worker: null, pullRequests: [] };
+    scenarios.push("installed-explicit-worker-claim-completion-history-noop-refusals-and-unknown-write");
     for (const permission of [true, false]) {
       const before = requests.length;
       const changed = await invoke(["task", "update", taskId, "--allow-agents", String(permission), "--if-version", "9223372036854775807", ...explicit], outside, 0, true);

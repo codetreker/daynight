@@ -60,6 +60,8 @@ export const runTaskCommand = async (
   const help = `${command.path.join(" ")} --help`;
   const name = command.command.name;
   const setsStatus = name === "set-status";
+  const rawClaimId = command.options.get("--claim-id") as string | undefined;
+  if (rawClaimId !== undefined && command.values[1] !== "done") throw new UsageError("--claim-id is only valid when setting done.", help);
   const targetsTask = name === "show" || name === "update" || setsStatus || name === "delete";
   const title = command.options.get("--title") as string | undefined;
   const description = command.options.get("--description") as string | undefined;
@@ -100,6 +102,7 @@ export const runTaskCommand = async (
   const rawProjectId = command.options.get("--project") as string | undefined;
   let projectId: string | undefined;
   let taskId: string | undefined;
+  let claimId: string | undefined;
   if (rawProjectId !== undefined || targetsTask) {
     const { canonicalId } = await import("../../api/parse.js");
     if (rawProjectId !== undefined) {
@@ -109,6 +112,11 @@ export const runTaskCommand = async (
     if (targetsTask) {
       taskId = canonicalId(command.values[0]!) ?? undefined;
       if (taskId === undefined) throw new UsageError("task-id must be a hyphenated UUID.", help);
+    }
+    if (rawClaimId !== undefined) {
+      const parsed = canonicalId(rawClaimId);
+      if (parsed === null) throw new UsageError("claim-id must be a hyphenated UUID.", help);
+      claimId = parsed;
     }
   }
   const versionArgument = command.options.get("--if-version") as string | undefined;
@@ -166,7 +174,9 @@ export const runTaskCommand = async (
       return `Task deleted. Stored data and attachments are retained.\nID: ${taskId!}\nProject: ${project.id}\n`;
     }
     if (setsStatus) {
-      const task = await api.setTaskStatus(project.id, taskId!, { version, status: command.values[1] as Task["status"] });
+      const task = claimId === undefined
+        ? await api.setTaskStatus(project.id, taskId!, { version, status: command.values[1] as Task["status"] })
+        : await api.completeWorkerTask(project.id, taskId!, { version, claimId });
       operation.check();
       return `Task status set.\n${renderTask(task)}`;
     }

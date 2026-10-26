@@ -87,6 +87,12 @@ completing `run-task`, and handing off a task never activate it.
 
 ## Shared constraints
 
+- A controller-supplied worker-managed assignment is bounded to its explicit
+  project, task, claim, worktree, and frozen execution configuration. Read
+  [run-task's worker-managed rules](references/run-task.md#worker-managed-assignment)
+  before acting. This assignment takes precedence over successor selection and
+  Goal transitions, including an active outer autopilot. A task's worker property
+  alone does not establish this context or grant execution authority.
 - Create tasks only with explicit permission for their scope. Implementation
   requests, tracking needs, inferred mode selection, and autopilot activation
   alone do not grant creation permission. An explicit user or applicable

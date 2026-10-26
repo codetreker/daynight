@@ -71,8 +71,9 @@ describe("native zsh completion", () => {
     expect(script).not.toContain("_files");
   });
 
-  it("completes set-status with a task ID, status choices, and version/project text options", () => {
+  it("completes set-status with task/status arguments and claim/version/project text options", () => {
     const script = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "set-status")!);
+    expect(script).toContain("(--claim-id)--claim-id=[Complete this active worker claim; valid only with done]:claim-id:->text_value");
     expect(script).toContain("(--if-version)--if-version=[Use this expected task version without reading a newer version]:version:->text_value");
     expect(script).toContain("(--project)--project=[Use this project UUID for this invocation]:project-id:->text_value");
     expect(script).toContain("(- *)--help[Show this help]");

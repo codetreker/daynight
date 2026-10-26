@@ -80,6 +80,42 @@ type InstructionScenario = {
 
 export const instructionScenarios: readonly InstructionScenario[] = [
   {
+    id: "worker-managed-context",
+    input: "A controller supplies a claimed task, worktree and frozen configuration, or supplies an incomplete or mismatched assignment.",
+    obligation: "Verify the explicit assignment against the latest claim and actual workspace, without inferring authority or falling back to an ordinary start.",
+    propositions: [
+      { resource: "SKILL.md", section: "## Shared constraints", requires: [/A controller-supplied worker-managed assignment is bounded to its explicit project, task, claim, worktree, and frozen execution configuration/, /A task's worker property alone does not establish this context or grant execution authority/] },
+      { resource: "references/run-task.md", section: "## Worker-managed assignment", requires: [/`projectId`, `taskId`, `claimId`, its worktree path and branch, and frozen execution configuration/, /context is missing or mismatched, return waiting without task or business writes/, /Do not fall back to ordinary task selection, claiming, or starting/, /Read the latest complete task using the supplied project and task IDs/, /`properties.worker.state=active` with the supplied `claimId`/, /Verify the actual working directory and Git branch match the supplied worktree/, /supplied frozen execution configuration without replacing it from current defaults/, /never substitute a claim read from the task/] },
+    ],
+  },
+  {
+    id: "worker-managed-existing-execution",
+    input: "An already-active controller assignment resumes with its original worktree, or a matching completed claim is encountered.",
+    obligation: "Resume only its existing execution and retain controller ownership of system resources.",
+    propositions: [
+      { resource: "references/run-task.md", section: "## Worker-managed assignment", requires: [/report the existing completion and return without reexecuting it/, /Do not claim it, set it to `in_progress`, select candidates, or rerun automatic candidate qualification/, /Before resuming interrupted work or making task writes, refresh the task and check the same active claim/, /Do not create, switch, or remove the system-managed worktree or branch/, /Avoid merge options such as `gh pr merge --delete-branch`/, /The worker owns resource cleanup after execution/, /do not delete its worktree or close its workspace/] },
+    ],
+  },
+  {
+    id: "worker-managed-claim-completion",
+    input: "The assigned claim has met task acceptance and all delivery gates, or its final write is refused or loses its response.",
+    obligation: "Make the explicit claim-bound final mutation with the observed version and reconcile only that claim without fallback or replay.",
+    propositions: [
+      { resource: "references/run-task.md", section: "## Worker-managed assignment", requires: [/normal task acceptance, evidence, delivery, PR, and human-confirmation gates below still apply/, /reread the complete task, verify the same active claim/, /daynight task set-status <task-id> done --project <project-id> --claim-id <claim-id> --if-version <observed-version>/, /This is the final task mutation/, /Confirm `done`, `properties.worker.state=completed`, and the original claim ID/, /never falls back to ordinary completion or automatic replay/, /reconcile only the original claim/, /An unreadable result remains unconfirmed/, /an observed claim change stops further business writes/] },
+      { resource: "references/handbook.md", section: "**Task status.**", requires: [/task set-status <task-id> done --claim-id <claim-id> --if-version <version>/, /valid only with `done`/, /never infers it from task data or the environment/, /Omit `--claim-id` for ordinary status setting/, /refusal never causes fallback between these operations/, /checks the exact version before a same-status no-op/] },
+    ],
+  },
+  {
+    id: "worker-managed-bounded-wait",
+    input: "An assigned task reaches completion, a human gate, an unmerged PR, or unmet acceptance while outer autopilot is active.",
+    obligation: "Preserve the assigned task through waiting and return without selecting another task or advancing Goal stages.",
+    propositions: [
+      { resource: "SKILL.md", section: "## Shared constraints", requires: [/This assignment takes precedence over successor selection and Goal transitions, including an active outer autopilot/] },
+      { resource: "references/run-task.md", section: "## Worker-managed assignment", requires: [/A missing input or unmet prerequisite keeps this assignment waiting in `in_progress`/, /Return after this task completes or requires external intervention/, /Do not choose a successor or advance a Goal stage, even when an outer autopilot is active/, /Preserve the assignment when waiting for a human gate, an unmerged required PR, or unmet acceptance/] },
+      { resource: "references/autopilot.md", section: "## Worker-managed assignment", requires: [/before this mode's restoration or selection/, /Execute only that supplied task and claim, then return on completion or external wait/, /Do not select a successor or advance a Goal stage/] },
+    ],
+  },
+  {
     id: "automatic-selection-permission",
     input: "Automatic selection is active; a user may also explicitly select a task without automatic permission.",
     obligation: "Filter automatic candidates before pagination, never self-enable permission, and preserve explicit manual execution.",

@@ -11,6 +11,15 @@ chain, read [the Goal protocol](goal.md) for stage requirements, breakdown, and
 whole-Goal acceptance. Delegate execution and completion to
 [run-task](run-task.md); do not maintain a separate delivery lifecycle here.
 
+## Worker-managed assignment
+
+A controller-supplied worker-managed assignment uses
+[run-task's bounded assignment rules](run-task.md#worker-managed-assignment)
+before this mode's restoration or selection. Execute only that supplied task
+and claim, then return on completion or external wait. Do not select a successor
+or advance a Goal stage, even when this session or an outer controller has
+autopilot active.
+
 ## Restore the current target
 
 Resume this session's current task before selecting new work. Read its ID from

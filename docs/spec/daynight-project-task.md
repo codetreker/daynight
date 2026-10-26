@@ -247,8 +247,7 @@ limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条
 拒绝，stdout 保持为空。正常的候选选择使用此有界操作，完整依赖关系可按需使用
 `graph` 查看。
 
-`set-status <task-id> <status>` 接受三状态目标、可选 project 和精确 `--if-version`，
-通过专用 PUT status 提交版本与目标。九种状态对均支持；当前版本同状态 +0，实际改变 +1，
+`set-status <task-id> <status>` 接受三状态目标、可选 project、精确 `--if-version` 和 done 专用 `--claim-id <claim-id>`。显式 claim UUID 在配置/网络前规范化，其他状态目标拒绝；携带时调用已有 claim-bound 完成接口，省略仍为普通 setter，不推断 claim。通过专用 PUT status 提交版本、目标及明确提供的 claimId。九种状态对均支持；当前版本同状态 +0，实际改变 +1，
 过期同状态先冲突。实际进入 in_progress/done 检查全部直接前置；done 退回要求没有进行中或已完成直接后继。
 拒绝返回原错误及稳定排序的阻塞 ID，不级联。成员与管理员均可设置，状态不授予执行或交付权限。
 显式版本不预读；省略时提交前只读一次。基于已审阅资料的决策必须带其版本，不能用临时 GET 替代。

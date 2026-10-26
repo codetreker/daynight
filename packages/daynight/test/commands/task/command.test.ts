@@ -11,6 +11,7 @@ const projectId = "abcdefab-1111-4222-8333-123456789abc";
 const taskId = "abcdefab-2222-4222-8333-123456789abc";
 const dependencyId = "abcdefab-3333-4222-8333-123456789abc";
 const otherDependencyId = "abcdefab-4444-4222-8333-123456789abc";
+const claimId = "abcdefab-5555-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
@@ -29,7 +30,7 @@ const fixture = (operation = createOperation()) => {
     listTaskPage: async () => { throw new Error("Unused worker API method"); },
     claimWorkerTask: async () => { throw new Error("Unused worker API method"); },
     updateWorkerClaim: async () => { throw new Error("Unused worker API method"); },
-    completeWorkerTask: async () => { throw new Error("Unused worker API method"); },
+    completeWorkerTask: vi.fn<ApiClient["completeWorkerTask"]>().mockResolvedValue(task),
     releaseWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     transferWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
@@ -65,6 +66,10 @@ describe("task parameter boundaries", () => {
       if (args[0] === "update") expect(output).toContain("--clear-pull-requests");
       else expect(output).not.toContain("--clear-pull-requests");
     }
+    if (args[0] === "set-status") {
+      expect(f.context.stdout.mock.calls[0]![0]).toContain("[--claim-id <claim-id>]");
+      expect(f.context.stdout.mock.calls[0]![0]).toContain("The claim is never inferred from the task or environment.");
+    }
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
     expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
     expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
@@ -80,6 +85,11 @@ describe("task parameter boundaries", () => {
     ["update", taskId, "--depends-on", dependencyId, "--external-depends-on", dependencyId.toUpperCase()],
     ["update", taskId, "--external-depends-on", dependencyId, "--clear-dependencies"],
     ["list", "--status", "blocked"], ["list", "--status", "proposed"], ["set-status", taskId, "proposed"], ["set-status", taskId], ["set-status", "invalid", "todo"],
+    ...["todo", "in_progress"].map((status) => ["set-status", taskId, status, "--claim-id", claimId]),
+    ...["", "invalid", ` ${claimId}`, claimId.replaceAll("-", "")].map((value) => ["set-status", taskId, "done", `--claim-id=${value}`]),
+    ["set-status", taskId, "done", "--claim-id"],
+    ["set-status", taskId, "done", "--claim-id", claimId, `--claim-id=${claimId}`],
+    ["show", taskId, "--claim-id", claimId], ["update", taskId, "--claim-id", claimId],
     ...["0", "1.5", "9223372036854775808"].map((version) => ["set-status", taskId, "todo", "--if-version", version]), ["update", taskId, "--status", "proposed"], ["list", "--project", "invalid"], ["show", "invalid"], ["show", taskId, "--project", "invalid"],
     ["delete"], ["delete", "invalid"], ["delete", taskId, "--json"],
     ["delete", taskId, "--remove-depends=true"], ["delete", taskId, "--remove-depends=false"],
@@ -169,6 +179,59 @@ describe("task parameter boundaries", () => {
     expect(f.api.setTaskStatus).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, status });
     expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
     expect(f.context.workingDirectory).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("completes an explicit canonical worker claim using one observed version read", async () => {
+    const f = fixture();
+    const result = { ...task, status: "done", ready: false, description: "Confirmed worker completion", version: task.version + 1n } as const;
+    f.api.completeWorkerTask.mockResolvedValue(result);
+
+    await runTaskCommand(["set-status", taskId.toUpperCase(), "done", "--claim-id", claimId.toUpperCase()], f.context, f.dependencies);
+
+    expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.api.completeWorkerTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: task.version, claimId });
+    expect(f.api.getTask.mock.invocationCallOrder[0]!).toBeLessThan(f.api.completeWorkerTask.mock.invocationCallOrder[0]!);
+    expect(f.api.setTaskStatus).not.toHaveBeenCalled();
+    expect(f.api.updateTask).not.toHaveBeenCalled();
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(`Task status set.\n${renderTask(result)}`);
+  });
+
+  it("submits the exact explicit worker completion version without reading or replaying a refusal", async () => {
+    const f = fixture();
+    const failure = new Error("Claim is no longer current");
+    f.api.completeWorkerTask.mockRejectedValue(failure);
+
+    await expect(runTaskCommand(["set-status", taskId, "done", `--claim-id=${claimId}`, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
+
+    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.completeWorkerTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: 9_223_372_036_854_775_807n, claimId });
+    expect(f.api.setTaskStatus).not.toHaveBeenCalled();
+    expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("does not infer worker completion when the observed task contains a claim", async () => {
+    const f = fixture();
+    f.api.getTask.mockResolvedValue({
+      ...task, status: "in_progress", ready: false, startedAt: time,
+      properties: { ...task.properties, worker: { claimId, state: "active", userId: projectId, workerId: dependencyId, machine: { id: otherDependencyId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId: taskId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time } },
+    });
+
+    await runTaskCommand(["set-status", taskId, "done", "--project", projectId], f.context, f.dependencies);
+
+    expect(f.api.setTaskStatus).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { version: task.version, status: "done" });
+    expect(f.api.completeWorkerTask).not.toHaveBeenCalled();
+  });
+
+  it("stops worker completion before dispatch when cancelled after its version read", async () => {
+    const cancellation = new AbortController();
+    const f = fixture(createOperation({ signal: cancellation.signal }));
+    f.api.getTask.mockImplementation(async () => { cancellation.abort(); return task; });
+
+    await expect(runTaskCommand(["set-status", taskId, "done", "--claim-id", claimId, "--project", projectId], f.context, f.dependencies)).rejects.toThrow("Operation cancelled");
+
+    expect(f.api.completeWorkerTask).not.toHaveBeenCalled();
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 

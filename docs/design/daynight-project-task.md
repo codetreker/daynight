@@ -340,7 +340,7 @@ flowchart TD
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
-| `task set-status <id> <status>` | 可选先 GET task，再 PUT 同一 task 的 `/status`，body 严格包含 version/status |
+| `task set-status <id> <status> [--claim-id <claim-id>]` | 可选先 GET task，再 PUT 同一 task 的 `/status`；普通 body 为 version/status，显式 done claim 完成为 version/status/claimId |
 | `task delete <id> [--remove-depends]` | 可选先 GET task，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |
 | `task graph` | `GET /api/v1/projects/{projectId}/task-graph`，不附加 query |
 | `task attachment put <id> <file>` | `PUT /api/v1/projects/{projectId}/tasks/{id}/attachments/files/{path...}`，流式请求体，接受 200/201 元数据 |
@@ -418,7 +418,7 @@ compileDependencies 只在关系选项出现时加载 UUID 校验；普通 N 与
 最新值替代。CLI 不重放 PATCH，不将旧版本冲突改成成功；语义无变化的响应也直接
 按服务返回渲染。生命周期操作复用相同 project 解析、Operation、int64 序列化和
 完整 mutation 渲染器；显式版本直接 PUT status，省略时仅 GET 一次，无冲突重试。当前版本同状态 +0，实际改变 +1。
-显式 project UUID、show/update/set-status/delete 的 task UUID、标题、描述、
+显式 claim UUID 仅允许 set-status done，在配置、Git 和网络前校验/规范化；带 claim 调用现有 completeWorkerTask，否则普通 setter，不推断或失败回退。显式 project UUID、show/update/set-status/delete 的 task UUID、标题、描述、
 版本及修改字段组合在配置、Git 和网络前验证；依赖选项存在时才懒加载 canonicalId，并在本地正规化、排序及拒绝非法/重复 UUID。显式 `--project` 直接 GET project，不读取工作目录或
 加载仓库模块；自动分支将 `serverUrl`、同一 `Operation`、API 和工作目录交给
 `resolveProject`。解析返回后才发送 task 请求，因此本地准备失败没有 task mutation。

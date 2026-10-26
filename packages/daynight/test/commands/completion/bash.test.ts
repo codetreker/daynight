@@ -69,12 +69,12 @@ describe("Bash completion rendering", () => {
     expect(script).not.toContain("'--json'");
   });
 
-  it("completes set-status with a task ID, status choices, and version/project text options", () => {
+  it("completes set-status with task/status arguments and claim/version/project text options", () => {
     const script = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "set-status")!);
-    expect(script).toContain("dn_options=('--if-version' '--project' '-h' '--help')");
-    expect(script).toContain("dn_option_values=('text' 'text' '' '')");
-    expect(script).toContain("dn_option_actions=('' '' 'help' 'help')");
-    expect(script).toContain("dn_option_repeats=('0' '0' '0' '0')");
+    expect(script).toContain("dn_options=('--claim-id' '--if-version' '--project' '-h' '--help')");
+    expect(script).toContain("dn_option_values=('text' 'text' 'text' '' '')");
+    expect(script).toContain("dn_option_actions=('' '' '' 'help' 'help')");
+    expect(script).toContain("dn_option_repeats=('0' '0' '0' '0' '0')");
     expect(script).toContain("dn_argument_count=2");
     expect(script).toContain("dn_choices=('todo' 'in_progress' 'done')");
     expect(script).not.toContain("'--status'");

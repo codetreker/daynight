@@ -6,7 +6,7 @@
 
 Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓库中可由 Agent 执行的 ready task，使用专用 Herdr 服务运行 Copilot 或 Codex，持续完成任务交付。每个未完成 task 保留自己的 worktree，进程或机器重启后继续原工作。
 
-服务端拥有任务资格、身份权限及唯一 claim；worker 拥有调度、执行资源、恢复与最终完成核验；agent 完成任务要求的交付循环；Herdr 拥有 agent 终端和会话。认证与三状态设置是独立前置，不由 worker 再实现一套。
+服务端拥有任务资格、身份权限及唯一 claim；worker 拥有调度、执行资源、恢复和按自有 claim 清单对账清理；agent 完成任务要求的交付、验收并最后提交 claim-bound done；Herdr 拥有 agent 终端和会话。认证与三状态设置是独立前置，不由 worker 再实现一套。
 
 ## 必须满足的行为
 
@@ -93,9 +93,9 @@ AND no active claim
 - Ctrl+C 停止新领取、当前 agent 与专用 Herdr，保存可恢复状态并保留未完成 claim/worktree。重启继续原任务。
 - 异常退出或基础设施故障在原 worktree/会话上按配置上限恢复；计数、原因及暂停状态持久化，重启不清零。超限保留资源与名额，等待人工处理或明确恢复操作。
 
-### W-10：完成核验与清理
+### W-10：Agent 完成与资源清理
 
-- Agent 交付循环结束后，worker 独立核对当前 claim、task 与附件可读性、PR 仓库/提交/合并及必要检查、worktree 成果整合和验收证据引用，再通过服务端 PUT status 的 done 目标携带当前 claimId 结束当前 claim。开发任务须具备 PR、检查/审查、合并及合并后验收证据。
+- 明确 worker-managed 上下文传入 project/task/claim、worktree/branch 和冻结配置；agent 复用已认领执行，完成全部任务交付、验收与证据后，最后使用 CLI set-status done 的显式 --claim-id 与观察版本提交既有 PUT status。开发任务仍满足必要 PR、检查/审查、授权合并和验收。worker 不独立解释业务验收或再次提交 done，只按成功完整自有 claim 清单对账。
 - Agent 负责执行并记录任务验收；其验收文字是执行方声明，不是任意自然语言条件的独立证明。证据缺失、相互冲突或任务明确要求人工验收时保持 task 未完成，在原会话请求处理；不要求通用 Markdown 验收解析器或形式化证明。
 - 完成后停止本 task 执行资源并删除 worktree，保留 SQLite 执行记录、PR/交付引用及 claim/session 标识。完成后修改自动执行许可或平台不能改写历史归属和实际平台。
 - 删除失败记录具体错误和待清理状态，重启后只继续清理，不能重新执行已完成任务。清理不能影响其他任务或人工 Herdr。
