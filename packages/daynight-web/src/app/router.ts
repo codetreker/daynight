@@ -11,6 +11,12 @@ export type Route =
   | ({ readonly kind: "attachment"; readonly projectId: string; readonly taskId: string; readonly path: string } & TaskDetailNavigation)
   | { readonly kind: "notFound" };
 
+export type ProtectedRoute = Route
+  | { readonly kind: "account" | "invitations" }
+  | { readonly kind: "device"; readonly userCode: string | null }
+  | { readonly kind: "members" | "settings"; readonly projectId: string };
+export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly returnPath: string | null };
+
 const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | null => {
   const values = new URLSearchParams(search).getAll("tab");
   if (values.length === 0) return defaultTab;
@@ -18,7 +24,7 @@ const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | n
 };
 
 export const parseRoute = (pathname: string, search = ""): Route => {
-  if (pathname === "/") return { kind: "projects" };
+  if (pathname === "/projects") return { kind: "projects" };
   const task = /^\/projects\/([^/]+)\/tasks\/([^/]+)(?:\/attachments\/(.+))?$/.exec(pathname);
   if (task !== null) {
     try {
@@ -48,6 +54,55 @@ export const parseRoute = (pathname: string, search = ""): Route => {
   return projectId === null ? { kind: "notFound" } : { kind: "project", projectId };
 };
 
+const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
+  if (pathname === "/account") return { kind: "account" };
+  if (pathname === "/invitations") return { kind: "invitations" };
+  if (pathname === "/device") {
+    const codes = new URLSearchParams(search).getAll("user_code");
+    return { kind: "device", userCode: codes.length === 0 ? null : codes.length === 1 ? codes[0]! : "" };
+  }
+  const management = /^(\/projects\/[^/]+)\/(members|settings)$/.exec(pathname);
+  if (management !== null) {
+    const project = parseRoute(management[1]!);
+    return project.kind === "project" ? { kind: management[2] as "members" | "settings", projectId: project.projectId } : { kind: "notFound" };
+  }
+  return parseRoute(pathname, search);
+};
+
+export const isLoginReturnPath = (value: string): boolean => {
+  if (!value.startsWith("/") || value.startsWith("//") || value.includes("#") || /[\\\u0000-\u001f\u007f]/.test(value)) return false;
+  try {
+    if (/[\\\u0000-\u001f\u007f]/.test(decodeURIComponent(value))) return false;
+    const target = new URL(value, "https://daynight.invalid");
+    if (target.origin !== "https://daynight.invalid") return false;
+    return target.pathname === "/" || target.pathname === "/setup" || parseProtectedRoute(target.pathname, target.search).kind !== "notFound";
+  } catch {
+    return false;
+  }
+};
+
+export const parseLoginReturnPath = (search: string): string | null => {
+  const values = new URLSearchParams(search).getAll("returnPath");
+  if (values.length === 0) return "/projects";
+  return values.length === 1 && isLoginReturnPath(values[0]!) ? values[0]! : null;
+};
+
+export const parseAuthRoute = (pathname: string, search = ""): AuthRoute => pathname === "/login"
+  ? { kind: "login", returnPath: parseLoginReturnPath(search) }
+  : parseProtectedRoute(pathname, search);
+
+export const invitationLocation = (pathname: string, search: string): boolean => {
+  if (pathname === "/invitations") return true;
+  if (pathname !== "/login") return false;
+  const target = parseLoginReturnPath(search);
+  return target !== null && new URL(target, "https://daynight.invalid").pathname === "/invitations";
+};
+
+export const loginUrl = (returnPath: string): string => {
+  if (!isLoginReturnPath(returnPath)) throw new Error("The login destination is not a supported same-origin page.");
+  return `/login?${new URLSearchParams({ returnPath })}`;
+};
+
 export const taskDetailUrl = (projectId: string, taskId: string, navigation: TaskDetailNavigation): string => {
   if (canonicalId(projectId) === null || canonicalId(taskId) === null) throw new ApiError("protocol");
   const base = navigation.path === null
@@ -59,6 +114,11 @@ export const taskDetailUrl = (projectId: string, taskId: string, navigation: Tas
 
 export const navigate = (to: string): void => {
   window.history.pushState(null, "", to);
+  window.dispatchEvent(new PopStateEvent("popstate"));
+};
+
+export const replaceRoute = (to: string): void => {
+  window.history.replaceState(null, "", to);
   window.dispatchEvent(new PopStateEvent("popstate"));
 };
 

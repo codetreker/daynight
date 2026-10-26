@@ -93,11 +93,15 @@ const loginReturn = async (browser: Browser, origin: string, target: string, tit
   });
   try {
     await session.send('Fetch.enable', { patterns: [{ urlPattern: 'https://github.com/login/oauth/authorize*', requestStage: 'Request' }] });
-    const failedReturn = new URL(target, origin);
+    const failedReturn = new URL('/login', origin);
     failedReturn.searchParams.set('authError', 'login_failed');
+    failedReturn.searchParams.set('returnPath', target);
     await page.goto(failedReturn.href);
     await expect(page.getByRole('heading', { name: '登录你的工作空间', exact: true })).toBeVisible();
-    await expect(page).toHaveURL(new URL(target, origin).href);
+    await expect.poll(() => {
+      const url = new URL(page.url());
+      return { pathname: url.pathname, returnPath: url.searchParams.get('returnPath'), authError: url.searchParams.get('authError') };
+    }).toEqual({ pathname: '/login', returnPath: target, authError: null });
     await Promise.all([page.getByRole('button', { name: '使用 GitHub 登录', exact: true }).click(), controlledProvider]);
     await expect(page).toHaveURL(new URL(target, origin).href);
     await expect(surface(page).locator('.task-detail-title')).toHaveText(title);

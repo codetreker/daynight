@@ -58,7 +58,7 @@ test.describe('Web language journeys', () => {
   test('language-startup-preferences', scenario('language-startup-preferences'), async ({ page, api: request }, info) => {
     const project = await createProject(request, { name: `原始项目 Raw project ${randomUUID()}` });
     const task = await createTask(request, project.id, { title: '原始任务 Raw task', description: '原始描述 Raw description' });
-    await page.goto('/');
+    await page.goto('/projects');
     await expect(page.getByRole('heading', { name: 'Projects', exact: true })).toBeVisible();
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await expect(page).toHaveTitle('My projects · Daynight');
@@ -329,16 +329,16 @@ test.describe('Web language journeys', () => {
     const clearFault = async (): Promise<void> => { await page.evaluate(() => {
       (window as unknown as { localeStorageFault: { value: string | null } }).localeStorageFault.value = null;
     }); };
-    await page.goto('/?localeFault=read');
+    await page.goto('/projects?localeFault=read');
     await expect(page.locator('.locale-notice')).toContainText('The saved language could not be read.');
     await clearFault();
     await language(page.locator('.topbar')).selectOption('zh-CN');
     await expect(page.locator('.locale-notice')).toHaveCount(0);
-    await page.goto('/?localeFault=invalid');
+    await page.goto('/projects?localeFault=invalid');
     await expect(page.locator('.locale-notice')).toContainText('The saved language is invalid.');
     await language(page.locator('.topbar')).selectOption('zh-CN');
     await expect(page.locator('.locale-notice')).toHaveCount(0);
-    await page.goto('/?localeFault=write');
+    await page.goto('/projects?localeFault=write');
     await language(page.locator('.topbar')).selectOption('zh-CN');
     await expect(page.locator('.locale-notice')).toContainText('语言无法保存到浏览器');
     await language(page.locator('.topbar')).selectOption('en');

@@ -74,7 +74,7 @@ describe("authentication language changes", () => {
   });
 
   it("retranslates an existing login failure and provider controls without another provider request", async () => {
-    window.history.replaceState(null, "", "/?authError=login_failed");
+    window.history.replaceState(null, "", "/login?authError=login_failed");
     const fetcher = install((url) => url === "/api/v1/me" ? failure(401, "unauthenticated") : defaults(url));
     const login = vi.fn();
     const interaction = userEvent.setup();
@@ -88,7 +88,7 @@ describe("authentication language changes", () => {
     expect(document.title).toBe(zhCN.auth.shell.documentTitle.login);
     expect(fetcher).toHaveBeenCalledTimes(requests);
     await interaction.click(provider);
-    expect(login).toHaveBeenCalledExactlyOnceWith("/api/v1/auth/login?provider=github&returnPath=%2F");
+    expect(login).toHaveBeenCalledExactlyOnceWith("/api/v1/auth/login?provider=github&returnPath=%2Fprojects");
   });
 
   it("translates an existing token error and request ID without refetching or leaving the token tab", async () => {

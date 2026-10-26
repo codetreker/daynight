@@ -200,7 +200,7 @@ describe("workspace localization", () => {
     expect(selector).toHaveFocus();
     expect(document.title).toBe("页面不存在 · Daynight");
     expect(document.documentElement.lang).toBe("zh-CN");
-    expect(screen.getByRole("link", { name: "返回项目列表" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "返回项目列表" })).toHaveAttribute("href", "/projects");
     expect(projectRequest).not.toHaveBeenCalled();
     expect(graphRequest).not.toHaveBeenCalled();
   });

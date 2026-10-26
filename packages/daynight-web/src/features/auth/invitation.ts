@@ -1,3 +1,5 @@
+import { invitationLocation } from "../../app/router";
+
 export const invitationStorageKey = "daynight.pendingInvitation";
 
 export type PendingInvitation = {
@@ -6,11 +8,10 @@ export type PendingInvitation = {
 };
 
 export const captureInvitation = (): PendingInvitation => {
-  if (window.location.pathname !== "/invitations") {
-    try { window.sessionStorage.removeItem(invitationStorageKey); } catch { /* No invitation is retained in memory on other routes. */ }
+  if (!invitationLocation(window.location.pathname, window.location.search)) {
     return { token: null, storageUnavailable: false };
   }
-  const token = window.location.hash.slice(1);
+  const token = window.location.pathname === "/invitations" ? window.location.hash.slice(1) : "";
   if (token !== "") window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
   try {
     if (token !== "") window.sessionStorage.setItem(invitationStorageKey, token);

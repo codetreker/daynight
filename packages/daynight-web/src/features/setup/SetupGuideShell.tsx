@@ -16,7 +16,7 @@ export const SetupGuideShell = () => {
     <div className="workspace">
       <a className="skip-link" href="#main-content">{app.skipToContent}</a>
       <header className="topbar">
-        <nav className="crumb" aria-label={app.breadcrumb}><a href="/">{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{setup.navigation}</span></nav>
+        <nav className="crumb" aria-label={app.breadcrumb}><a href="/projects">{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{setup.navigation}</span></nav>
         <div className="account-actions"><LanguageSelector /></div>
       </header>
       <main className="content" id="main-content" ref={content} tabIndex={-1}><SetupGuidePage /></main>

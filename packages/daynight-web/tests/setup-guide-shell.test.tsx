@@ -61,7 +61,7 @@ describe("public setup guide", () => {
     vi.stubGlobal("fetch", fetcher);
     renderWithLocale(<SetupGuideShell />, { locale: "zh-CN" });
     const link = screen.getByRole("link", { name: "返回项目列表" });
-    expect(link).toHaveAttribute("href", "/");
+    expect(link).toHaveAttribute("href", "/projects");
     expect(link).not.toHaveAttribute("target");
     expect(fireEvent.click(link, { ctrlKey: true })).toBe(true);
     expect(fetcher).not.toHaveBeenCalled();
@@ -87,7 +87,7 @@ describe("public setup guide", () => {
     for (const options of [{}, { ctrlKey: true }, { metaKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
       expect(fireEvent.click(link, options)).toBe(true);
     }
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/projects");
     expect(screen.getByRole("heading", { name: "项目" })).toBeVisible();
     expect(fetcher).toHaveBeenCalledTimes(before);
   });

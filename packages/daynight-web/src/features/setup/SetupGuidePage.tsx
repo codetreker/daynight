@@ -58,7 +58,7 @@ export const SetupGuidePage = () => {
           </button></div>
           {"note" in step && <p className="setup-guide-tip">{step.note}</p>}
           <p className="setup-guide-result"><span>{m.successLabel}</span>{step.success}</p>
-          {step.id === "start" && <a className="button primary" href="/">{m.returnToProjects}<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" /></svg></a>}
+          {step.id === "start" && <a className="button primary" href="/projects">{m.returnToProjects}<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 12h14m-5-5 5 5-5 5" /></svg></a>}
         </div>
       </li>)}
     </ol>

@@ -50,6 +50,15 @@ test.describe('visible authentication protocol', () => {
     const baseURL = origin(info);
     const project = await createProject(request, { name: `Visible login ${randomUUID()}` });
     allowBrowserWrites([{ method: 'POST', url: `${baseURL}/api/v1/auth/logout`, count: 1 }]);
+    await page.goto('/');
+    await expect(page.locator('.landing-page')).toBeVisible();
+    await expect(page.locator('.auth-shell')).toHaveCount(0);
+    await page.locator('.landing-page a[href="/login"]').first().click();
+    await expect(page).toHaveURL(`${baseURL}/login`);
+    await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
+    await page.goBack();
+    await expect(page).toHaveURL(`${baseURL}/`);
+    await expect(page.locator('.landing-page')).toBeVisible();
     const providerSession = await context.newCDPSession(page);
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const controlledProvider = new Promise<void>((resolve, reject) => {
@@ -75,16 +84,31 @@ test.describe('visible authentication protocol', () => {
       await providerSession.send('Fetch.enable', { patterns: [{ urlPattern: 'https://github.com/login/oauth/authorize*', requestStage: 'Request' }] });
       await page.goto(`/projects/${project.id}`);
       await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
+      await expect.poll(() => {
+        const target = new URL(page.url());
+        return { pathname: target.pathname, returnPath: target.searchParams.get('returnPath') };
+      }).toEqual({ pathname: '/login', returnPath: `/projects/${project.id}` });
       await Promise.all([page.getByRole('button', { name: '使用 GitHub 登录', exact: true }).click(), controlledProvider]);
       await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
       await expect(page).toHaveURL(`${baseURL}/projects/${project.id}`);
       expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(200);
       await page.reload();
       await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
+      await page.goto('/login');
+      await expect(page).toHaveURL(`${baseURL}/projects`);
+      await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+      await page.goto('/');
+      await expect(page).toHaveURL(`${baseURL}/`);
+      await expect(page.locator('.landing-page')).toBeVisible();
+      await page.locator('.landing-page a[href="/projects"]').first().click();
+      await expect(page).toHaveURL(`${baseURL}/projects`);
+      await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
       const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
       await page.getByRole('button', { name: '退出登录', exact: true }).click();
-      await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
       expect((await signedOut).status()).toBe(204);
+      await expect(page).toHaveURL(`${baseURL}/`);
+      await expect(page.locator('.landing-page')).toBeVisible();
+      await expect(page.locator('.auth-shell')).toHaveCount(0);
       expect((await authenticatedAPI(context.request).get('/api/v1/me')).status()).toBe(401);
       await picture(page, info, 'auth-login-session');
     } finally {
@@ -265,7 +289,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     await primaryFocus.send('Emulation.setFocusEmulationEnabled', { enabled: false });
     await primaryFocus.detach();
     otherTab = await context.newPage();
-    await otherTab.goto('/');
+    await otherTab.goto('/projects');
     const secondaryFocus = await context.newCDPSession(otherTab);
     await secondaryFocus.send('Emulation.setFocusEmulationEnabled', { enabled: false });
     await secondaryFocus.detach();
@@ -512,7 +536,7 @@ test('auth-invitations', scenario('auth-invitations'), async ({ page, context, a
   const active = await request.get(`/api/v1/projects/${project.id}/invitations`);
   expect((await active.json() as { items: { id: string }[] }).items.map((item) => item.id)).toContain(metadata.id);
   await browserAuthentication(context, baseURL, 'bob');
-  await page.goto('/');
+  await page.goto('/projects');
   await expect(page.getByRole('link', { name: '账户设置：Bob', exact: true })).toBeVisible();
   await openInvitation(page, metadata.link);
   await expect(page.getByRole('heading', { name: '你受邀加入一个项目' })).toBeVisible();
@@ -586,8 +610,10 @@ test('auth-resource-session', scenario('auth-resource-session'), async ({ page, 
   await expect(detail).toHaveCount(0);
   const signedOut = page.waitForResponse((response) => response.url() === `${baseURL}/api/v1/auth/logout` && response.request().method() === 'POST');
   await page.getByRole('button', { name: '退出登录', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '登录你的工作空间' })).toBeVisible();
   expect((await signedOut).status()).toBe(204);
+  await expect(page).toHaveURL(`${baseURL}/`);
+  await expect(page.locator('.landing-page')).toBeVisible();
+  await expect(page.locator('.auth-shell')).toHaveCount(0);
   for (const resource of [preview, attachmentDownloadUrl(project.id, task.id, path), attachmentPreviewUrl(project.id, task.id, 'site/app.js')]) {
     const response = await authenticatedAPI(context.request).get(resource);
     expect(response.status()).toBe(401);

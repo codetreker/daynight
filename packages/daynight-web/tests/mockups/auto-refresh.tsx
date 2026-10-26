@@ -157,7 +157,7 @@ const AutoRefreshMockup = () => {
   const change = (apply: () => void) => { apply(); notify(); };
   const keepPreviewLocation = (event: MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if (!(event.target instanceof Element) || event.target.closest('a[href="/"]') === null) return;
+    if (!(event.target instanceof Element) || event.target.closest('a[href="/"],a[href="/projects"]') === null) return;
     event.preventDefault(); event.stopPropagation();
     document.getElementById('mock-response')?.focus();
   };
@@ -165,11 +165,11 @@ const AutoRefreshMockup = () => {
     <a className="skip-link" href="#main-content">{m.skipToContent}</a>
     <aside className="sidebar" aria-label={m.workspaceNavigation}>
       <a className="brand" href="/" aria-label={m.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
-      <nav aria-label={m.mainNavigation}><p className="nav-label">{m.workspace}</p><a className="nav-button" href="/" aria-current="page"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>{m.projects}</a></nav>
+      <nav aria-label={m.mainNavigation}><p className="nav-label">{m.workspace}</p><a className="nav-button" href="/projects" aria-current="page"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>{m.projects}</a></nav>
       <div className="sidebar-bottom">{m.localWorkspace}<small>{m.localWorkspaceDetail}</small></div>
     </aside>
     <div className="workspace">
-      <header className="topbar"><nav className="crumb" aria-label={m.breadcrumb}><a href="/">{m.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{m.projectTasks}</span></nav><div className="topbar-tools"><span className="local-label">{m.localLabel}</span><LanguageSelector /></div></header>
+      <header className="topbar"><nav className="crumb" aria-label={m.breadcrumb}><a href="/projects">{m.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{m.projectTasks}</span></nav><div className="topbar-tools"><span className="local-label">{m.localLabel}</span><LanguageSelector /></div></header>
       <main className="content" id="main-content" tabIndex={-1}>
         <section className="snapshot-notice" aria-label="自动更新预览控制" style={{ margin: '0 0 24px' }}>
           <p><strong>任务状态自动更新 · 交互预览</strong></p>

@@ -27,6 +27,10 @@ export const auth: AuthMessages = {
     networkRetry: "Check your connection and try again.",
     signOut: "Sign out",
     retryLogout: "Retry signing out",
+    signingOut: "Signing out…",
+    invalidLoginTarget: "This sign-in destination is invalid",
+    invalidLoginTargetDetail: "Open a new sign-in page to continue to your workspace.",
+    startFreshLogin: "Open sign-in",
     invitationStorageError: "This browser could not save the invitation. Open the invitation link again after signing in.",
     invitationCleanupError: "This browser could not clear the temporary invitation. Close this tab to clear it.",
     revalidationLabel: "Confirm current account",
@@ -48,6 +52,7 @@ export const auth: AuthMessages = {
     },
   },
   login: {
+    returnHome: "About Daynight",
     heroTitleFirst: "Keep work moving.", heroTitleSecond: "Keep your team connected.",
     heroDetail: "Organize tasks, connect dependencies, and share results. Work together to turn plans into finished work.",
     heroCaption: "Focus on your projects. Move forward together.",

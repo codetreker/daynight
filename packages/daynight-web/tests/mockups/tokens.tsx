@@ -86,7 +86,7 @@ const TokensMockup = () => {
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
-          <nav className="crumb" aria-label={app.breadcrumb}><a href="/" onClick={(event) => event.preventDefault()}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{shell.accountSettings}</span></nav>
+          <nav className="crumb" aria-label={app.breadcrumb}><a href="/projects" onClick={(event) => event.preventDefault()}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{shell.accountSettings}</span></nav>
           <div className="account-actions">
             <LanguageSelector />
             <a className="account-button" href="/account" onClick={(event) => event.preventDefault()} aria-label={shell.accountLink({ name: user.name })}><span className="avatar" aria-hidden="true">{user.name.slice(0, 1).toUpperCase()}</span><span className="account-name">{user.name}</span></a>

@@ -23,7 +23,7 @@ const taskGraph = (url: string) => taskSyncResponse({ observedAt: "2026-10-20T12
 
 describe('application navigation', () => {
   beforeEach(() => {
-    window.history.replaceState(null, '', '/');
+    window.history.replaceState(null, '', '/projects');
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async (url: string) => new URL(url, location.origin).pathname.endsWith('/task-sync') ? taskGraph(url) : projectPage()));
   });
   afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -41,7 +41,7 @@ describe('application navigation', () => {
     expect(screen.queryByRole('heading', { name: '真实项目' })).toBeNull();
     await act(async () => { window.history.back(); });
     await screen.findByRole('heading', { name: '真实项目' });
-    expect(window.location.pathname).toBe('/');
+    expect(window.location.pathname).toBe('/projects');
     await act(async () => { window.history.forward(); });
     await screen.findByRole('heading', { name: '项目任务页面' });
     expect(window.location.pathname).toBe(`/projects/${projectId}`);
@@ -54,7 +54,7 @@ describe('application navigation', () => {
     expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('link', { name: '返回项目列表' }));
     await screen.findByRole('heading', { name: '真实项目' });
-    expect(window.location.pathname).toBe('/');
+    expect(window.location.pathname).toBe('/projects');
   });
 
   it('loads a valid project deep link through the summary sync API', async () => {

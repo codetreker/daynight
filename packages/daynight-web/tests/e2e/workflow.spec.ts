@@ -137,7 +137,7 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
   }
   const listRequests: string[] = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v1/projects') listRequests.push(request.url()); });
-  await page.goto('/');
+  await page.goto('/projects');
   await expect(page.getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
   await expect(page.locator('a.project-card')).toHaveCount(50);
   const firstPage = await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')));
@@ -970,7 +970,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await page.reload();
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
     await expect.poll(async () => (await page.locator('.sidebar').boundingBox())?.width).toBe(68);
-    await page.locator('.sidebar a.nav-button[href="/"]').click();
+    await page.locator('.sidebar a.nav-button[href="/projects"]').click();
     await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
     await loadAllProjects(page);
     await page.locator(`a.project-card[href="/projects/${other.id}"]`).click();

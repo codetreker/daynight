@@ -614,7 +614,7 @@ describe("authenticated application shell", () => {
     await waitFor(() => expect(meCalls).toBe(2));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
     fireEvent.click(screen.getByRole("button", { name: "退出登录" }));
-    await screen.findByRole("heading", { name: "登录你的工作空间" });
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/auth/logout")).toHaveLength(1);
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
   });
@@ -873,7 +873,7 @@ describe("authenticated application shell", () => {
     expect(screen.queryByRole("heading", { name: "私有项目" })).toBeNull();
     failed = false;
     fireEvent.click(await screen.findByRole("button", { name: "重试退出登录" }));
-    await screen.findByRole("heading", { name: "登录你的工作空间" });
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
   });
 
   it("clears the workspace and stops automatic graph reads after a resource401", async () => {
@@ -1107,7 +1107,8 @@ describe("invitation handoff", () => {
         await screen.findByText("Bob", { selector: ".person-name" });
         expect(screen.getByRole("button", { name: "接受邀请并加入" })).not.toBeDisabled();
       } else await screen.findByRole("heading", { name: "登录你的工作空间" });
-      expect(window.location.pathname).toBe("/invitations");
+      expect(window.location.pathname).toBe(outcome === "expired" ? "/login" : "/invitations");
+      if (outcome === "expired") expect(new URLSearchParams(window.location.search).get("returnPath")).toBe("/invitations");
       expect(fetcher.mock.calls.filter(([url]) => url.endsWith("/accept"))).toHaveLength(0);
       expect(window.sessionStorage.getItem(invitationStorageKey)).toBe("pending-account-secret");
     }
