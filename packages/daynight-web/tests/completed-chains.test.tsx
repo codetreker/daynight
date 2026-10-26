@@ -44,6 +44,7 @@ const visibilityKey = (id = projectId) => `daynight:completed-chains:${id}`;
 const expansionKey = `daynight:project-view:${projectId}`;
 const checkbox = () => screen.getByRole('checkbox', { name: /^显示已完成任务链/ });
 const root = (id: string) => document.getElementById(`task-root-${id}`)!;
+const graphButton = (id: string) => document.getElementById(`task-chain-graph-${id}`)!;
 const roots = () => [...document.querySelectorAll('.root-toggle')].map((item) => item.id);
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const request = graphRequest;
@@ -72,7 +73,7 @@ describe('completed task chain visibility', () => {
     expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000001']);
     expect(screen.getByLabelText('显示 2 条，共 4 条任务链')).toHaveTextContent('2 / 4');
     expect([count('任务总数'), count('已完成'), count('待处理')]).toEqual(['8', '5', '3']);
-    fireEvent.click(root('00000000-0000-4000-8000-000000000001'));
+    fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
     expect(within(root('00000000-0000-4000-8000-000000000001')).getByText('进行中')).toBeVisible();
     expect(root('00000000-0000-4000-8000-000000000001').querySelector('.root-status')).toHaveClass('graph-status-in_progress');
     const projection = screen.getByTestId('projection');
@@ -83,7 +84,7 @@ describe('completed task chain visibility', () => {
     fireEvent.click(checkbox());
     expect(checkbox()).toHaveFocus();
     expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003', 'task-root-00000000-0000-4000-8000-000000000001']);
-    expect(root('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(graphButton('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-haspopup', 'dialog');
     expect(screen.queryByTestId('projection')).toBeNull();
     expect(request).toHaveBeenCalledTimes(1);
   });
@@ -92,7 +93,7 @@ describe('completed task chain visibility', () => {
     window.localStorage.setItem(visibilityKey(), 'true');
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
-    fireEvent.click(root('00000000-0000-4000-8000-000000000005'));
+    fireEvent.click(graphButton('00000000-0000-4000-8000-000000000005'));
     expect(screen.getByTestId('projection')).toHaveAttribute('data-root-id', '00000000-0000-4000-8000-000000000005');
     closeGraph();
     checkbox().focus(); fireEvent.click(checkbox());
@@ -109,7 +110,7 @@ describe('completed task chain visibility', () => {
     request.mockImplementation(async (id) => graph(seeds, id));
     let view = render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
-    fireEvent.click(checkbox()); fireEvent.click(root('00000000-0000-4000-8000-000000000003'));
+    fireEvent.click(checkbox()); fireEvent.click(graphButton('00000000-0000-4000-8000-000000000003'));
     expect(screen.getByTestId('projection')).toBeVisible();
     view.unmount(); view = render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
@@ -155,7 +156,7 @@ describe('completed task chain visibility', () => {
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     request.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(allDone())).mockResolvedValueOnce(resetSnapshot(graph([task('00000000-0000-4000-8000-000000000011', 'todo'), task('00000000-0000-4000-8000-000000000012', 'todo', ['00000000-0000-4000-8000-000000000011'])])));
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
-    fireEvent.click(root('00000000-0000-4000-8000-000000000001'));
+    fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     await screen.findByRole('heading', { name: '所有任务链已完成' });
     expect(screen.queryByTestId('projection')).toBeNull();
@@ -171,7 +172,7 @@ describe('completed task chain visibility', () => {
 
   it('keeps an explicitly closed graph closed while filtering and refreshing', async () => {
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
-    fireEvent.click(root('00000000-0000-4000-8000-000000000001'));
+    fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
     closeGraph();
     fireEvent.click(checkbox()); fireEvent.click(checkbox()); fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));

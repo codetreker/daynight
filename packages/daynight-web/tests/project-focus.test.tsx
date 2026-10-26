@@ -91,7 +91,8 @@ afterEach(() => {
 const openDialog = async (fullscreen = false) => {
   render(<ProjectPage projectId={projectId} />, { container: root });
   fireEvent.click(screen.getByRole('tab', { name: '任务列表' }));
-  fireEvent.click(await screen.findByRole('button', { name: /^原任务链/ }));
+  await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toBeVisible());
+  fireEvent.click(document.getElementById(`task-chain-graph-${rootId}`)!);
   if (fullscreen) fireEvent.click(screen.getByRole('button', { name: '全屏查看' }));
   const trigger = await screen.findByRole('button', { name: '节点 所选任务' });
   trigger.focus();
@@ -167,7 +168,7 @@ describe('project dialog focus restoration', () => {
     expect(root).toHaveAttribute('inert');
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
-    await waitFor(() => expect(screen.getByRole('button', { name: /^保留任务链/ })).toHaveFocus());
+    await waitFor(() => expect(document.getElementById(`task-root-${remainingId}`)!).toHaveFocus());
     expectModalReleased();
   });
 
@@ -182,13 +183,13 @@ describe('project dialog focus restoration', () => {
     expect(dialog).toBeVisible();
     expect(document.getElementById(`task-root-${rootId}`)).toBeNull();
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
-    await waitFor(() => expect(keepRemaining ? screen.getByRole('button', { name: /^保留任务链/ }) : screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
+    await waitFor(() => expect(keepRemaining ? document.getElementById(`task-root-${remainingId}`)! : screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
     expectModalReleased();
     const checkbox = screen.getByRole('checkbox', { name: /^显示已完成任务链/ });
     if (!keepRemaining) {
       fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
       expect(checkbox).toHaveFocus();
-      expect(screen.getByRole('button', { name: /^原任务链/ })).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
       expect(document.querySelector('.task-chain-dialog')).toBeNull();
     }
   });
@@ -210,10 +211,11 @@ describe('project dialog focus restoration', () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph(remainingChain)));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    const remainingRoot = await screen.findByRole('button', { name: /^保留任务链/ });
+    await waitFor(() => expect(document.getElementById(`task-root-${remainingId}`)).toBeVisible());
+    const remainingRoot = document.getElementById(`task-root-${remainingId}`)!;
     await waitFor(() => expect(remainingRoot).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
-    expect(remainingRoot).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(remainingRoot).toHaveAttribute('aria-expanded', 'false');
     expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expectModalReleased();
   });
@@ -227,7 +229,7 @@ describe('project dialog focus restoration', () => {
     expect(document.querySelector('.task-chain-dialog')).toBeVisible();
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(document.querySelector('.task-chain-close')!);
-    await waitFor(() => expect(document.getElementById(`task-root-${rootId}`)).toHaveFocus());
+    await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveFocus());
     expectModalReleased();
   });
 
@@ -256,7 +258,7 @@ describe('project dialog focus restoration', () => {
     expect(graphDialog).not.toHaveClass('task-chain-dialog-fullscreen');
     expect(graphDialog).toBeVisible();
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
-    await waitFor(() => expect(document.getElementById(`task-root-${rootId}`)).toHaveFocus());
+    await waitFor(() => expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveFocus());
     expectModalReleased();
   });
 

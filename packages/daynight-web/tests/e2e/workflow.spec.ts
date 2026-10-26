@@ -20,6 +20,7 @@ const card = (page: Page, id: string): Locator => page.locator(`.react-flow__nod
 const inspectTask = (page: Page, id: string): Locator => page.locator(`.react-flow__node[data-id="${id}"] button.task-node-body`);
 const details = (page: Page, id: string): Locator => card(page, id).locator('button.task-node-details');
 const root = (page: Page, id: string): Locator => page.locator(`#task-root-${id}`);
+const graphButton = (page: Page, id: string): Locator => page.locator(`#task-chain-graph-${id}`);
 const standalone = (page: Page, id: string): Locator => page.locator(`#standalone-task-${id}`);
 const viewTab = (page: Page, name: '独立任务' | '任务链'): Locator => page.getByRole('tab', { name, exact: true });
 const activateViewWithoutScrolling = async (page: Page, name: '独立任务' | '任务链' | '概览' | '任务列表'): Promise<void> => {
@@ -217,6 +218,38 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     [a].map(({ id }) => `task-root-${id}`),
   );
   await expectClosedChain(page, a.id);
+  await test.step('browses complete Goal task rows and details independently from the dependency graph', async () => {
+    const goal = root(page, a.id);
+    const members = page.locator(`#goal-children-${a.id}`);
+    await expect(goal).toHaveAttribute('aria-expanded', 'false');
+    await openChain(page, a.id);
+    await closeChain(page);
+    await expect(goal).toHaveAttribute('aria-expanded', 'false');
+    await goal.focus();
+    await page.keyboard.press('Enter');
+    await expect(goal).toHaveAttribute('aria-expanded', 'true');
+    await expect(members).toBeVisible();
+    expect(await members.locator('.goal-task-row').evaluateAll((rows) => rows.map((row) => row.querySelector('.root-title')!.textContent))).toEqual(
+      [b, f, g, c, d, e].map((task) => task.title),
+    );
+    await expect(members.locator('.goal-task-row')).toHaveCount(6);
+    const taskRow = page.locator(`#chain-task-${a.id}-${b.id}`);
+    await expect(taskRow.locator('.root-status')).toHaveText('进行中');
+    await taskRow.click();
+    const detail = page.locator('.task-detail-dialog');
+    await expect(detail.locator('.task-detail-title')).toHaveText(b.title);
+    await page.keyboard.press('Escape');
+    await expect(detail).toHaveCount(0);
+    await expect(taskRow).toBeFocused();
+    await expect(goal).toHaveAttribute('aria-expanded', 'true');
+    const goalDetails = members.locator('.goal-detail-link');
+    await goalDetails.click();
+    await expect(detail.locator('.task-detail-title')).toHaveText(a.title);
+    await page.keyboard.press('Escape');
+    await expect(goalDetails).toBeFocused();
+    await expect(goal).toHaveAttribute('aria-expanded', 'true');
+    await screenshot(page, info, 'goal-task-list');
+  });
   const listPosition = await root(page, a.id).boundingBox();
   const listScroll = await page.evaluate(() => window.scrollY);
   await openChain(page, a.id);
@@ -230,7 +263,8 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await expectOpenChain(page, a.id);
   await page.locator('.task-chain-backdrop').click({ position: { x: 5, y: 5 } });
   await expectClosedChain(page, a.id);
-  await expect(root(page, a.id)).toBeFocused();
+  await expect(graphButton(page, a.id)).toBeFocused();
+  await expect(root(page, a.id)).toHaveAttribute('aria-expanded', 'true');
   expect(await root(page, a.id).boundingBox()).toEqual(listPosition);
   expect(await page.evaluate(() => window.scrollY)).toBe(listScroll);
   await openChain(page, a.id);
@@ -272,6 +306,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await viewTab(page, '任务链').click();
   await expect(completedVisibility).not.toBeChecked();
   await expectClosedChain(page, a.id);
+  await expect(root(page, a.id)).toHaveAttribute('aria-expanded', 'false');
   await openChain(page, a.id);
   await expect(root(page, a.id).locator('.root-status')).toHaveText('进行中');
   await expect(root(page, a.id).locator('.root-progress-label')).toHaveText('4/7 已完成');
@@ -553,7 +588,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await refresh();
     await expectOpenChain(page, goal.id);
     await expect(page.locator('.task-chain-close')).toBeFocused();
-    await expect(root(page, auth[0]!.id)).not.toHaveAttribute('aria-controls');
+    await expect(graphButton(page, auth[0]!.id)).not.toHaveAttribute('aria-controls');
     await expect(root(page, goal.id).locator('.root-progress-label')).toHaveText('1/10 已完成');
     await expect(page.locator('.task-node-external')).toHaveCount(8);
     expect(await page.evaluate((key) => localStorage.getItem(key), key)).toBeNull();
@@ -712,7 +747,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await chainsCompleted.check();
   await expect(root(page, completedRoot.id)).toBeVisible();
   await expect(viewTab(page, '任务链').locator('.graph-count-pill')).toHaveText('25');
-  await root(page, predecessor.id).click();
+  await graphButton(page, predecessor.id).click();
   await expect(inspectTask(page, predecessor.id)).toBeVisible();
   await expect(inspectTask(page, dependent.id)).toBeVisible();
   await expect(inspectTask(page, dependent.id).locator('.graph-blocked-badge')).toHaveCount(0);
@@ -737,7 +772,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await page.mouse.wheel(0, 200);
     expect(await page.evaluate(() => window.scrollY)).toBe(lockedScroll);
     await closeChain(page);
-    await expect(root(page, predecessor.id)).toBeFocused();
+    await expect(graphButton(page, predecessor.id)).toBeFocused();
     expect(await page.evaluate(() => window.scrollY)).toBe(lockedScroll);
     await expect(page.locator('body')).not.toHaveCSS('overflow', 'hidden');
     const beforeSidebarReads = syncReads;
@@ -956,7 +991,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await page.keyboard.press('Escape');
   await expect(page.locator('.task-chain-close')).toBeFocused();
   await closeChain(page);
-  await expect(root(page, predecessor.id)).toBeFocused();
+  await expect(graphButton(page, predecessor.id)).toBeFocused();
   await expect(page.locator('#root')).not.toHaveAttribute('inert', '');
   await expect(viewTab(page, '任务链').locator('.graph-count-pill')).toHaveText('25');
   await expect(viewTab(page, '独立任务').locator('.graph-count-pill')).toHaveText('21');
@@ -1631,7 +1666,7 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await expect(page.locator('body')).toHaveCSS('overflow', 'hidden');
   await page.keyboard.press('Escape');
   await expectClosedChain(page, a.id);
-  await expect(root(page, a.id)).toBeFocused();
+  await expect(graphButton(page, a.id)).toBeFocused();
   expect(await page.evaluate(() => ({ document: document.documentElement.style.overflow, body: document.body.style.overflow }))).toEqual(originalOverflow);
   await openChain(page, a.id);
 
@@ -1714,7 +1749,7 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
       await expect(enterFullscreen).toBeFocused();
     } else await expect(page.locator('.task-chain-close')).toBeFocused();
     await closeChain(page);
-    await expect(root(page, a.id)).toBeFocused();
+    await expect(graphButton(page, a.id)).toBeFocused();
     await expect(page.locator('#root')).not.toHaveAttribute('inert', '');
     expect(await page.evaluate(() => ({ document: document.documentElement.style.overflow, body: document.body.style.overflow }))).toEqual(originalOverflow);
   }

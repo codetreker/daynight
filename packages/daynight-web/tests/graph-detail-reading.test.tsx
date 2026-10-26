@@ -73,7 +73,7 @@ describe('graph inspection and detail reading integration', () => {
     const user = userEvent.setup();
     const view = render(<ProjectPage projectId={graph.project.id} />, { container: root });
     await selectTaskList();
-    await user.click(await screen.findByRole('button', { name: /外部上下文 · 链内交付起点/ }));
+    await user.click(await screen.findByRole('button', { name: '外部上下文 · 链内交付起点，查看依赖关系' }));
     await waitFor(() => { expect(root.querySelectorAll('.react-flow__node')).toHaveLength(6); });
     await waitFor(() => { expect(root.querySelector<HTMLElement>('.react-flow__viewport')!.style.transform).not.toBe('translate(0px,0px) scale(1)'); });
     const selected = root.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${selectedId}"] .task-node-body`)!;

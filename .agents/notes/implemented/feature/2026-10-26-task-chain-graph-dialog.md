@@ -14,13 +14,18 @@ content has no interactive control.
 
 ## Decision
 
-A task-chain row opens one centered graph dialog through an explicit click or
-keyboard action. Its default dimensions are `80vw` by `80dvh`; at viewport
-widths of 740px or less, each dimension is the viewport minus 24px. The dialog
-shows the chain title, status and progress above the existing graph. Its
-background overlay leaves the compact list in place. A close button, backdrop
-activation and Escape dismiss it and restore a surviving chain trigger or an
-available list control without scrolling the page.
+The View dependencies control on a task-chain Goal row opens one centered graph
+dialog through an explicit click or keyboard action. The [Goal-list
+decision](2026-10-26-goal-task-lists.md) gives the row body an independent
+task-list disclosure and replaces the initial whole-row graph trigger; it
+retains this dialog lifecycle and geometry. Its default dimensions are `80vw`
+by `80dvh`; at viewport widths of 740px or less, each dimension is the viewport
+minus 24px. The dialog shows the chain title, status and progress above the
+existing graph. Its background overlay leaves the compact list in place. A
+close button, backdrop activation and Escape dismiss it and restore the
+original dependency-graph button or an available Goal disclosure, filter or
+list control without scrolling the page. Graph opening and closing preserve
+task-list disclosure choices.
 
 The project owns a transient original-member witness, initially null. It resolves
 that task through `componentByTask` to a current visible multi-member chain.
@@ -79,10 +84,12 @@ entry and return predictable while retaining independent browsing preferences.
 
 ## Consequences
 
-Graphs receive a stable viewing area without moving their task-chain list.
-Viewport and inspection survive fullscreen and task-detail round trips. Closing,
-category changes and project navigation intentionally end the graph-reading
-session; its viewport is initialized on the next explicit opening.
+Graphs receive a stable viewing area without moving or expanding their
+task-chain list. Task-list disclosure has its own row-local lifetime under the
+Goal-list decision. Viewport and inspection survive fullscreen and task-detail
+round trips. Closing, category changes and project navigation intentionally end
+the graph-reading session; its viewport is initialized on the next explicit
+opening.
 
 The dialog must remain within the application root so the existing body-portaled
 detail can isolate it. Refresh reconciliation and focus restoration must handle

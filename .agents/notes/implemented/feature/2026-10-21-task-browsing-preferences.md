@@ -28,14 +28,18 @@ without a saved record. There is no server preference or task-data change.
 The original inline view also stored `{ expandedRootId: string | null }` in
 `daynight:project-view:${projectId}`. Its string preserved the original member
 witness through merges and splits, and null preserved explicit collapse. That
-was appropriate while expansion was part of the page layout. The
-[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces persistent
-opening with an explicit, temporary reading session: the old expansion record
-is no longer read or written, entry starts closed, and leaving Task list or its
-Task chains category closes the dialog. An open dialog still resolves its
-original witness through the current ordinary component without overwriting a
-valid witness with its representative. A missing, standalone or hidden witness
-closes it instead of opening another chain.
+was appropriate while expansion was part of the page layout. The [graph-dialog
+decision](2026-10-26-task-chain-graph-dialog.md) replaces persistent opening
+with an explicit, temporary reading session: the old expansion record is no
+longer read or written, entry starts closed, and leaving Task list or its Task
+chains category closes the dialog. An open dialog still resolves its original
+witness through the current ordinary component without overwriting a valid
+witness with its representative. A missing, standalone or hidden witness closes
+it instead of opening another chain. The [Goal-list
+decision](2026-10-26-goal-task-lists.md) adds row-local task disclosure
+separately from graph opening: mounted rows retain it through refresh and
+dialog round trips, and remounted rows start collapsed without reviving the old
+storage record.
 
 Preference errors are displayed separately from graph request errors. Invalid
 stored data and denied storage access leave browsing usable with in-memory
@@ -73,8 +77,8 @@ filters retain their format after graph opening stops using storage.
 Reload and project navigation restore the saved outer section, task category,
 each category's completed visibility and page scroll position, while graph data
 comes from a fresh complete snapshot. Graph dialogs start closed and require a
-new row action. Storage access is synchronous and bounded to small project
-records. Privacy settings or invalid stored values can prevent persistence;
-visible notices distinguish that condition from a save. Preferences are local
-to one browser origin with no cross-browser synchronization. Current tabs keep
-their own in-memory choices.
+new dependency-graph action. Storage access is synchronous and bounded to small
+project records. Privacy settings or invalid stored values can prevent
+persistence; visible notices distinguish that condition from a save.
+Preferences are local to one browser origin with no cross-browser
+synchronization. Current tabs keep their own in-memory choices.

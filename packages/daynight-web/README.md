@@ -591,19 +591,32 @@ completed-item visibility, outer/inner selection and the open graph dialog. Thei
 equals the project's unfinished total; toolbars report visible/total entries.
 
 Chain membership is an ordinary-edge weak component: `dependsOn` contains all
-prerequisites, while `externalDependsOn` marks edges that do not join components.
-A normal `A → C ← B` creates one chain with two starting tasks and one member set. A chain's representative is its earliest ordinary-root
-member in exact service order; its title and creation ordering supply the row.
-Singletons with no ordinary incoming or outgoing edge are standalone tasks,
-even when external prerequisites block execution. Status and completion filters
-do not change membership. All edges still participate in execution consistency
-and full prerequisite inspection.
+prerequisites, while `externalDependsOn` marks edges that do not join
+components. A normal `A → C ← B` creates one chain with two starting tasks and
+one member set. A chain's representative is its earliest ordinary-root member
+in exact service order; its title and creation ordering supply the top-level
+Goal row. Goal is a browsing label, not a stored task type or a title-based
+membership rule. Singletons with no ordinary incoming or outgoing edge are
+standalone tasks, even when external prerequisites block execution. Status and
+completion filters do not change membership. All edges still participate in
+execution consistency and full prerequisite inspection.
 
 Standalone rows are compact native detail triggers with title, individual
-status, ID, creation time, automation permission and known execution timing.
-An unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. Chain
-rows aggregate only component members: all done means done; otherwise any done
-or in-progress member means in progress; otherwise any todo member means pending;
+status, ID, creation time, automation permission and known execution timing. An
+unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. A Goal row
+expands a task list through its main native button, independently of its
+sibling View dependencies / 查看依赖关系 button. The list contains every other
+ordinary-component member exactly once, with `in_progress` first, then `todo`,
+then `done`; tasks with the same status retain snapshot order. This child
+priority preserves top-level Goal ordering. Other starting tasks in a merge are
+included, while external prerequisite context is excluded. The
+list always retains `done`, `in_progress` and `todo` children; completed tasks
+remain visible. The chain-level Show completed control applies only to whole
+completed Goals and never filters children. Child rows show their own status
+and applicable ready/blocked markers and open the shared task dialog. The expanded heading offers the representative task's own
+details. Aggregate progress still includes that representative. Chain rows
+aggregate only component members: all done means done; otherwise any done or
+in-progress member means in progress; otherwise any todo member means pending;
 otherwise all members are todo. A completed representative with unfinished
 members stays visible. External prerequisite context does not contribute to
 chain progress or status. The former shared-membership badge is removed: a task
@@ -671,30 +684,44 @@ separately proves HTTP, database and persistence behavior.
 
 Both lists use newest creation first, with descending IDs breaking equal-time
 ties. Presentation reverses the exact API sequence without reducing timestamp
-precision; updates do not move older tasks. Completed items are hidden by default
-in each category. Each tab has its own completed-count checkbox, visible/total
-count and per-project visibility preference. An empty category, hidden all-complete
-items and a truly empty project have distinct states. Revealing completed items
-focuses the persistent checkbox before the empty-state action disappears. Long
-titles grow naturally in compact native row buttons. Chain buttons keep a 62px
-minimum height and 7px row gaps; a single-line bordered row is about 64px.
-Desktop titles stay 13px and narrow-screen titles 12px, with readable
-metadata/status sizes of 11px/10px.
+precision; updates do not move older tasks. Completed standalone tasks and
+whole completed Goal chains are hidden by default in their respective
+categories. Expanded child lists include all task statuses independently of
+that filter. Each tab has its own completed-count checkbox,
+visible/total count and per-project visibility preference. An empty category,
+hidden all-complete items and a truly empty project have distinct states.
+Revealing completed items focuses the persistent checkbox before the
+empty-state action disappears. Long titles grow naturally in compact native
+controls. Goal headers retain 7px row gaps and responsive progress widths; the
+graph action can wrap on narrow screens. Desktop header titles stay 13px and
+narrow-screen titles 12px. Child tasks use compact rows with visible individual
+status.
 
-Rows open one centered horizontal-graph dialog at a time. Desktop geometry is
-`80vw × 80dvh`; at widths of 740px or less the dialog fills the viewport except
-for 12px gutters. The title shows the chain name, status and progress. Closing
-with the explicit button, backdrop or Escape restores the original list trigger
-or an available list control without changing the list height or page position.
-Complete P contains every ordinary
-component member and every required ancestor through all dependency kinds,
-without unrelated successors of context tasks. Main progress counts component
-members only, and project counters count each project task once. Actual visible
-S is progressive for members and context alike. Dashed edges encode explicit
-external dependencies, including a shortcut inside one ordinary component;
-dashed cards encode context outside that component. Ordinary context edges stay
-solid. Details labels prerequisites, blockers and successors using each edge's
-own marker; no dependency editor is added.
+Each mounted Goal row owns an initially collapsed disclosure state, separate
+from graph opening. Several lists can be expanded at once. Same-row refreshes
+and detail/graph round trips preserve that choice while updating current
+members. Inactive inner categories unmount their rows, and filtering or
+representative replacement can also remove a row; remounting starts collapsed.
+Outer Overview switching retains the visited task subtree and its disclosure
+choices. No disclosure state is stored in browser preferences. The [Goal-list
+decision](../../.agents/notes/implemented/feature/2026-10-26-goal-task-lists.md)
+owns this interaction.
+
+The explicit View dependencies / 查看依赖关系 action opens one centered
+horizontal-graph dialog at a time without changing any disclosure state.
+Desktop geometry is `80vw × 80dvh`; at widths of 740px or less the dialog fills
+the viewport except for 12px gutters. The title shows the chain name, status
+and progress. Closing with the explicit button, backdrop or Escape restores the
+original graph button or an available Goal disclosure, filter or list control
+without changing the expanded lists, list height or page position. Complete P
+contains every ordinary component member and every required ancestor through
+all dependency kinds, without unrelated successors of context tasks. Main
+progress counts component members only, and project counters count each project
+task once. Actual visible S is progressive for members and context alike.
+Dashed edges encode explicit external dependencies, including a shortcut inside
+one ordinary component; dashed cards encode context outside that component.
+Ordinary context edges stay solid. Details labels prerequisites, blockers and
+successors using each edge's own marker; no dependency editor is added.
 
 P with at most fifty tasks and one hundred dependencies is fully visible.
 Larger P starts at the representative with stable undirected BFS, successors before prerequisites
@@ -734,7 +761,7 @@ separates topology state from presentation lifetime.
 
 Per-project browser preferences retain the selected outer section and inner task
 category, each category's page scroll position and completed-item choice. Graph
-dialog opening, witness, fullscreen, details and graph viewport are temporary;
+dialog opening, witness, Goal disclosure, fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
 written. The outer section uses the independent
 `daynight:project-section:${projectId}` record with the JSON string `"overview"`
@@ -750,7 +777,7 @@ current inner position before Overview can restore its own per-mount memory
 position. Overview starts at zero and never reads or overwrites the persisted
 task offsets. Outer switches retain the already visited task subtree; inner
 switches retain their conditional-content mounting. Graph dialogs close on
-either departure and open only after a new row action. Section/category
+either departure and open only after a new dependency-graph action. Section/category
 switching, filtering and scroll restoration make no API requests and do not
 alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/implemented/feature/2026-10-21-task-browsing-preferences.md)
 records the persistence rules.
@@ -825,40 +852,42 @@ The dialog offers a full graph refresh when that difference is observed.
 Reopening or refreshing details reads current PR associations; an attribute
 update changes the task timestamp and uses the same stale-snapshot prompt.
 
-The canvas supports pan, zoom and fit while editing and connection controls stay
-disabled. The toolbar offers Fullscreen viewing, which fills the browser viewport with
-the same mounted dialog and canvas. Exit fullscreen or Escape returns to the
-80% dialog without resetting pan, zoom or nodes. One graph-dialog owner isolates
-background controls and cycles Tab through its visible controls in either mode.
-Clicking a heading, legend or blank canvas keeps focus on the dialog so Escape
-continues to work. From that container, Tab enters the first visible control and
-Shift+Tab enters the last. Leaving fullscreen restores focus to its toggle. Task
-details remain available above the graph. Escape handles one applicable layer at a time: nested menu or
+The canvas supports pan, zoom and fit while editing and connection controls
+stay disabled. The toolbar offers Fullscreen viewing, which fills the browser
+viewport with the same mounted dialog and canvas. Exit fullscreen or Escape
+returns to the 80% dialog without resetting pan, zoom or nodes. One
+graph-dialog owner isolates background controls and cycles Tab through its
+visible controls in either mode. Clicking a heading, legend or blank canvas
+keeps focus on the dialog so Escape continues to work. From that container, Tab
+enters the first visible control and Shift+Tab enters the last. Leaving
+fullscreen restores focus to its toggle. Task details remain available above
+the graph. Escape handles one applicable layer at a time: nested menu or
 confirmation, detail fullscreen, details, graph fullscreen, then the graph
 dialog. Graph and detail dialogs share a counted body scroll lock so either
 unmount order restores the original scrolling state. Neither dialog opening nor
-fullscreen is saved as a browsing preference. The
-[graph-dialog decision](../../.agents/notes/implemented/feature/2026-10-26-task-chain-graph-dialog.md)
-owns presentation and preserves the original
-[fullscreen rationale](../../.agents/notes/implemented/feature/2026-10-22-task-graph-fullscreen.md). Each node has sibling native inspection, Details and direction controls. A long graph starts with its
-root visible at readable zoom; keyboard focus brings offscreen nodes into view.
-In normal mode, the centered body-portal dialog has a 960px maximum width, 24px viewport gutters
-(12px at 600px and below), and a maximum height of
-`min(880px, 100dvh - 2 × gutter)`. The persistent heading, tabs and footer
-surround an Overview panel and an Attachments panel. Overview owns its content
-scrolling and pairs a reading column with a 265px metadata/relationship column
-(225px at 850px and below); at 600px and below it stacks into one column.
-Attachments fills the panel with adjacent file and preview panes at every
-supported width, including 320px. Its parent body and panels do not scroll.
-Short viewports, including 844×390, use compact heading and control spacing to
-retain usable content without a second outer scrollbar. The dialog locks
-background focus and scrolling,
-supports its close button, backdrop, Escape and Tab,
-and restores a surviving original trigger or a visible control in the active task view on close. Focusable
-controls are enumerated with `tabbable` 6.5.0 using its normal browser visibility
-checks. Same-origin preview frames bridge Escape and first/last Tab boundaries
-back into the active reading container. Passive unmount restoration remains responsible
-for focusing a surviving trigger after DOM removal.
+fullscreen is saved as a browsing preference. The [graph-dialog
+decision](../../.agents/notes/implemented/feature/2026-10-26-task-chain-graph-dialog.md)
+owns graph presentation and preserves the original [fullscreen
+rationale](../../.agents/notes/implemented/feature/2026-10-22-task-graph-fullscreen.md).
+Each node has sibling native inspection, Details and direction controls. A long
+graph starts with its root visible at readable zoom; keyboard focus brings
+offscreen nodes into view. In normal mode, the centered body-portal dialog has
+a 960px maximum width, 24px viewport gutters (12px at 600px and below), and a
+maximum height of `min(880px, 100dvh - 2 × gutter)`. The persistent heading,
+tabs and footer surround an Overview panel and an Attachments panel. Overview
+owns its content scrolling and pairs a reading column with a 265px
+metadata/relationship column (225px at 850px and below); at 600px and below it
+stacks into one column. Attachments fills the panel with adjacent file and
+preview panes at every supported width, including 320px. Its parent body and
+panels do not scroll. Short viewports, including 844×390, use compact heading
+and control spacing to retain usable content without a second outer scrollbar.
+The dialog locks background focus and scrolling, supports its close button,
+backdrop, Escape and Tab, and restores a surviving original trigger or a
+visible control in the active task view on close. Focusable controls are
+enumerated with `tabbable` 6.5.0 using its normal browser visibility checks.
+Same-origin preview frames bridge Escape and first/last Tab boundaries back
+into the active reading container. Passive unmount restoration remains
+responsible for focusing a surviving trigger after DOM removal.
 
 The title-bar Enter fullscreen/Exit fullscreen button fills the browser content
 area with the same mounted Surface in both dialog and standalone entries. The
@@ -1179,23 +1208,28 @@ origin. The fixture mounts the production project page and CSS with mixed,
 fully completed and empty project graphs. Without a saved section preference it
 starts on Overview; select Task list to reach the two inner category tabs.
 Reloading or returning to a project restores the selected outer section. It
-demonstrates the current outer section layout, retained task subtree and isolated section scroll ownership,
-newest-first category lists, topology-based standalone classification,
-cross-chain prerequisites, direct standalone details and per-project tab, scroll,
-independent completed-item preferences across reloads. Graph dialogs start
-closed and open through a task-chain row action. The fixture uses the production
-compact row and dialog CSS directly, including naturally growing long titles,
-complete status/progress fields, 80% desktop geometry and narrow-screen gutters.
-Each graph dialog provides fullscreen controls, retained pan/zoom, keyboard
-focus isolation and task details above its canvas. It distinguishes hidden all-complete
-items from an empty category and a truly empty project and
-preserves focus when the reveal action disappears. The self-contained
-[task view mockup](../../docs/design/mockups/task-views.html) preserves the earlier
+demonstrates the current outer section layout, retained task subtree and
+isolated section scroll ownership, newest-first category lists, topology-based
+standalone classification, cross-chain prerequisites, direct standalone details
+and per-project tab, scroll, independent completed-item preferences across
+reloads. Goal headers expand one-task-per-row lists with direct child and Goal
+details; membership includes all ordinary-component members and keeps external
+context in the graph. Graph dialogs start closed and open only through each
+Goal's separate View dependencies action, leaving disclosure unchanged. The
+fixture uses the production compact row and dialog CSS directly, including
+naturally growing long titles, complete status/progress fields, 80% desktop
+geometry and narrow-screen gutters. Each graph dialog provides fullscreen
+controls, retained pan/zoom, keyboard focus isolation and task details above
+its canvas. It distinguishes hidden all-complete items from an empty category
+and a truly empty project and preserves focus when the reveal action
+disappears. The self-contained [task view
+mockup](../../docs/design/mockups/task-views.html) preserves the earlier
 inner-category visual baseline without a development server. Its original state
-examples do not replace the current production-component fixture. The scenario stays in the URL hash.
-Graph, detail and empty attachment-list reads are served in memory; unexpected
-requests fail instead of reaching a service. This development entry is excluded
-from the production build and does not establish real-backend acceptance.
+examples do not replace the current production-component fixture. The scenario
+stays in the URL hash. Graph, detail and empty attachment-list reads are served
+in memory; unexpected requests fail instead of reaching a service. This
+development entry is excluded from the production build and does not establish
+real-backend acceptance.
 
 ## Validation and build
 
@@ -1552,7 +1586,7 @@ scenario annotations validated in each target's report.
 | W1 | `project-list`: more than 50 projects, cursor requests, unique cards and navigation to a later-page project |
 | W2 | `project-graph`, `deep-links`, `task-attachments`, `task-detail-page`: project entry, direct HTML reload, complete standalone task/tab/file navigation and history without source-tab state; modal selection remains local |
 | W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained task-list subtree and closed graph dialog across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/scroll restoration and temporary graph-dialog opening, dependency reclassification and consistent full refresh |
-| W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: click-only 80% graph dialog and narrow-screen gutters, list/focus/scroll restoration, complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and detail/viewport actions |
+| W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: Goal disclosure with complete unique child rows and direct task details, independent explicit 80% graph dialog and narrow-screen gutters, list/focus/scroll restoration, complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and detail/viewport actions |
 | W8, TI12–TI14 | `detail-navigation`, `refresh-staleness`, `task-detail-page`: shared complete dialog/page content and actions, title-bar/attachment popouts, task/tab/file history, query-preserving login, nested confirmations, precise/conflicting/unknown writes, automatic full-detail reads and retained geometry/state |
 | W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, correlated errors, empty/not-found states, delayed request replacement and complete size refusal |
 | W10 | Native and container functional targets, exact image identity and dev-ci cleanup receipt |

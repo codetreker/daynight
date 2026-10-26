@@ -5,6 +5,12 @@ export type GraphMessages = {
   readonly rootSummary: (args: { total: number; remaining: number }) => string;
   readonly progress: (args: { done: number; total: number }) => string;
   readonly chainTitle: string;
+  readonly goalTitle: string;
+  readonly childTasks: (args: { count: number }) => string;
+  readonly goalDetails: string;
+  readonly goalDetailsLabel: (args: { title: string }) => string;
+  readonly viewDependencies: string;
+  readonly viewDependenciesLabel: (args: { title: string }) => string;
   readonly closeDialog: string;
   readonly showCompletedCount: (args: { count: number }) => string;
   readonly chainSummary: (args: { shown: number; total: number }) => string;

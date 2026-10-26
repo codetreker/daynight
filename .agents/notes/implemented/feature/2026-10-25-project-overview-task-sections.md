@@ -27,15 +27,17 @@ derive their content from the same snapshot. Overview needs current statistics,
 so the existing visible-page synchronization continues in either section. The
 detail dialog is outside both section panels and retains its existing lifetime.
 
-Task list mounts on first use and then stays mounted behind `hidden` and `inert`
-while Overview is visible. The original section decision kept the inline graph,
-inspection and viewport across outer switches. The
-[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces inline
-expansion: leaving Task list or its Task chains category closes the dialog and
-clears temporary opening state, so returning does not reopen it. The retained
-subtree continues to preserve list and preference ownership. The
-[inner category decision](2026-10-22-project-task-views.md) retains conditional
-content mounting and independent category page positions.
+Task list mounts on first use and then stays mounted behind `hidden` and
+`inert` while Overview is visible. The original section decision kept the
+inline graph, inspection and viewport across outer switches. The [graph-dialog
+decision](2026-10-26-task-chain-graph-dialog.md) replaces inline expansion:
+leaving Task list or its Task chains category closes the dialog and clears
+temporary opening state, so returning does not reopen it. The retained subtree
+continues to preserve list and preference ownership, including the mounted
+row-local disclosure introduced by the [Goal-list
+decision](2026-10-26-goal-task-lists.md). The [inner category
+decision](2026-10-22-project-task-views.md) retains conditional content
+mounting and independent category page positions.
 
 The independent section, category, filter and scroll
 [browsing preference records](2026-10-21-task-browsing-preferences.md) keep their

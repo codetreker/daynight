@@ -27,13 +27,16 @@ change membership; a fresh snapshot replaces classification and statistics toget
 
 Standalone native rows show individual facts and open details directly; a real
 unfinished prerequisite has an explicit blocked badge. Known execution timing
-follows the [timing decision](../architecture/2026-10-23-task-timing-design.md).
-Chain rows aggregate component members, retain all upstream context and provide
-fullscreen and Details. Normal `A → C ← B` is one chain with three members.
-The original tab design retained one entry per root, and its original badges
-counted entries. The [unfinished count decision](2026-10-22-unfinished-task-tab-counts.md)
-replaces the badge unit with unfinished tasks. Current components give each task
-one membership; toolbars separately report visible/total entries.
+follows the [timing
+decision](../architecture/2026-10-23-task-timing-design.md). Chain rows
+aggregate component members and expose direct child-task details through the
+[Goal-list disclosure](2026-10-26-goal-task-lists.md). A separate
+dependency-graph action retains complete upstream context, fullscreen and graph
+Details. Normal `A → C ← B` is one chain with three members. The original tab
+design retained one entry per root, and its original badges counted entries.
+The [unfinished count decision](2026-10-22-unfinished-task-tab-counts.md)
+replaces the badge unit with unfinished tasks. Current components give each
+task one membership; toolbars separately report visible/total entries.
 
 Each inner category has its own completed-item filter and page scroll position.
 Both lists use the exact newest-first presentation order. Category, standalone
@@ -41,23 +44,28 @@ visibility, completed-chain visibility and scroll positions use independent
 records. Storage failure leaves in-memory interaction available with a visible
 persistence notice. Page positions do not persist graph geometry, pan, zoom,
 details or fullscreen. The original category design retained the inline member
-witness or explicit collapse across switches; the
-[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces that
-persistent expansion with click-only temporary opening. Leaving either Task
-chains or Task list closes the dialog, and returning leaves it closed.
-Both inner tabpanel wrappers keep stable IDs and hide the inactive category.
-Only active category contents mount. The outer Task list subtree remains mounted
-after first use when Overview is selected.
+witness or explicit collapse across switches; the [graph-dialog
+decision](2026-10-26-task-chain-graph-dialog.md) replaces that persistent
+expansion with click-only temporary opening. Leaving either Task chains or Task
+list closes the dialog, and returning leaves it closed. Both inner tabpanel
+wrappers keep stable IDs and hide the inactive category. Only active category
+contents mount, so leaving Task chains resets row-local Goal disclosure on its
+next mount. The outer Task list subtree remains mounted after first use when
+Overview is selected, retaining those list choices across outer switches.
 
-This partially supersedes the unified list in the [presentation decision](2026-10-21-task-chain-presentation.md)
-and extends the [browsing preference decision](2026-10-21-task-browsing-preferences.md).
-The [projection decision](2026-10-20-task-graph-projection.md) retains ownership of
-complete dependency semantics; the [chain status decision](../bug-fix/2026-10-22-task-chain-status.md)
-continues to own aggregate status. Required behavior and current mechanisms
-belong in the [specification](../../../../docs/spec/daynight-web.md) and
-[design](../../../../docs/design/daynight-web.md). The original [interactive mockup](../../../../docs/design/mockups/task-views.html)
-retains the earlier inner-category visual baseline; the production-component
-browsing fixture demonstrates current graph dialogs and category behavior.
+This partially supersedes the unified list in the [presentation
+decision](2026-10-21-task-chain-presentation.md) and extends the [browsing
+preference decision](2026-10-21-task-browsing-preferences.md). The [projection
+decision](2026-10-20-task-graph-projection.md) retains ownership of complete
+dependency semantics; the [chain status
+decision](../bug-fix/2026-10-22-task-chain-status.md) continues to own
+aggregate status. Required behavior and current mechanisms belong in the
+[specification](../../../../docs/spec/daynight-web.md) and
+[design](../../../../docs/design/daynight-web.md). The original [interactive
+mockup](../../../../docs/design/mockups/task-views.html) retains the earlier
+inner-category visual baseline; the production-component browsing fixture
+demonstrates current Goal lists, independent graph dialogs and category
+behavior.
 
 ## Alternatives
 

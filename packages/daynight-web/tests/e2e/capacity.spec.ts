@@ -214,7 +214,7 @@ const measureBrowserFeedback = async (page: Page, condition: TimingCondition, ac
     const eventType = condition.kind === 'pan' ? 'pointermove' : 'click';
     const start = (event: Event) => {
       if (state.status !== 'armed' || !event.isTrusted || !(event.target instanceof Element)) return;
-      const selector = condition.kind === 'open' ? `#task-root-${condition.rootId}`
+      const selector = condition.kind === 'open' ? `#task-chain-graph-${condition.rootId}`
         : condition.kind === 'detail' ? `.react-flow__node[data-id="${condition.rootId}"] .task-node-details`
           : condition.kind === 'select' ? `.react-flow__node[data-id="${condition.rootId}"] .task-node-body`
           : condition.kind === 'zoom' ? '.react-flow__controls-zoomin' : '.react-flow__pane';
@@ -581,7 +581,7 @@ test.describe('fixed capacity and performance @capacity', () => {
           }, initialResponse.url());
           expect(Number.isFinite(dataset.networkMs)).toBe(true);
           expect(dataset.networkMs).toBeGreaterThanOrEqual(0);
-          const root = page.locator(`#task-root-${fixture.root.id}`);
+          const root = page.locator(`#task-chain-graph-${fixture.root.id}`);
           for (let repetition = 0; repetition < 5; repetition++) {
             await expectOpenChain(page, fixture.root.id);
             await closeChain(page);
