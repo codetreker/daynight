@@ -88,9 +88,10 @@ it from task data or the environment. This path uses the existing worker
 completion operation: a real completion requires the current owner, active
 claim, in-progress task, and exact version, and retains worker history with
 `state=completed`. Omit `--claim-id` for ordinary status setting; refusal never
-causes fallback between these operations. See
-[run-task](run-task.md#worker-managed-assignment) for managed execution and
-claim-aware reconciliation.
+causes fallback between these operations. Read the
+[managed execution reference](execute-task-in-managed.md) only when the worker
+startup prompt explicitly selects that mode; ordinary status operations do not
+load its execution rules.
 
 The service checks the exact version
 before a same-status no-op; it preserves all fields for a current-version no-op
@@ -279,11 +280,10 @@ create, establish identity from complete fields and operation context; a matchin
 title or an empty lookup alone is insufficient. Preserve actual errors and
 resource IDs rather than reporting success or blindly resending a write.
 
-Task registration, execution, selection, and requested handoff follow
-[create-task](create-task.md), [run-task](run-task.md), [autopilot](autopilot.md),
-and [handoff](handoff.md), respectively. For a chain of independently tracked
-delivery stages, use [the Goal protocol](goal.md).
-Every stage and delivery task follows the same todo/in_progress/done contract.
-A fixed Goal queue may use existing scoped execution authorization for its ready
-successors; registration and discussion confirmation grant no delivery execution
-permission.
+Task registration, ordinary execution, and requested handoff follow
+[create-task](create-task.md), [run-task](run-task.md), and [handoff](handoff.md),
+respectively. For a chain of independently tracked delivery stages, use
+[the Goal protocol](goal.md). Every stage and delivery task follows the same
+todo/in_progress/done contract. Registration and discussion confirmation grant
+no delivery execution permission. Each execution remains on its specified task;
+listing ready work does not select or start it.

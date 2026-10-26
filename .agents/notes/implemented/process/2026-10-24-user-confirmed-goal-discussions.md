@@ -22,8 +22,11 @@ breakdown, and discussion completion rules of the
 its self-contained briefs, stage-produced outputs and shared-artifact ownership.
 The [mode decision](../architecture/2026-10-21-using-daynight-modes.md) retains the
 general authorization boundaries; the [task-content and handoff decision](2026-10-25-task-content-handoff.md)
-adds a fifth mode and replaces mandatory primary-attachment storage without changing
-this decision's stage-confirmation gates.
+adds the handoff mode and replaces mandatory primary-attachment storage without
+changing this decision's stage-confirmation gates. The
+[managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
+removes continuous scheduling from the ordinary skill and keeps these
+user-directed discussion transitions with ordinary single-task execution.
 
 Starting a Goal requirements discussion creates or reuses only `[Goal]<outcome>`.
 An explicit request to begin that discussion authorizes set-status in_progress,
@@ -47,7 +50,9 @@ breakdown with real dependencies, task-specific plans and verified shared inputs
 Read back the complete registration before completing the solution-discussion
 task. Delivery tasks are registered as todo without execution. Existing explicit
 execution scope remains effective for ready successors; solution acceptance alone
-does not enable automatic execution, start autopilot or authorize merges.
+does not enable automatic execution, select later delivery work or authorize
+merges. Managed execution returns to its controller after its assigned task and
+does not advance Goal discussion stages.
 Material revisions after confirmation require renewed confirmation before
 advancement.
 

@@ -27,14 +27,22 @@ The later [user-confirmed Goal discussion decision](../process/2026-10-24-user-c
 owns sequential discussion creation, explicit user transition gates, and scoped
 starting the specified discussion. The [task-content and handoff decision](../process/2026-10-25-task-content-handoff.md)
 replaces mandatory primary-attachment ownership with one content owner and adds
-a separately authorized handoff mode; this note retains the original rationale.
+a separately authorized handoff mode. The [managed execution decision](2026-10-26-managed-task-skill.md)
+replaces the continuous-scheduling mode and the placement of managed rules while
+preserving the single public bundle and shared authorization boundaries. This
+note retains the rationale for those earlier choices.
 
-The public bundle is named `using-daynight`. Its entrypoint routes from the actual
-request and context to handbook, create-task, handoff, run-task or autopilot, with one
-reference document per mode. A bare invocation uses context; insufficient or
-ambiguous context prompts for intent. Autopilot requires an explicit user request
-for continuous execution. Mentioning automation, loading the skill or finishing
-a task does not activate it. The handbook provides a command-purpose index and
+The public bundle is named `using-daynight`. Its entrypoint routes ordinary
+requests to handbook, create-task, handoff or run-task. Only a worker startup
+prompt that explicitly supplies the worker-managed environment, using-daynight
+skill and execute-task-in-managed mode selects the managed execution reference.
+The entrypoint keeps this distinction brief; ordinary references do not load
+managed lifecycle instructions. A bare ordinary invocation uses context;
+insufficient or ambiguous context prompts for intent. The original autopilot
+mode required an explicit continuous-execution request to avoid converting
+ordinary skill use into scheduling. The managed execution decision removes
+that mode and leaves continuous scheduling with the worker. The handbook
+provides a command-purpose index and
 operational context such as repository discovery, read scope, observed-version
 updates and attachment independence. Installed CLI help owns argument and option
 usage; the handbook does not duplicate invocation examples or decoding code.
@@ -51,8 +59,10 @@ This partially replaces the
 portable packaged files, the interactive Agent/scope flow and complete replacement
 remain, while the public name and workflow ownership change. The
 [bounded-selection decision](../feature/2026-10-21-bounded-ready-task-selection.md)
-continues to own query cost and candidate semantics; autopilot owns next-work
-selection, and run-task owns one task's delivery.
+continues to own query cost and candidate semantics. Run-task owns one specified
+task's ordinary lifecycle; execute-task-in-managed owns its assigned claim's
+lifecycle. The neutral task-execution reference owns their common inputs,
+delivery, evidence and completion readiness.
 
 The original creation rule required explicit user permission for every task to
 keep the persistent backlog under the user's control. A direct creation request
@@ -107,16 +117,20 @@ The Goal protocol adds no service resource, CLI command or ownership mechanism.
 The [status assignment decision](2026-10-24-task-status-assignment.md) applies
 to every stage: registration produces todo without execution. Ready work within
 the existing execution scope starts with observed-version set-status in_progress
-and finishes only after acceptance and required delivery. The same scope may
-cover ready successors without task approval. Explicit discussion starts still
-apply only to the current user-confirmed Goal stage.
+and finishes only after acceptance and required delivery. Existing authorization
+can cover several designated tasks, but single-task execution returns after the
+specified task and does not select a successor. Explicit discussion starts apply
+only to the current user-confirmed Goal stage.
 
-An explicitly controller-supplied worker assignment follows the
-[worker-managed completion decision](2026-10-26-worker-managed-completion.md):
-it executes its already-claimed task in the supplied worktree, preserves all
-delivery gates, and finishes with an explicit claim ID. It never selects a
-successor or performs system-worktree cleanup, even under an outer autopilot.
-Ordinary mode selection and execution remain unchanged.
+A worker startup prompt explicitly selects execute-task-in-managed and supplies
+the original assignment. The [managed execution decision](2026-10-26-managed-task-skill.md)
+owns that entrypoint and its isolated lifecycle; the
+[worker-managed completion decision](2026-10-26-worker-managed-completion.md)
+owns the public claim-bound completion operation. The assigned agent preserves
+the original claim, frozen configuration and supplied worktree, satisfies all
+delivery gates, and finishes with that claim ID. The controller owns successor
+selection and system-worktree cleanup. Task properties, cwd or environment
+variables alone cannot activate the mode.
 
 Necessary direct dependencies remain in dependsOn, with externalDependsOn as
 its explicit external subset. The handbook owns dependency reduction: creation
@@ -137,8 +151,9 @@ todo without starting execution. Run-task reads the self-contained brief, detail
 plan and stage inputs, establishes the task's confirmed scope and acceptance before
 analysis, questions or proposals, executes its designated task and returns after
 completion or an external blocker. The entrypoint's shared constraints own the
-complete execution and discussion scope rule; run-task links to that rule from its
-execution reminder. Analysis, questions, proposals, discussions and subagent work
+complete execution and discussion scope rule; the common task-execution
+reference links to that rule before analysis and execution. Analysis, questions,
+proposals, discussions and subagent work
 follow the current task's confirmed objective, scope, deliverables and acceptance.
 Parent Goal, shared architecture, sibling and successor material supplies required
 inputs, interfaces and constraints without expanding the assignment. Cross-task
@@ -155,13 +170,15 @@ material and their phase acceptance. An explicitly requested discussion transiti
 can start the next discussion without continuous queue selection. A stage done
 does not establish whole-Goal completion.
 
-Autopilot restores the checkpoint's current task, otherwise picks exactly one
-ready todo most related to the authorized goal, requiring allowAgents=true for
-automatic discovery. Explicit task queues retain the manual path regardless of that flag. In-progress inventory does not
-establish ownership, and a bounded ready page does not establish complete backlog
-state. Delivery waits and subagents remain on the current task. Only confirmed
-done permits the next selection; external blockers retain the current task and
-return control rather than switching to unrelated work.
+The original autopilot workflow restored the checkpoint's current task and
+selected one related ready task only after confirmed completion, with
+allowAgents=true required for automatic discovery. That policy kept waits and
+subagents on the current task and distinguished explicit task queues from
+automatic discovery. The managed execution decision removes this agent-side
+scheduling loop. Ordinary run-task retains its designated task through waits
+and returns after completion or an external blocker; the worker owns managed
+successor scheduling. In-progress inventory still does not establish ownership,
+and a bounded ready page does not establish complete backlog state.
 
 The installer publishes the complete using-daynight bundle before removing the
 legacy daynight leaf in the same selected physical skill root. Other scopes,
@@ -191,8 +208,9 @@ work depend on the actual user request.
 
 **Default bare invocation to handbook.** This is predictable but discards clear
 context such as a previously designated task or a current creation request.
-Context-based routing preserves that intent; ambiguity is resolved with the user,
-and autopilot still has its explicit-request gate.
+Context-based routing preserves that intent; ambiguity is resolved with the user.
+At the original decision, autopilot also had an explicit-request gate; the
+managed execution decision removes that mode without changing ordinary routing.
 
 **Put solution, acceptance and progress in the description.** This was convenient
 before attachment-backed planning was available, but keeps unrelated lifetimes in
@@ -220,12 +238,15 @@ cost of an explicit partial-migration error and a possible temporary duplicate.
 
 ## Consequences
 
-One installed directory contains the entrypoint, five mode references, the shared
-task-content standard and Goal protocol.
-Command usage stays with the installed CLI, and the compact handbook explains
-the operational facts needed to choose and combine commands. Task execution and
-repeated selection share one completion gate. Explicit autopilot entry prevents ordinary skill use
-from silently becoming a continuous work queue. Scoped task creation permission,
+One installed directory contains the entrypoint, ordinary mode references, the
+managed execution reference, neutral task-execution guidance, task-content
+standard and Goal protocol. Command usage stays with the installed CLI, and the
+compact handbook explains the operational facts needed to choose and combine
+commands. Ordinary and managed execution share delivery and acceptance
+requirements while keeping their lifecycle operations separate. Explicit worker
+mode routing keeps managed instructions out of ordinary execution; the removed
+autopilot workflow no longer turns a skill invocation into a continuous queue.
+Scoped task creation permission,
 including applicable standing tracking/review instructions, prevents autonomous
 execution from expanding the persistent backlog beyond the confirmed scope;
 missing permission requires user input before registration. Required referenced content

@@ -107,8 +107,9 @@ src/
       skills/using-daynight/
         SKILL.md
         references/handbook.md
-        references/autopilot.md
         references/run-task.md
+        references/execute-task-in-managed.md
+        references/task-execution.md
         references/create-task.md
         references/goal.md
         references/task-content.md

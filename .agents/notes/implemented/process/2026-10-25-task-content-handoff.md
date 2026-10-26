@@ -58,7 +58,10 @@ revocation or stopping requires its own authorization and existing control flow.
 Running-task permission locks and active/released worker continuity remain in
 force. The mode's done policy reports that no handoff is needed without rewriting
 history. Handoff returns after review and result reconciliation; it does not start
-run-task/autopilot or add execution and delivery authority.
+ordinary or managed execution, select a successor, or add execution and delivery
+authority. The [managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
+owns the separate explicit worker entrypoint; this content standard applies to
+both execution modes.
 
 Task versions protect task metadata, not independent attachment or cross-task
 writes. Required mutable sources are checked before enabling and again at

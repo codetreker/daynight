@@ -20,7 +20,13 @@ exclusive claims; the worker owns scheduling, resources and recovery; Herdr owns
 agent terminals and sessions; the agent owns task delivery, acceptance and final
 claim-bound completion under the [explicit completion decision](2026-10-26-worker-managed-completion.md). The original design assigned an independent
 completion-verification step to the worker; that portion is superseded by the
-agent-owned completion and claim-inventory reconciliation boundaries. This note records the delivered design decision. The worker
+agent-owned completion and claim-inventory reconciliation boundaries. The
+[managed execution decision](2026-10-26-managed-task-skill.md) separates the
+ordinary and managed skill instructions. The worker constructs startup and
+same-claim relaunch prompts with an explicit worker-managed environment,
+using-daynight skill, execute-task-in-managed mode and original assignment;
+the Herdr adapter transports that prompt to the selected native agent. This note
+records the delivered design decision. The worker
 runtime remains implementation work. The [claim foundation decision](2026-10-24-worker-claim-foundation.md)
 owns implemented service/client ownership, status fencing and protected-property
 operations; it does not establish resource startup or recovery.

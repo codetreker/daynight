@@ -27,10 +27,13 @@ cases publish using-daynight before removing the legacy daynight leaf, preserve
 other scopes and link targets, and report cleanup failures with the new bundle
 still installed.
 
-Static checks preserve using-daynight frontmatter, five mode references, the shared
-task-content standard and Goal protocol, with guidance for explicit autopilot entry,
-bounded single-task selection, content-aware registration and handoff, observed-version
-updates and merge-bound completion. The [mode decision](../architecture/2026-10-21-using-daynight-modes.md)
+Static checks preserve using-daynight frontmatter, the ordinary and managed mode
+references, neutral task-execution guidance, shared task-content standard and
+Goal protocol. They check explicit worker mode routing, separate lifecycle
+instructions, content-aware registration and handoff, observed-version updates
+and merge-bound completion. The
+[managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
+owns the current resource separation and autopilot removal. The [mode decision](../architecture/2026-10-21-using-daynight-modes.md)
 owns routing and legacy-name migration; the
 [Goal decision](../process/2026-10-22-goal-workflow-design.md) owns stage rules,
 stage-specific task content and shared-source ownership. The

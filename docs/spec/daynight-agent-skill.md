@@ -1,7 +1,7 @@
 # Agent 项目任务管理 Skill 需求
 
 公开入口为随 `@codetreker/daynight` 发布的 `using-daynight` skill，包含 `handbook`、
-`create-task`、`handoff`、`run-task`、`autopilot` 五种内部模式。本文拥有使用、安装与覆盖的可观察
+`create-task`、`handoff`、`run-task` 和 worker 专用 `execute-task-in-managed` 模式。本文拥有使用、安装与覆盖的可观察
 要求；机制由[设计](../design/daynight-agent-skill.md)拥有。既有
 [客户端需求](daynight-project-task.md)与[附件需求](daynight-task-attachments.md)
 继续拥有命令、项目发现、版本和附件操作语义。
@@ -15,25 +15,33 @@
 
 产品只发布一个公开 `using-daynight` skill。英文 `SKILL.md` 使用标准 frontmatter，
 与 `references/handbook.md`、`references/create-task.md`、`references/run-task.md`、
-`references/handoff.md`、`references/autopilot.md`，以及共享 `references/task-content.md`
-和 `references/goal.md` 一起包含在 npm 安装产物中。
-Codex、Copilot CLI、Claude Code 使用相同内容。安装后不依赖源码仓库、仓库内部工作流 skill、未发布文档或包外临时文件；
-npm 包移动、升级或卸载不使已安装资源失效。
+`references/execute-task-in-managed.md`、`references/handoff.md`，以及共享
+`references/task-execution.md`、`references/task-content.md` 和 `references/goal.md`
+一起包含在 npm 安装产物中。Codex、Copilot CLI、Claude Code 使用相同内容。
+安装后不依赖源码仓库、仓库内部工作流 skill、未发布文档或包外临时文件；npm 包移动、
+升级或卸载不使已安装资源失效。
 
-五种模式是 skill 的使用协议，不增加 CLI 子命令。Agent 根据用户请求和实际上下文路由：
+这些模式是 skill 的使用协议，不增加 CLI 子命令。入口仅说明应读取哪份资料，不把
+所有模式的详细规则一并加载：
 
 | 模式 | 职责与完成边界 |
 |---|---|
 | `handbook` | 列出命令用途，解释项目发现、并发更新等背景规则；具体用法查询 CLI help。 |
 | `create-task` | 在明确创建许可内复用或登记具体工作；Goal 首先只登记需求讨论任务。仅登记请求核验后返回，明确开始讨论时按 Goal 协议进入当前阶段。 |
 | `handoff <task-id>` | 在明确移交授权内读取任务和必需资料并审查，通过后按精确版本启用许可；结果核对后返回，不开始执行。完整要求见 AS11。 |
-| `run-task <task-id>` | 执行明确任务；讨论按用户确认与阶段验收，交付按其实际交付条件完成。Goal 的明确用户转场由共享协议处理。 |
-| `autopilot <目标或范围>` | 在已授权范围内逐个选择任务并调用 `run-task`，完成后继续。 |
+| `run-task <task-id>` | 普通指定任务的开始、恢复和完成；讨论按用户确认与阶段验收，交付按其实际条件完成。Goal 的明确用户转场由共享协议处理。 |
+| `execute-task-in-managed` | 仅供 worker 启动 prompt 显式指定的 managed 环境使用；复用提供的已认领执行，只完成原任务及 claim，然后返回 controller。 |
 
-直接调用 `using-daynight` 而没有附加输入时，Agent 根据当前请求与上下文判断模式；
-上下文不足或存在歧义时询问用户意图。不能固定进入 handbook，也不能凭候选存在推断
-执行意图。只有用户明确要求自动连续推进 Daynight 任务才能进入 autopilot；话题中提及
-自动化、加载 skill、完成单任务、项目关联或发现 ready 任务都不构成启动要求。
+Worker 首次启动或为同一 claim 重新启动 agent 时，在 prompt 中明确指定运行环境
+`worker-managed`、技能 `using-daynight`、模式 `execute-task-in-managed`，并提供原
+assignment。只有该显式入口加载 `references/execute-task-in-managed.md`；普通指定
+任务加载 `references/run-task.md`。不能根据 `properties.worker`、工作目录、环境变量、
+任务标题或普通请求推断 managed 模式。显式 managed 请求缺少或不匹配上下文时等待，
+不能回落普通执行。SKILL.md 保留简短互斥路由，详细生命周期由各自引用拥有。
+
+普通裸调用根据当前请求与上下文判断普通模式；不足或歧义时询问用户意图。不能固定
+进入 handbook，也不能凭 ready 候选存在推断执行意图。普通技能不提供自动发现候选、
+连续选择或推进任意后继的调度模式；查询候选是管理操作，不构成执行授权。
 
 ## AS2. 必需追踪、评审、授权与事实来源
 
@@ -56,17 +64,20 @@ skill 提供工作规则，不增加实现、发布、合并、主线 push、部
 所有模式及直接 CLI 操作均不得在没有用户明确许可的情况下创建 task。用户直接要求
 创建任务，或此前已明确授予指定范围的创建权限，才满足此条件。用户或适用仓库指示
 明确要求通过 Daynight 追踪或评审，属于已确认范围内必要任务的长期创建许可，优先
-复用适合的已有任务，不重复询问许可。实现请求、持续追踪价值、上下文路由和启动
-autopilot 本身都不构成创建许可。
+复用适合的已有任务，不重复询问许可。实现请求、持续追踪价值和上下文路由本身都不
+构成创建许可。
 需要新 task 而缺少该许可时，先向用户取得明确许可，再执行创建。
 
 所有创建产生 todo，登记不启动执行。在用户已明确授权的任务或 Goal 范围内，ready todo
 满足阶段输入后用观察版本 set-status in_progress 开始，验收与必要授权交付后 set-status done。
-已有范围持续覆盖就绪后继，不要求逐任务审批，不以其他字段重建审批。用户明确开始 Goal
-需求讨论或确认需求并要求方案讨论，只启动指定讨论，阶段确认要求保留。
-allowAgents 只约束自动发现选择，明确指定的任务或确定队列可用任一许可值；创建、
+已有明确执行范围继续有效，不要求为范围内指定任务重复审批；普通技能不因此自行
+选择后继。用户明确开始 Goal 需求讨论或确认需求并要求方案讨论，只启动指定讨论，
+阶段确认要求保留。
+allowAgents 只约束自动发现选择，普通明确指定的任务可用任一许可值；创建、
 拆分、执行和调度不自行开启许可。明确授权的 handoff 按 AS11 审查后启用。
-状态不扩展实现或交付权限，PR 审查批准及必要平台授权继续独立。明确由 controller 提供的 worker-managed 上下文限定 project/task/claim、worktree/branch 和冻结配置；不能仅凭 worker 属性推断指派或权限，具体已认领执行规则由 AS5 拥有。
+状态不扩展实现或交付权限，PR 审查批准及必要平台授权继续独立。普通执行、managed
+执行的生命周期分别由 AS5、AS6 拥有；共同输入、交付和验收要求由
+references/task-execution.md 拥有。
 
 执行、分析、提问、方案提议和任务讨论均以当前任务已确认的目标、范围、交付物与
 验收条件为边界，subagents 遵守同一边界。上层 Goal、共享架构、兄弟和后续任务可以
@@ -201,69 +212,75 @@ UI Goal 的描述阶段产出最终视觉样式、可纯前端交互的 mock UI�
 交付要求核验；正常实现和已授权缺陷修复保留单元、集成、回归测试及仓库检查，用户
 明确要求的长期测试或自动化能力仍按其已确认开发范围交付。
 
-## AS5. run-task 的执行与完成
+## AS5. 普通指定任务的执行与完成
 
-明确 worker-managed 指派先核对提供的 project/task/claim 与最新 in_progress/active 归属、实际 worktree/branch 和冻结配置；缺失或不匹配时等待，不能回退普通认领/开始。已被 controller 开始的执行不重跑候选资格或 set-status in_progress，仍读取全部任务/阶段资料并核对当前前置。复用系统工作区，允许范围内编辑、提交、推送和授权合并，但不创建、切换、删除系统 worktree/branch。
+run-task 一次处理一个明确 task ID，拥有普通任务的开始、恢复、重开和普通完成流程。
+读取 `references/task-execution.md` 的共同任务输入、执行、证据和完成准备规则；不读取
+managed 指令，不要求普通任务具有 worker claim。显式指定任务不要求 allowAgents=true
+或平台自动匹配，但依赖、阶段资料和用户执行范围仍必须满足。普通技能不从候选中
+自行选择下一任务，也不把固定队列授权解释为自动调度入口。
 
-run-task 接收指定 ID，读取正文及其必需引用、当前任务证据位置和真实共享输入，按所属阶段判断
-必需资料；适用原型已经是输入时查看和操作。开始分析、提问或提出方案前，明确当前
-任务已确认的范围和验收条件，执行与讨论共同遵守 AS2 的范围约束。澄清与设计以阶段
-brief 开始，当前阶段尚待产出的完整要求、UI 或架构不能反过来阻止启动。ready todo
-在依赖、阶段输入及已有明确执行范围齐备后使用 task set-status in_progress 和观察
-版本开始，核验结果再工作。
-显式指定任务或既定队列不要求 allowAgents=true；自动发现候选仍要求 true。
-已有 in_progress 核对工作与检查点后恢复；done 按实际结果处理，重开须属于用户明确工作范围，
-并遵守前置/后继保护。输入缺失或依赖未完成时保留实际问题，不凭标题补出方案。
+ready todo 在依赖、阶段输入及已有明确执行范围齐备后，使用观察版本执行
+`task set-status in_progress` 并核验结果再工作。已有 in_progress 核对实际工作和
+检查点后恢复；任意 in_progress 项不代表归本会话所有。done 按实际结果报告，重开
+须属于用户明确工作范围并受前置/后继保护。状态不提供独占或额外执行权。
 
-Goal 讨论阶段按用户确认和自身阶段验收完成；确认前保持 in_progress，不能由 Agent
-判断、review 或 CI 替代。仅因仓库存在 PR 交付规则，不把讨论完成绑定到设计 PR 合并。
-独立代码、文档或原型交付，以及用户明确纳入讨论验收的 PR 交付，仍按目标仓库规则
-验证、独立审查并维护完整 PR 属性；全部必要 PR 经平台确认合并且验收满足后才 done。
-代码完成、PR 创建、review 或 CI 成功不能替代实际交付。通过多个 PR 时逐一确认。
+共享执行规则要求读取正文、必需引用、当前任务证据位置和真实共享输入，按所属阶段
+判断资料；适用原型已是输入时查看和操作。开始分析、提问或提出方案前，明确当前
+任务已确认的范围和验收条件。当前阶段尚待产出的完整要求、UI 或架构不能反过来
+阻止其讨论启动。缺关键内容、不可读引用或依赖未完成时保留实际问题，不凭标题补造方案。
 
-执行前按已确认的交付目的识别[终验收任务](#终验收任务)，再选择验证方法。无需代码
-或 PR 的终验收按整体要求、可读结论及证据完成；发现缺陷时如实记录，修复遵守已有
-授权和正常交付要求。必需结果仍未满足或未验证时，不得报告整个任务或 Goal 已验收。
+普通与 managed 执行共用同一交付准备条件：按目标仓库规则实现、验证、独立审查并
+维护完整 PR 属性和本任务证据。独立代码、文档或原型交付及用户明确纳入讨论验收的
+PR，必须全部经平台确认实际合并并满足验收；代码完成、PR 创建、review 或 CI 成功
+不能替代交付。Goal 讨论按用户确认和自身阶段验收完成，不因仓库存在通用 PR 规则
+自动增加设计 PR 门槛。合并权限、no-merge 指令和人工确认继续独立。
 
-完成前将用户确认、结果与必要证据写入本任务指定的正文或附件位置；实际 PR 交付保留 merge
-commit 引用。普通执行再读取 task，以实际版本 set-status done 并核验服务结果。worker-managed 执行保留明确给定的 claimId，最终重读核对原 active claim，用 --claim-id 与观察 --if-version 完成；这是最后一次 task mutation。拒绝或未知结果不回退、不重放，只读核对原 claim；同 claim 已完成可报告现有结果，claim 已换停止业务写入。必要交付 PR 仍打开
-或未满足明确的阶段 PR 验收时保持 in_progress，保存等待事项和下一步。no-merge 指令
-继续约束实际交付，不能用讨论 done 冒充仓库交付完成；完成规则不授予合并权限。
+共同执行规则在选择验证方法前识别[终验收任务](#终验收任务)。无需代码或 PR 的终验收
+按整体要求、可读结论及证据完成；必需结果未满足或未验证时不报告整体已验收。正常
+实现、授权修复与用户明确要求的长期自动化仍遵守其开发测试和交付要求。
 
-run-task 一次处理指定任务。普通 CI、review 或合并等待仍属于当前任务；subagents
-协作同一任务。需要外部介入时保留实际状态并返回。Goal 中用户明确确认需求并要求
-下一讨论时，共享协议可完成当前阶段并开始指定的方案讨论；这不启动 autopilot，也不
-选择任意后继。worker-managed 指派无论外层是否 autopilot 都只执行当前任务，完成或等待后返回 controller，不进入下一 task/Goal 阶段；controller 管资源清理和后续调度。其他完成后返回调用方。身份来自已有检查点，任意 in_progress 项不
-代表归本会话所有。
+普通完成前保存并核验当前任务的确认、结果与必要证据；实际 PR 交付保留 merge commit。
+重读 task，以实际观察版本执行普通 `task set-status done` 并核验服务结果。拒绝、冲突
+或未知结果保留真实原因，按当前版本与状态只读核对，不盲目重放；不引入 claim 条件。
+必要 PR 仍打开、缺合并权限或验收未满足时保留 in_progress、等待事项和下一步。
 
-## AS6. autopilot 的串行调度
+CI、review、合并等待及 subagent 协作仍属于当前任务。外部介入时保留当前身份与
+检查点并返回。只有普通 Goal 需求讨论中，用户明确确认需求并要求进入指定方案讨论时，
+才按共享 Goal 协议完成当前阶段并开始该指定讨论；这不授权任意后继或实际交付。
+其他完成或等待均返回调用方。
 
-autopilot 必须有用户明确启动要求，沿用确认的目标与授权范围。先刷新检查点中的当前
-任务；若身份未知，按需查询 in-progress 清单并核对上下文，不能任意认领。无当前任务
-时，用 `task ready --allow-agents true --json` 读取有界候选，从许可开启且属于授权范围的 ready `todo` 中比较问题、范围、方案、验收及依赖，选择与已授权目标最相关的一个，刷新详情与附件后进入 run-task。补充候选清单继续保留许可筛选；进行中的既定任务按已有检查点恢复，不因候选筛选被替换。
+## AS6. Worker managed 指定执行
 
-每个会话一次只推进一个任务，候选页不构成批量开工指令。等待交付及 subagent 协作
-期间保持当前任务。只有确认 done 才继续选择下一项；遇到需要外部介入的阻塞时保留
-当前任务和下一步，交回用户，不能自动换做无关工作。
+`references/execute-task-in-managed.md` 是独立执行入口，消费 worker 启动 prompt 中
+显式指定的运行环境、技能、模式和 assignment。它不先执行普通 run-task 再跳过步骤。
+Assignment 包括 projectId、taskId、claimId、worktreeId、实际 worktree 路径和 branch，
+以及该执行冻结的有效配置。先读完整任务并核对 project/task、in_progress、active
+worker claim 及 worktreeId，再核对真实工作目录、分支与冻结配置。上下文缺失或不匹配
+时等待，不降级普通认领、开始或任务选择；模式声明不能替代服务端权限和精确版本保护。
 
-Goal 需求或方案讨论完成只代表该阶段完成。未获用户明确确认时继续等待当前讨论，
-autopilot 不能代替确认、提前建方案任务或提前登记交付子任务。明确的用户讨论转场
-由 Goal 协议处理，不要求或激活 autopilot。整个 Goal 仍须全部实际交付和原始整体验收
-满足，不能由某个上游 done 推断。
+同 claim 已 completed 且 task done 时报告已有结果，不重新执行。恢复及任务写入前刷新
+原 claim；claim 变化立即停止业务写入，不用后来读到的 claim 替换 worker 给定身份。
+已由 controller 认领和开始的执行不再次 claim、set-status in_progress 或重跑候选资格。
+共同任务输入、实际阶段资料、当前前置、交付和完成准备继续读取
+`references/task-execution.md`，其公共规则不夹带普通开始/完成或候选选择语义。
 
-ready 为空或当前页没有匹配项时，按需补充范围相关查询，区分范围完成、依赖阻塞、
-其他工作进行中和候选不足。没有观察完整范围时不能宣称全部完成。需要登记缺失的
-工作时，必须有用户明确的 task 创建许可，适用的长期追踪或评审指示也满足该条件；
-autopilot 执行授权本身不包含该许可。取得或
-确认已有许可后遵守 create-task。新任务为 todo，登记不开始执行；已有明确范围可继续覆盖其 ready 后继。
-自动发现仅选 allowAgents=true 的 ready todo；确定队列沿用手工路径，流程不自行开启许可。
+允许范围内的编辑、提交、推送及授权合并使用给定系统工作区；agent 不创建、切换或
+删除其 worktree/branch，不关闭 workspace。避免会切换或删除分支的合并选项。Worker
+拥有系统资源收尾和后继调度；明确清理请求只处理其范围内可归属的 worktree 外临时资源。
+仅重连存活 agent 不意味着重新发送启动 prompt；确需重新启动时沿用原模式、assignment、
+工作区、native history 和冻结配置。实际 prompt 组装、递交与原生恢复由 worker 运行时
+和 Herdr 接入承担，技能文档和模拟检查不能替代这些运行结果。
 
-自动发现先观察真实执行环境 process.platform：win32→windows、darwin→macos、linux→linux，WSL的Linux运行时仍为linux。
-未知或不支持时等待，不从任务要求、配置、外层宿主或服务端推断。ready与补充list都携带allowAgents=true和
---compatible-platform <actual-platform>，筛选先于分页，不本地丢弃有界页。自动选出的ID保留自动模式与实际平台上下文，
-进入in_progress前重读完整任务，复核todo/ready/许可=true/平台null或匹配，以该完整读取的精确版本设置状态。
-资格变化重新选择，执行环境变化重新观察平台；不能把自动选出的ID当成人工指定。用户明确指定的任务或固定队列保留
-手工路径，可接受任一许可或平台值，仍受依赖、阶段资料及原执行范围约束，不自行启用许可。
+完成全部共同交付准备后，重读完整任务并核对原 active claim，最后使用显式
+`--claim-id` 与观察 `--if-version` 提交 done。这是最终 task mutation，确认服务结果的
+done、worker.state=completed 和原 claimId。拒绝或未知结果只读核对原执行，不重放、
+不回退普通 done；读取失败保持未确认，claim 变化停止后续业务写入。公开 CLI 的
+`--claim-id` 及 owner、claim、版本保护保持不变。
+
+等待人工、必要 PR 未合并或验收未满足时保持未完成；完成或等待后交还 controller。
+该入口不选择后继、不推进 Goal 阶段，也不删除系统工作区。普通入口和 managed 入口
+共用交付与验收要求，分别拥有自身的状态和资源生命周期。
 
 ## AS7. 交互安装与 scope
 
@@ -316,15 +333,15 @@ Claude Code personal 优先于 project，选择 Project 不修改 User。目录�
 
 | 编号 | 必须观察到的结果 |
 |---|---|
-| AS.V1 | 实际 npm pack 产物安装完整入口、五份模式引用及共享内容标准和 Goal 协议，移动包源后资料仍可读取。 |
+| AS.V1 | 实际 npm pack 产物安装完整入口、普通与 managed 模式引用、共享执行与内容标准及 Goal 协议，移动包源后资料仍可读取。 |
 | AS.V2 | 隔离 PATH 覆盖零、单、多 Agent；只显示可用选项，launcher 执行 sentinel 始终不存在；多选初始为空、scope 默认 User。 |
 | AS.V3 | 帮助与参数错误无检测和写入；无终端明确拒绝；交互取消、首次写入前取消与 stage 取消保持相应文件约束。 |
 | AS.V4 | 真正 PTY/ConPTY 覆盖三个 Agent × 两个 scope、根/子目录/linked worktree；无 origin/配置可安装，非 Git/bare Project 失败。 |
 | AS.V5 | 六种组合比较全部文件与字节；重装移除修改和旧文件，保留 sibling、另一 scope、parent 链接及 leaf 原指向对象。 |
 | AS.V6 | 同物理目标只写一次；安装与迁移路径嵌套写入前拒绝；部分失败停止后续目标并准确报告已有结果。 |
-| AS.V7 | 静态检查固定名称、非空 description、英文指引及所有实际本地资源引用；围栏代码中的任务示例保留有效 Markdown，不误认为 bundle 资源。实际打包与安装内容含 Markdown 写法、真实附件引用规则及完整入口、五份模式资料、共享内容标准和 Goal 协议，无仓库工作流依赖。 |
-| AS.V8 | 静态审查五模式路由、创建与执行授权、显式 autopilot、单任务、精确版本、专用 set-status、不确定写入、Markdown 自足正文、资料所有权、Goal 阶段和完成要求；资料不得指示 status patch、旧动作或旧状态创建。CLI 的创建、完整替换和读取验证含中英文、换行、代码、GFM 与链接的原始描述字符串及精确版本。 |
-| AS.V9 | 独立情境演练覆盖正文直接提供、完整文档引用与混合组织，引用不可读、内容缺项、范围不明与契约冲突，handoff 启用/失败/已启用复审、blocked todo、运行锁、done 策略、worker 连续性、附件变化及启用后立即被认领；同时覆盖裸调用有/无上下文、创建许可、Goal 唯一初始需求任务、明确讨论开始和仅登记的区分、需求确认转场、方案确认后拆分、autopilot 沿用已有创建与执行范围、具体工作项与临时执行步骤的区分、todo 各阶段登记、指定子任务的执行与讨论范围、跨任务阻塞和后续建议、共享输入读取不扩展范围、Goal 级讨论与整体验收范围、明确 Goal 队列、精确版本 set-status、in-progress 恢复、冲突与不确定写入、阶段输入/产出、真实拆分、部分登记恢复、Markdown 更新保留有效引用、资料所有权、前端 mock UI、开放 PR 等待、单任务返回、autopilot 阻塞与有界候选及整体验收。 |
+| AS.V7 | 静态检查固定名称、非空 description、英文指引及所有实际本地资源引用；围栏代码中的任务示例保留有效 Markdown，不误认为 bundle 资源。实际打包与安装内容含 Markdown 写法、真实附件引用规则及完整入口、普通与 managed 模式资料、共享执行与内容标准和 Goal 协议，无仓库工作流依赖。 |
+| AS.V8 | 静态审查互斥模式路由、创建与执行授权、普通单任务和显式 managed 入口、精确版本、专用 set-status、不确定写入、Markdown 自足正文、资料所有权、Goal 阶段和完成要求；资料不得指示 status patch、旧动作或旧状态创建。CLI 的创建、完整替换和读取验证含中英文、换行、代码、GFM 与链接的原始描述字符串及精确版本。 |
+| AS.V9 | 独立情境演练覆盖正文直接提供、完整文档引用与混合组织，引用不可读、内容缺项、范围不明与契约冲突，handoff 启用/失败/已启用复审、blocked todo、运行锁、done 策略、worker 连续性、附件变化及启用后立即被认领；同时覆盖裸调用有/无上下文、创建许可、Goal 唯一初始需求任务、明确讨论开始和仅登记的区分、需求确认转场、方案确认后拆分、普通执行沿用已有创建与执行范围、具体工作项与临时执行步骤的区分、todo 各阶段登记、指定子任务的执行与讨论范围、跨任务阻塞和后续建议、共享输入读取不扩展范围、Goal 级讨论与整体验收范围、普通指定任务返回、精确版本 set-status、in-progress 恢复、冲突与不确定写入、阶段输入/产出、真实拆分、部分登记恢复、Markdown 更新保留有效引用、资料所有权、前端 mock UI、开放 PR 等待、单任务返回、显式 worker 环境/技能/模式、普通不加载 managed 规则、managed assignment 缺失/不匹配、同 claim 恢复与最终完成、系统工作区边界及整体验收。 |
 | AS.V10 | 新名称发布后才清理所选根旧入口，覆盖旧叶节点链接、清理失败保留新 bundle、准确部分结果及重载提示。 |
 | AS.V11 | CLI typecheck、test、build、安装验收通过；Linux/macOS/Windows 分别提供适用检测、定位、取消、覆盖和链接的原生证据。 |
 | AS.V12 | 真实 npm 更新后已有 User/Project skill 与新包全文件字节一致，移除旧文件并保留缺失目标、无关 skill；当前或领先版本仍同步，失败非零且保留真实包状态；共享路径和叶链接符合 AS10。 |
@@ -385,4 +402,4 @@ flag 更新不包含附件的原子保护。可变引用按实际内容核验，
 
 结果包括内容结论、必要修改或缺项、实际版本、flag、状态、依赖阻塞和 worker 约束。
 许可为 true 不能证明执行开始或完成；实际观察到开始时应如实报告。handoff 本身不进入
-当前会话的 run-task/autopilot，不修改状态、依赖或平台，不授予独立交付权限。
+当前会话的任务执行，不修改状态、依赖或平台，不授予独立交付权限。

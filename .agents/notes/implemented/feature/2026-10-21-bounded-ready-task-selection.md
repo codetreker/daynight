@@ -28,9 +28,12 @@ option or new task state is introduced.
 
 The [public skill distribution](../architecture/2026-10-21-public-agent-skill-design.md)
 introduced bounded ready for next-work selection and show for known tasks.
-The [mode decision](../architecture/2026-10-21-using-daynight-modes.md) assigns
-selection to explicitly requested autopilot and designated-task execution to
-run-task. In-progress inventory supplies recovery clues, not session ownership;
+The [mode decision](../architecture/2026-10-21-using-daynight-modes.md) originally
+assigned selection to explicitly requested autopilot and designated-task
+execution to run-task. The
+[managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
+removes that agent-side scheduling mode; the public ready query remains useful
+for explicit inspection and worker candidate discovery. In-progress inventory supplies recovery clues, not session ownership;
 graph supplies overall dependencies. An empty ready result cannot establish that
 a project has no active or blocked work, and a full result cannot establish that
 no additional candidates exist. The prior graph-first policy provided a complete
@@ -39,13 +42,14 @@ recovery. This partially replaces the original
 [project/task CLI decision](../architecture/2026-10-20-project-task-cli-design.md)
 that all list-based queries exhaust their cursors.
 
-Within observed candidates, autopilot selects one ready todo most relevant to
-the current authorized work, after comparing problem, scope, attached solution
-and acceptance, and dependencies. A session restores its checkpoint's current
-task first and retains it through delivery waits; subagents collaborate on it.
-Only confirmed done permits selecting another authorized task. A standalone
-run-task returns without successor selection. Relevance belongs to the agent
-workflow, not service creation-order sorting or a new priority field.
+The original workflow selected one relevant ready todo from observed candidates
+after comparing scope, solution, acceptance and dependencies. It restored the
+current task first and kept delivery waits and subagents on that task before
+selecting another. Those rules prevented the bounded page from becoming an
+implicit batch. The current skill executes one specified ordinary task or one
+explicit worker assignment and returns without successor selection. The worker
+owns continuous discovery and scheduling; service creation-order sorting remains
+a query contract, not relevance or a new priority field.
 
 The [requirements](../../../../docs/spec/daynight-project-task.md) own observable
 command behavior; the [design](../../../../docs/design/daynight-project-task.md)

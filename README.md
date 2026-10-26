@@ -25,8 +25,9 @@ or run your own service. The interface supports English and Simplified Chinese.
   previews. Task and attachment links can open directly in an independent page.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
   Copilot CLI or Claude Code to register work, discuss designs, execute specified
-  tasks and review handoffs. Continuous execution requires an explicit request;
-  task readiness and agent permission remain separate from delivery authorization.
+  tasks and review handoffs. Ordinary execution handles one specified task.
+  Worker-started agents use an explicitly assigned managed mode; task readiness
+  and agent permission remain separate from delivery authorization.
 - **Control access and execution settings.** Use private projects, memberships,
   invitations and revocable CLI credentials. Set task platform requirements and
   agent permission, and view elapsed time and possible-stall warnings.

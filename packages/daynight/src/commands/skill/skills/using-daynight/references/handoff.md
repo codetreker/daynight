@@ -8,7 +8,7 @@ not authorize permission changes. Read [the handbook](handbook.md) for CLI
 operations and [the task content standard](task-content.md) for sufficiency.
 
 Handoff ends after review, any authorized permission update, and reconciliation.
-It does not start this session's run-task or autopilot, change status,
+It does not start this session's task execution, change status,
 dependencies or platform, or grant independent implementation, merge, mainline
 push, deployment, or external-communication authority. Existing execution and
 delivery authorization remains applicable to later scheduling.

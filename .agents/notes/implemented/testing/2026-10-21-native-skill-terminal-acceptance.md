@@ -96,10 +96,13 @@ stream separation without weakening production interactivity checks.
 Terminal installation proves the command and installed files. The installer
 acceptance uses simulated launchers and does not install or run real Agents,
 inspect account configuration, call models, or start Daynight services/databases.
-Static checks validate skill frontmatter, five mode references, shared task-content
-standard and Goal protocol, and task-command guidance. The [mode decision](../architecture/2026-10-21-using-daynight-modes.md)
-owns using-daynight routing and legacy-name migration; independent scenario
-review assesses instructions separately from installer file proof. Existing
+Static checks validate skill frontmatter, ordinary and managed mode references,
+neutral task-execution guidance, shared task-content standard and Goal protocol,
+and task-command guidance. The [mode decision](../architecture/2026-10-21-using-daynight-modes.md)
+owns using-daynight naming and legacy migration; the
+[managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
+owns the current routing and lifecycle separation. Independent scenario review
+assesses instructions separately from installer file proof. Existing
 project/task suites own task behavior. Host discovery and
 reload guidance follow the documented paths. Counts and transcripts belong to
 source-bound PR/CI evidence; this note preserves the terminal mechanism and limits.
