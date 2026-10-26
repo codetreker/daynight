@@ -24,7 +24,9 @@ The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define login, private
 projects, member and invitation management, CLI device authorization, and personal access tokens. The
 `AuthenticatedApp` implements their browser components and API client. Production
-`main.tsx` renders it under the persistent `LocaleProvider`; every business API
+`main.tsx` renders the public setup guide or `AuthenticatedApp` under the persistent
+`LocaleProvider`, selecting the exact `/setup` pathname before mounting any session
+lifecycle; every business API
 requires a browser session or PAT and current project membership. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources
 and keyboard behavior remain unchanged.
@@ -36,7 +38,8 @@ owns production composition and credential-private acceptance.
 ## Daily setup guide
 
 The header's book icon and visible Setup guide link appear before the language
-selector and open authenticated `/setup`. The expanded five steps explain CLI
+selector and open public `/setup` in a new tab with native link behavior and
+`noopener noreferrer`. The opener retains its current page. The expanded five steps explain CLI
 installation with Node.js 24, `daynight login` device authorization, discovering
 or creating a project from a Git repository's `origin`, `daynight skill install`
 and registering and viewing the first task. Each step gives its execution
@@ -44,23 +47,25 @@ location, prerequisites, copyable text and success signal. Remote terminals can
 use `daynight login --no-browser`; Agent reload instructions come from the
 installer's actual output for the selected launcher and User/Project scope.
 
-`SetupGuidePage` uses the typed `messages.setup` catalogs and the existing shell's
-route, title, breadcrumb, history, login return and normal modified-link behavior.
-It displays the current origin as information; the CLI's default login service
-remains `https://daynight.cc`. It reads no credentials, projects, tasks, token lists
-or completion status. The shell retains its normal identity checks.
+`SetupGuidePage` uses the typed `messages.setup` catalogs inside a public shell
+with a localized title, breadcrumb, skip link and language selector. It displays
+the current origin as information; the CLI's default login service remains
+`https://daynight.cc`. Direct access, reloads, copying, locale changes and
+focus/visibility restoration make zero API requests. No identity, provider, task
+cache or business-resource lifecycle mounts. Return-to-project links load a new
+document at `/`, where the normal authentication workflow starts.
 
 Command blocks retain selectable source text, exact newlines and argument quotes.
 One current copy operation disables the copy buttons until it settles. A floating
 status message reports success or explicitly asks for manual selection when the
 clipboard is unavailable or denied, without shifting content. Unmount and locale
 changes invalidate old results; switching language does not repeat a copy.
-The layout supports the real sidebar and header at desktop, 390px and 320px widths.
+The public reading layout supports the header at desktop, 390px and 320px widths.
 Go serves direct GET/HEAD requests and reloads through the normal no-store HTML
 handler; `/setup` and its descendants are reserved from authentication callbacks.
 The [requirements](../../docs/spec/daynight-web.md#日常使用引导),
 [design](../../docs/design/daynight-web.md#日常使用引导页) and
-[decision](../../.agents/notes/implemented/feature/2026-10-25-web-setup-guide.md)
+[decision](../../.agents/notes/implemented/architecture/2026-10-26-public-setup-guide.md)
 own the behavior, mechanisms and trade-offs.
 
 ## Authenticated workspace

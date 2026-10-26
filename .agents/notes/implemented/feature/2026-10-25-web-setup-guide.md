@@ -1,4 +1,4 @@
-# Agent Note: Authenticated daily setup guide
+# Agent Note: Daily setup guide content and interaction
 
 Status: implemented
 
@@ -12,17 +12,19 @@ The same material must remain useful for later reference.
 
 ## Decision
 
-A book icon and visible Setup guide link before the header language selector open
-an authenticated `/setup` page. Five expanded steps cover CLI installation,
-device login, repository project discovery or creation, Agent skill installation
-and registering and viewing a first task. The existing shell owns identity,
-login return, navigation, history, title and breadcrumb. Typed English and
-Simplified Chinese catalogs own the guide's text.
+Five expanded steps cover CLI installation, device login, repository project
+discovery or creation, Agent skill installation and registering and viewing a
+first task. Typed English and Simplified Chinese catalogs own the guide's text.
+The original delivery placed the guide inside the authenticated workspace to
+reuse its navigation, title, breadcrumb and login return. The
+[public guide decision](../architecture/2026-10-26-public-setup-guide.md) supersedes
+that composition: the header link opens a new tab and the guide mounts outside
+the session lifecycle.
 
 The guide is static content shipped with the Web build. It displays the current
 origin as information and uses the published CLI's normal production-default
 login flow. It reads no credentials, projects, tasks, tokens or completion state.
-Normal shell identity verification remains active. CLI, project discovery and
+The public guide makes no API requests. CLI, project discovery and
 skill installation keep their existing owners and are not reimplemented in the
 page.
 
@@ -62,15 +64,14 @@ its existing account owner.
 
 ## Consequences
 
-The guide introduces no business API, database format or completion record. It
-continues to render during the shell's normal identity lifecycle and supports
-direct links, refresh, history and narrow screens. CLI instruction changes must
+The guide introduces no API, database format or completion record. Its public
+entry supports direct links, refresh and narrow screens without authentication. CLI instruction changes must
 be checked against the actually published version and synchronized with both
 catalogs; the page does not probe a local CLI version at runtime.
 
 Live completion tracking would require a separately designed observation and
-privacy model. The current guide keeps instruction data separate from shell
-identity and copy state so that such a change would not redefine authentication
-or command semantics. Callback namespace reservation makes the new direct route
+privacy model. The guide keeps instruction data separate from copy state and the authenticated
+workspace so that such a change would require an explicit authentication and
+observation design. Callback namespace reservation makes the new direct route
 safe, with an explicit configuration change for deployments that previously
 used that path.
