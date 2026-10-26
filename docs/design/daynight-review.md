@@ -114,7 +114,9 @@ inode 识别实际位置及祖先关系，处理符号链接和挂载边界。�
 启动的 GitHub API 查询确定。[仓库添加决策](../../.agents/notes/implemented/feature/2026-10-18-add-repo-configuration.md)
 记录配置职责和路径固定的选择。
 
-使用 pnpm、TypeScript ESM、Node.js 24 LTS 和 `better-sqlite3`。实现包时锁定版本。
+源码开发使用 pnpm、TypeScript ESM 和 Node.js 24 LTS，持久化使用 `better-sqlite3`，
+依赖版本固定。发布的 CLI 运行于 Node.js 22 及以上版本，包与运行时依赖的 engine
+要求遵循[客户端设计](daynight.md#构建安装与交付)。
 review 模式需要预先安装 Git、`gh` 和 Copilot CLI，`gh` 认证提前准备好。Copilot 还需要
 受支持的凭据和可访问的模型。配置文件不包含凭据。
 

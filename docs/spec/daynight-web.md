@@ -68,7 +68,7 @@ Escape 或遮罩关闭后焦点回到展开按钮，选择路由则沿用正文�
 引导采用全部展开的五步布局，供首次操作和重复查阅。每步说明执行位置、必要前置条件、
 可复制内容与成功标志，命令遵循实际发布的 CLI：
 
-1. 安装 CLI：准备 Node.js 24，在终端运行 `npm install --global @codetreker/daynight`，
+1. 安装 CLI：准备 Node.js 22 及以上版本的最新补丁，在终端运行 `npm install --global @codetreker/daynight`，
    再运行 `daynight --version`，以版本输出确认可用。
 2. 登录账户：运行 `daynight login`，核对终端与浏览器的短码、当前账户和访问范围后批准。
    远程终端可使用 `daynight login --no-browser`，终端明确报告登录成功。CLI 默认连接

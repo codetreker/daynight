@@ -25,8 +25,9 @@ or run your own service. The interface supports English and Simplified Chinese.
   previews. Task and attachment links can open directly in an independent page.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
   Copilot CLI or Claude Code to register work, discuss designs, execute specified
-  tasks and review handoffs. Continuous execution requires an explicit request;
-  task readiness and agent permission remain separate from delivery authorization.
+  tasks and review handoffs. Ordinary execution handles one specified task.
+  Worker-started agents use an explicitly assigned managed mode; task readiness
+  and agent permission remain separate from delivery authorization.
 - **Control access and execution settings.** Use private projects, memberships,
   invitations and revocable CLI credentials. Set task platform requirements and
   agent permission, and view elapsed time and possible-stall warnings.
@@ -43,7 +44,8 @@ The planned autonomous worker runtime is still under development; its
 
 The public introduction explains the product before sign-in; its example can be
 used without an account. The **[setup guide](https://daynight.cc/setup)** walks
-through installation and agent setup. Use Node.js 24 LTS, then install the CLI and sign in:
+through installation and agent setup. Use the latest patch of Node.js 22 or newer,
+then install the CLI and sign in:
 
 ```bash
 npm install --global @codetreker/daynight
@@ -131,7 +133,8 @@ upload HTML you trust with that authority.
 
 ## CLI development
 
-Use Node.js 24 LTS and pnpm 11.28.6. From the repository root:
+Source development uses Node.js 24 LTS and pnpm 11.28.6. The published CLI runs on
+Node.js 22 or newer. From the repository root:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -178,7 +181,7 @@ from all changed paths, including deletions and both sides of renames:
 | Changed paths | PR application jobs |
 |---|---|
 | `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
-| Other `packages/daynight/` paths | Linux, macOS and Windows CLI, plus shell completion |
+| Other `packages/daynight/` paths | Linux, macOS and Windows CLI, runtime compatibility, plus shell completion |
 | `packages/daynight-server/` | Go server |
 | `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |

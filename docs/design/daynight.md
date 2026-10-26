@@ -107,8 +107,9 @@ src/
       skills/using-daynight/
         SKILL.md
         references/handbook.md
-        references/autopilot.md
         references/run-task.md
+        references/execute-task-in-managed.md
+        references/task-execution.md
         references/create-task.md
         references/goal.md
         references/task-content.md
@@ -396,7 +397,10 @@ addon 可能阻止替换，npm 失败直接可见。
 
 ## 构建、安装与交付
 
-开发使用 Node.js 24 LTS、pnpm 11.28.6、TypeScript ESM 和固定依赖版本。构建先执行
+发布包的 `engines.node` 为 `>=22`，无主版本上限；运行时依赖允许 Node.js 22 的当前 LTS patch。
+SQLite 使用 Node-API 10，实际运行需要 Node.js 22.14.0 或更新版本；安装文档推荐当前 patch。
+源码开发和发布使用 Node.js 24 LTS、pnpm 11.28.6、TypeScript ESM 和固定依赖版本。
+开发工具与直接执行的 TypeScript 脚本有独立于发布产物的运行要求。构建先执行
 `node scripts/clean-dist.ts` 删除包的 `dist/`，再通过 `tsc -p tsconfig.build.json`
 生成产物，防止模块移动后保留旧的可执行文件。构建还将 review 的完整内置 skill
 bundle 复制到 `dist/commands/review/skills/daynight-review/`，由既有 `dist` 发布规则
@@ -411,11 +415,14 @@ bundle 复制到 `dist/commands/review/skills/daynight-review/`，由既有 `dis
 的实际入口由
 [README](../../README.md#cli-development)维护。资源复制回归验证从无关工作目录执行实际
 脚本，在隔离包的全新目标下检查完整 bundle；重复排他复制必须失败且保留既有内容，
-缺少源码时同样明确失败。原生矩阵每次解析最新可用的 Node.js 24 patch，使构建行为
-覆盖受支持运行时的当前实现。源码、包元数据、构建或依赖输入变化
+缺少源码时同样明确失败。原生矩阵每次解析最新可用的 Node.js 24 patch，验证开发工具链。
+独立的运行时矩阵先在 Node.js 24 下构建 tarball，再分别使用 Node.js `22.14.0`、最新 `22`、
+最新 `24` 和当前 `node` 安装该产物。全新 npm consumer 启用严格 engine 校验，并验证
+CLI 命令、交互提示依赖和 SQLite，避免包元数据接受版本而实际依赖无法安装或运行。
+源码、包元数据、构建或依赖输入变化
 需要更高 SemVer；构建清理脚本也属于发布输入。[CI 路由](../../README.md#ci-selection)
-选中 CLI 时，全部原生检查和独立 shell completion 检查必须成功，PR 的 Linux CLI
-任务还检查包版本；main push 保留全量应用门禁。最终 `checks` 只接受所有前置 job 的
+选中 CLI 时，全部原生检查、运行时兼容检查和独立 shell completion 检查必须成功，
+PR 的 Linux CLI 任务还检查包版本；main push 保留全量应用门禁。最终 `checks` 只接受所有前置 job 的
 `success` 或 `skipped`，失败、取消及其他结果使汇总失败。
 发布在验证 CLI 与安装项目依赖前检查精确版本的 tag 和 npm 记录；任一存在则成功跳过。
 新版本在冻结的源码提交上独立执行 `@codetreker/daynight` 的类型检查、测试、安装验收和

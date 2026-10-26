@@ -18,26 +18,33 @@ with another target. Ordinary status setting remains unchanged when the option
 is absent. Expected versions, confirmed-result rendering and no automatic write
 retries remain shared with the existing command.
 
-The canonical using-daynight skill recognizes an explicit controller assignment
-containing project/task/claim identity, worktree/branch and frozen configuration.
-It verifies the latest active in-progress claim and actual workspace before
-business work; a worker record alone is not an assignment. Missing or mismatched
-context waits without falling back to ordinary selection or starting.
+The canonical using-daynight skill has a separate execute-task-in-managed
+reference under the [managed execution decision](2026-10-26-managed-task-skill.md).
+A worker startup prompt explicitly specifies the worker-managed environment,
+using-daynight skill and managed mode, with project/task/claim/worktree identity,
+actual worktree/branch and frozen configuration. The agent verifies the latest
+active in-progress claim and actual workspace before business work. A worker
+record, cwd or environment variable alone is not an assignment or mode selector.
+Missing or mismatched context waits without falling back to ordinary execution.
 
 The agent uses the provided execution, performs the complete authorized task,
 records its evidence, and finally completes the same explicit claim at the
 observed version. Required PR delivery and human gates still apply. A refused
 or unknown result cannot fall back to the ordinary setter; reconciliation reads
 only the original claim. The controller owns system-worktree cleanup and the
-next assignment, including when an outer autopilot is active.
+next assignment. Shared
+delivery and acceptance rules remain neutral; ordinary status transitions do not
+run as a preliminary managed workflow.
 
 The [task status architecture](../../../../docs/design/daynight-task-status.md#cli-与工作流)
 owns CLI dispatch. The canonical
-[worker-managed rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/run-task.md#worker-managed-assignment)
+[worker-managed rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/execute-task-in-managed.md)
 own the agent workflow. This partially supersedes the completion-verifier
 responsibility in the [worker design decision](2026-10-22-worker-design.md) and
-adds a bounded execution case to the [mode decision](2026-10-21-using-daynight-modes.md).
-It does not change the service's protected ownership or ordinary status rules.
+originally added a bounded execution case within ordinary run-task under the
+[mode decision](2026-10-21-using-daynight-modes.md). The managed execution
+decision separates that instruction placement and removes autopilot; the CLI
+operation and the service's protected ownership and ordinary status rules remain.
 
 ## Alternatives
 
@@ -57,8 +64,9 @@ existing task status API already expresses the agent's final accepted result.
 ## Consequences
 
 Worker-managed execution has a single task and explicit completion identity;
-ordinary manual execution, Goal discussion and automatic selection retain their
-own rules. Completion does not authorize a merge, deployment or broader work.
+ordinary manual execution and Goal discussion retain their own lifecycle rules.
+Automatic candidate selection and continuous scheduling belong to the worker.
+Completion does not authorize a merge, deployment or broader work.
 The skill is shipped from its canonical source; installed copies are not edited.
 Static discovery and instruction-contract checks prove packaging, while a
 controlled agent trace is separate behavior evidence. Neither substitutes for

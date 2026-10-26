@@ -103,9 +103,9 @@ Web 在任务详情标题下的同一状态行中，左侧显示状态、ready �
 
 开启框说明 worker 可在任务处于 todo、依赖完成并符合运行条件时自动领取；关闭框说明 worker 将不再自动领取。自动执行许可与 ready 独立，手工 set-status 与普通元数据修改均保留许可。实际切换在 `in_progress` 拒绝；权限和版本检查先于同值判定，精确版本同值 PATCH 返回原 task，不增加版本或更新时间。关闭许可不隐式停止执行或移交资源。
 
-确认表示明确操作意图，不能从 session/PAT 类型推断物理人工。CLI/skill 禁止自动 worker 自行启用许可，操作沿用现有项目成员写权限。Web 的双向确认、状态展示和失败交互遵循本节的布局与操作规则，具体组件与工作空间请求归属由[看板设计](daynight-web.md#自动执行许可与确认)拥有。CLI update/list/ready 的 `--allow-agents true|false` 映射到该普通更新或查询字段；随包自动候选同时使用 true 与实际平台兼容筛选，领取前从最新完整详情重验许可、ready 和平台；明确由用户指定的单任务执行沿用人工状态设置；已有 released 归属时使用显式人工 resume，自动选出的 ID 不属于人工例外。
+确认表示明确操作意图，不能从 session/PAT 类型推断物理人工。CLI/skill 禁止自动 worker 自行启用许可，操作沿用现有项目成员写权限。Web 的双向确认、状态展示和失败交互遵循本节的布局与操作规则，具体组件与工作空间请求归属由[看板设计](daynight-web.md#自动执行许可与确认)拥有。CLI update/list/ready 的 `--allow-agents true|false` 映射到该普通更新或查询字段。Worker 自动候选同时使用 true 与实际平台兼容筛选，认领由服务端事务重验许可、ready、平台、版本及归属；明确由用户指定的单任务执行沿用人工状态设置。已有 released 归属时使用显式人工 resume，自动选出的 ID 不属于人工例外。普通技能不承担自动候选选择或连续调度。
 
-平台兼容查询已接入现有列表。随包 autopilot 从实际 process.platform 映射 win32/windows、darwin/macos、linux/linux（含 WSL），不确定或不支持时等待；ready 与补充 list 均传同一实际平台，领取前完整详情重验绑定精确版本。后续 worker daemon 以自身真实运行平台消费该接口：
+平台兼容查询已接入现有列表。Worker daemon 需要从自身实际 process.platform 映射 win32/windows、darwin/macos、linux/linux（含 WSL），不确定或不支持时等待；ready 与后续候选查询均传同一实际平台，自动认领由服务端事务重验并绑定精确版本。普通指定任务不经过自动候选发现。运行时消费的查询为：
 
 ```http
 GET /api/v1/projects/{project}/tasks?ready=true&allowAgents=true&compatiblePlatform=linux&limit=10
@@ -239,6 +239,8 @@ Unix 使用 domain socket，两个路径分别校验 Linux 107、macOS 103 个 U
 
 ### Prompt 所有权与停止顺序
 
+单一 `using-daynight` 的 SKILL.md 只做简短入口路由。普通任务读取 run-task.md；worker 启动 prompt 显式指定上述环境、技能与模式后，agent 才读取 references/execute-task-in-managed.md。任务 worker 属性、cwd 和环境变量不能自行激活 managed。专属指令核对原 claim、实际工作区及冻结配置，缺失或不匹配时保持等待，不改走普通认领、开始或完成。两种入口复用 references/task-execution.md 中的任务输入、范围、交付、验收和证据规则，普通开始/重开/done 与 managed 原 claim 生命周期分别由对应入口拥有。
+
 协调循环负责首次启动和同 claim 确需重新启动 agent 时的完整 prompt：确认所需技能可用，显式声明 `worker-managed` 运行环境、`using-daynight` 技能与 `execute-task-in-managed` 模式，并传入 projectId/taskId/claimId、worktreeId、实际 worktree/branch、原会话关联及该执行冻结配置。Prompt 不含认证凭据；具体业务指令由协调循环和技能入口拥有。Herdr 适配层只向指定执行递交调用方给出的不透明文本，不解析任务、推断模式或重新组装内容。重连仍存活 agent 只恢复观察，不重新递交启动 prompt；未知启动或输入先观察原 pane，不盲目重发或启动第二个 agent。
 
 Codex 的新执行和 resume 可直到首个用户 turn 才运行 SessionStart hook，因而不能把新官方 ID 当成首条输入的前置。新启动以已核验的原目标、冻结 argv、配置和 readiness 授权一次初始输入；resume 还要求持久原 ID、必要 history 及确切 resume argv。随后等待官方 ID，若后续 ID 观察超时、取消或不匹配，`HerdrAgentActionError.promptSubmission` 保留 not-submitted/submitted/unknown，不能把已提交改说成未发送。
@@ -254,6 +256,7 @@ Codex 的新执行和 resume 可直到首个用户 turn 才运行 SessionStart h
 整个 worker 的退出在各任务停止后调用 `stopInstance`。server.stop ACK 只表示请求收到；仍须核对 API/client 实际关闭，并在本调用持有 live child handle 时等待其 close。重连实例没有 child handle 时返回 ownedChildClosed:null，不能伪称取得进程退出事件。服务不确定结果只继续观察，不重发 stop 或按持久 PID 杀进程。
 
 Agent 按显式 assignment 和技能规则复用已开始执行，不重认领或重建工作区，完整交付和验收后最后显式 claim-bound done；等待时保留原任务。适配层输入能力不等于 managed 业务指令、协调循环或完整 Goal 已交付。原生停止/恢复的来源、实际平台与限制遵循下方验证边界。
+
 
 ## Agent 完成与人工操作
 
@@ -324,7 +327,7 @@ Linux 的 Herdr 0.9.5 针对性验证已观察到：目录信任界面仍为 lau
 
 ## 模型入口大小
 
-Agent 的模型入口使用随包 `using-daynight` 与既有 task CLI；Worker 自己的任务操作直接调用进程内 typed ApiClient。启动上下文传 task/claim/session/worktree 标识及技能路径，不复制完整 Goal 或全部交互资源。初始设计对三个代表性输入的测量中，简介为 1708～3067 个 UTF-8 字节，主 Markdown 为 7588～15259 个字节；这些是当时输入的测量范围，后续资料修改不受该大小约束。
+Agent 的模型入口使用随包 `using-daynight` 与既有 task CLI；Worker 自己的任务操作直接调用进程内 typed ApiClient。启动 prompt 显式传入运行环境、技能、managed 模式及 assignment、工作区/会话和冻结配置，agent 按所选入口渐进读取，不复制完整 Goal 或全部交互资源。初始设计对三个代表性输入的测量中，简介为 1708～3067 个 UTF-8 字节，主 Markdown 为 7588～15259 个字节；这些是当时输入的测量范围，后续资料修改不受该大小约束。
 
 已知任务先读取完整详情，再按正文入口读取实际必需资料、UI 和证据；正文完整时不强制读取主附件。共享内容规则由随包 `references/task-content.md` 拥有，调用次数取决于真实引用与阶段输入，不能假定固定为三次。保留完整要求，不截断来制造固定 token 上限；具体 token 随 agent/model、仓库指示变化，原生验收记录实际模型使用量。未增加 report tool、模型 RPC 或通用 MCP 服务。
 

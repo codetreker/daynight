@@ -3,16 +3,15 @@
 Use this mode to prepare and register work that needs persistent tracking. Read
 [the handbook](handbook.md) before discovery, queries, or writes and
 [the task content standard](task-content.md) for content preparation. Return after
-registration; registration alone does not authorize execution or
-autopilot. An explicit request to start a Goal discussion routes the registered
+registration; registration alone does not authorize execution. An explicit request to start a Goal discussion routes the registered
 current stage to run-task under the Goal protocol.
 
 Create tasks only with the user's explicit permission for the relevant scope.
 An explicit user or applicable repository instruction requiring Daynight tracking
 or review supplies standing creation permission for necessary tasks within the
 confirmed scope. Reuse suitable tasks and do not ask for that permission again.
-Loading this mode, needing durable tracking, or permission to implement or run
-autopilot alone does not grant creation permission. Ask when it is missing; reuse
+Loading this mode, needing durable tracking, or permission to implement alone
+does not grant creation permission. Ask when it is missing; reuse
 permission already granted for the scope. Creation does not authorize execution or delivery.
 
 ## Choose the tracked outcome
@@ -186,7 +185,7 @@ discussion-start request is scoped execution authorization for that discussion,
 as the Goal protocol specifies. User solution confirmation permits registration
 of todo delivery tasks and grants no delivery execution permission. Apply any
 existing explicit execution authorization only within its stated task or Goal
-scope; ready successors in an authorized fixed queue need no per-task authorization.
+scope. Registration does not select or start a later task.
 
 If creation succeeds but a later operation fails, retain the confirmed IDs and
 resume missing operations there. Tasks remain `todo`. Reconcile uncertain results through the handbook before another

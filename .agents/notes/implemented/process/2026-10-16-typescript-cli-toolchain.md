@@ -20,6 +20,12 @@ artifacts. Source tests follow client, command and platform module ownership;
 tooling tests retain build and version-policy validation. The pnpm dependency store
 is local to `.tmp/pnpm-store`.
 
+The initial package engine restricted installation to Node.js 24. The
+[runtime support decision](../bug-fix/2026-10-26-node-runtime-support.md)
+replaces that restriction with Node.js `>=22` and adds strict installed-artifact
+checks across Node.js versions, with native binary requirements documented.
+Source development and native application validation retain Node.js 24.
+
 YAML parsing is followed by explicit field/type/path validation. Omitted numeric
 settings use documented defaults; invalid supplied values fail. Existing
 path components must be directories, while missing clone directories remain

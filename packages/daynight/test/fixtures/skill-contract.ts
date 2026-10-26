@@ -4,6 +4,12 @@ import { readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
 
+const requiredSkillResources = [
+  "SKILL.md", "references/handbook.md", "references/create-task.md", "references/handoff.md",
+  "references/run-task.md", "references/execute-task-in-managed.md", "references/task-execution.md",
+  "references/goal.md", "references/task-content.md",
+] as const;
+
 type Resource = { readonly path: string; readonly sha256: string; readonly localReferences: readonly string[] };
 export type InstalledSkillContract = {
   readonly documents: ReadonlyMap<string, string>;
@@ -56,10 +62,8 @@ export const inspectInstalledSkill = async (directory: string): Promise<Installe
   };
   await visit(root);
   resources.sort((left, right) => left.path.localeCompare(right.path));
-  for (const resource of [
-    "SKILL.md", "references/handbook.md", "references/create-task.md", "references/run-task.md",
-    "references/autopilot.md", "references/goal.md", "references/task-content.md", "references/handoff.md",
-  ]) assert.ok(documents.has(resource), `The installed bundle contains ${resource}.`);
+  for (const resource of requiredSkillResources) assert.ok(documents.has(resource), `The installed bundle contains ${resource}.`);
+  assert.equal(documents.has("references/autopilot.md"), false, "The removed automatic execution mode is not packaged.");
   const entrypoint = documents.get("SKILL.md");
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(entrypoint!);
   assert.notEqual(frontmatter, null, "The installed skill has YAML frontmatter.");
@@ -67,7 +71,30 @@ export const inspectInstalledSkill = async (directory: string): Promise<Installe
   assert.ok(typeof metadata === "object" && metadata !== null && !Array.isArray(metadata));
   assert.ok("name" in metadata && metadata.name === "using-daynight");
   assert.ok("description" in metadata && typeof metadata.description === "string" && metadata.description.trim().length > 0);
-  return { documents, resources, metadata: { name: metadata.name, description: metadata.description } };
+  const contract = { documents, resources, metadata: { name: metadata.name, description: metadata.description } };
+  verifyExecutionResourceSeparation(contract);
+  return contract;
+};
+
+export const verifyExecutionResourceSeparation = (bundle: InstalledSkillContract): void => {
+  const links = (resource: string): readonly string[] => {
+    const content = bundle.documents.get(resource);
+    assert.equal(typeof content, "string", `The installed bundle contains ${resource}.`);
+    return [...prose(content!).matchAll(/\[[^\]]*\]\(([^)]+)\)/g)]
+      .map((match) => path.posix.basename(match[1]!.split("#")[0]!));
+  };
+  const ordinary = "references/run-task.md";
+  const managed = "references/execute-task-in-managed.md";
+  const shared = "references/task-execution.md";
+  assert.ok(links(ordinary).includes("task-execution.md"), "Ordinary execution loads shared delivery guidance.");
+  assert.ok(links(managed).includes("task-execution.md"), "Managed execution loads the same shared delivery guidance.");
+  assert.ok(!links(ordinary).includes("execute-task-in-managed.md"), "Ordinary execution does not load the managed entrypoint.");
+  assert.ok(!links(managed).includes("run-task.md"), "Managed execution does not load the ordinary lifecycle.");
+  for (const entrypoint of ["run-task.md", "execute-task-in-managed.md"]) {
+    assert.ok(!links(shared).includes(entrypoint), `Shared delivery guidance does not load ${entrypoint}.`);
+  }
+  assert.doesNotMatch(bundle.documents.get(ordinary)!, /--claim-id\b|properties\.worker|claimId/);
+  assert.doesNotMatch(bundle.documents.get(shared)!, /task set-status\b|--claim-id\b/);
 };
 
 type Proposition = { readonly resource: string; readonly section: string; readonly requires: readonly RegExp[] };
@@ -81,11 +108,12 @@ type InstructionScenario = {
 export const instructionScenarios: readonly InstructionScenario[] = [
   {
     id: "worker-managed-context",
-    input: "A controller supplies a claimed task, worktree and frozen configuration, or supplies an incomplete or mismatched assignment.",
-    obligation: "Verify the explicit assignment against the latest claim and actual workspace, without inferring authority or falling back to an ordinary start.",
+    input: "The worker startup prompt explicitly supplies managed environment, skill, mode and an assignment, or its context is incomplete or mismatched.",
+    obligation: "Route only explicit worker startup assignments to managed instructions and verify the original claim without an ordinary fallback.",
     propositions: [
-      { resource: "SKILL.md", section: "## Shared constraints", requires: [/A controller-supplied worker-managed assignment is bounded to its explicit project, task, claim, worktree, and frozen execution configuration/, /A task's worker property alone does not establish this context or grant execution authority/] },
-      { resource: "references/run-task.md", section: "## Worker-managed assignment", requires: [/`projectId`, `taskId`, `claimId`, its worktree path and branch, and frozen execution configuration/, /context is missing or mismatched, return waiting without task or business writes/, /Do not fall back to ordinary task selection, claiming, or starting/, /Read the latest complete task using the supplied project and task IDs/, /`properties.worker.state=active` with the supplied `claimId`/, /Verify the actual working directory and Git branch match the supplied worktree/, /supplied frozen execution configuration without replacing it from current defaults/, /never substitute a claim read from the task/] },
+      { resource: "SKILL.md", section: "## Select a mode", requires: [/worker-managed/, /using-daynight/, /execute-task-in-managed/, /startup prompt/, /ordinary/i] },
+      { resource: "references/execute-task-in-managed.md", section: "## Establish the assignment", requires: [/projectId/, /taskId/, /claimId/, /worktreeId/, /branch/, /frozen/, /missing|incomplete/, /mismatch/, /return waiting without task or business writes/, /Do not.*(?:infer|guess)|not.*(?:infer|guess)/] },
+      { resource: "references/execute-task-in-managed.md", section: "## Verify the existing execution", requires: [/in_progress/, /active/, /with the supplied `claimId` and `worktreeId`/, /branch/, /frozen/, /never substitute/] },
     ],
   },
   {
@@ -93,47 +121,26 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "An already-active controller assignment resumes with its original worktree, or a matching completed claim is encountered.",
     obligation: "Resume only its existing execution and retain controller ownership of system resources.",
     propositions: [
-      { resource: "references/run-task.md", section: "## Worker-managed assignment", requires: [/report the existing completion and return without reexecuting it/, /Do not claim it, set it to `in_progress`, select candidates, or rerun automatic candidate qualification/, /Before resuming interrupted work or making task writes, refresh the task and check the same active claim/, /Do not create, switch, or remove the system-managed worktree or branch/, /Avoid merge options such as `gh pr merge --delete-branch`/, /The worker owns resource cleanup after execution/, /do not delete its worktree or close its workspace/] },
+      { resource: "references/execute-task-in-managed.md", section: "## Verify the existing execution", requires: [/completed/, /done/, /without reexecuting|without executing|do not reexecute/, /Do not claim it, set it to `in_progress`, select candidates/, /refresh|reread/, /task writes|mutation/, /same active claim/] },
+      { resource: "references/execute-task-in-managed.md", section: "## Execute within controller-owned resources", requires: [/Do not create, switch, or remove/, /worktree/, /branch/, /--delete-branch/, /worker owns resource cleanup/, /do not delete its worktree or close its workspace/] },
     ],
   },
   {
     id: "worker-managed-claim-completion",
-    input: "The assigned claim has met task acceptance and all delivery gates, or its final write is refused or loses its response.",
+    input: "The assigned claim has met acceptance and delivery gates, or its final write is refused or loses its response.",
     obligation: "Make the explicit claim-bound final mutation with the observed version and reconcile only that claim without fallback or replay.",
     propositions: [
-      { resource: "references/run-task.md", section: "## Worker-managed assignment", requires: [/normal task acceptance, evidence, delivery, PR, and human-confirmation gates below still apply/, /reread the complete task, verify the same active claim/, /daynight task set-status <task-id> done --project <project-id> --claim-id <claim-id> --if-version <observed-version>/, /This is the final task mutation/, /Confirm `done`, `properties.worker.state=completed`, and the original claim ID/, /never falls back to ordinary completion or automatic replay/, /reconcile only the original claim/, /An unreadable result remains unconfirmed/, /an observed claim change stops further business writes/] },
+      { resource: "references/execute-task-in-managed.md", section: "## Complete the original claim", requires: [/reread/, /active claim/, /daynight task set-status <task-id> done --project <project-id> --claim-id <claim-id> --if-version <observed-version>/, /final task mutation/, /properties\.worker\.state=completed/, /original claim/, /never falls back to ordinary completion or automatic replay/, /reconcile only the original claim/, /An unreadable result remains unconfirmed/, /observed claim change stops further business writes/] },
       { resource: "references/handbook.md", section: "**Task status.**", requires: [/task set-status <task-id> done --claim-id <claim-id> --if-version <version>/, /valid only with `done`/, /never infers it from task data or the environment/, /Omit `--claim-id` for ordinary status setting/, /refusal never causes fallback between these operations/, /checks the exact version before a same-status no-op/] },
     ],
   },
   {
     id: "worker-managed-bounded-wait",
-    input: "An assigned task reaches completion, a human gate, an unmerged PR, or unmet acceptance while outer autopilot is active.",
-    obligation: "Preserve the assigned task through waiting and return without selecting another task or advancing Goal stages.",
+    input: "An assigned task reaches completion, a human gate, an unmerged PR, or unmet acceptance.",
+    obligation: "Preserve the assigned task through waiting and return to the controller without another task or Goal transition.",
     propositions: [
-      { resource: "SKILL.md", section: "## Shared constraints", requires: [/This assignment takes precedence over successor selection and Goal transitions, including an active outer autopilot/] },
-      { resource: "references/run-task.md", section: "## Worker-managed assignment", requires: [/A missing input or unmet prerequisite keeps this assignment waiting in `in_progress`/, /Return after this task completes or requires external intervention/, /Do not choose a successor or advance a Goal stage, even when an outer autopilot is active/, /Preserve the assignment when waiting for a human gate, an unmerged required PR, or unmet acceptance/] },
-      { resource: "references/autopilot.md", section: "## Worker-managed assignment", requires: [/before this mode's restoration or selection/, /Execute only that supplied task and claim, then return on completion or external wait/, /Do not select a successor or advance a Goal stage/] },
-    ],
-  },
-  {
-    id: "automatic-selection-permission",
-    input: "Automatic selection is active; a user may also explicitly select a task without automatic permission.",
-    obligation: "Filter automatic candidates before pagination, never self-enable permission, and preserve explicit manual execution.",
-    propositions: [
-      { resource: "references/autopilot.md", section: "## Select one related task", requires: [/daynight task ready --allow-agents true --compatible-platform <actual-platform> --json/, /task with `allowAgents=true`/, /daynight task list --allow-agents true --compatible-platform <actual-platform> --json/, /Automatic selection never enables `allowAgents`/, /manual execution path remains available regardless of the flag/] },
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/explicitly user-selected task may use the manual execution path regardless of `allowAgents`/, /Automated task selection requires true and must not enable the flag itself/] },
-      { resource: "references/handbook.md", section: "**Automatic execution permission.**", requires: [/New tasks start false/, /Actual changes are locked during in_progress/, /server combines that condition with other filters before pagination and the ready limit/, /Automatic selection requires true and does not enable permission itself/] },
-    ],
-  },
-  {
-    id: "automatic-selection-platform",
-    input: "A Linux autopilot sees Windows-only tasks, a bounded page, or changed eligibility; a user may explicitly assign a fixed queue.",
-    obligation: "Use actual-runtime server filters, retain automatic context and recheck full-task eligibility at the exact start version; preserve only explicit manual assignment exceptions.",
-    propositions: [
-      { resource: "SKILL.md", section: "## Shared constraints", requires: [/Automatic task selection requires `allowAgents=true`, readiness, and `requiredPlatform` compatibility with the actual current execution environment/, /filter both ready and supplemental inventory before pagination/, /carry automatic selection and its platform into run-task/, /Only an explicitly user-selected task or fixed Goal queue may follow the manual execution path regardless of the flag or platform compatibility/] },
-      { resource: "references/autopilot.md", section: "## Select one related task", requires: [/node -p "process.platform"/, /Map `win32` to `windows`, `darwin` to `macos`, and `linux` to `linux`/, /A Linux runtime in WSL is `linux`/, /Unsupported or unknown runtime platforms leave selection waiting/, /Do not substitute a configured platform, remote host OS, or requested task platform for the observed runtime/, /daynight task ready --allow-agents true --compatible-platform <actual-platform> --json/, /daynight task list --allow-agents true --compatible-platform <actual-platform> --json/, /Both ready and supplemental list queries retain the actual-platform filter before pagination/, /Pass the selected ID, automatic-selection mode and actual platform to `run-task`/, /Immediately before setting in_progress, reread the full task with `daynight task show <task-id> --json` and recheck `todo`, ready, `allowAgents=true`, and `requiredPlatform` either null or equal to the same actual platform/, /A changed or incompatible requirement prevents starting and requires a new selection decision/, /using the exact version from this full-task recheck with `--if-version`/, /An automatically selected ID passed to run-task remains automatic selection and does not acquire this manual exception/] },
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/An explicitly user-selected task may use the manual execution path regardless of `allowAgents` or platform compatibility/, /An automatically selected ID passed here remains automatic selection, even though run-task receives a concrete ID/, /Carry its actual runtime platform from autopilot/, /Immediately before setting in_progress, reread the full task and recheck `todo`, ready, `allowAgents=true`, and `requiredPlatform` either null or equal to that same actual platform/, /A changed or incompatible requirement prevents starting and requires a new selection decision/, /Use the exact version from this full-task recheck with `--if-version`/] },
-      { resource: "references/goal.md", section: "## Advance and accept the whole Goal", requires: [/actual-runtime platform compatibility/, /platform-filtered queries/, /preserve automatic-selection context for run-task's full-task recheck before setting in_progress/] },
+      { resource: "references/execute-task-in-managed.md", section: "## Return to the controller", requires: [/completion|completes/, /wait|intervention/, /does not select a successor or advance a Goal stage/, /worker|controller/, /human|user/, /PR/, /acceptance/] },
+      { resource: "references/task-execution.md", section: "## Confirm acceptance readiness", requires: [/every necessary delivery PR/, /is merged/, /human|user/, /in progress/] },
     ],
   },
   {
@@ -146,21 +153,12 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     ],
   },
   {
-    id: "fixed-authorized-queue",
-    input: "The user explicitly authorized a fixed Goal queue with allowAgents=false.",
-    obligation: "Use its manual path and existing authorization for ready successors without enabling discovery permission.",
-    propositions: [
-      { resource: "references/autopilot.md", section: "## Select one related task", requires: [/fixed Goal queue/, /manual execution path regardless of `allowAgents`/, /Existing scoped authorization covers its ready successors without per-task reauthorization/, /Automatic selection never enables `allowAgents`/] },
-      { resource: "SKILL.md", section: "## Shared constraints", requires: [/Existing explicit authorization may cover a stated task or fixed Goal queue and its ready successors without another per-task authorization/] },
-    ],
-  },
-  {
     id: "authorized-ready-start",
     input: "An authorized ready todo has complete prerequisites and stage inputs, with execution authorized.",
     obligation: "Start using its decision version and confirm in_progress before work begins.",
     propositions: [
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/For ready `todo`, begin only when dependencies are done, required stage inputs are complete and the work is authorized/, /Both kinds must be done before entering in_progress or done/, /Use `task set-status <task-id> in_progress` with the exact version observed for that decision and confirm in_progress before starting/] },
-      { resource: "references/autopilot.md", section: "## Select one related task", requires: [/Readiness checks all prerequisites, not stage artifact completeness or execution authorization/, /External prerequisites still block readiness/, /cross-chain classification does not authorize executing them or expand the confirmed scope/, /enters in_progress using the version observed for that decision before starting/] },
+      { resource: "references/run-task.md", section: "## Start or resume the task", requires: [/ready/, /`todo`/, /dependencies/, /authorized/, /task set-status <task-id> in_progress/, /exact version/, /confirm.*in_progress/] },
+      { resource: "references/task-execution.md", section: "## Verify prerequisites and scope", requires: [/direct prerequisite/, /externalDependsOn/, /Both kinds must be done/, /Classification never grants permission to execute a prerequisite/] },
     ],
   },
   {
@@ -168,8 +166,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "A checkpoint identifies an existing in_progress task after interruption.",
     obligation: "Recover its actual work and identity; in_progress is not a claim lock or arbitrary selection.",
     propositions: [
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/For `in_progress`, recover existing work and coordinate/, /the state is not an assignee lock or lease/, /Preserve the requested task ID through recovery and waiting/] },
-      { resource: "references/autopilot.md", section: "## Restore the current target", requires: [/Resume this session's current task before selecting new work/, /An arbitrary `in_progress` task is not this session's target/] },
+      { resource: "references/run-task.md", section: "## Start or resume the task", requires: [/For `in_progress`, recover existing work and coordinate/, /the state is not an assignee lock or lease/] },
     ],
   },
   {
@@ -178,7 +175,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     obligation: "Reread and reconsider rather than changing the version and replaying automatically.",
     propositions: [
       { resource: "references/handbook.md", section: "**Task concurrency.**", requires: [/the exact version read for that decision using `--if-version`/, /Preserve full int64 decimal digits without numeric rounding/, /On a conflict, reread and reconsider/, /not merely a newer version/, /Never retry a mutation automatically/] },
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/A stale version or changed prerequisite requires rereading and reconsidering, with no automatic mutation retry/] },
+      { resource: "references/run-task.md", section: "## Start or resume the task", requires: [/A stale version or changed prerequisite requires rereading and reconsidering, with no automatic mutation retry/] },
     ],
   },
   {
@@ -196,8 +193,8 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "A delivery task passes acceptance but a required PR is open, or the user requests keeping that PR for review.",
     obligation: "Keep in_progress and the checkpoint; neither auto-merge nor complete to unlock successors.",
     propositions: [
-      { resource: "references/run-task.md", section: "## Confirm completion or return waiting", requires: [/passing CI, approved review, and an open PR do not satisfy this condition/, /If the user requests an open PR for review or forbids merging/, /preserve `in_progress` and the waiting checkpoint/, /Do not enable auto-merge/, /Do not declare completion or select other work to bypass a wait/] },
-      { resource: "references/autopilot.md", section: "## Advance serially and accept the scope", requires: [/An explicit no-merge or user-review requirement on a delivery task is such a wait/, /never permits auto-merge or marking the task done/, /Return without replacing the target/] },
+      { resource: "references/task-execution.md", section: "## Confirm acceptance readiness", requires: [/passing CI, approved review, and an open PR do not satisfy this condition/, /If the user requests an open PR for review or forbids merging/, /preserve the waiting checkpoint/, /Do not enable auto-merge/] },
+      { resource: "references/task-execution.md", section: "## Preserve waiting context", requires: [/Do not declare completion or select other work to bypass a wait/] },
     ],
   },
   {
@@ -205,7 +202,8 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "All stage acceptance and required authorized PR merges are confirmed, or there is no PR delivery path.",
     obligation: "Record readable evidence, reread in_progress and complete its observed version; stage completion is bounded.",
     propositions: [
-      { resource: "references/run-task.md", section: "## Confirm completion or return waiting", requires: [/every necessary delivery PR is merged/, /Completion rules grant no merge, deployment, external communication, or mainline push permission/, /For tasks without a development or PR delivery path, use their stated stage acceptance/, /confirm required evidence is recorded and readable/, /reread the complete in-progress task and use `task set-status <task-id> done` with its exact observed version/, /Only service confirmation establishes the status update/, /Neither establishes whole-Goal completion/] },
+      { resource: "references/task-execution.md", section: "## Confirm acceptance readiness", requires: [/every necessary delivery PR is merged/, /Completion rules grant no merge, deployment, external communication, or mainline push permission/, /For tasks without a development or PR delivery path, use their stated stage acceptance/, /confirm required evidence is recorded and readable/] },
+      { resource: "references/run-task.md", section: "## Complete or return waiting", requires: [/reread the complete in-progress task/, /task set-status <task-id> done/, /exact observed version/, /Only service confirmation establishes the status update/, /Whole-Goal acceptance follows the Goal protocol/] },
       { resource: "references/goal.md", section: "## Execute the appropriate stage", requires: [/Completion satisfies dependencies and grants no delivery execution permission/] },
     ],
   },
@@ -226,7 +224,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     propositions: [
       { resource: "references/goal.md", section: "## Identify the current discussion", requires: [/A request to start a Goal discussion authorizes creating and starting that discussion task so it becomes `in_progress`/] },
       { resource: "references/goal.md", section: "## Start requirements discussion", requires: [/Each task starts in `todo`/, /use `task set-status <task-id> in_progress` with the version observed for that decision and confirm `in_progress`/, /All direct prerequisites must be done/] },
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/authorizes entering in_progress for that discussion under the Goal protocol; registration alone does not/] },
+      { resource: "references/run-task.md", section: "## Establish the task", requires: [/authorizes entering `in_progress` for that discussion under the Goal protocol; registration alone does not/] },
     ],
   },
   {
@@ -250,7 +248,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "The user confirms the current solution and its actual delivery breakdown.",
     obligation: "Register real outcome tasks with verified dependencies and materials, then complete the discussion; delivery remains todo unless execution is already authorized.",
     propositions: [
-      { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/Only after user solution confirmation, create or reuse the concrete delivery tasks/, /Create new delivery tasks in `todo`/, /Solution confirmation authorizes the confirmed breakdown's registration, not implementation, autopilot/, /Every delivery root without another ordinary implementation prerequisite depends directly on the solution discussion/, /Read back every task, required attachment, shared input, and dependency/, /Keep the solution discussion `in_progress` when registration is incomplete/] },
+      { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/Only after user solution confirmation, create or reuse the concrete delivery tasks/, /Create new delivery tasks in `todo`/, /Solution confirmation authorizes the confirmed breakdown's registration, not implementation/, /Every delivery root without another ordinary implementation prerequisite depends directly on the solution discussion/, /Read back every task, required attachment, shared input, and dependency/, /Keep the solution discussion `in_progress` when registration is incomplete/] },
       { resource: "references/goal.md", section: "## Execute the appropriate stage", requires: [/Complete the solution discussion only after the accepted solution and actual registered delivery tasks, their required materials, and their dependencies are read back and verified/, /Completion satisfies dependencies and grants no delivery execution permission/] },
     ],
   },
@@ -262,7 +260,8 @@ export const instructionScenarios: readonly InstructionScenario[] = [
       { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/Every delivery task's description must directly list the architecture task ID and all required architecture source locations/, /full paths under the source task for each actual required attachment document/, /verified immutable repository references for repository documents/, /This applies to indirect successors as well as delivery roots/, /a reference only in another task or inside an attachment is insufficient/, /These input references do not add execution dependencies or duplicate shared documents/, /Check each delivery task's description, including indirect successors/, /confirm that each reference resolves to the intended readable content/] },
       { resource: "references/create-task.md", section: "## Write task-specific content", requires: [/For every Goal delivery task, list the architecture task ID and all required architecture source locations directly in its description, including indirect successors/] },
       { resource: "references/create-task.md", section: "## Register and verify", requires: [/check every task's description, including indirect successors, for its architecture task ID and required document references/, /read the referenced contents under the Goal protocol/] },
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/Before implementation, read every required architecture source listed in the delivery task's description/, /architecture task is only an indirect prerequisite/, /Missing required content, an unreadable required source, or a missing required architecture reference or input leaves execution unready/] },
+      { resource: "references/task-execution.md", section: "## Read the task and stage inputs", requires: [/Before implementation, read every required architecture source listed in the delivery task's description/, /architecture task is only an indirect prerequisite/] },
+      { resource: "references/task-execution.md", section: "## Verify prerequisites and scope", requires: [/Missing required content, an unreadable required source, or a missing required architecture reference or input leaves execution unready/] },
     ],
   },
   {
@@ -273,7 +272,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
       { resource: "references/task-content.md", section: "## Resolve and read sources", requires: [/owning task ID and content location: its description and applicable sections for inline content/, /Read source task descriptions with `task show --json`/, /Do not invent an attachment path for inline content, relocate or copy it merely to satisfy a reference format/, /Every Goal delivery task's description must directly list the architecture task ID and all required architecture source locations, including indirect successors/, /For inline architecture, name the source task's description and applicable sections/, /For each actual required attachment document, include its full path/] },
       { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/architecture source locations: description and applicable sections for inline design/, /Do not fabricate an attachment path or copy or relocate inline architecture to fit this index/, /This applies to indirect successors as well as delivery roots/, /These input references do not add execution dependencies or duplicate shared documents/] },
       { resource: "references/create-task.md", section: "## Write task-specific content", requires: [/Reference the owning task ID and its description with applicable sections for inline content/, /Read source descriptions through `task show --json`/, /all required architecture source locations directly in its description, including indirect successors/] },
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/Resolve real shared input references using the owning task ID and description\/sections/, /Read source descriptions through `task show --json`/, /Before implementation, read every required architecture source listed in the delivery task's description: the owning architecture task's inline description and applicable sections/, /architecture task is only an indirect prerequisite/] },
+      { resource: "references/task-execution.md", section: "## Read the task and stage inputs", requires: [/Resolve real shared input references using the owning task ID and description\/sections/, /Read source descriptions through `task show --json`/, /Before implementation, read every required architecture source listed in the delivery task's description: the owning architecture task's inline description and applicable sections/, /architecture task is only an indirect prerequisite/] },
     ],
   },
   {
@@ -294,7 +293,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     propositions: [
       { resource: "references/task-content.md", section: "## Six content requirements", requires: [/content requirements, not six mandatory headings/, /in the description, in clearly referenced documents, or through a mixture of both/, /Complete inline content needs no primary attachment/, /Objective and requirements/, /Scope and deliverables/, /Solution and design/, /Input and output contracts/, /Acceptance criteria and verification/, /Sources/, /Judge completeness from the description and the contents actually read/, /unreadable resources, and missing decisions are insufficient/] },
       { resource: "references/create-task.md", section: "## Register and verify", requires: [/all six content requirements, the explicit task-owned evidence location/] },
-      { resource: "references/run-task.md", section: "## Establish the task and stage", requires: [/Complete inline content needs no primary attachment/, /document-owned and mixed organization are valid when the combined contents satisfy the same six requirements/] },
+      { resource: "references/task-execution.md", section: "## Read the task and stage inputs", requires: [/Complete inline content needs no primary attachment/, /document-owned and mixed organization are valid when (?:their|the) combined contents satisfy the same six requirements/] },
     ],
   },
   {
@@ -323,7 +322,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "A task is created, broken down, or automatically discovered without an explicit request to hand it off.",
     obligation: "Keep automatic-execution permission unchanged and preserve separate execution and delivery authorization.",
     propositions: [
-      { resource: "SKILL.md", section: "## Shared constraints", requires: [/Automatic selection and execution must not enable this permission themselves/, /Only an explicitly authorized \[handoff\]\(references\/handoff\.md\) may enable it after content review/, /handoff does not start execution or replace other authority/] },
+      { resource: "SKILL.md", section: "## Shared constraints", requires: [/Task creation and execution do not enable `allowAgents`/, /Only an explicitly authorized \[handoff\]\(references\/handoff\.md\) may enable it after content review/, /handoff does not start execution or replace other authority/] },
       { resource: "references/create-task.md", section: "## Register and verify", requires: [/Creation and breakdown do not enable it/, /A separate, explicitly requested \[handoff\]\(handoff\.md\) reviews each task before enabling permission/] },
       { resource: "references/goal.md", section: "## Register the confirmed delivery breakdown", requires: [/`allowAgents=false`; registration does not enable it/, /Only a separately explicit \[handoff\]\(handoff\.md\) may review and enable permission/, /does not supply delivery execution authorization or advance the discussion gate/] },
     ],

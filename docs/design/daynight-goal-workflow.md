@@ -1,7 +1,7 @@
 # using-daynight Goal 工作流设计
 
-公开 skill 使用用户确认推进的需求讨论、方案讨论和实际交付协议，保留现有五种模式、
-服务生命周期与安装机制。[Goal 需求](../spec/daynight-goal-workflow.md)拥有 GW1–GW13，
+公开 skill 使用用户确认推进的需求讨论、方案讨论和实际交付协议，区分普通指定任务与
+worker-managed 执行，保留服务生命周期与安装机制。[Goal 需求](../spec/daynight-goal-workflow.md)拥有 GW1–GW13，
 [用户确认讨论决策](../../.agents/notes/implemented/process/2026-10-24-user-confirmed-goal-discussions.md)
 拥有当前阶段门槛；[原阶段设计决策](../../.agents/notes/implemented/process/2026-10-22-goal-workflow-design.md)
 保留阶段资料和共享来源的历史理由。当前发布结构由
@@ -21,7 +21,8 @@ packages/daynight/src/commands/skill/skills/using-daynight/
     handbook.md
     create-task.md
     run-task.md
-    autopilot.md
+    execute-task-in-managed.md
+    task-execution.md
     goal.md
     task-content.md
     handoff.md
@@ -29,19 +30,20 @@ packages/daynight/src/commands/skill/skills/using-daynight/
 
 | 文件 | 职责 |
 |---|---|
-| `SKILL.md` | 共同任务边界、材料、授权与统一终验收规则，按需路由五模式及 Goal 讨论协议。 |
+| `SKILL.md` | 共同任务边界、材料、授权与统一终验收规则，按普通请求或 worker prompt 的显式模式路由。 |
 | `references/goal.md` | 阶段产生时机、用户确认、讨论开始授权、确认后拆分、依赖、恢复与整体验收。 |
 | `references/task-content.md` | 所有阶段共用的六项内容标准、引用读取、内容唯一所有者和任务证据位置。 |
 | `references/handoff.md` | 明确指定的移交审查与许可更新；不替代 Goal 确认和执行门槛。 |
 | `references/create-task.md` | 在授权范围内复用或登记具体工作；仅登记请求返回，明确开始讨论时按协议进入当前阶段。 |
-| `references/run-task.md` | 指定任务的输入、状态、工作和完成规则；对 Goal 讨论采用确认与阶段验收，对实际 PR 交付采用交付门槛。 |
-| `references/autopilot.md` | 仅在明确启动后选择相关获批 ready 工作；讨论中的用户确认仍不可自动跳过。 |
+| `references/run-task.md` | 普通指定任务的开始、恢复、普通完成和返回；拥有用户明确要求的普通 Goal 讨论转场。 |
+| `references/execute-task-in-managed.md` | Worker prompt 显式激活后核对原 assignment，复用 active claim 并最终 claim-bound done，完成或等待后交还 controller。 |
+| `references/task-execution.md` | 两种入口共同读取的任务/阶段输入、范围、交付、证据和完成准备；不包含普通或 managed 状态转换。 |
 | `references/handbook.md` | CLI 命令用途、项目发现、版本与完整替换、附件独立性及不确定写入背景。 |
 
-阶段规则只由共享 Goal 协议拥有，各模式引用它，避免通用执行或 PR 规则覆盖讨论的
-确认门槛。Goal 拆分和整体完成引用 [SKILL.md#final-acceptance](../../packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md#final-acceptance)
-的共同终验收规则，不另建验收协议。发布资源仍是完整 allowlist bundle；没有新的安装分支或运行时 Markdown
-解析。协议只依赖随包资料与已安装 CLI help，不依赖仓库内部 skill 或本机草稿。
+阶段规则只由共享 Goal 协议拥有，各模式按需要读取输入与验收条件，避免通用执行或
+PR 规则覆盖讨论的确认门槛。普通入口执行用户明确要求的讨论转场；managed 入口只
+完成当前已指派阶段并返回 controller，不执行后续阶段创建或开始。Goal 拆分和整体完成引用 [SKILL.md#final-acceptance](../../packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md#final-acceptance)
+的共同终验收规则，不另建验收协议。发布资源仍是完整 allowlist bundle；两种执行文件与共享资料一起复制，安装覆盖清除已移除的调度文件，没有新的安装分支或运行时 Markdown 解析。协议只依赖随包资料与已安装 CLI help，不依赖仓库内部 skill 或本机草稿。
 
 ## 用户可观察的流程
 
@@ -53,7 +55,7 @@ flowchart TD
     D --> E{用户确认需求并要求进入方案讨论}
     E -->|继续修改| D
     E -->|确认| F[保存确认并 set-status done 需求 task]
-    F --> G[确认 done 后创建并开始方案讨论 task]
+    F --> G[普通入口确认 done 后创建并开始方案讨论 task]
     G --> H[讨论具体方案及候选成果拆分]
     H --> I{用户确认当前方案}
     I -->|继续修改| H
@@ -71,7 +73,8 @@ flowchart TD
 例如“可以了，进行架构讨论”同时表达了对当前需求的确认和下一阶段的开始指令。
 执行者保存确认对应材料，核验阶段验收，完成需求 task，并确认服务返回 done；随后
 才创建或复用依赖它的架构/方案 task，并以 set-status 启动当前讨论。该转场由用户的
-明确指令驱动，不是自主选择下一项，因此不要求启动 autopilot，也不授予自动交付权限。
+明确指令驱动，保持下一讨论的指定身份；普通技能不自动选择交付后继。Managed 指派完成
+或等待始终返回 controller，不执行这条普通讨论转场。
 
 方案讨论中先记录职责、边界、接口、失败行为、验证方式与候选工作项。只有用户明确
 确认当前方案后才登记实际交付子任务。登记总和覆盖完整目标，每个任务是可理解、可
@@ -160,14 +163,13 @@ externalDependsOn，外部边可由任一类边构成的路径替代，保留边
 
 明确的 Goal 创建许可覆盖已确认目标内按阶段发生的登记；不让未来阶段提前存在。
 开始需求讨论或确认需求并要求进入方案讨论的明确指令，只启动指定讨论，使用已有 set-status。
-方案确认许可登记交付任务；新任务为 todo，登记不开始执行。已有明确执行范围持续覆盖其就绪后继，
-不增设任务审批。实现、自动执行许可、部署、发布、外部通信、合并和主线 push 遵守各自授权。
+方案确认许可登记交付任务；新任务为 todo，登记不开始执行。已有明确执行范围继续有效，不增设范围内指定任务的重复审批；普通 skill 不据此自行选择后继。实现、自动执行许可、部署、发布、外部通信、合并和主线 push 遵守各自授权。
 
-allowAgents 默认 false，只约束自动发现选择；明确指定的任务或既定队列可采用手工路径，
+allowAgents 默认 false，只约束自动发现选择；普通明确指定的任务可采用手工路径，
 创建、拆分和调度不自行启用它。明确授权的 handoff 按共享内容标准审查后启用，
 可以预先移交仍被真实依赖阻塞的 todo；它不启动执行或替代阶段确认。已有 true 只读
-复审失败时保持许可并报告，撤销/停止仍需明确授权。autopilot 仍须明确启动；自动发现
-只处理 allowAgents=true 的 ready todo。
+复审失败时保持许可并报告，撤销/停止仍需明确授权。自动发现与连续调度归 worker，
+继续要求 allowAgents=true、ready 和真实平台；公开 skill 不提供候选选择循环。
 讨论等待确认时保持当前任务，不能换做后继。整个 Goal 仍须所有实际交付与原始验收完成。
 
 ## 写入、恢复与并发
@@ -194,7 +196,9 @@ ID，只恢复余下操作。相似标题不足以认定成功，失败响应也
 UI 原型、讨论与 PR 交付区分、交付授权、部分登记、不确定状态写入和整体验收。
 架构资料情境另覆盖“架构任务 → A → B”的 B 正文入口、实施前读取与输入不可读时的
 未就绪处理。独立 agent 审阅从最少任务上下文核验资料定位和读取；自动化指令情境
-使用静态断言证明相应规则随包存在，不创建额外真实任务、不调用真实模型或启动 autopilot。
+使用静态断言证明相应规则随包存在，不创建额外真实任务或把静态检查当作真实模型行为。
+普通与 managed 情境分别核对加载路径、完整任务资料和交付门槛；managed 还核对显式
+环境/技能/模式、原 assignment、缺失或不匹配等待、原 claim 完成和交还 controller。
 
 既有 copy-skills 测试、frontmatter 和本地链接检查验证完整 bundle，实际 build 与
 npm pack 证明协议进入发布产物。隔离安装及模拟 launcher 的三个 Agent × 两个 scope

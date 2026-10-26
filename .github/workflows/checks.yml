@@ -84,6 +84,18 @@ jobs:
         run: pnpm --filter @codetreker/daynight exec vitest run
       - name: Verify the compiled CLI installation
         run: pnpm --filter @codetreker/daynight exec vitest run --config vitest.acceptance.config.ts
+      - name: Pack the CLI for runtime compatibility checks
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm --filter @codetreker/daynight pack --out "${{ github.workspace }}/.tmp/daynight-runtime.tgz"
+      - name: Upload the runtime compatibility package
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: daynight-runtime-package
+          path: .tmp/daynight-runtime.tgz
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload acceptance evidence
         if: ${{ always() && steps.environment.outcome == 'success' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -107,6 +119,39 @@ jobs:
           include-hidden-files: true
           if-no-files-found: error
           retention-days: 30
+
+  verify-runtime:
+    name: verify (Node.js ${{ matrix.node }})
+    needs: [detect-changes, verify]
+    if: ${{ needs.detect-changes.outputs.cli == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22.14.0, 22, 24, node]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      NPM_CONFIG_CACHE: ${{ github.workspace }}/.tmp/npm-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          check-latest: true
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: daynight-runtime-package
+          path: .tmp/
+      - name: Strictly install the packed CLI and its runtime dependencies
+        run: |
+          mkdir -p .tmp/runtime-consumer
+          printf '{"private":true}\n' > .tmp/runtime-consumer/package.json
+          npm install --prefix .tmp/runtime-consumer --engine-strict --no-audit --no-fund --package-lock=false "$GITHUB_WORKSPACE/.tmp/daynight-runtime.tgz"
+      - name: Verify the installed CLI, SQLite and interactive prompts
+        run: node packages/daynight/scripts/check-runtime.mjs .tmp/runtime-consumer/node_modules/@codetreker/daynight
 
   verify-completion:
     name: verify (shell completion)
@@ -321,7 +366,7 @@ jobs:
           retention-days: 30
   checks:
     if: ${{ always() }}
-    needs: [detect-changes, verify, verify-completion, verify-server, verify-web-quality, verify-web]
+    needs: [detect-changes, verify, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web]
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
