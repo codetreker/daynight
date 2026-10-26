@@ -39,9 +39,11 @@ back to the home directory only when the variable is unset. An exported empty va
 zsh resolves that value from its own startup directory, so starting elsewhere
 selects another file. An unexported custom value requires an explicit file path.
 
-A managed block checks the actual daynight registration together with its
-callable completion function before deciding that loading is unnecessary. Managed
-blocks therefore reuse existing registrations when startup files load each other.
+A managed block checks that both `daynight` and `dn` register the expected
+callable completion function before deciding that loading is unnecessary. A
+missing or replaced registration for either command, or a missing function,
+reloads the shared script and restores both commands. Managed blocks therefore
+reuse complete registrations when startup files load each other.
 Preserved manual loading statements retain their own execution semantics. zsh
 reuses `compdef` when initialized and otherwise initializes `compinit` with its
 normal security checks. Generated loading code preserves the nonzero status of
@@ -56,7 +58,10 @@ blocks and a missing final separator use LF: CR in generated shell code is token
 data and can break command names, conditions and block delimiters. An adjacent
 exclusive lock serializes installers; a file identity, modification
 time or size change between inspection and append fails explicitly. Malformed,
-modified or repeated managed blocks and invalid file targets are errors.
+modified or repeated managed blocks and invalid file targets are errors. Earlier
+block templates are not migrated. A block that differs from the current template
+requires removal of its marked section before setup can install the current
+block; directly sourcing the current generated script remains available.
 
 The command reports file installation separately from session activation and
 prints the existing shell-specific source command. It does not execute user
@@ -98,6 +103,13 @@ has loaded. Static recognition covers the documented statement and owned block;
 custom control flow remains the operator's responsibility to verify by starting
 the shell.
 
+**Migrate earlier canonical blocks during setup.** This would let setup replace
+an earlier guard automatically, but requires taking ownership of rewriting
+existing startup files. The installer retains exact current-template recognition
+and explicit repair diagnostics. Earlier blocks still call the current generator
+in a fresh shell and normally register both commands, while their original
+registration guard remains unchanged.
+
 ## Consequences
 
 The standard installation path handles the two supported shells without making
@@ -125,6 +137,7 @@ shape and refresh rules.
 
 Real-shell verification covers Bash 4.2, modern Bash and zsh in isolated startup
 environments, including login priority, repeated setup and managed loading,
+partial or replaced command registrations, missing functions,
 unset, absolute and relative zsh directory selection, symbolic links, preserved
 CRLF startup content, failures and actual Tab behavior. Empty `ZDOTDIR` root
 mapping is verified with isolated mocked file I/O, avoiding host-root startup-file

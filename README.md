@@ -995,14 +995,17 @@ with its normal security checks before loading daynight.
 
 Setup recognizes its managed block and the documented standalone manual loading
 statement. Repeating it leaves an installed file unchanged. A managed block
-checks the shell's actual daynight completion registration before loading.
-Managed blocks skip an existing registration, including when startup files load
-each other. Preserved manual loading statements keep their unconditional
-behavior: if one runs after a managed block, it generates and loads the script
+checks that both `daynight` and `dn` use the expected callable completion
+function before skipping loading. A missing or replaced registration for either
+command reloads the shared script and restores both commands. Complete
+registrations are reused, including when startup files load each other. Preserved
+manual loading statements keep their unconditional behavior: if one runs after a managed block, it generates and loads the script
 again. Existing content, line endings, permissions and startup-file symbolic
 links are retained. Added blocks use LF line endings because a carriage return
 is shell token data. Malformed managed blocks, invalid targets and file access failures produce
-explicit errors.
+explicit errors. Setup does not migrate blocks from earlier templates. If an
+earlier block is reported as unrecognized, remove its marked section and rerun
+setup, or use the source command below to activate the current script directly.
 
 Setup reports the startup files it handled. It installs persistent configuration;
 an ordinary CLI child process cannot inspect or change its parent shell's loaded
