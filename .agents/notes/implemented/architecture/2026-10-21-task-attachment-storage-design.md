@@ -64,10 +64,10 @@ and its requirements inherit this constraint.
 
 CLI content reads use a binary streaming channel with backpressure, cancellation
 and explicit partial-failure semantics. The
-[server baseline](2026-10-19-daynight-server-task-design.md),
+[server baseline](../../archived/architecture/2026-10-19-daynight-server-task-design.md),
 [CLI baseline](2026-10-20-project-task-cli-design.md) and
-[read-only dashboard baseline](2026-10-20-task-dashboard-mvp-design.md) retain
-ownership of their delivered behavior. Attachments extend those baselines.
+[read-only dashboard baseline](2026-10-20-task-dashboard-mvp-design.md) record the
+choices underlying their delivered behavior. Attachments extend those baselines.
 
 Filesystem mutations and PostgreSQL metadata changes are not atomic. K1 in the
 requirements and architecture records the accepted failure and concurrency

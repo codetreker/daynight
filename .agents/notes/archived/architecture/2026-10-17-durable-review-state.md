@@ -34,7 +34,7 @@ and preparation retry policy belong to the coordinator. Retry records retain
 the captured target, session, budget, and latest attempt evidence. Prior log files
 remain under their review and attempt paths.
 
-The [bundled skill](2026-10-20-bundled-review-skill.md) uses one attempt for
+The [bundled skill](../../implemented/architecture/2026-10-20-bundled-review-skill.md) uses one attempt for
 sequential discovery and review children. `clearProcess` requires a matching
 current running attempt, exact PID and process identity, plus caller-supplied
 process-exclusion proof. It clears only that process pair and retains the
@@ -86,7 +86,7 @@ script. The original pnpm 10.34.5 toolchain nevertheless detected its
 `binding.gyp` as requiring a build, without consulting `gypfile: false`. That
 observation motivated blocking unnecessary implicit compilation. The workspace
 retains that decision with `allowBuilds.better-sqlite3: false` under the
-[pnpm 11 toolchain](../process/2026-10-22-pnpm-oidc-publication.md). See the inspected
+[pnpm 11 toolchain](../../implemented/process/2026-10-22-pnpm-oidc-publication.md). See the inspected
 [package manifest](https://github.com/WiseLibs/better-sqlite3/blob/dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb/package.json),
 [pnpm build detection](https://github.com/pnpm/pnpm/blob/702ad5f860ffd50d64a3a711d9f8a3da16fc796e/exec/pkg-requires-build/src/index.ts#L3-L16),
 and [ignored-build behavior](https://github.com/pnpm/pnpm/blob/702ad5f860ffd50d64a3a711d9f8a3da16fc796e/exec/build-modules/src/index.ts#L83-L105).
@@ -122,7 +122,7 @@ The [foreground coordinator](2026-10-17-foreground-review-coordination.md) compo
 polling, Git preparation, agent invocation and process evidence around these
 transactions. A caller supplies timestamps, IDs and external outcomes; the
 database does not manufacture evidence of successful review publication. The
-[conversation-cycle decision](2026-10-21-review-conversation-cycle.md) partially
+[conversation-cycle decision](../../implemented/architecture/2026-10-21-review-conversation-cycle.md) partially
 supersedes the original head-only follow-up and marker-only completion behavior.
 Schema version 2 adds `review_publications` records for the publisher captured
 before launch, pending remote verification,

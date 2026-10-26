@@ -52,8 +52,8 @@ fresh copies preserve separate mutable origins and all real manager operations.
 Every platform retains its existing worker defaults. Vitest 5.0.5's
 [worker default](https://github.com/vitest-dev/vitest/blob/7a825db43e2beca0b219d2eadaec334cb81af0c7/packages/vitest/src/utils/workers.ts#L3)
 reserves one available CPU; the measured Windows split run used three workers.
-The [decision note](../../.agents/notes/implemented/testing/2026-10-18-parallel-git-validation.md)
-defines fixture ownership and the alternatives considered.
+The [decision note](../../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
+records the fixture ownership choices and the alternatives considered.
 
 ## Hosted comparison
 

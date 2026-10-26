@@ -35,7 +35,7 @@ change for this simplification. The later
 replaces the publication dependency with independent CLI validation.
 
 This partially supersedes the
-[CLI toolchain decision](../process/2026-10-16-typescript-cli-toolchain.md), which
+[CLI toolchain decision](../../archived/process/2026-10-16-typescript-cli-toolchain.md), which
 originally checked versions on both PR and push events, and the
 [module-scoped CI decision](../process/2026-10-21-module-scoped-pr-ci.md), which
 originally added selection-aware result aggregation. Their release-input policy,

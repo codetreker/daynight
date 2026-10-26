@@ -154,6 +154,6 @@ hosted zoom failure required a new full matrix for the static SVG renderer. That
 new local matrix passes; production acceptance is delivered through PR #52.
 Fixed-topology results do not promise arbitrary-DAG latency.
 
-The existing [server task design](2026-10-19-daynight-server-task-design.md)
-remains the owner of the service domain and transaction rules; this decision
-adds a browser consumer without replacing those rules.
+This decision adds a browser consumer without replacing the service domain and
+transaction rules chosen in the original
+[server task design](../../archived/architecture/2026-10-19-daynight-server-task-design.md).

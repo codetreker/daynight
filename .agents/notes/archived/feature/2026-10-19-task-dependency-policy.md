@@ -16,7 +16,7 @@ The task service implements create, get, list and update over the existing
 concrete store. The [requirements](../../../../docs/spec/daynight-server.md)
 own the permitted states and refusals; the
 [design](../../../../docs/design/daynight-server.md) owns their transaction
-mechanism. The [approval lifecycle](2026-10-22-task-approval-lifecycle.md) extends the original
+mechanism. The [approval lifecycle](../../implemented/feature/2026-10-22-task-approval-lifecycle.md) extends the original
 create/get/list/update boundary with dedicated forward transitions, replacing
 generic state writes without changing project exclusion or task revisions.
 
@@ -33,9 +33,9 @@ transaction has completed successfully.
 
 The project check before writes reuses the project service. Projects have no
 deletion API, so a valid project cannot disappear through an allowed concurrent
-operation. [Task soft deletion](2026-10-25-task-soft-deletion.md) preserves rows
+operation. [Task soft deletion](../../implemented/feature/2026-10-25-task-soft-deletion.md) preserves rows
 and, by default, refuses undeleted references under the same project lock.
-[Explicit incoming removal](2026-10-25-task-delete-remove-depends.md) can atomically
+[Explicit incoming removal](../../implemented/feature/2026-10-25-task-delete-remove-depends.md) can atomically
 remove all direct references before marking the target and revises each affected
 source once; active reference validation excludes marked targets.
 Task reads and lists check project and task data within one read-only snapshot.
@@ -84,7 +84,7 @@ Real PostgreSQL tests exercise all state pairs, candidate replacement, rejected
 mutations, canonical references, no-op/version behavior, snapshot reads and
 filter-bound pages. Distinct sessions with exact application-name barriers prove
 reverse-edge, dependency-update/status and same-version status races. The
-[status assignment decision](../architecture/2026-10-24-task-status-assignment.md)
+[status assignment decision](../../implemented/architecture/2026-10-24-task-status-assignment.md)
 restores arbitrary transitions with ordinary/external direct-dependent reopening protection. Database failure after partial
 writes proves full rollback; lock/query cancellation proves no delayed mutation
 and reusable resources. No storage substitute or product coverage exclusion is

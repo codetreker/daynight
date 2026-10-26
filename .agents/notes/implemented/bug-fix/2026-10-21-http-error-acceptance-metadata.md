@@ -64,8 +64,8 @@ metadata preserves that check.
 The assertion distinguishes opaque correlation metadata from diagnostic content
 while retaining status, code, header correlation and privacy requirements. It
 adds no production helper, timeout, coverage exclusion or weakened acceptance
-gate. The [built-process acceptance decision](../testing/2026-10-19-server-process-acceptance.md)
-continues to own process, transaction and cleanup verification; the
+gate. The [built-process acceptance decision](../../archived/testing/2026-10-19-server-process-acceptance.md)
+records the process, transaction and cleanup verification choices retained here; the
 [server README](../../../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 owns reusable validation instructions. Execution results belong to the tested
 revision's PR and CI under the

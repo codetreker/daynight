@@ -5,7 +5,7 @@
 
 `daynight-server` 是独立的 Go 服务，为本机 CLI 和内部程序提供 project、task
 及任务依赖管理。行为要求由[需求文档](../spec/daynight-server.md)拥有；架构选择及
-重新评估条件由[决策记录](../../.agents/notes/implemented/architecture/2026-10-19-daynight-server-task-design.md)
+重新评估条件由[决策记录](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
 拥有。决策记录标记的是已采用的设计，不表示服务已经交付。
 [看板设计](daynight-web.md)定义完整图快照接口、浏览器页面和内嵌静态资源
 交付；图 API 保留本文的领域与事务结构，不改变现有分页读取的一致性承诺。

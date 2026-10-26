@@ -34,9 +34,9 @@ absent, and the API error remains visible. At expiry, the complete observation
 commits and clears the error. The prelaunch case preserves the captured review,
 session and worktree while the worker slot is available to another PR.
 
-The [coordination decision](../architecture/2026-10-17-foreground-review-coordination.md)
-owns production scheduling. This extends the
-[controlled-clock validation](../testing/2026-10-19-deterministic-coordinator-fairness.md)
+The [coordination decision](../../archived/architecture/2026-10-17-foreground-review-coordination.md)
+records the original production scheduling choices. This extends the
+[controlled-clock validation](../../archived/testing/2026-10-19-deterministic-coordinator-fairness.md)
 to deadline boundaries; product scheduling, request cooldown policy, timeouts,
 native workload and required CI jobs are unchanged.
 

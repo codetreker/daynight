@@ -16,7 +16,7 @@ have not been polled or individually enumerate permanently excluded PRs.
 `daynight review list` and `daynight review ls` share a one-shot local listing.
 The [requirements](../../../../docs/spec/daynight-review.md) own its visible behavior;
 the [design](../../../../docs/design/daynight-review.md) owns the reader and rendering
-mechanics. The [guided setup decision](2026-10-21-guided-configuration-setup.md)
+mechanics. The [guided setup decision](../../implemented/feature/2026-10-21-guided-configuration-setup.md)
 owns the configuration preflight for an absent file or repository field. After
 that preflight, the listing reads the current configuration and a consistent SQLite
 snapshot, then groups configured repositories in configuration order and sorts
@@ -31,7 +31,7 @@ messages. Saved `Running` state does not establish current process liveness.
 
 The original listing included each repository's permanent tracking boundary to
 explain why excluded PRs could not be enumerated: they had never been individually
-stored. The [cutoff-output simplification](../simplification/2026-10-20-review-list-cutoff-output.md)
+stored. The [cutoff-output simplification](../../implemented/simplification/2026-10-20-review-list-cutoff-output.md)
 removes that repeated notice while preserving the tracked scope and initialization
 rules.
 
@@ -103,7 +103,7 @@ prevents cross-table observations from different commits. The listing does not
 assert process health, current GitHub state or agent publication beyond the
 persisted record. Timestamps and saved errors expose that limit.
 
-The [conversation-cycle decision](../architecture/2026-10-21-review-conversation-cycle.md)
+The [conversation-cycle decision](../../implemented/architecture/2026-10-21-review-conversation-cycle.md)
 adds version 2 publication state while retaining read-only version 1 listing.
 A database with another schema version requires software that understands it;
 listing does not migrate or repair it. SQLite coordination sidecars remain native-managed

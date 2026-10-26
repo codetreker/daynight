@@ -51,7 +51,7 @@ runs after the complete original validation and acceptance artifact steps, so
 the additional artifact operation cannot prevent those tests from running.
 At adoption, the 10-second subprocess deadline, 1 MiB capture bound, mandatory
 tool success, native test workload and 600-second job deadline were unchanged.
-The later [cold-start preparation decision](2026-10-20-gh-cold-start-preparation.md)
+The later [cold-start preparation decision](../../implemented/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 adds selected-file preparation and measured provenance to gh discovery; resolution,
 preparation and execution now share one 10-second gh budget. The isolation and
 incremental diagnostics remain in use. Native versions, capture bounds, the full

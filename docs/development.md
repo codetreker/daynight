@@ -165,7 +165,7 @@ reuse only immutable default-base objects; scenario observations and mutations
 remain private. Source snapshots are prepared through batched native Git imports,
 while real clone/fetch/worktree operations remain the test subjects. Tests within
 a file stay sequential so environment changes and cleanup have one owner.
-The [Git test decision](../.agents/notes/implemented/testing/2026-10-18-parallel-git-validation.md)
+The [Git test decision](../.agents/notes/archived/testing/2026-10-18-parallel-git-validation.md)
 records the isolation rules, and the
 [CI timing report](../docs/research/windows-ci-performance.md) records native
 before/after measurements. The repository-discovery submodule case prepares its
@@ -335,9 +335,9 @@ locally, run `pnpm version:check pull_request <base-sha> <head-sha>` or
 from those commits; uncommitted files do not affect the result. The local push
 mode compares the complete before/after range; an all-zero before SHA validates
 the starting version without a predecessor comparison. Missing history,
-unreadable manifests and invalid versions fail visibly. See the
-[toolchain decision](../.agents/notes/implemented/process/2026-10-16-typescript-cli-toolchain.md)
-for the comparison and CI ownership rules.
+unreadable manifests and invalid versions fail visibly. The
+[toolchain decision](../.agents/notes/archived/process/2026-10-16-typescript-cli-toolchain.md)
+records the original comparison and CI ownership choices.
 
 ## npm publication
 
@@ -558,7 +558,7 @@ acceptance observes reviewed heads, retained session UUIDs, remote inline review
 and approvals, restart continuity and closure cleanup. Missing-marker recovery
 must reconcile confirmed publication while retaining the same session; controlled
 publication receipts do not establish live model behavior. The
-[installed CLI decision](../.agents/notes/implemented/testing/2026-10-17-installed-cli-acceptance.md)
+[installed CLI decision](../.agents/notes/archived/testing/2026-10-17-installed-cli-acceptance.md)
 owns the lifecycle rationale; the [bundled-skill decision](../.agents/notes/implemented/architecture/2026-10-20-bundled-review-skill.md)
 owns native loading evidence.
 

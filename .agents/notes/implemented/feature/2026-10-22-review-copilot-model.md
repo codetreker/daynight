@@ -24,16 +24,17 @@ defines the reasoning-effort flag and its alias. The
 [programmatic reference](https://github.com/github/docs/blob/5815d11586b0796688963a98c889680e60d72dc4/content/copilot/reference/copilot-cli-reference/cli-programmatic-reference.md#L178)
 explains that only some models support reasoning effort.
 
-The [configuration decision](../architecture/2026-10-16-user-home-review-configuration.md)
-continues to own startup loading, command-specific projections and preserved YAML
-updates. The shared parser recognizes both keys, while the server projection
+The [configuration decision](../../archived/architecture/2026-10-16-user-home-review-configuration.md)
+records the startup-loading, command-specific projection and YAML-update choices
+retained here. The shared parser recognizes both keys, while the server projection
 validates only its own fields. Setup and repository registration preserve the
 settings and comments. Invalid review values remain errors rather than triggering
 configuration guidance. The values apply to every review repository in that
 process and change only after restart.
 
-The [Copilot execution decision](../architecture/2026-10-17-copilot-session-execution.md)
-continues to own session identity, discovery, invocation and failure handling.
+The [Copilot execution decision](../../archived/architecture/2026-10-17-copilot-session-execution.md)
+records the session-identity, discovery, invocation and failure-handling choices
+retained here.
 The formal review child independently adds `--model` and the original model
 string when configured, and `--reasoning-effort` and the original effort string
 when configured. Each flag and value is a separate argv entry through the existing

@@ -14,7 +14,7 @@ The workspace manifests declare Node.js `>=22`, without a major-version ceiling.
 The published CLI is emitted JavaScript; source development, native application
 tests and publication retain Node.js 24 and pnpm 11.28.6. This partially
 supersedes the runtime restriction established with the
-[TypeScript CLI toolchain](../process/2026-10-16-typescript-cli-toolchain.md),
+[TypeScript CLI toolchain](../../archived/process/2026-10-16-typescript-cli-toolchain.md),
 while preserving its build and validation decisions.
 
 Installation guidance recommends the current patch of Node.js 22 or newer.

@@ -61,8 +61,8 @@ package-version enforcement in PRs. The path selection and each module's
 validation workload remain unchanged.
 
 This refines the scheduling described by the
-[CLI toolchain decision](2026-10-16-typescript-cli-toolchain.md),
-[server foundation](../architecture/2026-10-19-server-runtime-foundation.md) and
+[CLI toolchain decision](../../archived/process/2026-10-16-typescript-cli-toolchain.md),
+[server foundation](../../archived/architecture/2026-10-19-server-runtime-foundation.md) and
 [dashboard acceptance decision](../testing/2026-10-20-dashboard-production-acceptance.md).
 Their module workloads and acceptance criteria continue to apply when selected.
 GitHub's [job-condition documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-jobs-with-conditions)

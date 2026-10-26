@@ -12,7 +12,7 @@ mountpoint cannot establish whether the backing disk image remains attached.
 Cleanup needs an identity that covers the complete image before deleting its
 backing directory.
 
-The [original finalization decision](../testing/2026-10-18-apfs-fixture-finalization.md)
+The [original finalization decision](../../archived/testing/2026-10-18-apfs-fixture-finalization.md)
 retains its ordinary-detach policy, resource budget and diagnostic requirements.
 This decision replaces mountpoint-based attachment identity and adds explicit
 proof that the fixture's complete image is absent.

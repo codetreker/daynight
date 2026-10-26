@@ -57,8 +57,8 @@ real manager operations and filesystem snapshots. Version checks share only the
 default parentless `1.0.0` base objects; all scenario commits and refs, special
 prerelease roots, missing-object cases and unrelated histories remain private.
 No same-file concurrency or worker override is introduced. The
-[Git validation decision](2026-10-18-parallel-git-validation.md) owns seed and
-mutable-subject isolation.
+[Git validation decision](../../archived/testing/2026-10-18-parallel-git-validation.md) records the
+seed-sharing and mutable-subject-isolation choices retained here.
 
 This partially replaces the wall-clock requirement of the
 [installed project/task acceptance decision](2026-10-20-installed-project-task-acceptance.md).
@@ -90,7 +90,7 @@ slots within their sequential top-level test. Each scenario retains its schema,
 server and CLI processes, database barriers, receipt entry and cleanup. Waiting
 for parallel subtests before the parent returns keeps other top-level tests'
 process-wide environment changes outside that lifetime. This refines the
-[built-process acceptance decision](2026-10-19-server-process-acceptance.md)
+[built-process acceptance decision](../../archived/testing/2026-10-19-server-process-acceptance.md)
 without replacing package-level transaction, snapshot, race or coverage tests.
 
 Capacity fixture construction retains real public write APIs and the fixed

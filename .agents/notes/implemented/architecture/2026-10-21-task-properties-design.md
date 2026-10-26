@@ -15,9 +15,9 @@ The delivered artifacts are the [requirements](../../../../docs/spec/daynight-ta
 [design](../../../../docs/design/daynight-task-properties.md)
 and [interactive preview](../../../../docs/design/mockups/task-properties.html).
 Server persistence, migration, HTTP operations, CLI property input/output and
-read-only web presentation are implemented. The existing
-[server task design](2026-10-19-daynight-server-task-design.md) owns the delivered
-task lifecycle and transaction foundation; this design extends that foundation.
+read-only web presentation are implemented. This design extends the task
+lifecycle and transaction foundation chosen in the original
+[server task design](../../archived/architecture/2026-10-19-daynight-server-task-design.md).
 
 The server owns a concrete TaskProperties type. Its first predefined property,
 pullRequests, is an ordered array of records with caller-provided url and title

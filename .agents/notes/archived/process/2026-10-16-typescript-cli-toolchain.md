@@ -21,7 +21,7 @@ tooling tests retain build and version-policy validation. The pnpm dependency st
 is local to `.tmp/pnpm-store`.
 
 The initial package engine restricted installation to Node.js 24. The
-[runtime support decision](../bug-fix/2026-10-26-node-runtime-support.md)
+[runtime support decision](../../implemented/bug-fix/2026-10-26-node-runtime-support.md)
 replaces that restriction with Node.js `>=22` and adds strict installed-artifact
 checks across Node.js versions, with native binary requirements documented.
 Source development and native application validation retain Node.js 24.
@@ -40,12 +40,12 @@ JavaScript lowercase, or Unicode-normalization rule replaces actual lookup.
 The [configuration design](../../../../docs/design/daynight-review.md) owns the schema
 and path rules.
 
-The [client composition decision](../architecture/2026-10-20-client-command-composition.md)
+The [client composition decision](../../implemented/architecture/2026-10-20-client-command-composition.md)
 assigns root help/version to the client and operation loading to each command.
 The review module supports argument validation, configuration loading,
 [configuration-only repository registration](../feature/2026-10-18-add-repo-configuration.md)
 and [local persisted status listing](../feature/2026-10-18-review-status-listing.md).
-The [self-update command](../feature/2026-10-20-cli-self-update.md) updates only its
+The [self-update command](../../implemented/feature/2026-10-20-cli-self-update.md) updates only its
 verified npm global installation before home, configuration or review runtime
 loading. The listing parses configuration without physical path probes and reads
 a single SQLite transaction without initializing, migrating or recovering application state.
@@ -54,16 +54,16 @@ the instance lock, opens SQLite and runs the
 [foreground coordinator](../architecture/2026-10-17-foreground-review-coordination.md).
 Configuration failures report their filename and preserve the original cause.
 
-When the CLI is selected by the [module-scoped CI decision](2026-10-21-module-scoped-pr-ci.md),
+When the CLI is selected by the [module-scoped CI decision](../../implemented/process/2026-10-21-module-scoped-pr-ci.md),
 GitHub Actions runs type checking, build, and tests on native Linux, macOS, and
 Windows. Explicit `pnpm test:apfs` diagnostics on macOS mount temporary
 case-sensitive and case-insensitive APFS images and verify their actual lookup
 behavior before exercising configuration validation. Routine tests and the CLI
 matrix leave image diagnostics unselected, following the
-[native development coverage decision](../testing/2026-10-23-native-development-filesystem-coverage.md);
+[native development coverage decision](../../implemented/testing/2026-10-23-native-development-filesystem-coverage.md);
 non-mounting path and cleanup tests remain. The final `checks` job accepts only success or skipped from every
 preceding job, including the CLI matrix and dedicated shell completion job.
-Main pushes select all modules. The [CI simplification decision](../simplification/2026-10-21-ci-gate-simplification.md)
+Main pushes select all modules. The [CI simplification decision](../../implemented/simplification/2026-10-21-ci-gate-simplification.md)
 owns the final job-result gate and PR-only version enforcement.
 Actions are pinned to the inspected commits:
 [checkout](https://github.com/actions/checkout/tree/3d3c42e5aac5ba805825da76410c181273ba90b1),
@@ -96,7 +96,7 @@ metadata alone does not increase version precedence. Invalid manifests or missin
 check. The local push mode validates its first version when no predecessor
 exists. Version-check failures fail the PR's Linux job and the final `checks` job.
 The original toolchain ran this policy on main pushes as well; the
-[CI simplification decision](../simplification/2026-10-21-ci-gate-simplification.md)
+[CI simplification decision](../../implemented/simplification/2026-10-21-ci-gate-simplification.md)
 keeps the version decision in the reviewed PR while retaining full application
 validation on main.
 
@@ -134,10 +134,10 @@ Every release-affecting PR includes its version decision. Documentation and
 test maintenance stay independent of release numbering. The gate verifies the
 PR revisions supplied by the event; it does not publish packages or schedule
 release tags. Native-platform checks still own application validation. The
-separate [npm publishing decision](2026-10-20-npm-trusted-publishing.md) owns
+separate [npm publishing decision](../../implemented/process/2026-10-20-npm-trusted-publishing.md) owns
 manual release authorization, OIDC, artifact identity, and post-publication tags;
 its workflow validates the CLI at the selected commit under the
-[CLI publication-validation decision](2026-10-22-cli-publication-validation.md).
+[CLI publication-validation decision](../../implemented/process/2026-10-22-cli-publication-validation.md).
 
 All implementation tasks share concrete build and validation commands. Tests
 can inject home resolution and command boundaries without modifying an actual

@@ -43,7 +43,7 @@ ownership of that execution model; this design does not supersede it.
 
 The original service exposed three editable states through general updates.
 Reader preparation and approval actions later introduced proposed. The adopted
-[status assignment decision](2026-10-24-task-status-assignment.md) removes that
+[status assignment decision](../../implemented/architecture/2026-10-24-task-status-assignment.md) removes that
 state and those actions, defaults creation to todo and gives status a dedicated
 versioned resource. It preserves the project transaction and restores arbitrary
 transitions with direct-dependent reopening protection.
@@ -65,7 +65,7 @@ display values cannot weaken the requirement. The runtime foundation records
 this stricter replacement of the original inclusive total threshold. The design pins a tool revision containing the exclusion
 denominator fix and keeps tests with the packages whose coverage they must prove.
 The original CI aggregate required both the Go service checks and the existing
-native CLI checks. The later [module-scoped CI decision](../process/2026-10-21-module-scoped-pr-ci.md)
+native CLI checks. The later [module-scoped CI decision](../../implemented/process/2026-10-21-module-scoped-pr-ci.md)
 selects affected PR modules and retains all checks on main pushes without
 changing the individual validation gates.
 
@@ -107,15 +107,15 @@ Project-level locking serializes task writes within a project. Different
 projects can proceed independently. The database intentionally has no foreign
 keys: the locked service write path validates references, local constraints
 guard individual rows. The original design had no deletion API;
-[retained task deletion](../feature/2026-10-25-task-soft-deletion.md) now supplies
+[retained task deletion](../../implemented/feature/2026-10-25-task-soft-deletion.md) now supplies
 reference maintenance under that same project lock: undeleted references block
-strict deletion, while [explicit incoming removal](../feature/2026-10-25-task-delete-remove-depends.md)
+strict deletion, while [explicit incoming removal](../../implemented/feature/2026-10-25-task-delete-remove-depends.md)
 can detach them atomically with source-version updates. New dependencies cannot
 reference marked targets. Introducing another writer still requires the same
 reference-maintenance discipline.
 
 The original deployment was loopback-only for local CLI and internal program
-callers. The [authentication activation](2026-10-22-authentication-activation.md)
+callers. The [authentication activation](../../implemented/architecture/2026-10-22-authentication-activation.md)
 now authenticates HTTP callers and checks project membership in resource
 lookups while preserving the numeric-loopback listener. Its configured public
 origin and existing entry point are independent of that listener. A project ID
@@ -125,7 +125,7 @@ authenticated deployment.
 UI, task execution and PR/review integration are additive capabilities outside
 the task-management contract. Their affordable addition depends on keeping
 resource mutation separate from external execution and on retaining opaque task
-identities. The adopted [read-only dashboard design](2026-10-20-task-dashboard-mvp-design.md)
+identities. The adopted [read-only dashboard design](../../implemented/architecture/2026-10-20-task-dashboard-mvp-design.md)
 adds a browser consumer and a complete-graph read while retaining those boundaries;
 the complete graph read is implemented and browser delivery remains pending.
 Current requests only persist and read task-management state. Delete

@@ -37,7 +37,7 @@ partially supersedes the original summary-only COMMENT representation and
 head-only follow-up behavior while preserving these quality criteria.
 
 This partially supersedes the original absence-of-Critical/Major approval rule
-in the [Copilot execution decision](../architecture/2026-10-17-copilot-session-execution.md)
+in the [Copilot execution decision](../../archived/architecture/2026-10-17-copilot-session-execution.md)
 and expands the methodology owned by the
 [bundled-skill decision](../architecture/2026-10-20-bundled-review-skill.md).
 Their agent-owned publisher, immutable skill loading, stable review identity and

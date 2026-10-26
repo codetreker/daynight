@@ -22,7 +22,7 @@ It constructs the handler from that same store before accepting requests.
 A handler factory permits the composition
 root to assemble service-backed routes without another connection pool or
 mutating a running server. The
-[authentication activation](2026-10-22-authentication-activation.md) extends that
+[authentication activation](../../implemented/architecture/2026-10-22-authentication-activation.md) extends that
 factory with required Config and an error result; failed composition closes the
 already acquired listener, database and file root before accepting requests.
 There is no substitute database implementation.
@@ -43,13 +43,13 @@ mandatory: a missing or inaccessible database is a failing prerequisite. Runtime
 cancellation tests observe the uniquely marked handler SQL in PostgreSQL
 `active`/`Timeout/PgSleep` state from an independent connection before canceling
 the client or starting drain. The
-[acceptance-readiness decision](../testing/2026-10-20-observable-acceptance-readiness.md)
+[acceptance-readiness decision](../../implemented/testing/2026-10-20-observable-acceptance-readiness.md)
 owns the observation and cleanup ordering; existing cancellation, drain and
 connection-health assertions remain unchanged.
 
 The foundation originally added the Go CI job alongside the existing three
 native CLI jobs and required all of them in the aggregate. The later
-[module-scoped CI decision](../process/2026-10-21-module-scoped-pr-ci.md) selects
+[module-scoped CI decision](../../implemented/process/2026-10-21-module-scoped-pr-ci.md) selects
 PR jobs by affected module while preserving full main-push validation and each
 selected job's workload. The pinned go-cov checks package coverage at
 85%, function coverage at 80%, critical blocks, and total coverage at 90%.

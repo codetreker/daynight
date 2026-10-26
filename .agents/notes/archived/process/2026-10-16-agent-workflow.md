@@ -35,7 +35,7 @@ Scope choices preserve confirmed requirements and state concrete deferral costs.
 Only alternatives actually considered are recorded. Prose keeps the complete
 contract and enough local rationale to understand the mechanism; full decision
 history belongs in notes. Active research stays synchronized with relevant work.
-The [validation evidence decision](2026-10-20-source-bound-validation-evidence.md)
+The [validation evidence decision](../../implemented/process/2026-10-20-source-bound-validation-evidence.md)
 clarifies this ownership for acceptance: run observations stay with source-bound
 artifacts and their PR or CI run, while durable methods, limitations and decisions
 stay in their existing document owners.

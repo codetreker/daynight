@@ -44,8 +44,8 @@ and existing repository paths remain. Credential-bearing results use POSIX `0600
 writer, as required by the
 [credential decision](../architecture/2026-10-22-cli-server-credentials.md).
 Files without a token keep their existing permission behavior. The
-[registration decision](2026-10-18-add-repo-configuration.md) owns repository
-identity, paths, idempotency and its shared updater.
+[registration decision](../../archived/feature/2026-10-18-add-repo-configuration.md) records the
+repository identity, path, idempotency and shared-updater choices retained here.
 
 Prompts and save diagnostics use stderr, preserving machine-readable stdout.
 The shared CLI prompt/cancellation lifecycle also serves
@@ -57,7 +57,7 @@ once with its original arguments. Human input consumes no business budget, and
 a later failure keeps the saved configuration.
 
 The original guidance partially superseded startup prerequisites in the
-[user-home decision](../architecture/2026-10-16-user-home-review-configuration.md)
+[user-home decision](../../archived/architecture/2026-10-16-user-home-review-configuration.md)
 and [project/task decision](../architecture/2026-10-20-project-task-cli-design.md).
 Explicit preparation had avoided implicit writes and exposed configuration errors;
 guidance retained those error/runtime boundaries while adding interactive

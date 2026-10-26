@@ -20,8 +20,8 @@ The manual [`publish` workflow](../../../../.github/workflows/publish.yml)
 accepts only `refs/heads/main` and captures `GITHUB_SHA` as the release source.
 The release group allows one active run and does not cancel it when another run
 is dispatched.
-The [toolchain version gate](2026-10-16-typescript-cli-toolchain.md) remains
-independent: the reviewed change selects the package version, and publication
+The version gate chosen in the
+[toolchain decision](../../archived/process/2026-10-16-typescript-cli-toolchain.md) remains independent: the reviewed change selects the package version, and publication
 neither increments it nor commits changes. Prerelease versions fail because this
 workflow publishes stable releases to `latest`. A previously unpublished version
 must have greater precedence than the registry's current stable `latest` version.

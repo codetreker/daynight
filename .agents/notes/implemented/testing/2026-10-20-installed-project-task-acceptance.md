@@ -106,8 +106,8 @@ The [repository validation guide](../../../../README.md#validation) owns command
 client receipt meanings; the [server README](../../../../packages/daynight-server/README.md)
 owns service receipt and coverage interpretation. Source-bound observed results
 belong to the corresponding PR and CI run. The existing
-[installed-client](2026-10-17-installed-cli-acceptance.md) and
-[built-process](2026-10-19-server-process-acceptance.md) decisions retain the
+[installed-client](../../archived/testing/2026-10-17-installed-cli-acceptance.md) and
+[built-process](../../archived/testing/2026-10-19-server-process-acceptance.md) decisions retain the
 original lifecycle, updater, service and cleanup rationale.
 
 ## Alternatives

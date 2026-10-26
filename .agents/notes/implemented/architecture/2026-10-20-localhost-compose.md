@@ -32,8 +32,8 @@ with the service. The gateway owns the published port and network namespace;
 the server joins that namespace as a dependent service. Compose dependency ordering starts
 the server after the gateway is running and PostgreSQL is healthy; gateway
 health checks can fail until the server is ready without a dependency cycle.
-The [service design baseline](2026-10-19-daynight-server-task-design.md) retains
-ownership of the local-only runtime and independent reviewer lifecycle.
+The [service design baseline](../../archived/architecture/2026-10-19-daynight-server-task-design.md) records
+the original local-only runtime and independent reviewer lifecycle choices.
 
 The PostgreSQL 18 volume mounts at `/var/lib/postgresql`, containing its
 version-specific data directory. Ordinary `down` preserves the named volume;

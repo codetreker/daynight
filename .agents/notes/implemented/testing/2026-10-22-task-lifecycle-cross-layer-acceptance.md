@@ -121,7 +121,7 @@ The [server README](../../../../packages/daynight-server/README.md#built-process
 and [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 own repeatable commands, scenario mappings and receipt interpretation. This
 extends the [installed project/task](2026-10-20-installed-project-task-acceptance.md),
-[built-process](2026-10-19-server-process-acceptance.md) and
+[built-process](../../archived/testing/2026-10-19-server-process-acceptance.md) and
 [dashboard acceptance](2026-10-20-dashboard-production-acceptance.md) decisions.
 The [attachment cross-layer decision](2026-10-21-task-attachment-cross-layer-acceptance.md)
 retains original-byte, rendering, reader-input and K1 storage boundaries; shared

@@ -72,7 +72,7 @@ a new round without a commit. Configuration, session UUIDs and the existing
 agent-owned publisher remain unchanged. The
 [skill design](../../../../docs/design/daynight-review-skill.md) owns the mechanism
 and validation boundaries. This extends the
-[Copilot execution decision](2026-10-17-copilot-session-execution.md) and
+[Copilot execution decision](../../archived/architecture/2026-10-17-copilot-session-execution.md) and
 [client command composition](2026-10-20-client-command-composition.md).
 
 ## Alternatives

@@ -13,7 +13,7 @@ hide the cause of a rejected mutation.
 ## Decision
 
 The server exposes task create/list/get/update and one versioned PUT status
-beneath a project path. The [status assignment decision](../architecture/2026-10-24-task-status-assignment.md)
+beneath a project path. The [status assignment decision](../../implemented/architecture/2026-10-24-task-status-assignment.md)
 replaces the historical generic update and approval-action contracts. It
 converts API DTOs into the existing concrete task service without SQL or policy
 duplication in handlers. The runtime factory constructs project and task services

@@ -43,7 +43,7 @@ contexts. Error wrapping retains driver causes, the resource-not-found marker
 and cleanup failures while keeping SQL and credentials out of public diagnostics.
 All production writes go through the service's project boundary, with local
 database checks and no foreign keys. The original no-deletion assumption is
-replaced for tasks by [retained deletion](../feature/2026-10-25-task-soft-deletion.md),
+replaced for tasks by [retained deletion](../../implemented/feature/2026-10-25-task-soft-deletion.md),
 which keeps the project write boundary and protects active references. Projects
 still have no deletion API.
 

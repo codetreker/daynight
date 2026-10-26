@@ -13,7 +13,7 @@ actual Copilot reasoning and GitHub effects.
 
 `pnpm acceptance` builds the application and runs independent review, self-update
 and project/task installed suites. The
-[project/task acceptance decision](2026-10-20-installed-project-task-acceptance.md)
+[project/task acceptance decision](../../implemented/testing/2026-10-20-installed-project-task-acceptance.md)
 owns the third native suite and separate real-service path. Local and hosted
 validation pass with the original review and self-update workloads
 retained; [PR #55](https://github.com/codetreker/daynight/pull/55) owns review and
@@ -22,14 +22,14 @@ packs and installs the application into a
 project-local consumer, then drives its installed `daynight` command. It uses
 real Git and SQLite with controlled `gh` and Copilot executables. It injects no
 runtime or coordinator dependencies and adds no product test flags. The
-[bundled review skill](../architecture/2026-10-20-bundled-review-skill.md) is
+[bundled review skill](../../implemented/architecture/2026-10-20-bundled-review-skill.md) is
 loaded from the installed package: the controlled Copilot executable answers
 native discovery and checks that each review receives the immutable snapshot.
 Those discovery calls are separate from the simulated agent invocations and
 publications. Replacing only the isolated installed asset leaves the running
 daemon's captured bytes intact; orderly restart captures the new digest while
 retaining the same PR UUID. The
-[self-update suite](../feature/2026-10-20-cli-self-update.md) uses real npm with
+[self-update suite](../../implemented/feature/2026-10-20-cli-self-update.md) uses real npm with
 isolated task-local global prefixes and a controlled scoped HTTP registry; it
 checks replacement of the invoked installation without changing the operator's
 installed CLI.
@@ -68,7 +68,7 @@ is a controlled fault-injection point; ordinary native process-tree cancellation
 keeps its own unchanged tests. The [repository validation guide](../../../../README.md#validation)
 owns repeatable commands, receipt meanings and tested-baseline limits. The
 corresponding PR and CI run retain source-bound scenario results under the
-[validation evidence decision](../process/2026-10-20-source-bound-validation-evidence.md).
+[validation evidence decision](../../implemented/process/2026-10-20-source-bound-validation-evidence.md).
 The live-service limits remain independent of controlled fixture success.
 
 The existing installed suites perform normal registry dependency resolution. The pnpm

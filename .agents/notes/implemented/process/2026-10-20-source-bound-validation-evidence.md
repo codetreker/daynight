@@ -29,10 +29,10 @@ knowledge from the removed client, service and dashboard reports without copying
 their version, timing, coverage or delivery-status tables into another report.
 
 This clarifies the document ownership in the
-[shared workflow decision](2026-10-16-agent-workflow.md) and partially replaces
+[shared workflow decision](../../archived/process/2026-10-16-agent-workflow.md) and partially replaces
 the report ownership recorded by the
-[installed CLI](../testing/2026-10-17-installed-cli-acceptance.md),
-[built-process service](../testing/2026-10-19-server-process-acceptance.md) and
+[installed CLI](../../archived/testing/2026-10-17-installed-cli-acceptance.md),
+[built-process service](../../archived/testing/2026-10-19-server-process-acceptance.md) and
 [production dashboard](../testing/2026-10-20-dashboard-production-acceptance.md)
 acceptance decisions. Their original reasons for installed packages, real process
 behavior, complete browser workloads and independent live-service evidence

@@ -16,13 +16,13 @@ test invocation and drive it over loopback HTTP against isolated PostgreSQL
 schemas. They parse existing JSON readiness logs instead of adding a health
 endpoint, test-only production API or alternate runtime. Package tests continue
 to own store/service/server coverage. The
-[installed project/task extension](2026-10-20-installed-project-task-acceptance.md)
+[installed project/task extension](../../implemented/testing/2026-10-20-installed-project-task-acceptance.md)
 reuses this fixture for public CLI workflows, restart and
 version competition. It keeps CLI requirement identifiers in the `PT.V*` namespace and
 uses a separately prepared installation without replacing the service scenarios.
 Resource-budget probes run after the existing Go gate, outside its default
 ten-minute test timer, while the Go CI job retains its 20-minute bound. The
-[CI efficiency decision](2026-10-21-ci-validation-efficiency.md) defines short
+[CI efficiency decision](../../implemented/testing/2026-10-21-ci-validation-efficiency.md) defines short
 test-only deadline values, unchanged real byte-limit probes and bounded parallel
 scenario execution. Independent scenario subtests have at most four active
 slots within their sequential top-level test. Each owns its schema, server
@@ -43,7 +43,7 @@ The SQL diagnostic view masks only the direct error.requestId string after
 validating unique, syntactically valid header correlation. All other original
 JSON bytes, including unknown members and keys, remain subject to the scan.
 This treats an opaque ID as metadata without exempting diagnostic fields; the
-[metadata decision](../bug-fix/2026-10-21-http-error-acceptance-metadata.md)
+[metadata decision](../../implemented/bug-fix/2026-10-21-http-error-acceptance-metadata.md)
 records the false-positive mechanism and rejected alternatives.
 
 Only owned children are stopped or killed, then waited for. Row locks are
@@ -55,7 +55,7 @@ The incremental JSON receipt records Git/GitHub revision, required gitTreeSha
 from actual `git rev-parse HEAD^{tree}`, dirty state, compiler and database
 versions, tested binary hash, named results and cleanup counts. The packed CLI's
 source tree must match the service receipt alongside existing artifact checks.
-The [lifecycle cross-layer extension](2026-10-22-task-lifecycle-cross-layer-acceptance.md)
+The [lifecycle cross-layer extension](../../implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 adds genuine historical-SQL startup/restart and competing installed-process
 proof using these same fixture and cleanup owners; deterministic package-level
 interleavings remain separate. CI requires a clean checkout matching its supplied
@@ -64,7 +64,7 @@ uploads that receipt and the exact raw profile after validation, including on
 failure. The [server README](../../../../packages/daynight-server/README.md)
 owns requirement mapping and receipt interpretation. Observed results belong to
 the tested revision's PR and CI run under the
-[validation evidence decision](../process/2026-10-20-source-bound-validation-evidence.md).
+[validation evidence decision](../../implemented/process/2026-10-20-source-bound-validation-evidence.md).
 
 ## Alternatives
 
@@ -93,7 +93,7 @@ validation still fails; positive and negative receipts are retained separately
 so a negative control cannot masquerade as the successful acceptance artifact.
 
 The suite targets the Ubuntu Go CI job for process signals. The
-[module-scoped CI decision](../process/2026-10-21-module-scoped-pr-ci.md) controls
+[module-scoped CI decision](../../implemented/process/2026-10-21-module-scoped-pr-ci.md) controls
 which PR jobs run; selected jobs retain their full workloads, and main pushes
 retain every native CLI job. The suite creates no production helpers, service
 interfaces or coverage exclusions.

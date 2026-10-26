@@ -85,17 +85,17 @@ successor. Historical rows do not start models merely because the schema changed
 Read-only listing accepts supported schemas without migrating them.
 
 This partially supersedes trigger and completion facts in the
-[foreground-CLI decision](2026-10-16-foreground-review-cli.md),
-[durable-state decision](2026-10-17-durable-review-state.md),
-[foreground-coordination decision](2026-10-17-foreground-review-coordination.md),
-[Copilot-execution decision](2026-10-17-copilot-session-execution.md) and
+[foreground-CLI decision](../../archived/architecture/2026-10-16-foreground-review-cli.md),
+[durable-state decision](../../archived/architecture/2026-10-17-durable-review-state.md),
+[foreground-coordination decision](../../archived/architecture/2026-10-17-foreground-review-coordination.md),
+[Copilot-execution decision](../../archived/architecture/2026-10-17-copilot-session-execution.md) and
 [PR-quality decision](../process/2026-10-21-review-pr-quality-gates.md).
 Their permanent tracking boundary, immutable targets, per-PR sessions, process
 exclusion, agent-owned publication and quality gates remain in force. The
 [bundled-skill decision](2026-10-20-bundled-review-skill.md) retains packaging and
 loading ownership. The
-[status-listing decision](../feature/2026-10-18-review-status-listing.md) retains its
-read-only ownership across both supported schemas. Required behavior belongs to
+[status-listing decision](../../archived/feature/2026-10-18-review-status-listing.md) records the
+choice of read-only listing; listing remains read-only across both supported schemas. Required behavior belongs to
 [review R5–R14](../../../../docs/spec/daynight-review.md#r5-轮询与审查资格), with
 mechanism and API ownership in the
 [review design](../../../../docs/design/daynight-review.md).

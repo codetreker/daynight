@@ -15,7 +15,7 @@ notice. The listing retains its local-snapshot notice, observation times, saved
 errors, initialization messages and PR details. Permanent exclusion and tracked-PR
 selection remain unchanged.
 
-This partially supersedes the [original listing decision](../feature/2026-10-18-review-status-listing.md),
+This partially supersedes the [original listing decision](../../archived/feature/2026-10-18-review-status-listing.md),
 which displayed the boundary to explain why older PRs could not be enumerated.
 The [requirements](../../../../docs/spec/daynight-review.md) own the current visible
 behavior.

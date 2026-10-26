@@ -9,7 +9,7 @@
 进程内持续轮询和管理审查，`review add-repo` 管理配置，`review list` 与 `review ls`
 读取本地状态。客户端安装、顶层分发和自更新见[客户端架构](daynight.md)；
 [review 需求](../spec/daynight-review.md)定义业务行为，
-[前台审查决策](../../.agents/notes/implemented/architecture/2026-10-16-foreground-review-cli.md)
+[前台审查决策](../../.agents/notes/archived/architecture/2026-10-16-foreground-review-cli.md)
 保留执行模型的选择依据。
 
 ## 使用方式与配置
@@ -111,7 +111,7 @@ inode 识别实际位置及祖先关系，处理符号链接和挂载边界。�
 不得让同一仓库再次初始化。已有克隆与配置不匹配时拒绝使用，不得覆盖；保留其工作
 文件和分支。HTTPS 地址保留非默认端口；SSH 端口只属于 Git 传输，不作为 API 端口。
 配置解析得到的 `coordinate` 是规范化的 host/owner/name，稳定仓库 ID 由后续 review
-启动的 GitHub API 查询确定。[仓库添加决策](../../.agents/notes/implemented/feature/2026-10-18-add-repo-configuration.md)
+启动的 GitHub API 查询确定。[仓库添加决策](../../.agents/notes/archived/feature/2026-10-18-add-repo-configuration.md)
 记录配置职责和路径固定的选择。
 
 源码开发使用 pnpm、TypeScript ESM 和 Node.js 24 LTS，持久化使用 `better-sqlite3`，
@@ -162,7 +162,7 @@ GitHub ID 关联 PR 与审查记录。同一配置身份若对应多个已存 Gi
 错误带 `Previous revision` 前缀。错误文本中的终端控制字符被转义，防止破坏表格或
 产生终端控制效果。整个命令不启动 daemon、Git、gh 或 Copilot，不获取实例锁、
 不做认证或网络请求，也不恢复中断状态。
-[列表决策](../../.agents/notes/implemented/feature/2026-10-18-review-status-listing.md)
+[列表决策](../../.agents/notes/archived/feature/2026-10-18-review-status-listing.md)
 记录状态归属和本地快照范围的选择。
 
 `cleanup_pending` 独立于审查状态，重新打开的 PR 也可能保留此屏障。行详情显示
@@ -256,7 +256,7 @@ PR worktree 位于各受监控仓库根目录的 `.worktrees/` 下，布局见�
 API 请求为兼容 `gh` 的主机名校验，会在受控内存中读取已有主机凭据，再仅通过当前
 子进程的环境变量传递。令牌不得写入 SQLite、配置、命令参数、公开异常或日志。
 配置与状态位置的选择记录在
-[用户主目录配置决策](../../.agents/notes/implemented/architecture/2026-10-16-user-home-review-configuration.md)。
+[用户主目录配置决策](../../.agents/notes/archived/architecture/2026-10-16-user-home-review-configuration.md)。
 
 状态表按仓库观测、审查执行和远端发布分别保存：
 
@@ -313,7 +313,7 @@ head 和稳定身份均相符。历史 dismissed review 不能充当批准。`co
 `running` 或 `interrupted` 可能仍有子进程；不能只根据状态或 PID 推断它们已经停止。
 取代准备工作或解除中断前，由协调模块明确确认相应操作已结束。数据库保存这项确认
 带来的状态变化，本身不证明外部进程已经停止。状态实现决策见
-[持久化审查状态](../../.agents/notes/implemented/architecture/2026-10-17-durable-review-state.md)。
+[持久化审查状态](../../.agents/notes/archived/architecture/2026-10-17-durable-review-state.md)。
 
 ## 轮询与工作选择
 
@@ -401,7 +401,7 @@ HTTP 日期，以及主限额重置时间，取最晚约束。客户端在内存
 到期前不再执行该主机的 API 请求，因此同一批次中的其他仓库也不能绕过限流；其他
 主机可继续。模块不自行休眠或重试，由协调模块复用客户端并安排下一次观测。
 机制与凭据处理的依据见
-[完整 GitHub 观测决策](../../.agents/notes/implemented/architecture/2026-10-17-github-observation.md)。
+[完整 GitHub 观测决策](../../.agents/notes/archived/architecture/2026-10-17-github-observation.md)。
 
 轮询只能观测快照。两次轮询之间完整发生的 ready/Draft 往返，或修改目标分支后又改回，
 可能被遗漏。完整扫描和重复轮询能最终观测到持续存在的状态，不保证完整的事件历史。
@@ -434,8 +434,8 @@ PR worktree 放在实际仓库根目录下：
 本地克隆及其 PR worktree 是系统独占的审查环境。daemon 只操作自己登记的固定 PR
 路径，各 PR 的工作目录相互独立。Git 的 `locked daynight:<sessionId>` 标记将持久化
 会话与实际登记关联；同一 PR 清理后重新打开时，仍用原会话 UUID。此机制记录在
-[worktree 所有权决策](../../.agents/notes/implemented/architecture/2026-10-17-owned-review-worktrees.md)，
-环境边界见[专用审查环境决策](../../.agents/notes/implemented/architecture/2026-10-17-exclusive-review-environment.md)。
+[worktree 所有权决策](../../.agents/notes/archived/architecture/2026-10-17-owned-review-worktrees.md)，
+环境边界的选择依据记录在[专用审查环境决策](../../.agents/notes/archived/architecture/2026-10-17-exclusive-review-environment.md)。
 
 操作前必须确认配置路径是精确 Git 根目录，并比较物理目录身份。对 PR leaf 同时校验
 精确 top-level、common directory、固定路径、会话锁标记和数据库登记；不能只比较
@@ -721,7 +721,7 @@ worktree 保留。同一仓库中的其他 PR 和其他仓库继续轮询和执�
 `preparing` 或 `running` 记录经 `interrupted` 转入针对原捕获目标的重试或确认，
 绝不直接标记完成。更新目标可在同一会话中取代它们。不接管仍在运行的 agent，也不
 重建任意进程树。锁恢复选择见
-[失效实例锁决策](../../.agents/notes/implemented/bug-fix/2026-10-18-stale-instance-lock-recovery.md)。
+[失效实例锁决策](../../.agents/notes/archived/bug-fix/2026-10-18-stale-instance-lock-recovery.md)。
 Node 文档说明了相关的
 [子进程限制](https://nodejs.org/api/child_process.html#subprocesskillsignal)。
 进程证据的依据还包括 [Node 进程组](https://nodejs.org/api/child_process.html#optionsdetached)、
@@ -766,7 +766,7 @@ skill 提供；提示词断言不证明模型对这些指令的实际执行。�
 实际原生委派、固定目标输入、返回结果及主 agent 汇总，打包或文字匹配检查不能替代。
 skill 资源验证覆盖完整 bundle、内容哈希、原子缓存和已有快照损坏；安装验收验证
 实际发布资源存在。
-执行边界见[Copilot 会话执行决策](../../.agents/notes/implemented/architecture/2026-10-17-copilot-session-execution.md)。
+执行边界的选择依据记录在[Copilot 会话执行决策](../../.agents/notes/archived/architecture/2026-10-17-copilot-session-execution.md)。
 协调器测试使用真实 SQLite、受控观测和失败注入，验证公平调度、并发容量、永久边界、
 预算抑制、取消、清理及恢复。conversation 用例覆盖任意作者与 outdated thread 的
 阻塞、相同 SHA resolve 后一次后续轮次、完成前 resolve、合并新目标、重复轮询与
@@ -776,12 +776,12 @@ open thread 时等待，以及 actor 切换后已提交结果的核对与草稿�
 时钟及显式控制 CI 响应、执行结束
 来建立先后关系：先确认新修订已持久化，再让两个等待 PR 的 CI 就绪，逐次释放 Worker，
 验证两个等待 PR 均先于持续更新 PR 的后续修订，且就绪候选保持 FIFO。时钟在准入比较
-期间固定，机器负载不会使其中一个候选的 CI 证据先过期；详见
-[公平调度验证决策](../../.agents/notes/implemented/testing/2026-10-19-deterministic-coordinator-fairness.md)。
+期间固定，机器负载不会使其中一个候选的 CI 证据先过期；选择依据记录在
+[公平调度验证决策](../../.agents/notes/archived/testing/2026-10-19-deterministic-coordinator-fairness.md)。
 集成案例组合真实本地 Git、Copilot 受控进程和生产进程监督模块。编译后 CLI 测试验证
 实例锁、状态创建、信号退出和资源释放，无需真实远程认证。调度器内部失败也会取消
 仍在等待的轮询，再等待所有已启动操作结束。
-[协调决策](../../.agents/notes/implemented/architecture/2026-10-17-foreground-review-coordination.md)
+[协调决策](../../.agents/notes/archived/architecture/2026-10-17-foreground-review-coordination.md)
 记录这些责任和异常恢复前提。
 显式 `pnpm test:apfs` 在 macOS 挂载临时的大小写敏感和不敏感 APFS 镜像，
 日常 `pnpm test` 和 CLI CI 不选择该镜像专项；其余路径与清理测试继续运行。

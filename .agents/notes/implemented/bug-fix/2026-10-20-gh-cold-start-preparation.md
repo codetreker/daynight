@@ -14,7 +14,7 @@ validation workload remain required. The later
 [CLI publication-validation decision](../process/2026-10-22-cli-publication-validation.md)
 removes the publication dependency on the full mainline run.
 
-The earlier [probe isolation decision](2026-10-19-native-environment-probe-isolation.md)
+The earlier [probe isolation decision](../../archived/bug-fix/2026-10-19-native-environment-probe-isolation.md)
 isolated gh configuration and state, disabled telemetry and preserved failures.
 It deliberately left the original startup trigger unresolved. The recurrence
 required measurements of first process startup rather than another assumption

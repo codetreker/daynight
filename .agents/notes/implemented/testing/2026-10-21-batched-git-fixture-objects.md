@@ -32,7 +32,7 @@ imports packed, avoiding an additional native unpacking process. Native Git
 failures propagate through the supplied executor.
 
 This extends the source-construction mechanism of the
-[parallel Git validation decision](2026-10-18-parallel-git-validation.md), retaining
+[parallel Git validation decision](../../archived/testing/2026-10-18-parallel-git-validation.md), retaining
 its ownership rules. Each test file owns its immutable seed and cleanup; every
 case has a private upstream, refs, SQLite observations, clones and worktrees.
 Only object preparation is batched. Actual clone, fetch, sparse-checkout,

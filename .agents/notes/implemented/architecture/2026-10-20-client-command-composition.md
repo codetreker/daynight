@@ -92,11 +92,11 @@ The [client requirements](../../../../docs/spec/daynight.md) and
 The [review requirements](../../../../docs/spec/daynight-review.md) and
 [review design](../../../../docs/design/daynight-review.md) own review behavior.
 This decision partially supersedes the package-wide review framing in the
-[foreground review decision](2026-10-16-foreground-review-cli.md), while retaining
+[foreground review decision](../../archived/architecture/2026-10-16-foreground-review-cli.md), while retaining
 its polling, direct-child execution, retained-session and agent-publication
-model. The [home-layout decision](2026-10-16-user-home-review-configuration.md)
-and [self-update decision](../feature/2026-10-20-cli-self-update.md) retain their
-location and installation-ownership guarantees. The
+model. The location and installation-ownership guarantees chosen in the
+[home-layout decision](../../archived/architecture/2026-10-16-user-home-review-configuration.md)
+and [self-update decision](../feature/2026-10-20-cli-self-update.md) remain in force. The
 [shell-completion decision](../feature/2026-10-20-shell-completion.md) extends the
 metadata ownership to parsing, help and native shell generation while preserving
 per-command business loading.
@@ -143,8 +143,8 @@ Self-update must still prove actual installation ownership and fresh-process
 version after its source move. Source-bound JSON receipts and their corresponding
 PR or CI run distinguish current-source observations from historical results.
 Controlled process behavior does not establish real Copilot judgment or GitHub
-publication; the [installed acceptance decision](../testing/2026-10-17-installed-cli-acceptance.md)
-retains that separate live-service requirement.
+publication. The separate live-service requirement chosen in the
+[installed acceptance decision](../../archived/testing/2026-10-17-installed-cli-acceptance.md) remains in force.
 
 One package still installs the dependencies of all its commands. Lazy loading
 isolates execution and native-addon ownership, not installation size. The shell
