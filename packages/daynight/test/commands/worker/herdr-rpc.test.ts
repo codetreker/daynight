@@ -238,8 +238,12 @@ describe("Herdr local RPC", () => {
     const op = operation({ limits: { totalMs: 5_000, requestMs: 750 } });
     const pending = f.client.request("agent.prompt", { target: "pane", text: "one input" }, op).catch((error: unknown) => error);
     await received.promise;
-    expect(await pending).toMatchObject({ name: "HerdrRpcError", submission: "unknown", message: expect.stringContaining("deadline exceeded") });
+    // Either the deadline timer or the next response fragment can observe expiry first.
+    const result = await pending;
+    expect(result).toMatchObject({ name: "HerdrRpcError", submission: "unknown", cause: expect.objectContaining({ message: "The Herdr RPC request deadline elapsed." }) });
+    expect((result as HerdrRpcError).cause).toBeInstanceOf(Error);
     expect(f.connectionCount()).toBe(1);
+    expect(f.requests).toHaveLength(1);
     expect(op.signal.aborted).toBe(false);
     expect(() => op.check()).not.toThrow();
     await disconnected(f.sockets);
