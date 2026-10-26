@@ -78,6 +78,8 @@ AND no active claim
 - Herdr 与原生 agent 的会话关联可持久化，重启时核对并继续原执行，不要求人工重复输入已取得的标识。
 - 启动和恢复前校验官方 Herdr/native agent 会话集成，以及恢复所需的原生历史是否可用；不满足时显示具体问题和修正方法并暂停该任务。Worker 不自动全局安装集成或修改全局 agent 配置。
 - 开发 task 的 agent 负责实现、验证、提交、工作分支推送、PR、CI/review 反馈、合并和合并后验收，并遵守仓库权限、门禁与授权要求。其他允许 Agent 自动执行的 task 遵守其阶段和验收条件。
+- 协调循环拥有首次启动和同 claim 确需重新启动的完整 prompt，显式声明 `worker-managed`、`using-daynight`、`execute-task-in-managed` 及原 assignment/冻结配置；先确认所需技能可用。Herdr 适配层按原内容递交不透明文本，不选择任务或推断模式。只重连存活 agent 时不重发启动输入，未知受理先观察原 pane。
+- 首条输入不能依赖尚需首个 turn 才产生的官方 native ID。新启动核对原目标、readiness、冻结 argv/config 后只提交一次原 prompt；resume 还核对持久原 ID、必要 history 和确切 resume argv，输入后须取得并核对官方 ID。Blocked 后续输入需要持久的 `initialPromptNotSubmitted:true` 和从空 native-reference 基线取得的匹配 launchEvidence；重连或未知结果不授权重发。保留旧 native reference 的未活动恢复 pane 返回 rebind-required，先确认旧停止/关闭后换新 pane，保留 worktree/native ID/config；后续身份观察失败仍保留已知 promptSubmission 与 launchEvidence。
 - Worker 使用 Herdr 最新状态观察运行、等待和结束，不需要公开 report 命令、结构化报告协议或结果文件。Herdr idle/done 或 agent 一轮结束不等于 task 完成。
 
 ### W-08：人工介入与显式移交

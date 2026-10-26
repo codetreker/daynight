@@ -1,0 +1,89 @@
+import { execFileSync } from "node:child_process";
+import type { ChildProcess, SpawnOptions } from "node:child_process";
+import path from "node:path";
+import { performance } from "node:perf_hooks";
+import crossSpawn from "cross-spawn";
+import type { Operation } from "../../../api/operation.js";
+
+export type HerdrSpawn = (file: string, args: readonly string[], options: SpawnOptions) => ChildProcess;
+export const spawnHerdrProcess: HerdrSpawn = (file, args, options) => crossSpawn(file, [...args], options);
+export type HerdrCommand = { file: string; args: readonly string[]; environment: NodeJS.ProcessEnv };
+export type HerdrCommandResult = { stdout: string; stderr: string };
+
+export class HerdrCommandError extends Error {
+  constructor(message: string, readonly exitCode: number | null, readonly signal: NodeJS.Signals | null, readonly stderr: string, options?: ErrorOptions) {
+    super(message, options); this.name = "HerdrCommandError";
+  }
+}
+
+export const terminateOwnedHerdrProcess = (child: ChildProcess): void => {
+  if (child.pid === undefined) return;
+  if (process.platform === "win32") {
+    const systemRoot = process.env.SystemRoot;
+    if (systemRoot === undefined || !path.win32.isAbsolute(systemRoot)) throw new Error("SystemRoot must identify an absolute Windows directory to stop the owned Herdr process tree.");
+    execFileSync(path.win32.join(systemRoot, "System32", "taskkill.exe"), ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, timeout: 2_000, stdio: "pipe", maxBuffer: 64 * 1024 });
+    return;
+  }
+  try { process.kill(-child.pid, "SIGKILL"); }
+  catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
+};
+
+export const runHerdrCommand = async (
+  command: HerdrCommand,
+  operation: Operation,
+  start: HerdrSpawn = spawnHerdrProcess,
+): Promise<HerdrCommandResult> => {
+  operation.check();
+  const timeout = Math.max(1, Math.ceil(Math.min(10_000, operation.remainingMs(), operation.limits.requestMs)));
+  const child = start(command.file, command.args, { env: command.environment, detached: true, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let closed = false;
+  let exitCode: number | null = null;
+  let exitSignal: NodeJS.Signals | null = null;
+  let spawnError: Error | null = null;
+  let failure: unknown;
+  const cleanupErrors: unknown[] = [];
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let bytes = 0;
+  let terminating = false;
+  const terminate = (): void => {
+    if (closed || terminating) return;
+    terminating = true;
+    try { terminateOwnedHerdrProcess(child); } catch (error) { cleanupErrors.push(error); }
+  };
+  const interrupt = (reason: unknown): void => { if (failure === undefined) failure = reason; terminate(); };
+  const accept = (parts: Buffer[], chunk: Buffer): void => {
+    if (failure !== undefined) return;
+    try {
+      bytes += chunk.length;
+      if (bytes > 64 * 1024) throw new RangeError("The Herdr prerequisite command exceeded its 64 KiB output limit.");
+      operation.consume(chunk.length);
+      parts.push(chunk);
+    } catch (error) { interrupt(error); }
+  };
+  child.once("error", (error) => { spawnError = error; });
+  child.once("close", (code, signal) => { closed = true; exitCode = code; exitSignal = signal; });
+  child.stdout?.on("data", (chunk: Buffer) => accept(stdout, chunk));
+  child.stderr?.on("data", (chunk: Buffer) => accept(stderr, chunk));
+  const abort = (): void => interrupt(operation.signal.reason);
+  const timer = setTimeout(() => interrupt(new Error("The Herdr prerequisite command deadline elapsed.")), timeout);
+  operation.signal.addEventListener("abort", abort, { once: true });
+  if (operation.signal.aborted) abort();
+  try {
+    while (!closed && failure === undefined) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    if (!closed) {
+      const deadline = performance.now() + 2_000;
+      while (!closed && performance.now() < deadline) await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      if (!closed) cleanupErrors.push(new Error("The owned prerequisite process and output streams did not close after termination."));
+    }
+    if (cleanupErrors.length !== 0) throw new AggregateError(cleanupErrors, "Herdr prerequisite command cleanup remained unconfirmed.", failure === undefined ? undefined : { cause: failure });
+    if (failure !== undefined) throw failure;
+    if (spawnError !== null) throw new HerdrCommandError("Cannot execute the Herdr prerequisite command.", exitCode, exitSignal, "", { cause: spawnError });
+    const errorOutput = Buffer.concat(stderr).toString("utf8");
+    if (exitCode !== 0 || exitSignal !== null) throw new HerdrCommandError(`Herdr prerequisite command failed: exit=${String(exitCode)}, signal=${String(exitSignal)}.`, exitCode, exitSignal, errorOutput);
+    operation.check();
+    return { stdout: Buffer.concat(stdout).toString("utf8"), stderr: errorOutput };
+  } finally {
+    clearTimeout(timer); operation.signal.removeEventListener("abort", abort);
+  }
+};
