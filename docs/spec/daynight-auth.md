@@ -18,8 +18,8 @@ CLI 创建私有项目，创建者自动成为管理员；Web 表单复用现有
 不自动补齐旧项目成员。所有未配置成员的项目按同一授权规则不可访问。
 
 可信 HTML 保持现有同源执行，复用主站会话、普通 iframe、相对资源和键盘交互。
-[附件架构决策](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-storage-design.md)
-明确这是已采纳的约束，鉴权不能把独立预览域名、预览凭据或相关设施作为前提。
+鉴权不能把独立预览域名、预览凭据或相关设施作为前提；该约束的选择依据记录在
+[附件架构决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)。
 
 | 编号 | 必需行为 |
 |---|---|

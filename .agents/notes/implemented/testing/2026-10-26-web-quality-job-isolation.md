@@ -54,9 +54,10 @@ alter those timing conditions. Artifacts keep their quality or acceptance
 ownership, source identity and retention policy.
 
 This partially supersedes the unified quality/browser orchestration in the
-[acceptance pipeline decision](2026-10-21-web-acceptance-pipeline.md). Its target,
-permission, resource and recovery rules remain authoritative. The original
-[two-worker rationale](2026-10-21-ci-validation-efficiency.md) remains applicable
+[acceptance pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md). The target,
+permission, resource and recovery rules remain unchanged and are defined in the
+[Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance). The original
+[two-worker rationale](../../archived/testing/2026-10-21-ci-validation-efficiency.md) remains applicable
 to the quality command without claiming a universal fastest worker setting.
 
 ## Alternatives

@@ -47,10 +47,10 @@ upload alone never proves that the version exists.
 
 New uploads retain the source-bound tarball, OIDC, stable-version precedence,
 ten-minute public metadata/tarball visibility deadline and post-verification
-immutable tagging owned by the
-[trusted-publishing decision](2026-10-20-npm-trusted-publishing.md). This decision
+immutable tagging chosen in the
+[trusted-publishing decision](../../archived/process/2026-10-20-npm-trusted-publishing.md). This decision
 replaces the direct HTTP lookup and strict existing-version recovery in the
-[preflight decision](2026-10-21-publication-version-preflight.md). It does not
+[preflight decision](../../archived/process/2026-10-21-publication-version-preflight.md). It does not
 change package contents or the manual main-only release trigger.
 The [pnpm OIDC decision](2026-10-22-pnpm-oidc-publication.md) replaces the upload
 client with pnpm 11.28.6 while retaining npm 12.2.0 for these metadata queries

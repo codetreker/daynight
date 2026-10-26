@@ -54,7 +54,7 @@ contract; it does not implement those runtime components. Reconnecting a live
 agent does not itself authorize resending startup input.
 
 This decision partially supersedes the
-[public mode decision](2026-10-21-using-daynight-modes.md) and the placement of
+[public mode decision](../../archived/architecture/2026-10-21-using-daynight-modes.md) and the placement of
 managed execution rules in the
 [claim completion decision](2026-10-26-worker-managed-completion.md). Their
 original routing rationale and the delivered CLI completion contract remain

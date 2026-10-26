@@ -23,10 +23,10 @@ sync read and starts immediately. Navigation and unmount release the timer and
 owned requests; resource identity and request generation continue to reject late
 responses.
 
-The [original dashboard design](../architecture/2026-10-20-task-dashboard-mvp-design.md)
+The [original dashboard design](../../archived/architecture/2026-10-20-task-dashboard-mvp-design.md)
 adopted manual refresh to keep graph projection independent of request triggers
 and mutations. This decision partially supersedes that trigger policy while
-retaining the [dashboard's](2026-10-20-project-task-dashboard.md) complete-snapshot
+retaining the [dashboard's](../../archived/feature/2026-10-20-project-task-dashboard.md) complete-snapshot
 ownership. Changed graph data replaces statistics, indexes and both task-category
 lists together. Equivalent graph data reuses the graph and index, preserving
 projection and layout references. Every successful read advances the receipt

@@ -877,7 +877,7 @@ slots within their sequential top-level test; each retains its own schema,
 processes, database barriers and cleanup. This keeps other top-level tests'
 process-wide environment changes outside the parallel scenario lifetime.
 Existing three-platform CLI validation remains separate. The
-[CI efficiency decision](../../.agents/notes/implemented/testing/2026-10-21-ci-validation-efficiency.md)
+[CI efficiency decision](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 records the validation-cost trade-offs.
 
 The test process incrementally writes `.tmp/acceptance-evidence.json` with the
@@ -914,7 +914,7 @@ exact error.requestId/X-Request-ID correlation. Known secret markers and databas
 URLs are checked across the entire body. SQL-marker checks cover the complete
 JSON envelope, including unknown fields and keys, while masking only the direct
 error.requestId string after unique, syntactically valid header correlation.
-Other original bytes and nested requestId fields remain diagnostic content. The [acceptance metadata decision](../../.agents/notes/implemented/bug-fix/2026-10-21-http-error-acceptance-metadata.md)
+Other original bytes and nested requestId fields remain diagnostic content. The [acceptance metadata decision](../../.agents/notes/archived/bug-fix/2026-10-21-http-error-acceptance-metadata.md)
 explains why a legal opaque ID may contain the SQL marker.
 
 The installed CLI project/task scenario and its artifact/source validation live
@@ -950,8 +950,8 @@ restart reuses the same root and compares all remaining metadata and bytes.
 `attachmentPageRequests` record complete pagination, and existing
 `cliRefusalRequestIds` retains correlated failures; file bodies are not receipts.
 K1 remains recorded only, without asserting cross-store rollback.
-The [combined acceptance decision](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
-owns this proof alongside the same-data CLI/browser journeys.
+The [combined acceptance decision](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
+records the original choices for this proof and the same-data CLI/browser journeys.
 
 The [status scenarios](cmd/daynight-server/acceptance_lifecycle_cli_test.go)
 reuse the packed installation and actual-process fixture.

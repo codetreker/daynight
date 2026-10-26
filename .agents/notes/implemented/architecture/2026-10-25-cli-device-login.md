@@ -68,7 +68,7 @@ and uncertain failures remain explicit.
 This partially supersedes the manual-only issuance and setup guidance in the
 [CLI credential decision](2026-10-22-cli-server-credentials.md) and the server
 initialization branch of the
-[configuration decision](../feature/2026-10-21-guided-configuration-setup.md).
+[configuration decision](../../archived/feature/2026-10-21-guided-configuration-setup.md).
 Their safe persistence, independent capability projections, no-secret diagnostics
 and origin ownership remain. The
 [authentication design](../../../../docs/design/daynight-auth.md#cli-设备授权)

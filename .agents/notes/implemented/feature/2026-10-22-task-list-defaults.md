@@ -35,7 +35,7 @@ boundaries and rendering space proportional to displayed content continue to
 apply.
 
 This partially replaces the
-[original project/task CLI decision](../architecture/2026-10-20-project-task-cli-design.md).
+[original project/task CLI decision](../../archived/architecture/2026-10-20-project-task-cli-design.md).
 Its complete human resource blocks made every field accessible without a detail
 query and avoided terminal column-width assumptions. Operational inventory now
 uses a smaller field set while detail and mutation output preserve that rationale.

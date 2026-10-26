@@ -42,14 +42,14 @@ only the default parentless `1.0.0` base objects. Scenario commits and refs rema
 private; prerelease roots, absent objects/manifests and unrelated histories are
 still constructed by their owning cases. The seed replaces repeated identical
 source construction without precomputing the behavior being tested. The
-[CI efficiency decision](../../implemented/testing/2026-10-21-ci-validation-efficiency.md) records this
+[CI efficiency decision](2026-10-21-ci-validation-efficiency.md) records this
 extension alongside other workload optimizations.
 
 All existing Git scenarios and assertions remain exercised. The manager still
 executes real clone, fetch, worktree, sparse-checkout and submodule operations.
 Fixture commands retain their dynamic environment filtering, Unicode and space
 paths, fixed commit identities and committed byte-preservation attributes.
-The [batched-object decision](../../implemented/testing/2026-10-21-batched-git-fixture-objects.md) extends
+The [batched-object decision](2026-10-21-batched-git-fixture-objects.md) extends
 source preparation with one native `fast-import` stream per snapshot. It keeps
 this note's per-file seed lifecycle, private mutable subjects and all native
 manager operations; the historical split-suite measurements above retain their

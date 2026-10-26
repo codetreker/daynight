@@ -6,8 +6,8 @@
 [客户端 C7](../spec/daynight.md#c7-补全启动配置安装)拥有，project 行为由
 [Project 与 Task 客户端需求](../spec/daynight-project-task.md)拥有。本文负责命令描述、
 脚本生成、加载和真实 shell 验证的机制；[客户端架构](daynight.md)负责命令生命周期，
-[补全决策](../../.agents/notes/implemented/feature/2026-10-20-shell-completion.md)记录兼容范围，
-[setup 决策](../../.agents/notes/implemented/feature/2026-10-21-completion-setup.md)记录启动配置的所有权和替代方案。
+[补全决策](../../.agents/notes/archived/feature/2026-10-20-shell-completion.md)记录兼容范围，
+[setup 决策](../../.agents/notes/archived/feature/2026-10-21-completion-setup.md)记录启动配置的所有权和替代方案。
 
 ## 目标与范围
 
@@ -286,7 +286,7 @@ editor reset widget，在同一 generation 内确认空状态。每个场景发�
 30 ms 输出静默可以与未就绪状态同时存在；capture widget 在输出标记后被阻塞，
 证明排队的 reset 请求等待其退出后才执行。两种证明均须取得实际编辑器的空状态
 回执，并保留候选、argv、光标、执行哨兵和既有超时要求。同步依据及失败情形见
-[就绪验证决策](../../.agents/notes/implemented/testing/2026-10-20-observable-acceptance-readiness.md)。
+[就绪验证决策](../../.agents/notes/archived/testing/2026-10-20-observable-acceptance-readiness.md)。
 
 场景包括根命令、嵌套命令、别名、帮助与版本选项、shell 参数、空前缀、已用选项、
 光标位于行中、remote 的 `:`，以及空格、中文、单引号、双引号和美元符号目录。

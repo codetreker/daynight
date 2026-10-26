@@ -15,7 +15,7 @@ The repository records the [requirements](../../../../docs/spec/daynight-review.
 [design](../../../../docs/design/daynight-review.md) for the foreground
 `daynight review run` command in `packages/daynight/`. This note records the
 selected execution model. The
-[client composition decision](../../implemented/architecture/2026-10-20-client-command-composition.md) partially
+[client composition decision](2026-10-20-client-command-composition.md) partially
 supersedes the original package-wide review framing: review remains a single
 foreground workflow within a client that composes command modules. The
 CLI/configuration foundation and
@@ -35,7 +35,7 @@ child invocation belong to that single process. Each PR retains a session UUID
 and worktree. Captured review revisions are separate from latest desired state,
 so an old completion cannot discard a later trigger. Agents publish their own
 GitHub outcomes and report execution completion through one exact final text line.
-The [conversation-cycle decision](../../implemented/architecture/2026-10-21-review-conversation-cycle.md) partially
+The [conversation-cycle decision](2026-10-21-review-conversation-cycle.md) partially
 supersedes the original marker-only confirmation and head-only follow-up: the
 coordinator verifies actual publication, and resolved comment feedback can wake
 one later round without a commit. Agent-owned publishing and this foreground

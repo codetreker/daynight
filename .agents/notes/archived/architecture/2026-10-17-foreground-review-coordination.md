@@ -52,7 +52,7 @@ The [requirements](../../../../docs/spec/daynight-review.md#r5-轮询与审查�
 empty-CI policy. The [GitHub observation decision](2026-10-17-github-observation.md)
 owns complete CI evidence, including approval-blocked workflows without jobs.
 
-The [conversation-cycle decision](../../implemented/architecture/2026-10-21-review-conversation-cycle.md) partially
+The [conversation-cycle decision](2026-10-21-review-conversation-cycle.md) partially
 supersedes the original trigger and completion coordination. A verified COMMENT
 with real review/thread identities arms one durable follow-up consumed when all
 conversations resolve, even with no new commit or before an open count was ever
@@ -74,7 +74,7 @@ revision attribution. Preparation failures do not consume an agent attempt.
 Retry delays grow exponentially to a ten-minute cap. An uncertain Git command or
 agent stop blocks reuse and cleanup of its resources.
 
-The [bundled review skill](../../implemented/architecture/2026-10-20-bundled-review-skill.md) adds discovery
+The [bundled review skill](2026-10-20-bundled-review-skill.md) adds discovery
 before the review child within the same attempt and overall deadline. The
 supervisor retains one live child per attempt. It must exclude the discovery
 execution before the store can clear that exact PID/identity and register the

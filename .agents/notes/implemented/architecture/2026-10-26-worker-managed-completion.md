@@ -42,7 +42,7 @@ owns CLI dispatch. The canonical
 own the agent workflow. This partially supersedes the completion-verifier
 responsibility in the [worker design decision](2026-10-22-worker-design.md) and
 originally added a bounded execution case within ordinary run-task under the
-[mode decision](2026-10-21-using-daynight-modes.md). The managed execution
+[mode decision](../../archived/architecture/2026-10-21-using-daynight-modes.md). The managed execution
 decision separates that instruction placement and removes autopilot; the CLI
 operation and the service's protected ownership and ordinary status rules remain.
 

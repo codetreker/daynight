@@ -36,7 +36,7 @@ the original requirement to keep detailed plans in a primary Markdown attachment
 An explicit user or applicable repository tracking/review instruction supplies
 standing creation permission for necessary tasks within the user's confirmed
 scope. Existing suitable tasks are reused. This partially supersedes the
-[mode decision](../architecture/2026-10-21-using-daynight-modes.md)'s creation
+[mode decision](../../archived/architecture/2026-10-21-using-daynight-modes.md)'s creation
 permission and task eligibility rules while preserving their rationale and
 separate execution, automatic-selection permission and delivery gates. The
 [managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
@@ -54,7 +54,7 @@ First installation and refresh in another project use `daynight skill install`
 with the relevant Agents and scope, followed by its reload instructions.
 The installer still owns the independent Agent copies and complete replacement,
 as established by the
-[distribution decision](../architecture/2026-10-21-public-agent-skill-design.md). The
+[distribution decision](../../archived/architecture/2026-10-21-public-agent-skill-design.md). The
 [skill requirements](../../../../docs/spec/daynight-agent-skill.md) and
 [design](../../../../docs/design/daynight-agent-skill.md) own the public workflow;
 the [Goal protocol](../../../../docs/design/daynight-goal-workflow.md) retains

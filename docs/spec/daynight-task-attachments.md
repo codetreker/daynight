@@ -9,7 +9,7 @@
 附件物理目录按 project 隔离并按 task UUID 前两个字符分片；显式离线维护入口负责旧布局切换。
 本文拥有附件的产品行为与 FA1–FA14 要求；
 [架构](../design/daynight-task-attachments.md)拥有模块、接口和运行机制。
-[附件基础决策](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-storage-design.md)与
+[附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
 [项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)
 记录范围和取舍。各组件的实际验证结果归属对应源码、PR 与 CI。
 
@@ -339,7 +339,8 @@ Go/PG。它及本地现有浏览器探针验证前端状态、视觉和焦点。
 Go 的独立安装 CLI 旅程覆盖超过一页的附件列表、原始内容、拒绝及 requestId、同根
 重启和完整 task 不变，并把附件根目录实际删除纳入清理 gate。Web 完整运行复用
 一次安装产物，保留源码、tarball/entry 摘要、浏览器、生产镜像和进程/组回收证据。
-组合机制与证据边界由[验收决策](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)拥有。
+组合机制与证据边界见[验证设计](../design/daynight-task-attachments.md#实现验证)，
+选择依据记录在[验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。
 
 每份运行证据归属其测试源码、PR 和 CI；文档校验或设计审查不证明运行时已实现。
 项目隔离验收在同一服务、数据库和存储根内创建两个 project，并用固定 UUID 覆盖同分片与不同分片 task；

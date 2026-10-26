@@ -49,8 +49,8 @@ wrap long prose and constrain tables/code to local horizontal scrolling. The
 panes and single right-side vertical scroll owner. The
 [centered detail decision](../feature/2026-10-22-centered-task-detail-dialog.md)
 retains modal/focus ownership, while the
-[Web attachment decision](../feature/2026-10-21-task-attachment-web.md) retains
-frame lifecycle, trusted-origin behavior and raw file reads. This decision
+[Web attachment decision](../../archived/feature/2026-10-21-task-attachment-web.md) records the
+frame-lifecycle, trusted-origin and raw-file-read choices retained here. This decision
 extends their reading composition without replacing those responsibilities.
 
 The npm-bundled `using-daynight` entry and applicable mode/Goal references follow

@@ -42,7 +42,7 @@ behavior.
 and native markers retain that geometry. External dashed bodies retain the 5/4
 pattern and positive cumulative arc-length phase. Long straight regions keep
 unit-scale local-axis line paint from the
-[original paint decision](../bug-fix/2026-10-20-long-dashed-dependency-paint.md).
+[original paint decision](../../archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md).
 Curved pieces are exact De Casteljau subcurves, rather than line approximations.
 Internal piece boundaries fall at global phase-seven dash-gap midpoints. Every
 straight or curved paint piece has at most 8,192 graph units of arc length,

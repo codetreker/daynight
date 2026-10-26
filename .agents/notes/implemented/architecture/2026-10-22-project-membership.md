@@ -76,5 +76,5 @@ Independent PostgreSQL and authenticated-handler validation preceded mounting,
 preserving that original sequencing rationale. Production composition, CLI and
 Web are now connected by the activation decision; actual integrated results
 remain source-bound evidence. Trusted same-origin HTML retains the
-[adopted attachment boundary](2026-10-21-task-attachment-storage-design.md), and
+[adopted attachment boundary](../../archived/architecture/2026-10-21-task-attachment-storage-design.md), and
 file IO admission retains K1 and the existing short-transaction lifetime.

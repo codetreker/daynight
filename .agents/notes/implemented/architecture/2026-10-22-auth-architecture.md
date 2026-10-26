@@ -39,8 +39,8 @@ Executable HTML remains trusted project code at the main application origin,
 with the viewer's current main-origin authority. The ordinary iframe, relative
 scripts/styles/images/fetch and existing same-origin keyboard bridge remain.
 Attachment requests reuse the main browser session and normal project checks.
-This preserves the [attachment architecture decision](2026-10-21-task-attachment-storage-design.md)
-and [Web attachment decision](../feature/2026-10-21-task-attachment-web.md).
+This preserves the [attachment architecture decision](../../archived/architecture/2026-10-21-task-attachment-storage-design.md)
+and [Web attachment decision](../../archived/feature/2026-10-21-task-attachment-web.md).
 
 Independent preview domains/origins, preview credentials/sessions, bootstrap
 exchanges, cross-origin shells and their DNS/TLS/gateway infrastructure are

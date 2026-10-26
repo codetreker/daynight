@@ -82,7 +82,7 @@ not open SQLite, modify sessions or restart a running reviewer. The next CLI
 invocation uses the installed version. Restart any running reviewer to use it;
 on Windows, a reviewer holding a native addon open can prevent npm from replacing
 that file and cause the update to fail. The
-[self-update decision](../../.agents/notes/implemented/feature/2026-10-20-cli-self-update.md)
+[self-update decision](../../.agents/notes/archived/feature/2026-10-20-cli-self-update.md)
 records installation ownership and verification requirements.
 
 ## Client commands
@@ -132,7 +132,7 @@ Unknown commands and invalid arguments exit with status 2; operation failures
 exit with status 1 and retain their cause. The old `--daemon-review` and root
 `add-repo` forms are invalid. The
 [client design](../../docs/design/daynight.md) owns command composition and lazy loading;
-the [composition decision](../../.agents/notes/implemented/architecture/2026-10-20-client-command-composition.md)
+the [composition decision](../../.agents/notes/archived/architecture/2026-10-20-client-command-composition.md)
 records module ownership and the preserved data layout.
 
 ## Agent skill installation
@@ -293,9 +293,9 @@ update, run the applicable `source` command again to refresh an existing shell.
 A saved generated script must be regenerated after updating. The
 [completion design](../../docs/design/daynight-completion.md) explains the shared grammar
 and shell integration. The
-[completion decision](../../.agents/notes/implemented/feature/2026-10-20-shell-completion.md)
+[completion decision](../../.agents/notes/archived/feature/2026-10-20-shell-completion.md)
 records compatibility and execution trade-offs; the
-[setup decision](../../.agents/notes/implemented/feature/2026-10-21-completion-setup.md)
+[setup decision](../../.agents/notes/archived/feature/2026-10-21-completion-setup.md)
 records startup-file ownership and installation limits.
 
 ## Configuration setup
@@ -382,8 +382,8 @@ business execution. Human input consumes no business timeout. Review guidance
 saves configuration without network, login or authentication checks; cloning and
 review state initialization belong to the business operation.
 
-The [configuration decision](../../.agents/notes/implemented/feature/2026-10-21-guided-configuration-setup.md)
-owns review guidance and persistence; the
+The [configuration decision](../../.agents/notes/archived/feature/2026-10-21-guided-configuration-setup.md)
+records the review-guidance and persistence choices; the
 [device-login decision](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
 owns the default service, explicit login/logout and credential lifecycle. The
 [top-level setup removal decision](../../.agents/notes/implemented/simplification/2026-10-25-remove-top-level-setup.md)
@@ -744,7 +744,7 @@ known issue and the trusted same-origin preview model. The
 [authentication architecture](../../docs/design/daynight-auth.md) defines the required
 authentication and project-membership checks for attachment requests. Trusted
 executable HTML retains the application origin. The
-[CLI delivery decision](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-cli.md)
+[CLI delivery decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-cli.md)
 records binary transport and output ownership.
 
 ## Review configuration and startup
@@ -1106,15 +1106,15 @@ contract.
 
 The [execution decision](../../.agents/notes/archived/architecture/2026-10-17-copilot-session-execution.md)
 records process and publication boundaries; the
-[PR-quality decision](../../.agents/notes/implemented/process/2026-10-21-review-pr-quality-gates.md)
+[PR-quality decision](../../.agents/notes/archived/process/2026-10-21-review-pr-quality-gates.md)
 records the approval policy, and the
 [multi-perspective decision](../../.agents/notes/implemented/process/2026-10-22-pr-specific-review-perspectives.md)
 records delegation and synthesis. The
-[conversation-cycle decision](../../.agents/notes/implemented/architecture/2026-10-21-review-conversation-cycle.md)
+[conversation-cycle decision](../../.agents/notes/archived/architecture/2026-10-21-review-conversation-cycle.md)
 records durable follow-ups and publication verification. The
 [skill design](../../docs/design/daynight-review-skill.md) owns packaging, snapshots and
 loading, with rationale in the
-[bundled-skill decision](../../.agents/notes/implemented/architecture/2026-10-20-bundled-review-skill.md).
+[bundled-skill decision](../../.agents/notes/archived/architecture/2026-10-20-bundled-review-skill.md).
 Native probes with Copilot CLI 1.0.100 verify actual bundled-skill activation and
 changed-bundle resume with the same UUID, including comma, space and Unicode
 paths. The bundled-skill decision records the probe's conditions and limits.

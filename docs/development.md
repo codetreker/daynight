@@ -60,7 +60,7 @@ keeps the existing SQLite build-hook suppression. Linux builds its native
 terminal addon with the available compiler/Python toolchain; macOS and Windows
 use the packaged prebuild when available. A version-pinned pnpm patch restores
 missing Darwin helper executable bits in the stable terminal dependency. The
-[native terminal decision](../.agents/notes/implemented/testing/2026-10-21-native-skill-terminal-acceptance.md)
+[native terminal decision](../.agents/notes/archived/testing/2026-10-21-native-skill-terminal-acceptance.md)
 records the test isolation and stream separation. Installer acceptance constructs
 Agent launcher fixtures and verifies they are never run. Static bundle tests own
 frontmatter, mode references and published task-command guidance; existing
@@ -131,7 +131,7 @@ disabled telemetry. A separate diagnostic artifact uploads after validation even
 when environment discovery fails. Every native version, the complete validation
 workload and the 600-second platform gate remain required whenever CLI validation
 is selected. The
-[cold-start decision](../.agents/notes/implemented/bug-fix/2026-10-20-gh-cold-start-preparation.md)
+[cold-start decision](../.agents/notes/archived/bug-fix/2026-10-20-gh-cold-start-preparation.md)
 records the measurements, deadline semantics and remaining limits.
 
 Explicit `pnpm test:apfs` diagnostics on macOS mount temporary case-sensitive and
@@ -146,9 +146,9 @@ AND the mounted filesystem; generic fixture diagnostics retain their existing
 filesystem query. Every diagnostic keeps its two-second limit. All finalization
 shares one 30-second budget and at most three ordinary detach calls; unresolved
 cleanup fails the job. The
-[finalization decision](../.agents/notes/implemented/bug-fix/2026-10-20-apfs-finalization-window.md)
+[finalization decision](../.agents/notes/archived/bug-fix/2026-10-20-apfs-finalization-window.md)
 records the ownership and observation guarantees, and the
-[controlled-holder decision](../.agents/notes/implemented/bug-fix/2026-10-21-apfs-controlled-holder-observation.md)
+[controlled-holder decision](../.agents/notes/archived/bug-fix/2026-10-21-apfs-controlled-holder-observation.md)
 records the limited process selection and required native evidence. No live GitHub or Copilot
 credentials are required by these checks.
 SQLite tests use real disk databases, including reopen, transaction rollback,
@@ -424,8 +424,8 @@ artifact. Artifacts remain available for 30 days. The workflow serializes
 releases and keeps in-progress releases running. The
 [npm CLI publication-check decision](../.agents/notes/implemented/process/2026-10-22-npm-cli-publication-checks.md)
 owns lookup, skip and duplicate-publication behavior; the
-[trusted-publishing decision](../.agents/notes/implemented/process/2026-10-20-npm-trusted-publishing.md)
-owns new-artifact identity, OIDC and public verification. The
+[trusted-publishing decision](../.agents/notes/archived/process/2026-10-20-npm-trusted-publishing.md)
+records the new-artifact identity, OIDC and public-verification choices. The
 [pnpm OIDC decision](../.agents/notes/implemented/process/2026-10-22-pnpm-oidc-publication.md)
 owns the publishing client and its configuration. The
 [CLI publication-validation decision](../.agents/notes/implemented/process/2026-10-22-cli-publication-validation.md)
@@ -495,9 +495,9 @@ and container browser attachment journeys. After the web pipeline and recorded
 resource recovery, Ubuntu web CI runs the existing real-container attachment
 persistence and paired-backup check once; its `.tmp/attachment-deployment-*/`
 evidence is archived with the browser/deployment evidence. The
-[acceptance pipeline decision](../.agents/notes/implemented/testing/2026-10-21-web-acceptance-pipeline.md)
-owns scheduling and phase evidence; the
-[CI efficiency decision](../.agents/notes/implemented/testing/2026-10-21-ci-validation-efficiency.md)
+[acceptance pipeline decision](../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
+records the scheduling and phase-evidence choices; the
+[CI efficiency decision](../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 retains the other workload optimizations and their limits.
 
 The final `checks` job always runs after routing and application jobs. It accepts
@@ -508,10 +508,10 @@ without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
 CLI validation at the frozen release commit. Package-version enforcement belongs
 to PR validation. The
-[selection decision](../.agents/notes/implemented/process/2026-10-21-module-scoped-pr-ci.md)
+[selection decision](../.agents/notes/archived/process/2026-10-21-module-scoped-pr-ci.md)
 records the routing alternatives and maintenance costs; the
-[CI simplification decision](../.agents/notes/implemented/simplification/2026-10-21-ci-gate-simplification.md)
-owns version-check timing and the final job-result gate.
+[CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
+records the version-check timing and final job-result gate choices.
 
 To validate the routing rules locally without application dependencies, run:
 
@@ -559,7 +559,7 @@ and approvals, restart continuity and closure cleanup. Missing-marker recovery
 must reconcile confirmed publication while retaining the same session; controlled
 publication receipts do not establish live model behavior. The
 [installed CLI decision](../.agents/notes/archived/testing/2026-10-17-installed-cli-acceptance.md)
-owns the lifecycle rationale; the [bundled-skill decision](../.agents/notes/implemented/architecture/2026-10-20-bundled-review-skill.md)
+owns the lifecycle rationale; the [bundled-skill decision](../.agents/notes/archived/architecture/2026-10-20-bundled-review-skill.md)
 owns native loading evidence.
 
 The [dev-ci attachment check](../deployment/dev-ci/README.md#attachment-persistence-check)

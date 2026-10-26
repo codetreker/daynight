@@ -34,7 +34,7 @@ and preparation retry policy belong to the coordinator. Retry records retain
 the captured target, session, budget, and latest attempt evidence. Prior log files
 remain under their review and attempt paths.
 
-The [bundled skill](../../implemented/architecture/2026-10-20-bundled-review-skill.md) uses one attempt for
+The [bundled skill](2026-10-20-bundled-review-skill.md) uses one attempt for
 sequential discovery and review children. `clearProcess` requires a matching
 current running attempt, exact PID and process identity, plus caller-supplied
 process-exclusion proof. It clears only that process pair and retains the
@@ -122,7 +122,7 @@ The [foreground coordinator](2026-10-17-foreground-review-coordination.md) compo
 polling, Git preparation, agent invocation and process evidence around these
 transactions. A caller supplies timestamps, IDs and external outcomes; the
 database does not manufacture evidence of successful review publication. The
-[conversation-cycle decision](../../implemented/architecture/2026-10-21-review-conversation-cycle.md) partially
+[conversation-cycle decision](2026-10-21-review-conversation-cycle.md) partially
 supersedes the original head-only follow-up and marker-only completion behavior.
 Schema version 2 adds `review_publications` records for the publisher captured
 before launch, pending remote verification,

@@ -403,8 +403,8 @@ Compose 网络访问，PostgreSQL 18 数据卷挂到 `/var/lib/postgresql`。
 重建容器并保留数据卷。部署脚本每次重新构建并整体重建容器，用相同命令完成启动、
 源码更新及转发恢复；数据卷持续保留。网关意外单独重启时，Docker 不会自动重启
 共享命名空间的服务，健康检查会暴露转发失败，需要重新运行脚本恢复。
-[部署决策](../../.agents/notes/implemented/architecture/2026-10-20-localhost-compose.md)
-记录拓扑选择及运行限制。[内嵌交付决策](../../.agents/notes/implemented/architecture/2026-10-20-embedded-dashboard-deployment.md)
+[部署决策](../../.agents/notes/archived/architecture/2026-10-20-localhost-compose.md)
+记录拓扑选择及运行限制。[内嵌交付决策](../../.agents/notes/archived/architecture/2026-10-20-embedded-dashboard-deployment.md)
 记录构建与隔离验收结构。独立 `deployment/dev-ci` 复用同一 Dockerfile 和 nginx
 配置，采用唯一项目身份、随机 loopback 端口和专用数据库卷，按 run ID 有界清理，
 日常 localhost 数据与资源不作为测试前置。
@@ -498,7 +498,7 @@ project/task 操作、依赖推进、重启持久化及版本竞争。Node 编�
 真实 128 MiB/256 MiB 限制及精确边界和 +1 字节配对。原有 Go 作业仍为 20 分钟。
 独立实际进程场景在其顶层测试内最多四个并发，各自保留 schema、进程、数据库
 屏障及清理；顶层测试间的全局环境修改仍串行。原始服务场景不被 CLI 场景替换，细节见
-[安装联调决策](../../.agents/notes/implemented/testing/2026-10-20-installed-project-task-acceptance.md)及
+[安装联调决策](../../.agents/notes/archived/testing/2026-10-20-installed-project-task-acceptance.md)及
 [CLI 设计](daynight-project-task.md#验证与交付证据)。根目录
 `.tmp/project-task-service-evidence.json` 记录安装身份、Go/预算结果与清理。CI
 发布 `.tmp/acceptance-evidence.json` 和同次 `.tmp/coverage.out`；前者记录源版本、

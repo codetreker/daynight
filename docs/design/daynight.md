@@ -8,7 +8,7 @@ CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成�
 与默认预算验收已通过托管验证；集成状态见[PR #55](https://github.com/codetreker/daynight/pull/55)。
 [专属设计](daynight-project-task.md)拥有机制。行为归属见[客户端需求](../spec/daynight.md)及
 [review 需求](../spec/daynight-review.md)，结构选择见
-[命令组合决策](../../.agents/notes/implemented/architecture/2026-10-20-client-command-composition.md)。
+[命令组合决策](../../.agents/notes/archived/architecture/2026-10-20-client-command-composition.md)。
 [补全设计](daynight-completion.md)拥有共享语法描述、脚本生成和 shell 加载机制，
 [Agent skill 设计](daynight-agent-skill.md)拥有公开资源、交互安装、scope 与覆盖机制。
 
@@ -233,9 +233,9 @@ daynight 或网络请求。参数语法保留原有唯一帮助参数、remote �
 创建的路径输入。生成和加载机制、引号与光标处理由[补全设计](daynight-completion.md)
 统一说明，启用命令由[README](../../README.md#shell-completion)拥有。
 
-[补全决策](../../.agents/notes/implemented/feature/2026-10-20-shell-completion.md)
+[补全决策](../../.agents/notes/archived/feature/2026-10-20-shell-completion.md)
 记录 Bash 下限、zsh 原生集成和本地执行的成本；
-[setup 决策](../../.agents/notes/implemented/feature/2026-10-21-completion-setup.md)记录
+[setup 决策](../../.agents/notes/archived/feature/2026-10-21-completion-setup.md)记录
 启动文件安装及当前会话边界。脚本输出用于 source；zsh `fpath`
 自动加载需要不同的装载形式，未包含在该输出的使用承诺中。
 
@@ -314,7 +314,7 @@ review 交互引导只询问远程地址和可选路径，要求 stdin/stderr �
 SQLite 或审查运行时。引导完成后以原参数调用原操作一次，人工输入不计入业务期限；后续失败保留配置。
 服务命令从配置读取开始共享五分钟业务期限，设备登录拥有独立十分钟期限。
 [客户端 C6](../spec/daynight.md#c6-按需配置引导)拥有行为，
-[配置引导决策](../../.agents/notes/implemented/feature/2026-10-21-guided-configuration-setup.md)
+[配置引导决策](../../.agents/notes/archived/feature/2026-10-21-guided-configuration-setup.md)
 保留配置事务理由，[设备登录决策](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
 拥有默认服务、登录和退出的生命周期；
 [顶层 setup 移除决策](../../.agents/notes/implemented/simplification/2026-10-25-remove-top-level-setup.md)
@@ -392,7 +392,7 @@ npm 管理替换、安装恢复和并发安装行为，模块不引入另一套�
 不承诺原安装文件完整保留；需要按 npm 的错误处理安装。命令不控制已运行的 reviewer，
 其内存和已加载模块保持原版本，操作者须重启后使用新版本。Windows 上被占用的原生
 addon 可能阻止替换，npm 失败直接可见。
-[自更新决策](../../.agents/notes/implemented/feature/2026-10-20-cli-self-update.md)
+[自更新决策](../../.agents/notes/archived/feature/2026-10-20-cli-self-update.md)
 记录包管理权、范围选择和拒绝其他安装方式的依据。
 
 ## 构建、安装与交付
@@ -445,8 +445,8 @@ registry，发布子进程继承其配置与 GitHub OIDC 环境。公开仓库�
 共用十分钟验证期限。npm 查询限制三十秒，GitHub 与 tarball HTTP 请求限制二十秒，
 并受剩余总期限约束。
 [npm CLI 发布检查决策](../../.agents/notes/implemented/process/2026-10-22-npm-cli-publication-checks.md)
-维护查询、跳过与重复发布规则；发布授权、npm OIDC、产物身份及公共验证由
-[发布决策](../../.agents/notes/implemented/process/2026-10-20-npm-trusted-publishing.md)维护。
+维护查询、跳过与重复发布规则；发布授权、npm OIDC、产物身份及公共验证的选择依据
+记录在[发布决策](../../.agents/notes/archived/process/2026-10-20-npm-trusted-publishing.md)。
 
 ## 验证与交付
 

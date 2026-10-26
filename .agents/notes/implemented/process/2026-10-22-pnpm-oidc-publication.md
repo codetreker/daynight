@@ -51,8 +51,9 @@ owns the configuration changes.
 
 Metadata queries retain npm 12.2.0 and the
 rules owned by the [npm CLI publication-check decision](2026-10-22-npm-cli-publication-checks.md).
-The [trusted-publishing decision](2026-10-20-npm-trusted-publishing.md) continues
-to own source-bound artifacts, public byte verification and immutable tags.
+Source-bound artifacts, public byte verification and immutable tags retain the
+choices recorded in the
+[trusted-publishing decision](../../archived/process/2026-10-20-npm-trusted-publishing.md).
 The [CLI validation decision](2026-10-22-cli-publication-validation.md) continues
 to exclude unrelated module results from release admission.
 

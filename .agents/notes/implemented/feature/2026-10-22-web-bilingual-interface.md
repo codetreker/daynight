@@ -78,9 +78,9 @@ added three approval scenarios per target; the later
 was twenty-four functional per target and twenty-nine native, fifty-three across both targets,
 retaining all five capacity/limit cases. The existing single project, one worker, zero retries,
 capacity matrix, strict coverage and cleanup gates remain required. The
-[pipeline decision](../testing/2026-10-21-web-acceptance-pipeline.md) owns phase
-scheduling; the [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
-owns the requirement mapping and receipt interpretation.
+[pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md) records the original
+phase-scheduling choices; the [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
+owns current scheduling, requirement mapping and receipt interpretation.
 
 The [requirements](../../../../docs/spec/daynight-web-i18n.md) own complete
 L1–L10 behavior, and the [design](../../../../docs/design/daynight-web-i18n.md)

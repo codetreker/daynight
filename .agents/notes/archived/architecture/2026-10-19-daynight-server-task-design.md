@@ -65,7 +65,7 @@ display values cannot weaken the requirement. The runtime foundation records
 this stricter replacement of the original inclusive total threshold. The design pins a tool revision containing the exclusion
 denominator fix and keeps tests with the packages whose coverage they must prove.
 The original CI aggregate required both the Go service checks and the existing
-native CLI checks. The later [module-scoped CI decision](../../implemented/process/2026-10-21-module-scoped-pr-ci.md)
+native CLI checks. The later [module-scoped CI decision](../process/2026-10-21-module-scoped-pr-ci.md)
 selects affected PR modules and retains all checks on main pushes without
 changing the individual validation gates.
 
@@ -125,7 +125,7 @@ authenticated deployment.
 UI, task execution and PR/review integration are additive capabilities outside
 the task-management contract. Their affordable addition depends on keeping
 resource mutation separate from external execution and on retaining opaque task
-identities. The adopted [read-only dashboard design](../../implemented/architecture/2026-10-20-task-dashboard-mvp-design.md)
+identities. The adopted [read-only dashboard design](2026-10-20-task-dashboard-mvp-design.md)
 adds a browser consumer and a complete-graph read while retaining those boundaries;
 the complete graph read is implemented and browser delivery remains pending.
 Current requests only persist and read task-management state. Delete

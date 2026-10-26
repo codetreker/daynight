@@ -50,10 +50,10 @@ upstream task begins at a 32px inset. Pan, zoom, Fit and keyboard reveal keep
 other cards accessible. Selection never reruns initialization.
 
 This partially supersedes the direct-boundary projection in the
-[projection and layout decision](2026-10-20-task-graph-projection.md). That earlier
+[projection and layout decision](../../archived/feature/2026-10-20-task-graph-projection.md). That earlier
 decision kept direct blockers visible without recursively expanding ancestry;
-it remains the owner of complete-snapshot validation, main-set counting and the
-pinned Dagre layout choices. The
+its complete-snapshot validation, main-set counting and pinned Dagre layout
+choices remain in force. The
 [inspection design](../architecture/2026-10-22-task-inspection-design.md) owns the
 task-card selection and smooth-route mechanisms. The
 [centered detail decision](2026-10-22-centered-task-detail-dialog.md) implements
@@ -87,8 +87,9 @@ native and twenty-four container scenarios, with these same five capacity/limit 
 
 The [requirements](../../../../docs/spec/daynight-web.md) own visible behavior,
 the [web design](../../../../docs/design/daynight-web.md) owns model and viewport
-contracts, and the [acceptance decision](../testing/2026-10-20-dashboard-production-acceptance.md)
-owns the production verification mechanism. Source-bound measurements remain
+contracts. The [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
+owns production verification; the [acceptance decision](../../archived/testing/2026-10-20-dashboard-production-acceptance.md)
+records the original mechanism choices. Source-bound measurements remain
 with the corresponding PR and CI run.
 
 ## Alternatives

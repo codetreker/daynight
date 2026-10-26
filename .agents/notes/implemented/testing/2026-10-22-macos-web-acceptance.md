@@ -7,7 +7,7 @@ Status: implemented
 The shared Web acceptance pipeline used Linux procfs directly. Docker Desktop
 could run the production containers on macOS, but that did not provide native
 process recovery, Chromium bundle ownership or case-sensitive attachment storage.
-The [pipeline decision](2026-10-21-web-acceptance-pipeline.md) established complete
+The [pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md) established complete
 functional and capacity evidence and cancellation ordering; those guarantees must
 survive the platform extension.
 

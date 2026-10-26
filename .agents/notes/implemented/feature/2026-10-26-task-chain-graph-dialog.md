@@ -58,8 +58,8 @@ node disappeared. Graph and detail locks share the existing reference count;
 background state and scrolling restore only after the last owner releases them.
 
 This replaces the inline opening and persistence portions of the
-[browsing-preference decision](2026-10-21-task-browsing-preferences.md),
-[chain-presentation decision](2026-10-21-task-chain-presentation.md) and
+[browsing-preference decision](../../archived/feature/2026-10-21-task-browsing-preferences.md),
+[chain-presentation decision](../../archived/feature/2026-10-21-task-chain-presentation.md) and
 [fullscreen decision](2026-10-22-task-graph-fullscreen.md). It preserves their
 original ordering, filtering, single-canvas and layered-detail rationale. The
 [Web requirements](../../../../docs/spec/daynight-web.md) own observable behavior;

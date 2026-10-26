@@ -25,8 +25,8 @@ The [user-confirmed discussion decision](2026-10-24-user-confirmed-goal-discussi
 replaces this decision's initial-pair registration, pre-confirmation delivery
 breakdown and discussion completion rules. The original architecture was delivered separately
 from its dependent protocol implementation and independent consumer acceptance.
-The [mode decision](../architecture/2026-10-21-using-daynight-modes.md) continues to
-own the current entrypoint and authorization rules. The
+The [mode decision](../../archived/architecture/2026-10-21-using-daynight-modes.md) records the original
+entrypoint and authorization choices. The
 [task-content and handoff decision](2026-10-25-task-content-handoff.md) replaces
 mandatory primary-attachment ownership while retaining stage and shared-source
 rules. The [managed execution decision](../architecture/2026-10-26-managed-task-skill.md)

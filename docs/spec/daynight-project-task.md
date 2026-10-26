@@ -10,7 +10,7 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 并列，使用现有 HTTP API。本文拥有命令、配置、仓库关联和输出要求；服务的数据、
 状态约束及错误语义由[服务需求](daynight-server.md)拥有，机制见
 [客户端设计](../design/daynight-project-task.md)，决策见
-[方案决策](../../.agents/notes/implemented/architecture/2026-10-20-project-task-cli-design.md)。
+[方案决策](../../.agents/notes/archived/architecture/2026-10-20-project-task-cli-design.md)。
 
 [预定义属性需求](daynight-task-properties.md)的 server 接口、CLI PR 引用参数和
 完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建/更新输入只提供可写 PR 字段。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有，未增加 worker 人工管理命令。
@@ -379,6 +379,6 @@ V1–V15 继续约束完整 CLI 交付。CLI 必须通过三原生平台的安�
 原生安装结果写入仓库根 `.tmp/project-task-evidence.json`，服务及预算结果写入
 `.tmp/project-task-service-evidence.json`；每份证据标识源码、pack/安装身份、场景
 和清理。Go 原有 receipt 及 raw coverage 保留其归属，CLI 要求编号使用 `PT.V*` 命名
-空间。[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；当前期限 mock 及验证成本取舍由
-[CI 验证效率决策](../../.agents/notes/implemented/testing/2026-10-21-ci-validation-efficiency.md)
-拥有，逐次结果随对应 PR 与 CI 保存。受控 HTTP、真实服务与原生平台证据分别证明其对应要求，不能互相替代。
+空间。[PR #55](https://github.com/codetreker/daynight/pull/55) 保留真实 Go/PostgreSQL 联调及真实默认预算的历史源码验证结果；期限 mock 及验证成本的取舍记录在
+[CI 验证效率决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)，
+逐次结果随对应 PR 与 CI 保存。受控 HTTP、真实服务与原生平台证据分别证明其对应要求，不能互相替代。

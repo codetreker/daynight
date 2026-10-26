@@ -378,7 +378,7 @@ CI 只是启动条件，不递增待审修订。已完成审查不会因 CI 重�
 agent 也不因后续新登记的 CI 自动取消。没有检查时直接放行意味着后续才登记的 workflow
 可能在审查启动后出现。CI、snapshot 请求与其他受管操作共同响应关闭，并等待已发出
 请求结束。资格与完成核对规则的选择见
-[conversation 轮次决策](../../.agents/notes/implemented/architecture/2026-10-21-review-conversation-cycle.md)。
+[conversation 轮次决策](../../.agents/notes/archived/architecture/2026-10-21-review-conversation-cycle.md)。
 
 `adapters/github.ts` 提供只读查询，`polling.ts` 编排一次仓库观测，不启动定时器。
 通过参数数组调用 `gh api --include`
@@ -580,7 +580,7 @@ subagents，宜并行执行。每个委派显式传递固定 head/base/merge-bas
 问题。一个 PR 必须解决一个明确问题且能够有效审查；扩大 description 不能单独为
 无关改动提供依据。必要实现、结构调整、测试和文档按同一结果的联系判断范围，不按
 行数或文件数拒绝跨模块的必要修改。具体规则由[review 需求 R10](../spec/daynight-review.md#r10-审查判断与结果发布)
-持有，决策依据见[PR 质量门槛决策](../../.agents/notes/implemented/process/2026-10-21-review-pr-quality-gates.md)。
+持有，决策依据见[PR 质量门槛决策](../../.agents/notes/archived/process/2026-10-21-review-pr-quality-gates.md)。
 
 agent 首先按稳定审查身份、捕获 commit 和本轮固定发布者核对既有结果。匹配的
 `APPROVED` 直接确认，description 后续变化不能撤销它；已有 `COMMENTED` 必须证明
@@ -811,10 +811,10 @@ PID、Busy 后至少六秒的释放确认、最多三次普通 detach、完整�
 案例记录 monotonic 调用时间及最终状态，与 `afterAll` 共享包含失败的一次性清理
 Promise，防止重复获得清理预算。120 秒 setup、40 秒 teardown、600 秒平台限制均
 保持不变；新增案例为 40 秒，其 finalizer 仍为 30 秒。
-[设备归属决策](../../.agents/notes/implemented/bug-fix/2026-10-20-apfs-device-ownership.md)和
-[观测窗口决策](../../.agents/notes/implemented/bug-fix/2026-10-20-apfs-finalization-window.md)
+[设备归属决策](../../.agents/notes/archived/bug-fix/2026-10-20-apfs-device-ownership.md)和
+[观测窗口决策](../../.agents/notes/archived/bug-fix/2026-10-20-apfs-finalization-window.md)
 记录所有权与期限机制；
-[受控持有者观测决策](../../.agents/notes/implemented/bug-fix/2026-10-21-apfs-controlled-holder-observation.md)
+[受控持有者观测决策](../../.agents/notes/archived/bug-fix/2026-10-21-apfs-controlled-holder-observation.md)
 记录 PID 与文件系统同时选择的依据。真实普通文件案例必须由 macOS 原生 CI 证明
 两秒内捕获实际 PID，不能由模拟命令参数测试替代；它不用于识别历史持有者或证明
 原生部分卸载阶段。

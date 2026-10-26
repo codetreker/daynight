@@ -30,7 +30,7 @@ pagination, failure handling and final-output timing retain their existing
 semantics. A caller needing a listed task's description reads its details.
 
 This partially supersedes the full-resource list JSON choice in the
-[original CLI design](../architecture/2026-10-20-project-task-cli-design.md) and
+[original CLI design](../../archived/architecture/2026-10-20-project-task-cli-design.md) and
 [task-list defaults](../feature/2026-10-22-task-list-defaults.md). Full-resource
 JSON originally made every field available without a detail query. That
 rationale continues to apply to detail, bounded ready selection and confirmed
@@ -39,7 +39,7 @@ writes, while inventory has a narrower field set. The
 own observable output; the
 [design](../../../../docs/design/daynight-project-task.md) owns rendering
 responsibilities. The
-[installed acceptance decision](../testing/2026-10-20-installed-project-task-acceptance.md)
+[installed acceptance decision](../../archived/testing/2026-10-20-installed-project-task-acceptance.md)
 keeps retained-field equality and real-service behavior observable.
 
 ## Alternatives

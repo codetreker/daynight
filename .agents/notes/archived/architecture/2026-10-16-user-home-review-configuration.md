@@ -31,7 +31,7 @@ worktrees follow the [repository-local worktree decision](2026-10-16-repository-
 Shared home-path resolution, strict YAML reading and atomic configuration saves
 are implemented under `config/`. The review module owns its field projection
 and runtime paths; the server projection validates `serverUrl` and optional
-`serverToken`. The [project/task design](../../implemented/architecture/2026-10-20-project-task-cli-design.md)
+`serverToken`. The [project/task design](2026-10-20-project-task-cli-design.md)
 owns the independent HTTP foundation, and the
 [credential decision](../../implemented/architecture/2026-10-22-cli-server-credentials.md) owns origin-bound
 tokens and POSIX `0600` for credential-bearing configuration. Its original
@@ -44,7 +44,7 @@ failures retain safe category, code and offsets without raw scalar text or
 parser causes; other errors preserve their useful cause chains.
 The original configuration-loading behavior stopped startup when the file was
 absent, making manual preparation an explicit prerequisite. The
-[guided setup decision](../../implemented/feature/2026-10-21-guided-configuration-setup.md) partially
+[guided setup decision](../feature/2026-10-21-guided-configuration-setup.md) partially
 supersedes that prerequisite: valid review operations can guide missing repository
 configuration before entering their operation. Invalid existing configuration
 still stops execution. `review add-repo` and first-use guidance create missing

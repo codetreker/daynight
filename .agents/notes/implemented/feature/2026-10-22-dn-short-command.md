@@ -21,8 +21,9 @@ existing startup loader continues generating scripts from the installed package;
 new shells and explicit reloads register both names. Saved scripts require
 regeneration after updating, as with other command-definition changes.
 
-The [client composition](../architecture/2026-10-20-client-command-composition.md)
-and [completion](2026-10-20-shell-completion.md) decisions retain their ownership.
+The command composition and completion ownership choices recorded in the
+[client composition](../../archived/architecture/2026-10-20-client-command-composition.md)
+and [completion](../../archived/feature/2026-10-20-shell-completion.md) decisions remain in force.
 The updater continues validating the canonical npm-owned `daynight` launcher and
 physical package directory, including when invoked through `dn`.
 

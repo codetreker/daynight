@@ -21,7 +21,7 @@ continue to exercise both APFS variants.
 
 The original finalizer used the mountpoint as its detach target and required
 ordinary detach success before directory removal after attempted attachment.
-The [disk-image ownership decision](../../implemented/bug-fix/2026-10-20-apfs-device-ownership.md)
+The [disk-image ownership decision](../bug-fix/2026-10-20-apfs-device-ownership.md)
 replaces that identity: cleanup retains the attached image's whole-device identity
 and requires inspection proving that the exact fixture image is absent before
 removing its directory. An uncertain attach result still requires that proof;
@@ -32,7 +32,7 @@ attempt. Bounded holder and device diagnostics retain command status, stdout and
 stderr. `lsof +f -- <mount>` selects the mounted filesystem without recursively
 opening its files, as documented by the
 [Apple lsof manual](https://github.com/apple-oss-distributions/lsof/blob/7a8a1b2a3c0f35c30a5fcd0927f31d441c3e5255/lsof/lsof.8#L722-L760).
-The [controlled-holder observation decision](../../implemented/bug-fix/2026-10-21-apfs-controlled-holder-observation.md)
+The [controlled-holder observation decision](../bug-fix/2026-10-21-apfs-controlled-holder-observation.md)
 limits that volume query to an acknowledged owned child when the native case
 provides its PID, using `-a` to intersect process and filesystem selection. Generic
 volume diagnostics keep the original query. An exit of 1 is not proof that no

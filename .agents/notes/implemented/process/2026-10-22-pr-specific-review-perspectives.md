@@ -42,8 +42,8 @@ effects without repeating review. The daemon does not parse subagent transcripts
 or findings to infer compliance.
 
 This extends the methodology in the
-[bundled-skill decision](../architecture/2026-10-20-bundled-review-skill.md) and
-[PR-quality decision](2026-10-21-review-pr-quality-gates.md) while retaining their
+[bundled-skill decision](../../archived/architecture/2026-10-20-bundled-review-skill.md) and
+[PR-quality decision](../../archived/process/2026-10-21-review-pr-quality-gates.md) while retaining their
 loading, evidence and publication boundaries. It preserves the session and
 attempt ownership in the
 [Copilot execution decision](../../archived/architecture/2026-10-17-copilot-session-execution.md).

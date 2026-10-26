@@ -19,7 +19,7 @@ exclusion and final review transitions to the coordinator. The existing
 intent before spawning; no additional execution database or process layer is
 introduced.
 
-The [bundled-skill decision](../../implemented/architecture/2026-10-20-bundled-review-skill.md) extends each
+The [bundled-skill decision](2026-10-20-bundled-review-skill.md) extends each
 attempt with native discovery of an immutable package-owned skill snapshot.
 Both child phases share one budget and timeout deadline. Discovery must resolve
 the enabled named skill to the current snapshot; its prompt explicitly invokes
@@ -51,12 +51,12 @@ identity travel in the prompt. The agent reads current PR metadata and linked
 scope requirements, checks the complete captured diff, and rechecks metadata and
 eligibility before publishing or confirming prior publication. It binds reviews
 to the captured commit and reconciles existing effects before retry. The
-[PR-quality decision](../../implemented/process/2026-10-21-review-pr-quality-gates.md) partially
+[PR-quality decision](../process/2026-10-21-review-pr-quality-gates.md) partially
 supersedes the original approval rule: description and scope gates must pass in
 addition to there being no Critical/Major code issues. Blockers use `COMMENT`,
 with actual native review threads; PR-level reasons use clearly labeled file-level
 threads and suitable findings remain inline. Passing reviews use `APPROVE`. The
-[conversation-cycle decision](../../implemented/architecture/2026-10-21-review-conversation-cycle.md) partially
+[conversation-cycle decision](2026-10-21-review-conversation-cycle.md) partially
 supersedes marker-only completion and head-only follow-up facts: stable-identity
 remote results are verified, comments arm one follow-up after resolution, and
 existing approvals are preserved during confirmation. Agent-owned publication

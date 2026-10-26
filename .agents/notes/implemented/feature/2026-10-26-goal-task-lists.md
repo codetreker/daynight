@@ -53,10 +53,10 @@ This partially supersedes the whole-row entry in the
 [graph-dialog decision](2026-10-26-task-chain-graph-dialog.md). That decision
 continues to own dialog geometry, graph witness reconciliation, fullscreen,
 focus containment, layered Escape and scroll locks. The
-[presentation decision](2026-10-21-task-chain-presentation.md) retains ordering,
-completion filtering and compact readable text; the
-[browsing-preference decision](2026-10-21-task-browsing-preferences.md) retains
-the independent project records. The
+ordering, completion filtering and compact readable text chosen in the
+[presentation decision](../../archived/feature/2026-10-21-task-chain-presentation.md) remain, as do the
+independent project records chosen in the
+[browsing-preference decision](../../archived/feature/2026-10-21-task-browsing-preferences.md). The
 [Web requirements](../../../../docs/spec/daynight-web.md) and
 [Web design](../../../../docs/design/daynight-web.md) own observable behavior
 and current composition.

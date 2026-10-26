@@ -85,7 +85,7 @@ added, and filesystem/PostgreSQL non-atomicity remains K1.
 Trusted executable HTML stays at the application origin with the viewer's
 ordinary session authority, relative resources and existing keyboard bridge.
 The [architecture decision](2026-10-22-auth-architecture.md) and
-[attachment decision](2026-10-21-task-attachment-storage-design.md) retain the
+[attachment decision](../../archived/architecture/2026-10-21-task-attachment-storage-design.md) retain the
 explicit exclusion of preview domains, scoped preview credentials and gateway
 infrastructure. Existing projects remain unassigned until manual membership
 maintenance; no legacy data branch is added.

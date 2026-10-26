@@ -34,7 +34,7 @@ The command reuses review field and filesystem-identity validation. Shared
 `config/` modules own document parsing and the atomic save protocol. A file with
 only server settings can receive its first review repository; existing malformed
 review values still fail, while server values remain unchanged and unvalidated
-by review. The [project/task design](../../implemented/architecture/2026-10-20-project-task-cli-design.md)
+by review. The [project/task design](../architecture/2026-10-20-project-task-cli-design.md)
 owns the server projection.
 Adding an existing normalized repository without an explicit path reuses the saved
 path, including after root changes. An explicit path to the same actual location
@@ -47,7 +47,7 @@ write failures preserve the original file; cleanup errors after replacement rema
 visible. Mutation requires a regular
 configuration file and rejects symlinks.
 
-The [guided setup decision](../../implemented/feature/2026-10-21-guided-configuration-setup.md) reuses this
+The [guided setup decision](2026-10-21-guided-configuration-setup.md) reuses this
 registration operation for explicit setup and missing-review configuration prompts.
 The shared updater composes repository registration with an optional server change
 in one locked configuration transaction. Existing path and idempotency rules remain

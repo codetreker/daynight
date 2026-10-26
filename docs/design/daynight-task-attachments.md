@@ -7,7 +7,7 @@
 
 行为要求由[附件需求](../spec/daynight-task-attachments.md)拥有；本文解释通用存储接口、
 附件元数据及各端集成机制。
-[附件基础决策](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-storage-design.md)与
+[附件基础决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)与
 [项目分片决策](../../.agents/notes/implemented/architecture/2026-10-24-project-sharded-attachment-layout.md)
 保存选择依据、已接受的限制及重新评估条件。
 
@@ -575,7 +575,7 @@ Document 监听并释放全部待处理器；退出独立页全屏不重建 fram
 PDF 浏览器内部 reader 可能不提供可控 document，不能把 HTML 的桥接结果作为 PDF
 键盘证明；保留原生 reader 与显式退出/返回控件，并记录真实浏览器验证的边界。
 [全屏阅读决策](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
-拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
+拥有该 owner 扩展的理由，[Web 附件决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)保留原有同源与清理取舍。
 
 `tests/mockups/attachments.html` 仅由 Vite 开发服务提供，实际组件和 CSS 使用内存
 fixture API 与原生 fixture 文件，覆盖有文件、空态、加载、失败和忙碌状态及长内容。fixture 分配的对象
@@ -629,9 +629,9 @@ Go UI mux 精确登记基础任务和附件页面 GET/HEAD，继续交付相同 
 拥有当前完整任务详情组合。
 
 前端实际组件 mockup 与真实服务验收分别证明其被测行为；fixture 临时对象 URL
-只用于演示。源码、构建产物及浏览器环境的证据边界沿用
-[附件组合验收决策](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)，
-历史运行结果不能替代当前扩展的验证。
+只用于演示。源码、构建产物及浏览器环境的证据必须对应其被测对象，历史运行结果
+不能替代当前扩展的验证。原有边界的选择依据记录在
+[附件组合验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。
 
 ## CLI
 
@@ -683,7 +683,7 @@ DELETE 的 204 空响应；错误响应继续使用 JSON DTO 和字节预算。
 逐段调用可等待的 `stdoutBytes` 后返回 void。真实 CLI 上下文始终提供
 `closeStdoutBytes`，runtime 在 dispose 操作和移除信号监听器前调用它；测试或嵌入
 上下文可以不提供该可选关闭函数。该辅助进程只服务一次命令的字节输出，不是后台
-服务。机制选择见[CLI 决策](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-cli.md)。
+服务。机制选择见[CLI 决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-cli.md)。
 
 文件传输失败、stdout 关闭或操作取消时关闭本次拥有的流并解除网络请求。写请求不
 自动重试或经重定向重发，结果未确认时明确提示操作可能已经生效。
@@ -710,7 +710,7 @@ runner 继续使用其所属独立目录。
 localhost 的 PG 与附件卷在正常停止、重启、重建及 `down` 后保留，显式
 `down --volumes` 同时销毁两者。dev-ci 每次隔离 Compose 项目拥有独立的 PG 与
 附件卷，现有 runner 按项目标签记录所有卷并清理、核验其全部消失。测试项目不使用
-开发环境持久卷。实现取舍由[部署决策](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-persistence.md)
+开发环境持久卷。实现取舍由[部署决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-persistence.md)
 拥有。
 
 上传、下载和预览继续经过同一个 gateway；对应代理规则必须支持二进制请求与流式
@@ -738,7 +738,7 @@ SQL 备份会保存并恢复旧 UUID，恢复 UUID 本身不能标识历史替�
 完整服务组合的验证结论仍须来自各自源码绑定的实际运行，本机验证不能代替
 Windows/macOS 托管结果。Web 管理界面交付组件、状态及前端 fixture，真实浏览器
 探针覆盖该环境的视觉与焦点。源绑定结果归属对应 PR 与 CI。组合验收的机制见
-[跨层验收决策](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)，各层验证职责如下：
+[跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)，各层验证职责如下：
 
 - Storage：bucket 隔离、真实相对路径、同路径完整覆盖、原始字节一致、实际大小、
   缺失与权限错误、取消、普通失败的临时文件清理及路径不能越出根目录。
@@ -781,11 +781,11 @@ compositor 像素中的 fixture 专用色块。判断器将匹配像素按连通
 各个实心色块的像素数、边界和密度，并在延伸到 frame 右半区的页面候选中检查
 最大的色块。此位置规则基于 fixture 与固定查看器布局，排除仅缩略图已绘制的情形；
 独立边界也使单独绘制的缩略图不会稀释页面色块的密度。成功 PNG 与区域指标保留在绘制回执中，
-匹配阈值由[组合验收决策](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
-拥有。成功状态、load 和固定等待均不能代替绘制。独立阅读验收另以真实滚轮、
+匹配阈值的选择依据记录在[组合验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)。成功状态、load 和固定等待均不能代替绘制。独立阅读验收另以真实滚轮、
 键盘及多页 PDF 的末页专用绘制标记证明内容可读至末尾；私有查看器 DOM 只提供
 只读偏移诊断，不能替代真实输入和绘制。实际故障来自隔离数据库与存储文件，
-请求屏障仅控制时序，不伪造服务响应。判定与环境限制继续由该决策拥有。
+请求屏障仅控制时序，不伪造服务响应。判定与环境限制见
+[Web 验证说明](../../packages/daynight-web/README.md#production-browser-acceptance)。
 
 运行回执校验 Git SHA/dirty 标记及实际 tarball/entry 摘要；dirty 标记不是脏源码内容
 指纹。CI 继续要求干净 checkout 等于 `GITHUB_SHA`。浏览器、CLI 和辅助子进程/组均

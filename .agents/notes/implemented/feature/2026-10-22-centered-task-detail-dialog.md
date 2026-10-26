@@ -39,13 +39,14 @@ metadata/relationship column; the latter becomes 225px at 850px and below, and
 both columns stack at 600px and below. Long text wraps and tables/code retain
 local horizontal scrolling.
 
-The [dashboard decision](2026-10-20-project-task-dashboard.md) and
-[original dashboard design](../architecture/2026-10-20-task-dashboard-mvp-design.md)
-retain their snapshot and modal ownership. This decision partially supersedes
+The [dashboard decision](../../archived/feature/2026-10-20-project-task-dashboard.md) and
+[original dashboard design](../../archived/architecture/2026-10-20-task-dashboard-mvp-design.md)
+record the snapshot and modal ownership choices retained here. This decision partially supersedes
 their right-side reading layout. Synchronous layout cleanup releases keyboard
 listeners, background inertness and counted scroll ownership; the separate
-passive cleanup restores focus after sibling DOM removal, as required by the
-[focus restoration decision](../bug-fix/2026-10-20-drawer-focus-restoration.md).
+passive cleanup restores focus after sibling DOM removal, following the choice
+recorded in the
+[focus restoration decision](../../archived/bug-fix/2026-10-20-drawer-focus-restoration.md).
 Relationship navigation changes the resource within one dialog lifetime.
 
 The dialog remains above the [fullscreen graph](2026-10-22-task-graph-fullscreen.md).
@@ -56,8 +57,8 @@ after nested children consume their own layer; a vanished entry falls back to th
 surviving fullscreen exit control or the current project view's visible controls,
 with the project heading retained for an empty project. Both modal owners use
 the same counted body scroll lock, including when the graph unmounts first.
-The [attachment decision](2026-10-21-task-attachment-web.md) continues to own
-same-origin rendering and request behavior. Its Tab/Escape bridge now follows
+The [attachment decision](../../archived/feature/2026-10-21-task-attachment-web.md) records the
+same-origin rendering and request choices retained here. The Tab/Escape bridge now follows
 the active root and loaded document under the fullscreen-reading decision, using
 `dialogFocusables` without changing the frame or dialog lifecycle.
 

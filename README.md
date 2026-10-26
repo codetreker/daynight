@@ -239,7 +239,7 @@ immutable. Run-specific counts, hashes, timings and delivery results stay with
 their PR and CI run. CI artifacts expire after 30 days; lasting conclusions must
 remain understandable in their research or decision owner with methods, source
 identity and limitations. See the
-[evidence ownership decision](.agents/notes/implemented/process/2026-10-20-source-bound-validation-evidence.md).
+[evidence ownership decision](.agents/notes/archived/process/2026-10-20-source-bound-validation-evidence.md).
 
 Specifications and designs use Chinese headings and prose while preserving
 technical literals. Other documents, skills, code, comments and commit messages

@@ -36,7 +36,7 @@ replace the entire set with external relationships.
 Ordinary-edge weak components define exclusive chain membership. Complete
 all-edge ancestor closure supplies context. Dashed edges encode explicit
 external prerequisites; dashed cards encode tasks outside the selected
-component. Earlier [projection](../feature/2026-10-20-task-graph-projection.md),
+component. Earlier [projection](../../archived/feature/2026-10-20-task-graph-projection.md),
 [complete context](../feature/2026-10-22-complete-prerequisite-context.md) and
 [progressive overview](../feature/2026-10-22-progressive-task-graph.md) decisions
 retain their original rationale. The current model preserves snapshot, layout,
