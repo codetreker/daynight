@@ -48,6 +48,8 @@ const unknownUserScope = "The original authenticated execution owner is unknown;
 const changedUserScope = "The current authenticated user does not match the original execution owner.";
 const unscopedCleanup = "The original authenticated owner of this committed cleanup is unknown; cleanup remains paused.";
 const scopePauseReasons = new Set([unknownUserScope, changedUserScope, unscopedCleanup]);
+const removalBoundary = (task: LocalTask) => ({ control: task.control !== null, terminal: task.cleanup?.kind === "terminal", deleted: task.cleanup?.worktreeDeleted === true, done: task.status === "done" });
+const unsettledRemoval = (task: LocalTask): boolean => (task.control !== null || task.cleanup?.kind === "terminal") && task.cleanup?.worktreeDeleted !== true;
 
 export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const now = options.now === undefined ? Date.now : options.now;
@@ -118,7 +120,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       options.emit({ kind: "summary-error", task: latest(task), message: "The execution summary was not confirmed; an uncertain write will not be replayed.", error });
     }
   };
-  const recordRecovered = async (remoteTask: Task, resources: readonly HerdrOwnedWorkspace[], authenticatedUserId: string): Promise<LocalTask> => {
+  const recordRecovered = async (remoteTask: Task, resources: readonly HerdrOwnedWorkspace[], authenticatedUserId: string): Promise<LocalTask | null> => {
     const worker = remoteTask.properties.worker!;
     const identity = { serverOrigin: options.serverOrigin, projectId: remoteTask.projectId, taskId: remoteTask.id, claimId: worker.claimId, workerId: worker.workerId, worktreeId: worker.worktreeId };
     const present = options.store.getTask(identity);
@@ -138,12 +140,34 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const predecessors = workerLocalTasks().filter((task) => task.taskId === identity.taskId && claimKey(task) !== claimKey(identity))
       .map((task) => ({ task, worktreePath: task.resources.worktree?.worktreePath ?? path.join(task.repositoryPath, ".worktrees", "daynight", task.taskId) }));
     const fixedPath = path.join(project.localPath, ".worktrees", "daynight", identity.taskId);
+    const runtimeTrace = worker.herdr !== null || worker.nativeSessionId !== null || resources.some(({ owner }) => owner.serverOrigin === identity.serverOrigin && owner.projectId === identity.projectId && owner.taskId === identity.taskId && owner.claimId === identity.claimId);
+    const prospectiveFresh = !runtimeTrace && worker.phase === "preparing";
+    const matchingPredecessors: LocalTask[] = [];
+    const deferForRemoval = (): boolean => {
+      for (const previous of matchingPredecessors) {
+        const current = options.store.getTask(previous);
+        if (current === null) throw new Error("The original predecessor execution record disappeared.");
+        if (unsettledRemoval(previous) || unsettledRemoval(current) || !same(removalBoundary(previous), removalBoundary(current))) {
+          options.emit({ kind: "handoff-waiting", task: current, message: `New claim ${identity.claimId} in project ${identity.projectId} is waiting for the original worktree removal boundary to settle.` });
+          return true;
+        }
+      }
+      return false;
+    };
     let pathTrace = await exists(fixedPath);
-    if (pathTrace && worker.herdr === null && worker.nativeSessionId === null && worker.phase === "preparing") {
+    if (prospectiveFresh && predecessors.length > 0) {
       const target = await physicalPath(fixedPath);
       for (const { task: previous, worktreePath } of predecessors) {
+        try { if (await physicalPath(worktreePath) === target) matchingPredecessors.push(previous); }
+        catch (error) {
+          if (isWorkerCancellation(error, normalSignal)) throw error;
+          if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw error;
+          options.emit({ kind: "worktree-conflict", task: previous, message: "The original predecessor path could not be inspected.", error });
+        }
+      }
+      if (deferForRemoval()) return null;
+      if (pathTrace) for (const previous of matchingPredecessors) {
         try {
-          if (await physicalPath(worktreePath) !== target) continue;
           const original = await workerOperation((operation) => options.git.findWorktree(previous, operation), normalSignal);
           pathTrace = original === null ? await exists(fixedPath) : false;
           break;
@@ -156,7 +180,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
     }
     if (pathTrace) pathTrace = await exists(fixedPath);
-    const trace = worker.herdr !== null || worker.nativeSessionId !== null || resources.some(({ owner }) => owner.serverOrigin === identity.serverOrigin && owner.projectId === identity.projectId && owner.taskId === identity.taskId && owner.claimId === identity.claimId) || pathTrace;
+    // No filesystem await may separate this boundary check from materialization.
+    if (prospectiveFresh && deferForRemoval()) return null;
+    const trace = runtimeTrace || pathTrace;
     const configuration = matchingAttempt ? attempt.configuration : configured?.configuration;
     const fresh = !trace && configuration !== undefined && configuration.agent === worker.agent && worker.phase === "preparing";
     const pending = options.store.registerPending(identity, fresh ? { kind: "new", configuration } : { kind: "recovered", configuration: null }, now());

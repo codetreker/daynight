@@ -1,7 +1,9 @@
 import path from "node:path";
-import { mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
 import * as filesystem from "../../../src/platform/filesystem.js";
-import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
@@ -23,7 +25,7 @@ const workerId = uuid(1);
 const configuration: FrozenExecutionConfiguration = { agent: "codex", model: "frozen-model", args: ["--search"], recoveryLimit: 2 };
 const roots: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
-afterEach(async () => { vi.restoreAllMocks(); for (const store of stores.splice(0)) store.close(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); for (const store of stores.splice(0)) store.close(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 const remoteTask = (projectId: string, id: string): Task => ({ id, projectId, title: id, description: "fixture", status: "todo", allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, version: 1n,
   properties: { worker: null, pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const fixture = async (maxConcurrent = 1, repoCount = 1) => {
@@ -51,7 +53,7 @@ const fixture = async (maxConcurrent = 1, repoCount = 1) => {
     prepareWorktree: vi.fn(async (task: LocalTask) => { order.push("worktree"); expect(store.getTask(task)?.status).toBe("active"); const binding = { repositoryPath: task.repositoryPath, commonDirectory: path.join(task.repositoryPath, ".git"), worktreePath: path.join(task.repositoryPath, ".worktrees", "daynight", task.taskId), branch: `daynight/${task.taskId}` }; worktrees.set(task.claimId, binding); return binding; }),
     verifyWorktree: vi.fn(async (task: LocalTask) => task.resources.worktree!),
     findWorktree: vi.fn(async (task: LocalTask) => worktrees.get(task.claimId) ?? null),
-    removeWorktree: vi.fn(async (task: LocalTask) => { order.push("delete-worktree"); expect(store.getTask(task)?.cleanup).toMatchObject({ agentStopped: true, workspaceClosed: true }); worktrees.delete(task.claimId); }),
+    removeWorktree: vi.fn(async (task: LocalTask) => { order.push("delete-worktree"); expect(store.getTask(task)?.cleanup).toMatchObject({ agentStopped: true, workspaceClosed: true }); const owned = worktrees.get(task.claimId); if (owned !== undefined && owned !== null) await rm(owned.worktreePath, { recursive: true, force: true }); worktrees.delete(task.claimId); }),
   } as unknown as WorkerGitManager;
   const tasks = {
     listResources: vi.fn(async () => structuredClone([...resources.values()])),
@@ -665,16 +667,16 @@ describe("worker foreground coordinator", () => {
       claim: vi.fn(async (_candidate, descriptor) => { actual = grant(descriptor.claimId, descriptor.worktreeId); return actual; }) };
     const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 });
     const beforeALists = vi.mocked(f.remote.ownInventory).mock.calls.length;
-    await changedOrigin.tick(); const incoming = f.store.getTask({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: actual!.properties.worker!.claimId })!;
-    expect(incoming).toMatchObject({ status: "pending", configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } });
+    await changedOrigin.tick(); const incomingIdentity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: actual!.properties.worker!.claimId };
+    if (entry === "claimed") expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "pending", configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } });
+    else { expect(f.store.getTask(incomingIdentity)).toBeNull(); expect(f.git.findWorktree).not.toHaveBeenCalled(); }
     expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce(); expect(f.store.getTask(original)).toMatchObject({ status: "active", cleanup: { kind: "terminal", agentStopped: false } });
-    if (entry === "discovered") expect(vi.mocked(f.git.findWorktree).mock.calls.at(-1)?.[0]).toMatchObject({ serverOrigin: origin, projectId: original.projectId, taskId: original.taskId, claimId: original.claimId });
     f.setCompleteCleanup(true); f.setTime(f.store.getTask(original)!.cleanup!.deadline); await changedOrigin.advanceCommittedCleanups(original);
     expect(f.store.getTask(original)?.status).toBe("done");
-    await changedOrigin.tick(); const started = f.store.getTask(incoming)!;
+    await changedOrigin.tick(); const started = f.store.getTask(incomingIdentity)!;
     expect(started).toMatchObject({ status: "active", configuration: frozen, nativeExecution: { promptSubmission: "submitted" } });
     expect(started.resources.nativeSession?.sessionId).not.toBe(original.resources.nativeSession!.sessionId); expect(f.tasks.start).toHaveBeenCalledTimes(2);
-    expect(f.tasks.start.mock.calls[1]![0]).toMatchObject({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: incoming.claimId, worktreeId: incoming.worktreeId }); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
+    expect(f.tasks.start.mock.calls[1]![0]).toMatchObject({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: incomingIdentity.claimId, worktreeId: started.worktreeId }); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
     expect(f.remote.ownInventory).toHaveBeenCalledTimes(beforeALists);
   });
 
@@ -687,14 +689,16 @@ describe("worker foreground coordinator", () => {
     const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: original.claimId, worktreeId: uuid(1041), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
     const frozen = { ...configuration, model: "independent-origin-model" };
     const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
-    await createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 }).tick();
-    const incoming = f.store.getTask({ ...original, serverOrigin: otherOrigin, projectId: project.projectId })!;
-    expect(incoming).toMatchObject({ status: "pending", claimId: original.claimId, worktreeId: uuid(1041), configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } });
-    expect(vi.mocked(f.git.findWorktree).mock.calls.at(-1)?.[0]).toMatchObject({ serverOrigin: origin, projectId: original.projectId, claimId: original.claimId, worktreeId: original.worktreeId });
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 });
+    await changedOrigin.tick(); const incomingIdentity = { ...original, serverOrigin: otherOrigin, projectId: project.projectId };
+    expect(f.store.getTask(incomingIdentity)).toBeNull(); expect(f.git.findWorktree).not.toHaveBeenCalled();
+    expect(f.events.some((event) => event.kind === "handoff-waiting" && event.task?.serverOrigin === origin && event.task.projectId === original.projectId && event.task.claimId === original.claimId)).toBe(true);
     expect(f.store.getTask(original)).toMatchObject({ status: "active", serverOrigin: origin, resources: original.resources }); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce();
+    f.setTime(f.store.getTask(original)!.cleanup!.deadline); await changedOrigin.advanceCommittedCleanups(original); await changedOrigin.tick();
+    expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "active", claimId: original.claimId, worktreeId: uuid(1041), configuration: frozen }); expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
   });
 
-  it.each(["ancestor-alias", "removed-before-inspection", "removed-with-registration"] as const)("keeps a fresh claim's configuration when its local predecessor uses %s", async (condition) => {
+  it.each(["ancestor-alias", "pointerless-leaf", "missing-leaf"] as const)("defers new claim classification while its predecessor removal is unsettled (%s)", async (condition) => {
     const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
     f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick();
     await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
@@ -703,21 +707,20 @@ describe("worker foreground coordinator", () => {
       const alias = path.join(f.root, "alias-parent"); await symlink(f.root, alias, process.platform === "win32" ? "junction" : "dir"); localPath = path.join(alias, path.basename(localPath));
     } else {
       f.store.recordCleanupResult(original, "completed", null, 1000); f.store.confirmAgentStopped(original, { agentStopped: true }, 1000); f.store.confirmWorkspaceClosed(original, { workspaceClosed: true }, 1000); f.resources.delete(original.claimId);
-      vi.mocked(f.git.findWorktree).mockImplementationOnce(async () => {
-        await rm(original.resources.worktree!.worktreePath, { recursive: true });
-        if (condition === "removed-with-registration") throw new Error("The original task worktree is missing; its ownership registration was retained.");
-        f.worktrees.delete(original.claimId); return null;
-      });
+      if (condition === "missing-leaf") await rm(original.resources.worktree!.worktreePath, { recursive: true });
+      else { await writeFile(path.join(original.resources.worktree!.worktreePath, ".git"), "gitdir: fixture-admin\n"); await rm(path.join(original.resources.worktree!.worktreePath, ".git")); }
     }
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1050), localPath }; f.store.registerProject(project);
     const candidate = remoteTask(project.projectId, original.taskId);
     const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1051), worktreeId: uuid(1052), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
     const frozen = { ...configuration, model: "fresh-origin-B-config" };
     const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
-    await createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 }).tick();
-    const incoming = f.store.getTask({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1051) })!;
-    expect(incoming).toMatchObject({ status: "pending", configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce();
-    expect(vi.mocked(f.git.findWorktree).mock.calls.at(-1)?.[0]).toMatchObject({ serverOrigin: origin, projectId: original.projectId, claimId: original.claimId });
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 });
+    const incomingIdentity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1051) };
+    await changedOrigin.tick(); expect(f.store.getTask(incomingIdentity)).toBeNull(); expect(f.git.findWorktree).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    f.store.recordCleanupResult(original, "completed", null, 1000); f.store.confirmAgentStopped(original, { agentStopped: true }, 1000); f.store.confirmWorkspaceClosed(original, { workspaceClosed: true }, 1000); f.resources.delete(original.claimId);
+    await rm(original.resources.worktree!.worktreePath, { recursive: true, force: true }); f.worktrees.delete(original.claimId); f.store.confirmWorktreeDeleted(original, { worktreeDeleted: true }, 1000); f.store.completeTask(original, 1000);
+    await changedOrigin.tick(); expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "active", configuration: frozen }); expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
   });
 
   it("does not persist a fault pause when normal shutdown cancels read-only original-worktree verification", async () => {
@@ -783,7 +786,7 @@ describe("worker foreground coordinator", () => {
 
   it.each(["foreign-present", "permission-denied"] as const)("does not treat a predecessor attribution failure as an empty path when %s", async (condition) => {
     const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
-    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick(); await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
+    await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
     const failure = condition === "permission-denied" ? Object.assign(new Error("Permission denied while inspecting the original worktree."), { code: "EACCES" }) : new Error("The task worktree ownership marker or repository identity does not match this claim.");
     vi.mocked(f.git.findWorktree).mockRejectedValueOnce(failure);
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1060) }; f.store.registerProject(project);
@@ -829,7 +832,6 @@ describe("worker foreground coordinator", () => {
 
   it("does not materialize a fresh claim with missing configuration when cancellation interrupts predecessor inspection", async () => {
     const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
-    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick();
     await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
     const before = f.store.getTask(original)!;
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1070) }; f.store.registerProject(project);
@@ -845,7 +847,7 @@ describe("worker foreground coordinator", () => {
     expect(f.store.getTask(incomingIdentity)).toBeNull(); expect(f.store.getTask(original)).toEqual(before); expect(f.tasks.start).toHaveBeenCalledOnce();
     const restarted = createWorkerCoordinator(changed); await restarted.tick();
     expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "pending", configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } });
-    f.setTime(before.cleanup!.deadline); await restarted.advanceCommittedCleanups(original); await restarted.tick();
+    f.store.beginCleanup(original, { kind: "terminal", deadline: 601000 }, 1000); f.setTime(601000); await restarted.advanceCommittedCleanups(original); await restarted.tick();
     expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "active", configuration: frozen, nativeExecution: { promptSubmission: "submitted" } });
     expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined(); expect(f.store.getTask(incomingIdentity)?.resources.nativeSession?.sessionId).not.toBe(original.resources.nativeSession!.sessionId);
   });
@@ -869,10 +871,11 @@ describe("worker foreground coordinator", () => {
       completedDuringObservation = true;
       return physical;
     });
-    await createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 }).tick();
-    expect(completedDuringObservation).toBe(true); expect(f.store.getTask(original)?.status).toBe("done");
-    expect(vi.mocked(f.git.findWorktree).mock.calls.at(-1)?.[0]).toMatchObject({ serverOrigin: origin, projectId: original.projectId, taskId: original.taskId, claimId: original.claimId, worktreeId: original.worktreeId, status: "active" });
-    const incoming = f.store.getTask({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1081) })!;
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 });
+    const incomingIdentity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1081) };
+    await changedOrigin.tick(); expect(completedDuringObservation).toBe(true); expect(f.store.getTask(original)?.status).toBe("done");
+    expect(f.store.getTask(incomingIdentity)).toBeNull(); expect(f.git.findWorktree).not.toHaveBeenCalled();
+    await changedOrigin.tick(); const incoming = f.store.getTask(incomingIdentity)!;
     if (pathState === "absent") {
       expect(incoming.configuration).toEqual(frozen); expect(incoming.status).toBe("active"); expect(incoming.recovery.pauseReason).toBeNull();
       expect(f.events.some((event) => event.kind === "pending-recovered" && event.task?.claimId === incoming.claimId && event.task.status === "pending" && event.task.configuration?.model === frozen.model)).toBe(true);
@@ -911,6 +914,55 @@ describe("worker foreground coordinator", () => {
     } else {
       expect(successor).toMatchObject({ configuration: null, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
     }
+  });
+
+  it.each(["ongoing-removal", "settled-during-final-check", "incoming-native-history", "incoming-herdr-resource"] as const)("materializes only across a stable predecessor removal boundary (%s)", async (phase) => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    const fixedPath = original.resources.worktree!.worktreePath; await mkdir(fixedPath, { recursive: true }); await writeFile(path.join(fixedPath, ".git"), "gitdir: fixture-admin\n");
+    const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1100) }; f.store.registerProject(project);
+    const candidate = remoteTask(project.projectId, original.taskId); const successorId = uuid(1101);
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: successorId, worktreeId: uuid(1102), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: phase === "incoming-native-history" ? { session: "w", workspaceId: "existing-successor", paneId: "existing-successor-pane" } : null, nativeSessionId: phase === "incoming-native-history" ? uuid(1103) : null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const incomingIdentity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: successorId };
+    if (phase === "incoming-herdr-resource") {
+      const binding = { session: "w", workspaceId: "existing-current-workspace", paneId: "existing-current-pane", terminalId: "existing-current-terminal" };
+      f.resources.set(successorId, { owner: { ...incomingIdentity, worktreeId: uuid(1102) }, workspaceId: binding.workspaceId, panes: [{ binding, cwd: fixedPath, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr:codex", agent: "codex", sessionId: uuid(1104) }, stateChangeSeq: 1, completionSeq: 0 }] });
+    }
+    const frozen = { ...configuration, model: "configuration-after-stable-removal" };
+    const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
+    const beginRemoval = () => {
+      f.store.beginCleanup(original, { kind: "terminal", deadline: 601000 }, 1000); f.store.recordCleanupResult(original, "completed", null, 1000); f.store.confirmAgentStopped(original, { agentStopped: true }, 1000); f.store.confirmWorkspaceClosed(original, { workspaceClosed: true }, 1000); f.resources.delete(original.claimId);
+      rmSync(path.join(fixedPath, ".git"));
+    };
+    const finishRemoval = () => {
+      rmSync(fixedPath, { recursive: true }); f.worktrees.delete(original.claimId); f.store.confirmWorktreeDeleted(original, { worktreeDeleted: true }, 1000); f.store.completeTask(original, 1000);
+    };
+    const missingPointer = new Error("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
+    let inspectAfterPointerRemoval = false; let completionBeforeMaterialization: boolean | undefined;
+    if (phase === "settled-during-final-check") {
+      vi.mocked(f.git.findWorktree).mockImplementationOnce(async () => { beginRemoval(); inspectAfterPointerRemoval = true; throw missingPointer; });
+      const lstat = fsPromises.lstat; let positiveInspections = 0;
+      vi.spyOn(fsPromises, "lstat").mockImplementation(async (...args) => {
+        const observed = await lstat(...args);
+        if (inspectAfterPointerRemoval && args[0] === fixedPath && ++positiveInspections === 2) {
+          expect(existsSync(fixedPath)).toBe(true); completionBeforeMaterialization = f.store.getTask(incomingIdentity) === null; finishRemoval();
+        }
+        return observed;
+      });
+      syncBuiltinESMExports();
+    } else {
+      beginRemoval(); vi.mocked(f.git.findWorktree).mockRejectedValueOnce(missingPointer);
+    }
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 });
+    await changedOrigin.tick();
+    if (phase === "incoming-native-history" || phase === "incoming-herdr-resource") {
+      expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "active", configuration: null, recovery: { pauseReason: expect.stringContaining("configuration") } }); expect(f.tasks.start).toHaveBeenCalledOnce(); return;
+    }
+    if (phase === "settled-during-final-check") { expect(completionBeforeMaterialization).toBe(true); expect(f.store.getTask(original)).toMatchObject({ status: "done", cleanup: { worktreeDeleted: true } }); expect(existsSync(fixedPath)).toBe(false); }
+    else { expect(existsSync(fixedPath)).toBe(true); expect(existsSync(path.join(fixedPath, ".git"))).toBe(false); }
+    expect(f.store.getTask(incomingIdentity)).toBeNull(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    if (phase === "ongoing-removal") finishRemoval();
+    await changedOrigin.tick();
+    expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "active", configuration: frozen, nativeExecution: { promptSubmission: "submitted" } }); expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
   });
 
 });

@@ -188,9 +188,11 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 新任务候选同时使用 ready、allowAgents=true 与实际兼容平台，条件在服务端排序和分页前组合；worker 不修改自动执行许可。Released 历史候选跳过但继续分页。仓库之间轮转，同仓库遵守服务端顺序，配置为空或无合格候选不占名额。项目未决 claimAttempt 阻止该项目继续认领，但不替代其他项目的调度。
 
-当前 B 服务的新 claim 遇到同 worker 的旧规范路径时，只用只读 Git 所有权核对归属前驱；不能因相同 task UUID 或路径采纳旧会话/配置。文件系统异步核对开始前保留相关前驱的持久执行身份、原 repoUrl/repositoryPath 和已有的可选 worktree binding。候选资格不要求 binding 已落库：Git 可能已创建带所有权标记的 leaf，而 SQLite 尚未记录返回值；此时仍由原 task/claim/worktree 身份及仓库坐标推导规范路径，使用既有只读 Git 发现核验完整 claim、root/common/leaf、精确 .git 指针和分支，不能以目录存在代替归属证明。前驱在核对期间完成清理、从未完成记录中消失，也不得把较早的路径存在观察改判为新 claim 已执行。分类结合当前路径与原所有权核对，区分已清除的旧前驱和仍无法归属的占用。
+当前 B 服务尚未物化的 preparing claim 若没有自身 Herdr/native 执行迹象，须在稳定的前驱移交边界分类。文件系统异步核对前保留相关前驱的持久 origin/project/task/claim/worktree 身份、原 repoUrl/repositoryPath 和已有的可选 worktree binding。候选资格不要求 binding 已落库：Git 可能已创建带标记的 leaf，而 SQLite 尚未记录返回值。候选还须匹配同一物理规范路径；它只确定需要等待的移交范围，不代表采纳路径所有权。稳定后的只读 Git 分类仍严格核验完整 claim、root/common/leaf、精确 .git 指针及分支，不以目录存在或相同 task UUID 代替归属证明。
 
-实际新 claim 没有自身执行迹象时冻结 B 的新配置并保持 pending，只要同 worker 任一 origin 仍有相同 task UUID 的 active 前驱就不启动；等待旧本地责任 done 后再创建新资源。无法归属的占用继续保留并报告。完整 origin/project/task/claim 身份不被这个等待条件合并，也不复用旧 native 历史。
+若捕获的或当前前驱仍承担 terminal/control 的 worktree 删除责任，或异步核对期间删除边界发生变化，则该尚未物化的新 claim 非阻塞延后，不插入记录或作配置分类；即使删除在此期间开始并已完成、前驱已变 done，也视为边界变化。下一次成功完整 inventory 在稳定后重新考虑。最终检查紧贴 pending 插入且其后没有 await，避免较早的路径观察与较晚的前驱记录拼成新 claim 已执行的结论。已有 pending 及冻结配置不重新分类；匹配 claimAttempt 的原决定证据在延后期间保留，不被覆盖或清除；其他 task 和独立清理截止继续推进，不增加状态、队列或锁。
+
+普通稳定的 active 前驱不阻止通过严格归属核对的新 claim 冻结自身配置并物化为 pending；同 worker 任一 origin 的同 task UUID active 前驱仍会阻止其启动，直到旧本地责任 done。无法归属的稳定占用继续保留并报告，不放松 Git 证明，也不采纳旧 native 会话或配置。完整 origin/project/task/claim 身份不被路径或等待条件合并。
 
 项目映射先落库，具体请求先保存未知结果 fence，服务端原子授予后才登记 pending；确认名额/条件并提交 active 后才创建 worktree 和 Herdr 资源。等待、超限暂停、原执行恢复与清理均保留 active 责任和名额；找回已有/未知资源而缺配置的执行同样保留责任。降低并发不抢占已开始执行。同 task 的旧 active 未清理前新 pending 不启动。
 

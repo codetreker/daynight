@@ -57,27 +57,37 @@ contact the old API with new credentials or query that record against the new
 service. Full origin/project/task/claim scope remains intact, without a
 credential registry or multi-service acquisition mechanism.
 
-A current-service new claim can encounter a canonical path owned by an old
-origin. Read-only Git ownership verification attributes that predecessor rather
-than adopting its conversation. Relevant persisted execution identities,
-original repository URL/path and optional worktree bindings are captured before
-asynchronous filesystem checks. A stored worktree binding is not required for
-candidate eligibility: Git may already have created the marked leaf before its
-binding result committed to SQLite. Existing discovery uses the original
-repository/task/claim/worktree identity and canonical path, and still requires
-full claim, root/common/leaf, exact Git pointer and branch ownership proof.
-Directory presence alone grants no attribution.
+A current-service preparing claim with no local row or own Herdr/native trace is
+classified only across a stable predecessor handoff boundary. Relevant persisted
+origin/project/task/claim/worktree identities, original repository URL/path and
+optional worktree bindings are captured before filesystem awaits. A stored
+binding is not required for candidate eligibility: Git may have created the
+marked leaf before SQLite saved its result. Candidates must match the same
+physical canonical path. That identifies a handoff to defer, not ownership to
+adopt. Stable read-only attribution still requires full claim, root/common/leaf,
+exact Git pointer and branch proof; neither path presence nor a shared task UUID
+grants attribution.
 
-Concurrent cleanup can remove the old path and finish its record during those
-checks. A later unfinished-record list must not discard the retained identity
-and turn the earlier old-path observation into evidence of new-claim execution.
-Current path/ownership validation distinguishes a cleared predecessor from an
-unattributed occupied path, without a broader Git fallback or persistent
-registry. The new claim freezes its own configuration when it has no execution
-trace, then waits pending behind any active predecessor with the same task UUID
-for that worker across origins. Old local responsibility must finish before new
-resources start. This barrier preserves full claim identities and never adopts
-the old conversation or configuration.
+If a captured or current predecessor owes terminal/control worktree removal, or
+that removal boundary changes during asynchronous checks, classification of the
+unmaterialized prospective-fresh claim is deferred without blocking or inserting
+a row/configuration. A removal that starts and completes to done during the
+checks still changes the boundary. The next complete inventory reconsiders the
+claim after stability. A final synchronous check immediately precedes pending
+insertion, with no intervening await, so old path and newer local observations
+cannot be combined into false evidence that the successor already executed.
+Existing pending records keep their frozen configuration and are not classified
+again. Deferral preserves matching claim-attempt decision provenance instead of
+replacing or clearing it. Other tasks and independent cleanup deadlines
+continue; no state, queue or lock is added.
+
+A stable ordinary active predecessor can still be attributed strictly, allowing
+the new claim to freeze its own configuration and become pending behind the
+worker's activation barrier for active predecessors with the same task UUID
+across origins. New resources wait until old local responsibility is done.
+Stable unattributed occupancy remains an error; ownership checks are not
+weakened and old conversation/configuration is never adopted. Full claim
+identities remain separate.
 
 Actual claims become pending before activation and resources. Active
 preparation, waiting, paused recovery and cleanup retain capacity; lowering the
