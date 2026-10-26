@@ -62,6 +62,15 @@ func (s *Tasks) List(ctx context.Context, principal core.Principal, projectID st
 		return TaskPage{}, invalidInput("Compatible platform must be windows, linux or macos.")
 	}
 	scope := listScope{Kind: "tasks", ProjectID: projectID, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform}
+	var worker *store.WorkerQuery
+	if request.WorkerID != nil {
+		workerID, err := CanonicalID(*request.WorkerID)
+		if err != nil {
+			return TaskPage{}, err
+		}
+		worker = &store.WorkerQuery{UserID: principal.UserID, WorkerID: workerID}
+		scope.WorkerID, scope.WorkerUserID = &worker.WorkerID, &worker.UserID
+	}
 	if request.Status != nil {
 		status := string(*request.Status)
 		scope.Status = &status
@@ -80,7 +89,7 @@ func (s *Tasks) List(ctx context.Context, principal core.Principal, projectID st
 			return err
 		}
 		var err error
-		result, err = snapshot.Tasks(ctx, projectID, store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform})
+		result, err = snapshot.Tasks(ctx, projectID, store.TaskQuery{Page: page, Status: request.Status, Ready: request.Ready, AllowAgents: request.AllowAgents, CompatiblePlatform: request.CompatiblePlatform, Worker: worker})
 		return err
 	})
 	if err != nil {

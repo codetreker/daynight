@@ -313,7 +313,11 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 两个列表接口接受 `limit` 和不透明 `cursor`。`limit` 默认 50，范围为 1 至 100，
 使用 `(createdAt, id)` 升序 keyset 分页；响应为 `items` 和 `nextCursor`，没有
 下一页时后者为 `null`。
-task 列表另外接受单个 `status` 枚举、`ready`、`allowAgents` 布尔筛选和三个枚举之一的 `compatiblePlatform`，按 AND 组合。兼容谓词为 `required_platform IS NULL OR required_platform = requested_platform`；许可、平台和 ready 条件都在 SQL 中先于排序、limit 和 lookahead。cursor 绑定全部筛选，保留许可的未提供/true/false 与平台的未提供/三个枚举范围，切换或移除任一筛选不能沿用旧 cursor。
+task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform` 和可选规范 UUID `workerId`，显式条件按 AND 组合。许可、平台和 ready 等普通条件在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
+
+普通列表保留 SQL limit；指定 workerId 时，store 按原 keyset 顺序扫描 SQL 候选，用既有 task properties codec 解码并匹配归属，收集到 page limit+1 个匹配项或结束。最终分页和 lookahead 在归属筛选后计算，cursor 来自最后返回的匹配项。该路径可能扫描更多非匹配行，但不转换整段 opaque TEXT properties，不新增投影列或 claim 表；合法 PR 的 NUL/Unicode 转义继续由原 codec 处理。
+
+Cursor 绑定全部显式筛选，workerId 还绑定隐式认证 userId；未指定 worker 时保持原用户无关列表范围。更换用户、worker 或其他筛选不能沿用旧 cursor。
 
 cursor 编码最后一项的位置、资源类型、project 路径范围及规范化筛选条件。解码时
 校验格式和范围，拒绝将 project 列表 cursor 用于 task 列表，或在修改筛选后复用。
@@ -323,7 +327,7 @@ cursor 不承担身份授权或加密职责。列表不承诺跨多次请求维�
 单次 GET 或列表的任务状态、依赖与派生字段必须来自同一个数据库快照。实现可以在
 同一 SQL 语句中聚合，或在只读 `REPEATABLE READ` 事务内完成分页、依赖和状态查询。
 `ready` 筛选在数据库中使用同一状态条件，`allowAgents` 和 `requiredPlatform` 使用 task 同行值；不能取一页后在应用中删掉 blocked、许可不匹配或平台不兼容的任务。
-分页边界应用于筛选后的结果，`nextCursor` 根据该结果中是否还有记录产生。
+分页边界应用于筛选后的结果，`nextCursor` 根据该结果中是否还有记录产生。仅 workerId 筛选的全部项目/页成功汇总后，调用者才可按自有 claim 清单缺席对账；带额外候选资格筛选或部分页不是完整归属集合。
 
 ## 错误与诊断
 

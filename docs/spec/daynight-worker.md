@@ -87,7 +87,8 @@ AND no active claim
 ### W-09：SQLite、退出与恢复
 
 - SQLite 保存当前执行状态与恢复所需检查点：worker 身份、仓库轮转位置、claim、冻结配置、worktree/分支、会话关联、最新状态、交付引用、失败原因、恢复次数、暂停与待清理事项。
-- 影响外部资源的动作先保存恢复检查点，认领前记录 server origin、projectId、taskId 与 claimId。重启使用 SQLite 原记录或显式移交导入记录中的已知 taskId，逐任务读取详情，核对服务端归属、Git 和 Herdr 的实际状态，再恢复任务和领取新任务；不确定的 claim、worktree、agent、PR、合并或清理结果不能按“未发生”直接重做。恢复不要求按用户或 worker 反查已认领任务。
+- 启动和持续对账通过既有 task list 的 workerId 筛选，成功汇总当前认证用户/worker 全部项目与分页的有效 active claim；不附加候选资格条件，不把失败或部分清单当成空集合。原 claimId 不在完整清单就触发相同本地清理，不按 task 状态或单 task GET 分类原因。同 task 新 claim 不保护旧 claim，完成本轮对账后才登记新领取。
+- 同一仍归属执行的恢复核对 SQLite、Git 和 Herdr 的原资源与冻结配置；新发现 claim 先登记 pending。显式写入的版本和未知结果仍可按 taskId 读取核对，不确定的外部动作不能按“未发生”重做。
 - Worker 崩溃或机器失联不自动释放 claim，由原 worker 恢复或人工移交。worker 死亡不证明 agent 或工具已停止；无法确认原执行是否停止时暂停，避免重复 agent。
 - Ctrl+C 停止新领取、当前 agent 与专用 Herdr，保存可恢复状态并保留未完成 claim/worktree。重启继续原任务。
 - 异常退出或基础设施故障在原 worktree/会话上按配置上限恢复；计数、原因及暂停状态持久化，重启不清零。超限保留资源与名额，等待人工处理或明确恢复操作。

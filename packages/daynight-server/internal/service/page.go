@@ -19,6 +19,8 @@ type listCursor struct {
 	Ready              *bool              `json:"ready"`
 	AllowAgents        *bool              `json:"allowAgents"`
 	CompatiblePlatform *core.TaskPlatform `json:"compatiblePlatform"`
+	WorkerID           *string            `json:"workerId"`
+	WorkerUserID       *string            `json:"workerUserId"`
 	CreatedAt          time.Time          `json:"createdAt"`
 	ID                 string             `json:"id"`
 }
@@ -30,6 +32,8 @@ type listScope struct {
 	Ready              *bool
 	AllowAgents        *bool
 	CompatiblePlatform *core.TaskPlatform
+	WorkerID           *string
+	WorkerUserID       *string
 }
 
 func projectListPage(request PageRequest) (store.Page, error) {
@@ -60,7 +64,7 @@ func listPage(request PageRequest, scope listScope) (store.Page, error) {
 	id, err := CanonicalID(cursor.ID)
 	if err != nil || id != cursor.ID || cursor.Version != 1 || cursor.Kind != scope.Kind ||
 		cursor.ProjectID != scope.ProjectID || !equalOptional(cursor.Status, scope.Status) ||
-		!equalOptional(cursor.Ready, scope.Ready) || !equalOptional(cursor.AllowAgents, scope.AllowAgents) || !equalOptional(cursor.CompatiblePlatform, scope.CompatiblePlatform) || cursor.CreatedAt.IsZero() {
+		!equalOptional(cursor.Ready, scope.Ready) || !equalOptional(cursor.AllowAgents, scope.AllowAgents) || !equalOptional(cursor.CompatiblePlatform, scope.CompatiblePlatform) || !equalOptional(cursor.WorkerID, scope.WorkerID) || !equalOptional(cursor.WorkerUserID, scope.WorkerUserID) || cursor.CreatedAt.IsZero() {
 		return store.Page{}, invalidInput("Cursor is invalid for this list.")
 	}
 	page.After = &store.Position{CreatedAt: cursor.CreatedAt, ID: id}
@@ -73,7 +77,7 @@ func encodeProjectCursor(project core.Project) (string, error) {
 
 func encodeListCursor(scope listScope, createdAt time.Time, id string) (string, error) {
 	cursor := listCursor{Version: 1, Kind: scope.Kind, ProjectID: scope.ProjectID, Status: scope.Status,
-		Ready: scope.Ready, AllowAgents: scope.AllowAgents, CompatiblePlatform: scope.CompatiblePlatform, CreatedAt: createdAt, ID: id}
+		Ready: scope.Ready, AllowAgents: scope.AllowAgents, CompatiblePlatform: scope.CompatiblePlatform, WorkerID: scope.WorkerID, WorkerUserID: scope.WorkerUserID, CreatedAt: createdAt, ID: id}
 	data, err := json.Marshal(cursor)
 	if err != nil {
 		return "", err

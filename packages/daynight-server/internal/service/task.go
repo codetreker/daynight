@@ -47,6 +47,7 @@ type TaskListRequest struct {
 	Ready              *bool
 	AllowAgents        *bool
 	CompatiblePlatform *core.TaskPlatform
+	WorkerID           *string
 }
 
 type TaskPage struct {

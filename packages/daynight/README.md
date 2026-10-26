@@ -619,6 +619,14 @@ inline assignment. Attachment `put` declares its `--path` as text, accepting
 `--path=value`; attachment `put/read/remove` also accept `--` before positional
 paths starting with a dash. Other task operations retain their declared syntax.
 
+The internal typed ApiClient accepts optional `workerId` on TaskFilters and
+TaskPageQuery. It requests only the authenticated user/worker active claims and
+validates active state and matching worker ID in responses. `listTasks` returns
+only after every page succeeds; `listTaskPage` remains partial. A workerId-only
+traversal across all relevant projects provides ownership inventory; extra filters
+or incomplete pages cannot authorize cleanup. This field is not a public task CLI
+option.
+
 Human task lists use labeled blocks containing ID, project, title, PR references,
 status, readiness, automatic-execution permission, required platform, dependencies and blocking.
 Description, version and timestamps

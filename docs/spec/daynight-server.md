@@ -213,8 +213,10 @@ Task 更新示例：
 
 列表使用 `limit`、`cursor`。`limit` 默认 `50`，允许 `1..100`；按
 `createdAt ASC, id ASC` 稳定排序，返回 `items` 和 `nextCursor`，末页后者为 `null`。
-Task 列表支持单个三状态 status、ready/allowAgents 布尔值及 compatiblePlatform=windows|linux|macos。布尔只接受 true/false，兼容匹配包含 null 或同值要求；省略不筛选。全部条件 AND 组合，先于排序、分页和 lookahead，且每项条件进入 cursor 范围。不能取有界页再本地丢弃不匹配项。
-Cursor 必须绑定列表类型、所属 project 和筛选条件，格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
+Task 列表支持单个三状态 status、ready/allowAgents 布尔值、compatiblePlatform=windows|linux|macos，以及可选 UUID workerId。布尔只接受 true/false，兼容匹配包含 null 或同值要求；省略不筛选。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除 null/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
+
+仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
+Cursor 必须绑定列表类型、所属 project 和规范化筛选条件；指定 workerId 时还绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
 输入错误拒绝；`limit` 的默认值仅用于未提供该参数。
 单次响应中的 task、依赖和派生字段保持一致；多次翻页不承诺跨请求快照。
 

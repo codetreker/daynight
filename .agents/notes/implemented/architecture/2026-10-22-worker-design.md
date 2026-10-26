@@ -52,14 +52,15 @@ Uncertain external results are reconciled before actions are repeated. Waiting
 and paused tasks retain their claims, worktrees and global concurrency slots.
 
 Acquisition discovers eligible unclaimed tasks and lets the service atomically
-select one winner. Recovery uses task IDs already persisted in SQLite or imported
-through an explicit transfer. Before sending a claim, the worker persists its
-server origin, project/task identity, proposed claim and pending action. Restart
-and unknown-result reconciliation read each known task directly through the
-in-process API client. This does not require an owner-based reverse inventory or
-dedicated database projection columns, indexes or a claim table for that query.
-Missing SQLite or original execution resources remains a visible recovery issue
-requiring human handling.
+select one winner. The original recovery design discovered work only through
+known local/imported task IDs. The [current-claim inventory decision](2026-10-26-worker-claim-inventory.md)
+partially supersedes that discovery mechanism: the project task list supplies
+current authenticated user/worker active claims without adding projections or
+a claim table. Complete project/page traversal is required before absence can
+authorize reconciliation, and candidate eligibility filters are not inventory
+filters. Known-task reads still reconcile explicit versioned writes and unknown
+mutation outcomes. Ownership discovery does not recreate missing worktrees,
+frozen configuration or native history; those remain concrete recovery issues.
 
 ## Alternatives
 

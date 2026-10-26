@@ -59,6 +59,10 @@ func (s *Snapshot) Task(ctx context.Context, projectID, id string) (core.Task, e
 
 func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery) (TaskPage, error) {
 	afterTime, afterID := pageValues(query.Page)
+	var limit any = query.Page.Limit + 1
+	if query.Worker != nil {
+		limit = nil
+	}
 	rows, err := s.tx.Query(ctx, `SELECT `+taskProjection+` FROM tasks t
 		WHERE t.project_id = $1 AND t.deleted_at IS NULL
 		AND ($2::timestamptz IS NULL OR (t.created_at, t.id) > ($2, $3::uuid))
@@ -66,12 +70,32 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 		AND ($5::boolean IS NULL OR `+taskReady+` = $5)
 		AND ($6::boolean IS NULL OR t.allow_agents = $6)
 		AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
-		ORDER BY t.created_at, t.id LIMIT $8`, projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, query.Page.Limit+1)
+		ORDER BY t.created_at, t.id LIMIT $8`, projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit)
 	if err != nil {
 		return TaskPage{}, queryError("list tasks", err)
 	}
-	items, err := collectTasks(rows)
-	if err != nil {
+	defer rows.Close()
+	items := make([]core.Task, 0, query.Page.Limit+1)
+	for rows.Next() {
+		task, err := scanTask(rows)
+		if err != nil {
+			return TaskPage{}, queryError("list tasks", err)
+		}
+		// Worker ownership is decoded before the page limit so opaque PR strings
+		// never pass through PostgreSQL JSON conversion or hide later matches.
+		if query.Worker != nil {
+			worker := task.Properties.Worker
+			if worker == nil || worker.State != core.WorkerActive || worker.UserID != query.Worker.UserID || worker.WorkerID != query.Worker.WorkerID {
+				continue
+			}
+		}
+		items = append(items, task)
+		if len(items) > query.Page.Limit {
+			break
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
 		return TaskPage{}, queryError("list tasks", err)
 	}
 	hasMore := len(items) > query.Page.Limit

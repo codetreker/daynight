@@ -25,12 +25,18 @@ type ProjectPage struct {
 	HasMore bool
 }
 
+type WorkerQuery struct {
+	UserID   string
+	WorkerID string
+}
+
 type TaskQuery struct {
 	Page               Page
 	Status             *core.TaskStatus
 	Ready              *bool
 	AllowAgents        *bool
 	CompatiblePlatform *core.TaskPlatform
+	Worker             *WorkerQuery
 }
 
 type TaskPage struct {
