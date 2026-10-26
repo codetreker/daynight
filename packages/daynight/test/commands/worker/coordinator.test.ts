@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
-import { OperationError } from "../../../src/api/operation.js";
+import { createOperation, OperationError } from "../../../src/api/operation.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
@@ -879,6 +879,37 @@ describe("worker foreground coordinator", () => {
       expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
     } else {
       expect(incoming).toMatchObject({ configuration: null, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(f.tasks.start).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each(["predecessor", "unmarked", "successor"] as const)("recovers a new claim after worktree creation before SQLite binding (%s ownership)", async (owner) => {
+    const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
+    const originalIdentity = { serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: uuid(1090), workerId, worktreeId: uuid(1091) };
+    f.store.registerPending(originalIdentity, { kind: "new", configuration }, 1000); f.store.bindUserScope(originalIdentity, uuid(2), 1000); const original = f.store.activateTask(originalIdentity, 1000);
+    const operation = createOperation();
+    let binding: NonNullable<LocalTask["resources"]["worktree"]>;
+    try { binding = await f.git.prepareWorktree(original, operation); } finally { operation.dispose(); }
+    await mkdir(binding.worktreePath, { recursive: true });
+    expect(f.store.getTask(original)?.resources.worktree).toBeNull();
+    vi.mocked(f.git.findWorktree).mockImplementation(async (task) => {
+      expect(task).toMatchObject({ serverOrigin: origin, projectId: project.projectId, taskId: original.taskId, claimId: original.claimId, worktreeId: original.worktreeId });
+      if (owner === "unmarked") throw new Error("An existing task worktree path has no matching ownership registration; it was retained.");
+      if (owner === "successor") throw new Error("The task worktree ownership marker or repository identity does not match this claim.");
+      return binding;
+    });
+    const successorId = uuid(1092); const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: successorId, worktreeId: original.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    f.granted.set(successorId, actual); f.candidates.set(project.projectId, []);
+    const frozen = { ...configuration, model: "new-claim-after-unbound-worktree" };
+    await createWorkerCoordinator({ ...f.options, repositories: [{ project, configuration: frozen }] }).tick();
+    const successor = f.store.getTask({ ...originalIdentity, claimId: successorId })!;
+    if (owner === "predecessor") {
+      expect(successor.configuration).toEqual(frozen); expect(successor.status).toBe("active"); expect(successor.recovery.pauseReason).toBeNull();
+      expect(f.store.getTask(original)).toMatchObject({ status: "done", cleanup: { kind: "terminal", worktreeDeleted: true } });
+      expect(vi.mocked(f.git.findWorktree).mock.calls[0]?.[0]).toMatchObject({ ...originalIdentity, resources: { worktree: null, herdr: null, nativeSession: null } });
+      expect(f.events.some((event) => event.kind === "pending-recovered" && event.task?.claimId === successorId && event.task.configuration?.model === frozen.model)).toBe(true);
+      expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.tasks.start.mock.calls[0]![0]).toMatchObject({ claimId: successorId, worktreeId: original.worktreeId }); expect(f.tasks.start.mock.calls[0]![2].resumeSessionId).toBeUndefined();
+    } else {
+      expect(successor).toMatchObject({ configuration: null, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
     }
   });
 

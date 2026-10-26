@@ -133,16 +133,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (attempt !== null && attempt.claimId === worker.claimId && attempt.userId !== authenticatedUserId) throw new Error("The original claim request belongs to another authenticated user; its scope cannot be replaced.");
     const matchingAttempt = attempt !== null && attempt.userId === authenticatedUserId && attempt.taskId === remoteTask.id && attempt.claimId === worker.claimId && attempt.workerId === worker.workerId && attempt.worktreeId === worker.worktreeId;
     const configured = options.repositories.find(({ project: selected }) => selected.serverOrigin === identity.serverOrigin && selected.projectId === identity.projectId);
-    // Cleanup can finish during filesystem reads, so the original bindings must survive
-    // their transition out of the unfinished selection.
-    const predecessors = workerLocalTasks().filter((task) => task.taskId === identity.taskId && claimKey(task) !== claimKey(identity) && task.resources.worktree !== null);
+    // Capture original identities before filesystem reads: cleanup may finish while
+    // these reads are in flight, and Git creation may precede the binding commit.
+    const predecessors = workerLocalTasks().filter((task) => task.taskId === identity.taskId && claimKey(task) !== claimKey(identity))
+      .map((task) => ({ task, worktreePath: task.resources.worktree?.worktreePath ?? path.join(task.repositoryPath, ".worktrees", "daynight", task.taskId) }));
     const fixedPath = path.join(project.localPath, ".worktrees", "daynight", identity.taskId);
     let pathTrace = await exists(fixedPath);
     if (pathTrace && worker.herdr === null && worker.nativeSessionId === null && worker.phase === "preparing") {
       const target = await physicalPath(fixedPath);
-      for (const previous of predecessors) {
+      for (const { task: previous, worktreePath } of predecessors) {
         try {
-          if (await physicalPath(previous.resources.worktree!.worktreePath) !== target) continue;
+          if (await physicalPath(worktreePath) !== target) continue;
           const original = await workerOperation((operation) => options.git.findWorktree(previous, operation), normalSignal);
           pathTrace = original === null ? await exists(fixedPath) : false;
           break;

@@ -59,18 +59,25 @@ credential registry or multi-service acquisition mechanism.
 
 A current-service new claim can encounter a canonical path owned by an old
 origin. Read-only Git ownership verification attributes that predecessor rather
-than adopting its conversation. Candidate predecessor identities and original
-bindings are retained before asynchronous filesystem checks. Concurrent cleanup
-can delete the old path and complete its record during those checks;
-disappearance from a later unfinished-record list must not turn the earlier path
-observation into evidence that the new claim already executed. Current
-path/ownership validation distinguishes a cleared predecessor from an
-unattributed occupied path, without another persistent registry.
+than adopting its conversation. Relevant persisted execution identities,
+original repository URL/path and optional worktree bindings are captured before
+asynchronous filesystem checks. A stored worktree binding is not required for
+candidate eligibility: Git may already have created the marked leaf before its
+binding result committed to SQLite. Existing discovery uses the original
+repository/task/claim/worktree identity and canonical path, and still requires
+full claim, root/common/leaf, exact Git pointer and branch ownership proof.
+Directory presence alone grants no attribution.
 
-The new claim freezes its own configuration and waits pending behind any active
-predecessor with the same task UUID for that worker, across origins, until old
-local responsibility is done. This capacity/path barrier does not merge the
-claims' identities or reuse old native history.
+Concurrent cleanup can remove the old path and finish its record during those
+checks. A later unfinished-record list must not discard the retained identity
+and turn the earlier old-path observation into evidence of new-claim execution.
+Current path/ownership validation distinguishes a cleared predecessor from an
+unattributed occupied path, without a broader Git fallback or persistent
+registry. The new claim freezes its own configuration when it has no execution
+trace, then waits pending behind any active predecessor with the same task UUID
+for that worker across origins. Old local responsibility must finish before new
+resources start. This barrier preserves full claim identities and never adopts
+the old conversation or configuration.
 
 Actual claims become pending before activation and resources. Active
 preparation, waiting, paused recovery and cleanup retain capacity; lowering the
