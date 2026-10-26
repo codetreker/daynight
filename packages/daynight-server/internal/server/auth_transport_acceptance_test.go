@@ -160,7 +160,7 @@ func TestAuthenticationRealUniAuthResultWireLoss(t *testing.T) {
 	}
 	cut.armed.Store(true)
 	response, _ := identityRequest(t, browser, http.MethodGet, callback.String(), "", nil, http.StatusSeeOther)
-	if response.Header.Get("Location") != "/?authError=login_failed" || response.Header.Get("Cache-Control") != "no-store" {
+	if response.Header.Get("Location") != "/login?authError=login_failed&returnPath=%2Fprojects%3Fview%3Dtasks" || response.Header.Get("Cache-Control") != "no-store" {
 		t.Fatal("lost identity response did not safely return to the login UI")
 	}
 	select {

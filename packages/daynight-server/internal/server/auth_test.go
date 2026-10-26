@@ -96,7 +96,11 @@ func (h *authHarness) request(method, path, body string, cookies []*http.Cookie,
 
 func (h *authHarness) start(t *testing.T, returnPath string) (string, *http.Cookie) {
 	t.Helper()
-	response := h.request("GET", "/api/v1/auth/login?provider=github&returnPath="+url.QueryEscape(returnPath), "", nil, nil, "")
+	values := url.Values{"provider": {"github"}}
+	if returnPath != "" {
+		values.Set("returnPath", returnPath)
+	}
+	response := h.request("GET", "/api/v1/auth/login?"+values.Encode(), "", nil, nil, "")
 	if response.Code != 303 || len(response.Result().Cookies()) != 1 {
 		t.Fatalf("login start: %d %s", response.Code, response.Body)
 	}
@@ -282,27 +286,30 @@ func TestIdentityHTTPResponsePrincipalProvenance(t *testing.T) {
 
 func TestIdentityHTTPCallbackFailures(t *testing.T) {
 	h := authTestHarness(t)
-	for _, mode := range []string{"provider", "protocol-secret", "denied-secret"} {
-		state, binding := h.start(t, "/")
-		values := url.Values{"state": {state}}
-		if mode == "provider" {
-			values.Set("error", "provider_denied")
-		} else {
-			values.Set("code", mode)
-		}
-		before := h.claims.Load()
-		result := h.request("GET", "/api/v1/auth/callback?"+values.Encode(), "", []*http.Cookie{binding}, nil, "")
-		if result.Code != 303 || result.Header().Get("Location") != "/?authError=login_failed" || len(result.Result().Cookies()) != 1 || result.Result().Cookies()[0].MaxAge != -1 {
-			t.Fatalf("failed browser navigation: %d %s", result.Code, result.Body)
-		}
-		replay := h.request("GET", "/api/v1/auth/callback?"+values.Encode(), "", []*http.Cookie{binding}, nil, "")
-		assertProjectError(t, replay, 401, "unauthenticated")
-		want := int32(1)
-		if mode == "provider" {
-			want = 0
-		}
-		if h.claims.Load()-before != want {
-			t.Fatal("one-time callback retried")
+	for _, destination := range []string{"/projects/project/tasks/task/attachments/docs/guide.md?tab=overview#details", "/invitations", "/device?user_code=ABCD-EFGH"} {
+		for _, mode := range []string{"provider", "protocol-secret", "denied-secret"} {
+			state, binding := h.start(t, destination)
+			values := url.Values{"state": {state}}
+			if mode == "provider" {
+				values.Set("error", "provider_denied")
+			} else {
+				values.Set("code", mode)
+			}
+			before := h.claims.Load()
+			result := h.request("GET", "/api/v1/auth/callback?"+values.Encode(), "", []*http.Cookie{binding}, nil, "")
+			location, err := url.Parse(result.Header().Get("Location"))
+			if result.Code != http.StatusSeeOther || err != nil || location.Path != "/login" || location.Query().Get("authError") != "login_failed" || location.Query().Get("returnPath") != destination || len(location.Query()) != 2 || len(result.Result().Cookies()) != 1 || result.Result().Cookies()[0].MaxAge != -1 {
+				t.Fatalf("failed browser navigation lost its login state or destination: %d %s", result.Code, result.Body)
+			}
+			replay := h.request("GET", "/api/v1/auth/callback?"+values.Encode(), "", []*http.Cookie{binding}, nil, "")
+			assertProjectError(t, replay, 401, "unauthenticated")
+			want := int32(1)
+			if mode == "provider" {
+				want = 0
+			}
+			if h.claims.Load()-before != want {
+				t.Fatal("one-time callback retried")
+			}
 		}
 	}
 	state, binding := h.start(t, "/")
@@ -327,6 +334,36 @@ func TestIdentityHTTPCallbackFailures(t *testing.T) {
 	}
 }
 
+func TestIdentityHTTPDefaultLoginDestination(t *testing.T) {
+	h := authTestHarness(t)
+	state, binding := h.start(t, "")
+	result := h.request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"default-destination"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
+	if result.Code != http.StatusSeeOther || result.Header().Get("Location") != "/projects" {
+		t.Fatal("login without a destination did not enter the project workspace")
+	}
+}
+
+func TestIdentityHTTPSessionCreationFailureRetainsDestination(t *testing.T) {
+	h := authTestHarness(t)
+	if _, err := h.database.Pool.Exec(context.Background(), `ALTER TABLE sessions ADD CONSTRAINT reject_session CHECK (false)`); err != nil {
+		t.Fatal(err)
+	}
+	const destination = "/device?user_code=ABCD-EFGH"
+	state, binding := h.start(t, destination)
+	result := h.request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"session-failure"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
+	location, err := url.Parse(result.Header().Get("Location"))
+	if result.Code != http.StatusSeeOther || err != nil || location.Path != "/login" || location.Query().Get("authError") != "login_failed" || location.Query().Get("returnPath") != destination {
+		t.Fatal("session creation failure lost its validated login destination")
+	}
+	cookies := result.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Name != binding.Name || cookies[0].MaxAge != -1 {
+		t.Fatal("session creation failure must clear only its consumed browser binding")
+	}
+	if !strings.Contains(h.logs.String(), `"cause":"database"`) {
+		t.Fatal("session creation failure lost its database error classification")
+	}
+}
+
 func TestIdentityHTTPInputAndOperationalFailures(t *testing.T) {
 	h := authTestHarness(t)
 	cookie := h.login(t, "input-user")
@@ -335,7 +372,7 @@ func TestIdentityHTTPInputAndOperationalFailures(t *testing.T) {
 		assertProjectError(t, h.request("POST", "/api/v1/me/tokens", body, cookies, nil, h.auth.origin), 400, "invalid_input")
 	}
 	assertProjectError(t, h.request("DELETE", "/api/v1/me/tokens/invalid", "", cookies, nil, h.auth.origin), 400, "invalid_input")
-	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/login?provider=unknown", "/api/v1/auth/login?provider=github&returnPath=https://foreign.test", "/api/v1/auth/login?provider=github&returnPath=//foreign.test", "/api/v1/auth/login?provider=github&returnPath=%2Fapi%2Fv1%2Fauth%2Flogin", "/api/v1/auth/login?provider=github&unexpected=x"} {
+	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/login?provider=unknown", "/api/v1/auth/login?provider=github&returnPath=https://foreign.test", "/api/v1/auth/login?provider=github&returnPath=//foreign.test", "/api/v1/auth/login?provider=github&returnPath=%2Fapi%2Fv1%2Fauth%2Flogin", "/api/v1/auth/login?provider=github&returnPath=%2Flogin", "/api/v1/auth/login?provider=github&returnPath=%2Flogin%3FreturnPath%3D%2Fprojects", "/api/v1/auth/login?provider=github&unexpected=x"} {
 		assertProjectError(t, h.request("GET", path, "", nil, nil, ""), 400, "invalid_input")
 	}
 	for _, path := range []string{"/api/v1/auth/login", "/api/v1/auth/callback"} {

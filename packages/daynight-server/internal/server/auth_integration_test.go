@@ -325,7 +325,7 @@ func TestAuthenticationUniAuthBrowserBindingAndConsumption(t *testing.T) {
 	bindings := deniedBrowser.Jar.Cookies(mainURL)
 	before = integration.logs.count("type=fixture_result_request")
 	response, _ := identityRequest(t, deniedBrowser, http.MethodGet, denied.String(), "", nil, http.StatusSeeOther)
-	if response.Header.Get("Location") != "/?authError=login_failed" {
+	if response.Header.Get("Location") != "/login?authError=login_failed&returnPath=%2Fprojects%3Fview%3Dtasks" {
 		t.Fatal("provider denial did not produce the generic login failure")
 	}
 	identityRequest(t, deniedBrowser, http.MethodGet, integration.server.URL+"/api/v1/me", "", nil, http.StatusUnauthorized)

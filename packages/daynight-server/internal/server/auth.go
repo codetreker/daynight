@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -173,7 +174,8 @@ func (h *Authentication) callback(w http.ResponseWriter, request *http.Request) 
 		if result.LoginID != "" {
 			LogFailure(logger, request.Context(), "auth", "callback", err)
 			if request.Context().Err() == nil {
-				http.Redirect(w, request, "/?authError=login_failed", http.StatusSeeOther)
+				failure := url.Values{"authError": {"login_failed"}, "returnPath": {result.ReturnPath}}
+				http.Redirect(w, request, "/login?"+failure.Encode(), http.StatusSeeOther)
 			}
 		} else {
 			writeError(w, request, logger, "auth", "callback", err)
