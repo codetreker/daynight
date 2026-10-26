@@ -76,7 +76,7 @@ export const TaskChainDialog = ({ index, rootId, onOpenTask, onClose, onRestoreF
       if (!dialog.current!.contains(document.activeElement) || (!event.shiftKey && document.activeElement === last)) {
         event.preventDefault();
         first.focus();
-      } else if (event.shiftKey && document.activeElement === first) {
+      } else if (event.shiftKey && (document.activeElement === first || document.activeElement === dialog.current)) {
         event.preventDefault();
         last.focus();
       }
@@ -85,7 +85,7 @@ export const TaskChainDialog = ({ index, rootId, onOpenTask, onClose, onRestoreF
 
   return <div className="task-chain-backdrop" onPointerDown={(event) => { backdropPressed.current = event.target === event.currentTarget; }} onClick={(event) => { if (backdropPressed.current && event.target === event.currentTarget) onClose(); backdropPressed.current = false; }}>
     <section className={`task-chain-dialog${fullscreen ? ' task-chain-dialog-fullscreen' : ''}`} id={`task-graph-${rootId}`}
-      role="dialog" aria-modal="true" aria-labelledby={titleId} ref={dialog} onKeyDown={onKeyDown} onFocusCapture={(event) => { focusedControl.current = event.target as HTMLElement; }}>
+      role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={dialog} onKeyDown={onKeyDown} onFocusCapture={(event) => { focusedControl.current = event.target as HTMLElement; }}>
       <header className="task-chain-header">
         <span className="task-chain-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><rect x="3" y="3" width="6" height="6" rx="1.4" /><rect x="15" y="15" width="6" height="6" rx="1.4" /><path d="M9 6h5a4 4 0 0 1 4 4v5M6 9v5a4 4 0 0 0 4 4h5" /></svg></span>
         <div className="task-chain-heading">

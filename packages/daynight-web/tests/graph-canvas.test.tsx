@@ -158,6 +158,53 @@ describe('task dependency canvas', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it.each(['.task-chain-heading h2', '.graph-toolbar-summary', '.task-graph-canvas'])('closes with Escape after clicking noninteractive content at %s', async (target) => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    await ready(view.container);
+    const dialog = screen.getByRole('dialog');
+    await user.click(view.container.querySelector<HTMLElement>(target)!);
+    expect(dialog).toHaveFocus();
+    expect(onClose).not.toHaveBeenCalled();
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('leaves fullscreen before closing after clicking blank canvas content', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={onClose} onRestoreFocus={noop} />);
+    await ready(view.container);
+    const dialog = screen.getByRole('dialog');
+    const canvas = view.container.querySelector('.task-graph-canvas');
+    const transform = viewport(view.container).style.transform;
+    const fullscreen = screen.getByRole('button', { name: '全屏查看' });
+    await user.click(fullscreen);
+    await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
+    expect(dialog).toHaveFocus();
+    await user.keyboard('{Escape}');
+    expect(dialog).not.toHaveClass('task-chain-dialog-fullscreen');
+    expect(fullscreen).toHaveFocus();
+    expect(view.container.querySelector('.task-graph-canvas')).toBe(canvas);
+    expect(viewport(view.container).style.transform).toBe(transform);
+    expect(onClose).not.toHaveBeenCalled();
+    await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
+    await user.keyboard('{Escape}');
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('keeps Tab navigation inside the modal after clicking its canvas (shift: %s)', async (shift) => {
+    const user = userEvent.setup();
+    const view = render(<TaskChainDialog index={index} rootId="A" onOpenTask={noop} onClose={noop} onRestoreFocus={noop} />);
+    await ready(view.container);
+    const dialog = screen.getByRole('dialog');
+    await user.click(view.container.querySelector<HTMLElement>('.task-graph-canvas')!);
+    expect(dialog).toHaveFocus();
+    await user.tab({ shift });
+    expect(shift ? within(dialog).getByRole('link', { name: 'React Flow attribution' }) : within(dialog).getByRole('combobox', { name: '语言 / Language' })).toHaveFocus();
+  });
+
   it('inerts background ancestors for the whole modal and restores their original state without touching body portals', async () => {
     document.body.style.overflow = 'scroll';
     const portal = document.createElement('div');
