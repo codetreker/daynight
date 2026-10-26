@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录和 Git 工作区管理已实现；前台运行、Herdr、人工管理命令和完整交付仍须运行时验收。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
+本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台运行、人工管理命令和完整交付仍须运行时验收。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
 
 ## 目标与范围
 
@@ -75,11 +75,15 @@ AND no active claim
 ### W-07：专用 Herdr 与 agent 执行
 
 - 每个 worker 自动启动和管理一个专用 Herdr 实例，每 task 使用其中独立的 workspace/pane/agent，通过 Herdr API 启动、输入和观察 Copilot / Codex；不干扰人工或其他 worker 的实例。私有 `[session] resume_agents_on_restore=false`，worker 是原生 agent 唯一启动/恢复者。
-- Herdr 与原生 agent 的会话关联可持久化，重启时核对并继续原执行，不要求人工重复输入已取得的标识。
-- Worker 组装首次启动及同 claim 确需重新启动 agent 的 prompt，显式指定 `worker-managed` 运行环境、`using-daynight` 技能和 `execute-task-in-managed` 模式，传入原 projectId/taskId/claimId/worktreeId、实际工作区路径/branch 和冻结执行配置。Herdr 适配层接收完整 prompt 并递交给对应原生 agent，返回实际受理、拒绝或未知结果；它不选择任务或模式，也不组装业务指令。
-- 单一 `using-daynight` 技能按显式模式选择指令：普通指定任务读取 run-task，managed 执行读取 references/execute-task-in-managed.md，SKILL.md 只保留简短路由。普通执行不加载 managed 详细指令；不能从 properties.worker、cwd 或环境变量推断模式。显式 managed 上下文缺失或不匹配时等待，不回落普通执行。仅重连仍存活 agent 不重发启动 prompt，启动或输入受理未知先观察原资源。
-- 启动和恢复前校验官方 Herdr/native agent 会话集成，以及恢复所需的原生历史是否可用；不满足时显示具体问题和修正方法并暂停该任务。Worker 不自动全局安装集成或修改全局 agent 配置。
-- 开发 task 的 agent 负责实现、验证、提交、工作分支推送、PR、CI/review 反馈、合并和合并后验收，并遵守仓库权限、门禁与授权要求。其他允许 Agent 自动执行的 task 遵守其阶段和验收条件。
+- Herdr 与原生 agent 的会话关联可持久化，重启时核对并继续原执行，不要求人工重复输入已取得的标识。Daemon 的 XDG 与 endpoint 私有；native/workspace 保留调用方原 XDG 的 set/unset 语义及认证目录，仅传所需两字段环境覆盖。遵守 HISTFILE 的 Bash/Zsh 历史写私有文件，自定义 rc 和其他 shell 不在通用隔离保证内。
+- 协调循环组装首次启动及同 claim 确需重新启动的完整 prompt，先确认所需技能可用，显式指定 `worker-managed` 环境、`using-daynight` 技能和 `execute-task-in-managed` 模式，传入原 projectId/taskId/claimId/worktreeId、实际工作区路径/branch、原会话关联及冻结配置。Herdr 适配层按原内容递交不透明文本，返回受理、拒绝或未知结果，不选择任务/模式或组装业务指令；仅重连存活 agent 不重发启动输入，未知结果先观察原资源。
+- 单一 `using-daynight` 技能按显式模式选择指令：普通指定任务读取 run-task，managed 执行读取 references/execute-task-in-managed.md，SKILL.md 只保留简短路由。普通执行不加载 managed 详细指令；不能从 properties.worker、cwd 或环境变量推断模式。显式 managed 上下文缺失或不匹配时等待，不回落普通执行。两种入口共享任务输入、范围、交付、验收和证据规则，各自拥有普通或原 claim 的生命周期动作。
+- 启动和恢复前以 task cwd 校验官方 Herdr/native agent 集成及所需原生历史，feature/config 检查保留冻结的相关配置、feature 与 profile 参数及顺序。当前 Codex 0.164.0 的只读 features 命令无法检查 profile 时明确拒绝并保留原因，不能丢弃参数后查默认值。不满足时显示修正方法并暂停；不自动全局安装/修改集成，也不另建配置解析、MCP 或 SDK 引擎。
+- 新 workspace 只有核验的创建 ACK 能取得绑定当前 terminal、owner 和确切 XDG 的环境 receipt；adoption/丢失 ACK 为 null。冷恢复不保留 workspace.env，旧 terminal 的 receipt 不能授权新 native 启动，即使 pane 为空且从未取得 native ID；缺失或不匹配时先返回 rebind-required，不预检、启动或输入。已存活 agent 重连不修改环境。
+- 首条输入不能依赖尚需首个 turn 才产生的官方 native ID。新启动核对原目标、readiness、冻结 argv/config 后只提交一次原 prompt；resume 还核对持久原 ID、必要 history 和确切 resume argv，输入后须取得并核对官方 ID。Blocked 后续输入需要持久的 `initialPromptNotSubmitted:true` 和从空 native-reference 基线取得、含有效 workspaceEvidence 的匹配 launchEvidence，重连或未知结果不授权重发；后续身份观察失败仍保留已知 promptSubmission 与 launchEvidence。
+- 对 native 从未提交的准备窗口，协调循环必须在任何可能启动前为具体 claim/workspace 持久记录 never 事实，并在调用启动前持久转为已尝试/未知。结合唯一启动者和实际 owned 普通空 shell、无 pending/native/前台工作，可确认没有原 agent 后关闭/rebind；null 引用或本次 not-submitted 不产生该事实。先前未知 launch 必须取得原停止证明或暂停。
+- 未活动的恢复 pane 若保留旧 native reference，应先确认旧停止/关闭再换新 pane，保留 worktree/native ID/config；不能把旧引用冒充新报告。冷恢复若改变 terminal/shell，原停止观察保持不可变，须分别核对实际 restored 资源、原 native PIDs/旧 shell 已不执行及当前没有原生/前台工作；新空 shell 本身不构成原 agent 停止证明。
+- 开发 task 的 agent 负责实现、验证、提交、工作分支推送、PR、CI/review 反馈、授权合并和合并后验收，并遵守仓库权限、门禁与授权要求。其他允许 Agent 自动执行的 task 遵守其阶段和验收条件。
 - Worker 使用 Herdr 最新状态观察运行、等待和结束，不需要公开 report 命令、结构化报告协议或结果文件。Herdr idle/done 或 agent 一轮结束不等于 task 完成。
 
 ### W-08：人工介入与显式移交

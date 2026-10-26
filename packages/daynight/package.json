@@ -1,6 +1,6 @@
 {
   "name": "@codetreker/daynight",
-  "version": "0.21.9",
+  "version": "0.21.10",
   "description": "A client command toolkit for development workflows",
   "repository": {
     "type": "git",

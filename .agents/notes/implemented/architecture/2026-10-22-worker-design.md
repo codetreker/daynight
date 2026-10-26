@@ -59,8 +59,12 @@ workspace owner and tracked external-action uncertainty. Stable workerId now
 lives in shared configuration; fixed per-user worker resources and the concrete
 projects/tasks schema provide that identity, exclusion and recovery ownership.
 Identity, storage and the [owned Git workspaces](2026-10-26-worker-git-workspaces.md)
-are delivered as concrete primitives. Foreground scheduling and Herdr resource
-adapters remain runtime implementation work.
+are delivered as concrete primitives. The
+[private Herdr adapter](2026-10-26-worker-herdr-adapter.md) owns instance
+isolation, native preflight, input uncertainty and concrete stop/rebind operations.
+Foreground scheduling and management commands remain runtime implementation
+work; adapter source and targeted observations do not establish whole-Goal or
+three-platform acceptance.
 
 The worker reads the latest Herdr status for execution observations. The agent
 validates delivery against task requirements, PR facts and acceptance evidence,
