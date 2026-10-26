@@ -1,4 +1,6 @@
 import path from "node:path";
+import { mkdirSync, rmSync } from "node:fs";
+import * as filesystem from "../../../src/platform/filesystem.js";
 import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
@@ -846,6 +848,38 @@ describe("worker foreground coordinator", () => {
     f.setTime(before.cleanup!.deadline); await restarted.advanceCommittedCleanups(original); await restarted.tick();
     expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "active", configuration: frozen, nativeExecution: { promptSubmission: "submitted" } });
     expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined(); expect(f.store.getTask(incomingIdentity)?.resources.nativeSession?.sessionId).not.toBe(original.resources.nativeSession!.sessionId);
+  });
+
+  it.each(["absent", "foreign-replacement"] as const)("revalidates a path whose predecessor completes before unfinished-row enumeration (%s)", async (pathState) => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick();
+    f.store.recordCleanupResult(original, "completed", null, 1000); f.store.confirmAgentStopped(original, { agentStopped: true }, 1000); f.store.confirmWorkspaceClosed(original, { workspaceClosed: true }, 1000); f.resources.delete(original.claimId);
+    const fixedPath = original.resources.worktree!.worktreePath; await mkdir(fixedPath, { recursive: true });
+    const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1080) }; f.store.registerProject(project);
+    const candidate = remoteTask(project.projectId, original.taskId);
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1081), worktreeId: uuid(1082), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const frozen = { ...configuration, model: "configuration-after-predecessor-completion" };
+    const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
+    const resolve = filesystem.resolvePhysicalDirectory; let completedDuringObservation = false;
+    vi.spyOn(filesystem, "resolvePhysicalDirectory").mockImplementationOnce(async (...args) => {
+      const physical = await resolve(...args);
+      rmSync(fixedPath, { recursive: true }); f.worktrees.delete(original.claimId);
+      f.store.confirmWorktreeDeleted(original, { worktreeDeleted: true }, 1000); f.store.completeTask(original, 1000);
+      if (pathState === "foreign-replacement") mkdirSync(fixedPath, { recursive: true });
+      completedDuringObservation = true;
+      return physical;
+    });
+    await createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 }).tick();
+    expect(completedDuringObservation).toBe(true); expect(f.store.getTask(original)?.status).toBe("done");
+    expect(vi.mocked(f.git.findWorktree).mock.calls.at(-1)?.[0]).toMatchObject({ serverOrigin: origin, projectId: original.projectId, taskId: original.taskId, claimId: original.claimId, worktreeId: original.worktreeId, status: "active" });
+    const incoming = f.store.getTask({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1081) })!;
+    if (pathState === "absent") {
+      expect(incoming.configuration).toEqual(frozen); expect(incoming.status).toBe("active"); expect(incoming.recovery.pauseReason).toBeNull();
+      expect(f.events.some((event) => event.kind === "pending-recovered" && event.task?.claimId === incoming.claimId && event.task.status === "pending" && event.task.configuration?.model === frozen.model)).toBe(true);
+      expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
+    } else {
+      expect(incoming).toMatchObject({ configuration: null, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(f.tasks.start).toHaveBeenCalledOnce();
+    }
   });
 
 });

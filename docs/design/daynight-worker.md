@@ -188,7 +188,7 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 新任务候选同时使用 ready、allowAgents=true 与实际兼容平台，条件在服务端排序和分页前组合；worker 不修改自动执行许可。Released 历史候选跳过但继续分页。仓库之间轮转，同仓库遵守服务端顺序，配置为空或无合格候选不占名额。项目未决 claimAttempt 阻止该项目继续认领，但不替代其他项目的调度。
 
-当前 B 服务的新 claim 遇到同 worker 的旧规范路径时，只用只读 Git 所有权核对归属前驱；不能因相同 task UUID 或路径采纳旧会话/配置。实际新 claim 冻结 B 的新配置并保持 pending，只要同 worker 任一 origin 仍有相同 task UUID 的 active 前驱就不启动；等待旧本地责任 done 后再创建新资源。完整 origin/project/task/claim 身份不被这个等待条件合并。
+当前 B 服务的新 claim 遇到同 worker 的旧规范路径时，只用只读 Git 所有权核对归属前驱；不能因相同 task UUID 或路径采纳旧会话/配置。文件系统异步核对开始前保留本次可归属的前驱身份及原 binding；前驱在核对期间完成清理、从未完成记录中消失，不得把较早的路径存在观察改判为新 claim 已执行。分类仍需结合当前路径和原所有权核对：旧路径已清除且新 claim 没有自身执行迹象时，使用新配置；存在但无法归属的路径继续保留并报告。实际新 claim 冻结 B 的新配置并保持 pending，只要同 worker 任一 origin 仍有相同 task UUID 的 active 前驱就不启动；等待旧本地责任 done 后再创建新资源。完整 origin/project/task/claim 身份不被这个等待条件合并。
 
 项目映射先落库，具体请求先保存未知结果 fence，服务端原子授予后才登记 pending；确认名额/条件并提交 active 后才创建 worktree 和 Herdr 资源。等待、超限暂停、原执行恢复与清理均保留 active 责任和名额；找回已有/未知资源而缺配置的执行同样保留责任。降低并发不抢占已开始执行。同 task 的旧 active 未清理前新 pending 不启动。
 

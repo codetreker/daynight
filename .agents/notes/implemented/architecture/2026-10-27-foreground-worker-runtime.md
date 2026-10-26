@@ -59,11 +59,18 @@ credential registry or multi-service acquisition mechanism.
 
 A current-service new claim can encounter a canonical path owned by an old
 origin. Read-only Git ownership verification attributes that predecessor rather
-than adopting its conversation. The new claim freezes its own configuration and
-waits pending behind any active predecessor with the same task UUID for that
-worker, across origins, until old local responsibility is done. This
-capacity/path barrier does not merge the claims' identities or reuse old native
-history.
+than adopting its conversation. Candidate predecessor identities and original
+bindings are retained before asynchronous filesystem checks. Concurrent cleanup
+can delete the old path and complete its record during those checks;
+disappearance from a later unfinished-record list must not turn the earlier path
+observation into evidence that the new claim already executed. Current
+path/ownership validation distinguishes a cleared predecessor from an
+unattributed occupied path, without another persistent registry.
+
+The new claim freezes its own configuration and waits pending behind any active
+predecessor with the same task UUID for that worker, across origins, until old
+local responsibility is done. This capacity/path barrier does not merge the
+claims' identities or reuse old native history.
 
 Actual claims become pending before activation and resources. Active
 preparation, waiting, paused recovery and cleanup retain capacity; lowering the

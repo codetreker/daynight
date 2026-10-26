@@ -133,11 +133,14 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     if (attempt !== null && attempt.claimId === worker.claimId && attempt.userId !== authenticatedUserId) throw new Error("The original claim request belongs to another authenticated user; its scope cannot be replaced.");
     const matchingAttempt = attempt !== null && attempt.userId === authenticatedUserId && attempt.taskId === remoteTask.id && attempt.claimId === worker.claimId && attempt.workerId === worker.workerId && attempt.worktreeId === worker.worktreeId;
     const configured = options.repositories.find(({ project: selected }) => selected.serverOrigin === identity.serverOrigin && selected.projectId === identity.projectId);
+    // Cleanup can finish during filesystem reads, so the original bindings must survive
+    // their transition out of the unfinished selection.
+    const predecessors = workerLocalTasks().filter((task) => task.taskId === identity.taskId && claimKey(task) !== claimKey(identity) && task.resources.worktree !== null);
     const fixedPath = path.join(project.localPath, ".worktrees", "daynight", identity.taskId);
     let pathTrace = await exists(fixedPath);
     if (pathTrace && worker.herdr === null && worker.nativeSessionId === null && worker.phase === "preparing") {
       const target = await physicalPath(fixedPath);
-      for (const previous of workerLocalTasks().filter((task) => task.taskId === identity.taskId && claimKey(task) !== claimKey(identity) && task.resources.worktree !== null)) {
+      for (const previous of predecessors) {
         try {
           if (await physicalPath(previous.resources.worktree!.worktreePath) !== target) continue;
           const original = await workerOperation((operation) => options.git.findWorktree(previous, operation), normalSignal);
@@ -151,6 +154,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
       }
     }
+    if (pathTrace) pathTrace = await exists(fixedPath);
     const trace = worker.herdr !== null || worker.nativeSessionId !== null || resources.some(({ owner }) => owner.serverOrigin === identity.serverOrigin && owner.projectId === identity.projectId && owner.taskId === identity.taskId && owner.claimId === identity.claimId) || pathTrace;
     const configuration = matchingAttempt ? attempt.configuration : configured?.configuration;
     const fresh = !trace && configuration !== undefined && configuration.agent === worker.agent && worker.phase === "preparing";
