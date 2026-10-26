@@ -53,22 +53,25 @@ test.describe('visible authentication protocol', () => {
     const originalViewport = page.viewportSize();
     if (originalViewport === null) throw new Error('The responsive header check requires a configured viewport.');
     const narrowHeaderFits = async (state: string) => {
-      await expect(page.locator('.site-header .brand')).toBeVisible();
-      await expect(page.locator('.site-header select')).toBeVisible();
-      await expect(page.locator('.site-header .nav-start')).toBeVisible();
-      const geometry = await page.locator('.landing-page .site-header').evaluate((header) => ({
-        viewport: window.innerWidth,
-        documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-        controls: [...header.querySelectorAll('a, select')].map((element) => element.getBoundingClientRect())
-          .filter((bounds) => bounds.width > 0 && bounds.height > 0)
-          .map(({ left, right }) => ({ left, right })),
-      }));
-      expect(geometry.viewport, `${state}: the English header is checked at 320px`).toBe(320);
-      expect(geometry.documentWidth, `${state}: the page has no horizontal overflow`).toBeLessThanOrEqual(geometry.viewport);
-      expect(geometry.controls.length, `${state}: header controls remain visible`).toBeGreaterThan(1);
-      for (const bounds of geometry.controls) {
-        expect(bounds.left, `${state}: a header control starts inside the viewport`).toBeGreaterThanOrEqual(0);
-        expect(bounds.right, `${state}: a header control ends inside the viewport`).toBeLessThanOrEqual(geometry.viewport);
+      for (const width of [320, 361, 375, 390]) {
+        await page.setViewportSize({ width, height: 844 });
+        await expect(page.locator('.site-header .brand')).toBeVisible();
+        await expect(page.locator('.site-header select')).toBeVisible();
+        await expect(page.locator('.site-header .nav-start')).toBeVisible();
+        const geometry = await page.locator('.landing-page .site-header').evaluate((header) => ({
+          viewport: window.innerWidth,
+          documentWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+          controls: [...header.querySelectorAll('a, select')].map((element) => element.getBoundingClientRect())
+            .filter((bounds) => bounds.width > 0 && bounds.height > 0)
+            .map(({ left, right }) => ({ left, right })),
+        }));
+        expect(geometry.viewport, `${state}: the English header is checked at ${width}px`).toBe(width);
+        expect(geometry.documentWidth, `${state} at ${width}px: the page has no horizontal overflow`).toBeLessThanOrEqual(geometry.viewport);
+        expect(geometry.controls.length, `${state} at ${width}px: header controls remain visible`).toBeGreaterThan(1);
+        for (const bounds of geometry.controls) {
+          expect(bounds.left, `${state} at ${width}px: a header control starts inside the viewport`).toBeGreaterThanOrEqual(0);
+          expect(bounds.right, `${state} at ${width}px: a header control ends inside the viewport`).toBeLessThanOrEqual(geometry.viewport);
+        }
       }
     };
     const releaseIdentity = Promise.withResolvers<void>();

@@ -442,8 +442,11 @@
  .landing-page .floating-note { font-size:9px; }
 }
 @media(max-width:640px) {
+ .landing-page { --landing-anchor-offset:125px; }
+ .landing-page:has(.identity-notice) { --landing-anchor-offset:215px; }
+ .landing-page .header-inner { flex-wrap:wrap; min-height:0; padding-block:15px; gap:13px; }
  .landing-page .header-nav { display:none; }
- .landing-page .header-actions { gap:12px; margin-left:auto; }
+ .landing-page .header-actions { flex:1 0 100%; justify-content:space-between; margin-left:0; gap:12px; }
  .landing-page .nav-start { font-size:11px; }
  .landing-page .locale-control select { max-width:108px; font-size:10px; padding:6px; }
  .landing-page .locale-notice { right:0; width:min(270px,calc(100vw - 32px)); }
@@ -454,12 +457,6 @@
  .landing-page .scene-tab .tab-label { overflow-wrap:anywhere; }
 }
 @media(max-width:360px) {
- .landing-page { --landing-anchor-offset:125px; }
- .landing-page:has(.identity-notice) { --landing-anchor-offset:215px; }
- .landing-page .header-inner { flex-wrap:wrap; min-height:0; padding-block:15px; gap:13px; }
- .landing-page .header-actions { flex:1 0 100%; justify-content:space-between; margin-left:0; gap:12px; }
- .landing-page .nav-start { font-size:10px; }
- .landing-page .locale-control select { max-width:93px; }
  .landing-page .receipt-tabs { gap:12px; }
  .landing-page .receipt-tab { font-size:10px; }
  .landing-page .mini-task { flex-wrap:wrap; }
