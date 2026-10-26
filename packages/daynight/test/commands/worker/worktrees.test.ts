@@ -26,7 +26,9 @@ const fixture = async () => {
   const repository = path.join(root, "repository"); await mkdir(repository);
   git(repository, ["init", "--initial-branch=main"]);
   git(repository, ["config", "user.name", "Fixture"]); git(repository, ["config", "user.email", "fixture@example.com"]);
-  await writeFile(path.join(repository, "tracked.txt"), "original\n"); git(repository, ["add", "tracked.txt"]); git(repository, ["commit", "-m", "fixture"]);
+  // Checkout bytes remain stable under native core.autocrlf settings; dirty-work assertions stay exact.
+  await writeFile(path.join(repository, ".gitattributes"), "* text eol=lf\n");
+  await writeFile(path.join(repository, "tracked.txt"), "original\n"); git(repository, ["add", ".gitattributes", "tracked.txt"]); git(repository, ["commit", "-m", "fixture"]);
   git(repository, ["remote", "add", "origin", remote]);
   const project: WorkerProject = { serverOrigin: "https://daynight.example", projectId: ids.projectId, repoUrl: remote, localPath: repository };
   const task: LocalTask = { ...ids, serverOrigin: project.serverOrigin, status: "active", repoUrl: remote, repositoryPath: repository, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 3 }, resources: { worktree: null, herdr: null, nativeSession: null }, recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null, createdAt: 1, updatedAt: 1 };
@@ -34,6 +36,7 @@ const fixture = async () => {
 };
 const proof = { terminal: true, agentStopped: true, workspaceClosed: true } as const;
 const administrativeDirectory = (cwd: string): string => git(cwd, ["rev-parse", "--absolute-git-dir"]);
+const worktreePaths = (cwd: string): string[] => git(cwd, ["worktree", "list", "--porcelain", "-z"]).split("\0").filter((field) => field.startsWith("worktree ")).map((field) => path.normalize(field.slice(9)));
 const changedClaim = (task: LocalTask): LocalTask => ({ ...task, claimId: "66666666-6666-4666-8666-666666666666", worktreeId: "77777777-7777-4777-8777-777777777777", resources: { ...task.resources, worktree: null } });
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -123,7 +126,7 @@ describe("worker repositories and task worktrees", () => {
     await writeFile(path.join(binding.worktreePath, "unpublished"), "terminal temp\n"); await writeFile(path.join(f.repository, "unrelated"), "keep\n");
     for (const invalid of [{ ...proof, terminal: false }, { ...proof, agentStopped: false }, { ...proof, workspaceClosed: false }]) await expect(adapter.removeWorktree(f.task, invalid as typeof proof, operation())).rejects.toThrow("requires terminal cleanup");
     await adapter.removeWorktree(f.task, proof, operation()); expect(git(f.repository, ["for-each-ref", "--format=%(refname)", `refs/heads/${binding.branch}`])).toBe(`refs/heads/${binding.branch}`);
-    expect(await readFile(path.join(f.repository, "unrelated"), "utf8")).toBe("keep\n"); expect(git(f.repository, ["worktree", "list", "--porcelain"])).not.toContain(binding.worktreePath);
+    expect(await readFile(path.join(f.repository, "unrelated"), "utf8")).toBe("keep\n"); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
     await adapter.removeWorktree(f.task, proof, operation());
   });
 
@@ -134,7 +137,7 @@ describe("worker repositories and task worktrees", () => {
     await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toBe(failure);
     expect(await readFile(path.join(admin, "locked"), "utf8")).toContain(ids.claimId);
     await expect(adapter.verifyWorktree({ ...f.task, resources: { ...f.task.resources, worktree: binding } }, operation())).rejects.toThrow("Git pointer is missing");
-    await adapter.removeWorktree(f.task, proof, operation()); expect(git(f.repository, ["worktree", "list", "--porcelain"])).not.toContain(binding.worktreePath);
+    await adapter.removeWorktree(f.task, proof, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 
   it("retains a replaced leaf after partial cleanup instead of deleting its new contents", async () => {
@@ -202,8 +205,10 @@ describe("worker repositories and task worktrees", () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.task, operation());
     const admin = administrativeDirectory(binding.worktreePath); const locked = path.join(admin, "locked"); const original = await readFile(locked, "utf8");
     await rm(locked); await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("no ownership marker"); await writeFile(locked, original);
+    // Git creates hidden .git files on Windows, where reopening them with 'w' fails:
+    // https://nodejs.org/docs/latest-v24.x/api/fs.html#file-system-flags
     const pointer = path.join(binding.worktreePath, ".git"); const originalPointer = await readFile(pointer, "utf8");
-    await writeFile(pointer, `gitdir: ${path.join(f.repository, ".git")}\n`); await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("Git pointer has changed"); await writeFile(pointer, originalPointer);
+    await rm(pointer); await writeFile(pointer, `gitdir: ${path.join(f.repository, ".git")}\n`); await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("Git pointer has changed"); await rm(pointer); await writeFile(pointer, originalPointer);
     git(binding.worktreePath, ["checkout", "-b", "other-task"]);
     await expect(adapter.removeWorktree(f.task, proof, operation())).rejects.toThrow("original task branch"); expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   });
@@ -212,7 +217,7 @@ describe("worker repositories and task worktrees", () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.task, operation());
     const other = path.join(f.root, "unrelated worktree"); git(f.repository, ["worktree", "add", "--detach", "--lock", "--reason", "unrelated", other, "HEAD"]);
     await rm(binding.worktreePath, { recursive: true }); await rm(path.dirname(binding.worktreePath), { recursive: true });
-    await adapter.removeWorktree(f.task, proof, operation()); expect(git(f.repository, ["worktree", "list", "--porcelain"])).toContain(other); expect(await readFile(path.join(other, "tracked.txt"), "utf8")).toBe("original\n");
+    await adapter.removeWorktree(f.task, proof, operation()); expect(worktreePaths(f.repository)).toContain(path.normalize(other)); expect(await readFile(path.join(other, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
   it("uses one private hooks directory across concurrent tasks and disposes it", async () => {
@@ -235,6 +240,6 @@ describe("worker repositories and task worktrees", () => {
     const task = { ...f.task, resources: { ...f.task.resources, worktree: binding } };
     await expect(adapter.verifyWorktree(task, operation())).rejects.toThrow("origin does not match");
     await expect(adapter.prepareWorktree(task, operation())).rejects.toThrow("origin does not match");
-    await adapter.removeWorktree(task, proof, operation()); expect(git(f.repository, ["worktree", "list", "--porcelain"])).not.toContain(binding.worktreePath);
+    await adapter.removeWorktree(task, proof, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
   });
 });
