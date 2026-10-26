@@ -42,8 +42,8 @@ uses the shared installer cleanup; forced supervisor termination cannot promise
 stage cleanup or atomic replacement.
 
 This partially supersedes the manual-refresh boundary of the
-[public distribution decision](../architecture/2026-10-21-public-agent-skill-design.md)
-and extends the [self-update decision](2026-10-20-cli-self-update.md) beyond its
+[public distribution decision](../../archived/architecture/2026-10-21-public-agent-skill-design.md)
+and extends the [self-update decision](../../archived/feature/2026-10-20-cli-self-update.md) beyond its
 original package-only operation. Package-manager ownership, exact-version npm
 installation and new-process version verification remain unchanged.
 [Requirements](../../../../docs/spec/daynight-agent-skill.md#as10-cli-更新时同步已安装-skill)

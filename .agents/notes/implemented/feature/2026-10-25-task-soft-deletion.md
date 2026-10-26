@@ -63,10 +63,10 @@ retains identity fencing and GET-only unknown-result recovery.
 [design](../../../../docs/design/daynight-task-deletion.md) own the full behavior.
 
 This replaces the no-task-deletion assumption in the original
-[transactional storage](../architecture/2026-10-19-server-transactional-storage.md),
-[task design](../architecture/2026-10-19-daynight-server-task-design.md),
-[dependency policy](2026-10-19-task-dependency-policy.md) and
-[CLI design](../architecture/2026-10-20-project-task-cli-design.md).
+[transactional storage](../../archived/architecture/2026-10-19-server-transactional-storage.md),
+[task design](../../archived/architecture/2026-10-19-daynight-server-task-design.md),
+[dependency policy](../../archived/feature/2026-10-19-task-dependency-policy.md) and
+[CLI design](../../archived/architecture/2026-10-20-project-task-cli-design.md).
 The [summary window API](../architecture/2026-10-24-task-summary-window-api.md)
 and [timestamp-window views](../architecture/2026-10-24-task-view-timestamp-window.md)
 retain their protocol and gain this supported epoch-replacement writer.

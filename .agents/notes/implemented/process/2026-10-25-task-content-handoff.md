@@ -25,7 +25,7 @@ owner, and confirmation, acceptance conclusions and delivery evidence have an
 explicit location in the current task's body or attachments.
 
 This partially replaces the mandatory primary-attachment storage rules in the
-[mode decision](../architecture/2026-10-21-using-daynight-modes.md),
+[mode decision](../../archived/architecture/2026-10-21-using-daynight-modes.md),
 [Goal brief decision](2026-10-22-goal-workflow-design.md),
 [Markdown description decision](../architecture/2026-10-22-task-description-markdown.md)
 and [tracking/review decision](2026-10-24-daynight-tracking-and-design-review.md).

@@ -20,8 +20,8 @@ workflow. This replaces the initial-pair registration, pre-confirmation delivery
 breakdown, and discussion completion rules of the
 [original staged Goal decision](2026-10-22-goal-workflow-design.md), while retaining
 its self-contained briefs, stage-produced outputs and shared-artifact ownership.
-The [mode decision](../architecture/2026-10-21-using-daynight-modes.md) retains the
-general authorization boundaries; the [task-content and handoff decision](2026-10-25-task-content-handoff.md)
+The general authorization boundaries chosen in the
+[mode decision](../../archived/architecture/2026-10-21-using-daynight-modes.md) remain; the [task-content and handoff decision](2026-10-25-task-content-handoff.md)
 adds the handoff mode and replaces mandatory primary-attachment storage without
 changing this decision's stage-confirmation gates. The
 [managed execution decision](../architecture/2026-10-26-managed-task-skill.md)

@@ -44,7 +44,7 @@ and use host-only session cookies. Production uses Secure, HttpOnly and Lax;
 the initial module allowed explicit numeric-loopback HTTP development. The
 activation decision now separates configured main-site HTTP testing from the
 SDK gateway's literal-loopback allowance and owns current callback routing.
-The [trusted same-origin attachment decision](2026-10-21-task-attachment-storage-design.md)
+The [trusted same-origin attachment decision](../../archived/architecture/2026-10-21-task-attachment-storage-design.md)
 continues to apply without a preview domain, credential or gateway.
 
 Real integration uses the exact pinned UniAuth source and its actual gateway,

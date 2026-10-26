@@ -2,9 +2,9 @@
 
 [需求](../spec/daynight-agent-skill.md)拥有公开行为，
 [入口隔离决策](../../.agents/notes/implemented/architecture/2026-10-26-managed-task-skill.md)
-拥有普通与 managed 执行的分工；[原模式决策](../../.agents/notes/implemented/architecture/2026-10-21-using-daynight-modes.md)
+拥有普通与 managed 执行的分工；[原模式决策](../../.agents/notes/archived/architecture/2026-10-21-using-daynight-modes.md)
 保留单一入口的原始理由；[内容与移交决策](../../.agents/notes/implemented/process/2026-10-25-task-content-handoff.md)
-拥有内容单一所有权和审查后启用许可的取舍；[原分发决策](../../.agents/notes/implemented/architecture/2026-10-21-public-agent-skill-design.md)
+拥有内容单一所有权和审查后启用许可的取舍；[原分发决策](../../.agents/notes/archived/architecture/2026-10-21-public-agent-skill-design.md)
 保留安装机制的原始理由。[Project/Task CLI](daynight-project-task.md)与
 [附件设计](daynight-task-attachments.md)继续拥有服务访问、版本、依赖和文件操作。
 
@@ -427,7 +427,7 @@ Windows 沿用进程树终止机制。强制终止不能承诺 stage 清理或�
 安装验收运行实际 npm pack 和本地安装 CLI，隔离 User、Project、PATH 和全部临时
 资源。模拟 codex/copilot/claude launcher 启动即写 sentinel 并失败，场景结束要求
 sentinel 不存在。不安装真实 Agent、不读取账号、不调用模型、不启动任务服务或数据库。
-[模拟验收决策](../../.agents/notes/implemented/testing/2026-10-21-simulated-agent-installation-acceptance.md)
+[模拟验收决策](../../.agents/notes/archived/testing/2026-10-21-simulated-agent-installation-acceptance.md)
 保留此边界。
 
 开发依赖 `node-pty@1.1.0` 在 Linux/macOS 使用 PTY，Windows 使用 ConPTY。终端内
@@ -436,7 +436,7 @@ Node bridge 启动安装 launcher，stdin/stderr 继承终端，stdout 单独落
 ConPTY 可能将尾随空白编码为光标移动，匹配稳定可见文本并保留原始终端流。pnpm 仅
 允许固定 node-pty 的构建 hook，保留 SQLite 既有禁用选择；稳定包 Darwin helper 的
 0755 修正使用版本限定 mode-only 补丁，测试不临时修复依赖。
-[原生终端决策](../../.agents/notes/implemented/testing/2026-10-21-native-skill-terminal-acceptance.md)
+[原生终端决策](../../.agents/notes/archived/testing/2026-10-21-native-skill-terminal-acceptance.md)
 拥有这些平台理由和来源。
 
 六种 Agent/scope 组合验证完整相对路径与每个文件字节、重装清除修改和旧文件、保留

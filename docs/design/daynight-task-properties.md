@@ -2,7 +2,7 @@
 
 状态：服务端存储、迁移、HTTP 读写、CLI 属性操作与只读网页展示已实现。行为与验收编号由
 [属性需求](../spec/daynight-task-properties.md)拥有；
-[决策记录](../../.agents/notes/implemented/architecture/2026-10-21-task-properties-design.md)
+[决策记录](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)
 保存备选方案与长期代价。[交互预览](mockups/task-properties.html)展示详情区域及边界数据。
 
 ## 问题与设计目标
@@ -235,7 +235,7 @@ GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有�
 | 文本列保存具体属性 JSON | 接受既定字符串内容，沿用单行事务与快照 | 依赖应用编解码发现存储损坏；将来属性查询需要有明确语义的索引或投影。 |
 | 一项 CLI 参数携带 JSON 数组 | 直接表达 API 数据并方便程序生成 | 手写时有 shell 与 JSON 两层转义；已存在的重复文本选项可表达成对数据。 |
 
-详细决策背景由[决策记录](../../.agents/notes/implemented/architecture/2026-10-21-task-properties-design.md)
+详细决策背景由[决策记录](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)
 拥有。上述取舍不预先承诺属性搜索、逐项修改或运行时扩展能力。
 
 ## 范围约束、风险与验证

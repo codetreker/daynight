@@ -82,7 +82,7 @@ not open SQLite, modify sessions or restart a running reviewer. The next CLI
 invocation uses the installed version. Restart any running reviewer to use it;
 on Windows, a reviewer holding a native addon open can prevent npm from replacing
 that file and cause the update to fail. The
-[self-update decision](../../.agents/notes/implemented/feature/2026-10-20-cli-self-update.md)
+[self-update decision](../../.agents/notes/archived/feature/2026-10-20-cli-self-update.md)
 records installation ownership and verification requirements.
 
 ## Client commands
@@ -132,7 +132,7 @@ Unknown commands and invalid arguments exit with status 2; operation failures
 exit with status 1 and retain their cause. The old `--daemon-review` and root
 `add-repo` forms are invalid. The
 [client design](../../docs/design/daynight.md) owns command composition and lazy loading;
-the [composition decision](../../.agents/notes/implemented/architecture/2026-10-20-client-command-composition.md)
+the [composition decision](../../.agents/notes/archived/architecture/2026-10-20-client-command-composition.md)
 records module ownership and the preserved data layout.
 
 ## Agent skill installation
@@ -293,9 +293,9 @@ update, run the applicable `source` command again to refresh an existing shell.
 A saved generated script must be regenerated after updating. The
 [completion design](../../docs/design/daynight-completion.md) explains the shared grammar
 and shell integration. The
-[completion decision](../../.agents/notes/implemented/feature/2026-10-20-shell-completion.md)
+[completion decision](../../.agents/notes/archived/feature/2026-10-20-shell-completion.md)
 records compatibility and execution trade-offs; the
-[setup decision](../../.agents/notes/implemented/feature/2026-10-21-completion-setup.md)
+[setup decision](../../.agents/notes/archived/feature/2026-10-21-completion-setup.md)
 records startup-file ownership and installation limits.
 
 ## Configuration setup
@@ -382,8 +382,8 @@ business execution. Human input consumes no business timeout. Review guidance
 saves configuration without network, login or authentication checks; cloning and
 review state initialization belong to the business operation.
 
-The [configuration decision](../../.agents/notes/implemented/feature/2026-10-21-guided-configuration-setup.md)
-owns review guidance and persistence; the
+The [configuration decision](../../.agents/notes/archived/feature/2026-10-21-guided-configuration-setup.md)
+records the review-guidance and persistence choices; the
 [device-login decision](../../.agents/notes/implemented/architecture/2026-10-25-cli-device-login.md)
 owns the default service, explicit login/logout and credential lifecycle. The
 [top-level setup removal decision](../../.agents/notes/implemented/simplification/2026-10-25-remove-top-level-setup.md)
@@ -744,7 +744,7 @@ known issue and the trusted same-origin preview model. The
 [authentication architecture](../../docs/design/daynight-auth.md) defines the required
 authentication and project-membership checks for attachment requests. Trusted
 executable HTML retains the application origin. The
-[CLI delivery decision](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-cli.md)
+[CLI delivery decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-cli.md)
 records binary transport and output ownership.
 
 ## Review configuration and startup
@@ -843,7 +843,7 @@ review preparation and execution. Startup acquires an exclusive instance lock,
 opens SQLite and prepares the configured clones. Each repository is polled
 independently; access failures retain its last complete observation and remain
 visible in diagnostics. The
-[repository registration decision](../../.agents/notes/implemented/feature/2026-10-18-add-repo-configuration.md)
+[repository registration decision](../../.agents/notes/archived/feature/2026-10-18-add-repo-configuration.md)
 records the fixed-path and configuration-only choices.
 
 ## Review status listing
@@ -890,7 +890,7 @@ database, migrate a schema, recover interrupted work or update application state
 SQLite may create or update its WAL coordination sidecar files while reading an
 existing database. Missing or invalid configuration, unreadable or corrupt state,
 and unsupported schema versions fail visibly. The
-[listing decision](../../.agents/notes/implemented/feature/2026-10-18-review-status-listing.md)
+[listing decision](../../.agents/notes/archived/feature/2026-10-18-review-status-listing.md)
 records status attribution and snapshot limits.
 
 ## Durable review state
@@ -925,7 +925,7 @@ Database state does not replace physical Git/worktree or session-history
 verification.
 
 See the [review architecture](../../docs/design/daynight-review.md) for transitions and the
-[state decision](../../.agents/notes/implemented/architecture/2026-10-17-durable-review-state.md)
+[state decision](../../.agents/notes/archived/architecture/2026-10-17-durable-review-state.md)
 for persistence choices. The coordinator opens this state before scheduling work
 and advances only the revision captured by each completed attempt.
 
@@ -941,7 +941,7 @@ the previous repository observation. A completed pass commits its observations
 and success time atomically. Rate-limit failures expose the server's retry
 deadline and block later same-host calls in that client; the coordinator schedules
 the next pass after the applicable deadline.
-The [observation decision](../../.agents/notes/implemented/architecture/2026-10-17-github-observation.md)
+The [observation decision](../../.agents/notes/archived/architecture/2026-10-17-github-observation.md)
 records pagination and failure handling.
 
 CI admission uses a read-only GraphQL query for the current PR head and
@@ -978,11 +978,13 @@ even when the base checkout uses sparse settings. Confirmation retries retain
 local context. Files, nested clones and administration inside the owned PR
 worktree are disposable; cleanup does not inventory their external consumers.
 Other PR worktrees and retained sessions remain separate. Cleanup rechecks remote
-closure before removal. The [exclusive-environment decision](../../.agents/notes/implemented/architecture/2026-10-17-exclusive-review-environment.md)
-defines this ownership boundary.
+closure before removal. The [exclusive-environment decision](../../.agents/notes/archived/architecture/2026-10-17-exclusive-review-environment.md)
+records the choice of this ownership boundary.
 
-See the [worktree ownership decision](../../.agents/notes/implemented/architecture/2026-10-17-owned-review-worktrees.md)
-for target validation and recovery boundaries.
+The [review architecture](../../docs/design/daynight-review.md#worktree-生命周期)
+defines target validation and recovery boundaries; the
+[worktree ownership decision](../../.agents/notes/archived/architecture/2026-10-17-owned-review-worktrees.md)
+records their rationale.
 
 ## Copilot execution
 
@@ -1102,17 +1104,17 @@ before completing the round. It owns scheduling and final state transitions;
 runtime process supervision supplies evidence under the foreground execution
 contract.
 
-The [execution decision](../../.agents/notes/implemented/architecture/2026-10-17-copilot-session-execution.md)
+The [execution decision](../../.agents/notes/archived/architecture/2026-10-17-copilot-session-execution.md)
 records process and publication boundaries; the
-[PR-quality decision](../../.agents/notes/implemented/process/2026-10-21-review-pr-quality-gates.md)
+[PR-quality decision](../../.agents/notes/archived/process/2026-10-21-review-pr-quality-gates.md)
 records the approval policy, and the
 [multi-perspective decision](../../.agents/notes/implemented/process/2026-10-22-pr-specific-review-perspectives.md)
 records delegation and synthesis. The
-[conversation-cycle decision](../../.agents/notes/implemented/architecture/2026-10-21-review-conversation-cycle.md)
+[conversation-cycle decision](../../.agents/notes/archived/architecture/2026-10-21-review-conversation-cycle.md)
 records durable follow-ups and publication verification. The
 [skill design](../../docs/design/daynight-review-skill.md) owns packaging, snapshots and
 loading, with rationale in the
-[bundled-skill decision](../../.agents/notes/implemented/architecture/2026-10-20-bundled-review-skill.md).
+[bundled-skill decision](../../.agents/notes/archived/architecture/2026-10-20-bundled-review-skill.md).
 Native probes with Copilot CLI 1.0.100 verify actual bundled-skill activation and
 changed-bundle resume with the same UUID, including comma, space and Unicode
 paths. The bundled-skill decision records the probe's conditions and limits.
@@ -1171,7 +1173,7 @@ and logs. That explicitly confirmed restart reconciles interrupted work with
 the same captured target and session; it never declares a saved running attempt
 complete or kills a saved process ID.
 
-The [coordination decision](../../.agents/notes/implemented/architecture/2026-10-17-foreground-review-coordination.md)
+The [coordination decision](../../.agents/notes/archived/architecture/2026-10-17-foreground-review-coordination.md)
 explains scheduling and the foreground execution boundary. The
-[stale-lock recovery decision](../../.agents/notes/implemented/bug-fix/2026-10-18-stale-instance-lock-recovery.md)
+[stale-lock recovery decision](../../.agents/notes/archived/bug-fix/2026-10-18-stale-instance-lock-recovery.md)
 records owner-liveness checks and the separate process-exclusion requirement.

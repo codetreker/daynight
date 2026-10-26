@@ -31,8 +31,9 @@ The callback retains its three-second readiness observation and one-second IPC
 status deadline. Identity, exact Docker command count, permission-before-Chromium,
 abort-reason propagation, absence of cancellation listeners and timers, and
 confirmed process disappearance remain part of the same native journey. The
-[acceptance pipeline decision](2026-10-21-web-acceptance-pipeline.md) owns callback
-permission and resource ordering; this decision owns the fixture's phase budgets.
+[acceptance pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md) records the
+callback permission and resource-ordering choices retained here; this decision
+owns the fixture's phase budgets.
 
 A controlled native regression delays initialization by four seconds and callback
 readiness by another two seconds. It observes both phase boundaries through the

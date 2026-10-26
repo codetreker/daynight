@@ -68,10 +68,10 @@ with the complete attachment panel and standalone navigation history. The
 within complete task details and extends history to task/tab/file state. This
 decision extends the [split-view decision](2026-10-22-task-attachment-split-view.md), which retains
 inline tabs, state and scroll ownership. The
-[original Web attachment decision](../feature/2026-10-21-task-attachment-web.md)
+[original Web attachment decision](../../archived/feature/2026-10-21-task-attachment-web.md)
 retains rendering, file operations and trusted-origin rationale; the
-[embedded delivery decision](2026-10-20-embedded-dashboard-deployment.md)
-retains one mux, real assets and exact page registration.
+[embedded delivery decision](../../archived/architecture/2026-10-20-embedded-dashboard-deployment.md)
+records the choice of one mux, real assets and exact page registration.
 
 ## Alternatives
 
@@ -111,7 +111,8 @@ The production-component fixture supplies reloadable bundled-file reader URLs
 for visual and interaction checks. Implementation checks own this feature's
 route, rendering, failure and sizing behavior on their tested source. Independent
 real-service runtime acceptance of the reading task group is complete; the
-[cross-layer acceptance decision](../testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
-owns its real-input, native-content, failure-recovery and cleanup methods.
+[cross-layer acceptance decision](../../archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
+records the real-input, native-content, failure-recovery and cleanup methods used
+for that acceptance.
 Results retain their tested source, artifact and browser limits. Fixture evidence
 remains distinct and a local browser override is not hosted-CI browser proof.

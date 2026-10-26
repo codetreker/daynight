@@ -115,15 +115,15 @@ mismatched tree identity fails; no schema-version bump or legacy fallback
 reinterprets an incomplete receipt. A tree identifies committed content; dirty
 state is not a digest of modifications, and tree equality alone proves neither
 an executed gate nor reviewer approval. Original artifact and platform identities
-remain intact under the [evidence ownership decision](../process/2026-10-20-source-bound-validation-evidence.md).
+remain intact under the [evidence ownership decision](../../archived/process/2026-10-20-source-bound-validation-evidence.md).
 
 The [server README](../../../../packages/daynight-server/README.md#built-process-acceptance-and-ci-evidence)
 and [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 own repeatable commands, scenario mappings and receipt interpretation. This
-extends the [installed project/task](2026-10-20-installed-project-task-acceptance.md),
-[built-process](2026-10-19-server-process-acceptance.md) and
-[dashboard acceptance](2026-10-20-dashboard-production-acceptance.md) decisions.
-The [attachment cross-layer decision](2026-10-21-task-attachment-cross-layer-acceptance.md)
+extends the [installed project/task](../../archived/testing/2026-10-20-installed-project-task-acceptance.md),
+[built-process](../../archived/testing/2026-10-19-server-process-acceptance.md) and
+[dashboard acceptance](../../archived/testing/2026-10-20-dashboard-production-acceptance.md) decisions.
+The [attachment cross-layer decision](../../archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
 retains original-byte, rendering, reader-input and K1 storage boundaries; shared
 artifacts do not collapse those separate proofs into this lifecycle journey.
 

@@ -59,7 +59,7 @@ and [design](../../../../docs/design/daynight-task-attachments.md#web-文件树�
 own the complete behavior and composition.
 
 This partially supersedes deletion placement in the
-[original Web attachment decision](2026-10-21-task-attachment-web.md) and
+[original Web attachment decision](../../archived/feature/2026-10-21-task-attachment-web.md) and
 [split-view decision](../architecture/2026-10-22-task-attachment-split-view.md).
 Their single-controller, trusted-origin, upload and scroll decisions remain
 applicable. The [shared-page decision](../architecture/2026-10-24-shared-attachment-page.md)

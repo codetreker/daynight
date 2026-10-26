@@ -7,9 +7,9 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 [仓库 README](../../README.md)。必需行为与编号验收由
 [客户端需求](../spec/daynight-project-task.md)拥有，服务行为由
 [服务需求](../spec/daynight-server.md)拥有。结构决策与真实备选方案见
-[决策记录](../../.agents/notes/implemented/architecture/2026-10-20-project-task-cli-design.md)及
-[创建预检决策](../../.agents/notes/implemented/bug-fix/2026-10-21-project-create-repository-discovery.md)，
-有界 ready 选择见[选择决策](../../.agents/notes/implemented/feature/2026-10-21-bounded-ready-task-selection.md)，
+[决策记录](../../.agents/notes/archived/architecture/2026-10-20-project-task-cli-design.md)及
+[创建预检决策](../../.agents/notes/archived/bug-fix/2026-10-21-project-create-repository-discovery.md)，
+有界 ready 选择的取舍见[选择决策](../../.agents/notes/archived/feature/2026-10-21-bounded-ready-task-selection.md)，
 列表默认值与文本输出见[列表决策](../../.agents/notes/implemented/feature/2026-10-22-task-list-defaults.md)，
 JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplification/2026-10-22-task-list-json-description.md)。
 任务起止字段与图时钟的读取机制由[执行计时架构](daynight-task-timing.md)扩展；
@@ -25,7 +25,7 @@ Web 文件管理亦已实现。元数据查询按操作输出 JSON；
 task list 的 JSON 仅省略 `description`，其他元数据查询保留各自完整资源。
 文本输出选择列表摘要或完整资源，创建和更新输出完整文本资源；原始内容逐段写入
 字节通道。
-[CLI 决策](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-cli.md)记录
+[CLI 决策](../../.agents/notes/archived/feature/2026-10-21-task-attachment-cli.md)记录
 流传输及输出辅助进程的选择。
 
 CLI 默认使用 `https://daynight.cc`，显式 `login/logout` 管理通过设备授权自动取得的凭据，
@@ -541,10 +541,10 @@ Project 命令的实际编译入口已在受控 HTTP 条件下验证创建、完
 详情、原始 JSON、参数及服务错误、取消和依赖隔离。共享 runtime 测试覆盖配置读取
 取消、信号清理、callback 失败后的空 stdout、渲染后的最终期限检查及多请求累计
 预算。Task 的命令、API/仓库组合及完整渲染已通过本地专项和编译入口验证；静态
-补全在三种真实 shell 中通过新增 Task 场景。安装验证的分层与隔离由
-[安装联调决策](../../.agents/notes/implemented/testing/2026-10-20-installed-project-task-acceptance.md)
-拥有；当前期限 mock 和验证成本取舍由
-[CI 验证效率决策](../../.agents/notes/implemented/testing/2026-10-21-ci-validation-efficiency.md)拥有。
+补全在三种真实 shell 中通过新增 Task 场景。安装验证分层与隔离的选择依据记录在
+[安装联调决策](../../.agents/notes/archived/testing/2026-10-20-installed-project-task-acceptance.md)；
+期限 mock 和验证成本的取舍记录在
+[CI 验证效率决策](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)。
 
 原生路径将 project/task 安装 suite 加入既有 `pnpm acceptance`，三个
 原生平台的必选 suite 使用实际 pack/install 产物、真实 Git 和受控 HTTP 验证配置、自动发现、
@@ -574,9 +574,10 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 附件 `installed_cli_task_attachment_workflow` 复用同一服务安装及进程 fixture，覆盖
 原始字节、多页路径列表、拒绝、同根重启及完整 task 不变；清理 gate 同时要求存储
 根实际消失。共享安装 fixture 也供完整 Web run 使用，在原生与容器页面上复用一次
-安装来操作同组真实数据。机制与证据字段由
-[附件跨层验收决策](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
-拥有，原有 PT 场景和六个预算探针保持完整。
+安装来操作同组真实数据。机制与证据字段见[附件验证设计](daynight-task-attachments.md#实现验证)，
+其选择依据记录在
+[附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
+原有 PT 场景和六个预算探针保持完整。
 
 编排层原样执行固定 go-cov 参数及 strict raw coverage 检查，通过后才在 Go 默认
 10 分钟计时器之外运行六个公开安装 CLI 场景：持续推进 cursor 的总期限、

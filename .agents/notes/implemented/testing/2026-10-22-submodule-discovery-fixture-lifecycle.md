@@ -27,8 +27,10 @@ The existing cleanup hook still disposes operations, restores environment and
 mock state, and removes every registered private directory, including resources
 created during a failed setup.
 
-The [Git validation ownership rules](2026-10-18-parallel-git-validation.md)
-continue to apply. This case still uses native `git submodule add`, the real
+The fixture isolation described in the
+[development guide](../../../../docs/development.md#cli-development) continues to
+apply; the [Git validation decision](../../archived/testing/2026-10-18-parallel-git-validation.md)
+records the original ownership choices. This case still uses native `git submodule add`, the real
 submodule administration file, Unicode and space-containing private paths, and
 the configured submodule origin. The
 [repository validation guide](../../../../README.md#validation) owns commands and

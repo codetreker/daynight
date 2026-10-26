@@ -54,10 +54,10 @@ next mount. The outer Task list subtree remains mounted after first use when
 Overview is selected, retaining those list choices across outer switches.
 
 This partially supersedes the unified list in the [presentation
-decision](2026-10-21-task-chain-presentation.md) and extends the [browsing
-preference decision](2026-10-21-task-browsing-preferences.md). The [projection
-decision](2026-10-20-task-graph-projection.md) retains ownership of complete
-dependency semantics; the [chain status
+decision](../../archived/feature/2026-10-21-task-chain-presentation.md) and extends the [browsing
+preference decision](../../archived/feature/2026-10-21-task-browsing-preferences.md). Complete
+dependency semantics follow the choices recorded in the [projection
+decision](../../archived/feature/2026-10-20-task-graph-projection.md); the [chain status
 decision](../bug-fix/2026-10-22-task-chain-status.md) continues to own
 aggregate status. Required behavior and current mechanisms belong in the
 [specification](../../../../docs/spec/daynight-web.md) and
@@ -107,7 +107,8 @@ opening initializes its pan and zoom. Keyboard tabs,
 native row actions and active-view focus restoration are
 part of the delivered interaction, including empty and all-completed views.
 The actual-backend `project-view-tabs` scenario runs on native and production
-container targets; the [acceptance pipeline](../testing/2026-10-21-web-acceptance-pipeline.md)
-retains strict inventory validation and the original capacity/limit scenarios.
+container targets. Strict inventory validation and the original capacity/limit
+scenarios remain required, following the choices recorded in the
+[acceptance pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md).
 The [complete context decision](2026-10-22-complete-prerequisite-context.md) adds
 dense external ancestry without changing tab classification or chain membership.

@@ -5,7 +5,7 @@
 
 `daynight-server` 是独立的 Go 服务，为本机 CLI 和内部程序提供 project、task
 及任务依赖管理。行为要求由[需求文档](../spec/daynight-server.md)拥有；架构选择及
-重新评估条件由[决策记录](../../.agents/notes/implemented/architecture/2026-10-19-daynight-server-task-design.md)
+重新评估条件由[决策记录](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
 拥有。决策记录标记的是已采用的设计，不表示服务已经交付。
 [看板设计](daynight-web.md)定义完整图快照接口、浏览器页面和内嵌静态资源
 交付；图 API 保留本文的领域与事务结构，不改变现有分页读取的一致性承诺。
@@ -403,8 +403,8 @@ Compose 网络访问，PostgreSQL 18 数据卷挂到 `/var/lib/postgresql`。
 重建容器并保留数据卷。部署脚本每次重新构建并整体重建容器，用相同命令完成启动、
 源码更新及转发恢复；数据卷持续保留。网关意外单独重启时，Docker 不会自动重启
 共享命名空间的服务，健康检查会暴露转发失败，需要重新运行脚本恢复。
-[部署决策](../../.agents/notes/implemented/architecture/2026-10-20-localhost-compose.md)
-记录拓扑选择及运行限制。[内嵌交付决策](../../.agents/notes/implemented/architecture/2026-10-20-embedded-dashboard-deployment.md)
+[部署决策](../../.agents/notes/archived/architecture/2026-10-20-localhost-compose.md)
+记录拓扑选择及运行限制。[内嵌交付决策](../../.agents/notes/archived/architecture/2026-10-20-embedded-dashboard-deployment.md)
 记录构建与隔离验收结构。独立 `deployment/dev-ci` 复用同一 Dockerfile 和 nginx
 配置，采用唯一项目身份、随机 loopback 端口和专用数据库卷，按 run ID 有界清理，
 日常 localhost 数据与资源不作为测试前置。
@@ -498,7 +498,7 @@ project/task 操作、依赖推进、重启持久化及版本竞争。Node 编�
 真实 128 MiB/256 MiB 限制及精确边界和 +1 字节配对。原有 Go 作业仍为 20 分钟。
 独立实际进程场景在其顶层测试内最多四个并发，各自保留 schema、进程、数据库
 屏障及清理；顶层测试间的全局环境修改仍串行。原始服务场景不被 CLI 场景替换，细节见
-[安装联调决策](../../.agents/notes/implemented/testing/2026-10-20-installed-project-task-acceptance.md)及
+[安装联调决策](../../.agents/notes/archived/testing/2026-10-20-installed-project-task-acceptance.md)及
 [CLI 设计](daynight-project-task.md#验证与交付证据)。根目录
 `.tmp/project-task-service-evidence.json` 记录安装身份、Go/预算结果与清理。CI
 发布 `.tmp/acceptance-evidence.json` 和同次 `.tmp/coverage.out`；前者记录源版本、

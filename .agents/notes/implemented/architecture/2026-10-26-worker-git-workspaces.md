@@ -80,8 +80,8 @@ owned by the manager and removed by `dispose`; agent business Git operations
 retain their repository workflow.
 
 The [worker design](2026-10-22-worker-design.md) retains resource responsibility
-boundaries; the [review worktree decision](2026-10-17-owned-review-worktrees.md)
-continues to own disposable detached PR checkouts. Their different mutation rules
+boundaries; the [review worktree decision](../../archived/architecture/2026-10-17-owned-review-worktrees.md)
+records the choice of disposable detached PR checkouts for review. Their different mutation rules
 are separate despite reusing narrow Git, identity and physical-path primitives.
 
 ## Alternatives

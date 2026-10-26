@@ -24,7 +24,7 @@ project. PostgreSQL retains the logical task-relative path and no physical key.
 API, CLI and preview URLs retain their original form, including relative HTML
 and Markdown resources. Generic Storage continues to receive bucket/path only.
 
-The [original attachment decision](2026-10-21-task-attachment-storage-design.md)
+The [original attachment decision](../../archived/architecture/2026-10-21-task-attachment-storage-design.md)
 selected a direct task-only directory and left potential physical sharding to
 an adapter. That was sufficient for a globally unique task identity and the
 initial file API, avoiding another storage identity or migration mechanism.
@@ -118,7 +118,7 @@ observable before the new runtime serves data.
 Clients and PostgreSQL keep stable logical identities while instance storage is
 organized by project and task shard. Project directories are not independent OS
 sandboxes; root confinement and allowed generic-adapter symlink behavior retain
-the [storage foundation](2026-10-21-bucket-file-storage.md) contract. Ordinary
+the [storage foundation](../../archived/architecture/2026-10-21-bucket-file-storage.md) contract. Ordinary
 empty-parent pruning naturally includes task/shard/project and stops before the
 bucket, preserving nonempty siblings.
 

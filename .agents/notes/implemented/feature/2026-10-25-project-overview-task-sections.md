@@ -40,7 +40,7 @@ decision](2026-10-22-project-task-views.md) retains conditional content
 mounting and independent category page positions.
 
 The independent section, category, filter and scroll
-[browsing preference records](2026-10-21-task-browsing-preferences.md) keep their
+[browsing preference records](../../archived/feature/2026-10-21-task-browsing-preferences.md) keep their
 shapes and project scope; the former expansion record is no longer read or written. Task page scroll ownership is active only
 when Task list is selected and a snapshot is available. Leaving Tasks saves the
 current category position and releases its scroll/pagehide listeners during the

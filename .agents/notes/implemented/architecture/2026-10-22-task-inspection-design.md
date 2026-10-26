@@ -109,11 +109,11 @@ or separate structural decisions. Keeping raw description strings, independent
 selection/resource state, caller-owned URL handling and immutable route
 geometry preserves affordable extension points without claiming those features.
 
-The [projection](../feature/2026-10-20-task-graph-projection.md) note retains the
+The [projection](../../archived/feature/2026-10-20-task-graph-projection.md) note retains the
 original direct-boundary rationale and links its replacement. The existing
-[paint repair](../bug-fix/2026-10-20-long-dashed-dependency-paint.md) and
-[fullscreen](../feature/2026-10-22-task-graph-fullscreen.md) notes remain current
-for retained rendering and layered-detail rationale. The
+[paint repair](../../archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md) and
+[fullscreen](../feature/2026-10-22-task-graph-fullscreen.md) notes preserve the
+retained rendering and layered-detail rationale. The
 [graph-dialog decision](../feature/2026-10-26-task-chain-graph-dialog.md) replaces
 inline entry with a click-only modal and unifies normal/fullscreen ownership;
 the centered detail composition keeps its portal and reading lifecycle. The standalone prototype proves its own

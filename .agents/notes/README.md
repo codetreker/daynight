@@ -12,7 +12,7 @@ documents explain the current structure and its essential rationale, and
 research documents own durable evidence and citations. Agent Notes own decision
 history, alternatives, consequences, and conditions for reconsideration. Runtime
 acceptance observations belong to source-bound artifacts and their corresponding
-PR or CI run; the [validation evidence decision](implemented/process/2026-10-20-source-bound-validation-evidence.md)
+PR or CI run; the [validation evidence decision](archived/process/2026-10-20-source-bound-validation-evidence.md)
 explains their retention limits and the durable knowledge that remains tracked.
 Link to the owning document instead of duplicating its explanation.
 

@@ -327,7 +327,7 @@ request with its saved old epoch returns a complete task snapshot. Check project
 membership, attachment lists, downloads and relative preview resources, and
 upload a new file. This is a manual paired backup/restore procedure; it adds no
 backup service or cross-store recovery mechanism. The
-[deployment decision](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-persistence.md)
+[deployment decision](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-persistence.md)
 owns the volume and validation rationale. The
 [dev-ci attachment check](../dev-ci/README.md#attachment-persistence-check)
 exercises this procedure with disposable data and confirms scoped cleanup.

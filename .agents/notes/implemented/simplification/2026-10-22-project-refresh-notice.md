@@ -18,7 +18,7 @@ retain their existing presentation. The unused loading-notice message is removed
 from the shared message type and both locales.
 
 This decision partially supersedes the refresh presentation in the
-[project dashboard decision](../feature/2026-10-20-project-task-dashboard.md).
+[project dashboard decision](../../archived/feature/2026-10-20-project-task-dashboard.md).
 The original separate notice made retained snapshot freshness explicit during a
 request. Button feedback and the existing failure state preserve request and
 failure visibility without inserting a temporary row. Request scheduling,

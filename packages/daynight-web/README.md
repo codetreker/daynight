@@ -14,10 +14,11 @@ The [requirements](../../docs/spec/daynight-web.md) own visible behavior and the
 [architecture](../../docs/design/daynight-web.md) owns graph projection, request
 lifecycles and delivery. The [task property requirements](../../docs/spec/daynight-task-properties.md)
 and [design](../../docs/design/daynight-task-properties.md) own PR associations.
-The [attachment requirements](../../docs/spec/daynight-task-attachments.md),
-[architecture](../../docs/design/daynight-task-attachments.md) and
-[Web decision](../../.agents/notes/implemented/feature/2026-10-21-task-attachment-web.md)
-own single-file management, previews and their independent state. The original
+The [attachment requirements](../../docs/spec/daynight-task-attachments.md) and
+[architecture](../../docs/design/daynight-task-attachments.md) own single-file
+management, previews and their independent state; the
+[Web decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)
+records the original choices. The original
 offline dashboard mockups remain separate from the application; the attachment
 development mockup below reuses the real components with a frontend-only fixture.
 
@@ -779,7 +780,7 @@ task offsets. Outer switches retain the already visited task subtree; inner
 switches retain their conditional-content mounting. Graph dialogs close on
 either departure and open only after a new dependency-graph action. Section/category
 switching, filtering and scroll restoration make no API requests and do not
-alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/implemented/feature/2026-10-21-task-browsing-preferences.md)
+alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)
 records the persistence rules.
 
 The detail decoder requires `properties.pullRequests` with string `url` and
@@ -1315,14 +1316,14 @@ After core acceptance and recorded recovery, the Ubuntu browser job runs `node d
 volume/recreation/isolation and paired-backup proof. Its
 `.tmp/attachment-deployment-*/` receipts join the existing deployment artifact.
 Go module/compiler caches remain reusable.
-The [pipeline decision](../../.agents/notes/implemented/testing/2026-10-21-web-acceptance-pipeline.md)
+The [pipeline decision](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
 records the scheduling and ownership constraints. The quality job uploads
 `coverage-final.json` and `summary.json`, which records exact counts and the relative
 product-source manifest; the browser job uploads acceptance and deployment
 evidence. Both artifact families are retained for 30 days. The
-[deployment decision](../../.agents/notes/implemented/architecture/2026-10-20-embedded-dashboard-deployment.md)
+[deployment decision](../../.agents/notes/archived/architecture/2026-10-20-embedded-dashboard-deployment.md)
 records embedded HTTP/container smoke checks and concurrent dev-ci isolation;
-the [production acceptance decision](../../.agents/notes/implemented/testing/2026-10-20-dashboard-production-acceptance.md)
+the [production acceptance decision](../../.agents/notes/archived/testing/2026-10-20-dashboard-production-acceptance.md)
 records the separate real-Docker fault matrix and its limits. CI repeats the
 controlled lifecycle fixtures and full production-browser suite. Manual Docker
 fault testing and controlled fixtures each retain their own evidence scope.
@@ -1455,8 +1456,8 @@ fixture/viewer location rule excludes thumbnail-only paint; independent bounds
 also prevent a separate thumbnail from diluting the page marker's density. The
 successful PNG and component metrics remain in the marker evidence; HTTP success
 or an iframe load cannot satisfy this check. The
-[combined acceptance decision](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
-owns data-sharing, rendering and independent reading proof.
+[combined acceptance decision](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
+records the original data-sharing, rendering and independent-reading proof choices.
 
 The additional [combined authentication journey](scripts/acceptance/auth-combined.mts)
 requires a separate receipt on each runtime target, alongside the 63
@@ -1540,7 +1541,7 @@ require the saved value, restored select focus and zero writes, without forcing
 focus after dismissal or increasing timeouts. Attachment component checks wait
 for actual preview focus after delete-dialog teardown while its list reload is
 still pending, then release the reload and require focus to remain. The
-[observable-readiness decision](../../.agents/notes/implemented/testing/2026-10-20-observable-acceptance-readiness.md)
+[observable-readiness decision](../../.agents/notes/archived/testing/2026-10-20-observable-acceptance-readiness.md)
 records the synchronization rule.
 
 The `task-detail-page` journey observes source and popup requests at the browser
@@ -1642,7 +1643,7 @@ Browser identities must agree across a target's phases; every fixed graph's five
 timing repetitions, independent size refusals and cleanup/recovery must pass.
 Local receipts retain their source and browser identity; they do not establish
 clean hosted delivery results. The
-[paint decision](../../.agents/notes/implemented/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
+[paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
 retains raster evidence and visual tolerances needed to assess that mechanism.
 
 Capacity receipts also retain per-interaction `feedbackDiagnostics`: input,
@@ -1660,7 +1661,7 @@ complete graph/geometry checks remain. Controller-side
 `controllerDurations` records fixture creation, graph snapshot validation and
 per-repetition interaction/total durations. These diagnostics locate harness
 costs outside the browser input-to-feedback gates; they do not alter those gates.
-The [CI efficiency decision](../../.agents/notes/implemented/testing/2026-10-21-ci-validation-efficiency.md)
+The [CI efficiency decision](../../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 records why this avoids duplicate capture work without splitting the suite.
 
 ### Cleanup and interrupted-run recovery
@@ -1723,7 +1724,7 @@ group cannot satisfy cleanup merely because `/proc` ownership or executable data
 has disappeared. Remaining members require unchanged identities before SIGKILL.
 An initially live group without verified owned members fails immediately, and
 EPERM or other probe errors remain failures. The
-[pipeline decision](../../.agents/notes/implemented/testing/2026-10-21-web-acceptance-pipeline.md)
+[pipeline decision](../../.agents/notes/archived/testing/2026-10-21-web-acceptance-pipeline.md)
 owns the recovery rationale and real-kernel reproduction.
 
 Recovery writes separate per-run/latest `recovery.json` receipts and preserves
@@ -1745,7 +1746,7 @@ barycenter/tie/removal assertions and license/source-map checks supplement exact
 coordinate, edge-point, bounds and determinism comparisons. Upgrades must rerun
 these regressions. Longest-path can lengthen edges and normalization depends on rank
 spans; fixed capacity timings do not promise the same latency for arbitrary DAGs.
-The [layout decision](../../.agents/notes/implemented/feature/2026-10-20-task-graph-projection.md)
+The [layout decision](../../.agents/notes/archived/feature/2026-10-20-task-graph-projection.md)
 owns those trade-offs.
 
 React Flow is pinned to 12.12.0. Its system dependency 0.0.83 has a declaration-only
@@ -1789,7 +1790,7 @@ midpoints to bound GPU work without removing route geometry. Cumulative phase
 error stays within 0.025 CSS px at maximum 1.8 zoom. Solid bodies remain native.
 Pieces are noninteractive and hidden from the accessibility tree; canonical edges
 keep their existing identity/semantics. The
-[paint decision](../../.agents/notes/implemented/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
+[paint decision](../../.agents/notes/archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md)
 owns the pinned raster evidence and local-line rationale; the
 [bounded-line extension](../../.agents/notes/implemented/bug-fix/2026-10-22-bounded-dashed-dependency-lines.md)
 owns the original GPU stroke bound and its added DOM cost.

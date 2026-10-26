@@ -26,11 +26,11 @@ module independently of publication. No application suites or repository
 protection settings change.
 
 This replaces the full-main prerequisite in the
-[trusted-publishing decision](2026-10-20-npm-trusted-publishing.md). That
+[trusted-publishing decision](../../archived/process/2026-10-20-npm-trusted-publishing.md). That
 prerequisite provided broad integration evidence when release validation was
 established, but coupled the CLI's release to independently delivered modules.
-The [module-scoped CI decision](2026-10-21-module-scoped-pr-ci.md) and
-[CI gate simplification](../simplification/2026-10-21-ci-gate-simplification.md)
+The [module-scoped CI decision](../../archived/process/2026-10-21-module-scoped-pr-ci.md) and
+[CI gate simplification](../../archived/simplification/2026-10-21-ci-gate-simplification.md)
 retain their mainline scheduling and aggregation rules. Main-only dispatch,
 existence preflight, OIDC, source-bound artifacts, public byte verification and
 immutable tagging retain their existing owners and behavior.

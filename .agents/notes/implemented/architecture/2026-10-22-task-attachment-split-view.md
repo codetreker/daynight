@@ -54,7 +54,7 @@ native reader scrolls. The header exposes the full path and keeps download and s
 The [requirements](../../../../docs/spec/daynight-task-attachments.md#web-管理与预览)
 own visible behavior, and the [attachment design](../../../../docs/design/daynight-task-attachments.md#web-文件树与预览)
 owns composition and renderer sizing. This decision partially supersedes the
-placement in the [original Web attachment decision](../feature/2026-10-21-task-attachment-web.md)
+placement in the [original Web attachment decision](../../archived/feature/2026-10-21-task-attachment-web.md)
 and the content scroll ownership in the [centered detail decision](../feature/2026-10-22-centered-task-detail-dialog.md).
 Their file, request, trusted-origin and modal lifecycle decisions remain valid.
 
@@ -70,8 +70,8 @@ The [shared-page decision](2026-10-24-shared-attachment-page.md) composes this s
 complete panel in the standalone container and scopes URL/history integration
 to that container; embedded selection remains local.
 Independent runtime acceptance is complete for the integrated production page
-and actual native rendering. The [cross-layer acceptance decision](../testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
-owns its source/environment limits, real-input scrolling, final-page paint,
+and actual native rendering. The [cross-layer acceptance decision](../../archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
+records its source/environment limits, real-input scrolling, final-page paint,
 failure recovery and cleanup proof; HEAD alone remains insufficient.
 
 ## Alternatives

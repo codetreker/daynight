@@ -35,11 +35,11 @@ Readers retain strict origin, token and transport validation; login/logout retai
 locked observation checks and atomic persistence.
 
 `daynight completion setup` independently installs shell startup configuration
-and remains available. The [completion decision](../feature/2026-10-21-completion-setup.md)
-owns that operation.
+and remains available. The [completion decision](../../archived/feature/2026-10-21-completion-setup.md)
+records that operation's original scope and ownership choices.
 
 This supersedes the root setup entry and noninteractive service-write options in
-the [guided configuration decision](../feature/2026-10-21-guided-configuration-setup.md),
+the [guided configuration decision](../../archived/feature/2026-10-21-guided-configuration-setup.md),
 [credential decision](../architecture/2026-10-22-cli-server-credentials.md) and
 [device-login decision](../architecture/2026-10-25-cli-device-login.md).
 Their historical rationale, safe persistence, capability projections and

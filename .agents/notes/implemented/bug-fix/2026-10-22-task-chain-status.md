@@ -31,9 +31,9 @@ retain individual task semantics. A new snapshot rebuilds the derived values;
 selection, pan and zoom do not trigger domain recomputation.
 
 This replaces the original badge semantics described by the
-[presentation decision](../feature/2026-10-21-task-chain-presentation.md).
-The [projection decision](../feature/2026-10-20-task-graph-projection.md) retains
-ownership of components, projection and distinct counts; the
+[presentation decision](../../archived/feature/2026-10-21-task-chain-presentation.md).
+The [projection decision](../../archived/feature/2026-10-20-task-graph-projection.md) records the
+component, projection and distinct-count choices retained here; the
 [complete context decision](../feature/2026-10-22-complete-prerequisite-context.md)
 expands displayed ancestors without changing that counted membership.
 Requirements and current structure belong in the [specification](../../../../docs/spec/daynight-web.md)

@@ -17,9 +17,9 @@ actual third-party human login.
 The [authentication requirements](../../../../docs/spec/daynight-auth.md) retain
 AU-V1–AU-V10. The [activation decision](../architecture/2026-10-22-authentication-activation.md)
 continues to own mandatory composition, normal-protocol credential bootstrap and
-private fixture state. The [attachment acceptance decision](2026-10-21-task-attachment-cross-layer-acceptance.md)
-continues to own shared installed-package identity, original bytes and paired
-restore proof. The additional authentication harness composes those existing
+private fixture state. The [attachment acceptance decision](../../archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)
+records the shared installed-package identity, original-byte and paired-restore
+proof choices retained here. The additional authentication harness composes those existing
 mechanisms without adding product routes, privileged user adapters, provider
 personas or a generic fixture-control service.
 

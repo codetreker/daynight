@@ -12,9 +12,9 @@
 
 附件维持现有可信同源执行。HTML 拥有浏览者当前主站权限，资源请求复用主站会话与
 项目成员检查。普通 iframe、相对资源、同源文档键盘桥和单 origin 部署继续使用。
-[附件架构决策](../../.agents/notes/implemented/architecture/2026-10-21-task-attachment-storage-design.md)
-明确独立预览域名/origin、预览凭据、bootstrap 交换及其配套设施不属于本方案；
-鉴权实现必须遵守，不能从项目成员权限推导出预览隔离工程。
+独立预览域名/origin、预览凭据、bootstrap 交换及其配套设施不属于本方案；
+鉴权实现必须遵守，不能从项目成员权限推导出预览隔离工程。此约束的选择依据记录在
+[附件架构决策](../../.agents/notes/archived/architecture/2026-10-21-task-attachment-storage-design.md)。
 
 ## 现状与可复用机制
 

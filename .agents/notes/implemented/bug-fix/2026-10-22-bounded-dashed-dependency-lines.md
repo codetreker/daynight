@@ -5,7 +5,7 @@ Status: implemented
 ## Problem
 
 Locally horizontal SVG lines avoid the expensive CPU raster path identified by
-the [original paint decision](2026-10-20-long-dashed-dependency-paint.md), but a
+the [original paint decision](../../archived/bug-fix/2026-10-20-long-dashed-dependency-paint.md), but a
 long line can still occupy the macOS Metal GPU pipeline after a drawer closes.
 Input for a later viewport operation then waits for preceding presentation work.
 Equivalent graph sizes can produce different route lengths because generated

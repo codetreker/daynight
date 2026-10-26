@@ -327,7 +327,7 @@ HEAD 成功不能证明实际内容已经绘制。预览没有独立弹窗、会
 原生 frame 分别沿用唯一滚动所有者，删除确认保留自身原生模态交互。文件产品要求由
 [独立页面完整阅读](daynight-task-attachments.md#独立页面完整阅读)拥有。
 原完整阅读任务组已通过独立真实服务运行时验收；实际源码、产物、环境与清理的证明机制见
-[附件组合验收决策](../../.agents/notes/implemented/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)，不将本机浏览器结果扩大为托管 CI 结论。
+[附件组合验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)，不将本机浏览器结果扩大为托管 CI 结论。
 
 ## 部署与测试隔离
 

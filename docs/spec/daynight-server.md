@@ -6,7 +6,7 @@
 
 本文定义 `daynight-server` 面向本机 CLI 和内部程序的任务管理行为。
 [技术设计](../design/daynight-server.md)拥有分层、存储和并发机制；
-[设计决策](../../.agents/notes/implemented/architecture/2026-10-19-daynight-server-task-design.md)
+[设计决策](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
 记录取舍和范围。
 
 [预定义属性需求](daynight-task-properties.md)扩展本文的 task 资源，PR 引用的
