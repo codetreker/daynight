@@ -217,8 +217,10 @@ review 的配置和路径类型明确以 `ReviewConfiguration`、`ReviewPaths` �
 只向 stdout 写入脚本。裸 `completion` 及其帮助只显示使用说明，错误 shell 或无效
 参数沿用状态码 2。脚本生成不读取配置和状态，不加载 review 或更新业务。
 `completion setup` 在参数校验后才加载 `setup.ts`，检查调用 shell 并安装持久启动
-配置。它独立拥有 shell 检测、默认或显式文件选择、完整管理块识别及保留原文件
-身份的写入，不改变生成操作的无 I/O 保证。review 配置引导由 review 模块拥有；[客户端 C7](../spec/daynight.md#c7-补全启动配置安装)拥有其行为。
+配置。启动块只在 `daynight` 与 `dn` 均注册预期的可调用补全函数时跳过加载；
+任一入口失效都会重新加载共享脚本。安装器独立拥有 shell 检测、默认或显式文件
+选择、完整管理块识别及保留原文件身份的写入，不改变生成操作的无 I/O 保证。
+review 配置引导由 review 模块拥有；[客户端 C7](../spec/daynight.md#c7-补全启动配置安装)拥有其行为。
 普通子进程不能修改父 shell 的函数注册，`completion setup` 输出既有 source 命令
 供当前会话启用。
 

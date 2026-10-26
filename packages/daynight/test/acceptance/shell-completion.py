@@ -614,19 +614,21 @@ def generation_count(directory):
     return len(log.read_text().splitlines()) if log.exists() else 0
 
 
-def startup_probe(label, binary, kind, directory, environment, profile, login=False, repeat=True, explicit_source=False):
+def startup_probe(label, binary, kind, directory, environment, profile, login=False, repeat=True, explicit_source=False, prepare="", expected_loads=1):
     # Neither registration nor compinit is installed by the editor harness: startup owns both.
-    registered = "complete -p daynight >/dev/null 2>&1 && complete -p dn >/dev/null 2>&1" if kind == "bash" else '(( $+functions[compdef] )) && [[ -n ${_comps[daynight]-} && ${_comps[dn]-} == ${_comps[daynight]} ]]'
-    guard = "source " + shlex.quote(str(profile)) + " || exit 93; " if explicit_source else ""
+    registered = "declare -F _daynight_completion >/dev/null && [ \"$(complete -p daynight 2>/dev/null)\" = 'complete -F _daynight_completion daynight' ] && [ \"$(complete -p dn 2>/dev/null)\" = 'complete -F _daynight_completion dn' ]" if kind == "bash" else '(( $+functions[compdef] && $+functions[_daynight] )) && [[ ${_comps[daynight]-} == _daynight && ${_comps[dn]-} == _daynight ]]'
+    guard = prepare
+    guard += "source " + shlex.quote(str(profile)) + " || exit 93; " if explicit_source else ""
     guard += registered + " || exit 92; "
     if repeat:
         guard += "source " + shlex.quote(str(profile)) + " || exit 93; "
+        guard += registered + " || exit 92; "
     startup = ["--noprofile", "--norc", "-i"] if explicit_source and kind == "bash" else ["-l", "-i"] if login else ["-i"] if kind == "bash" else ["-d", "-i"]
     shell = Terminal(binary, kind, directory, environment, guard + shell_setup(kind, None), startup=startup)
     try:
         loads = generation_count(directory)
-        if loads != 1:
-            raise AssertionError(f"{label}: startup and repeated sourcing must load exactly once, received {loads}")
+        if loads != expected_loads:
+            raise AssertionError(f"{label}: startup and repeated sourcing must load exactly {expected_loads} time(s), received {loads}")
         completions = []
         for command in ["daynight", "dn"]:
             line, cursor, output = shell.complete(command + " comp\t")
@@ -673,6 +675,23 @@ def run_setup_acceptance(selected, directory, evidence, zsh_root):
             (fresh / "generation.log").unlink()
             probe = startup_probe(label, binary, kind, fresh, environment, home / ".bash_profile", login=True)
             passed("fresh login startup and repeated source load once with real Tab", probe=probe)
+
+        registration_states = [
+            ("only daynight registered", "complete -r dn", "compdef -d dn", True),
+            ("only dn registered", "complete -r daynight", "compdef -d daynight", True),
+            ("dn registered to another function", "_other_completion() { :; }; complete -F _other_completion dn", "_other_completion() { :; }; compdef _other_completion dn", True),
+            ("completion function missing", "unset -f _daynight_completion", "unfunction _daynight", True),
+            ("both registrations already correct", ":", ":", False),
+        ]
+        for index, (name, bash_mutation, zsh_mutation, reload) in enumerate(registration_states):
+            target, environment = fixture("registration-" + str(index))
+            rc = target / "registration.rc"
+            invoke_setup(binary, kind, target, environment, ["--shell", kind, "--rc-file", str(rc)])
+            prepare = "autoload -Uz compinit; compinit -D || exit 91; " if kind == "zsh" else ""
+            prepare += '__daynight_seed="$(daynight completion ' + kind + ')" || exit 90; eval "$__daynight_seed" || exit 90; unset __daynight_seed; '
+            prepare += (bash_mutation if kind == "bash" else zsh_mutation) + " || exit 94; "
+            probe = startup_probe(label, binary, kind, target, environment, rc, explicit_source=True, prepare=prepare, expected_loads=2 if reload else 1)
+            passed(name + " preserves both names with real Tab and no duplicate reload", probe=probe)
 
         manual, environment = fixture("manual")
         rc = manual / "manual.rc"

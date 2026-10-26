@@ -185,16 +185,18 @@ flowchart LR
 Bash 管理块使用 POSIX 可解析的外层条件，仅在 `BASH_VERSION` 存在且 shell 为
 交互式时进入 Bash 代码；过程替换置于仅由 Bash 执行的文本中。共享 `.profile`
 由其他 POSIX shell 读取时不解析 Bash 专用语法。块内同时确认补全函数可调用和
-`complete -p daynight` 仍注册该函数，注册缺失时才加载脚本；仅检查函数名不足以
-发现已被清除的注册。
+`complete -p daynight` 与 `complete -p dn` 均准确注册 `_daynight_completion`；
+函数缺失或任一命令的注册缺失、被替换时，重新加载共享脚本并恢复两个入口。
+仅检查函数名或主命令的注册，无法发现短命令仍不可补全的状态。
 
 默认 zsh 路径按 `${ZDOTDIR}/.zshrc` 拼接，未设置时才使用主目录。导出空值
 得到 `/.zshrc`，安装器按 setup 当前工作目录解析相对值；不能先将空字符串解析
 为当前目录。zsh 按自身启动工作目录解析相对值，从其他目录启动会选择另一文件。
 shell 内未导出的自定义值无法从子进程获得，显式 `--rc-file` 为该配置提供准确路径。
 zsh 管理块只在交互式 zsh 中工作，检查
-`_comps[daynight]` 和 `_daynight` 函数，确认实际注册存在后跳过加载。缺少
-`compdef` 时运行 `autoload -Uz compinit` 和正常的 `compinit`，保留不安全目录
+`_comps[daynight]` 与 `_comps[dn]` 均为 `_daynight`，并确认 `_daynight` 函数
+可调用；仅当两个入口均有效时跳过加载。任一注册缺失、被替换或函数缺失时
+重新加载并恢复两个入口。缺少 `compdef` 时运行 `autoload -Uz compinit` 和正常的 `compinit`，保留不安全目录
 检查；初始化失败时不继续注册。已初始化的系统直接复用，不重复执行 `compinit`。
 两种加载块均保留生成、执行和初始化的非零失败状态，不能用过程替换吞掉生成错误。
 
@@ -202,8 +204,10 @@ zsh 管理块只在交互式 zsh 中工作，检查
 
 管理块由 `# >>> daynight completion >>>` 和
 `# <<< daynight completion <<<` 标记。安装器验证标记数目、配对和内部内容，
-完整有效的块被识别为已安装；损坏、重复或被修改的管理块明确失败。文档中的独立
-标准语句 `source <(daynight completion bash)` 或 zsh 对应形式，也被识别为已有
+与当前模板完整一致的块被识别为已安装；损坏、重复或内容不同的管理块明确失败。
+安装器不迁移早期模板；旧块被拒绝后，操作者可删除其标记区段再运行 setup，或
+直接 source 当前生成脚本。旧块需要加载时仍调用当前版本的生成器并注册两个入口，
+其跳过加载的条件保留原来的检查逻辑。文档中的独立标准语句 `source <(daynight completion bash)` 或 zsh 对应形式，也被识别为已有
 配置并保持不变。管理块彼此相互加载时仍检查实际注册，已有注册不会重复生成。
 保留的手写语句不受管理块控制：例如 `.bash_profile` 先 source 含管理块的
 `.bashrc`，之后无条件执行标准手写语句，后者仍会再次生成和加载。安装器不改写
