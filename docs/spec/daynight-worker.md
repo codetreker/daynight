@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录已实现；前台运行、Git 工作区、Herdr、人工管理命令和完整交付仍须运行时验收。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
+本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录和 Git 工作区管理已实现；前台运行、Herdr、人工管理命令和完整交付仍须运行时验收。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
 
 ## 目标与范围
 
@@ -66,9 +66,10 @@ AND no active claim
 
 ### W-06：稳定的 task worktree
 
-- Worktree 由系统创建和销毁，每 task 一个，分支为 `daynight/<taskId>`，目录为 `.worktrees/daynight/<taskId>`。同一仍有效 claim 的继续、重试和恢复始终使用原 worktreeId、分支和成果。
+- Worktree 由系统创建和销毁，每 task 一个，分支为 `daynight/<taskId>`，目录为 `.worktrees/daynight/<taskId>`。首次分支从仓库当前 HEAD 创建，保留分支从原 tip 使用，不 reset；同一仍有效 claim 的继续、重试和恢复始终使用原 worktreeId、分支与未提交成果。
 - 普通退出、失败和崩溃保留仍归属执行的 worktree/native history/config；资源缺失或身份不一致时保留现场并报告，不能新建空目录掩盖恢复失败。
-- 原 claim 终止后统一删除本次 worktree，保留分支、执行历史和交付引用。新 claim 使用新 worktreeId 和原生会话；规范路径仍被旧 claim 占用时等待或报告冲突。创建/删除均核对实际仓库与 claim/worktreeId 标记，只操作本次执行资源。
+- 原 claim 终止后统一删除本次 worktree，保留分支、执行历史和交付引用。新 claim 使用新 worktreeId 和原生会话；规范路径仍被旧 claim 占用时等待或报告冲突。创建/删除均核对实际仓库、分支、claim/worktreeId 标记及目录物理身份，只操作本次执行资源。
+- 创建成功但绑定结果未保存时，只接回匹配原标记的资源；已知原成果缺失、无标记预留目录或路径替换均保留现场并报错。终止删除需原 agent 停止和 workspace 关闭；部分删除保留原归属标记继续清理，删除成功结果未保存可据实际目录/注册缺席核对，不误删同路径新执行。
 
 ### W-07：专用 Herdr 与 agent 执行
 

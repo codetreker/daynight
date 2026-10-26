@@ -1,12 +1,12 @@
 # Worker 架构设计
 
-状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁与 SQLite 记录已实现；前台 worker、Git 工作区、Herdr 和人工管理命令仍待运行时交付。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
+状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录和 Git 工作区管理已实现；前台 worker、Herdr 和人工管理命令仍待运行时交付。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
 
 ## 目标与当前基础
 
 `daynight worker run` 是一个前台常驻 CLI：通过 REST 领取多仓库中允许 Agent 执行的任务，使用系统管理的稳定 worktree 与专用 Herdr 执行，持久化状态并完成恢复和清理。Agent 负责完整交付、验收和最终 claim-bound done，worker 负责归属清单对账、资源与恢复。
 
-设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，认领基础由[归属架构](daynight-worker-claims.md)拥有，worker 的调度及资源运行时仍待实现。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
+设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，认领基础由[归属架构](daynight-worker-claims.md)拥有，worker 的调度及 Herdr 运行时仍待实现。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
 
 | 当前基础 | 复用点 |
 |---|---|
@@ -14,7 +14,7 @@
 | [项目写锁](https://github.com/codetreker/daynight/blob/e533b8610ec38522fd5387e4715b573734bd16c2/packages/daynight-server/internal/core/store/project_tx.go#L29-L39)、[版本检查](https://github.com/codetreker/daynight/blob/e533b8610ec38522fd5387e4715b573734bd16c2/packages/daynight-server/internal/service/task.go#L100-L120) | 同一事务中检查资格、权限、版本和归属。 |
 | [属性 codec](../../packages/daynight-server/internal/taskproperties/codec.go) | 新增预定义属性，保留已有 PR 属性；读与写权限分开。 |
 | [REST client](../../packages/daynight/src/api/client.ts)、[分页范围](../../packages/daynight-server/internal/service/page.go) | 复用认证、int64、游标和不确定写入分类；新任务使用许可/平台候选筛选；完整 workerId 清单提供当前归属，已知 taskId 的读取核对显式写入。 |
-| [review store](../../packages/daynight/src/commands/review/store.ts)、[worktrees](../../packages/daynight/src/commands/review/adapters/worktrees.ts) | 复用必要的持久性、Git/路径原语；worker 自己拥有状态和可提交分支。 |
+| [本机记录](../../packages/daynight/src/commands/worker/store.ts)、[任务 worktree](../../packages/daynight/src/commands/worker/worktrees.ts) | worker 自己拥有状态、稳定可提交分支和原资源恢复，复用通用 Git/路径原语。 |
 
 ## 总体结构
 
@@ -168,7 +168,27 @@ Pending 表示已经取得或找回的 claim 等待名额与启动确认；activ
 
 同一有效 claim 的恢复需要原 worktree、native 会话及冻结配置；清单只恢复身份，不能重建丢失成果。显式管理写入可读具体 taskId 核对版本和未知结果，这不用于自动清理分类。每次请求直接调用进程内 ApiClient，独立有界并参与取消；常驻命令不套普通五分钟总期限。
 
-分支 `daynight/<taskId>` 与目录 `.worktrees/daynight/<taskId>` 由 task 身份确定，同一有效 claim 的中断恢复使用原 worktreeId 和成果。实际 Git common directory、路径、分支与 claimId/worktreeId 归属标记都需核对，禁止套用 review 的 reset/clean。新 claim 使用新 worktreeId 和 native 会话；规范路径仍由旧 claim 占用时等待或报冲突，不复用或擅删。每次终止清理均删除本次 worktree，分支及执行历史保留。
+## Git 仓库与任务工作区
+
+[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)提供 `createWorkerGitManager`，使用现有[仓库地址身份](../../packages/daynight/src/repository/identity.ts)、[Git 子进程](../../packages/daynight/src/repository/git.ts)及物理路径原语。它不拥有 claim 查询、名额、Herdr 或第二份存储；实际 binding 返回给调用者，由同一 tasks 行保存。
+
+| 操作 | 调用条件与结果 |
+|---|---|
+| `prepareRepository(project, operation)` | 缺失目录进行普通 clone；已有目录须是 non-bare Git 工作区，配置路径与真实顶层物理身份一致，单一 origin 与配置 repoUrl 的通用地址身份一致。返回 root/common-directory 与物理身份。 |
+| `prepareWorktree(task, operation)` | 必须是无 cleanup/control 的 active 记录。新执行在固定路径创建；创建结果丢失时，仅接回匹配同一 claim/worktreeId 的原注册。返回实际 `WorktreeBinding`；实际 task worktree 的 origin 也须匹配当次 repoUrl，包括 worktree-specific 配置。 |
+| `verifyWorktree(task, operation)` | 必须已有持久 binding，核对原仓库、实际 task worktree 的 origin、路径、分支和所有权；缺原目录或注册明确失败，不新建替代成果。 |
+| `removeWorktree(task, proof, operation)` | 调用方须确认 terminal、agentStopped、workspaceClosed，模块再核对原归属后删除。实际删除失败直接暴露，只有目录和注册均不存在才成功。 |
+| `dispose()` | 删除本管理器在指定临时目录内创建的空 hooks/template 目录。 |
+
+分支 `daynight/<taskId>` 与目录 `.worktrees/daynight/<taskId>` 由 task 身份确定。首次分支从仓库当前 HEAD 创建；已有保留分支从原 tip 创建新工作区，不 reset 分支。同一有效 claim 的中断恢复使用原 worktreeId、分支和 dirty 成果，不执行 review 的 reset/clean。新 claim 使用新的 worktreeId 和 native 会话；规范路径仍被旧 claim 或外来目录占用时明确冲突，不复用或擅删。
+
+创建先独占预留空 leaf，记录其 device/inode，再通过 `git worktree add --lock --reason` 在 Git 自己的 linked-worktree 管理目录中持久保存 `daynight-worker:` JSON 标记。标记包含 serverOrigin/projectId/taskId/claimId/worktreeId 及 leaf/root/common 的 device/inode。每次操作核对原服务和执行身份、root/common 物理身份、确定的分支、leaf 身份、`.git` 指针与注册 backpointer；缺标记、注册歧义、符号链接或替换目录都拒绝。
+
+Git 创建成功而 SQLite 尚未保存 binding 时，可凭完整原标记核对同一次执行；仅有预留空目录而 Git 尚未写标记时，没有足够归属证明，保留目录并报告冲突。已知原执行目录丢失时不 clone 或新建 worktree 掩盖。Clone 失败或取消后的部分目录保留并显示实际错误，不把现有内容当作空路径重试。
+
+终止清理仍核对原仓库、完整所有权与物理绑定，但不要求 task-local origin 保持不变；仅改变任务工作区的 remote 不撤销原清理责任。删除先保留 Git 注册和标记，对仍匹配原 inode 的 leaf 执行递归删除；部分删除失败仍保留管理标记，下一次只续原清理。确认 leaf 已不存在后才定点移除该条 locked Git 注册，不运行全局 prune。删除成功但结果未记回 SQLite 时，目录和注册均无可确认已完成；任何同路径的新目录、不同标记或不同 inode 都阻止旧清理。分支和历史保留，done/release/transfer 使用相同规则。
+
+所有 Git 子进程继承调用者的有界 `Operation`，复用进程组停止和错误链。Worker 的设置操作清除继承的仓库选择器、命令配置与 trace 注入，使用自己空 hooks 目录，clone 使用空 template，并关闭自动 submodule 递归；正常全局认证和传输配置仍继承。共享 runner 的环境与期限覆盖按调用传入，普通仓库发现调用保持原有默认行为。临时目录只属于该管理器，不能改写用户全局 Git/agent 配置。
 
 ## Herdr 与 agent
 
