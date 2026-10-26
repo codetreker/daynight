@@ -43,7 +43,11 @@ attributable to [PR #70](https://github.com/codetreker/daynight/pull/70) and
 results retain their tested source and do not establish a later pipeline's
 behavior. The replacement keeps that child budget and all acceptance gates while
 using one early normal dev-ci source build and delaying capacity until other
-work and container cleanup have finished.
+work and container cleanup have finished. The later
+[coverage admission decision](2026-10-26-web-coverage-resource-admission.md) keeps
+harness overlap but makes CI Vitest/V8 wait for native and container preparation;
+the historical two-worker comparison below remains evidence for that worker
+budget, not a guarantee about later hosted duration.
 
 Native Git fixture reuse extends the existing per-file immutable bare seed.
 Sparse suites prepare their shared source graph and refs once before copying;

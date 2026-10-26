@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { getEventListeners } from 'node:events';
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join } from 'node:path';
-import { setTimeout as delay } from 'node:timers/promises';
+import { setImmediate as nextTurn, setTimeout as delay } from 'node:timers/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { processIdentity } from './identity.mts';
-import { launchNativeServer, restartContainerServer } from './runner.mts';
+import { launchNativeServer, restartContainerServer, waitForContainerPreparation } from './runner.mts';
 import type { CombinedCommand } from './auth-combined-target.mts';
 import type { RestartReceipt } from './auth-combined.mts';
 
@@ -108,6 +109,103 @@ const readyReceipt = async (path: string, running: ReturnType<typeof start>): Pr
     await delay(10);
   }
 };
+
+const preparationFixture = async (value: Fixture) => {
+  const id = runId();
+  const directory = join(value.directory, id, 'container');
+  const callback = await processIdentity(process.pid);
+  if (callback === null) throw new Error('The test callback process is unavailable.');
+  const devCiRunId = '20261021123457-1234-56789';
+  const ready = { acceptanceRunId: id, devCiRunId, sourceGitSha, callback, readyAt: new Date().toISOString() };
+  const publish = async (name: string, contents: string) => {
+    await mkdir(directory, { recursive: true });
+    await writeFile(join(directory, `${name}.next`), contents);
+    await rename(join(directory, `${name}.next`), join(directory, name));
+  };
+  const options = (signal: AbortSignal) => ({ acceptanceRunId: id, sourceGitSha, devCiRunId: () => devCiRunId, signal });
+  return { directory, callback, ready, devCiRunId, publish, options };
+};
+const pollingPreparation = async (signal: AbortSignal): Promise<void> => {
+  for (let attempt = 0; attempt < 1_000; attempt++) {
+    if (getEventListeners(signal, 'abort').length !== 0) return;
+    await nextTurn();
+  }
+  throw new Error('Preparation waiter did not start abortable polling.');
+};
+
+test('container preparation waits for its owned announcement and accepts atomic readiness without granting browser permission', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  await fixture(async (value) => {
+    const prepared = await preparationFixture(value);
+    const controller = new AbortController();
+    let announced: string | undefined;
+    await prepared.publish('callback.json', JSON.stringify(prepared.callback));
+    await prepared.publish('ready.json', JSON.stringify(prepared.ready));
+    const waiting = waitForContainerPreparation(prepared.directory, { ...prepared.options(controller.signal), devCiRunId: () => announced });
+    await pollingPreparation(controller.signal);
+    assert.equal(getEventListeners(controller.signal, 'abort').length > 0, true);
+    announced = prepared.devCiRunId;
+    await waiting;
+    assert.deepEqual((await readdir(prepared.directory)).sort(), ['callback.json', 'ready.json']);
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+    assert.equal(await readFile(value.commands, 'utf8'), '');
+  });
+});
+
+test('container preparation rejects malformed, stale, missing and mismatched callback records', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  await fixture(async (value) => {
+    const prepared = await preparationFixture(value);
+    const controller = new AbortController();
+    const options = prepared.options(controller.signal);
+    for (const invalid of [
+      null, [], { ...prepared.ready, extra: true }, { ...prepared.ready, readyAt: 'not-a-date' },
+      { ...prepared.ready, acceptanceRunId: runId() },
+      { ...prepared.ready, devCiRunId: '20261021123457-4321-56789' },
+      { ...prepared.ready, sourceGitSha: 'a'.repeat(40) },
+      { ...prepared.ready, callback: null },
+      { ...prepared.ready, callback: { ...prepared.callback, startTicks: `${prepared.callback.startTicks}1` } },
+    ]) {
+      await prepared.publish('callback.json', JSON.stringify(prepared.callback));
+      await prepared.publish('ready.json', JSON.stringify(invalid));
+      await assert.rejects(waitForContainerPreparation(prepared.directory, options), /[Cc]ontainer preparation|recorded process identity/);
+    }
+    await prepared.publish('ready.json', '{');
+    await assert.rejects(waitForContainerPreparation(prepared.directory, options), SyntaxError);
+    await prepared.publish('ready.json', JSON.stringify(prepared.ready));
+    await prepared.publish('callback.json', '{');
+    await assert.rejects(waitForContainerPreparation(prepared.directory, options), SyntaxError);
+    await prepared.publish('callback.json', JSON.stringify({ ...prepared.callback, executable: '/different-callback' }));
+    await assert.rejects(waitForContainerPreparation(prepared.directory, options), /recorded live process/);
+    const stale = { ...prepared.callback, startTicks: `${prepared.callback.startTicks}1` };
+    await prepared.publish('callback.json', JSON.stringify(stale));
+    await prepared.publish('ready.json', JSON.stringify({ ...prepared.ready, callback: stale }));
+    await assert.rejects(waitForContainerPreparation(prepared.directory, options), /recorded live process/);
+    await prepared.publish('ready.json', JSON.stringify(prepared.ready));
+    await rm(join(prepared.directory, 'callback.json'));
+    await assert.rejects(waitForContainerPreparation(prepared.directory, options), { code: 'ENOENT' });
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+  });
+});
+
+test('container preparation polling preserves cancellation and rejects invalid invocation ownership', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
+  await fixture(async (value) => {
+    const prepared = await preparationFixture(value);
+    const controller = new AbortController();
+    const reason = new Error('Preparation admission cancelled.');
+    const waiting = waitForContainerPreparation(prepared.directory, prepared.options(controller.signal));
+    const rejection = assert.rejects(waiting, (error) => error === reason);
+    await pollingPreparation(controller.signal);
+    controller.abort(reason);
+    await rejection;
+    assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+    await prepared.publish('ready.json', '{');
+    await assert.rejects(waitForContainerPreparation(prepared.directory, prepared.options(controller.signal)), (error) => error === reason);
+    const valid = prepared.options(new AbortController().signal);
+    await assert.rejects(waitForContainerPreparation('relative', valid), /ownership/);
+    await assert.rejects(waitForContainerPreparation(prepared.directory, { ...valid, acceptanceRunId: 'invalid' }), /ownership/);
+    await assert.rejects(waitForContainerPreparation(prepared.directory, { ...valid, sourceGitSha: 'short' }), /ownership/);
+    await assert.rejects(waitForContainerPreparation(prepared.directory, { ...valid, devCiRunId: () => 'invalid' }), /announced/);
+  });
+});
 
 test('importing the acceptance runner executes no commands or signal registration', { skip: process.platform === 'win32' }, async () => {
   await fixture(async (value) => {

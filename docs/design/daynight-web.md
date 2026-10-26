@@ -709,10 +709,26 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 web job 在统一验收前执行 dev-ci 生命周期 fixture，随后仅调用 `scripts/ci.mts`。
 workflow 先选择官方 Ubuntu package archives，再启动统一验收；该镜像源变更由
 [PR #148](https://github.com/codetreker/daynight/pull/148) 交付。
-入口把固定 Chromium 的 `install --with-deps chromium` 与测试准备 callback 交给共享 runner。测试准备先执行包内 `test:harness`，再执行 `test:coverage`，每段分别限时 180 秒；前者的运行时长不占用后者的预算，全部 Node harness、Vitest 文件和严格覆盖率检查仍必需。仅 `test:coverage` 子进程设置 `VITEST_MAX_WORKERS=2`，保留 `forks` pool 和文件隔离。runner 同时启动测试准备、原生 UI/Go/PostgreSQL 准备、容器 callback 与正常 dev-ci 源码构建/启动；仅在两段测试都通过后启动浏览器安装，避免 apt 与 Chromium 下载争用 5 秒 UI 测试时限。浏览器安装（含 Linux 依赖）限时 600 秒，任一命令失败或超时都使验收失败。官方包源下载时间仍会波动，
-600 秒只容纳已观测的慢速安装；web job 20 分钟总上限继续约束完整验收。浏览器准备
-仍与原生及 dev-ci 准备并行。dev-ci 继续拥有本次唯一镜像及运行镜像身份校验和完整
-shell 清理。
+入口把固定 Chromium 的 `install --with-deps chromium` 与测试准备 callback 交给共享 runner。
+runner 同时启动测试 callback、原生 UI/Go/PostgreSQL 准备、容器 callback 与正常 dev-ci
+源码构建/启动。CI 先执行包内 `test:harness`，与准备过程保持重叠，再调用惰性的
+`waitForPreparations()`，等原生准备完成及 `containerPrepared()` 验证现有原子
+`container/ready.json` 后，才启动完整 `test:coverage`。runner 的
+`waitForContainerPreparation()` 校验 run/source 及已登记、仍存活的 callback，记录
+`container-preparation` 阶段，并与容器退出竞争；只在调用方请求时观察准备状态，不增加
+producer 协议。
+默认本地 acceptance 不请求此 gate，保持既有调度。准备完成只准入覆盖率，不授予容器
+浏览器执行权；不能等待容器完整结束，否则会与原生功能后的浏览器许可形成依赖环。
+
+两个质量命令分别限时 180 秒，harness 和等待准备的耗时不占用 Vitest 命令的预算，
+全部 Node harness、Vitest 文件和严格覆盖率检查仍必需。仅 `test:coverage` 子进程设置
+`VITEST_MAX_WORKERS=2`，保留 `forks` pool 和文件隔离。两段命令通过后才启动浏览器
+安装，避免 apt 与 Chromium 下载争用 5 秒 UI 测试时限；安装含 Linux 依赖限时 600 秒。
+失败和取消唤醒准入等待并排空所有已启动阶段。容器执行许可等待保持 900 秒，web job
+总上限保持 20 分钟。官方包源下载时间仍会波动，命令超时继续使验收失败。dev-ci 仍拥有
+本次唯一镜像及运行镜像身份校验和完整 shell 清理。
+[覆盖率资源准入决策](../../.agents/notes/implemented/testing/2026-10-26-web-coverage-resource-admission.md)
+拥有这一准备条件及证据边界；调度明确不等于已测得 CPU/I/O 原因或保证 hosted 运行更快。
 
 原生功能阶段只等待原生服务和浏览器就绪；其二十九个场景及浏览器回收成功后，runner
 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器执行许可。

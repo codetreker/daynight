@@ -86,7 +86,9 @@ without shards. `scripts/acceptance/runner.mts` exports `runAcceptance`,
 signal handlers on import. The thin `scripts/acceptance.mts` CLI and `scripts/ci.mts`
 pass explicit cancellation controllers to that runner. CI supplies callbacks for
 pinned Chromium installation and test preparation through the runner's coverage
-callback. Package `test:harness` owns all Node acceptance/tooling harness tests; `test:coverage` owns the complete
+callback. That callback receives a lazy `waitForPreparations()` operation; CI
+runs the harness, requests the preparation gate, then runs coverage. Package
+`test:harness` owns all Node acceptance/tooling harness tests; `test:coverage` owns the complete
 Vitest/V8 suite and strict statement checker. Package `test` and root `web:test`
 compose both serially. CI uses the same two canonical commands serially, each
 bounded at 180 seconds, so the harness cannot consume the Vitest/coverage budget.
@@ -104,12 +106,20 @@ and the original schedule of the
 Their real targets, complete scenarios, coverage, performance and cleanup
 requirements continue to apply.
 
-The runner starts the serialized test preparation, native production
-UI/Go/PostgreSQL preparation, container callback and normal dev-ci source
-build/start concurrently. Browser and Linux dependency installation starts only
-after both test phases pass, removing apt and browser downloads from the 5-second UI-test deadline. Browser installation still
-overlaps native and dev-ci preparation. The existing shell runner remains
-authoritative for the unique image, running-image check and full stack cleanup.
+The runner starts the test callback, native production UI/Go/PostgreSQL
+preparation, container callback and normal dev-ci source build/start concurrently.
+CI keeps the harness in that overlap, then admits Vitest/V8 only after native
+preparation and validated container prepared state. The internal
+`containerPrepared()` phase observes the existing ready record only when the
+coverage callback requests the gate and races container exit. It does not wait
+for complete container acceptance. Callbacks that ignore the gate, including
+default local acceptance, retain their existing schedule. The
+[coverage admission decision](2026-10-26-web-coverage-resource-admission.md)
+partially supersedes this pipeline's original full test/preparation overlap.
+Browser and Linux dependency installation starts only after both test commands
+pass, removing apt and browser downloads from the 5-second UI-test deadline.
+The existing shell runner remains authoritative for the unique image,
+running-image check and full stack cleanup.
 Native functional browser work waits only for the native process, shared installed
 CLI and browser preparation. Its twenty-nine scenarios and immediate browser
 recovery must pass before the runner releases the container browser.
@@ -118,8 +128,9 @@ If either test command or another active phase fails while browser preparation
 is waiting, the pipeline marks cancellation and the browser callback checks it as
 soon as test preparation drains; it never starts the installer. The
 [pipeline regressions](../../../../packages/daynight-web/scripts/acceptance/pipeline.test.mts)
-verify coverage-before-browser ordering, cancellation while waiting, continued
-native/container overlap, browser-install failure handling, and capacity after
+verify harness/preparation overlap, coverage admission after both preparations,
+prepared-state versus container-completion ordering, early exit and cancellation
+while waiting, browser-install failure handling, and capacity after
 full container cleanup. Their completion observer records rejection before
 controlled failures are released, so teardown waits do not leave a rejected
 pipeline promise unobserved.
@@ -128,7 +139,8 @@ Release is an atomic `container/container-permission.json` receipt with schema 1
 phase `native-functional-cleaned`, acceptance run ID, dev-ci run ID and source
 SHA. The container callback records its process identity before waiting and
 inventories browsers only after validating that exact permission. Its
-`ready.json` records diagnostic timing and grants no permission. The callback
+`ready.json` identifies prepared state and records timing; validated observation
+can admit CI coverage but grants no browser permission. The callback
 runs the twenty-four container functional scenarios, confirms browser cleanup and
 returns to the normal shell exit path. The outer stage waits for full dev-ci
 cleanup and browser recovery before completing. The native callback fixture
@@ -256,9 +268,10 @@ outcomes remain tied to their source, environment and PR/CI run.
 
 **Run browser preparation concurrently with coverage.** This hides some setup
 time, but main run 39798535790 timed out a 5-second progressive visibility test
-while Playwright downloaded Chromium. Waiting for coverage isolates those tests
-from browser downloads and still overlaps browser setup with native and dev-ci
-preparation.
+while Playwright downloaded Chromium. The original ordering separated those
+tests from browser downloads while retaining independent native and dev-ci
+preparation. Coverage admission now also constrains CI preparation before the
+coverage command.
 
 **Keep the 180-second browser-install deadline.** PR run 39794986474 passed with
 the official archives under that bound, but the later main run 39801658628 needed
@@ -267,10 +280,12 @@ archive. The command timed out at three minutes before Chromium installation
 started. A 600-second command deadline accommodates this measured preparation
 while preserving the web job's 20-minute overall limit.
 
-**Wait for all preparations before starting browser installation.** This would
-also separate browser downloads from coverage, but would serialize independent
-native and dev-ci work. Waiting only for coverage protects the short UI-test
-deadline while retaining the other preparation overlap.
+**Wait for all preparations before starting browser installation.** The original
+pipeline rejected that direct dependency because it would serialize independent
+native and dev-ci work; waiting only for coverage separated browser downloads
+from the short UI tests. The later coverage-admission decision narrows CI
+coverage overlap while retaining concurrent native/container preparation and
+unchanged scheduling for callers that do not request that gate.
 
 **Remove `--with-deps` in CI.** This avoids apt work but leaves the runner without
 the Linux libraries and fonts that Playwright prepares for Chromium. Browser
@@ -317,9 +332,12 @@ which builds fresh native artifacts and owns their exact identity and lifetime.
 
 ## Consequences
 
-Both test phases complete before the network-dependent browser preparation
-begins, while test and browser preparation continue to overlap native service and
-dev-ci preparation. The official Ubuntu archives selected by PR #148 replace the slow Azure mirror, though run
+Both test commands complete before network-dependent browser preparation begins.
+The harness overlaps native service and dev-ci preparation; CI coverage waits for
+their prepared boundary. This makes its admitted preparation conditions explicit
+without asserting a measured CPU/I/O cause or guaranteed hosted speedup. The
+coverage gate changes neither browser permission nor the default local schedule.
+The official Ubuntu archives selected by PR #148 replace the slow Azure mirror, though run
 39801658628 shows that transfers from the official archive can still take several
 minutes. The 600-second browser-install bound accommodates the measured 4-minute-
 42-second apt phase. Harness and Vitest/strict-checker commands are separately

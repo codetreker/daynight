@@ -1243,10 +1243,16 @@ the gate. Deliberately unselected jobs report `skipped`. When selected,
 builds and production-browser acceptance. The CI entry
 `node packages/daynight-web/scripts/ci.mts` uses the same acceptance runner as
 `pnpm web:acceptance`. CI supplies pinned Chromium installation, including Linux
-dependencies, and serialized `test:harness` / `test:coverage` commands as
-preparation callbacks. Both test phases must finish successfully before browser
-installation starts, so apt and Chromium downloads do not compete with the
-5-second UI-test deadline. The CI
+dependencies, and the canonical `test:harness` / `test:coverage` commands through
+its coverage callback. The harness overlaps native and dev-ci preparation. Before
+starting Vitest/V8, CI invokes the callback's lazy `waitForPreparations()` gate:
+native preparation must finish and `containerPrepared()` must validate the existing
+atomic `container/ready.json` against run/source/process ownership. The wait races
+container exit; it never waits for the entire container browser lifecycle.
+Readiness admits coverage, not browser execution. Callbacks that do not invoke
+the gate retain their prior schedule, including default local acceptance.
+Both test commands must finish successfully before browser installation starts,
+so apt and Chromium downloads do not compete with the 5-second UI-test deadline. The CI
 workflow selects official Ubuntu package archives before this step, as delivered
 in [PR #148](https://github.com/codetreker/daynight/pull/148). The Node harness and
 Vitest/strict-checker commands each have a separate 180-second deadline and run
@@ -1255,10 +1261,13 @@ consuming the Vitest/coverage phase's budget; they do not omit files or checks.
 Only the `test:coverage` child receives `VITEST_MAX_WORKERS=2`, retaining its `forks`
 pool and per-file isolation. Browser installation, including Linux dependencies
 and Chromium, has a 600-second command deadline. A failure or timeout in any of
-these commands fails acceptance. Browser installation still overlaps native
-production assets, Go/PostgreSQL and one normal
-dev-ci source build/start. The dev-ci runner remains the owner of the built/running
-image identity and full cleanup; the job retains its 20-minute overall bound.
+these commands fails acceptance. Native preparation and one normal dev-ci source
+build/start still begin concurrently. The dev-ci runner remains the owner of the
+built/running image identity and full cleanup; the container browser retains its
+900-second permission wait and the job retains its 20-minute overall bound.
+Admission failure or cancellation wakes waiting stages and drains all started
+work. The [coverage admission decision](../../.agents/notes/implemented/testing/2026-10-26-web-coverage-resource-admission.md)
+owns the resource condition and its evidence limits.
 
 Native functional checks start after the native process and browser are ready.
 Their browser cleanup must pass before an atomic, run/source-bound permission

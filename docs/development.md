@@ -451,12 +451,19 @@ Native CLI jobs typecheck and build once before
 running ordinary and installed tests against the same output. After deployment
 fixture checks, the web job uses one acceptance pipeline. Test preparation,
 native UI/Go/PostgreSQL preparation and the normal dev-ci source build start
-concurrently. Test preparation runs the Web Node harness and then the complete
-Vitest/V8 suite with its strict statement checker as separate required commands,
-each with a 180-second deadline. Installation of pinned Chromium and Linux
-dependencies starts only after both test phases pass, then overlaps the remaining
-native/dev-ci preparation. Browser installation has a 600-second deadline and the
-web job 20 minutes; a nonzero exit or timeout in either test phase fails acceptance.
+concurrently. Test preparation runs the Web Node harness, awaits its lazy
+`waitForPreparations()` gate, then runs the complete Vitest/V8 suite and strict
+statement checker. The gate waits for native preparation and the validated
+container prepared record, racing container exit; it does not wait for full
+container acceptance or grant browser permission. Only callers that request the
+gate add this dependency, so default local acceptance retains its schedule.
+The two quality commands each retain a 180-second deadline. Pinned Chromium and
+Linux dependency installation starts only after both commands pass and retains
+its 600-second deadline. The container permission wait remains 900 seconds and
+the web job 20 minutes; a nonzero exit or timeout fails acceptance.
+The [coverage admission decision](../.agents/notes/implemented/testing/2026-10-26-web-coverage-resource-admission.md)
+records the explicit resource condition without claiming a measured contention
+cause or a universal runtime improvement.
 Only the Vitest/coverage subprocess uses two workers through its copied child
 environment, retaining its `forks` pool and file isolation. Native functional checks
 and their browser cleanup precede the container browser checks; full container cleanup
