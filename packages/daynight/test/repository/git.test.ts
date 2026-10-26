@@ -119,7 +119,7 @@ describe("repository Git discovery", () => {
     });
     expect(result.exitCode).toBe(1); expect(result.stdout).toBe(""); expect(process.env.GIT_CONFIG_COUNT).toBe("1");
     expect((await runRepositoryGit(root, ["config", "--get", "fixture.value"], operation())).stdout.trim()).toBe("injected");
-    expect((await runRepositoryGit(root, ["rev-parse", "--show-toplevel"], operation(), { environment: { GIT_WORK_TREE: "wrong" } })).stdout.trim()).toBe(root);
+    expect(path.normalize((await runRepositoryGit(root, ["rev-parse", "--show-toplevel"], operation(), { environment: { GIT_WORK_TREE: "wrong" } })).stdout.trim())).toBe(root);
   });
 
   it("selects per-command Git configuration without changing later default URL rewrites", async () => {
