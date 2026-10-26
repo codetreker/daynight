@@ -168,7 +168,9 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 启动先解析配置、取得排他锁和稳定身份、打开 SQLite 并校验安装包 managed 技能。已授权收尾的发现/job 可立即启动；任何 /me、项目或其他网络请求之前，原已知账号范围的持久收尾仍能推进，未知范围意图保留。运行时使用启动时固定的服务凭据调用既有 GET /api/v1/me，取得认证 userId 后才解析项目、读取自有清单或认领。后续成功响应（包括空分页）均核对既有 Daynight-User-ID 与固定 UID 一致；缺失或不匹配是失败，不产生空清单结论。
 
-每轮完整读取已登记原服务项目中的当前认证 userId/workerId active claim 清单，再确保 Herdr 并枚举 owned 资源。清单不附加 status/ready/allowAgents/platform 过滤，任一项目或页失败则本轮不产生可用于新增终止决定的归属集合。原任务 userId 必须与清单 principal 相同，才可因缺席新建清理或恢复执行；同 OS 的 workerId 不代表同一 Daynight 账号。
+本地收尾与服务工作使用不同范围：已提交 cleanup/source control 和正常 shutdown 覆盖同 workerId 的所有原服务记录；清单、候选、认领、新缺席决定和普通恢复只面向当前 serverUrl。切换 serverUrl 后，原服务 A 已提交的本地截止/停止仍继续，不请求 A API，也不向 B 查询 A 的记录；原 scope 始终保留完整 origin/project/task/claim 身份，不增加凭据登记或多服务认领。
+
+每轮完整读取当前服务已登记项目中的当前认证 userId/workerId active claim 清单，再确保 Herdr 并枚举 owned 资源。清单不附加 status/ready/allowAgents/platform 过滤，任一项目或页失败则本轮不产生可用于新增终止决定的归属集合。原任务 userId 必须与清单 principal 相同，才可因缺席新建清理或恢复执行；同 OS 的 workerId 不代表同一 Daynight 账号。
 
 ```text
 远端自己有、本机没有 → 找回实际 claim → pending / 原执行缺证据暂停
@@ -178,7 +180,7 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 完成原记录对账后 → 按仓库轮转领取新 claim → pending → active → 资源
 ```
 
-运行时在 /me 和配置仓库的远端解析/准备之前启动轻量收尾发现循环，只为已持久保存的 cleanup/source control 意图创建瞬时异步 job；实际推进仍须原 userId 已知，不能借后台继续补授权未知范围的意图。每个完整 origin/project/task/claim 同时至多一个 job，调用 `advanceCommittedCleanups(identity)`；各 job 按自己的原截止独立推进，每次等待最多 1000ms，最近原截止更早时缩短等待。一个 task 的 RPC 等待不阻塞其他 task 的下一次收尾推进，不以等待整批 job 完成作为下一轮前置。同一 task 与普通循环仍共用串行边界，外部步骤各自有界。发现和 job 都在同一前台进程内，不增加持久队列、表、台账或 OS daemon。它们不查询服务以新增缺席判断，也不认领任务；服务读取失败不撤销已有收尾责任，新终止决定仍要求完整 inventory。
+运行时在 /me 和配置仓库的远端解析/准备之前启动轻量收尾发现循环，只为同 workerId 各 origin 已持久保存的 cleanup/source control 意图创建瞬时异步 job；实际推进仍须原 userId 已知，不能借后台继续补授权未知范围的意图。每个完整 origin/project/task/claim 同时至多一个 job，调用 `advanceCommittedCleanups(identity)`；各 job 按自己的原截止独立推进，每次等待最多 1000ms，最近原截止更早时缩短等待。一个 task 的 RPC 等待不阻塞其他 task 的下一次收尾推进，不以等待整批 job 完成作为下一轮前置。同一 task 与普通循环仍共用串行边界，外部步骤各自有界。发现和 job 都在同一前台进程内，不增加持久队列、表、台账或 OS daemon。它们不查询服务以新增缺席判断，也不认领任务；服务读取失败不撤销已有收尾责任，新终止决定仍要求完整 inventory。
 
 同一已核验原账号范围内，自动终止判断仅为原 claimId 缺席；不按 task 状态或单 task GET 分类 done/release/transfer。同 task 的新 claim 不能保护旧 claim。记录中的终止/管理意图不可被普通恢复撤销；显式 source 控制的服务端操作仍由人工管理交付拥有。Herdr 中有本 worker 标记却缺本地行的资源需要原项目绑定才能登记并收尾；归属无法证明时保留并报告。
 
@@ -186,9 +188,13 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 新任务候选同时使用 ready、allowAgents=true 与实际兼容平台，条件在服务端排序和分页前组合；worker 不修改自动执行许可。Released 历史候选跳过但继续分页。仓库之间轮转，同仓库遵守服务端顺序，配置为空或无合格候选不占名额。项目未决 claimAttempt 阻止该项目继续认领，但不替代其他项目的调度。
 
+当前 B 服务的新 claim 遇到同 worker 的旧规范路径时，只用只读 Git 所有权核对归属前驱；不能因相同 task UUID 或路径采纳旧会话/配置。实际新 claim 冻结 B 的新配置并保持 pending，只要同 worker 任一 origin 仍有相同 task UUID 的 active 前驱就不启动；等待旧本地责任 done 后再创建新资源。完整 origin/project/task/claim 身份不被这个等待条件合并。
+
 项目映射先落库，具体请求先保存未知结果 fence，服务端原子授予后才登记 pending；确认名额/条件并提交 active 后才创建 worktree 和 Herdr 资源。等待、超限暂停、原执行恢复与清理均保留 active 责任和名额；找回已有/未知资源而缺配置的执行同样保留责任。降低并发不抢占已开始执行。同 task 的旧 active 未清理前新 pending 不启动。
 
 每个 origin/project/task 的推进串行，tick 不重入；已消费中断 shutdown 的 task 在普通执行前刷新本地 Herdr 资源清单。清单是本轮已有执行的对账输入；新增 claim 发生在其后，不能被本轮旧清单清理。原 claim 已存在且 agent 实际存活时只观察和重连。确需重新启动时核对原 worktree/native history/config，按持久预算恢复；未知 launch/prompt 只观察，不能推为未派发或启动第二个 agent。
+
+普通操作只有沿错误 cause 链确认源自当前 worker cancellation 的中断才按正常取消传播，进入退出而不新增故障暂停。真实旧暂停、已消耗预算和未知外部动作记录保持原义；不能把 signal 已取消之后遇到的任意错误都归为正常取消。只读操作中断、成功 shutdown 与原会话恢复不因此形成新的 fault pause。
 
 执行摘要更新绑定原 claim 与观察版本，先保存提交责任再调用服务端。未知更新先用后续权威观察核对，不重发；这不增加业务/PR 验收或完成解释器。业务完成仍由 agent 的最终 claim-bound done 表达，随后其原 claim 离开自有清单触发资源清理。
 
@@ -301,7 +307,7 @@ Herdr 冷恢复可保留 workspace/pane，却重新创建 terminal 和 shell。`
 
 这类已有或未知 native 执行缺少原观察、查询被拒、仍存活或身份不匹配时均不能返回 stopped。必要的强制停止仍严格针对原 binding：在同一 owned workspace 创建一个临时空 tab/pane 作为 anchor，关闭原 agent pane，再确认原 processIds 不再执行，最后才允许关闭 workspace。该 anchor 不启动 agent、不创建第二实例，保留任务工作区直到停止核实完成；中断后沿原绑定及已保存观察续核对。不会用裸持久 PID 直接发 kill，也不声称已证明每个可能逃逸的临时工具都结束。
 
-正常退出跳过严格未启动的 pending 后继，保留其 pending 和原认领，不为它们新建 cleanup 或提升 active。其余任务的收尾初始化与推进分别隔离；一个记录的初始化失败不阻止其他已知 agent 停止。账号范围未知的终止意图、无法确认停止或未归属本机未完成记录的 Herdr 资源会使实例停止保持未确认，保留私有实例。
+正常退出处理同 workerId 各 origin 的本地原执行，跳过严格未启动的 pending 后继，保留其 pending 和原认领，不为它们新建 cleanup 或提升 active。其余任务的收尾初始化与推进分别隔离；一个记录的初始化失败不阻止其他已知 agent 停止。账号范围未知的终止意图、无法确认停止或未归属本机未完成记录的 Herdr 资源会使实例停止保持未确认，保留私有实例。
 
 整个 worker 的退出在各任务停止后调用 `stopInstance`。server.stop ACK 只表示请求收到；仍须核对 API/client 实际关闭，并在本调用持有 live child handle 时等待其 close。重连实例没有 child handle 时返回 ownedChildClosed:null，不能伪称取得进程退出事件。服务不确定结果只继续观察，不重发 stop 或按持久 PID 杀进程。
 

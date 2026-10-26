@@ -843,6 +843,15 @@ records need the original account/identity inspected; do not remove local state
 or regenerate workerId to make the mismatch disappear. The running process
 keeps its startup credential; restart after an intended account change.
 
+Changing serverUrl also separates local responsibility from remote work. The
+worker queries and acquires only on its current service. Previously committed
+cleanup deadlines and normal shutdown cover that worker's local records across
+all original services, without calling an old API or asking the new service
+about old records. A newly granted current-service claim freezes its new
+configuration and waits pending behind any active predecessor with the same task UUID for that
+worker, including another origin. Read-only Git ownership attributes
+an occupied canonical path; it does not adopt the old conversation or config.
+
 The foreground stderr output and JSONL logs identify project/task/claim, platform,
 waiting, pause and cleanup errors. The log path is printed at startup. An
 unconfirmed claim request, native launch or input is retained for observation;
@@ -891,6 +900,12 @@ ID is missing, shutdown preserves its old binding, launch and PID evidence and
 pauses; it does not turn that execution into a first launch. Proven
 never-started work and executions with a known original native ID retain their
 normal recovery path.
+
+A causal worker cancellation propagates into shutdown without adding a fault
+pause. Existing real pauses, recovery budget and unknown-action records keep
+their meaning; an unrelated error is not normal cancellation merely because the
+signal is already aborted. Read-only interruption followed by successful
+shutdown can resume the original session through the normal recovery path.
 
 Pending successors whose resources, workspace and native launch are proven
 never started stay pending on normal exit. A successful complete inventory from

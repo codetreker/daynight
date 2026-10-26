@@ -103,12 +103,15 @@ AND no active claim
 - 启动和持续对账通过既有 task list 的 workerId 筛选，成功汇总当前认证用户/worker 全部项目与分页的有效 active claim；不附加候选资格条件，不把失败或部分清单当成空集合。原 claimId 不在完整清单就触发相同本地清理，不按 task 状态或单 task GET 分类原因。同 task 新 claim 不保护旧 claim，完成本轮对账后才登记新领取。
 - Worker 复用既有 GET /api/v1/me 核验启动凭据的 UID，项目和清单请求前固定该 principal，并对后续成功响应（包括空页）核对 Daynight-User-ID。新缺席清理和恢复必须属于原 userId；同 OS 换成另一个账号的空清单不能结束旧账号工作，须保留/暂停。旧范围未知的 terminal/control 意图不可由当前登录补授权；ordinary/shutdown 只可由完整身份匹配的实际自有 claim 学得未知 UID。
 - 原生启动、初始 prompt 和远端摘要更新在外部调用前持久记录可能提交的责任。确定未派发的同一次尝试可以恢复其未提交事实以便后续明确决定；实际未知结果只观察，不自动重放，也不覆盖成 never。
+- 服务清单、新缺席判断、普通恢复和认领只使用当前 origin；已提交 cleanup/source control 与正常退出则覆盖同 workerId 各原 origin 的本地责任。切换 serverUrl 不抛弃旧截止，不请求旧服务或向新服务查询旧记录，不增加多服务凭据/认领注册。
 - 同一仍归属执行的恢复核对 SQLite、Git 和 Herdr 的原资源与冻结配置；新发现 claim 先登记 pending。显式写入的版本和未知结果仍可按 taskId 读取核对，不确定的外部动作不能按“未发生”重做。
 - 已持久保存的 cleanup/source control 意图由前台轻量发现循环交给每完整 claim 至多一个瞬时异步 job。各 job 按自己的原截止独立推进，定时等待最多 1000ms，并受最近原截止缩短；一个 task 的 RPC 等待不能阻塞其他 task 的下一次推进。同 task 仍串行，且与 /me、服务轮询和启动仓库请求分离；只有原账号范围已知的已提交意图可继续，未知范围保留。它只续原责任，不因读取失败新增缺席或终止决定；新的自动终止和认领仍要求成功完整的自有 claim 清单，不增加持久队列或 OS daemon。
+- 跨 origin 的规范路径冲突仅以只读 Git 原所有权核对前驱；当前服务实际新 claim 冻结新配置，在同 worker 任一 origin 的同 task UUID active 前驱结束前保持 pending，不采纳旧 native 会话。完整 origin/project/task/claim scope 仍分开。
 - Worker 崩溃或机器失联不自动释放 claim，由原 worker 恢复或人工结束/移交。Worker 死亡不证明 agent 或工具已停止；无法确认原执行是否停止时暂停，避免重复 agent。
 - Ctrl+C 停止新领取和普通输入，先取消并等待常规收尾发现循环及全部 per-claim job，再以独立且受原截止约束的清理范围记录 shutdown 并给原 agent 清理外部资源的机会，确认 agent 停止和 workspace 关闭后关闭专用实例，保留 claim/worktree/native/config。正常重启不消耗故障恢复预算，不清除原暂停或重试授权；旧 shutdown 的停止确认不能应用于新启动的 agent。
 - 消费中断的 shutdown 后，普通执行前必须刷新 Herdr 实际资源。若 native 可能已启动但未报告确切原 ID，完成停止/关闭也不允许清空原绑定及启动/PID 证据后开启首次会话；保留并暂停，等待恢复原身份。已证明未启动或已知原 ID 的正常路径继续保留原成果和预算。
 - 严格证明资源与 native 均从未启动的 pending 后继在正常退出时保持 pending，不提升 active 或制造清理意图。它的原 userId 与成功完整清单 principal 匹配且原 claim 缺席时，可直接 pending→done，不扫描/删除旧固定路径。其余任务的退出初始化故障分别隔离；无法确认的资源或账号范围使私有实例保留。
+- 沿当前 worker 取消原因或其 cause 链确认的正常中断向退出传播，不制造新故障暂停；已有真实暂停、预算和未知动作记录不被覆盖。仅 signal 已取消不足以把任意错误解释为正常取消。
 - 异常退出或基础设施故障在原 worktree/会话上按配置上限恢复；计数、原因及暂停状态持久化，重启不清零。超限保留资源与名额，等待人工处理或明确恢复操作。已存在 cleanup/control 意图时只推进其收尾，不进行普通恢复。
 
 ### W-10：Agent 完成与资源清理

@@ -73,21 +73,24 @@ else if(args.includes('features'))process.stdout.write('hooks stable true\n');
 else throw new Error('Only metadata commands are permitted in this fixture');
 `;
 
-it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline", "independent-cleanup-deadlines", "account-scope"] as const)("runs the installed worker through claim, managed launch and %s", async (scenario) => {
+it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline", "independent-cleanup-deadlines", "account-scope", "origin-cleanup", "origin-shutdown"] as const)("runs the installed worker through claim, managed launch and %s", async (scenario) => {
   const accountScope = scenario === "account-scope";
+  const originCleanup = scenario === "origin-cleanup";
+  const originShutdown = scenario === "origin-shutdown";
+  const originChanged = originCleanup || originShutdown;
   const parallelDeadlines = scenario === "independent-cleanup-deadlines";
-  const committedDeadline = scenario === "committed-cleanup-deadline" || parallelDeadlines;
+  const committedDeadline = scenario === "committed-cleanup-deadline" || parallelDeadlines || originCleanup;
   const scratch = path.join(primary, ".tmp");
   await mkdir(scratch, { recursive: true });
   const home = await mkdtemp(path.join(scratch, "w"));
   const eventsFile = path.join(home, "events.jsonl");
   const databaseFile = path.join(home, ".daynight/worker/state.sqlite");
-  const evidenceName = accountScope ? "installed-worker-account-scope" : parallelDeadlines ? "installed-worker-independent-deadlines" : committedDeadline ? "installed-worker-committed-deadline" : "installed-worker-acceptance";
+  const evidenceName = originChanged ? `installed-worker-${scenario}` : accountScope ? "installed-worker-account-scope" : parallelDeadlines ? "installed-worker-independent-deadlines" : committedDeadline ? "installed-worker-committed-deadline" : "installed-worker-acceptance";
   const evidenceFile = path.join(workspace, ".tmp", `${evidenceName}.json`);
   const cleanupEvidenceFile = path.join(workspace, ".tmp", scenario === "startup-interrupt" ? "installed-worker-cleanup.json" : `${evidenceName}-cleanup.json`);
   const cleanupGateFile = path.join(home, "cleanup-ack-gate");
   const logs: string[] = [];
-  const requests: { method: string; path: string; userId: string; taskId?: string }[] = [];
+  const requests: { method: string; path: string; userId: string; serverOrigin: string; taskId?: string }[] = [];
   const inventoryResponses: { userId: string; projectId: string; itemCount: number; status: number }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
   let installed: Awaited<ReturnType<typeof createInstalledCli>> | undefined;
@@ -101,6 +104,10 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
   let peerPendingWitness: { timestamp: number; status: string; input: string; nativeProcessIds: number[] } | null = null;
   let principal = uuid(100);
   let accountScopeWitness: { originalUserId: string | null; switchedUserId: string; originalClaimId: string; originalConfiguration: string; originalResources: string; sentinel: string; nativeStartsBeforeSwitch: number; successfulEmptyInventoryProjects: string[] } | null = null;
+  let sourceOrigin = "";
+  let sourceServerClosed = false;
+  let alternateServer: ReturnType<typeof createServer> | undefined;
+  let originScopeWitness: { originalOrigin: string; currentOrigin: string; sourceRequestsAtClosure: number; originalResources: string; originalConfiguration: string; preShutdownNativeProcessIds: number[]; preShutdownStatus: string | null; preShutdownCleanup: string | null } | null = null;
   const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
   const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: true, requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
   const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json", ...(status >= 200 && status < 300 ? { "Daynight-User-ID": principal } : {}) }); response.end(stringifyApiJson(value)); };
@@ -116,7 +123,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       const task = tasks.find((item) => item.id === parts[6]);
       const authenticatedUser = request.headers.authorization === "Bearer worker-fixture-token" ? uuid(100) : request.headers.authorization === "Bearer worker-fixture-token-b" ? uuid(101) : null;
       if (authenticatedUser !== principal) { send(response, { error: { code: "unauthorized", message: "Fixture authentication mismatch", requestId: "worker-auth-fixture" } }, 401); return; }
-      requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, userId: authenticatedUser, ...(task === undefined ? {} : { taskId: task.id }) });
+      requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, userId: authenticatedUser, serverOrigin: sourceOrigin, ...(task === undefined ? {} : { taskId: task.id }) });
       if (url.pathname === "/api/v1/me" && request.method === "GET") { send(response, { id: principal, email: null, emailVerified: null, name: null, avatarUrl: null }); return; }
       if (project !== undefined && parts.length === 5 && request.method === "GET") {
         if (holdProjectReads) { heldProjectReads++; return; }
@@ -157,7 +164,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
   };
   const row = (taskId: string) => {
     const db = new Database(databaseFile, { readonly: true });
-    try { return db.prepare("SELECT * FROM tasks WHERE task_id=?").get(taskId) as { status: string; user_id: string | null; configuration: string; recovery: string; native_execution: string; cleanup: string; resources: string }; }
+    try { return db.prepare("SELECT * FROM tasks WHERE task_id=?").get(taskId) as { status: string; server_origin: string; user_id: string | null; configuration: string; recovery: string; native_execution: string; cleanup: string; resources: string }; }
     finally { db.close(); }
   };
   const waitFor = async (label: string, condition: () => boolean | Promise<boolean>, timeout = 20_000): Promise<void> => {
@@ -177,6 +184,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("Missing worker fixture address.");
+    sourceOrigin = `http://127.0.0.1:${address.port}`;
     const bin = path.join(home, "bin");
     const codex = path.join(home, "c");
     await mkdir(bin); await mkdir(codex);
@@ -224,8 +232,8 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     });
     if (parallelDeadlines) await waitFor("first original native process journal", () => JSON.parse(row(first.id).native_execution).stopObservation !== null);
     const sentinelFile = path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id, "uncommitted-a.txt");
+    if (accountScope || originShutdown) await writeFile(sentinelFile, "Uncommitted result belonging to authenticated user A.\n");
     if (accountScope) {
-      await writeFile(sentinelFile, "Uncommitted result belonging to authenticated user A.\n");
       expect(originalWorker.child.kill("SIGINT")).toBe(true);
       await expectNormalExit(originalWorker.closed);
       const original = row(tasks[1]!.id);
@@ -243,7 +251,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       expect(await originalWorker.closed).toBeNull();
     }
     expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(accountScope ? 1 : 0);
-    holdProjectReads = !accountScope;
+    holdProjectReads = !accountScope && !originChanged;
     const restartRequestOffset = requests.length;
     if (committedDeadline) {
       const deadline = Date.now() + 2_000;
@@ -266,6 +274,38 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
         task.properties = { ...task.properties, worker: { ...task.properties.worker!, state: "completed" } };
       }
     }
+    if (originChanged) {
+      const original = row(tasks[1]!.id);
+      expect(original.server_origin).toBe(sourceOrigin);
+      expect(original.user_id).toBe(uuid(100));
+      alternateServer = createServer((request, response) => {
+        const url = new URL(request.url!, "http://localhost");
+        const address = alternateServer!.address();
+        if (address === null || typeof address === "string") throw new Error("Missing alternate worker origin.");
+        requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, userId: principal, serverOrigin: `http://127.0.0.1:${address.port}` });
+        if (request.headers.authorization !== "Bearer worker-fixture-token" || request.method !== "GET" || url.pathname !== "/api/v1/me") {
+          logs.push(`Unexpected alternate-origin request ${request.method} ${url.pathname}\n`);
+          send(response, { error: { code: "forbidden", message: "Alternate origin only provides current identity", requestId: "worker-origin-fixture" } }, 403);
+          return;
+        }
+        send(response, { id: uuid(100), email: null, emailVerified: null, name: null, avatarUrl: null });
+      });
+      await new Promise<void>((resolve) => alternateServer!.listen(0, "127.0.0.1", resolve));
+      const address = alternateServer.address();
+      if (address === null || typeof address === "string") throw new Error("Missing alternate worker origin.");
+      const alternateOrigin = `http://127.0.0.1:${address.port}`;
+      expect(alternateOrigin).not.toBe(sourceOrigin);
+      const configFile = path.join(home, ".daynight/config.yml");
+      const configuration = parseYaml(await readFile(configFile, "utf8")) as { serverUrl: string; worker: { pollIntervalMs: number; repositories: unknown[] } };
+      configuration.serverUrl = alternateOrigin;
+      configuration.worker.pollIntervalMs = 3_600_000;
+      configuration.worker.repositories = [];
+      await writeFile(configFile, yaml(configuration));
+      await new Promise<void>((resolve, reject) => { server.close((error) => error === undefined ? resolve() : reject(error)); server.closeAllConnections(); });
+      sourceServerClosed = true;
+      originScopeWitness = { originalOrigin: sourceOrigin, currentOrigin: alternateOrigin, sourceRequestsAtClosure: requests.filter((request) => request.serverOrigin === sourceOrigin).length, originalResources: original.resources, originalConfiguration: original.configuration, preShutdownNativeProcessIds: [], preShutdownStatus: null, preShutdownCleanup: null };
+    }
+    const restartLogOffset = logs.length;
     const restartedWorker = start();
     if (accountScope) {
       await waitFor("successful empty user B inventory and original-owner scope pause", () => new Set(inventoryResponses.filter((response) => response.userId === principal && response.status === 200 && response.itemCount === 0).map((response) => response.projectId)).size === 2 && logs.some((line) => line.includes("scope-paused")));
@@ -278,6 +318,26 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       expect((await events()).filter((event) => event.kind === "native-start")).toHaveLength(accountScopeWitness!.nativeStartsBeforeSwitch);
       expect(tasks[1]!.properties.worker).toMatchObject({ state: "active", userId: uuid(100), claimId: accountScopeWitness!.originalClaimId });
       expect(requests.slice(restartRequestOffset).every((request) => request.userId === principal && request.method === "GET")).toBe(true);
+    } else if (originChanged) {
+      await waitFor("new origin identity and successful empty configured project scope", () => requests.some((request) => request.serverOrigin === originScopeWitness!.currentOrigin && request.path === "/api/v1/me") && logs.slice(restartLogOffset).some((line) => line.includes("Original ready private Herdr session")));
+      expect(row(tasks[1]!.id).server_origin).toBe(sourceOrigin);
+      expect(requests.filter((request) => request.serverOrigin === sourceOrigin)).toHaveLength(originScopeWitness!.sourceRequestsAtClosure);
+      expect(requests.filter((request) => request.serverOrigin === originScopeWitness!.currentOrigin).every((request) => request.method === "GET" && request.path === "/api/v1/me")).toBe(true);
+      const sql = new Database(databaseFile, { readonly: true });
+      try { expect(sql.prepare("SELECT count(*) AS count FROM projects WHERE server_origin=?").get(originScopeWitness!.currentOrigin)).toEqual({ count: 0 }); }
+      finally { sql.close(); }
+      if (originShutdown) {
+        const retained = row(tasks[1]!.id);
+        expect(retained).toMatchObject({ status: "active", cleanup: null, resources: originScopeWitness!.originalResources, configuration: originScopeWitness!.originalConfiguration });
+        const nativeProcessIds = JSON.parse(retained.native_execution).stopObservation.processIds as number[];
+        expect(nativeProcessIds.length).toBeGreaterThan(0);
+        for (const pid of nativeProcessIds) expect(() => process.kill(pid, 0)).not.toThrow();
+        originScopeWitness!.preShutdownNativeProcessIds = nativeProcessIds;
+        originScopeWitness!.preShutdownStatus = retained.status;
+        originScopeWitness!.preShutdownCleanup = retained.cleanup;
+        expect((await events()).some((event) => event.kind === "native-stop" && event.taskId === tasks[1]!.id)).toBe(false);
+        expect(await readFile(sentinelFile, "utf8")).toContain("Uncommitted result belonging to authenticated user A.");
+      }
     } else await waitFor("restarted worker held during project discovery", () => heldProjectReads > 0);
     if (committedDeadline) {
       const deadlineTask = parallelDeadlines ? first : tasks[1]!;
@@ -365,12 +425,20 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
         expect(unfinished).toMatchObject({ user_id: uuid(100), configuration: accountScopeWitness!.originalConfiguration, resources: accountScopeWitness!.originalResources });
         expect(await readFile(sentinelFile, "utf8")).toBe(accountScopeWitness!.sentinel);
       }
+      if (originShutdown) {
+        expect(unfinished).toMatchObject({ user_id: uuid(100), server_origin: sourceOrigin, configuration: originScopeWitness!.originalConfiguration, resources: originScopeWitness!.originalResources });
+        expect(await readFile(sentinelFile, "utf8")).toContain("Uncommitted result belonging to authenticated user A.");
+      }
     }
     const originalNativeId = JSON.parse(unfinished.resources).nativeSession.sessionId as string;
     expect(originalNativeId).toMatch(/^[0-9a-f-]{36}$/);
     expect(await readFile(path.join(codex, "sessions", `rollout-${originalNativeId}.jsonl`), "utf8")).toContain(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id));
     expect(tasks[1]!.properties.worker!.state).toBe(committedDeadline ? "completed" : "active");
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: accountScope ? "Installed public launcher, real Git/SQLite/HTTP; normal user A shutdown then user B authentication with successful empty own inventory and scope pause" : "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, inventoryResponses, events: observed, first: row(first.id), unfinished, ...(accountScopeWitness === null ? {} : { accountScopeWitness }), ...(seededCleanup === null ? {} : { injection: { method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision", cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: true, inventoryFaultEnabled: failInventoryReads, inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length, cleanupCompletedAt, processingAllowanceMs: 5_000, ...(peerCleanup === null ? {} : { peerCleanup, peerPendingWitness }) } }), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
+    if (originChanged) {
+      expect(unfinished.server_origin).toBe(sourceOrigin);
+      expect(requests.filter((request) => request.serverOrigin === sourceOrigin)).toHaveLength(originScopeWitness!.sourceRequestsAtClosure);
+    }
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: originChanged ? "Installed public launcher, real Git/SQLite/HTTP; origin A unavailable after worker crash, origin B identity-only service with no configured repositories" : accountScope ? "Installed public launcher, real Git/SQLite/HTTP; normal user A shutdown then user B authentication with successful empty own inventory and scope pause" : "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, inventoryResponses, events: observed, first: row(first.id), unfinished, ...(accountScopeWitness === null ? {} : { accountScopeWitness }), ...(originScopeWitness === null ? {} : { originScopeWitness: { ...originScopeWitness, sourceServerClosed, configuredRepositoryCount: 0, persistedCurrentOriginProjectCount: 0 } }), ...(seededCleanup === null ? {} : { injection: { method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision", cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: holdProjectReads, inventoryFaultEnabled: failInventoryReads, inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length, cleanupCompletedAt, processingAllowanceMs: 5_000, ...(peerCleanup === null ? {} : { peerCleanup, peerPendingWitness }) } }), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });
@@ -380,16 +448,28 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
   finally {
     const cleanupErrors: unknown[] = [];
     for (const [child, closed] of children) try { await terminateInstalledProcess(child, closed); } catch (error) { cleanupErrors.push(error); }
-    for (const event of await events()) if (event.kind === "daemon-start" && event.pid !== undefined) {
+    const finalEvents = await events();
+    for (const event of finalEvents) if (event.kind === "daemon-start" && event.pid !== undefined) {
       try {
+        const processAbsent = (): boolean => {
+          try { process.kill(event.pid!, 0); return false; }
+          catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return true; throw error; }
+        };
+        if (finalEvents.some((item) => item.kind === "daemon-stop" && item.pid === event.pid)) {
+          await waitFor("recorded fixture daemon process exit", processAbsent, 2_000);
+          continue;
+        }
+        if (processAbsent()) continue;
         const environment = await readFile(`/proc/${event.pid}/environ`, "utf8");
         if (!environment.split("\0").includes(`FIXTURE_EVENTS=${eventsFile}`)) throw new Error("The fixture daemon PID was reused; its process group was retained.");
         process.kill(-event.pid, "SIGKILL");
+        await waitFor("terminated fixture daemon process exit", processAbsent, 2_000);
       } catch (error) {
         if (!(error instanceof Error && "code" in error && (error.code === "ESRCH" || error.code === "ENOENT"))) cleanupErrors.push(error);
       }
     }
-    await new Promise<void>((resolve, reject) => { server.close((error) => error === undefined || ("code" in error && error.code === "ERR_SERVER_NOT_RUNNING") ? resolve() : reject(error)); server.closeAllConnections(); }).catch((error: unknown) => { cleanupErrors.push(error); });
+    if (!sourceServerClosed) await new Promise<void>((resolve, reject) => { server.close((error) => error === undefined || ("code" in error && error.code === "ERR_SERVER_NOT_RUNNING") ? resolve() : reject(error)); server.closeAllConnections(); }).catch((error: unknown) => { cleanupErrors.push(error); });
+    if (alternateServer !== undefined) await new Promise<void>((resolve, reject) => { alternateServer!.close((error) => error === undefined ? resolve() : reject(error)); alternateServer!.closeAllConnections(); }).catch((error: unknown) => { cleanupErrors.push(error); });
     try { await installed?.cleanup(); } catch (error) { cleanupErrors.push(error); }
     try { await rm(home, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
     await writeFile(cleanupEvidenceFile, JSON.stringify({ outcome: cleanupErrors.length === 0 ? "passed" : "failed", scenario, homeRemoved: !existsSync(home), installedArtifactRemoved: installed === undefined ? null : !existsSync(installed.receipt.root), errors: cleanupErrors.map((error) => error instanceof Error ? error.message : String(error)) }, null, 2));

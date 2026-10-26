@@ -1,5 +1,5 @@
 import path from "node:path";
-import { createOperation } from "../../api/operation.js";
+import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerAgent } from "../../api/types.js";
 import { HerdrAgentActionError } from "./herdr.js";
@@ -19,6 +19,13 @@ export type ExecutionDependencies = {
   buildPrompt: (task: LocalTask, platform: TaskPlatform) => string;
   emit: (event: WorkerEvent) => void;
   now: () => number;
+};
+export const isWorkerCancellation = (error: unknown, signal: AbortSignal): boolean => {
+  if (!signal.aborted) return false;
+  if (error instanceof AggregateError && error.errors.some((failure) => !isWorkerCancellation(failure, signal))) return false;
+  return error === signal.reason ||
+    (error instanceof OperationError && error.kind === "cancelled" && error.cause === signal.reason) ||
+    (error instanceof Error && error.cause !== undefined && isWorkerCancellation(error.cause, signal));
 };
 export const workerOperation = async <T>(action: (operation: Operation) => Promise<T>, signal?: AbortSignal, totalMs = 120_000): Promise<T> => {
   const operation = createOperation({ ...(signal === undefined ? {} : { signal }), limits: { totalMs } });

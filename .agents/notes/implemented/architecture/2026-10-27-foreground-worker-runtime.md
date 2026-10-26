@@ -49,6 +49,22 @@ Those records remain preserved/paused. Previously committed cleanup with known
 original scope retains its authority and can progress before /me or project
 network requests; unknown-scope intents remain preserved.
 
+Local responsibility spans all original services for the same workerId:
+committed cleanup/control and normal shutdown retain those records. Remote
+inventory, new absence decisions, ordinary recovery and acquisition stay on the
+current origin. Switching serverUrl does not postpone an old local deadline,
+contact the old API with new credentials or query that record against the new
+service. Full origin/project/task/claim scope remains intact, without a
+credential registry or multi-service acquisition mechanism.
+
+A current-service new claim can encounter a canonical path owned by an old
+origin. Read-only Git ownership verification attributes that predecessor rather
+than adopting its conversation. The new claim freezes its own configuration and
+waits pending behind any active predecessor with the same task UUID for that
+worker, across origins, until old local responsibility is done. This
+capacity/path barrier does not merge the claims' identities or reuse old native
+history.
+
 Actual claims become pending before activation and resources. Active
 preparation, waiting, paused recovery and cleanup retain capacity; lowering the
 limit does not preempt existing work. Rediscovered original resources with
@@ -94,7 +110,8 @@ adapter](2026-10-26-worker-herdr-adapter.md) owns transport and resource
 observations, and its receipt/stop gates remain authoritative.
 
 Cleanup retains its first deadline and input provenance. A lightweight discovery
-loop inside the foreground process starts one transient job per complete
+loop inside the foreground process discovers this worker's persisted intents
+across all origins and starts one transient job per complete
 origin/project/task/claim identity with persisted cleanup or source-control
 intent. Each job calls advanceCommittedCleanups(identity) and independently
 waits at most one second, shortened to its nearest original deadline. A held
@@ -132,6 +149,13 @@ directly pending to done without a Git scan or touching an old claim's path.
 Other tasks' shutdown initialization is isolated so one record's failure does
 not prevent known agents stopping. Untracked resources or unconfirmed scope keep
 the private instance when its safe stop cannot be established.
+
+Only cancellation causally linked to the current worker signal, including a
+preserved error cause chain, is propagated as normal interruption. It does not
+add a fault pause, clear an existing real pause or reset budget/unknown-action
+records. An unrelated failure remains a failure even after that signal aborts. A
+read-only cancellation followed by confirmed shutdown can therefore resume the
+original native session without a synthetic fault barrier.
 
 The public attachment descriptor is advertised only after complete inventory and
 managed private-instance/snapshot readiness. It applies routing variables only

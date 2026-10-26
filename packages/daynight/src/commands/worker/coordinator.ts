@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { lstat } from "node:fs/promises";
 import { ApiError } from "../../api/client.js";
+import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { Task, TaskPlatform, WorkerMachine, WorkerPhase } from "../../api/types.js";
 import { createCleanupDriver } from "./cleanup.js";
-import { createExecutionDriver, ownedWorkspace, workerOperation } from "./execution.js";
+import { createExecutionDriver, isWorkerCancellation, ownedWorkspace, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, WorkerEvent, WorkerGitManager } from "./execution.js";
 import { HerdrAgentActionError } from "./herdr.js";
 import type { HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
@@ -37,6 +38,10 @@ const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) ==
 const exists = async (target: string): Promise<boolean> => {
   try { await lstat(target); return true; }
   catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
+};
+const physicalPath = async (target: string): Promise<string> => {
+  const resolved = await resolvePhysicalDirectory(target);
+  return path.join(resolved.ancestorPath, ...resolved.missingComponents);
 };
 const sleep = (milliseconds: number): Promise<void> => new Promise((resolve) => { setTimeout(resolve, milliseconds); });
 const unknownUserScope = "The original authenticated execution owner is unknown; only an exact current own claim can establish it.";
@@ -71,7 +76,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     return result;
   };
   const capacity = (): number => options.store.listUnfinishedTasks().filter((task) => task.status === "active").length;
-  const localTasks = (): LocalTask[] => options.store.listUnfinishedTasks().filter((task) => task.serverOrigin === options.serverOrigin && task.workerId === options.workerId);
+  const workerLocalTasks = (): LocalTask[] => options.store.listUnfinishedTasks().filter((task) => task.workerId === options.workerId);
+  const currentOriginTasks = (): LocalTask[] => workerLocalTasks().filter((task) => task.serverOrigin === options.serverOrigin);
   const pauseForScope = (task: LocalTask, reason: string): LocalTask => {
     const originalReason = task.recovery.pauseReason;
     const retainedReason = originalReason !== null && !scopePauseReasons.has(originalReason) ? originalReason : reason;
@@ -130,10 +136,19 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const fixedPath = path.join(project.localPath, ".worktrees", "daynight", identity.taskId);
     let pathTrace = await exists(fixedPath);
     if (pathTrace && worker.herdr === null && worker.nativeSessionId === null && worker.phase === "preparing") {
-      const previous = localTasks().find((task) => task.projectId === identity.projectId && task.taskId === identity.taskId && task.claimId !== identity.claimId && task.resources.worktree?.worktreePath === fixedPath);
-      if (previous !== undefined) {
-        try { pathTrace = await workerOperation((operation) => options.git.findWorktree(previous, operation), normalSignal) === null; }
-        catch (error) { options.emit({ kind: "worktree-conflict", task: previous, message: "The occupied task path could not be attributed to its previous claim; the new execution remains unverified.", error }); }
+      const target = await physicalPath(fixedPath);
+      for (const previous of workerLocalTasks().filter((task) => task.taskId === identity.taskId && claimKey(task) !== claimKey(identity) && task.resources.worktree !== null)) {
+        try {
+          if (await physicalPath(previous.resources.worktree!.worktreePath) !== target) continue;
+          const original = await workerOperation((operation) => options.git.findWorktree(previous, operation), normalSignal);
+          pathTrace = original === null ? await exists(fixedPath) : false;
+          break;
+        } catch (error) {
+          if (isWorkerCancellation(error, normalSignal)) throw error;
+          if (error instanceof Error && "code" in error && (error.code === "EACCES" || error.code === "EPERM")) throw error;
+          pathTrace = await exists(fixedPath);
+          options.emit({ kind: "worktree-conflict", task: previous, message: "The occupied task path could not be attributed to its previous claim; the new execution remains unverified.", error });
+        }
       }
     }
     const trace = worker.herdr !== null || worker.nativeSessionId !== null || resources.some(({ owner }) => owner.serverOrigin === identity.serverOrigin && owner.projectId === identity.projectId && owner.taskId === identity.taskId && owner.claimId === identity.claimId) || pathTrace;
@@ -189,11 +204,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
       if (task.recovery.pauseReason !== null && scopePauseReasons.has(task.recovery.pauseReason)) task = options.store.clearPause(task, now());
       if (task.status === "pending") {
-        if (capacity() >= options.maxConcurrent || options.store.listUnfinishedTasks().some((other) => other.status === "active" && taskKey(other) === taskKey(task))) return;
+        if (capacity() >= options.maxConcurrent || workerLocalTasks().some((other) => other.status === "active" && other.taskId === task.taskId)) return;
         task = options.store.activateTask(task, now());
       }
       try { task = await execution.advance(task, currentResources, normalSignal); }
       catch (error) {
+        if (isWorkerCancellation(error, normalSignal)) throw error;
         if (error instanceof HerdrAgentActionError && error.submission === "unknown" && ["workspace.create", "workspace.close", "tab.create", "pane.close"].includes(error.action)) {
           task = latest(task);
           options.emit({ kind: "resource-unknown", task, message: "A resource mutation has an uncertain outcome; the next complete resource observation will reconcile its original identity.", error });
@@ -241,7 +257,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     advanceCommittedCleanups: async (identity?: ClaimIdentity): Promise<void> => {
       if (shuttingDown) return;
       normalSignal.throwIfAborted();
-      const committed = localTasks().filter((task) => (task.cleanup !== null || task.control !== null) && (identity === undefined || claimKey(task) === claimKey(identity)));
+      const committed = workerLocalTasks().filter((task) => (task.cleanup !== null || task.control !== null) && (identity === undefined || claimKey(task) === claimKey(identity)));
       const results = await Promise.allSettled(committed.map((input) => serializeTask(input, async () => {
         normalSignal.throwIfAborted();
         let task = latest(input);
@@ -297,10 +313,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           }
           options.store.registerPending({ ...owner, workerId: options.workerId }, { kind: "recovered", configuration: null }, now());
         }
-        const existing = localTasks().sort((left, right) => Number(right.status === "active") - Number(left.status === "active"));
+        const existing = currentOriginTasks().sort((left, right) => Number(right.status === "active") - Number(left.status === "active"));
         for (const task of existing) {
           try { await reconcileTask(task, byClaim.get(claimKey(task)), resources, authenticatedUserId); }
-          catch (error) { options.emit({ kind: "reconciliation-error", task: latest(task), message: "The original execution remains owned locally; reconciliation will preserve its recorded progress.", error }); }
+          catch (error) {
+            if (isWorkerCancellation(error, normalSignal)) throw error;
+            options.emit({ kind: "reconciliation-error", task: latest(task), message: "The original execution remains owned locally; reconciliation will preserve its recorded progress.", error });
+          }
         }
         resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
         let misses = 0;
@@ -316,7 +335,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     shutdown: async (): Promise<boolean> => {
       shuttingDown = true;
       await Promise.all([...tails.values()]);
-      const tasks = localTasks().filter((task) => !isUnstartedPending(task));
+      const tasks = workerLocalTasks().filter((task) => !isUnstartedPending(task));
       const deadline = now() + 600_000;
       const results = await Promise.allSettled(tasks.map((input) => serializeTask(input, async () => {
         let task = latest(input);

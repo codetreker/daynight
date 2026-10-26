@@ -1,7 +1,9 @@
 import path from "node:path";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
+import { OperationError } from "../../../src/api/operation.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
@@ -11,7 +13,7 @@ import type { Task, WorkerClaim } from "../../../src/api/types.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, HerdrWorkspaceEvidence, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerGitManager, WorkerEvent } from "../../../src/commands/worker/execution.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
-import type { LocalTask, WorkerProject, FrozenExecutionConfiguration } from "../../../src/commands/worker/types.js";
+import type { LocalTask, ProjectIdentity, WorkerProject, FrozenExecutionConfiguration } from "../../../src/commands/worker/types.js";
 
 const uuid = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
@@ -607,6 +609,243 @@ describe("worker foreground coordinator", () => {
     f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: uuid(1012), userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
     await f.coordinator.tick(); expect(f.store.getTask(identity)).toMatchObject({ userId: null, worktreeId: identity.worktreeId, cleanup: null });
     expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("does not make new origin-A decisions from origin B's empty inventory but stops A on local shutdown", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    const otherOrigin = "https://other-daynight.example";
+    const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => []) };
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [] });
+    await changedOrigin.tick();
+    expect(otherRemote.ownInventory).toHaveBeenCalledWith([], workerId, expect.any(AbortSignal)); expect(f.remote.ownInventory).toHaveBeenCalledOnce();
+    expect(f.store.getTask(original)).toEqual(original); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.tasks.forceStop).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    expect(await changedOrigin.shutdown()).toBe(true);
+    expect(f.store.getTask(original)).toMatchObject({ serverOrigin: origin, claimId: original.claimId, worktreeId: original.worktreeId, status: "active", userId: uuid(2), cleanup: { kind: "shutdown", deadline: 601000, agentStopped: true, workspaceClosed: true, worktreeDeleted: false }, resources: { worktree: original.resources.worktree, nativeSession: original.resources.nativeSession } });
+    expect(f.tasks.forceStop).toHaveBeenCalledOnce(); expect(f.tasks.forceStop.mock.calls[0]![0].serverOrigin).toBe(origin); expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.remote.ownInventory).toHaveBeenCalledOnce(); expect(otherRemote.ownInventory).toHaveBeenCalledOnce(); expect(f.granted.get(original.claimId)?.properties.worker?.state).toBe("active");
+  });
+
+  it("continues an already committed origin-A deadline locally after configuration switches to origin B", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick(); const deadline = f.store.getTask(original)!.cleanup!.deadline;
+    const otherOrigin = "https://other-daynight.example";
+    const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => { throw new Error("origin B identity offline"); }), ownInventory: vi.fn(async () => { throw new Error("origin B inventory offline"); }) };
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [] });
+    f.setTime(deadline); await changedOrigin.advanceCommittedCleanups(original);
+    expect(f.store.getTask(original)).toMatchObject({ status: "done", serverOrigin: origin, claimId: original.claimId, worktreeId: original.worktreeId, userId: uuid(2), cleanup: { kind: "terminal", deadline, result: "timed-out", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+    expect(otherRemote.currentUserId).not.toHaveBeenCalled(); expect(otherRemote.ownInventory).not.toHaveBeenCalled(); expect(f.remote.ownInventory).toHaveBeenCalledTimes(2); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.tasks.forceStop.mock.calls[0]![0].serverOrigin).toBe(origin);
+  });
+
+  it("keeps unknown-user terminal responsibility blocked across an origin change", async () => {
+    const f = await fixture(); const original = { serverOrigin: origin, projectId: f.projects[0]!.projectId, taskId: uuid(1020), claimId: uuid(1021), workerId, worktreeId: uuid(1022) };
+    f.store.registerPending(original, { kind: "recovered", configuration }, 1000); f.store.activateTask(original, 1000); f.store.beginCleanup(original, { kind: "terminal", deadline: 1500 }, 1000);
+    const otherOrigin = "https://other-daynight.example"; const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => []) };
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [] });
+    f.setTime(1500); await changedOrigin.advanceCommittedCleanups(original);
+    expect(f.events.some((event) => event.kind === "scope-paused" && event.task?.claimId === original.claimId)).toBe(true);
+    expect(await changedOrigin.shutdown()).toBe(false);
+    expect(f.store.getTask(original)).toMatchObject({ status: "active", serverOrigin: origin, userId: null, cleanup: { kind: "terminal", deadline: 1500, agentStopped: false, worktreeDeleted: false } });
+    expect(f.tasks.forceStop).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(otherRemote.currentUserId).not.toHaveBeenCalled(); expect(otherRemote.ownInventory).not.toHaveBeenCalled();
+  });
+
+  it.each(["discovered", "claimed"] as const)("freezes a fresh origin-B %s claim and waits for the same task's origin-A predecessor", async (entry) => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick();
+    await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
+    const otherOrigin = "https://other-daynight.example";
+    const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1030) }; f.store.registerProject(project);
+    const frozen = { ...configuration, model: "model-for-origin-B" };
+    const candidate = remoteTask(project.projectId, original.taskId);
+    const grant = (claimId: string, worktreeId: string): Task => ({ ...candidate, status: "in_progress", ready: false, version: 2n, properties: { ...candidate.properties, worker: { claimId, worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    let actual = entry === "discovered" ? grant(uuid(1031), uuid(1032)) : undefined;
+    const otherRemote: WorkerRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async (projects: readonly ProjectIdentity[]) => { expect(projects.every((item) => item.serverOrigin === otherOrigin)).toBe(true); return actual === undefined ? [] : [actual]; }),
+      candidates: vi.fn(async function* () { if (actual === undefined) yield candidate; }),
+      claim: vi.fn(async (_candidate, descriptor) => { actual = grant(descriptor.claimId, descriptor.worktreeId); return actual; }) };
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 });
+    const beforeALists = vi.mocked(f.remote.ownInventory).mock.calls.length;
+    await changedOrigin.tick(); const incoming = f.store.getTask({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: actual!.properties.worker!.claimId })!;
+    expect(incoming).toMatchObject({ status: "pending", configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } });
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce(); expect(f.store.getTask(original)).toMatchObject({ status: "active", cleanup: { kind: "terminal", agentStopped: false } });
+    if (entry === "discovered") expect(vi.mocked(f.git.findWorktree).mock.calls.at(-1)?.[0]).toMatchObject({ serverOrigin: origin, projectId: original.projectId, taskId: original.taskId, claimId: original.claimId });
+    f.setCompleteCleanup(true); f.setTime(f.store.getTask(original)!.cleanup!.deadline); await changedOrigin.advanceCommittedCleanups(original);
+    expect(f.store.getTask(original)?.status).toBe("done");
+    await changedOrigin.tick(); const started = f.store.getTask(incoming)!;
+    expect(started).toMatchObject({ status: "active", configuration: frozen, nativeExecution: { promptSubmission: "submitted" } });
+    expect(started.resources.nativeSession?.sessionId).not.toBe(original.resources.nativeSession!.sessionId); expect(f.tasks.start).toHaveBeenCalledTimes(2);
+    expect(f.tasks.start.mock.calls[1]![0]).toMatchObject({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: incoming.claimId, worktreeId: incoming.worktreeId }); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined();
+    expect(f.remote.ownInventory).toHaveBeenCalledTimes(beforeALists);
+  });
+
+  it("attributes the local predecessor by full scope when independent origins use the same claim UUID", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick();
+    await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
+    const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1040) }; f.store.registerProject(project);
+    const candidate = remoteTask(project.projectId, original.taskId);
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: original.claimId, worktreeId: uuid(1041), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const frozen = { ...configuration, model: "independent-origin-model" };
+    const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
+    await createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 }).tick();
+    const incoming = f.store.getTask({ ...original, serverOrigin: otherOrigin, projectId: project.projectId })!;
+    expect(incoming).toMatchObject({ status: "pending", claimId: original.claimId, worktreeId: uuid(1041), configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } });
+    expect(vi.mocked(f.git.findWorktree).mock.calls.at(-1)?.[0]).toMatchObject({ serverOrigin: origin, projectId: original.projectId, claimId: original.claimId, worktreeId: original.worktreeId });
+    expect(f.store.getTask(original)).toMatchObject({ status: "active", serverOrigin: origin, resources: original.resources }); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce();
+  });
+
+  it.each(["ancestor-alias", "removed-before-inspection", "removed-with-registration"] as const)("keeps a fresh claim's configuration when its local predecessor uses %s", async (condition) => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick();
+    await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
+    let localPath = f.projects[0]!.localPath;
+    if (condition === "ancestor-alias") {
+      const alias = path.join(f.root, "alias-parent"); await symlink(f.root, alias, process.platform === "win32" ? "junction" : "dir"); localPath = path.join(alias, path.basename(localPath));
+    } else {
+      f.store.recordCleanupResult(original, "completed", null, 1000); f.store.confirmAgentStopped(original, { agentStopped: true }, 1000); f.store.confirmWorkspaceClosed(original, { workspaceClosed: true }, 1000); f.resources.delete(original.claimId);
+      vi.mocked(f.git.findWorktree).mockImplementationOnce(async () => {
+        await rm(original.resources.worktree!.worktreePath, { recursive: true });
+        if (condition === "removed-with-registration") throw new Error("The original task worktree is missing; its ownership registration was retained.");
+        f.worktrees.delete(original.claimId); return null;
+      });
+    }
+    const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1050), localPath }; f.store.registerProject(project);
+    const candidate = remoteTask(project.projectId, original.taskId);
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1051), worktreeId: uuid(1052), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const frozen = { ...configuration, model: "fresh-origin-B-config" };
+    const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
+    await createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 }).tick();
+    const incoming = f.store.getTask({ serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1051) })!;
+    expect(incoming).toMatchObject({ status: "pending", configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce();
+    expect(vi.mocked(f.git.findWorktree).mock.calls.at(-1)?.[0]).toMatchObject({ serverOrigin: origin, projectId: original.projectId, claimId: original.claimId });
+  });
+
+  it("does not persist a fault pause when normal shutdown cancels read-only original-worktree verification", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    const cancellation = new AbortController(); const reason = new Error("normal worker shutdown");
+    vi.mocked(f.git.verifyWorktree).mockImplementationOnce(async (task, operation) => { cancellation.abort(reason); operation.check(); return task.resources.worktree!; });
+    const interrupted = createWorkerCoordinator({ ...f.options, signal: cancellation.signal });
+    await expect(interrupted.tick()).rejects.toBeInstanceOf(OperationError);
+    expect(f.store.getTask(original)).toMatchObject({ recovery: { count: 0, pauseReason: null }, configuration, resources: { nativeSession: original.resources.nativeSession, worktree: original.resources.worktree } });
+    expect(await interrupted.shutdown()).toBe(true);
+    expect(f.store.getTask(original)?.recovery.pauseReason).toBeNull();
+    await createWorkerCoordinator(f.options).tick();
+    expect(f.store.getTask(original)).toMatchObject({ cleanup: null, recovery: { count: 0, pauseReason: null }, configuration, resources: { nativeSession: original.resources.nativeSession, worktree: original.resources.worktree } });
+    expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBe(original.resources.nativeSession!.sessionId); expect(f.events.some((event) => event.kind === "paused")).toBe(false);
+  });
+
+  it("preserves a real existing pause when read-only verification is cancelled for normal shutdown", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.store.pauseTask(original, "Provider permission requires intervention.", 1000);
+    const cancellation = new AbortController(); const reason = new Error("normal worker shutdown");
+    vi.mocked(f.git.verifyWorktree).mockImplementationOnce(async (task, operation) => { cancellation.abort(reason); operation.check(); return task.resources.worktree!; });
+    const interrupted = createWorkerCoordinator({ ...f.options, signal: cancellation.signal });
+    await expect(interrupted.tick()).rejects.toBeInstanceOf(OperationError); expect(await interrupted.shutdown()).toBe(true);
+    await createWorkerCoordinator(f.options).tick();
+    expect(f.store.getTask(original)).toMatchObject({ recovery: { count: 0, pauseReason: "Provider permission requires intervention." }, resources: { nativeSession: original.resources.nativeSession, worktree: original.resources.worktree } });
+    expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it("preserves journaled unknown native submission through cancellation and shutdown without replaying it", async () => {
+    const f = await fixture(); const cancellation = new AbortController(); const reason = new Error("normal worker shutdown");
+    f.tasks.start.mockImplementationOnce(async (context) => {
+      const pane = f.resources.get(context.claimId)!.panes[0]!; pane.kind = "codex"; pane.interactiveReady = true; pane.stateChangeSeq = 1; pane.completionSeq = 0;
+      cancellation.abort(reason);
+      throw new HerdrAgentActionError("Native submission outcome is unknown.", "agent.start", "unknown", { cause: new OperationError("cancelled", { cause: reason }), promptSubmission: "unknown" });
+    });
+    const interrupted = createWorkerCoordinator({ ...f.options, signal: cancellation.signal });
+    await expect(interrupted.tick()).rejects.toBeInstanceOf(HerdrAgentActionError);
+    const original = f.store.listTasks()[0]!;
+    expect(original).toMatchObject({ recovery: { count: 0, pauseReason: null }, nativeExecution: { launchSubmission: "unknown", promptSubmission: "unknown" } });
+    f.tasks.submitPrompt.mockRejectedValueOnce(new HerdrAgentActionError("The original session is not ready for cleanup input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" }));
+    expect(await interrupted.shutdown()).toBe(true);
+    await createWorkerCoordinator(f.options).tick();
+    expect(f.store.getTask(original)).toMatchObject({ status: "active", nativeExecution: { launchSubmission: "unknown", promptSubmission: "unknown" }, resources: { nativeSession: null }, recovery: { pauseReason: expect.stringContaining("native session ID is missing") } });
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.tasks.prepareWorkspace).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce();
+  });
+
+  it("records an unrelated execution failure even when normal cancellation happens at the same time", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    const cancellation = new AbortController(); const reason = new Error("normal worker shutdown"); const failure = new Error("The repository identity changed.");
+    vi.mocked(f.git.verifyWorktree).mockImplementationOnce(async () => { cancellation.abort(reason); throw failure; });
+    await createWorkerCoordinator({ ...f.options, signal: cancellation.signal }).tick();
+    expect(f.store.getTask(original)?.recovery.pauseReason).toBe(failure.message); expect(f.events.some((event) => event.kind === "paused" && event.error === failure)).toBe(true);
+  });
+
+  it("recognizes only cancellation errors causally linked to the aborted worker signal", () => {
+    const cancellation = new AbortController(); const reason = new Error("normal worker shutdown"); const unrelated = new Error("Other request was cancelled.");
+    expect(isWorkerCancellation(reason, cancellation.signal)).toBe(false); cancellation.abort(reason);
+    expect(isWorkerCancellation(reason, cancellation.signal)).toBe(true);
+    expect(isWorkerCancellation(new Error("wrapped", { cause: new OperationError("cancelled", { cause: reason }) }), cancellation.signal)).toBe(true);
+    expect(isWorkerCancellation(new OperationError("cancelled", { cause: unrelated }), cancellation.signal)).toBe(false);
+    expect(isWorkerCancellation(new Error("Independent failure."), cancellation.signal)).toBe(false);
+  });
+
+  it.each(["foreign-present", "permission-denied"] as const)("does not treat a predecessor attribution failure as an empty path when %s", async (condition) => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick(); await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
+    const failure = condition === "permission-denied" ? Object.assign(new Error("Permission denied while inspecting the original worktree."), { code: "EACCES" }) : new Error("The task worktree ownership marker or repository identity does not match this claim.");
+    vi.mocked(f.git.findWorktree).mockRejectedValueOnce(failure);
+    const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1060) }; f.store.registerProject(project);
+    const candidate = remoteTask(project.projectId, original.taskId);
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1061), worktreeId: uuid(1062), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
+    const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration }], maxConcurrent: 2 });
+    const identity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1061) };
+    if (condition === "permission-denied") {
+      await expect(changedOrigin.tick()).rejects.toBe(failure); expect(f.store.getTask(identity)).toBeNull();
+    } else {
+      await changedOrigin.tick(); expect(f.store.getTask(identity)).toMatchObject({ configuration: null, resources: { worktree: null, herdr: null, nativeSession: null } });
+    }
+    expect(f.git.prepareWorktree).toHaveBeenCalledOnce(); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  });
+
+  it("preserves a Git cleanup failure aggregated with normal cancellation as a real execution fault", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    const cancellation = new AbortController(); const reason = new Error("normal worker shutdown");
+    const cancelledOperation = new OperationError("cancelled", { cause: reason });
+    const terminationFailure = new Error("Git process termination is unconfirmed.");
+    const failure = new AggregateError([terminationFailure], "Git failed and its process termination is unconfirmed.", { cause: cancelledOperation });
+    vi.mocked(f.git.verifyWorktree).mockImplementationOnce(async () => { cancellation.abort(reason); throw failure; });
+    await createWorkerCoordinator({ ...f.options, signal: cancellation.signal }).tick();
+    expect(isWorkerCancellation(failure, cancellation.signal)).toBe(false);
+    expect(f.store.getTask(original)?.recovery.pauseReason).toBe(failure.message);
+    const diagnostic = f.events.find((event) => event.kind === "paused" && event.error === failure);
+    expect(diagnostic?.error).toBe(failure); expect(failure.errors).toEqual([terminationFailure]); expect(failure.cause).toBe(cancelledOperation); expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it("never classifies independent aggregate cleanup failures as benign solely from their cancellation cause", () => {
+    const cancellation = new AbortController(); const reason = new Error("normal worker shutdown"); cancellation.abort(reason);
+    const cancelledOperation = new OperationError("cancelled", { cause: reason });
+    const cleanupFailure = new Error("Git process termination is unconfirmed.");
+    const mixed = new AggregateError([cleanupFailure], "Git termination failed.", { cause: cancelledOperation });
+    const nested = new AggregateError([cancelledOperation, mixed], "Cleanup had mixed outcomes.", { cause: cancelledOperation });
+    expect(isWorkerCancellation(mixed, cancellation.signal)).toBe(false); expect(isWorkerCancellation(nested, cancellation.signal)).toBe(false);
+    expect(isWorkerCancellation(new Error("Wrapped cleanup failure.", { cause: nested }), cancellation.signal)).toBe(false);
+    const pure = new AggregateError([cancelledOperation, new Error("Cancellation wrapper.", { cause: cancelledOperation })], "All operations were cancelled.", { cause: cancelledOperation });
+    expect(isWorkerCancellation(pure, cancellation.signal)).toBe(true);
+    expect(isWorkerCancellation(new AggregateError([cancelledOperation], "No link to the current worker abort."), cancellation.signal)).toBe(false);
+  });
+
+  it("does not materialize a fresh claim with missing configuration when cancellation interrupts predecessor inspection", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(original.projectId, []); await f.coordinator.tick();
+    await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
+    const before = f.store.getTask(original)!;
+    const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1070) }; f.store.registerProject(project);
+    const candidate = remoteTask(project.projectId, original.taskId);
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1071), worktreeId: uuid(1072), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
+    const frozen = { ...configuration, model: "fresh-handoff-config" };
+    const cancellation = new AbortController(); const reason = new Error("normal worker shutdown");
+    vi.mocked(f.git.findWorktree).mockImplementationOnce(async (task, operation) => { cancellation.abort(reason); operation.check(); return task.resources.worktree; });
+    const changed = { ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 };
+    const incomingIdentity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1071) };
+    await expect(createWorkerCoordinator({ ...changed, signal: cancellation.signal }).tick()).rejects.toBeInstanceOf(OperationError);
+    expect(f.store.getTask(incomingIdentity)).toBeNull(); expect(f.store.getTask(original)).toEqual(before); expect(f.tasks.start).toHaveBeenCalledOnce();
+    const restarted = createWorkerCoordinator(changed); await restarted.tick();
+    expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "pending", configuration: frozen, resources: { worktree: null, herdr: null, nativeSession: null } });
+    f.setTime(before.cleanup!.deadline); await restarted.advanceCommittedCleanups(original); await restarted.tick();
+    expect(f.store.getTask(incomingIdentity)).toMatchObject({ status: "active", configuration: frozen, nativeExecution: { promptSubmission: "submitted" } });
+    expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBeUndefined(); expect(f.store.getTask(incomingIdentity)?.resources.nativeSession?.sessionId).not.toBe(original.resources.nativeSession!.sessionId);
   });
 
 });

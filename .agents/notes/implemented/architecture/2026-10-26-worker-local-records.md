@@ -113,6 +113,13 @@ must supply those observations and serialize each claim's actions. Failed or
 partial claim inventory cannot authorize deletion. The original claim's absence
 from a successful complete own-current inventory is the automatic cleanup rule.
 
+Original service identity remains a local resource scope after serverUrl
+changes. Same-worker committed cleanup and shutdown preserve all such local
+responsibilities while new remote work uses only the current origin. Storage
+does not gain a credential registry or authorize absence through a different
+service. Normal causal cancellation preserves existing real pauses, budgets and
+unknown submission facts instead of manufacturing a new fault pause.
+
 The [foreground runtime](2026-10-27-foreground-worker-runtime.md) consumes these
 identity/storage operations and concrete native facts. The [Git workspace
 manager](2026-10-26-worker-git-workspaces.md) supplies concrete worktree
