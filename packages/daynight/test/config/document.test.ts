@@ -14,9 +14,9 @@ afterEach(async () => {
 
 describe("shared YAML document boundary", () => {
   it("recognizes each command's fields without imposing its value rules", () => {
-    const source = "# Server settings\nserverUrl: &server nonsense\nrepositoryRoot: *server # preserved alias\nrepositories: malformed\npollIntervalMs: null\nmaxConcurrentWorker: false\nagentTimeoutMs: []\nmaxAttempts: {}\nretryDelayMs: -1\ncopilotModel: null\ncopilotReasoningEffort: false\n";
+    const source = "# Server settings\nworkerId: null\nserverUrl: &server nonsense\nrepositoryRoot: *server # preserved alias\nrepositories: malformed\npollIntervalMs: null\nmaxConcurrentWorker: false\nagentTimeoutMs: []\nmaxAttempts: {}\nretryDelayMs: -1\ncopilotModel: null\ncopilotReasoningEffort: false\n";
     const { document, mapping } = parseConfigurationDocument(source, paths);
-    expect(mapping).toEqual({ serverUrl: "nonsense", repositoryRoot: "nonsense", repositories: "malformed", pollIntervalMs: null, maxConcurrentWorker: false, agentTimeoutMs: [], maxAttempts: {}, retryDelayMs: -1, copilotModel: null, copilotReasoningEffort: false });
+    expect(mapping).toEqual({ workerId: null, serverUrl: "nonsense", repositoryRoot: "nonsense", repositories: "malformed", pollIntervalMs: null, maxConcurrentWorker: false, agentTimeoutMs: [], maxAttempts: {}, retryDelayMs: -1, copilotModel: null, copilotReasoningEffort: false });
     expect(document.toString()).toContain("serverUrl: &server nonsense");
     expect(document.toString()).toContain("repositoryRoot: *server # preserved alias");
   });

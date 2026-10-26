@@ -28,9 +28,16 @@ Explicit manual resume preserves the original resource binding while retaining
 the manual execution exception to automatic eligibility. Transfer requires a
 source owner/admin actor and a separately validated current target member.
 
-Callers generate and persist a fresh claim UUID before each acquisition or
-transfer and never reuse it. The service rejects the latest ID's reuse and
-requires the current claim plus an exact task version for subsequent writes.
+Callers generate a fresh claim UUID for each acquisition or transfer and never
+reuse it. The service rejects the latest ID's reuse and requires the current
+claim plus an exact task version for subsequent writes. The foundation originally
+required persisting that ID before either operation. The
+[local-records decision](2026-10-26-worker-local-records.md) partially supersedes
+that ordering: initial automatic acquisition generates its request ID in memory
+after durable worker identity and project mapping, then registers pending only
+for an actual remote claim. Complete own-claim inventory recovers an unknown
+acquisition without replay. Transfer still persists its target claim ID in the
+source control intent before the remote write.
 Claim IDs are public correlation and fencing identifiers, not secret machine
 credentials. There is no historical claim registry or additional generation
 counter. Released/completed records retain the last execution information.
@@ -87,7 +94,8 @@ manual resume requires continuity before a new owner can continue released work.
 
 The service validates identities and confirmations, not remote process death or
 Git/native-history contents. Fencing does not revoke external credentials.
-Callers must preserve fresh claim IDs and original resources. Latest-record GET
+Callers must preserve original resources while the same claim remains valid.
+Latest-record GET
 can establish current ownership but is not a historical operation receipt after
 later writers replace that record. Uncertain writes remain visible and are not
 automatically replayed.

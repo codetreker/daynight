@@ -8,6 +8,7 @@ export type ConfigurationDocument = {
 };
 
 export const supportedConfigurationFields = [
+  "workerId",
   "serverUrl",
   "serverToken",
   "repositoryRoot",

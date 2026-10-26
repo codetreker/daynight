@@ -44,16 +44,25 @@ remain prerequisites rather than new worker-specific identity or task-state
 systems. The initial design used the then-current approval lifecycle; the
 three-state decision owns its replacement.
 
-The worker retains one worktree for each unfinished task, starts a dedicated
-Herdr instance and keeps only current execution state and necessary recovery
-checkpoints in SQLite. New worker resources use an explicitly configured,
-workspace-owned state directory; existing shared configuration paths stay with
-their current owners. It reads the latest Herdr status for execution observations. The agent validates
-delivery against task requirements, PR facts and acceptance evidence, then submits
-the same claim's final done. Complete current-claim inventory governs worker
+The worker retains the original worktree and native history while the same claim
+remains valid, and uses one dedicated Herdr instance with per-task workspaces.
+The [local-records decision](2026-10-26-worker-local-records.md) partially
+supersedes the initial explicitly configured workspace state directory and
+worker_state/executions schema. The initial choice gave new resources an explicit
+workspace owner and tracked external-action uncertainty. Stable workerId now
+lives in shared configuration; fixed per-user worker resources and the concrete
+projects/tasks schema provide that identity, exclusion and recovery ownership.
+The source primitives exist; foreground scheduling and resource adapters remain
+runtime implementation work.
+
+The worker reads the latest Herdr status for execution observations. The agent
+validates delivery against task requirements, PR facts and acceptance evidence,
+then submits the same claim's final done. Complete current-claim inventory governs
 resource reconciliation rather than a second business-acceptance verifier.
 Uncertain external results are reconciled before actions are repeated. Waiting
 and paused tasks retain their claims, worktrees and global concurrency slots.
+Every ownership exit uses the same terminal stop/close/delete cleanup; a new
+claim starts fresh resources rather than importing the old execution.
 
 Acquisition discovers eligible unclaimed tasks and lets the service atomically
 select one winner. The original recovery design discovered work only through
@@ -78,8 +87,9 @@ projections without treating missing local resources as recovered work.
 **A worker-owned delivery engine.** Moving implementation, PR creation,
 CI/review handling and merge orchestration into the coordinator would duplicate
 the agent's task workflow and make every repository delivery rule a worker
-integration. The agent retains that loop while the worker verifies completion
-and controls ownership and resources.
+integration. The original design retained that loop in the agent while assigning completion
+verification to the worker. Agent-owned final completion now supersedes that
+verification step; ownership and resources remain with the worker.
 
 **A public report command and SQLite inbox.** A structured command could accept
 waiting, failure and delivery-candidate messages with deduplication identifiers.
@@ -100,18 +110,18 @@ schema on these different lifecycles.
 ## Consequences
 
 The design keeps exclusive ownership and crash recovery explicit without a
-second agent reporting protocol. Current-state persistence still requires
-checkpoints for external actions: a lost response cannot justify another agent
-or a repeated delivery action. Claim transfer requires confirmed stopping and
-access to original work; machine loss does not expire ownership automatically.
+second agent reporting protocol. Lost external responses cannot justify another
+agent or repeated input. Worker death does not expire ownership automatically.
+The original transfer design required access to source results; the local-records
+decision replaces that continuity assumption with terminal source cleanup and a
+fresh target execution. Existing service continuity constraints remain distinct
+until their management-protocol implementation changes them.
 
-Completion verification is limited by the task's actual evidence. Herdr
-idle/done is only an execution observation. The worker independently checks
-claim, accessible task evidence, PR identity and integration facts; the agent
-performs the task's acceptance work and records its observations. Conflicting
-or missing evidence and explicit human acceptance requirements keep the task
-pending for work or human input. This does not introduce a universal
-natural-language acceptance parser or demand formal proof for ordinary tasks.
+Herdr idle/done is only an execution observation. The agent performs task
+acceptance, records evidence and submits final claim-bound done. Conflicting or
+missing evidence and explicit human acceptance requirements keep the task
+unfinished for work or human input. The worker uses complete current ownership
+for cleanup and does not independently parse business acceptance or PR evidence.
 
 Native Herdr transport, unattended session restoration, stopping and both agent
 adapters require source-bound runtime acceptance on supported platforms. Design

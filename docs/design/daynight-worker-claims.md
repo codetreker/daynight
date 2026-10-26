@@ -1,6 +1,6 @@
 # Worker 任务认领与执行归属
 
-状态：服务端认领、归属更新、释放、移交、人工接续及 CLI/Web 读取模型已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。前台 worker、SQLite 执行记录、Herdr 运行和人工管理命令由运行时交付，不由本能力启动。
+状态：服务端认领、归属更新、释放、移交、人工接续及 CLI/Web 读取模型已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供；前台 worker、Git/Herdr 运行和人工管理命令仍由运行时交付，不由本协议启动。
 
 ## 资源和属性所有权
 
@@ -31,7 +31,7 @@
 
 ## HTTP 操作
 
-以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID。领取或移交前，调用方生成从未使用过的新 ID 并持久化，不能把旧 ID 用作另一次执行。
+以下路径均位于 `/api/v1/projects/{projectId}/tasks/{taskId}`。全部写入要求正 int64 `version`，成功返回 200、完整 Task 与 no-store；沿用严格 JSON、重复/未知字段及请求体限制。`claimId` 是 UUID，不能把旧 ID 用作另一次执行。自动初次认领为请求在内存生成新 ID；稳定 workerId 与原服务范围/项目仓库映射先持久保存，实际远端 claim 确认后才登记本机 pending，不预建任务行或额外台账。Transfer 则在 source 管理意图中先持久保存新 targetClaimId，再调用远端。
 
 | 方法和后缀 | 输入与结果 |
 |---|---|
@@ -94,7 +94,7 @@ listTaskPage 保留 nextCursor，供运行时有界推进候选；许可、ready
 
 Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 workerId；listTasks 成功读到末页才返回完整数组，后页失败、重复身份或游标循环抛出错误，不返回部分成功。listTaskPage 仍是显式分页接口；响应不匹配 active/workerId 时拒绝协议，不本地丢项。调用者汇总全部项目后按原 claimId 是否在清单对账，不读取 task 状态分类缺席原因。
 
-显式管理的精确版本及未知写入结果仍按具体 taskId 读取核对。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
+自动初次认领结果未知时不重放；成功完整的自己 claim 清单找回实际 claim 后再登记 pending，失败或部分清单不建立归属结论。显式管理的精确版本及未知写入结果仍按具体 taskId 读取核对。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
 
 每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建/更新输入仅暴露可写的 PR 属性。
 
@@ -108,7 +108,7 @@ Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 workerId；listTasks 成功
 jq 'select(.task_id == "<task-id>" and .request_id == "<request-id>")' server.jsonl
 ```
 
-请求日志用于定位操作，不能代替权威归属读取。未知结果仍按 SQLite 中的 taskId 直接 GET，核对当前 claim、用户、worker 和原工作区；后续 GET 有自己的 request_id。此能力复用服务端 JSON 日志，没有新增日志子系统；常驻 worker 的本地执行日志与原生恢复遥测属于后续运行时能力，服务日志不构成其验收证据。
+请求日志用于定位操作，不能代替权威归属读取。自动初次认领的未知结果由成功完整的自己 claim 清单找回；显式管理写入按已知 taskId 直接 GET 核对当前 claim、用户、worker 和资源绑定，后续 GET 有自己的 request_id。此能力复用服务端 JSON 日志，没有新增日志子系统；常驻 worker 的本地执行日志与原生恢复遥测属于后续运行时能力，服务日志不构成其验收证据。
 
 ## 验证边界
 
