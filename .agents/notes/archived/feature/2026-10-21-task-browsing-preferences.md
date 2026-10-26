@@ -29,14 +29,14 @@ The original inline view also stored `{ expandedRootId: string | null }` in
 `daynight:project-view:${projectId}`. Its string preserved the original member
 witness through merges and splits, and null preserved explicit collapse. That
 was appropriate while expansion was part of the page layout. The [graph-dialog
-decision](2026-10-26-task-chain-graph-dialog.md) replaces persistent opening
+decision](../../implemented/feature/2026-10-26-task-chain-graph-dialog.md) replaces persistent opening
 with an explicit, temporary reading session: the old expansion record is no
 longer read or written, entry starts closed, and leaving Task list or its Task
 chains category closes the dialog. An open dialog still resolves its original
 witness through the current ordinary component without overwriting a valid
 witness with its representative. A missing, standalone or hidden witness closes
 it instead of opening another chain. The [Goal-list
-decision](2026-10-26-goal-task-lists.md) adds row-local task disclosure
+decision](../../implemented/feature/2026-10-26-goal-task-lists.md) adds row-local task disclosure
 separately from graph opening: mounted rows retain it through refresh and
 dialog round trips, and remounted rows start collapsed without reviving the old
 storage record.

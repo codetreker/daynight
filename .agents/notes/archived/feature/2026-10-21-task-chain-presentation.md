@@ -43,7 +43,7 @@ ChainList receives visible representatives alongside the complete immutable
 GraphIndex. Its representative row now discloses a compact list under the
 [Goal-list decision](../../implemented/feature/2026-10-26-goal-task-lists.md); the sibling
 dependency-graph control alone opens the graph. The [graph-dialog
-decision](2026-10-26-task-chain-graph-dialog.md) replaces the original inline
+decision](../../implemented/feature/2026-10-26-task-chain-graph-dialog.md) replaces the original inline
 default selection and persisted expansion. Its temporary original task witness
 resolves the current component; changed representatives do not overwrite a
 valid witness. A missing, standalone or hidden witness closes the dialog. First

@@ -35,7 +35,7 @@ contents unmount while their hidden wrappers retain stable tabpanel IDs. The
 the visited Task list subtree mounted across outer Overview switches and
 isolates its page scroll ownership. The project opens one graph dialog after an
 explicit dependency-graph action; the [graph-dialog
-decision](2026-10-26-task-chain-graph-dialog.md) replaces inline graph
+decision](../../implemented/feature/2026-10-26-task-chain-graph-dialog.md) replaces inline graph
 expansion and persisted opening while retaining one mounted graph. The
 [Goal-list decision](../../implemented/feature/2026-10-26-goal-task-lists.md) gives the row body a
 separate compact member list without changing graph resources. Independent
@@ -45,7 +45,7 @@ preference decision](2026-10-21-task-browsing-preferences.md). The
 newest-first visible chain order while the complete graph index retains its API
 order. React Flow owns 220px-wide task cards, 96px high without expansion
 controls and 136px with them, following the [conditional footer
-decision](../bug-fix/2026-10-22-task-card-expansion-footer.md), native node
+decision](../../implemented/bug-fix/2026-10-22-task-card-expansion-footer.md), native node
 measurement, keyboard interaction, the viewport and its controls. Editing,
 connection, deletion, wrapper focus and interactive-lock controls remain
 disabled. Each task has one native button for pointer, Enter and Space
