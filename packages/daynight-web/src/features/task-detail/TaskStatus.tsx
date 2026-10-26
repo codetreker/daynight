@@ -37,10 +37,10 @@ export const TaskStatusMenu = ({ status, disabled, onSelect }: {
     return () => document.removeEventListener('pointerdown', outside);
   }, [open]);
   return <div className="task-status-picker" ref={container} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) close(false); }}>
-    <button className="button task-status-trigger" ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
+    <button className="task-status-trigger" ref={trigger} type="button" aria-haspopup="menu" aria-expanded={open} aria-controls={open ? menuId : undefined}
       disabled={disabled} onClick={() => open ? close(false) : show(statuses.indexOf(status))}
       onKeyDown={(event) => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); show(event.key === 'ArrowDown' ? 0 : statuses.length - 1); } }}>
-      <i className={`task-detail-dot-${status}`} aria-hidden="true" />{messages.common.status[status]}<span className="task-status-chevron" aria-hidden="true">⌄</span>
+      <i className={`task-detail-dot-${status}`} aria-hidden="true" />{messages.common.status[status]}<svg className="task-status-chevron" width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m2 4 3 3 3-3" /></svg>
     </button>
     {open && <div className="task-status-menu" ref={menu} id={menuId} role="menu" aria-label={messages.inspection.status.menu} onKeyDown={(event) => {
       if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) {
