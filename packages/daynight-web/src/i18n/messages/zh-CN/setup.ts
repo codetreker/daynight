@@ -19,7 +19,7 @@ export const setup: SetupMessages = {
   steps: {
     install: {
       title: "安装 Daynight CLI",
-      description: "准备 Node.js 24，在终端安装 CLI。",
+      description: "准备 Node.js 22 及以上版本的最新补丁，在终端安装 CLI。",
       success: "终端输出版本号。",
     },
     login: {

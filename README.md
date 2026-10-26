@@ -44,7 +44,8 @@ The planned autonomous worker runtime is still under development; its
 
 The public introduction explains the product before sign-in; its example can be
 used without an account. The **[setup guide](https://daynight.cc/setup)** walks
-through installation and agent setup. Use Node.js 24 LTS, then install the CLI and sign in:
+through installation and agent setup. Use the latest patch of Node.js 22 or newer,
+then install the CLI and sign in:
 
 ```bash
 npm install --global @codetreker/daynight
@@ -132,7 +133,8 @@ upload HTML you trust with that authority.
 
 ## CLI development
 
-Use Node.js 24 LTS and pnpm 11.28.6. From the repository root:
+Source development uses Node.js 24 LTS and pnpm 11.28.6. The published CLI runs on
+Node.js 22 or newer. From the repository root:
 
 ```bash
 pnpm install --frozen-lockfile
@@ -179,7 +181,7 @@ from all changed paths, including deletions and both sides of renames:
 | Changed paths | PR application jobs |
 |---|---|
 | `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
-| Other `packages/daynight/` paths | Linux, macOS and Windows CLI, plus shell completion |
+| Other `packages/daynight/` paths | Linux, macOS and Windows CLI, runtime compatibility, plus shell completion |
 | `packages/daynight-server/` | Go server |
 | `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |

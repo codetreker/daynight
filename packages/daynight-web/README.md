@@ -62,8 +62,8 @@ own the complete visitor journey and public/private ownership.
 The header's book icon and visible Setup guide link appear before the language
 selector and open public `/setup` in a new tab with native link behavior and
 `noopener noreferrer`. The opener retains its current page. The expanded five steps explain CLI
-installation with Node.js 24, `daynight login` device authorization, discovering
-or creating a project from a Git repository's `origin`, `daynight skill install`
+installation with Node.js 22 or newer, `daynight login` device authorization,
+discovering or creating a project from a Git repository's `origin`, `daynight skill install`
 and registering and viewing the first task. Each step gives its execution
 location, prerequisites, copyable text and success signal. Remote terminals can
 use `daynight login --no-browser`; Agent reload instructions come from the
