@@ -22,12 +22,13 @@ lifecycle. Worker composes existing typed HTTP, identity/lock, Git, Herdr and
 managed-skill modules instead of introducing another delivery engine.
 
 A single coordinator owns repository rotation, capacity and per-task serial
-advancement. Every complete round reads current own-claim inventory before
-reconciling existing records and Herdr resources, then acquires new work. Failed
-or partial inventory cannot authorize deletion. Only original-claim absence
-triggers automatic terminal cleanup; task status does not classify exits.
-Explicit source control and irreversible terminal intent precede ordinary
-recovery. A new claim never protects an old claim with the same task ID.
+advancement. Every inventory/acquisition round reads complete current own-claim
+inventory before reconciling records and Herdr resources, then acquires new
+work. Failed or partial inventory cannot authorize a new terminal decision. Only
+original-claim absence triggers new automatic terminal cleanup; task status does
+not classify exits. Explicit source control and irreversible terminal intent
+precede ordinary recovery. A new claim never protects an old claim with the same
+task ID.
 
 Actual claims become pending before activation and resources. Active
 preparation, waiting, paused recovery and cleanup retain capacity; lowering the
@@ -73,13 +74,32 @@ done. Live reconnection does not repeat startup input. The [Herdr
 adapter](2026-10-26-worker-herdr-adapter.md) owns transport and resource
 observations, and its receipt/stop gates remain authoritative.
 
-Cleanup retains its first deadline and input provenance. The driver requests
-attributable outside-worktree cleanup, observes a fresh completion boundary or
-the fixed deadline, confirms original stop, closes the workspace and deletes the
-original Git worktree before local done. Unknown cleanup input is not replayed.
-Ctrl+C uses a separate bounded cleanup scope with a shared exit deadline;
-unfinished claims/worktrees/native history survive normal shutdown. The private
-daemon stops only after original agents are confirmed stopped.
+Cleanup retains its first deadline and input provenance. One concrete async loop
+inside the foreground process advances only previously persisted cleanup or
+source-control intents independently of inventory/acquisition polling and
+startup repository requests. Its timer waits at most one second, shortened to
+the nearest original deadline; bounded resource operations still use the shared
+per-task serial boundary. A failed read creates no new absence decision, but
+cannot withdraw an already committed cleanup responsibility. No new table,
+ledger, public configuration or OS daemon is introduced.
+
+The driver requests attributable outside-worktree cleanup, observes a fresh
+completion boundary or fixed deadline, confirms original stop, closes the
+workspace and deletes the original Git worktree before local done. Unknown
+cleanup input is not replayed. Ctrl+C cancels and joins the normal committed
+cleanup loop before the independent bounded shutdown scope and shared exit
+deadline. The private Herdr instance stops last, after original agents are
+confirmed stopped.
+
+Consuming completed interrupted shutdown invalidates its old Herdr snapshot;
+ordinary execution first enumerates current resources again. Proven
+never-started work or an execution with its exact original native ID can take
+the normal resume path while preserving worktree/configuration, recovery budget
+and pause state. If native execution may have started but its exact ID is
+unavailable, confirmed stopping/closure does not authorize first launch:
+original bindings, launch/prompt provenance and PID evidence are retained and
+execution pauses. That uncertainty is not reset to never-submitted or an empty
+conversation.
 
 The public attachment descriptor is advertised only after complete inventory and
 managed private-instance/snapshot readiness. It applies routing variables only
@@ -113,13 +133,25 @@ succeed before its reply or local result commits. Persisted submission facts and
 actual resource/provenance checks distinguish never-started work from an unknown
 execution. Fresh replacement resources cannot conceal lost history or config.
 
+**Use acquisition polling to schedule committed cleanup.** A long poll interval,
+failed server inventory or blocked startup project request can delay a deadline
+that was already accepted and persisted. A narrow foreground cleanup loop keeps
+that commitment progressing without obtaining new termination authority or
+creating another resource controller.
+
+**Reset any stopped execution to first launch after shutdown.** Process stop and
+workspace closure do not identify the original conversation. When a launch may
+have happened without its native ID being retained, clearing old provenance can
+start a new conversation under the old claim. Pausing with the original evidence
+preserves that boundary until the exact identity is recovered.
+
 ## Consequences
 
-The command is an operational foreground entry rather than another server or
-background service. Configuration defaults and repository overrides have one
-strict owner; startup reload affects new assignments while existing ones keep
-their snapshots. Fixed paths and a stable worker identity give restarts the same
-record/resource scope.
+The command and its async cleanup loop remain one foreground process rather than
+another server or OS background service. Configuration defaults and repository
+overrides have one strict owner; startup reload affects new assignments while
+existing ones keep their snapshots. Fixed paths and a stable worker identity
+give restarts the same record/resource scope.
 
 An unresolved project acquisition or missing original native proof can require
 inspection while other eligible work continues within available capacity.

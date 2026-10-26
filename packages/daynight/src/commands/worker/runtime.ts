@@ -62,6 +62,8 @@ export const runWorker = async (options: {
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
   let herdr: ReturnType<typeof createWorkerHerdr> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
+  let cleanupLoop: Promise<void> | undefined;
+  let cleanupFailure: unknown;
   const failures: unknown[] = [];
   try {
     cancellation.signal.throwIfAborted();
@@ -85,6 +87,27 @@ export const runWorker = async (options: {
       machine: machineDescription(platform), repositories, maxConcurrent: configuration.maxConcurrent,
       buildPrompt, emit, signal: cancellation.signal,
     });
+    const cleanupCoordinator = coordinator;
+    const cleanupDiagnostics = diagnostics;
+    const cleanupStore = store;
+    cleanupLoop = (async () => {
+      while (!cancellation.signal.aborted) {
+        try { await cleanupCoordinator.advanceCommittedCleanups(); }
+        catch (error) {
+          if (cancelled(error, cancellation.signal)) break;
+          emit({ kind: "cleanup-error", message: "Committed cleanup could not advance; its original deadline and responsibility are retained.", error });
+        }
+        await cleanupDiagnostics.flush();
+        const observedAt = Date.now();
+        const interval = Math.max(1, cleanupStore.listUnfinishedTasks().reduce((waiting, task) => {
+          if (task.serverOrigin !== serverUrl || task.workerId !== workerId || task.cleanup === null || task.cleanup.result !== null) return waiting;
+          const remaining = task.cleanup.deadline - observedAt;
+          return remaining > 0 ? Math.min(waiting, remaining) : waiting;
+        }, 1_000));
+        try { await delay(interval, undefined, { signal: cancellation.signal }); }
+        catch (error) { if (!cancelled(error, cancellation.signal)) throw error; }
+      }
+    })().catch((error: unknown) => { cleanupFailure = error; cancellation.abort(error); });
     emit({ kind: "started", message: `Foreground worker ${workerId} on ${platform}; maxConcurrent=${configuration.maxConcurrent}; pollIntervalMs=${configuration.pollIntervalMs}; logs=${diagnostics.filename}.` });
     for (const repository of configuration.repositories) {
       cancellation.signal.throwIfAborted();
@@ -119,6 +142,9 @@ export const runWorker = async (options: {
   } catch (error) {
     if (!cancelled(error, cancellation.signal)) failures.push(error);
   } finally {
+    if (!cancellation.signal.aborted) cancellation.abort(new Error("Worker runtime is closing."));
+    await cleanupLoop;
+    if (cleanupFailure !== undefined && !failures.includes(cleanupFailure)) failures.push(cleanupFailure);
     if (coordinator !== undefined && herdr !== undefined) {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping acquisitions and ordinary input; cleaning original executions with their persisted deadlines." });

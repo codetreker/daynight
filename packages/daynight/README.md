@@ -856,14 +856,25 @@ the same terminal cleanup for done, release and transfer: request attributable
 outside-worktree cleanup for at most the original ten-minute deadline, confirm
 the original agent stopped, close its workspace, delete its worktree and retain
 local history. Failures keep responsibility and resume cleanup after restart.
-An incomplete or failed inventory never authorizes deletion.
+A failed or incomplete inventory cannot authorize a new terminal-cleanup
+decision. Already persisted cleanup/control intents continue in the same
+foreground process through a separate asynchronous loop, even during server
+read failures or startup repository requests. Its wait is bounded by one second
+and the nearest original deadline, independently of pollIntervalMs; per-task
+serialization still prevents overlapping resource operations.
 
-Ctrl+C stops acquisition and ordinary input. Original task cleanup runs with a
-separate bounded cancellation scope and a shared exit deadline. Unfinished
+Ctrl+C stops acquisition and ordinary input, cancels and joins the ordinary
+cleanup loop, then runs original-task shutdown with a separate bounded
+cancellation scope and a shared exit deadline. Unfinished
 claims, worktrees and native history remain; the private instance stops only
 after original agents are confirmed stopped. Stop uncertainty is reported and
 retains the instance/resources for inspection. Restart the command to reconcile
-with the same worker identity and original state.
+with the same worker identity and original state. After consuming interrupted
+shutdown, the worker refreshes Herdr resources before ordinary execution. If a
+native launch may have occurred but its exact original session ID is missing,
+shutdown preserves its old binding, launch and PID evidence and pauses; it does
+not turn that execution into a first launch. Proven never-started work and
+executions with a known original native ID retain their normal recovery path.
 
 Public worker release/transfer/resume/retry commands and the service's terminal
 management-protocol revision remain pending. Linux, Windows and macOS complete

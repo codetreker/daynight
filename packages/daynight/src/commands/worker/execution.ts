@@ -103,6 +103,11 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (task.configuration === null) throw new Error("The original frozen execution configuration is missing; restore it before retrying.");
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized && (task.resources.worktree === null || task.resources.herdr === null)) return task;
       if (task.status !== "active") throw new Error("Only an active execution may prepare resources.");
+      const original = actualTaskPane(task, resources);
+      if (task.resources.nativeSession === null && task.nativeExecution?.launchSubmission !== "never-submitted") {
+        if (original === undefined || (!live(original) && original.nativeSession === null)) throw new Error("The original native session ID is missing; recover its exact history identity before preparing replacement resources.");
+        if (original.nativeSession !== null && task.resources.herdr !== null) task = rememberNative(task, original.nativeSession);
+      }
       if (task.resources.worktree === null) {
         const binding = task.nativeExecution === null
           ? await workerOperation((operation) => deps.git.findWorktree(task, operation), signal)

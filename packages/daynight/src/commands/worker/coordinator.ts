@@ -127,6 +127,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const reconcileTask = async (input: LocalTask, remoteTask: Task | undefined, resources: readonly HerdrOwnedWorkspace[]): Promise<void> => {
     await serializeTask(input, async () => {
       let task = latest(input);
+      let currentResources = resources;
       if (task.status === "done") return;
       if (remoteTask === undefined || task.control !== null || task.cleanup?.kind === "terminal") {
         task = await cleanup.advance(task, resources, "terminal", now() + 600_000, normalSignal);
@@ -137,6 +138,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         task = await cleanup.advance(task, resources, "shutdown", task.cleanup.deadline, normalSignal);
         if (!task.cleanup!.agentStopped || !task.cleanup!.workspaceClosed || task.cleanup!.result === null) return;
         task = options.store.resumeAfterShutdown(task, now());
+        currentResources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
       }
       const worker = remoteTask.properties.worker!;
       if (worker.workerId !== task.workerId || worker.worktreeId !== task.worktreeId || worker.platform !== options.platform || (task.configuration !== null && worker.agent !== task.configuration.agent)) {
@@ -153,7 +155,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (capacity() >= options.maxConcurrent || options.store.listUnfinishedTasks().some((other) => other.status === "active" && taskKey(other) === taskKey(task))) return;
         task = options.store.activateTask(task, now());
       }
-      try { task = await execution.advance(task, resources, normalSignal); }
+      try { task = await execution.advance(task, currentResources, normalSignal); }
       catch (error) {
         if (error instanceof HerdrAgentActionError && error.submission === "unknown" && ["workspace.create", "workspace.close", "tab.create", "pane.close"].includes(error.action)) {
           task = latest(task);
@@ -196,6 +198,34 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   return {
     serializeTask,
+    advanceCommittedCleanups: async (): Promise<void> => {
+      if (shuttingDown) return;
+      normalSignal.throwIfAborted();
+      const committed = localTasks().filter((task) => task.cleanup !== null || task.control !== null);
+      const results = await Promise.allSettled(committed.map((input) => serializeTask(input, async () => {
+        normalSignal.throwIfAborted();
+        let task = latest(input);
+        if (task.status === "done" || (task.cleanup === null && task.control === null)) return;
+        if (task.cleanup?.result !== null && task.cleanup?.agentStopped && task.cleanup.workspaceClosed && (task.cleanup.kind === "shutdown" || task.cleanup.worktreeDeleted)) {
+          completeTerminal(task, false);
+          return;
+        }
+        task = options.store.beginCleanup(task, { kind: task.control !== null ? "terminal" : task.cleanup!.kind, deadline: task.cleanup?.deadline ?? now() + 600_000 }, now());
+        await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
+        const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
+        task = await cleanup.advance(task, resources, task.cleanup!.kind, task.cleanup!.deadline, normalSignal);
+        completeTerminal(task, false);
+      })));
+      for (let index = 0; index < results.length; index += 1) {
+        const result = results[index]!;
+        if (result.status === "rejected" && !normalSignal.aborted) {
+          let task = latest(committed[index]!);
+          if (task.cleanup !== null) task = options.store.recordCleanupError(task, errorText(result.reason), now());
+          options.emit({ kind: "cleanup-error", task, message: "Committed local cleanup remains active and will continue independently of remote inventory.", error: result.reason });
+        }
+      }
+      normalSignal.throwIfAborted();
+    },
     cleanupTask: async (identity: ClaimIdentity, kind: CleanupState["kind"] = "terminal"): Promise<LocalTask> => serializeTask(identity, async () => {
       await workerOperation((operation) => options.herdr.ensureInstance(operation));
       const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation));

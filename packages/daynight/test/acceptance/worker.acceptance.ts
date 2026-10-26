@@ -1,23 +1,25 @@
 import { execFileSync } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import path from "node:path";
 import Database from "better-sqlite3";
 import crossSpawn from "cross-spawn";
-import { stringify as yaml } from "yaml";
+import { parse as parseYaml, stringify as yaml } from "yaml";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Project, Task, UpdateWorkerClaimInput, WorkerClaimDescriptor } from "../../src/api/types.js";
+import type { CleanupState } from "../../src/commands/worker/types.js";
 import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
 const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.resolve(workspace, "../..") : workspace;
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const time = "2026-10-26T00:00:00Z";
-type Event = { kind: string; pid?: number; taskId?: string; text?: string; row?: { status: string; configuration: string }; projectCount?: number; binding?: unknown; argv?: string[] };
+type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: { status: string; configuration: string }; projectCount?: number; binding?: unknown; argv?: string[] };
 type FixtureTask = { -readonly [Key in keyof Task]: Task[Key] };
 
 const daemon = String.raw`#!/usr/bin/env node
@@ -29,7 +31,7 @@ import path from 'node:path';
 if (process.argv.includes('--version')) { process.stdout.write('herdr 0.9.5\n'); process.exit(0); }
 const require=createRequire(import.meta.url), Database=require(process.env.FIXTURE_SQLITE);
 const events=process.env.FIXTURE_EVENTS;
-const event=async(value)=>appendFile(events,JSON.stringify(value)+'\n');
+const event=async(value)=>appendFile(events,JSON.stringify({timestamp:Date.now(),...value})+'\n');
 const db=()=>new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});
 const record=async(kind,taskId,extra={})=>{const sql=db();try{await event({kind,taskId,row:sql.prepare('SELECT status,configuration FROM tasks WHERE task_id=?').get(taskId),projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,...extra});}finally{sql.close();}};
 const directory=path.join(process.env.XDG_CONFIG_HOME,'herdr','sessions','w');await mkdir(directory,{recursive:true});
@@ -70,13 +72,15 @@ else if(args.includes('features'))process.stdout.write('hooks stable true\n');
 else throw new Error('Only metadata commands are permitted in this fixture');
 `;
 
-it.skipIf(process.platform !== "linux")("runs the installed worker through claim, managed launch, terminal cleanup and startup Ctrl+C after a crash", async () => {
+it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline"] as const)("runs the installed worker through claim, managed launch and %s after a crash", async (scenario) => {
+  const committedDeadline = scenario === "committed-cleanup-deadline";
   const scratch = path.join(primary, ".tmp");
   await mkdir(scratch, { recursive: true });
   const home = await mkdtemp(path.join(scratch, "w"));
   const eventsFile = path.join(home, "events.jsonl");
   const databaseFile = path.join(home, ".daynight/worker/state.sqlite");
-  const evidenceFile = path.join(workspace, ".tmp/installed-worker-acceptance.json");
+  const evidenceFile = path.join(workspace, committedDeadline ? ".tmp/installed-worker-committed-deadline.json" : ".tmp/installed-worker-acceptance.json");
+  const cleanupEvidenceFile = path.join(workspace, committedDeadline ? ".tmp/installed-worker-committed-deadline-cleanup.json" : ".tmp/installed-worker-cleanup.json");
   const logs: string[] = [];
   const requests: { method: string; path: string; taskId?: string }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
@@ -84,6 +88,9 @@ it.skipIf(process.platform !== "linux")("runs the installed worker through claim
   let failure: unknown;
   let holdProjectReads = false;
   let heldProjectReads = 0;
+  let failInventoryReads = false;
+  let seededCleanup: CleanupState | null = null;
+  let cleanupCompletedAt: number | null = null;
   const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
   const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: true, requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
   const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json" }); response.end(stringifyApiJson(value)); };
@@ -104,6 +111,7 @@ it.skipIf(process.platform !== "linux")("runs the installed worker through claim
       }
       if (project !== undefined && parts.length === 6 && request.method === "GET") {
         const inventory = url.searchParams.get("workerId");
+        if (inventory !== null && failInventoryReads) { send(response, { error: { code: "internal_error", message: "Injected unavailable inventory", requestId: "worker-inventory-fault" } }, 500); return; }
         const items = tasks.filter((item) => item.projectId === project.id && (inventory === null ? item.ready && item.allowAgents : item.properties.worker?.state === "active" && item.properties.worker.workerId === inventory));
         send(response, { items, nextCursor: null }); return;
       }
@@ -188,13 +196,43 @@ it.skipIf(process.platform !== "linux")("runs the installed worker through claim
     first.status = "done"; first.ready = false; first.completedAt = time; first.version += 1n;
     first.properties = { ...first.properties, worker: { ...first.properties.worker!, state: "completed" } };
     await waitFor("first cleanup and second managed prompt", async () => row(first.id).status === "done" && (await events()).some((event) => event.kind === "prompt" && event.taskId === tasks[1]!.id));
-    await waitFor("second prompt journal", () => JSON.parse(row(tasks[1]!.id).native_execution).promptSubmission === "submitted");
+    await waitFor("second prompt and original native process journal", () => {
+      const execution = JSON.parse(row(tasks[1]!.id).native_execution);
+      return execution.promptSubmission === "submitted" && execution.stopObservation !== null;
+    });
     expect(originalWorker.child.kill("SIGKILL")).toBe(true);
     expect(await originalWorker.closed).toBeNull();
     expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(0);
     holdProjectReads = true;
+    const restartRequestOffset = requests.length;
+    if (committedDeadline) {
+      const deadline = Date.now() + 2_000;
+      seededCleanup = { kind: "terminal", startedAt: deadline - 600_000, deadline, input: "unknown", baseline: null, result: null, error: "Controlled SQL injection of a previously committed terminal intent with an uncertain cleanup input.", agentStopped: false, workspaceClosed: false, worktreeDeleted: false };
+      const sql = new Database(databaseFile);
+      try { expect(sql.prepare("UPDATE tasks SET cleanup=? WHERE task_id=? AND claim_id=? AND status='active'").run(JSON.stringify(seededCleanup), tasks[1]!.id, tasks[1]!.properties.worker!.claimId).changes).toBe(1); }
+      finally { sql.close(); }
+      const configFile = path.join(home, ".daynight/config.yml");
+      const configuration = parseYaml(await readFile(configFile, "utf8")) as { worker: { pollIntervalMs: number } };
+      configuration.worker.pollIntervalMs = 3_600_000;
+      await writeFile(configFile, yaml(configuration));
+      failInventoryReads = true;
+      const second = tasks[1]!;
+      second.status = "done"; second.ready = false; second.completedAt = time; second.version += 1n;
+      second.properties = { ...second.properties, worker: { ...second.properties.worker!, state: "completed" } };
+    }
     const restartedWorker = start();
     await waitFor("restarted worker held during project discovery", () => heldProjectReads > 0);
+    if (committedDeadline) {
+      await waitFor("committed terminal cleanup despite blocked startup and one-hour polling", () => row(tasks[1]!.id).status === "done", 8_000);
+      cleanupCompletedAt = Date.now();
+      expect(cleanupCompletedAt).toBeLessThanOrEqual(seededCleanup!.deadline + 5_000);
+      const stop = (await events()).find((event) => event.kind === "native-stop" && event.taskId === tasks[1]!.id)!;
+      expect(stop.timestamp).toBeGreaterThanOrEqual(seededCleanup!.deadline);
+      expect(stop.timestamp).toBeLessThanOrEqual(seededCleanup!.deadline + 5_000);
+      expect(requests.slice(restartRequestOffset).some((request) => request.path.includes("workerId="))).toBe(false);
+      expect((await events()).filter((event) => event.kind === "prompt" && event.taskId === tasks[1]!.id)).toHaveLength(1);
+      expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(0);
+    }
     expect(restartedWorker.child.kill("SIGINT")).toBe(true);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const code = await Promise.race([restartedWorker.closed, new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error(`Installed worker shutdown timed out.\n${logs.join("")}`)), 20_000); })]).finally(() => { if (timeout !== undefined) clearTimeout(timeout); });
@@ -224,7 +262,7 @@ it.skipIf(process.platform !== "linux")("runs the installed worker through claim
         branch: `daynight/${task.id}`, platform: "linux", nativeSession: null,
         configuration: { agent: "codex", model: "fixture-model", args: ["--search"], recoveryLimit: 3 },
       });
-      expect(observed.filter((event) => event.kind === "prompt" && event.taskId === task.id)).toHaveLength(2);
+      expect(observed.filter((event) => event.kind === "prompt" && event.taskId === task.id)).toHaveLength(committedDeadline && index === 1 ? 1 : 2);
     }
     expect(observed.filter((event) => event.kind === "daemon-start")).toHaveLength(1);
     expect(observed.filter((event) => event.kind === "daemon-stop")).toHaveLength(1);
@@ -236,18 +274,24 @@ it.skipIf(process.platform !== "linux")("runs the installed worker through claim
     expect(row(first.id).status).toBe("done");
     await expect(readFile(path.join(repositoryPaths[0]!, ".worktrees/daynight", first.id, "README.md"))).rejects.toMatchObject({ code: "ENOENT" });
     const unfinished = row(tasks[1]!.id);
-    expect(unfinished.status).toBe("active");
-    expect(JSON.parse(unfinished.cleanup)).toMatchObject({ kind: "shutdown", agentStopped: true, workspaceClosed: true, worktreeDeleted: false });
-    expect(await readFile(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id, "README.md"), "utf8")).toContain("Worker integration fixture");
+    if (committedDeadline) {
+      expect(unfinished.status).toBe("done");
+      expect(JSON.parse(unfinished.cleanup)).toMatchObject({ ...seededCleanup, result: "timed-out", agentStopped: true, workspaceClosed: true, worktreeDeleted: true, error: expect.any(String) });
+      await expect(readFile(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id, "README.md"))).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      expect(unfinished.status).toBe("active");
+      expect(JSON.parse(unfinished.cleanup)).toMatchObject({ kind: "shutdown", agentStopped: true, workspaceClosed: true, worktreeDeleted: false });
+      expect(await readFile(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id, "README.md"), "utf8")).toContain("Worker integration fixture");
+    }
     const originalNativeId = JSON.parse(unfinished.resources).nativeSession.sessionId as string;
     expect(originalNativeId).toMatch(/^[0-9a-f-]{36}$/);
     expect(await readFile(path.join(codex, "sessions", `rollout-${originalNativeId}.jsonl`), "utf8")).toContain(path.join(repositoryPaths[1]!, ".worktrees/daynight", tasks[1]!.id));
-    expect(tasks[1]!.properties.worker!.state).toBe("active");
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", method: "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then SIGINT during held restart project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, events: observed, first: row(first.id), unfinished, limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
+    expect(tasks[1]!.properties.worker!.state).toBe(committedDeadline ? "completed" : "active");
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, events: observed, first: row(first.id), unfinished, ...(seededCleanup === null ? {} : { injection: { method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision", cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: true, inventoryFaultEnabled: failInventoryReads, inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length, cleanupCompletedAt, processingAllowanceMs: 5_000 } }), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "failed", method: "Installed worker controlled fixture", error: error instanceof Error ? error.stack : String(error), requests, events: await events(), logs }, null, 2));
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "failed", scenario, method: "Installed worker controlled fixture", seededCleanup, error: error instanceof Error ? error.stack : String(error), requests, events: await events(), logs }, null, 2));
     throw error;
   }
   finally {
@@ -265,6 +309,7 @@ it.skipIf(process.platform !== "linux")("runs the installed worker through claim
     await new Promise<void>((resolve, reject) => { server.close((error) => error === undefined || ("code" in error && error.code === "ERR_SERVER_NOT_RUNNING") ? resolve() : reject(error)); server.closeAllConnections(); }).catch((error: unknown) => { cleanupErrors.push(error); });
     try { await installed?.cleanup(); } catch (error) { cleanupErrors.push(error); }
     try { await rm(home, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
+    await writeFile(cleanupEvidenceFile, JSON.stringify({ outcome: cleanupErrors.length === 0 ? "passed" : "failed", scenario, homeRemoved: !existsSync(home), installedArtifactRemoved: installed === undefined ? null : !existsSync(installed.receipt.root), errors: cleanupErrors.map((error) => error instanceof Error ? error.message : String(error)) }, null, 2));
     if (cleanupErrors.length !== 0) throw new AggregateError(failure === undefined ? cleanupErrors : [failure, ...cleanupErrors], "Installed worker fixture or cleanup failed.");
   }
 });

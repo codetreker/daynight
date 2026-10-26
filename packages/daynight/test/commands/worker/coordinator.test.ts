@@ -225,7 +225,8 @@ describe("worker foreground coordinator", () => {
   it("does not retry native launch automatically when its original history identity is missing", async () => {
     const f = await fixture(); f.tasks.start.mockRejectedValueOnce(new HerdrAgentActionError("native response lost", "agent.start", "unknown", { promptSubmission: "unknown" }));
     await f.coordinator.tick(); const task = f.store.listTasks()[0]!; expect(task.nativeExecution?.launchSubmission).toBe("unknown");
-    await f.coordinator.tick(); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.store.getTask(task)?.recovery.pauseReason).toContain("native response lost");
+    await f.coordinator.tick(); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.store.getTask(task)?.recovery.pauseReason).toContain("native session ID is missing");
+    expect(f.events.some((event) => event.error instanceof Error && event.error.message === "native response lost")).toBe(true);
   });
 
   it("keeps never-submitted launch proof after definite local preflight failure and permits explicit retry", async () => {
@@ -403,11 +404,67 @@ describe("worker foreground coordinator", () => {
     f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: identity.worktreeId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: configuration.agent, phase: "executing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
     const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", candidate.id), branch: `daynight/${candidate.id}` };
     if (present) f.worktrees.set(identity.claimId, binding);
+    const herdrBinding = { session: "w", workspaceId: "original-workspace", paneId: "original-pane", terminalId: "original-terminal" };
+    f.resources.set(identity.claimId, { owner: { serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: identity.claimId, worktreeId: identity.worktreeId }, workspaceId: herdrBinding.workspaceId, panes: [{ binding: herdrBinding, cwd: binding.worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: { agent: "codex", source: "herdr:codex", sessionId: uuid(912) }, stateChangeSeq: 1, completionSeq: 0 }] });
     await f.coordinator.tick();
     expect(f.git.findWorktree).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.tasks.prepareWorkspace).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
     const actual = f.store.getTask(identity)!;
-    expect(actual).toMatchObject({ status: "active", configuration, nativeExecution: null, recovery: { pauseReason: expect.stringMatching(/provenance/) } });
+    expect(actual).toMatchObject({ status: "active", configuration, recovery: { pauseReason: present ? null : expect.stringMatching(/provenance/) } });
+    expect(actual.nativeExecution).toEqual(present ? expect.objectContaining({ launchSubmission: "unknown" }) : null);
     expect(actual.resources.worktree).toEqual(present ? binding : null);
+    expect(actual.resources.nativeSession).toEqual(present ? { source: "herdr", sessionId: uuid(912) } : null);
+  });
+
+  it("resumes the original native conversation after interrupted shutdown closes its original workspace", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
+    f.store.beginCleanup(task, { kind: "shutdown", deadline: 601000 }, 1000);
+    await createWorkerCoordinator(f.options).tick();
+    const resumed = f.store.getTask(task)!;
+    expect(resumed).toMatchObject({ status: "active", cleanup: null, recovery: { pauseReason: null }, configuration, resources: { worktree: task.resources.worktree, nativeSession: task.resources.nativeSession } });
+    expect(f.tasks.start).toHaveBeenCalledTimes(2); expect(f.tasks.start.mock.calls[1]![2].resumeSessionId).toBe(task.resources.nativeSession!.sessionId);
+    expect(resumed.resources.herdr?.workspaceId).not.toBe(task.resources.herdr?.workspaceId); expect(f.events.some((event) => event.kind === "paused")).toBe(false);
+  });
+
+  it("advances committed terminal cleanup at its deadline while a later own-inventory request is still in flight", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(f.projects[0]!.projectId, []); await f.coordinator.tick();
+    const deadline = f.store.getTask(task)!.cleanup!.deadline;
+    expect(f.store.getTask(task)).toMatchObject({ status: "active", cleanup: { kind: "terminal", input: "submitted", result: null } });
+    let release!: () => void; let entered!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const blocked = new Promise<readonly Task[]>((resolve) => { release = () => resolve([]); });
+    vi.mocked(f.remote.ownInventory).mockImplementationOnce(async () => { entered(); return blocked; });
+    const pendingTick = f.coordinator.tick(); await started;
+    try {
+      f.setTime(deadline); await f.coordinator.advanceCommittedCleanups();
+      expect(f.store.getTask(task)).toMatchObject({ status: "done", cleanup: { deadline, result: "timed-out", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+      expect(f.tasks.forceStop).toHaveBeenCalledOnce(); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.remote.ownInventory).toHaveBeenCalledTimes(3);
+    } finally { release(); await pendingTick; }
+  });
+
+  it("continues a persisted cleanup deadline after restart while remote inventory is unavailable", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
+    f.setCompleteCleanup(false); f.granted.clear(); f.candidates.set(f.projects[0]!.projectId, []); await f.coordinator.tick(); const deadline = f.store.getTask(task)!.cleanup!.deadline;
+    const restarted = createWorkerCoordinator(f.options); vi.mocked(f.remote.ownInventory).mockRejectedValueOnce(new Error("service unavailable"));
+    await expect(restarted.tick()).rejects.toThrow("service unavailable"); f.setTime(deadline); await restarted.advanceCommittedCleanups();
+    expect(f.store.getTask(task)).toMatchObject({ status: "done", cleanup: { deadline, result: "timed-out" } }); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it("does not infer new cleanup decisions from an unavailable remote inventory", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!; const before = f.store.getTask(task);
+    vi.mocked(f.remote.ownInventory).mockRejectedValueOnce(new Error("inventory unavailable")); await expect(f.coordinator.tick()).rejects.toThrow("inventory unavailable");
+    await f.coordinator.advanceCommittedCleanups();
+    expect(f.store.getTask(task)).toEqual(before); expect(f.tasks.submitPrompt).not.toHaveBeenCalled(); expect(f.tasks.forceStop).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.remote.ownInventory).toHaveBeenCalledTimes(2);
+  });
+
+  it("completes explicit source cleanup offline while retaining pending remote management responsibility", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
+    f.store.recordControlIntent(task, { kind: "release", sourceClaimId: task.claimId, version: f.granted.get(task.claimId)!.version.toString() }, 1000);
+    const inventoryCalls = vi.mocked(f.remote.ownInventory).mock.calls.length;
+    await f.coordinator.advanceCommittedCleanups();
+    expect(f.store.getTask(task)).toMatchObject({ status: "active", control: { submission: "not-submitted" }, cleanup: { kind: "terminal", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+    expect(f.remote.ownInventory).toHaveBeenCalledTimes(inventoryCalls); expect(f.tasks.start).toHaveBeenCalledOnce();
+    await f.coordinator.advanceCommittedCleanups(); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   });
 
 });

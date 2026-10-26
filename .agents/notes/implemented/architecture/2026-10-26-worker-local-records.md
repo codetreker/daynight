@@ -62,10 +62,14 @@ Complete own-claim inventory can confirm original ownership ended without a
 per-task read to classify the exit.
 
 Normal shutdown differs from an ownership exit: after agent stop and workspace
-closure it preserves the original worktree/native/config. Consuming that
-shutdown clears stale Herdr and stop facts atomically while retaining recovery
-count, pause and retry authorization. It does not consume fault-recovery budget;
-terminal cleanup cannot be consumed as ordinary restart.
+closure it preserves the original worktree/native/config. For proven unlaunched
+work or a known exact original native ID, consuming shutdown clears obsolete
+Herdr/stop facts while retaining recovery count, pause and retry authorization.
+If native execution may have started but the original ID is unavailable, the
+[foreground runtime](2026-10-27-foreground-worker-runtime.md) instead preserves
+bindings, launch and PID provenance and pauses after cleanup. Stop alone cannot
+turn that history into first launch. Normal restart does not consume fault
+recovery budget; terminal cleanup cannot become ordinary restart.
 
 This partially supersedes the configured state-root and worker_state/executions
 storage design in the [earlier worker decision](2026-10-22-worker-design.md).

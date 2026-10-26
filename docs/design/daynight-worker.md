@@ -158,7 +158,7 @@ Cleanup 保存 `terminal|shutdown`、原开始/截止、清理输入的 not-subm
 
 Source control 只保存 release/transfer 的具体意图、原版本、target 身份及提交/结果，不提供任意动作日志。版本以精确 int64 十进制字符串持久化；远端提交要求本地完整终止清理且匹配原决定版本，未知写入不能重放。成功完整自有清单确认原 claim 缺席也能确认 ownership-ended，无须读取 task 状态分类。清理已完成而控制结果未确认时，不能置本机 done 或重建原资源。
 
-`resumeAfterShutdown` 仅消费已经记录结果、原 agent 停止及 workspace 关闭的正常退出。它原子清除 shutdown 和旧 Herdr 绑定，保留 worktree/native/config、恢复计数、原暂停及重试授权；正常重启不消耗故障恢复预算。Terminal 不可恢复为普通执行。上述 API 只保存调用者确认的事实，外部资源检查和调度由各模块负责。
+`resumeAfterShutdown` 仅消费已经记录结果、原 agent 停止及 workspace 关闭的正常退出。已证明 native 从未启动，或已有确切原 native ID 时，可清除旧 Herdr 绑定供同一执行恢复，保留 worktree/native/config、恢复计数、原暂停与重试授权；正常重启不消耗故障恢复预算。如果 native 可能已启动却没有确切原 ID，则保留原 Herdr 绑定、launch/prompt 和 PID 证据并暂停，不能重置成首次启动。消费 shutdown 后，普通执行前必须重新枚举 Herdr，不能继续使用关闭 workspace 之前的 snapshot。Terminal 不可恢复为普通执行；外部资源核对仍由调用者负责。
 
 ## 前台循环与 worktree
 
@@ -173,13 +173,15 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 完成原记录对账后 → 按仓库轮转领取新 claim → pending → active → 资源
 ```
 
+运行时在配置仓库的远端解析/准备之前启动一条前台进程内的异步收尾循环。它只推进已持久保存的 cleanup 或 source control 意图，与服务 inventory/认领的 pollIntervalMs 独立；每次等待最多 1000ms，最近的原清理截止更早时使用更短等待。外部步骤仍各自有界，同一 task 与普通循环共用串行推进边界。该循环不查询服务以新增缺席判断，也不认领任务；读取失败不产生新的终止决定，之前已确认并提交的清理责任仍继续。
+
 自动终止判断仅为原 claimId 缺席；不按 task 状态或单 task GET 分类 done/release/transfer。同 task 的新 claim 不能保护旧 claim。记录中的终止/管理意图不可被普通恢复撤销；显式 source 控制的服务端操作仍由人工管理交付拥有。Herdr 中有本 worker 标记却缺本地行的资源需要原项目绑定才能登记并收尾；归属无法证明时保留并报告。
 
 新任务候选同时使用 ready、allowAgents=true 与实际兼容平台，条件在服务端排序和分页前组合；worker 不修改自动执行许可。Released 历史候选跳过但继续分页。仓库之间轮转，同仓库遵守服务端顺序，配置为空或无合格候选不占名额。项目未决 claimAttempt 阻止该项目继续认领，但不替代其他项目的调度。
 
 项目映射先落库，具体请求先保存未知结果 fence，服务端原子授予后才登记 pending；确认名额/条件并提交 active 后才创建 worktree 和 Herdr 资源。等待、超限暂停、原执行恢复与清理均保留 active 责任和名额；找回已有/未知资源而缺配置的执行同样保留责任。降低并发不抢占已开始执行。同 task 的旧 active 未清理前新 pending 不启动。
 
-每个 origin/project/task 的推进串行，tick 不重入。清单是本轮已有执行的对账输入；新增 claim 发生在其后，不能被本轮旧清单清理。原 claim 已存在且 agent 实际存活时只观察和重连。确需重新启动时核对原 worktree/native history/config，按持久预算恢复；未知 launch/prompt 只观察，不能推为未派发或启动第二个 agent。
+每个 origin/project/task 的推进串行，tick 不重入；已消费中断 shutdown 的 task 在普通执行前刷新本地 Herdr 资源清单。清单是本轮已有执行的对账输入；新增 claim 发生在其后，不能被本轮旧清单清理。原 claim 已存在且 agent 实际存活时只观察和重连。确需重新启动时核对原 worktree/native history/config，按持久预算恢复；未知 launch/prompt 只观察，不能推为未派发或启动第二个 agent。
 
 执行摘要更新绑定原 claim 与观察版本，先保存提交责任再调用服务端。未知更新先用后续权威观察核对，不重发；这不增加业务/PR 验收或完成解释器。业务完成仍由 agent 的最终 claim-bound done 表达，随后其原 claim 离开自有清单触发资源清理。
 
@@ -324,7 +326,7 @@ Release/transfer 先记录原 claim 和精确版本的管理意图，抑制普�
 → 本机 done
 ```
 
-普通循环的取消不取消清理责任；Ctrl+C 后以独立、受原截止约束的清理取消范围继续停止和资源核实。重启沿用原截止和输入结果，不能重发未知清理指令或创建新清理 agent。agent 不可用时记录不可用，再确认实际停止；停止、关闭或删除失败保留 active 与具体错误，下次只续清理。Agent 清理指令不删除系统 worktree，最后删除由 worker 核对原归属后执行。单任务清理不关闭共享专用实例或触碰其他任务。
+Ctrl+C 先取消并等待常规异步收尾循环结束，停止新认领和普通输入，再进入独立、受原截止约束的 shutdown 清理范围。各原任务共用退出截止，已保存的更早截止不延长。服务 pollIntervalMs、清单读取错误或启动时仓库请求不会延后已提交收尾的调度；它们也不授予新的删除决定。重启沿用原截止和输入结果，不能重发未知清理指令或创建新清理 agent。agent 不可用时记录不可用，再确认实际停止；停止、关闭或删除失败保留 active 与具体错误，下次只续清理。Agent 清理指令不删除系统 worktree，最后删除由 worker 核对原归属后执行。单任务清理不关闭共享专用实例或触碰其他任务。
 
 | 情况 | 恢复动作 |
 |---|---|
@@ -333,7 +335,7 @@ Release/transfer 先记录原 claim 和精确版本的管理意图，抑制普�
 | claim/资源启动/输入响应丢失 | 核对服务端、Git 或 Herdr 实际结果；未知不等于未发生。 |
 | 异常/基础设施故障 | 在原 worktree/native 会话有上限恢复；累计预算和暂停跨重启保持。 |
 | Ctrl+C | 停止新领取，记录 shutdown，给原 agent 清理外部资源的机会并确认停止、关闭 workspace，最后关闭专用实例；保留 claim/worktree/native/config。 |
-| 已完成正常退出后重启 | 消费 shutdown 后继续原执行，保留原暂停与预算，不能把旧停止确认用于新启动的 agent。 |
+| 已完成正常退出后重启 | 消费 shutdown 后先刷新 Herdr，再按原配置/历史恢复。可能已启动却无原 native ID 时保留原绑定/启动/PID 证据并暂停，不重置首次会话；不把旧停止确认用于新 agent。 |
 | 终止清理失败或管理结果未知 | 继续原清理/核对，不恢复业务、不重建已删除 worktree。 |
 
 原生恢复优先使用 Herdr 保存的引用；只接受 Herdr 或可靠 native history 的来源。私有 Herdr 不自动启动 native agent，避免与 worker 竞争。无客户端恢复、停止和两类 agent 的真实历史必须通过原生实测门禁，不能把 client attached 当作无人值守的隐含条件。
@@ -358,7 +360,7 @@ Release/transfer 先记录原 claim 和精确版本的管理意图，抑制普�
 | 远端与持久化 | 候选条件/分页、完整自有 inventory、并发单赢家、claimAttempt 未决 fence、实际 grant 后 pending、active 后资源、schema 迁移和不确定结果不重放。 |
 | 调度与恢复 | 仓库轮转、active/暂停/清理名额、降低上限、原配置/原 worktree/native 接续、原生与 workspace 未知动作、丢失 receipt/配置/历史及预算耗尽。 |
 | Managed 入口 | 构造并实际递交的绝对安装包路径、显式模式、原 assignment 与冻结配置；存活重连不重发，错误上下文不回落普通任务流程。 |
-| 清理与退出 | 原 claim 缺席的统一收尾、原截止/输入/基线跨重启、不可用/拒绝/未知/超时、实际停止和 worktree 删除失败、正常退出保留成果及单一实例隔离。 |
+| 清理与退出 | 新终止决定的完整清单约束、已提交收尾独立于长服务轮询/启动请求/读取失败推进、原截止/输入/基线跨重启、不可用/拒绝/未知/超时、实际停止和删除失败、shutdown 后刷新资源/缺原 ID 暂停及单一实例隔离。 |
 
 Herdr/native 的版本、profile 检查、压缩历史、模型实际生效、认证与 shell/profile 环境边界见上文及[适配决策](../../.agents/notes/implemented/architecture/2026-10-26-worker-herdr-adapter.md)。它们要求针对实际环境核验，不能将一个版本/模型或受控替身的结果外推为完整平台保证。
 

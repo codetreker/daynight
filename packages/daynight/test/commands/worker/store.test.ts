@@ -215,6 +215,72 @@ describe("native launch receipts and process provenance", () => {
     f.store.bindHerdrExecution(claim, binding, workspaceEvidence, 24);
     return f;
   };
+  const shutdown = (store: WorkerStore): void => {
+    store.beginCleanup(claim, { kind: "shutdown", deadline: 600_030 }, 30);
+    store.recordCleanupInputOutcome(claim, "unavailable", 31);
+    store.recordCleanupResult(claim, "unavailable", null, 32);
+    store.confirmAgentStopped(claim, { agentStopped: true }, 33);
+    store.confirmWorkspaceClosed(claim, { workspaceClosed: true }, 34);
+  };
+
+  it("preserves submitted startup provenance and pauses a completed shutdown when its original native ID is missing", () => {
+    const f = prepared();
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession', json('null')) WHERE claim_id = ?").run(claim.claimId);
+    f.store.markNativeLaunchSubmitting(claim, 25);
+    f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "submitted" }, 26);
+    f.store.recordStopObservation(claim, stopObservation, 27);
+    f.store.markExecutionSummarySubmitting(claim, { version: "11", herdr: f.store.getTask(claim)!.resources.herdr, nativeSessionId: null, phase: "waiting" }, 28);
+    const original = f.store.getTask(claim)!;
+    shutdown(f.store); close(f.store);
+    const reopened = open(f.file);
+    const resumed = reopened.resumeAfterShutdown(claim, 40);
+    expect(resumed).toMatchObject({ cleanup: null, resources: original.resources, nativeExecution: original.nativeExecution, recovery: { count: 0, pauseReason: expect.stringContaining("original native session ID is missing") } });
+    expect(() => reopened.markWorkspaceSubmitting(claim, 41)).toThrow("original native session ID is missing");
+    reopened.authorizeRecoveryRetry(claim, 42);
+    reopened.beginRecovery(claim, 43);
+    expect(() => reopened.markWorkspaceSubmitting(claim, 44)).toThrow("original native session ID is missing");
+    expect(() => reopened.markNativeLaunchSubmitting(claim, 44)).toThrow("proven unlaunched");
+    expect(reopened.getTask(claim)?.nativeExecution).toEqual(original.nativeExecution);
+    close(reopened);
+    expect(open(f.file).getTask(claim)?.nativeExecution).toEqual(original.nativeExecution);
+  });
+
+  it("keeps unknown legacy launch provenance after shutdown without inventing an original native ID", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    f.store.registerPending(claim, { kind: "recovered", configuration }, 10);
+    f.store.activateTask(claim, 20);
+    shutdown(f.store);
+    const resumed = f.store.resumeAfterShutdown(claim, 40);
+    expect(resumed).toMatchObject({ cleanup: null, nativeExecution: null, resources: { nativeSession: null }, recovery: { pauseReason: expect.stringContaining("original native session ID is missing") } });
+    expect(() => f.store.markWorkspaceSubmitting(claim, 41)).toThrow("persisted provenance");
+  });
+
+  it("prepares fresh Herdr resources for a known original native ID after shutdown", () => {
+    const f = prepared();
+    f.store.markNativeLaunchSubmitting(claim, 25);
+    f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "submitted" }, 26);
+    shutdown(f.store);
+    const original = f.store.getTask(claim)!;
+    const resumed = f.store.resumeAfterShutdown(claim, 40);
+    expect(resumed.resources).toEqual({ ...original.resources, herdr: null });
+    expect(resumed.nativeExecution).toMatchObject({ launchSubmission: "never-submitted", promptSubmission: "not-submitted", terminalId: null });
+    expect(resumed.recovery.pauseReason).toBeNull();
+    expect(f.store.markWorkspaceSubmitting(claim, 41).nativeExecution?.workspaceSubmission).toBe("unknown");
+  });
+
+  it("preserves the genuine first-launch path for a proven never-launched shutdown without a native ID", () => {
+    const f = prepared();
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession', json('null')) WHERE claim_id = ?").run(claim.claimId);
+    shutdown(f.store);
+    const resumed = f.store.resumeAfterShutdown(claim, 40);
+    expect(resumed.resources.nativeSession).toBeNull();
+    expect(resumed.resources.herdr).toBeNull();
+    expect(resumed.recovery.pauseReason).toBeNull();
+    expect(resumed.nativeExecution?.launchSubmission).toBe("never-submitted");
+    expect(f.store.markWorkspaceSubmitting(claim, 41).nativeExecution?.workspaceSubmission).toBe("unknown");
+  });
 
   it("fences an unknown initial workspace create across restart and adopts its actual binding without inventing environment evidence", () => {
     const f = fixture(); f.start();

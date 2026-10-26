@@ -403,6 +403,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       const state = task.nativeExecution;
       if (task.status !== "active" || task.resources.worktree === null || state === null) throw new Error("Workspace creation requires its active original worktree and persisted provenance.");
       if (state.workspaceSubmission === "unknown") throw new Error("The original workspace creation is unresolved and cannot be replayed.");
+      if (state.launchSubmission !== "never-submitted" && task.resources.nativeSession === null) throw new Error("The original native session ID is missing; workspace replacement cannot start a new conversation.");
       if (task.resources.herdr !== null && state.launchSubmission !== "never-submitted" && state.stopObservation === null) throw new Error("Workspace replacement requires its durable original native stop observation.");
       return { ...task, nativeExecution: { ...state, workspaceSubmission: "unknown" } };
     }),
@@ -482,6 +483,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if (task.status !== "active" || task.resources.worktree === null || task.resources.herdr === null) throw new Error("Herdr rebinding requires the active original worktree and workspace binding.");
       if (!same(task.resources.herdr, parseHerdr(expectedPrevious))) throw new Error("The previous Herdr binding does not match the original execution.");
       if (proof.originalAgentStopped !== true || proof.oldWorkspaceClosed !== true) throw new Error("Herdr rebinding requires confirmed original agent stop and old workspace closure.");
+      if (task.resources.nativeSession === null && task.nativeExecution?.launchSubmission !== "never-submitted") throw new Error("The original native session ID is missing; rebinding cannot start a new conversation.");
       return { ...task, resources: { ...task.resources, herdr: parseHerdr(next) }, nativeExecution: { ...unknownNativeExecution(), summary: task.nativeExecution === null ? null : task.nativeExecution.summary } };
     }),
     rebindHerdrExecution: (identity: ClaimIdentity, expectedPrevious: HerdrTaskBinding, next: HerdrTaskBinding, workspaceEvidence: HerdrWorkspaceEvidence | null, proof: { originalAgentStopped: true; oldWorkspaceClosed: true }, now: number): LocalTask => change(identity, now, (task) => {
@@ -490,6 +492,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       const state = task.nativeExecution;
       if (task.status !== "active" || task.resources.worktree === null || task.resources.herdr === null || state === null || !same({ ...task.resources.herdr, terminalId: state.terminalId }, previous)) throw new Error("The previous full Herdr binding does not match the active execution.");
       if (proof.originalAgentStopped !== true || proof.oldWorkspaceClosed !== true || (state.stopObservation === null && state.launchSubmission !== "never-submitted")) throw new Error("Herdr rebinding requires durable original stop provenance and confirmed old workspace closure.");
+      if (state.launchSubmission !== "never-submitted" && task.resources.nativeSession === null) throw new Error("The original native session ID is missing; rebinding cannot start a new conversation.");
       if (state.workspaceSubmission !== "unknown") throw new Error("Herdr rebinding requires the persisted new workspace creation attempt.");
       const binding = parseTaskBinding(next);
       if (same(binding, previous)) throw new Error("A fresh Herdr execution must use a new workspace or terminal binding.");
@@ -572,6 +575,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       const cleanup = needCleanup(task);
       if (cleanup.kind !== "shutdown" || cleanup.result === null || !cleanup.agentStopped || !cleanup.workspaceClosed || task.control !== null) throw new Error("Shutdown resume requires the original agent stopped, workspace closed and its cleanup result recorded.");
       if (task.configuration === null) throw new Error("The original frozen execution configuration is missing.");
+      if (task.resources.nativeSession === null && task.nativeExecution?.launchSubmission !== "never-submitted") return { ...task, cleanup: null, recovery: { ...task.recovery, pauseReason: "The original native session ID is missing; recover its exact history identity before resuming this claim." } };
       return { ...task, cleanup: null, resources: { ...task.resources, herdr: null }, nativeExecution: { ...freshNativeExecution(), summary: task.nativeExecution === null ? null : task.nativeExecution.summary } };
     }),
     recordControlIntent: (identity: ClaimIdentity, input: ControlIntent, now: number): LocalTask => change(identity, now, (task) => {
