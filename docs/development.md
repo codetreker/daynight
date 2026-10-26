@@ -254,7 +254,10 @@ Chinese across the shipped interface, native Intl formatting and an independent
 saved language preference. Navigation, the centered detail dialog and fullscreen
 graph share one language choice while preserving browsing and pending attachment
 state. The [bilingual requirements](../docs/spec/daynight-web-i18n.md) own the full
-outcome. The header's book icon and visible Setup guide link, immediately before
+outcome. The public `/` introduction and local example use that same language
+state. `/login` owns authentication and `/projects` is the workspace index; the
+[public entry design](design/daynight-landing.md) owns route composition,
+public navigation hints and metadata. The header's book icon and visible Setup guide link, immediately before
 the language selector, open public `/setup` in a new tab. Its expanded bilingual steps cover CLI
 installation, device login, repository project discovery or creation, Agent skill
 installation and registering a first task. Commands stay selectable and provide
@@ -438,26 +441,39 @@ Selected jobs keep their complete checks, coverage thresholds, acceptance suites
 timeouts and cleanup requirements. The Go job still builds real web assets and
 exercises the installed CLI; the web job still builds and exercises the Go
 service and production deployment. Selecting one module does not split these
-existing integration suites. The Ubuntu shell-completion and Web jobs select the
+existing integration suites. The same Web selector enables quality and browser
+jobs; both are required by the final gate. The Ubuntu shell-completion and Web
+browser jobs select the
 official HTTPS Ubuntu archive and security services before package preparation.
 Their shared command changes only the runner's referenced mirror list; signed
 source stanzas and package indices remain intact. An unexpected source layout
 fails explicitly. The [mirror decision](../.agents/notes/implemented/testing/2026-10-22-ubuntu-package-mirrors.md)
 records the provisioning failure and the retained acceptance limits.
-Native CLI jobs typecheck and build once before
-running ordinary and installed tests against the same output. After deployment
-fixture checks, the web job uses one acceptance pipeline. Test preparation,
-native UI/Go/PostgreSQL preparation and the normal dev-ci source build start
-concurrently. Test preparation runs the Web Node harness and then the complete
-Vitest/V8 suite with its strict statement checker as separate required commands,
-each with a 180-second deadline. Installation of pinned Chromium and Linux
-dependencies starts only after both test phases pass, then overlaps the remaining
-native/dev-ci preparation. Browser installation has a 600-second deadline and the
-web job 20 minutes; a nonzero exit or timeout in either test phase fails acceptance.
-Only the Vitest/coverage subprocess uses two workers through its copied child
-environment, retaining its `forks` pool and file isolation. Native functional checks
-and their browser cleanup precede the container browser checks; full container cleanup
-and all preparation/check commands finish before the native capacity phase.
+Native CLI jobs typecheck and build once before running ordinary and installed
+tests against the same output. Web quality and browser acceptance run in parallel
+jobs, `verify-web-quality` and `verify-web`, each with a 20-minute bound. The final
+`checks` job requires both and every other selected module; shared workflow
+changes retain all-module selection.
+
+The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness
+and the complete Vitest/V8 suite with its strict statement checker serially,
+each with a 180-second deadline. Only the coverage subprocess uses two workers
+through its copied environment, retaining the `forks` pool and file isolation.
+The `browser` mode installs pinned Chromium and Linux dependencies under the
+existing 600-second bound, then invokes ordinary core acceptance after the job's
+deployment fixture checks. The wrapper checks that each command's owned process
+group stopped after settlement, preserving both command and cleanup failures.
+
+The core has no quality/browser preparation callbacks or readiness-admission
+observer. Local acceptance uses its existing installed browser. Native and
+container preparation still overlap; native functional checks and browser cleanup
+precede the container browser permission release. The permission wait remains
+900 seconds. Core preparation, functional phases, full container cleanup and
+browser recovery finish before native capacity. Independent quality checks run
+on their own runner and do not add empty core phases or split browser scenarios.
+The [quality isolation decision](../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
+records the responsibility and budget boundaries without claiming a measured
+CPU/I/O cause or guaranteed hosted speedup.
 Both Go-consuming jobs restore module and compiler caches keyed by the server
 `go.sum`, while the server check expires test results before database/race/
 coverage validation. The web pipeline retains the full production build and

@@ -35,7 +35,7 @@ func validateAuthSettings(config AuthConfig, callbackURL string) (*url.URL, stri
 	if callbackPath == "" || callbackPath == "/" || !strings.HasPrefix(callbackPath, "/") || path.Clean(callbackPath) != callbackPath || callback.RawPath != "" || strings.ContainsAny(callbackPath, "{}%\\") || strings.ContainsFunc(callbackPath, func(char rune) bool { return unicode.IsSpace(char) || unicode.IsControl(char) }) {
 		return nil, "", &ConfigurationError{Field: "DAYNIGHT_UNIAUTH_CALLBACK_URL", Rule: "requires a canonical non-root callback path without routing wildcards or encoded aliases"}
 	}
-	for _, reserved := range []string{"/api/v1/projects", "/api/v1/me", "/api/v1/invitations", "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/auth/providers", "/api/v1/auth/device", "/device", "/healthz", "/readyz", "/assets", "/projects", "/account", "/invitations", "/setup"} {
+	for _, reserved := range []string{"/api/v1/projects", "/api/v1/me", "/api/v1/invitations", "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/auth/providers", "/api/v1/auth/device", "/device", "/healthz", "/readyz", "/assets", "/login", "/projects", "/account", "/invitations", "/setup"} {
 		if callbackPath == reserved || strings.HasPrefix(callbackPath, reserved+"/") {
 			return nil, "", &ConfigurationError{Field: "DAYNIGHT_UNIAUTH_CALLBACK_URL", Rule: "must not overlap an application API, page, asset, or health route"}
 		}

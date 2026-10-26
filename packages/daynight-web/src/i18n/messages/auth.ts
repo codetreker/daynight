@@ -29,6 +29,10 @@ export type AuthMessages = {
     readonly networkRetry: string;
     readonly signOut: string;
     readonly retryLogout: string;
+    readonly signingOut: string;
+    readonly invalidLoginTarget: string;
+    readonly invalidLoginTargetDetail: string;
+    readonly startFreshLogin: string;
     readonly invitationStorageError: string;
     readonly invitationCleanupError: string;
     readonly revalidationLabel: string;
@@ -40,6 +44,7 @@ export type AuthMessages = {
     readonly documentTitle: Readonly<Record<"loading" | "error" | "login" | "setup" | "device" | "invitations" | "projects" | "project" | "members" | "settings" | "account" | "notFound", string>>;
   };
   readonly login: {
+    readonly returnHome: string;
     readonly heroTitleFirst: string;
     readonly heroTitleSecond: string;
     readonly heroDetail: string;

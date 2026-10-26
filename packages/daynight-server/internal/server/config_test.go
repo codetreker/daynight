@@ -187,13 +187,13 @@ func TestInvalidAppCredentialConfigurationPrecedesResourceOpening(t *testing.T) 
 	}
 }
 
-func TestSetupGuideCallbackConflictsPrecedeResourceOpening(t *testing.T) {
-	for _, callbackPath := range []string{"/setup", "/setup/callback", "/setup/nested/callback"} {
+func TestPublicPageCallbackConflictsPrecedeResourceOpening(t *testing.T) {
+	for _, callbackPath := range []string{"/setup", "/setup/callback", "/setup/nested/callback", "/login", "/login/callback", "/login/nested/callback", "/projects", "/projects/callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
 			config := configuredTestConfig()
 			config.UniAuthCallbackURL = config.PublicOrigin + callbackPath
 			config.DatabaseURL = "invalid-database-configuration"
-			config.StorageRoot = filepath.Join(testStorageRoot(t), "unopened-setup-storage")
+			config.StorageRoot = filepath.Join(testStorageRoot(t), "unopened-public-page-storage")
 			_, loadErr := LoadConfig(configEnvironment(map[string]string{
 				"DAYNIGHT_UNIAUTH_CALLBACK_URL": config.UniAuthCallbackURL,
 			}))
@@ -205,23 +205,23 @@ func TestSetupGuideCallbackConflictsPrecedeResourceOpening(t *testing.T) {
 				return http.NotFoundHandler(), nil
 			})
 			if handler != nil || runtime != nil || factoryCalled {
-				t.Fatal("conflicting setup callback reached route or runtime composition")
+				t.Fatal("conflicting public-page callback reached route or runtime composition")
 			}
 			for _, err := range []error{loadErr, validateErr, compositionErr, startErr} {
 				var failure *ConfigurationError
 				if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_UNIAUTH_CALLBACK_URL" || failure.Rule != "must not overlap an application API, page, asset, or health route" {
-					t.Fatalf("setup callback conflict lost configuration diagnosis: %v", err)
+					t.Fatalf("public-page callback conflict lost configuration diagnosis: %v", err)
 				}
 			}
 			if _, err := os.Stat(config.StorageRoot); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("conflicting setup callback touched storage: %v", err)
+				t.Fatalf("conflicting public-page callback touched storage: %v", err)
 			}
 		})
 	}
 }
 
-func TestSetupGuideCallbackReservationPreservesDistinctPaths(t *testing.T) {
-	for _, callbackPath := range []string{"/auth/callback", "/setup-callback", "/setupcallback", "/auth/setup/callback"} {
+func TestPublicPageCallbackReservationPreservesDistinctPaths(t *testing.T) {
+	for _, callbackPath := range []string{"/auth/callback", "/setup-callback", "/setupcallback", "/auth/setup/callback", "/login-callback", "/logincallback", "/auth/login/callback", "/projects-callback"} {
 		t.Run(callbackPath, func(t *testing.T) {
 			config, err := LoadConfig(configEnvironment(map[string]string{
 				"DAYNIGHT_UNIAUTH_CALLBACK_URL": "https://daynight.example" + callbackPath,

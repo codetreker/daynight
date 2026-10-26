@@ -48,6 +48,7 @@ const trackStorageOperation = (target: EventTarget, events: readonly string[]) =
 };
 
 beforeEach(() => {
+  window.history.replaceState(null, "", "/projects");
   cleaningStorage = false;
   mockSidebarMediaQuery();
   vi.spyOn(window, "scrollTo").mockImplementation(() => {});
@@ -91,5 +92,5 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   window.localStorage.clear();
-  window.history.replaceState(null, "", "/");
+  window.history.replaceState(null, "", "/projects");
 });

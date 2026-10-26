@@ -270,7 +270,7 @@ describe("project dashboard", () => {
     document.addEventListener("click", observe, { once: true });
     fireEvent.click(link, { ctrlKey: true });
     fireEvent.click(link);
-    expect(window.location.pathname).toBe("/");
+    expect(window.location.pathname).toBe("/projects");
   });
 });
 

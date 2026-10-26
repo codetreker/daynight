@@ -17,37 +17,23 @@ import { TaskDetailSessionProvider } from "../features/task-detail/TaskDetailSes
 import { ProjectPage } from "../features/projects/ProjectPage";
 import { ProjectsPage } from "../features/projects/ProjectsPage";
 import { TaskDetailPage } from "../features/task-detail/TaskDetailPage";
-import { navigate, parseRoute, type Route } from "./router";
+import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, replaceRoute, type AuthRoute } from "./router";
 import { useI18n } from "../i18n/LocaleProvider";
 import { LanguageSelector } from "../i18n/LanguageSelector";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { useSidebarPreference } from "./useSidebarPreference";
 import "../styles/auth.css";
 
-type AuthRoute = Route | { readonly kind: "account" | "invitations" } | { readonly kind: "device"; readonly userCode: string | null } | { readonly kind: "members" | "settings"; readonly projectId: string };
-export const parseAuthRoute = (pathname: string, search = ""): AuthRoute => {
-  if (pathname === "/account") return { kind: "account" };
-  if (pathname === "/invitations") return { kind: "invitations" };
-  if (pathname === "/device") {
-    const codes = new URLSearchParams(search).getAll("user_code");
-    return { kind: "device", userCode: codes.length === 0 ? null : codes.length === 1 ? codes[0]! : "" };
-  }
-  const members = /^(\/projects\/[^/]+)\/(members|settings)$/.exec(pathname);
-  if (members !== null) {
-    const project = parseRoute(members[1]!);
-    return project.kind === "project" ? { kind: members[2] as "members" | "settings", projectId: project.projectId } : { kind: "notFound" };
-  }
-  return parseRoute(pathname, search);
-};
+export { parseAuthRoute } from "./router";
 
 const followLink = (event: MouseEvent<HTMLAnchorElement>) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-  event.preventDefault(); navigate(event.currentTarget.pathname);
+  event.preventDefault(); navigate(event.currentTarget.pathname + event.currentTarget.search + event.currentTarget.hash);
 };
 const accountLabel = (user: CurrentUser, currentAccount: string) => user.name ?? user.email ?? currentAccount;
 const AccessUnavailable = () => {
   const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
-  return <section className="state-box" role="alert"><h1>{m.accessUnavailable}</h1><p>{m.accessUnavailableDetail}</p><a className="button primary" href="/" onClick={followLink}>{app.returnToProjects}</a></section>;
+  return <section className="state-box" role="alert"><h1>{m.accessUnavailable}</h1><p>{m.accessUnavailableDetail}</p><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>;
 };
 
 const ProjectRoleBadge = ({ role, labels }: { readonly role: ProjectRole | null; readonly labels: Readonly<Record<ProjectRole, string>> }) => (
@@ -95,7 +81,7 @@ const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
-          <nav className="crumb" aria-label={app.breadcrumb}><a href="/" onClick={followLink}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{label}</span></nav>
+          <nav className="crumb" aria-label={app.breadcrumb}><a href="/projects" onClick={followLink}>{app.workspace}</a><span aria-hidden="true">/</span><span className="crumb-current" aria-current="page">{label}</span></nav>
           <div className="account-actions">
             <a className="setup-guide-link" href="/setup" target="_blank" rel="noopener noreferrer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 5v15M3 4h5a5 5 0 0 1 4 2 5 5 0 0 1 4-2h5v15h-5a5 5 0 0 0-4 2 5 5 0 0 0-4-2H3z" /></svg>{setup.navigation}</a>
             <LanguageSelector />
@@ -145,7 +131,9 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   sessionRef.current = session;
   const [creating, setCreating] = useState(false);
   const [logoutFailed, setLogoutFailed] = useState(false);
-  const [cleanupFailed, setCleanupFailed] = useState(false);
+  const [logoutPending, setLogoutPending] = useState(false);
+  const logoutContinuation = useRef<string | null>(null);
+  const [cleanupFailed, setCleanupFailed] = useState(() => !invitationLocation(window.location.pathname, window.location.search) && !clearInvitation());
   const [projectName, setProjectName] = useState<string | null>(null);
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
@@ -154,6 +142,13 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const cacheScope = useRef<TaskCacheScope | null>(null);
   const identityRecheck = useRef<() => void>(() => {});
   const route = parseAuthRoute(pathname, search);
+  const navigation = new URLSearchParams(search);
+  navigation.delete("authError");
+  const requestedPath = route.kind === "login" ? route.returnPath : route.kind === "notFound" ? null : route.kind === "invitations" ? "/invitations" : pathname + (navigation.size === 0 ? "" : `?${navigation}`);
+  const returnPath = requestedPath !== null && isLoginReturnPath(requestedPath) ? requestedPath : null;
+  const target = returnPath === null ? null : new URL(returnPath, window.location.origin);
+  const destination = target === null ? route : parseAuthRoute(target.pathname, target.search);
+  const invitationFlow = invitationLocation(pathname, search);
   useLayoutEffect(() => {
     document.documentElement.lang = locale;
     const page = session.status === "authenticated" ? route.kind : session.status === "anonymous" ? "login" : session.status;
@@ -173,7 +168,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   useEffect(() => subscribeUnauthorized(() => clearSession(sessionRef.current.status === "authenticated" ? "expired" : undefined)), [clearSession]);
   useEffect(() => {
     mounted.current = true;
-    return () => { mounted.current = false; active.current?.abort(); cacheScope.current?.dispose(); invalidateAuthRequests(); };
+    return () => { mounted.current = false; active.current?.abort(); invitationLifetime.current.abort(); cacheScope.current?.dispose(); invalidateAuthRequests(); };
   }, []);
   useEffect(() => {
     const onNavigate = () => {
@@ -217,18 +212,32 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   }, [attempt, clearSession]);
   const discardInvitation = useCallback(() => { invitationLifetime.current.abort(); setCleanupFailed(!clearInvitation()); setInvitation({ token: null, storageUnavailable: false }); }, []);
   const completeInvitation = useCallback((projectId: string) => { discardInvitation(); navigate(`/projects/${projectId}`); }, [discardInvitation]);
-  const cancelInvitation = useCallback(() => { discardInvitation(); navigate("/"); }, [discardInvitation]);
+  const cancelInvitation = useCallback(() => { discardInvitation(); navigate("/projects"); }, [discardInvitation]);
   const unavailableInvitation = discardInvitation;
-  useEffect(() => { if (route.kind !== "invitations" && invitation.token !== null) discardInvitation(); }, [route.kind, invitation.token, discardInvitation]);
-  const signOut = useCallback(() => {
-    setLogoutFailed(false);
+  useEffect(() => { if (!invitationFlow && invitation.token !== null) discardInvitation(); }, [invitationFlow, invitation.token, discardInvitation]);
+  const signOut = useCallback((continuation: string | null = null) => {
+    logoutContinuation.current = continuation;
+    setLogoutFailed(false); setLogoutPending(true);
     const controller = new AbortController();
     const request = logout(controller.signal);
     clearSession("signedOut");
-    void request.catch((error: unknown) => {
-      if (mounted.current && !isAbortError(error) && !(error instanceof ApiError && error.status === 401)) { setLogoutFailed(true); setSession({ status: "anonymous", notice: "logoutFailed" }); }
+    const complete = () => {
+      if (!mounted.current) return;
+      setLogoutPending(false);
+      if (continuation === null) navigate("/");
+      else replaceRoute(loginUrl(continuation));
+    };
+    void request.then(complete).catch((error: unknown) => {
+      if (!mounted.current || isAbortError(error)) return;
+      if (error instanceof ApiError && error.status === 401) { complete(); return; }
+      setLogoutPending(false); setLogoutFailed(true); setSession({ status: "anonymous", notice: "logoutFailed" });
     });
   }, [clearSession]);
+  useLayoutEffect(() => {
+    if (returnPath === null || logoutPending) return;
+    if (session.status === "authenticated" && route.kind === "login") replaceRoute(returnPath);
+    else if (session.status === "anonymous" && route.kind !== "login" && route.kind !== "notFound") replaceRoute(loginUrl(returnPath));
+  }, [session.status, route.kind, returnPath, logoutPending]);
   const pauseIdentity = useCallback(() => {
     active.current?.abort(); active.current = null; ++generation.current;
     resumeAuthRequests.current = pauseAuthRequests();
@@ -286,25 +295,26 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     };
   }, [session.status, pauseIdentity, recheckIdentity]);
   const startLogin = (provider: AuthProvider) => {
-    const navigation = new URLSearchParams(search);
-    navigation.delete("authError");
-    const returnPath = route.kind === "invitations" ? "/invitations" : pathname + (navigation.size === 0 ? "" : `?${navigation}`);
+    if (returnPath === null) throw new Error("The login destination has not been validated.");
     const parameters = new URLSearchParams({ provider, returnPath });
     navigateToLogin(`/api/v1/auth/login?${parameters}`);
   };
   const cleanupWarning = cleanupFailed ? <div className="notice warning" role="alert">{m.invitationCleanupError}</div> : null;
-  if (session.status === "loading") return <main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main>;
-  if (session.status === "error") return <main className="auth-main"><section className="state-box" role="alert"><h1>{m.identityError}</h1><p>{m.networkRetry}</p><LanguageSelector /><button className="button primary" type="button" onClick={() => setAttempt((value) => value + 1)}>{projects.retry}</button></section></main>;
-  if (session.status === "anonymous") return <>{cleanupWarning}{route.kind === "invitations" && invitation.storageUnavailable && <div className="notice warning" role="alert">{m.invitationStorageError}</div>}<LoginPage invitation={route.kind === "invitations"} device={route.kind === "device"} {...(session.notice !== undefined ? { notice: m.notice[session.notice] } : loginError ? { notice: m.notice.loginFailed } : {})} onLogin={startLogin} />{logoutFailed && <button className="button" type="button" onClick={signOut}>{m.retryLogout}</button>}</>;
+  if (returnPath === null && (route.kind === "login" || route.kind !== "notFound" && session.status === "anonymous")) return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.invalidLoginTarget}</h1><p>{m.invalidLoginTargetDetail}</p><LanguageSelector /><a className="button primary" href="/login">{m.startFreshLogin}</a></section></main></>;
+  if (route.kind === "notFound") return <>{cleanupWarning}<main className="auth-main"><section className="state-box"><h1>{app.notFound}</h1><LanguageSelector /><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section></main></>;
+  if (logoutPending) return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.signingOut}</h1><LanguageSelector /></section></main></>;
+  if (session.status === "loading" || session.status === "authenticated" && route.kind === "login") return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="status"><span className="spinner" aria-hidden="true" /><h1>{m.identityLoading}</h1><LanguageSelector /></section></main></>;
+  if (session.status === "error") return <>{cleanupWarning}<main className="auth-main"><section className="state-box" role="alert"><h1>{m.identityError}</h1><p>{m.networkRetry}</p><LanguageSelector /><button className="button primary" type="button" onClick={() => setAttempt((value) => value + 1)}>{projects.retry}</button></section></main></>;
+  if (session.status === "anonymous") return <>{cleanupWarning}{invitationFlow && invitation.storageUnavailable && <div className="notice warning" role="alert">{m.invitationStorageError}</div>}<LoginPage invitation={destination.kind === "invitations"} device={destination.kind === "device"} {...(session.notice !== undefined ? { notice: m.notice[session.notice] } : loginError ? { notice: m.notice.loginFailed } : {})} onLogin={startLogin} />{logoutFailed && <button className="button" type="button" onClick={() => signOut(logoutContinuation.current)}>{m.retryLogout}</button>}</>;
   const identity = `${session.user.id}:${session.generation}`;
   const revalidationOverlay = blocked ? <RevalidationOverlay failed={revalidation === "error"} onRetry={recheckIdentity} /> : null;
   if (route.kind === "attachment" || route.kind === "task") return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}{cleanupWarning}<div className="auth-shell" key={identity} aria-hidden={blocked} inert={blocked}>
     <TaskDetailPage key={route.projectId} projectId={route.projectId} taskId={route.taskId} navigation={{ tab: route.tab, path: route.path }} />
   </div></TaskDetailSessionProvider></TaskCacheProvider>;
-  if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={signOut} onUnavailable={unavailableInvitation} /></div></>;
-  if (route.kind === "device") return <>{revalidationOverlay}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={signOut} onIdentityMismatch={invalidateIdentity} /></div></>;
-  return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}<Workspace key={identity} user={session.user} route={route} onSignOut={signOut} blocked={blocked} identityChecking={revalidation !== "idle"}>
-    {cleanupWarning}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <AuthorizedProject key={route.projectId} projectId={route.projectId} user={session.user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={session.user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={session.user} onRemoved={() => navigate("/")} /></> : route.kind === "account" ? <AccountPage user={session.user} onSignOut={signOut} onIdentityMismatch={invalidateIdentity} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/" onClick={followLink}>{app.returnToProjects}</a></section>}
+  if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} /></div></>;
+  if (route.kind === "device") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={() => signOut(returnPath)} onIdentityMismatch={invalidateIdentity} /></div></>;
+  return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}<Workspace key={identity} user={session.user} route={route} onSignOut={() => signOut()} blocked={blocked} identityChecking={revalidation !== "idle"}>
+    {cleanupWarning}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <AuthorizedProject key={route.projectId} projectId={route.projectId} user={session.user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={session.user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={session.user} onRemoved={() => navigate("/projects")} /></> : route.kind === "account" ? <AccountPage user={session.user} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
     {creating && <CreateProjectDialog onClose={() => setCreating(false)} onCreated={(project) => { setCreating(false); navigate(`/projects/${project.id}`); }} />}
   </Workspace></TaskDetailSessionProvider></TaskCacheProvider>;
 };

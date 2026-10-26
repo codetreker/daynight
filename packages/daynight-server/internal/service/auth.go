@@ -88,7 +88,7 @@ func (s *Identity) validReturnPath(value string) bool {
 		return false
 	}
 	target := path.Clean(decoded)
-	return target != callback.Path && !strings.HasPrefix(target, callback.Path+"/")
+	return target != "/login" && !strings.HasPrefix(target, "/login/") && target != callback.Path && !strings.HasPrefix(target, callback.Path+"/")
 }
 
 func (s *Identity) StartLogin(ctx context.Context, provider, returnPath string) (LoginStart, error) {
@@ -96,7 +96,7 @@ func (s *Identity) StartLogin(ctx context.Context, provider, returnPath string) 
 		return LoginStart{}, invalidInput("Provider must be microsoft, google, or github.")
 	}
 	if returnPath == "" {
-		returnPath = "/"
+		returnPath = "/projects"
 	}
 	if !s.validReturnPath(returnPath) {
 		return LoginStart{}, invalidInput("Return path must be a main-site path outside authentication routes.")
@@ -155,7 +155,7 @@ func (s *Identity) CompleteLogin(ctx context.Context, query url.Values, binding 
 	result.Session = core.Session{ID: uuid.NewString(), TokenHash: secretHash(result.Secret), CreatedAt: now, ExpiresAt: now.Add(SessionLifetime)}
 	result.User, err = s.store.CreateIdentitySession(ctx, core.User{ID: uuid.NewString(), UniAuthID: identity.ID, Email: identity.Email, EmailVerified: identity.EmailVerified, Name: identity.Name, AvatarURL: identity.AvatarURL}, result.Session)
 	if err != nil {
-		return LoginCompletion{LoginID: pending.ID}, err
+		return LoginCompletion{LoginID: pending.ID, ReturnPath: pending.ReturnPath}, err
 	}
 	result.Session.UserID = result.User.ID
 	return result, nil

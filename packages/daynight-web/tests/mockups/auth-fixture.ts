@@ -102,7 +102,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
       ? `/projects/${authProjectId}/members`
       : ['project', 'access-unavailable', 'attachments', 'attachment-head-unauthorized'].includes(next) ? `/projects/${authProjectId}`
         : next.startsWith('tokens') || next.startsWith('token-') || next === 'account' || next === 'clipboard-failure' ? '/account'
-          : next.startsWith('invite') ? '/invitations' : '/';
+          : next.startsWith('invite') ? '/invitations' : authenticated ? '/projects' : '/login';
     const fragment = route === '/invitations' && next !== 'invite-invalid' ? `#${secret}` : '';
     history.replaceState(null, '', `${route}${next === 'login-error' ? '?authError=login_failed' : ''}${fragment}`);
   };
@@ -273,16 +273,16 @@ export const installAuthFixture = (initial: AuthScenario) => {
     if (authenticated && response.status !== 401 && url.origin === location.origin && url.pathname.startsWith('/api/v1/') && !url.pathname.startsWith('/api/v1/auth/')) response.headers.set('Daynight-User-ID', activeUser.id);
     return response;
   };
-  const keepFixtureHome = (event: MouseEvent): void => {
+  const keepFixtureNavigation = (event: MouseEvent): void => {
     if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || !(event.target instanceof Element)) return;
     const link = event.target.closest<HTMLAnchorElement>('a[href]');
-    if (link === null || link.origin !== location.origin || link.pathname !== '/' || link.search !== '' || link.hash !== '' || link.target !== '') return;
+    if (link === null || link.origin !== location.origin || !['/', '/projects', '/login', '/setup'].includes(link.pathname) || link.hash !== '' || link.target !== '') return;
     event.preventDefault();
-    history.pushState(null, '', '/');
+    history.pushState(null, '', link.pathname + link.search);
     window.dispatchEvent(new PopStateEvent('popstate'));
   };
   window.fetch = fetchFixture;
-  document.addEventListener('click', keepFixtureHome);
+  document.addEventListener('click', keepFixtureNavigation);
   reset(initial);
   return {
     reset,
@@ -296,11 +296,11 @@ export const installAuthFixture = (initial: AuthScenario) => {
       const login = new URL(url, location.origin);
       if (login.pathname !== '/api/v1/auth/login') throw new Error('The fixture only handles Daynight login redirects.');
       authenticated = true; loginCompleted = true;
-      history.replaceState(null, '', login.searchParams.get('returnPath') ?? '/');
+      history.replaceState(null, '', login.searchParams.get('returnPath') ?? '/projects');
     },
     dispose: () => {
       for (const pending of identityWaiters) pending.cancel();
-      document.removeEventListener('click', keepFixtureHome);
+      document.removeEventListener('click', keepFixtureNavigation);
       if (window.fetch === fetchFixture) window.fetch = originalFetch;
       if (clipboardDescriptor === undefined) delete (navigator as unknown as Record<string, unknown>).clipboard;
       else Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);

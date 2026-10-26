@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { AuthenticatedApp } from '../../src/app/AuthenticatedApp';
+import { Application } from '../../src/app/Application';
 import { LocaleProvider } from '../../src/i18n/LocaleProvider';
 import { resolveInitialLocale } from '../../src/i18n/locale';
 import { authScenarios, installAuthFixture, readAuthScenario, type AuthScenario } from './auth-fixture';
@@ -18,7 +18,7 @@ const AuthMockup = () => {
   const [identityControl, setIdentityControl] = useState('暂停检查后，切换到另一个浏览器标签页，再切回这里。等待期间可以继续编辑当前页面。');
   const reset = (next: AuthScenario) => { fixture.reset(next); setScenario(next); setRevision((value) => value + 1); setIdentityControl('暂停检查后，切换到另一个浏览器标签页，再切回这里。等待期间可以继续编辑当前页面。'); };
   return <>
-    <AuthenticatedApp key={revision} navigateToLogin={(url) => { fixture.completeLogin(url); setRevision((value) => value + 1); }} />
+    <Application key={revision} navigateToLogin={(url) => { fixture.completeLogin(url); setRevision((value) => value + 1); }} />
     <aside aria-label="Authentication fixture controls" ref={(node) => { if (node !== null) Object.defineProperty(node, 'authFixture', { configurable: true, value: fixture }); }} style={{ position: 'fixed', zIndex: 200, bottom: 12, left: 12, maxWidth: 'calc(100vw - 24px)', border: '1px solid #e2e4ed', borderRadius: 8, background: '#fffffff5', boxShadow: '0 4px 22px #25325312', fontSize: 11 }}>
       <details><summary style={{ padding: '8px 12px', cursor: 'pointer', color: '#746c5d' }}>Component fixture · 场景</summary><div style={{ padding: '4px 12px 12px', width: 340, maxWidth: 'calc(100vw - 26px)', display: 'grid', gap: 10 }}>
         <label htmlFor="auth-fixture-scenario">受控 API 场景</label><select id="auth-fixture-scenario" value={scenario} onChange={(event) => reset(event.currentTarget.value as AuthScenario)}>{authScenarios.map(([id, label]) => <option value={id} key={id}>{label}</option>)}</select>

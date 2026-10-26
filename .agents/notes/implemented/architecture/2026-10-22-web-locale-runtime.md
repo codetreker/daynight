@@ -45,8 +45,8 @@ requests and does not modify API, task, project or database data.
 The [requirements](../../../../docs/spec/daynight-web-i18n.md) own the complete
 bilingual outcome; the [design](../../../../docs/design/daynight-web-i18n.md)
 explains both runtime and production integration. `main.tsx` now mounts the
-Provider before rendering, and `App` and feature components use the same
-catalogs. The linked interface decision owns that integration; the foundation
+Provider before rendering, and the public entry, authenticated application and
+feature components use the same catalogs. The linked interface decision owns that integration; the foundation
 choice recorded here remains in force.
 
 ## Alternatives

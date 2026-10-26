@@ -13,8 +13,9 @@
 
 [鉴权架构](daynight-auth.md)拥有 UniAuth 登录、项目权限、成员与邀请及个人访问
 令牌；`AuthenticatedApp` 和 API 客户端已接入生产入口。
-[需求](../spec/daynight-auth.md)拥有完整行为。生产 `main.tsx` 在常驻 LocaleProvider 中渲染 `AuthenticatedApp`，复用
-messages.auth 的英语/简体中文目录及同一语言偏好。后端使用升级后的公开 UniAuth
+[需求](../spec/daynight-auth.md)拥有完整行为。生产 `Application` 在常驻 LocaleProvider 中按
+当前地址组合公开推广页、公开指南和 `AuthenticatedApp`；后者复用 messages.auth 的英语/简体中文目录
+及同一语言偏好。[公开入口设计](daynight-landing.md)拥有分流、介绍、演示和元数据。后端使用升级后的公开 UniAuth
 SDK 提供 App-aware provider discovery；发现失败与用户会话失效分开呈现。新壳
 复用现有任务页签、渐进图和居中 `TaskDetailDialog`，保留可信同源 frame、相对资源及键盘机制。
 [Web 鉴权决策](../../.agents/notes/implemented/feature/2026-10-22-web-auth-workspace.md)
@@ -92,7 +93,7 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 拥有状态、错误与身份边界的取舍；[账户导航决策](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
 保留底部入口布局的原始理由。
 
-### 项目列表 `/`
+### 项目列表 `/projects`
 
 - 页首显示“项目”和刷新按钮。
 - 卡片显示项目名称、仓库地址、创建日期和“查看任务”。长名称、地址允许换行，仓库地址按普通文本展示。
@@ -449,12 +450,13 @@ React Flow 12.12.0保留220px宽、96px或136px高的可见卡片、原生测量
 ## 日常使用引导页
 
 `features/setup/SetupGuidePage.tsx` 与 `styles/setup.css` 拥有静态五步指南。
-`main.tsx` 在挂载认证组件前将精确 `/setup` 分流到公开静态外壳，query 不影响匹配。
+`Application` 响应当前地址，将精确 `/setup` 分流到公开静态外壳，query 不影响匹配；
+公开首页和认证页面分别由[公开入口设计](daynight-landing.md)定义。
 该外壳保留本地语言 Provider、语言选择器、面包屑、标题、跳过导航和正文聚焦，
 不挂载 `AuthenticatedApp` 的身份、provider、邀请、任务缓存或前台认证重检生命周期。
 工作空间顶栏语言选择器前的书本图标与文字链接使用 `target="_blank"`、
 `rel="noopener noreferrer"`，不拦截点击。引导页中的项目链接采用完整页面导航，
-离开指南后由正常应用入口处理认证。
+项目链接进入 `/projects`，离开指南后由正常应用入口处理认证。
 
 `messages.setup` 的类型化目录拥有五步标题、前置条件、成功标志、自然语言示例、
 复制与导航文案。终端命令以完整字符串呈现和复制，多行使用真实换行，不从 HTML 或
@@ -601,7 +603,9 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 
 | 路径 | 行为 |
 |---|---|
-| `GET /{$}` | 精确根路径，返回 SPA index；`GET /` 不能替代精确匹配 |
+| `GET /{$}` | 精确根路径，返回 index 并显示公开推广页；`GET /` 不能替代精确匹配 |
+| `GET /login` | 返回同一个 index，由现有认证生命周期显示独立登录页 |
+| `GET /projects` | 返回同一个 index，认证后显示项目列表 |
 | `GET /projects/{projectId}` | 返回同一个 index，资源存在性由图 API 决定 |
 | `GET /setup` | 返回同一个 index，由公开静态入口显示日常使用指南，不发起任何 API 请求 |
 | `GET /projects/{projectId}/tasks/{taskId}/attachments/{path...}` | 返回同一个 index，前端在工作空间外打开独立阅读页；文件存在性由完整附件清单决定 |
@@ -700,35 +704,53 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 
 ### CI 构建归属
 
-`verify-web` 和 `verify-server` 被选中时，都使用固定 Node/pnpm，在干净 checkout
-从锁文件安装依赖并构建真实 UI。Go 检查调用共享构建后继续负责 build/vet/race/go-cov；
-web job 在统一验收前执行 dev-ci 生命周期 fixture，随后仅调用 `scripts/ci.mts`。
-workflow 先选择官方 Ubuntu package archives，再启动统一验收；该镜像源变更由
-[PR #148](https://github.com/codetreker/daynight/pull/148) 交付。
-入口把固定 Chromium 的 `install --with-deps chromium` 与测试准备 callback 交给共享 runner。测试准备先执行包内 `test:harness`，再执行 `test:coverage`，每段分别限时 180 秒；前者的运行时长不占用后者的预算，全部 Node harness、Vitest 文件和严格覆盖率检查仍必需。仅 `test:coverage` 子进程设置 `VITEST_MAX_WORKERS=2`，保留 `forks` pool 和文件隔离。runner 同时启动测试准备、原生 UI/Go/PostgreSQL 准备、容器 callback 与正常 dev-ci 源码构建/启动；仅在两段测试都通过后启动浏览器安装，避免 apt 与 Chromium 下载争用 5 秒 UI 测试时限。浏览器安装（含 Linux 依赖）限时 600 秒，任一命令失败或超时都使验收失败。官方包源下载时间仍会波动，
-600 秒只容纳已观测的慢速安装；web job 20 分钟总上限继续约束完整验收。浏览器准备
-仍与原生及 dev-ci 准备并行。dev-ci 继续拥有本次唯一镜像及运行镜像身份校验和完整
-shell 清理。
+同一个 Web 模块选择结果并行启用 `verify-web-quality` 与 `verify-web`，两个 job 各保留
+20 分钟上限，最终 `checks` 同时依赖二者及其他已选择模块。共享 workflow 变更仍按原有
+规则选择全部模块，不改变路径分类、合并结果验证或未选择 job 的 `skipped` 语义。
 
-原生功能阶段只等待原生服务和浏览器就绪；其二十九个场景及浏览器回收成功后，runner
-原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器执行许可。
-容器 callback 已登记身份后等待该许可，通过后才记录浏览器 inventory 并执行
-二十九个功能场景。完整 dev-ci 退出清理、容器浏览器回收和全部准备/覆盖率命令结束
-后，才在仍存活的原生 Go/PostgreSQL 上执行五个容量/超限场景。任一失败取消并
-等待已启动的所有任务；原生进程意外退出同样取消其他任务。容量阶段保持单浏览器
-worker，并与构建、单元测试、功能测试及容器清理隔离。
+质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行完整 `test:harness` 和
+`test:coverage`，每个命令分别限时 180 秒。后者保留全部 Vitest/V8 文件与严格语句覆盖率
+检查；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=2`，`forks` pool 和文件隔离不变。
+仅测试文件逐项通过不足以证明 V8 报告和严格 checker 完成。质量 job 归档原始覆盖率及
+完整源码清单摘要。
 
-两个 job 复用以 server `go.sum` 为依赖身份的 Go 模块/编译缓存；Go gate 仍先
-失效测试结果缓存。workflow 的恢复和两组产物归档都绑定同一个统一验收步骤。
+浏览器 job 和 `verify-server` 继续使用固定 Node/pnpm，在干净 checkout 从锁文件安装
+依赖并构建真实 UI。Go gate 仍负责 build/vet/race/go-cov。浏览器 job 运行原有 dev-ci
+生命周期 fixture；workflow 选择官方 Ubuntu package archives，随后通过 `scripts/ci.mts`
+的 `browser` 模式安装固定 Chromium 及 Linux 依赖，保留 600 秒命令上限，再调用普通
+core acceptance。镜像源选择由 [PR #148](https://github.com/codetreker/daynight/pull/148)
+拥有；命令或 job 超时仍使检查失败。
+
+CI 命令包装保留进程组所有权：命令结束后由 `requireGroupStopped` 确认其所属进程组已停止，
+不能仅凭 leader 退出认定清理完成。命令错误、取消和清理错误均传播，同时失败时保留
+完整原因。core 不再拥有质量/浏览器准备 callback、空成功阶段或覆盖率准入观察器。
+本地 acceptance 继续使用已安装浏览器，不因 CI 拆分增加质量命令或准备等待。
+
+core 并行准备原生 UI/Go/PostgreSQL 和正常 dev-ci 源码构建/启动。dev-ci 继续拥有本次
+唯一镜像、运行镜像身份校验与完整 shell 清理。原生功能阶段及其浏览器回收通过后，
+runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器执行许可。
+容器 callback 登记身份后等待并验证该许可，保留 900 秒等待上限，再记录浏览器 inventory
+并执行原有全部功能场景。`ready.json` 保留准备时间的诊断用途，不授予浏览器执行权。
+
+原生准备、功能阶段、完整 dev-ci 退出清理与容器浏览器回收结束后，才在仍存活的原生
+Go/PostgreSQL 上执行全部容量/超限场景。任一 core 失败取消并排空所有已启动任务；
+原生进程意外退出同样取消其他任务。容量保留单浏览器 worker、零 retries、固定输入、
+几何与时间门槛，并与本 runner 的构建、功能检查和清理隔离。质量命令位于另一个 runner，
+不分片浏览器场景，也不为容量增加跨 job 准入协议。
+
+两个 Go-consuming job 继续复用以 server `go.sum` 为依赖身份的 Go 模块/编译缓存；
+Go gate 仍先失效测试结果缓存。浏览器 job 的恢复与产物归档绑定同一个实际验收步骤。
 [流水线决策](../../.agents/notes/implemented/testing/2026-10-21-web-acceptance-pipeline.md)
-拥有调度、替代方案和阶段证据取舍。完整 Web run 只准备一次已安装 CLI，在原生与
-容器的附件功能场景中复用。生产浏览器与恢复结束后，Ubuntu web job 再执行一次
-既有 `deployment/dev-ci/tests/attachments.mts`，将其附件卷和配套备份恢复回执归档到
-同一部署证据产物；容量测试继续与构建、功能检查及清理隔离。
-PR 按[仓库 CI 路由](../../README.md#ci-selection)选择模块，main push 执行全量检查。
-最终 `checks` 汇总路由、Go、web、CLI 原生矩阵和独立 Linux shell completion job 的
-结果，只接受 `success` 或 `skipped`，失败、取消及其他结果使汇总失败；未选中的 job
-为 `skipped`。
+拥有 core 的阶段、目标和恢复；
+[质量 job 隔离决策](../../.agents/notes/implemented/testing/2026-10-26-web-quality-job-isolation.md)
+拥有两类 job 的职责、命令边界和替代方案。拆分不证明先前超时的 CPU/I/O 原因，也不保证
+hosted 运行更快；实际结果绑定被测源码、工作量和 runner。
+
+完整 core run 只准备一次已安装 CLI，在原生与容器附件功能场景中复用。生产浏览器与
+恢复结束后，Ubuntu 浏览器 job 继续执行既有 `deployment/dev-ci/tests/attachments.mts`，
+将附件卷和配套备份恢复回执归档到同一部署证据产物。质量与浏览器产物分别保留其身份和
+既有留存期限。最终 `checks` 只接受所有前置 job 的 `success` 或 `skipped`；失败、取消
+及其他结果使汇总失败。PR 路由和 main push 全量规则由[仓库 CI 路由](../../README.md#ci-selection)拥有。
 
 ## 执行耗时与提醒
 
@@ -938,7 +960,8 @@ Markdown 复用渲染器，分别使用任务根与文档目录；其他附件�
 `scripts/acceptance/runner.mts` 拥有新建运行的源码身份、构建、原生 PostgreSQL/
 服务进程、Playwright、dev-ci 调用与恢复；模块导入不注册信号或启动工作。
 `packages/daynight-web/scripts/acceptance.mts` 是解析命令及显式传入取消控制器的
-CLI，`scripts/ci.mts` 调用同一 runner 并提供浏览器/覆盖率准备 callback。
+CLI。`scripts/ci.mts` 的 browser 模式完成浏览器安装后调用同一普通 runner，quality
+模式独立执行完整质量命令；core 没有准备 hook 或空质量阶段。
 `pipeline.mts` 只表达本验收的固定阶段依赖，`permission.mts` 拥有绑定运行和源码的
 原子许可；没有新增部署环境接口或旧二进制交接路径。`tests/e2e/` 拥有功能流程、
 API 数据和固定图集。

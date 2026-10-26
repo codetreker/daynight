@@ -31,8 +31,10 @@ project creation, filtered project lists, administrator changes and invitations.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
-every project, task, graph and attachment route. The production dashboard mounts
-`AuthenticatedApp`; `daynight login` uses Daynight device authorization to obtain
+every project, task, graph and attachment route. The production Web entry separates
+the public introduction at `/`, the zero-API guide at `/setup`, and the existing
+`AuthenticatedApp` lifecycle for `/login`, `/projects` and private pages.
+`daynight login` uses Daynight device authorization to obtain
 a nonexpiring `Daynight CLI (<hostname>)` Bearer credential named for the initiating machine. Explicit PAT configuration remains
 available for automation. Existing projects are assigned members
 manually and remain inaccessible while they have no members. Trusted executable
@@ -234,10 +236,12 @@ diagnostics and cause categories.
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
 rejected. Callback paths that collide with application routes are rejected during
 configuration and startup validation before route registration; this includes
-`/setup` and every descendant path. If an existing callback occupies that
+`/login`, `/setup` and every descendant path. If an existing callback occupies that
 namespace, choose another path and register its exact full URL in UniAuth before
-starting the server. Login return loops are rejected before a login transaction
-is created. Only the configured callback path is routed; there is no fixed-path alias or authentication-disable
+starting the server. Login return loops, including `/login`, are rejected before a
+login transaction is created. An absent return target defaults to `/projects`; a
+known callback failure redirects to the explicit login error page and retains the
+validated target, including when local session creation fails. Only the configured callback path is routed; there is no fixed-path alias or authentication-disable
 mode. The two HTTP exceptions control different origins and do not imply each
 other. The exact `/setup` page uses the normal embedded HTML GET/HEAD handler,
 no-store policy, 405/Allow response and request logging. Its public static guide mounts
@@ -265,7 +269,7 @@ return `Daynight-User-ID` from the admitted principal, including empty mutations
 and later resource errors. Failed authentication does not emit that header;
 caller-supplied values are not echoed. An unmatched route has an empty route template.
 UI and API requests use the same logging wrapper. Exact `/device`, `/account`,
-`/invitations`, `/`,
+`/invitations`, `/`, `/login`, `/projects`, `/setup`,
 `/projects/{projectId}`, `/projects/{projectId}/members`,
 `/projects/{projectId}/settings`, `/projects/{projectId}/tasks/{taskId}` and
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` page shapes return

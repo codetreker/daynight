@@ -76,7 +76,7 @@ export const DeviceAuthorizationPage = ({ user, initialCode, onSwitchAccount, on
   const errorMessage = (error: unknown) => error instanceof ApiError && error.status === 429 ? m.rateLimited : m.loadError;
   const requestId = "error" in state && state.error instanceof ApiError ? state.error.requestId : null;
   return <div className="invite-page device-page">
-    <a className="brand" href="/" aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
+    <a className="brand" href="/projects" aria-label={app.projectHome}><span className="brand-mark" aria-hidden="true" />daynight</a>
     <main className="invite-card device-card"><LanguageSelector /><p className="eyebrow">{m.eyebrow}</p>
       <h1>{terminal === null ? unavailable ? m.unavailable : m.title : completed ? m.approved : terminal === "denied" ? m.denied : m.expired}</h1>
       {state.kind === "entry" && <><p className="subtitle">{m.subtitle}</p><form className="device-code-form" onSubmit={(event) => {
@@ -92,7 +92,7 @@ export const DeviceAuthorizationPage = ({ user, initialCode, onSwitchAccount, on
         <div className="invite-footer"><div className="invite-account"><div className="person"><span className="avatar" aria-hidden="true">{(user.name ?? user.email ?? "?").slice(0, 1).toUpperCase()}</span><div><p className="person-name">{user.name ?? shell.currentAccount}</p>{user.email !== null && <p className="person-meta">{user.email}</p>}</div></div><button className="inline-link" type="button" disabled={busy || state.kind === "uncertain"} onClick={onSwitchAccount}>{m.switchAccount}</button></div>
           {state.kind === "uncertain" ? <div className="notice warning" role="alert"><p><strong>{m.uncertain}</strong></p><p>{m.uncertainDetail}</p>{state.error !== null && <p>{errorMessage(state.error)}</p>}{requestId !== null && <p className="request-id">requestId: {requestId}</p>}<button className="button" type="button" disabled={state.checking} onClick={() => inspect(inspection.userCode, inspection)}>{state.checking ? m.reconciling : m.reconcile}</button></div> : <>{state.kind === "ready" && state.reconciled && <p className="notice" role="status">{m.reconciled}</p>}<label className="device-match"><input type="checkbox" checked={matches} disabled={busy} onChange={(event) => setMatches(event.currentTarget.checked)} /><span>{m.confirmMatch}</span></label><div className="device-actions"><button className="button primary" type="button" disabled={busy || !matches} onClick={() => decide("approve")}>{busy ? m.submitting : m.approve}</button><button className="button danger" type="button" disabled={busy} onClick={() => decide("deny")}>{m.deny}</button></div></>}
         </div></>}
-      {!busy && state.kind !== "uncertain" && <div className="device-home"><a className="inline-link" href="/">{m.returnToProjects}</a></div>}
+      {!busy && state.kind !== "uncertain" && <div className="device-home"><a className="inline-link" href="/projects">{m.returnToProjects}</a></div>}
     </main>
   </div>;
 };

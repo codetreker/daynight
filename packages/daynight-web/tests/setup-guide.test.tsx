@@ -27,7 +27,7 @@ describe("daily setup guide", () => {
     ]);
     expect(screen.getByText(window.location.origin)).toBeVisible();
     expect(screen.getByText("Agent 请求")).toBeVisible();
-    expect(screen.getByRole("link", { name: "返回项目列表" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "返回项目列表" })).toHaveAttribute("href", "/projects");
     expect(screen.queryByText("daynight setup")).toBeNull();
     expect(fetcher).not.toHaveBeenCalled();
   });

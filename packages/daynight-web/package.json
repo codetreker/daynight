@@ -11,7 +11,7 @@
     "typecheck": "tsc --noEmit",
     "build": "pnpm typecheck && vite build",
     "test": "pnpm test:harness && pnpm test:coverage",
-    "test:harness": "node --test scripts/acceptance/auth-combined.test.mts scripts/acceptance/authentication.test.mts scripts/coverage.test.mts scripts/dagre.test.mts scripts/publish-assets.test.mts scripts/acceptance/report.test.mts scripts/acceptance/performance.test.mts scripts/acceptance/identity.test.mts scripts/acceptance/process-platform.test.mts scripts/acceptance/browser.test.mts scripts/acceptance/storage.test.mts scripts/acceptance/permission.test.mts scripts/acceptance/pipeline.test.mts scripts/acceptance/process.test.mts scripts/acceptance/installed-cli.test.mts scripts/acceptance/runner.test.mts",
+    "test:harness": "node --test scripts/ci.test.mts scripts/acceptance/auth-combined.test.mts scripts/acceptance/authentication.test.mts scripts/coverage.test.mts scripts/dagre.test.mts scripts/publish-assets.test.mts scripts/acceptance/report.test.mts scripts/acceptance/performance.test.mts scripts/acceptance/identity.test.mts scripts/acceptance/process-platform.test.mts scripts/acceptance/browser.test.mts scripts/acceptance/storage.test.mts scripts/acceptance/permission.test.mts scripts/acceptance/pipeline.test.mts scripts/acceptance/process.test.mts scripts/acceptance/installed-cli.test.mts scripts/acceptance/runner.test.mts",
     "test:coverage": "vitest run --coverage && node scripts/coverage.mts",
     "test:unit": "vitest run",
     "preview": "vite preview --host 127.0.0.1",

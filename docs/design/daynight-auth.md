@@ -22,8 +22,9 @@
 再注册身份、成员、project/task/graph/property/attachment、健康检查和 UI；失败返回
 error，运行时关闭已获得的 listener、数据库和文件根句柄。业务服务显式接受
 core.Principal，原 CreatePrivate/ListAccessible 暂存别名已移除，普通 Create/List
-直接实现私有创建和按成员过滤。正式 main.tsx 在常驻 LocaleProvider 下挂载
-AuthenticatedApp，保留当前任务/附件页签和渐进图。
+直接实现私有创建和按成员过滤。正式 Application 在常驻 LocaleProvider 下选择公开首页、
+公开指南或 AuthenticatedApp；后者拥有登录和私有页面，保留当前任务/附件页签和渐进图。
+[公开入口设计](daynight-landing.md)拥有路由组合与公开身份提示，后者不参与私有资源准入。
 
 [身份基础](../../.agents/notes/implemented/architecture/2026-10-22-identity-credentials.md)
 与[成员基础](../../.agents/notes/implemented/architecture/2026-10-22-project-membership.md)
@@ -112,7 +113,8 @@ callback 在同一事务验证绑定/state/provider/期限并消费 pending；�
 合法 provider error 结束 pending；错误绑定不领取。网络断连、取消、协议错误或
 领取响应丢失都重新登录，不能重试可能已消费的 code。用户以完整 UniAuth id 唯一
 upsert，本地 UUID 不变；资料保留 null/false，不按邮箱合并。用户与 session 同事务
-提交。返回路径拒绝外站、协议相对 URL 和 auth 循环路径，默认项目列表。
+提交。返回路径拒绝外站、协议相对 URL 和 auth 循环路径，包括独立 `/login` 及实际 callback；
+无目标默认 `/projects`，不把已提供的非法目标替换成默认值。
 
 ### 主站 session 与 PAT
 
@@ -150,8 +152,9 @@ PublicOrigin 使用规范的小写主机、有效端口并省略 scheme 默认�
 Origin 序列化一致；不规范配置明确拒绝。Cookie 写请求要求精确主站 Origin，PAT 写
 请求按其 header 凭据验证。数据 API 401
 始终 JSON，Web 发起登录导航。已验证并消费的 callback 若失败，清除绑定 Cookie、
-记录清洗后的错误并 303 到固定主站 `/?authError=login_failed`；错误/未绑定 callback
-保留 JSON 拒绝。登录壳读取并清除该通用标记，显示重试入口，不带回原始 code/错误。
+记录清洗后的错误并 303 到固定主站 `/login?authError=login_failed`；已知事务同时带回
+经过验证的 `returnPath`，包括身份领取后本地 session 创建失败。错误/未绑定 callback
+保留 JSON 拒绝。登录壳读取并清除通用标记，保留目标与重试入口，不带回原始 code/错误。
 主站默认 HTTPS，使用 __Host- 会话/绑定 Cookie；显式 HTTP 主站测试配置使用不带
 该前缀和 Secure 的测试名称，仍为 host-only、HttpOnly、Lax。SDK gateway 的
 literal-loopback HTTP 开关只决定 SDK 传输，不决定主站 Cookie。
@@ -205,6 +208,9 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET /api/v1/auth/login?provider=... | 创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET /api/v1/me | 当前用户最小资料。 |
+| GET / | 交付同一内嵌页面，显示公开推广页；可取消身份提示只改变导航，不授予私有访问。 |
+| GET /login | 交付同一内嵌页面，显示独立登录或将已有会话替换到有效目标。 |
+| GET /projects | 交付同一内嵌页面，认证后显示项目列表。 |
 | GET /setup | 交付同一内嵌页面，在认证组件之外显示公开静态使用引导，不发起身份或其他 API 请求。 |
 | POST /api/v1/auth/logout | 主站会话注销，验证 Origin。 |
 | GET/POST /api/v1/me/tokens、PATCH/DELETE .../{tokenId} | 主站会话列出/创建、按账号与到期观察值修改、撤销自己的有效 PAT；Cookie 写校验精确 Origin。 |
@@ -222,15 +228,22 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 新增 unauthenticated/forbidden/last_admin/invitation_unavailable 错误，保留原 envelope/
 requestId。非成员与不存在项目均 not_found；错误类别不能落入 internal_error。
 
-正式 main.tsx 在常驻 LocaleProvider 下挂载 AuthenticatedApp；语言机制和现有图、
-任务/附件页签及完整详情的弹窗/独立展示保持同一实例与状态规则。独立详情导航同时
+正式 Application 在常驻 LocaleProvider 下组合公开页与 AuthenticatedApp；语言机制和
+认证分支内现有图、任务/附件页签及完整详情的弹窗/独立展示保持同一实例与状态规则。
+`/projects` 拥有项目索引。客户端路由将普通匿名业务目标替换到 `/login?returnPath=...`，
+对目标复用实际路由解析并明确呈现非法目标；无目标默认 `/projects`。已有身份访问
+登录页替换到有效目标，成功认证不在历史中留下循环的中间登录入口。独立详情导航同时
 包含 pathname 与 search；登录返回路径保留任务、页签和附件的相关查询参数，构造
 登录入口时移除临时 `authError`，避免一次旧登录失败随成功返回再次呈现。
 TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详情关闭/重开
 保持 project/task 的状态操作身份与结果，401 或身份变化时丢弃旧用户状态；同一
 用户核验与语言切换不重建 Provider。状态设置依赖当前完整详情的精确版本，冲突与未知
 结果遵守[三状态设计](daynight-task-status.md)。
-它通过 /me 取得身份，401 显示 UniAuth 入口；资源 404 不退出全局会话。
+它通过 /me 取得身份，401 进入带有效目标的独立登录流程；资源 404 不退出全局会话。
+登录地址的有效目标仍是 invitations 时保留现有 tab 内凭据，fragment 在请求之前捕获
+并移出地址。离开到公开页会卸载认证分支，因此 Application 同时负责离开邀请时的清理
+与失败可见性。设备授权保留原始 user_code；普通退出成功回公开首页，账号切换保留
+邀请/设备目标，退出失败保持当前错误与重试。
 项目列表增加名称/仓库地址创建表单，复用原 API，成功进入空项目且创建者为 admin。
 账户页管理 PAT，项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
 服务端在项目锁后独立复核角色与设置版本。设置按 user/project 键隔离，草稿不写入权威 Project；
@@ -348,6 +361,7 @@ session 和精确 Origin；PAT、过期会话与跨源请求不能决定授权�
 不能重新取回，用户重新发起登录，遗留凭据可在账户页撤销。现有 PAT 创建接口仍只允许有效浏览器会话。
 
 `/device` 复用 AuthenticatedApp 的登录 returnPath、LocaleProvider 与当前用户请求 gate。
+匿名入口和切换账号保留包含原始 user_code 的目标，完成登录后继续同一授权请求。
 用户输入或预填短码后核对当前账号、短码、授权范围及到期；GET、自动打开或登录成功不批准。
 批准/拒绝待提交时阻止重复写；未知结果先 inspect 核对，读取失败继续阻止决定，只提供检查重试。
 同用户前台核验保留输入，换号/失效清除旧状态与迟到请求。
@@ -378,7 +392,7 @@ Public origin 是无路径/凭据/query/fragment 的 canonical origin，host 小
 
 Callback 与 public origin 精确同源，完整 URL 无凭据、query 或 fragment；路径为
 canonical 非根路径，不接受编码别名、dot-segment、路由通配符或与 API/页面/资源/
-健康入口冲突。页面命名空间包含 `/setup` 根及其后代，`validateAuthSettings` 在配置和
+健康入口冲突。页面命名空间包含 `/login`、`/setup` 根及其后代，`validateAuthSettings` 在配置和
 启动阶段、创建路由前拒绝冲突。原 callback 占用该命名空间时须改到其他路径并同步
 UniAuth 的完整登记值。配置可使用 `/auth/callback`，与 UniAuth App 精确登记值一致；只注册
 这一条路径，不增加旧别名。StartLogin 在持久化 pending 前拒绝 auth 入口和实际

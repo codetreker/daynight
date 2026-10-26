@@ -10,7 +10,7 @@ import { LanguageSelector } from '../i18n/LanguageSelector';
 const goToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
-  navigate('/');
+  navigate('/projects');
 };
 
 const AppView = () => {
@@ -41,12 +41,12 @@ const AppView = () => {
     <div className="shell">
       <a className="skip-link" href="#main-content">{m.skipToContent}</a>
       <aside className="sidebar" aria-label={m.workspaceNavigation}>
-        <a className="brand" href="/" onClick={goToProjects} aria-label={m.projectHome}>
+        <a className="brand" href="/projects" onClick={goToProjects} aria-label={m.projectHome}>
           <span className="brand-mark" aria-hidden="true" />daynight
         </a>
         <nav aria-label={m.mainNavigation}>
           <p className="nav-label">{m.workspace}</p>
-          <a className="nav-button" href="/" onClick={goToProjects} aria-current={route.kind === 'notFound' ? undefined : 'page'}>
+          <a className="nav-button" href="/projects" onClick={goToProjects} aria-current={route.kind === 'notFound' ? undefined : 'page'}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
               <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
               <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
@@ -59,7 +59,7 @@ const AppView = () => {
       <div className="workspace">
         <header className="topbar">
           <nav className="crumb" aria-label={m.breadcrumb}>
-            <a href="/" onClick={goToProjects}>{m.workspace}</a>
+            <a href="/projects" onClick={goToProjects}>{m.workspace}</a>
             <span aria-hidden="true">/</span>
             <span className="crumb-current" aria-current="page">{route.kind === 'projects' ? m.projects : route.kind === 'project' ? m.projectTasks : m.notFound}</span>
           </nav>
@@ -71,7 +71,7 @@ const AppView = () => {
               <p className="eyebrow">404</p>
               <h1>{m.notFound}</h1>
               <p>{m.notFoundDetail}</p>
-              <a className="button primary" href="/" onClick={goToProjects}>{m.returnToProjects}</a>
+              <a className="button primary" href="/projects" onClick={goToProjects}>{m.returnToProjects}</a>
             </section>
           )}
         </main>

@@ -80,55 +80,61 @@ inventory is 33 native and 28 container results. The rollout counts below retain
 their original delivery context; repeatable current commands and mappings belong
 to the Web README.
 
-One acceptance runner owns the fixed dependencies of the complete web job,
-without shards. `scripts/acceptance/runner.mts` exports `runAcceptance`,
-`runContainerCallback` and `recoverAcceptance` without starting work or registering
-signal handlers on import. The thin `scripts/acceptance.mts` CLI and `scripts/ci.mts`
-pass explicit cancellation controllers to that runner. CI supplies callbacks for
-pinned Chromium installation and test preparation through the runner's coverage
-callback. Package `test:harness` owns all Node acceptance/tooling harness tests; `test:coverage` owns the complete
-Vitest/V8 suite and strict statement checker. Package `test` and root `web:test`
-compose both serially. CI uses the same two canonical commands serially, each
-bounded at 180 seconds, so the harness cannot consume the Vitest/coverage budget.
-Neither phase may be skipped, and a failure or timeout prevents acceptance.
-Only the `test:coverage` child receives `VITEST_MAX_WORKERS=2`, retaining its `forks`
-pool and per-file isolation. The callback passes a copied environment to that
-child rather than changing `process.env`; the harness, browser installation,
-native preparation and dev-ci callback do not inherit the coverage-only worker
-limit. Browser installation, including Playwright's Linux dependency installation,
-has a 600-second deadline. The web job retains its 20-minute overall timeout.
-Controlled deployment fixtures run before the unified CI entry. This partially replaces the cache-only preparation and target
-sequencing of the [CI efficiency decision](2026-10-21-ci-validation-efficiency.md)
-and the original schedule of the
+One core acceptance runner owns the fixed dependencies of the complete native,
+container and capacity browser journey, without scenario shards.
+`scripts/acceptance/runner.mts` exports `runAcceptance`, `runContainerCallback` and
+`recoverAcceptance` without starting work or registering signal handlers on
+import. The thin `scripts/acceptance.mts` CLI passes an explicit cancellation
+controller; local acceptance uses the installed browser.
+
+CI separates Web quality and browser validation into parallel `verify-web-quality`
+and `verify-web` jobs selected by the same Web module result. Both retain a
+20-minute job bound and are required by `checks`. The internal `quality` mode of
+`scripts/ci.mts` runs the canonical `test:harness` and `test:coverage` commands
+serially with separate 180-second bounds. The latter retains the complete
+Vitest/V8 suite, strict statement checker, `forks` pool, per-file isolation and
+coverage-only `VITEST_MAX_WORKERS=2` child environment. Package `test` and root
+`web:test` still compose both commands serially for local quality checks.
+The [quality isolation decision](2026-10-26-web-quality-job-isolation.md) owns the
+independent jobs, wrapper commands and budget rationale.
+
+The CI wrapper's `browser` mode installs pinned Chromium and Linux dependencies
+under the existing 600-second bound, then calls ordinary core acceptance. It
+preserves the managed-command process-group stop check and both command and
+cleanup errors. The core has no quality or browser preparation callbacks, no
+empty success phases and no coverage-readiness observer. Controlled deployment
+fixtures still run before the browser acceptance entry. This partially replaces
+the cache-only preparation and target sequencing of the
+[CI efficiency decision](2026-10-21-ci-validation-efficiency.md) and the original
+schedule of the
 [dashboard acceptance decision](2026-10-20-dashboard-production-acceptance.md).
 Their real targets, complete scenarios, coverage, performance and cleanup
 requirements continue to apply.
 
-The runner starts the serialized test preparation, native production
-UI/Go/PostgreSQL preparation, container callback and normal dev-ci source
-build/start concurrently. Browser and Linux dependency installation starts only
-after both test phases pass, removing apt and browser downloads from the 5-second UI-test deadline. Browser installation still
-overlaps native and dev-ci preparation. The existing shell runner remains
-authoritative for the unique image, running-image check and full stack cleanup.
-Native functional browser work waits only for the native process, shared installed
-CLI and browser preparation. Its twenty-nine scenarios and immediate browser
-recovery must pass before the runner releases the container browser.
+The core starts native production UI/Go/PostgreSQL preparation, the container
+callback and normal dev-ci source build/start concurrently. The existing shell
+runner remains authoritative for the unique image, running-image check and full
+stack cleanup. Native functional browser work waits for native preparation and
+the shared installed CLI; its scenarios and immediate browser recovery must pass
+before the runner releases the container browser. Quality is on another runner
+rather than an overlapping phase owned by this timing runner.
 
-If either test command or another active phase fails while browser preparation
-is waiting, the pipeline marks cancellation and the browser callback checks it as
-soon as test preparation drains; it never starts the installer. The
+If an active core phase fails, the pipeline cancels dependent work and drains all
+started phases. The
 [pipeline regressions](../../../../packages/daynight-web/scripts/acceptance/pipeline.test.mts)
-verify coverage-before-browser ordering, cancellation while waiting, continued
-native/container overlap, browser-install failure handling, and capacity after
-full container cleanup. Their completion observer records rejection before
-controlled failures are released, so teardown waits do not leave a rejected
-pipeline promise unobserved.
+verify native/container overlap, native-before-container release, cancellation,
+failure draining and capacity after full container cleanup. CI wrapper tests own
+quality command order, browser installation and process-group settlement; these
+preparation steps are not simulated by empty core phases. Completion observers
+record rejection before controlled failures are released, so teardown waits do
+not leave a rejected pipeline promise unobserved.
 
 Release is an atomic `container/container-permission.json` receipt with schema 1,
 phase `native-functional-cleaned`, acceptance run ID, dev-ci run ID and source
 SHA. The container callback records its process identity before waiting and
 inventories browsers only after validating that exact permission. Its
-`ready.json` records diagnostic timing and grants no permission. The callback
+`ready.json` records diagnostic prepared-state timing and grants no browser
+permission. The callback
 runs the twenty-four container functional scenarios, confirms browser cleanup and
 returns to the normal shell exit path. The outer stage waits for full dev-ci
 cleanup and browser recovery before completing. The native callback fixture
@@ -137,8 +143,8 @@ readiness, status, permission, and cleanup checks; the
 [callback phase-budget decision](2026-10-24-web-callback-phase-budgets.md) owns
 that test-only timing boundary.
 
-Capacity runs last, after every preparation/check command, native functional
-phase, container functional phase and complete container cleanup. The native
+Capacity runs last within core acceptance, after its preparation commands,
+native functional phase, container functional phase and complete container cleanup. The native
 Go process and PostgreSQL remain alive for this final phase. One browser worker,
 zero retries, all four fixed graphs with five repetitions, both independent
 limits, complete visible induced geometry, twenty CDP traces and all original
@@ -223,9 +229,10 @@ process-discovery and privileged-permission questions in
 [issue #86](https://github.com/codetreker/daynight/issues/86) remain separately
 tracked.
 
-CI recovery and both artifact uploads share the unified acceptance step's
-attempted-execution condition, so partial preparation remains attributable and
-recoverable.
+Browser CI recovery and its acceptance artifact upload share the core attempt's
+condition, so partial preparation remains attributable and recoverable. The
+quality artifact upload is tied to its independent quality attempt under the
+[quality isolation decision](2026-10-26-web-quality-job-isolation.md).
 
 The [web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 owns commands and evidence interpretation. The
@@ -254,11 +261,16 @@ outcomes remain tied to their source, environment and PR/CI run.
 
 ## Alternatives
 
+The scheduling alternatives retain the original single-job circumstances. The
+quality isolation decision owns their later replacement; resource and recovery
+ownership below remains applicable.
+
 **Run browser preparation concurrently with coverage.** This hides some setup
 time, but main run 39798535790 timed out a 5-second progressive visibility test
-while Playwright downloaded Chromium. Waiting for coverage isolates those tests
-from browser downloads and still overlaps browser setup with native and dev-ci
-preparation.
+while Playwright downloaded Chromium. The original ordering separated those
+tests from browser downloads while retaining independent native and dev-ci
+preparation. Quality now has its own runner, so browser installation no longer
+shares those command resources.
 
 **Keep the 180-second browser-install deadline.** PR run 39794986474 passed with
 the official archives under that bound, but the later main run 39801658628 needed
@@ -267,10 +279,12 @@ archive. The command timed out at three minutes before Chromium installation
 started. A 600-second command deadline accommodates this measured preparation
 while preserving the web job's 20-minute overall limit.
 
-**Wait for all preparations before starting browser installation.** This would
-also separate browser downloads from coverage, but would serialize independent
-native and dev-ci work. Waiting only for coverage protects the short UI-test
-deadline while retaining the other preparation overlap.
+**Wait for all preparations before starting browser installation.** The original
+pipeline rejected that direct dependency because it would serialize independent
+native and dev-ci work; waiting only for coverage separated browser downloads
+from the short UI tests. The quality isolation decision separates those responsibilities; browser mode
+finishes installation before entering the ordinary core, which still prepares
+native and container targets concurrently.
 
 **Remove `--with-deps` in CI.** This avoids apt work but leaves the runner without
 the Linux libraries and fonts that Playwright prepares for Chromium. Browser
@@ -286,9 +300,9 @@ expanding the overall job or individual UI-test deadlines.
 
 **Increase the whole job timeout.** That expands the deadline for every CI phase
 and does not remove shared-runner contention during coverage. The existing
-20-minute cap is retained; browser preparation is bounded at 600 seconds, and
-the serialized harness and Vitest/strict-checker phases each have a 180-second
-command bound.
+20-minute cap is retained independently for quality and browser jobs; browser
+installation is bounded at 600 seconds, and serialized harness and
+Vitest/strict-checker commands each have a 180-second bound.
 
 **Keep cache-only preparation followed by a later normal build.** This allowed
 preparation overlap without changing deployment ownership, but scheduled a second
@@ -301,9 +315,10 @@ elapsed time but changes CPU conditions for the strict browser performance gate.
 The fixed pipeline overlaps functional work and preparation, then waits for all
 competing work and full stack cleanup before capacity.
 
-**Shard the job.** Additional runners duplicate setup and require independent
-identity and report aggregation rules. The adopted scope excludes shards and
-retains one complete job with explicit phase dependencies.
+**Shard browser acceptance.** Additional acceptance runners duplicate target
+setup and require independent identity and scenario aggregation rules. The
+complete native/container/capacity journey stays together with explicit phase
+dependencies. The separate quality job does not shard browser scenarios.
 
 **Stop waiting when owned-process discovery becomes empty.** The discovery scan
 can lose executable/environment ownership data before the parent reaps an exited
@@ -317,14 +332,19 @@ which builds fresh native artifacts and owns their exact identity and lifetime.
 
 ## Consequences
 
-Both test phases complete before the network-dependent browser preparation
-begins, while test and browser preparation continue to overlap native service and
-dev-ci preparation. The official Ubuntu archives selected by PR #148 replace the slow Azure mirror, though run
-39801658628 shows that transfers from the official archive can still take several
-minutes. The 600-second browser-install bound accommodates the measured 4-minute-
-42-second apt phase. Harness and Vitest/strict-checker commands are separately
-bounded at 180 seconds, and the complete web job remains bounded at 20 minutes.
-A slower install that exceeds its command bound fails acceptance rather than extending CI without limit.
+Quality and browser checks have independent runners and job results. The same
+Web selector enables both, and the final gate requires both. Each job remains
+bounded at 20 minutes. Harness and Vitest/strict-checker commands keep separate
+180-second bounds, and browser installation keeps 600 seconds. The core retains
+native/container preparation overlap and capacity isolation without depending on
+quality callbacks or a readiness observer.
+
+The official Ubuntu archives selected by PR #148 replace the slow Azure mirror,
+though run 39801658628 shows that transfers can still take several minutes. The
+600-second browser-install bound accommodates its measured 4-minute-42-second apt
+phase. That historical evidence explains the install bound; it does not establish
+the duration or success of the later two-job workflow. A command or job exceeding
+its bound fails rather than extending CI without limit.
 
 The normal dev-ci runner keeps its existing public interface, production image
 checks and targeted cleanup. The native service lives longer because both native
@@ -336,5 +356,6 @@ local validation and historical main runs retain their own source and environmen
 limits. Run 39801658628 proves coverage-before-browser ordering and the install
 deadline failure path, but did not reach browser scenarios. PR run 39803676876
 passed the complete production acceptance and cleanup under the updated ordering
-and 600-second install bound. Archive transfer latency still varies by hosted
-run, and the command and overall job deadlines remain failure bounds.
+and 600-second install bound in the predecessor schedule. Archive transfer
+latency still varies by hosted run; current two-job completion needs its own
+source-bound evidence, and command and job deadlines remain failure bounds.

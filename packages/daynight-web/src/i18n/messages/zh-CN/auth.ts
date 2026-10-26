@@ -16,6 +16,7 @@ export const auth: AuthMessages = {
     accessUnavailable: "项目不存在或你没有访问权限", accessUnavailableDetail: "如果你认为应该可以访问，请联系项目管理员获取邀请。",
     permissionsError: "暂时无法读取项目权限。", retryPermissions: "重试读取权限", identityLoading: "正在确认登录状态", identityError: "暂时无法确认登录状态",
     networkRetry: "请检查网络连接后重试。", signOut: "退出登录", retryLogout: "重试退出登录",
+    signingOut: "正在退出登录…", invalidLoginTarget: "登录返回地址无效", invalidLoginTargetDetail: "请重新打开登录页，继续进入你的工作台。", startFreshLogin: "重新打开登录页",
     invitationStorageError: "浏览器无法保存邀请。登录后请重新打开邀请链接。", invitationCleanupError: "浏览器无法清除邀请临时数据。请关闭此标签页以清除邀请。",
     revalidationLabel: "重新确认当前账户", revalidationLoading: "正在确认当前账户…", revalidationError: "暂时无法重新确认当前账户",
     revalidationRetained: "当前工作已保留。确认账户后可继续。", revalidationRetry: "重新确认账户",
@@ -31,6 +32,7 @@ export const auth: AuthMessages = {
     },
   },
   login: {
+    returnHome: "了解 Daynight",
     heroTitleFirst: "让任务有序推进，", heroTitleSecond: "让协作持续发生。", heroDetail: "在项目中整理任务、连接依赖、共享成果。与团队一起，把计划推进到完成。",
     heroCaption: "专注于你的项目，与团队共同前进。", milestones: ["明确目标", "连接工作", "交付成果"], welcome: "欢迎使用 DAYNIGHT", title: "登录你的工作空间",
     subtitle: "通过 UniAuth 登录，访问你的项目与任务。", inviteSubtitle: "通过 UniAuth 登录后，继续确认项目邀请。", deviceSubtitle: "登录后确认 Daynight CLI 显示的授权码。",

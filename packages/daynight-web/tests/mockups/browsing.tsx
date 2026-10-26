@@ -28,7 +28,7 @@ const BrowsingMockup = ({ fixture }: { readonly fixture: BrowsingFixture }) => {
 
   const keepPreviewLocation = (event: MouseEvent<HTMLDivElement>) => {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
-    if (!(event.target instanceof Element) || event.target.closest('a[href="/"]') === null) return;
+    if (!(event.target instanceof Element) || event.target.closest('a[href="/"],a[href="/projects"]') === null) return;
     event.preventDefault();
     event.stopPropagation();
     scenarioSelect.current?.focus();
@@ -46,7 +46,7 @@ const BrowsingMockup = ({ fixture }: { readonly fixture: BrowsingFixture }) => {
         </a>
         <nav aria-label={m.mainNavigation}>
           <p className="nav-label">{m.workspace}</p>
-          <a className="nav-button" href="/" aria-current="page">
+          <a className="nav-button" href="/projects" aria-current="page">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
               <rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" />
               <rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" />
@@ -59,7 +59,7 @@ const BrowsingMockup = ({ fixture }: { readonly fixture: BrowsingFixture }) => {
       <div className="workspace">
         <header className="topbar">
           <nav className="crumb" aria-label={m.breadcrumb}>
-            <a href="/">{m.workspace}</a><span aria-hidden="true">/</span>
+            <a href="/projects">{m.workspace}</a><span aria-hidden="true">/</span>
             <span className="crumb-current" aria-current="page">{m.projectTasks}</span>
           </nav>
           <div className="topbar-tools"><span className="local-label">{m.localLabel}</span><LanguageSelector /></div>

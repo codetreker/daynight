@@ -43,7 +43,12 @@ attributable to [PR #70](https://github.com/codetreker/daynight/pull/70) and
 results retain their tested source and do not establish a later pipeline's
 behavior. The replacement keeps that child budget and all acceptance gates while
 using one early normal dev-ci source build and delaying capacity until other
-work and container cleanup have finished.
+browser work and container cleanup have finished. The later
+[quality isolation decision](2026-10-26-web-quality-job-isolation.md) gives quality
+and browser acceptance separate runners and 20-minute job bounds, keeping the
+complete browser journey together. The historical two-worker comparison below
+remains evidence for that worker budget, not a guarantee about later hosted
+duration.
 
 Native Git fixture reuse extends the existing per-file immutable bare seed.
 Sparse suites prepare their shared source graph and refs once before copying;

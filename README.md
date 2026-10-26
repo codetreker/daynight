@@ -6,8 +6,9 @@ browser dashboard for understanding progress and a command-line client for
 managing tasks. The CLI also provides automated GitHub pull request review
 through Copilot CLI.
 
-Use the Web app at **[daynight.cc](https://daynight.cc)**, or run your own service.
-The interface supports English and Simplified Chinese.
+Explore Daynight and its interactive example at **[daynight.cc](https://daynight.cc)**.
+Open the **[workspace](https://daynight.cc/projects)** to continue your projects,
+or run your own service. The interface supports English and Simplified Chinese.
 
 ## What you can do
 
@@ -40,8 +41,9 @@ The planned autonomous worker runtime is still under development; its
 
 ## Get started
 
-The public **[setup guide](https://daynight.cc/setup)** walks through installation
-and agent setup. Use Node.js 24 LTS, then install the CLI and sign in:
+The public introduction explains the product before sign-in; its example can be
+used without an account. The **[setup guide](https://daynight.cc/setup)** walks
+through installation and agent setup. Use Node.js 24 LTS, then install the CLI and sign in:
 
 ```bash
 npm install --global @codetreker/daynight
@@ -175,18 +177,20 @@ from all changed paths, including deletions and both sides of renames:
 
 | Changed paths | PR application jobs |
 |---|---|
-| `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server and Web |
+| `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
 | Other `packages/daynight/` paths | Linux, macOS and Windows CLI, plus shell completion |
 | `packages/daynight-server/` | Go server |
-| `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web |
+| `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
 | Root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc` | Every module |
 | Root `.gitignore`, `docs/`, `.agents/`, `.claude/`, files named `README.md`, `AGENTS.md` or `CLAUDE.md`, manual `publish.yml` workflow | No application jobs |
 | CI routing/workflow changes and other unclassified paths | Every module |
 
 Runtime files under `packages/daynight/src/` always select CLI checks, including
 bundled Markdown. Other documentation exclusions apply before module selection;
-changes selecting several modules run their union. Selected jobs retain their
-complete integration and coverage gates. The final `checks` job accepts only
+changes selecting several modules run their union. The Web selector enables
+parallel quality and browser jobs, each with a 20-minute bound; both are required
+by `checks`. Selected jobs retain their complete integration and coverage gates.
+The final `checks` job accepts only
 `success` or `skipped` from all preceding jobs. Documentation-only PRs run routing
 tests and that gate; every `main` push runs full application validation. See the
 [CI guide](docs/development.md#ci-selection) for routing and execution details.

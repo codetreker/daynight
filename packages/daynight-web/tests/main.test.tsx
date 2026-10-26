@@ -1,6 +1,8 @@
 import type { ReactElement } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LocaleProviderProps } from '../src/i18n/LocaleProvider';
+import { en } from '../src/i18n/messages/en';
+import { zhCN } from '../src/i18n/messages/zh-CN';
 
 const render = vi.fn((..._args: unknown[]) => undefined);
 const rootMetadata: { readonly language: string; readonly title: string }[] = [];
@@ -22,7 +24,9 @@ describe('application bootstrap', () => {
   });
 
   it.each([
-    { locale: 'en', path: '/', title: 'Checking sign-in · Daynight' },
+    { locale: 'en', path: '/', title: en.landing.metadata.title },
+    { locale: 'zh-CN', path: '/', title: zhCN.landing.metadata.title },
+    { locale: 'en', path: '/projects', title: 'Checking sign-in · Daynight' },
     { locale: 'en', path: '/setup/', title: 'Checking sign-in · Daynight' },
     { locale: 'en', path: '/setup/elsewhere', title: 'Checking sign-in · Daynight' },
     { locale: 'zh-CN', path: '/projects/00000000-0000-4000-8000-000000000001', title: '正在确认登录 · Daynight' },
@@ -37,7 +41,7 @@ describe('application bootstrap', () => {
     const element = render.mock.calls[0]?.[0] as ReactElement<LocaleProviderProps>;
     expect(element.type).toHaveProperty('name', 'LocaleProvider');
     expect(element.props.initial).toEqual({ locale, issue: null });
-    expect((element.props.children as ReactElement).type).toHaveProperty('name', 'AuthenticatedApp');
+    expect((element.props.children as ReactElement).type).toHaveProperty('name', 'Application');
   });
 
   it.each([
@@ -55,7 +59,7 @@ describe('application bootstrap', () => {
     const element = render.mock.calls[0]?.[0] as ReactElement<LocaleProviderProps>;
     expect(element.type).toHaveProperty('name', 'LocaleProvider');
     expect(element.props.initial).toEqual({ locale, issue: null });
-    expect((element.props.children as ReactElement).type).toHaveProperty('name', 'SetupGuideShell');
+    expect((element.props.children as ReactElement).type).toHaveProperty('name', 'Application');
     expect(fetcher).not.toHaveBeenCalled();
   });
 

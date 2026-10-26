@@ -40,7 +40,6 @@ const json = async (path: string, value: unknown): Promise<void> => {
 const readJson = async (path: string): Promise<unknown> => JSON.parse(await readFile(path, 'utf8'));
 export type AcceptanceCommand = (file: string, args: readonly string[], options?: Omit<CommandOptions, 'cwd'> & { cwd?: string }) => Promise<string>;
 export type AcceptanceOptions = { allowApfsImage?: boolean };
-export type AcceptancePreparations = { browser: (run: AcceptanceCommand) => Promise<void>; coverage: (run: AcceptanceCommand) => Promise<void> };
 
 type InstalledPreparation = { receipt: InstalledCliReceipt; receiptPath: string; cleanup(): Promise<void> };
 type InstalledFactoryOptions = { signal: AbortSignal; temporaryRoot: string; rootDirectory: string; onSpawn(child: ChildProcess): Promise<void> };
@@ -680,7 +679,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     console.log(`Web acceptance recovery ${evidence.runId}: passed.`);
   };
 
-  const main = async (preparations?: AcceptancePreparations): Promise<void> => {
+  const main = async (): Promise<void> => {
     const compose = await readFile(join(repositoryRoot, 'deployment/dev-ci/compose.yaml'), 'utf8');
     const images = [...compose.matchAll(/^\s+image:\s+(postgres:18\.6-bookworm@sha256:[a-f0-9]{64})\s*$/gm)];
     if (images.length !== 1) throw new Error('Dev-ci must declare exactly one pinned PostgreSQL 18.6 image.');
@@ -782,8 +781,6 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     await save();
     try {
       await runPipeline(cancellation, {
-        browser: () => stage('browser-preparation', async (ownedRun) => { if (preparations !== undefined) await preparations.browser(ownedRun); }),
-        coverage: () => stage('coverage', async (ownedRun) => { if (preparations !== undefined) await preparations.coverage(ownedRun); }),
         nativePreparation: () => stage('native-preparation', async (ownedRun, register) => {
           console.log(`Web acceptance ${runId}: building production assets and native Go executable.`);
           await ownedRun('pnpm', ['build'], { timeoutMs: 180_000 });
@@ -1002,7 +999,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
   return { main, containerCallback, recover };
 };
 
-export const runAcceptance = async (cancellation: AbortController, preparations?: AcceptancePreparations, options?: AcceptanceOptions): Promise<void> =>
-  createRunner(cancellation, options).main(preparations);
+export const runAcceptance = async (cancellation: AbortController, options?: AcceptanceOptions): Promise<void> =>
+  createRunner(cancellation, options).main();
 export const runContainerCallback = async (cancellation: AbortController): Promise<void> => createRunner(cancellation).containerCallback();
 export const recoverAcceptance = async (cancellation: AbortController, runId?: string): Promise<void> => createRunner(cancellation).recover(runId);

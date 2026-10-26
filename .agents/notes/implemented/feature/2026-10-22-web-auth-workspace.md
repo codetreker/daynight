@@ -15,7 +15,7 @@ look successful.
 
 `AuthenticatedApp` first shipped as an explicitly mounted shell so the frontend
 could be exercised without publishing mixed authentication behavior. It now
-serves as the production entry through the
+serves login and protected production pages through the
 [activation decision](../architecture/2026-10-22-authentication-activation.md).
 It provides login, private project creation, account/token pages, member and invitation management,
 and explicit invitation acceptance. It composes the existing project list,
@@ -23,7 +23,10 @@ project task tabs, graph and centered `TaskDetailDialog`. Workspace navigation
 keeps the account entry in its sidebar footer; the [account navigation decision](2026-10-25-bottom-account-navigation.md)
 owns its placement, and the [sidebar preference decision](2026-10-25-sidebar-preference.md)
 owns local folding and temporary narrow-screen navigation. Production `main.tsx`
-now renders `AuthenticatedApp` under the same persistent `LocaleProvider`. Both
+keeps the persistent `LocaleProvider` above public and authenticated branches. The
+[public product entry decision](../architecture/2026-10-26-public-product-entry.md)
+owns the reactive application selection, explicit `/login` and `/projects` entry.
+`AuthenticatedApp` retains its private lifecycle. Both
 catalogs extend their complete `messages.auth` contract to login, project creation, account, members, invitations, tokens and
 management dialogs. Selectors remain available on login, invitation, workspace
 and modal surfaces. Semantic notifications and validation render through the

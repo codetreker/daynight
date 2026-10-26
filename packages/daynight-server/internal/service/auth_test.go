@@ -151,7 +151,7 @@ func TestIdentityStartLogin(t *testing.T) {
 		if err := fixture.database.Pool.QueryRow(context.Background(), "SELECT state_hash,browser_binding_hash,provider,return_path FROM login_transactions WHERE id=$1", start.ID).Scan(&stateHash, &bindingHash, &storedProvider, &returnPath); err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(stateHash, secretHash(start.State)) || !bytes.Equal(bindingHash, secretHash(start.BrowserBinding)) || storedProvider != provider || returnPath != "/" {
+		if !bytes.Equal(stateHash, secretHash(start.State)) || !bytes.Equal(bindingHash, secretHash(start.BrowserBinding)) || storedProvider != provider || returnPath != "/projects" {
 			t.Fatalf("pending login did not persist hashes and default return path: %s %s", storedProvider, returnPath)
 		}
 	}
@@ -166,11 +166,11 @@ func TestIdentityStartLoginValidation(t *testing.T) {
 		_, err := fixture.identity.StartLogin(context.Background(), provider, "/")
 		requireFault(t, err, "invalid_input")
 	}
-	for _, path := range []string{"https://evil.example/path", "//evil.example", "relative", "/\\evil", "/line\rbreak", "/line\nbreak", "/bad\x00", "/bad\xff", "/%5Cevil", "/%0Dheader", "/%00bad", "/%2fexample.com", "/api/v1/auth/login", "/api/v1/%61uth/callback", "/%zz"} {
+	for _, path := range []string{"https://evil.example/path", "//evil.example", "relative", "/\\evil", "/line\rbreak", "/line\nbreak", "/bad\x00", "/bad\xff", "/%5Cevil", "/%0Dheader", "/%00bad", "/%2fexample.com", "/api/v1/auth/login", "/api/v1/%61uth/callback", "/login", "/login?returnPath=/projects", "/login/child", "/other/../login", "/%6cogin", "/%zz"} {
 		_, err := fixture.identity.StartLogin(context.Background(), "microsoft", path)
 		requireFault(t, err, "invalid_input")
 	}
-	for _, path := range []string{"/", "/projects/abc?view=graph#tasks", "/%E4%B8%AD%E6%96%87"} {
+	for _, path := range []string{"/", "/projects", "/projects/abc?view=graph#tasks", "/%E4%B8%AD%E6%96%87", "/login-help"} {
 		if _, err := fixture.identity.StartLogin(context.Background(), "microsoft", path); err != nil {
 			t.Fatalf("valid return path %q: %v", path, err)
 		}
@@ -319,6 +319,39 @@ func TestIdentityRetrieveFailuresConsumeExactlyOnce(t *testing.T) {
 			requireFault(t, err, "unauthenticated")
 			if fixture.calls.Load() != before+1 {
 				t.Fatal("failed one-time retrieval was retried")
+			}
+		})
+	}
+}
+
+func TestIdentitySessionCreationFailureRetainsDestination(t *testing.T) {
+	for _, destination := range []string{
+		"/projects/project/tasks/task/attachments/docs/guide.md?tab=overview#details",
+		"/invitations",
+		"/device?user_code=ABCD-EFGH",
+	} {
+		t.Run(destination, func(t *testing.T) {
+			fixture := newIdentityFixture(t)
+			if _, err := fixture.database.Pool.Exec(context.Background(), `ALTER TABLE sessions ADD CONSTRAINT reject_session CHECK (false)`); err != nil {
+				t.Fatal(err)
+			}
+			start := startIdentityLogin(t, fixture, destination)
+			result, err := fixture.identity.CompleteLogin(context.Background(), identityQuery(start, "session-failure"), start.BrowserBinding)
+			requireIdentityOperationalError(t, err)
+			if result.LoginID != start.ID || result.ReturnPath != destination {
+				t.Fatal("session creation failure lost its consumed login or validated destination")
+			}
+			if result.Secret != "" || result.User.ID != "" || !reflect.DeepEqual(result.Session, core.Session{}) {
+				t.Fatal("session creation failure exposed unissued credentials")
+			}
+			var logins, users, sessions int
+			if err := fixture.database.Pool.QueryRow(context.Background(), `SELECT (SELECT count(*) FROM login_transactions), (SELECT count(*) FROM users), (SELECT count(*) FROM sessions)`).Scan(&logins, &users, &sessions); err != nil || logins != 0 || users != 0 || sessions != 0 {
+				t.Fatalf("session failure did not preserve consumed login and atomic identity state: %d %d %d, %v", logins, users, sessions, err)
+			}
+			_, err = fixture.identity.CompleteLogin(context.Background(), identityQuery(start, "session-failure"), start.BrowserBinding)
+			requireFault(t, err, "unauthenticated")
+			if fixture.calls.Load() != 1 {
+				t.Fatal("session failure replay retrieved the one-time identity again")
 			}
 		})
 	}

@@ -16,7 +16,7 @@ import "../../styles/project.css";
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
   if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
-  navigate("/");
+  navigate("/projects");
 };
 
 type ProjectNotice = { readonly kind: "selected-task-removed" | "overview-target-unavailable" };
@@ -180,7 +180,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   return (
     <>
       <div className="project-navigation">
-        <a className="back-link" href="/" onClick={backToProjects}>{m.back}</a>
+        <a className="back-link" href="/projects" onClick={backToProjects}>{m.back}</a>
         {snapshot !== null && (
           <p className="snapshot-time"><time dateTime={new Date(snapshot.receivedAt).toISOString()}>{m.lastRefreshed({ time: format.time(snapshot.receivedAt) })}</time></p>
         )}
@@ -210,7 +210,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
             <section className="state-box" role="alert">
               <h2>{projectGraphErrorTitle(graph.error, m)}</h2><ProjectGraphErrorDetail error={graph.error} />
               <button className="button primary" type="button" onClick={graph.refresh}>{projects.retry}</button>
-              <a className="back-link" href="/" onClick={backToProjects}>{app.returnToProjects}</a>
+              <a className="back-link" href="/projects" onClick={backToProjects}>{app.returnToProjects}</a>
             </section>
           )}
           {snapshot !== null && graph.error !== null && (

@@ -154,10 +154,10 @@ describe('authenticated status ownership', () => {
     const dialog = await open('Alice task P');
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' })); close(dialog);
     fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
-    await screen.findByRole('heading', { name: 'Sign in to your workspace' });
+    await waitFor(() => expect(window.location.pathname).toBe('/'));
     const reads = vi.mocked(getTask).mock.calls.length;
     await act(async () => { mutation.reject(new ApiError('network')); });
-    expect(screen.getByRole('heading', { name: 'Sign in to your workspace' })).toBeVisible();
+    expect(window.location.pathname).toBe('/');
     expect(screen.queryByText('Alice reviewed content')).toBeNull();
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(getTask).toHaveBeenCalledTimes(reads);

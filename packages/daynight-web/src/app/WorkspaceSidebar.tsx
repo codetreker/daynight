@@ -104,10 +104,10 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
     {active && <button className="sidebar-backdrop" type="button" tabIndex={-1} aria-label={m.sidebar.close} onClick={closeDrawer} />}
     <aside ref={sidebar} id="workspace-sidebar" className={`sidebar${active ? " sidebar-drawer-open" : ""}`} aria-label={app.workspaceNavigation} role={active ? "dialog" : undefined} aria-modal={active ? true : undefined} tabIndex={-1}>
       <div className="sidebar-main">
-        <a className="brand" href="/" onClick={follow} aria-label={app.projectHome} title={app.projectHome}><span className="brand-mark" aria-hidden="true" /><span className="brand-name">daynight</span></a>
+        <a className="brand" href="/projects" onClick={follow} aria-label={app.projectHome} title={app.projectHome}><span className="brand-mark" aria-hidden="true" /><span className="brand-name">daynight</span></a>
         <nav aria-label={app.mainNavigation}>
           <p className="nav-label">{app.workspace}</p>
-          <a className="nav-button" href="/" onClick={follow} aria-label={m.myProjects} title={m.myProjects} aria-current={projectsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▦</span><span className="nav-text">{m.myProjects}</span></a>
+          <a className="nav-button" href="/projects" onClick={follow} aria-label={m.myProjects} title={m.myProjects} aria-current={projectsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▦</span><span className="nav-text">{m.myProjects}</span></a>
         </nav>
       </div>
       <div className="sidebar-bottom">
