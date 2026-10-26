@@ -205,6 +205,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET /api/v1/auth/login?provider=... | 创建 pending 并跳转 UniAuth。 |
 | GET {配置 callback 路径} | 校验/消费 pending、领取身份、建立 session；只注册配置路径。 |
 | GET /api/v1/me | 当前用户最小资料。 |
+| GET /setup | 交付同一内嵌页面，AuthenticatedApp 登录后显示静态使用引导；登录返回保留该路径。 |
 | POST /api/v1/auth/logout | 主站会话注销，验证 Origin。 |
 | GET/POST /api/v1/me/tokens、PATCH/DELETE .../{tokenId} | 主站会话列出/创建、按账号与到期观察值修改、撤销自己的有效 PAT；Cookie 写校验精确 Origin。 |
 | POST /api/v1/auth/device/code、POST .../token | 公开客户端 form 设备授权与轮询领取；RFC 错误 JSON。 |
@@ -377,7 +378,9 @@ Public origin 是无路径/凭据/query/fragment 的 canonical origin，host 小
 
 Callback 与 public origin 精确同源，完整 URL 无凭据、query 或 fragment；路径为
 canonical 非根路径，不接受编码别名、dot-segment、路由通配符或与 API/页面/资源/
-健康入口冲突。配置可使用 `/auth/callback`，与 UniAuth App 精确登记值一致；只注册
+健康入口冲突。页面命名空间包含 `/setup` 根及其后代，`validateAuthSettings` 在配置和
+启动阶段、创建路由前拒绝冲突。原 callback 占用该命名空间时须改到其他路径并同步
+UniAuth 的完整登记值。配置可使用 `/auth/callback`，与 UniAuth App 精确登记值一致；只注册
 这一条路径，不增加旧别名。StartLogin 在持久化 pending 前拒绝 auth 入口和实际
 callback 的 returnPath，防止回调循环。
 

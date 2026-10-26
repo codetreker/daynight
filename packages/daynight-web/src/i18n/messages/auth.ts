@@ -37,7 +37,7 @@ export type AuthMessages = {
     readonly revalidationRetained: string;
     readonly revalidationRetry: string;
     readonly notice: Readonly<Record<"expired" | "signedOut" | "logoutFailed" | "loginFailed", string>>;
-    readonly documentTitle: Readonly<Record<"loading" | "error" | "login" | "device" | "invitations" | "projects" | "project" | "members" | "settings" | "account" | "notFound", string>>;
+    readonly documentTitle: Readonly<Record<"loading" | "error" | "login" | "setup" | "device" | "invitations" | "projects" | "project" | "members" | "settings" | "account" | "notFound", string>>;
   };
   readonly login: {
     readonly heroTitleFirst: string;

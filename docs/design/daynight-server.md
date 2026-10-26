@@ -92,8 +92,9 @@ HTTP 错误映射和服务生命周期。`internal/service` 拥有 project/task 
 `go:embed` 资源及页面/资源响应，server 在既有 mux 精确注册路由。静态处理不经过
 service/store；请求仍只经过一次现有日志包装。HTML、图及最新详情为 no-store，
 哈希资源为 immutable，缺失资源不回退 HTML。精确 UI 页面形状包含根路径、项目页、
-`/projects/{projectId}/tasks/{taskId}` 完整详情和其附件路径入口；GET
-沿用 HEAD 语义，其他方法返回 405，未知形状不回退 index。UI 的无效 ID 仍交付
+认证内使用引导 `/setup`、`/projects/{projectId}/tasks/{taskId}` 完整详情和其附件路径入口。
+使用引导组件不读取业务资源，认证外壳仍核验身份。`/setup` 根及后代命名空间在
+callback 配置验证中保留，冲突在路由注册前拒绝。GET 沿用 HEAD 语义，其他方法返回 405，未知形状不回退 index。UI 的无效 ID 仍交付
 index 后由前端显示未找到页面。独立附件命名空间复用原始路径守卫，在 ServeMux
 清理和重定向前拒绝非法路径；数据与授权仍由已有任务、图和附件接口负责，机制见
 [详情页面设计](daynight-task-inspection.md#独立完整任务详情)及

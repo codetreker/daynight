@@ -28,8 +28,12 @@ Set the following values in `deployment/localhost/.env` before starting:
 
 The callback must have a canonical non-root path and no query or fragment. The
 server registers that path and rejects collisions with application API, page,
-asset and health routes. Register the same full callback URL in UniAuth. The
-example application values are placeholders; supply credentials for the intended
+asset and health routes during configuration validation. The `/setup` namespace
+is reserved for the daily usage guide, including all descendant paths. If a
+previous callback uses that namespace, choose another canonical path such as
+`/auth/callback`, update `DAYNIGHT_UNIAUTH_CALLBACK_URL`, and register the same full
+callback URL in UniAuth before restarting. The example application values are
+placeholders; supply credentials for the intended
 UniAuth deployment.
 
 Production public origins require HTTPS. The template explicitly enables

@@ -5,6 +5,7 @@ import { automation } from "./en/automation";
 import { inspection } from "./en/inspection";
 import { execution } from "./en/execution";
 import { auth } from "./en/auth";
+import { setup } from "./en/setup";
 import type { Messages } from "../messages";
 
 export const en: Messages = {
@@ -14,6 +15,7 @@ export const en: Messages = {
   automation,
   platform,
   auth,
+  setup,
   execution,
   common: {
     retrySave: "Retry saving language",

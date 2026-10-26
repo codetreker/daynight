@@ -435,6 +435,36 @@ React Flow 12.12.0保留220px宽、96px或136px高的可见卡片、原生测量
 运行时字节不变，`exactOptionalPropertyTypes` 与依赖类型检查继续有效。静态测试
 保护自定义数据与位置字段约束；容器构建必须复制 root patches 作为安装输入。
 
+## 日常使用引导页
+
+`features/setup/SetupGuidePage.tsx` 与 `styles/setup.css` 拥有静态五步指南。
+`AuthenticatedApp` 将精确 `/setup` 解析为认证工作空间路由，在顶栏语言选择器前放置
+书本图标与可见文字链接；它复用 `followLink`、history/popstate、面包屑、标题和
+认证登录的 `returnPath`。修饰键点击由浏览器处理，页面底部的真实链接返回项目列表。
+
+`messages.setup` 的类型化目录拥有五步标题、前置条件、成功标志、自然语言示例、
+复制与导航文案。终端命令以完整字符串呈现和复制，多行使用真实换行，不从 HTML 或
+零散翻译词语恢复。CLI 直接使用已发布的设备登录与项目发现能力，安装指令的公开契约
+继续由客户端和 skill 模块拥有。当前服务地址直接读取 `window.location.origin`；
+该展示不参与 CLI 服务配置。
+
+组件没有业务 API 依赖，也没有完成度探测、凭据输入或本地引导状态。认证外壳的身份
+读取与前台重新核验保持现有生命周期。五步全部展开，使命令可重复查阅且不需要保存
+向导位置。[引导决策](../../.agents/notes/implemented/feature/2026-10-25-web-setup-guide.md)
+保留这一选择及其成本。
+
+页面只允许当前 generation 的一次复制。同步防重锁在异步剪贴板调用前建立，等待时
+禁用全部复制按钮；结果保存语义，由当前目录生成浮动 `role=status` 反馈，提示不占据
+文档流。剪贴板不可用或拒绝时保留可选择命令并说明手动复制。语言切换推进 generation、
+清理原提示及当前等待状态，旧调用随后完成时不发布结果；卸载也使旧调用失效。
+切换本身不执行复制。页面、命令块与顶栏在侧栏后的真实可用宽度内自然换行或局部滚动，
+320px/390px 下没有整页横向溢出。
+
+`server.uiRoutes` 以现有 handler 注册 `/setup`，与其他页面共享 GET/HEAD、
+`no-store`、方法拒绝和请求记录。`validateAuthSettings` 同时保留 `/setup` 根和后代
+命名空间，配置及启动验证先于路由注册，避免 callback 冲突导致 ServeMux panic。
+已有冲突配置须更换 callback 并同步 UniAuth 登记值；页面无需增加 API 或数据库字段。
+
 ## 模块职责与调用方向
 
 ```text
@@ -560,6 +590,7 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 |---|---|
 | `GET /{$}` | 精确根路径，返回 SPA index；`GET /` 不能替代精确匹配 |
 | `GET /projects/{projectId}` | 返回同一个 index，资源存在性由图 API 决定 |
+| `GET /setup` | 返回同一个 index，在认证工作空间显示日常使用指南 |
 | `GET /projects/{projectId}/tasks/{taskId}/attachments/{path...}` | 返回同一个 index，前端在工作空间外打开独立阅读页；文件存在性由完整附件清单决定 |
 | `GET /assets/` 前缀 | 仅返回实际存在的构建资源；目录与缺失文件返回 404 |
 | `/api/v1/...` | 项目、任务及 task-graph API 已实现 |

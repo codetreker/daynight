@@ -232,11 +232,17 @@ diagnostics and cause categories.
 | `DAYNIGHT_TASK_SYNC_OVERLAP` | Positive Go duration subtracted from a supplied task-summary watermark | `10s` |
 
 Wildcard, non-loopback, hostname, scoped IPv6, and malformed listen addresses are
-rejected. Callback paths that collide with application routes and login return
-loops are rejected before a login transaction is created. Only the configured
-callback path is routed; there is no fixed-path alias or authentication-disable
+rejected. Callback paths that collide with application routes are rejected during
+configuration and startup validation before route registration; this includes
+`/setup` and every descendant path. If an existing callback occupies that
+namespace, choose another path and register its exact full URL in UniAuth before
+starting the server. Login return loops are rejected before a login transaction
+is created. Only the configured callback path is routed; there is no fixed-path alias or authentication-disable
 mode. The two HTTP exceptions control different origins and do not imply each
-other. `/healthz` and `/readyz` are public GET/HEAD endpoints; readiness checks
+other. The exact `/setup` page uses the normal embedded HTML GET/HEAD handler,
+no-store policy, 405/Allow response and request logging. Its guide is displayed
+after the existing browser authentication flow and does not add a business API.
+`/healthz` and `/readyz` are public GET/HEAD endpoints; readiness checks
 only PostgreSQL, so it does not establish UniAuth connectivity or login success.
 Port `0` requests an ephemeral loopback port; the bound address appears
 in the startup log. Invalid timeout values fail validation.
