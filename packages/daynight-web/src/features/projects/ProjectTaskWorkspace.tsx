@@ -27,7 +27,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, activeView, unfinish
         <div role="tabpanel" id="project-task-panel-chains" aria-labelledby="project-task-tab-chains" hidden={activeView !== "chains"}>
           {activeView === "chains" && <section aria-label={m.chains}><ChainList index={snapshot.index} {...chains} /></section>}
         </div>
-        <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"}>
+        <div role="tabpanel" id="project-task-panel-standalone" aria-labelledby="project-task-tab-standalone" hidden={activeView !== "standalone"} tabIndex={-1}>
           {activeView === "standalone" && <StandaloneList index={snapshot.index} {...standalone} />}
         </div>
       </TaskExecutionClockProvider>

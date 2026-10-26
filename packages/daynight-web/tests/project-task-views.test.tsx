@@ -5,7 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ApiError, getTask, getTaskSync } from '../src/api/client';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
-import type { GraphIndex } from '../src/features/task-graph/model';
+import * as ProjectOverviewModule from '../src/features/projects/ProjectOverview';
+import * as TaskGraphModule from '../src/features/projects/useTaskGraph';
+import { buildGraphIndex, type GraphIndex } from '../src/features/task-graph/model';
 
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
@@ -397,6 +399,155 @@ describe('project overview and task workspace', () => {
     return render(<ProjectPage projectId={project} />, { container: root });
   };
   const sectionTab = (section: 'overview' | 'tasks') => within(screen.getByRole('tablist', { name: '项目视图' })).getByRole('tab', { name: section === 'overview' ? '概览' : '任务列表' });
+  const progressButton = (title: string) => within(screen.getByRole('region', { name: '整体进度' })).getByRole('button', { name: new RegExp(title) });
+  const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+  const scrollIntoView = vi.fn<(this: HTMLElement, options?: ScrollIntoViewOptions) => void>();
+  beforeEach(() => {
+    scrollIntoView.mockReset();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: scrollIntoView });
+  });
+  afterEach(() => {
+    if (originalScrollIntoView === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
+  });
+
+  it('locates an overview chain after switching from the saved standalone category and overrides its old scroll position', async () => {
+    window.localStorage.setItem(key('task-view'), '"standalone"');
+    window.localStorage.setItem(key('task-view-scroll'), JSON.stringify({ chains: 320, standalone: 540 }));
+    let scroll = 0;
+    vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
+    vi.mocked(window.scrollTo).mockImplementation((options) => { scroll = (options as ScrollToOptions).top!; });
+    scrollIntoView.mockImplementation(function (this: HTMLElement) { expect(this.id).toBe(`task-root-${canonicalTask(1)}`); scroll = 760; });
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    scroll = 90;
+    fireEvent.click(progressButton(`任务 ${canonicalTask(1)}`));
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
+    expect(tab('chains')).toHaveAttribute('aria-selected', 'true');
+    expect(chainRow()).toHaveFocus();
+    expect(chainRow()).toHaveClass('overview-progress-target');
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'center', behavior: 'instant' });
+    expect(scroll).toBe(760);
+    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 760, standalone: 540 });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByTestId('graph-node')).toBeNull();
+    fireEvent.click(sectionTab('overview'));
+    expect(scroll).toBe(90);
+    fireEvent.click(sectionTab('tasks'));
+    expect(scroll).toBe(760);
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it('locates the standalone list from its overview aggregate and expires the temporary highlight', async () => {
+    let scroll = 0;
+    vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
+    vi.mocked(window.scrollTo).mockImplementation((options) => { scroll = (options as ScrollToOptions).top!; });
+    scrollIntoView.mockImplementation(function (this: HTMLElement) { expect(this.id).toBe('project-task-panel-standalone'); scroll = 240; });
+    mountOverview();
+    await screen.findByRole('heading', { name: project });
+    vi.useFakeTimers();
+    fireEvent.click(progressButton('独立任务'));
+    const target = document.getElementById('project-task-panel-standalone')!;
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
+    expect(tab('standalone')).toHaveAttribute('aria-selected', 'true');
+    expect(target).toHaveFocus();
+    expect(target).toHaveClass('overview-progress-target');
+    expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'start', behavior: 'instant' });
+    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 0, standalone: 240 });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    act(() => vi.advanceTimersByTime(2_200));
+    expect(target).not.toHaveClass('overview-progress-target');
+    expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it('clears a previous navigation highlight when locating another group and on unmount', async () => {
+    const view = mountOverview();
+    await screen.findByRole('heading', { name: project });
+    fireEvent.click(progressButton(`任务 ${canonicalTask(1)}`));
+    const previousTarget = chainRow();
+    expect(previousTarget).toHaveClass('overview-progress-target');
+    fireEvent.click(sectionTab('overview'));
+    fireEvent.click(progressButton('独立任务'));
+    const target = document.getElementById('project-task-panel-standalone')!;
+    expect(previousTarget).not.toHaveClass('overview-progress-target');
+    expect(target).toHaveClass('overview-progress-target');
+    view.unmount();
+    expect(target).not.toHaveClass('overview-progress-target');
+  });
+
+  const mockNavigationSnapshot = (tasks: GraphTask[], revision: number): TaskGraphModule.GraphSnapshot => {
+    const graph = snapshot(tasks);
+    return { graph, index: buildGraphIndex(graph), observedAt: graph.observedAt, receivedAt: Date.now(), receivedMonotonic: performance.now(), revision };
+  };
+  const interceptOverviewNavigation = () => {
+    let navigate!: Parameters<typeof ProjectOverviewModule.ProjectOverview>[0]['onNavigate'];
+    const ActualOverview = ProjectOverviewModule.ProjectOverview;
+    vi.spyOn(ProjectOverviewModule, 'ProjectOverview').mockImplementation((props) => {
+      navigate = props.onNavigate;
+      return <ActualOverview {...props} />;
+    });
+    return () => navigate;
+  };
+
+  it('resolves a retained overview task witness against its latest representative without reopening the graph or repeating navigation', async () => {
+    const getNavigate = interceptOverviewNavigation();
+    const state = { snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    const view = mountOverview();
+    const navigate = getNavigate();
+    state.snapshot = mockNavigationSnapshot([seed(canonicalTask(0), 'done'), seed(canonicalTask(1), 'done', [canonicalTask(0)]), ...seeds.slice(1)], 2);
+    view.rerender(<ProjectPage projectId={project} />);
+    act(() => navigate({ kind: 'chain', taskId: canonicalTask(1) }));
+    expect(chainRow(canonicalTask(0))).toHaveFocus();
+    expect(chainRow(canonicalTask(0))).toHaveClass('overview-progress-target');
+    expect(chainRow()).toBeNull();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+    state.snapshot = mockNavigationSnapshot([...state.snapshot.graph.tasks, seed(canonicalTask(9))], 3);
+    view.rerender(<ProjectPage projectId={project} />);
+    expect(scrollIntoView).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['removed', seeds.slice(2)],
+    ['standalone', [seeds[0]!, ...seeds.slice(2)]],
+    ['completed and hidden', [seeds[0]!, seed(canonicalTask(2), 'done', [canonicalTask(1)]), ...seeds.slice(2)]],
+  ])('keeps the requested category focused when the overview chain is %s before navigation', async (_name, tasks) => {
+    const getNavigate = interceptOverviewNavigation();
+    const state = { snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready' as const, refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    const view = mountOverview();
+    const navigate = getNavigate();
+    state.snapshot = mockNavigationSnapshot(tasks, 2);
+    view.rerender(<ProjectPage projectId={project} />);
+    act(() => navigate({ kind: 'chain', taskId: canonicalTask(1) }));
+    expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
+    expect(tab('chains')).toHaveFocus();
+    expect(screen.getByText('对应的任务分组已不可见，请从任务列表选择任务。')).toBeVisible();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(window.localStorage.getItem(key('completed-chains'))).toBeNull();
+    expect(window.localStorage.getItem(key('completed-standalone-tasks'))).toBeNull();
+  });
+
+  it('consumes an overview target when project access disappears and returns focus to the visible Tasks section', () => {
+    const getNavigate = interceptOverviewNavigation();
+    let state: ReturnType<typeof TaskGraphModule.useTaskGraph> = { snapshot: mockNavigationSnapshot(seeds, 1), status: 'ready', refreshing: false, error: null, refresh: vi.fn() };
+    vi.spyOn(TaskGraphModule, 'useTaskGraph').mockImplementation(() => state);
+    const view = mountOverview();
+    const navigate = getNavigate();
+    state = { ...state, snapshot: null, status: 'error', error: new ApiError('server', 404, 'not_found', 'missing-project') };
+    view.rerender(<ProjectPage projectId={project} />);
+    act(() => navigate({ kind: 'chain', taskId: canonicalTask(1) }));
+    expect(sectionTab('tasks')).toHaveFocus();
+    expect(screen.getByRole('heading', { name: '项目不存在' })).toBeVisible();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    state = { ...state, snapshot: mockNavigationSnapshot(seeds, 3), status: 'ready', error: null };
+    view.rerender(<ProjectPage projectId={project} />);
+    expect(scrollIntoView).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
 
   it('defaults to Overview and restores Tasks directly on remount with its separate scroll position', async () => {
     window.localStorage.setItem(key('task-view-scroll'), JSON.stringify({ chains: 320, standalone: 540 }));
@@ -509,7 +660,7 @@ describe('project overview and task workspace', () => {
     view.rerender(<ProjectPage projectId={otherProject} />);
     await screen.findByRole('heading', { name: otherProject });
     expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
-    expect(screen.queryByRole('heading', { name: '还没有任务' })).toBeNull();
+    expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
     expect(screen.getByRole('region', { name: '项目任务统计' })).toBeVisible();
     expect(window.localStorage.getItem(key('project-section', otherProject))).toBeNull();
     view.rerender(<ProjectPage projectId={project} />);
@@ -522,7 +673,7 @@ describe('project overview and task workspace', () => {
     mountOverview();
     expect(sectionTab('overview')).toHaveAttribute('aria-selected', 'true');
     await screen.findByRole('heading', { name: project });
-    expect(screen.queryByRole('heading', { name: '还没有任务' })).toBeNull();
+    expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
   });
 
   it.each(['"standalone"', 'null', '{}', '["tasks"]', 'tasks'])('rejects invalid outer section %s and remains usable', async (value) => {

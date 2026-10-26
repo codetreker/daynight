@@ -1,9 +1,29 @@
-import type { TaskGraph } from "../../api/types";
+import { useId } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
+import type { OverviewProgressCount, OverviewTaskTarget } from "./overview-progress";
+import { useOverviewProgress } from "./useOverviewProgress";
+import type { GraphSnapshot } from "./useTaskGraph";
 
-export const ProjectOverview = ({ summary }: { readonly summary: TaskGraph["summary"] }) => {
-  const { messages: { workspace: { project: m, sections }, common }, format } = useI18n();
+export const ProjectOverview = ({ snapshot, chainIds, standaloneIds, active, onNavigate }: {
+  readonly snapshot: GraphSnapshot;
+  readonly chainIds: readonly string[];
+  readonly standaloneIds: readonly string[];
+  readonly active: boolean;
+  readonly onNavigate: (target: OverviewTaskTarget) => void;
+}) => {
+  const { messages: { workspace: { project: m, sections, overview }, common }, format } = useI18n();
+  const summary = snapshot.graph.summary;
+  const progress = useOverviewProgress(snapshot, chainIds, standaloneIds, active);
+  const headingId = useId();
   const completion = summary.total === 0 ? 0 : Math.round(summary.done * 100 / summary.total);
+  const row = (title: string, value: OverviewProgressCount, target: OverviewTaskTarget, scope?: string) => <button className="overview-progress-row" type="button"
+    aria-label={overview.rowLabel({ title, ...value })} onClick={() => onNavigate(target)}>
+    <span className="overview-progress-title">{title}{scope !== undefined && <span className="overview-progress-scope">{scope}</span>}</span>
+    <span className="overview-progress-metric"><span>{format.number(value.done)} / {format.number(value.total)}</span>
+      <span className="root-progress-track" aria-hidden="true"><i style={{ width: `${value.percent}%` }} /></span></span>
+    <span className="overview-progress-percent">{format.number(value.percent)}%</span>
+    <svg className="overview-progress-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+  </button>;
   return <>
     <div className="project-section-heading"><h2>{sections.overview}</h2><p title={sections.overviewDescription}>{sections.overviewDescription}</p></div>
     <section className="stats" aria-label={m.statistics}>
@@ -13,6 +33,13 @@ export const ProjectOverview = ({ summary }: { readonly summary: TaskGraph["summ
       <div className="stat active"><p className="stat-label">{common.status.in_progress}</p><p className="stat-number">{format.number(summary.inProgress)}</p><p className="stat-foot">{m.advancing}</p></div>
       <div className="stat ready"><p className="stat-label">{m.ready}</p><p className="stat-number">{format.number(summary.ready)}</p><p className="stat-foot">{m.todoSubset}</p></div>
       <div className="stat blocked"><p className="stat-label">{m.blocked}</p><p className="stat-number">{format.number(summary.blocked)}</p><p className="stat-foot">{m.todoSubset}</p></div>
+    </section>
+    <section className="overview-progress" aria-labelledby={headingId}>
+      <h2 id={headingId}>{overview.heading}</h2>
+      {progress.chains.length > 0 || progress.standalone !== null ? <ul className="overview-progress-list">
+        {progress.chains.map((chain) => <li key={chain.taskId}>{row(`${chain.title}${chain.titleTruncated ? "…" : ""}`, chain, { kind: "chain", taskId: chain.taskId })}</li>)}
+        {progress.standalone !== null && <li>{row(overview.standalone, progress.standalone, { kind: "standalone" }, overview.standaloneScope)}</li>}
+      </ul> : <div className="state-box overview-progress-empty"><h3>{summary.total === 0 ? m.empty : overview.allCompleted}</h3><p>{summary.total === 0 ? m.emptyDetail : overview.allCompletedDetail}</p></div>}
     </section>
   </>;
 };

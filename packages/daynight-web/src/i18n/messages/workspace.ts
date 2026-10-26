@@ -71,6 +71,15 @@ export type WorkspaceMessages = {
     readonly emptyDetail: string;
     readonly chains: string;
   };
+  readonly overview: {
+    readonly heading: string;
+    readonly standalone: string;
+    readonly standaloneScope: string;
+    readonly allCompleted: string;
+    readonly allCompletedDetail: string;
+    readonly targetUnavailable: string;
+    readonly rowLabel: (args: { readonly title: string; readonly done: number; readonly total: number; readonly percent: number }) => string;
+  };
   readonly standalone: {
     readonly list: string;
     readonly showCompletedCount: (args: { readonly count: number }) => string;

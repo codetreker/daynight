@@ -16,6 +16,12 @@ export const workspace: WorkspaceMessages = {
     graphLimitCounts: ({ nodes, edges, maxNodes, maxEdges }) => `当前 ${number(nodes)} 个任务、${number(edges)} 条依赖；支持最多 ${number(maxNodes)} 个任务、${number(maxEdges)} 条依赖。`,
     refreshFailed: "刷新失败", showingSnapshot: "仍显示上次成功读取的数据。", retryRefresh: "重试刷新", selectedTaskRemoved: "所选任务已不在新的任务图中，详情已关闭。", statistics: "项目任务统计", totalTasks: "任务总数", uniqueTasks: "按任务 ID 去重", completion: ({ percent }) => `完成比例 ${number(percent)}%`, waiting: "等待开始", advancing: "正在推进", ready: "可开始", blocked: "被阻塞", todoSubset: "待处理的子集", empty: "还没有任务", emptyDetail: "项目中的任务会显示在这里。创建任务后，点击刷新查看。", chains: "任务依赖链",
   },
+  overview: {
+    heading: "整体进度", standalone: "独立任务", standaloneScope: "未完成任务 + 最近 7 天完成的任务",
+    allCompleted: "所有任务均已完成", allCompletedDetail: "当前没有未完成的任务链或独立任务。",
+    targetUnavailable: "对应的任务分组已不可见，请从任务列表选择任务。",
+    rowLabel: ({ title, done, total, percent }) => `${title}，已完成 ${number(done)} / ${number(total)}，${number(percent)}%，前往任务列表`,
+  },
   standalone: {
     list: "独立任务列表", showCompletedCount: ({ count }) => `显示已完成独立任务（${number(count)}）`, summary: ({ visible, total }) => `最新创建在前 · ${number(visible)} / ${number(total)} 个独立任务`, summaryLabel: ({ visible, total }) => `显示 ${number(visible)} 个，共 ${number(total)} 个独立任务`, explanation: "按创建时间倒序排列。独立任务没有普通前置或普通后续依赖；外部前置仍可能阻塞执行，点击任务直接查看详情。", empty: "暂无独立任务", emptyDetail: "当前任务均由普通依赖连接为任务链，可在任务链页签查看。", allCompleted: "所有独立任务已完成", hiddenCompleted: ({ count }) => `已隐藏 ${number(count)} 个已完成独立任务，项目统计仍包含全部任务。`, showCompleted: "显示已完成独立任务", createdOn: ({ date }) => `创建于 ${date}`,
   },
