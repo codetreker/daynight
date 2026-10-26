@@ -27,7 +27,10 @@ npm 包名为 `@codetreker/daynight`，可执行命令为 `daynight` 和 `dn`，
 `packages/daynight/`。两个名称均由包的 `bin` 声明指向 `dist/main.js`，安装后可直接使用，无需手动设置 shell alias。
 它们共享全部命令、参数、配置、副作用、输出和退出码；帮助及诊断使用规范名称 `daynight`。Linux、macOS 和 Windows
 必须支持同一组命令和对应的业务保证；平台相关的命令执行、输出处理和退出行为必须
-经过原生验证。shell 补全的运行环境由 C5 单独约束。
+经过原生验证。发布包的 Node.js 要求为 `>=22`，不限制主版本上限；运行时依赖必须
+允许 Node.js 22 的当前 LTS patch，使严格 engine 校验下的安装和运行均可用。Node.js 22.14
+之前的旧小版本不具备 SQLite 二进制需要的 Node-API 10；安装指引建议使用当前 patch。源码开发和发布工具链的要求由
+[开发指南](../development.md#cli-development)维护。shell 补全的运行环境由 C5 单独约束。
 
 ### C2. 命令组合与退出结果
 

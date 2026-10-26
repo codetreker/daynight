@@ -30,7 +30,8 @@ GitHub CLI and Copilot CLI on `PATH`.
 
 ## Install and update
 
-Use Node.js 24 LTS. Install the CLI with npm:
+Use the latest patch of Node.js 22 or newer (`>=22`, with no upper major-version
+limit). SQLite requires Node.js 22.14.0 or newer. Install the CLI with npm:
 
 ```bash
 npm install --global @codetreker/daynight

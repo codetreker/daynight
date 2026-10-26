@@ -17,7 +17,12 @@ working directory is specified.
 
 ## CLI development
 
-Use Node.js 24 LTS and pnpm 11.28.6 for development. pnpm settings, including
+The published CLI supports Node.js 22 or newer (`engines.node: >=22`) without an
+upper major-version limit. Use the latest patch of the selected Node.js major.
+The SQLite dependency requires Node-API 10, available from Node.js 22.14.0;
+earlier Node.js 22 patches cannot load its native binary. Source development and
+publication use Node.js 24 LTS and pnpm 11.28.6: development dependencies and directly executed TypeScript
+scripts have their own runtime requirements. pnpm settings, including
 `engineStrict`, `storeDir` and dependency build permissions, belong in
 `pnpm-workspace.yaml`. Runtime review also requires
 Git, authenticated GitHub CLI and Copilot CLI on PATH. The inspected
@@ -102,11 +107,18 @@ loading guarantees.
 
 GitHub Actions runs type checking, build, and tests on native Linux, macOS, and
 Windows runners. Each native job resolves the latest available Node.js 24 patch.
+A separate runtime matrix builds the package with Node.js 24 and checks the packed
+artifact with Node.js `22.14.0`, the latest `22` and `24` releases, and current
+`node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
+and exercises CLI commands, interactive prompt dependencies and SQLite. These
+checks cover the published package and its production dependency graph without
+requiring the source-development toolchain on each supported runtime.
 PRs select complete module jobs from their changed paths; the
 [CI selection rules](#ci-selection) define shared inputs and exclusions for
-documentation and repository metadata. A selected CLI runs every native platform and the dedicated Linux shell
-completion job. On PRs, the Linux job also enforces package version increases
-before ordinary validation. It compares the PR's complete source changes with
+documentation and repository metadata. A selected CLI runs every native platform,
+the runtime compatibility matrix and the dedicated Linux shell completion job.
+On PRs, the Linux job also enforces package version increases before ordinary
+validation. It compares the PR's complete source changes with
 its merge base and its package version with the event's target-branch revision.
 Main pushes run every module. The checkout includes the required history.
 Native tool discovery records command resolution, launcher, PID, timing, status
@@ -450,8 +462,9 @@ source stanzas and package indices remain intact. An unexpected source layout
 fails explicitly. The [mirror decision](../.agents/notes/implemented/testing/2026-10-22-ubuntu-package-mirrors.md)
 records the provisioning failure and the retained acceptance limits.
 Native CLI jobs typecheck and build once before running ordinary and installed
-tests against the same output. Web quality and browser acceptance run in parallel
-jobs, `verify-web-quality` and `verify-web`, each with a 20-minute bound. The final
+tests against the same output. The separate runtime compatibility matrix checks
+the packed CLI installation across the supported Node.js range. Web quality and
+browser acceptance run in parallel jobs, `verify-web-quality` and `verify-web`, each with a 20-minute bound. The final
 `checks` job requires both and every other selected module; shared workflow
 changes retain all-module selection.
 

@@ -19,7 +19,7 @@ export const setup: SetupMessages = {
   steps: {
     install: {
       title: "Install the Daynight CLI",
-      description: "Use Node.js 24, then install the CLI in your terminal.",
+      description: "Use the latest patch of Node.js 22 or newer, then install the CLI in your terminal.",
       success: "The terminal displays the installed version.",
     },
     login: {
