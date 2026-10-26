@@ -369,11 +369,14 @@ CLI commands below apply to the client; server commands have their own module.
 A project without a saved section preference opens Overview, with six statistics
 from one complete snapshot. The adjacent Task list section contains the existing
 Standalone tasks and Task chains tabs. The section, inner task category,
-independent completed-item filters, chain expansion and task browse positions
-retain their per-project browser records across reloads and navigation.
-The task workspace mounts on its first selection and remains mounted while
-Overview is visible, preserving the graph's viewport and inspection state.
-Standalone rows open details directly. Task chains are ordinary-edge weak
+independent completed-item filters and task browse positions retain their
+per-project browser records across reloads and navigation. Task-chain rows open
+a centered dependency-graph dialog at 80% of the viewport width and height;
+small screens retain 12px gutters. Opening is temporary and starts closed on
+entry. The same canvas survives fullscreen and task-detail round trips; closing
+the dialog or leaving the task-chain view ends that graph session. The task
+workspace mounts on its first selection and remains mounted while Overview is
+visible. Standalone rows open details directly. Task chains are ordinary-edge weak
 components; their graphs include the full prerequisite context, while progress
 counts only chain members. The two category badges count unfinished tasks from
 the complete snapshot and remain independent of completion filters. The

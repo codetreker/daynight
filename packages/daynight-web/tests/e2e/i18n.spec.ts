@@ -1,3 +1,4 @@
+import { openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
@@ -126,6 +127,7 @@ test.describe('Web language journeys', () => {
     await page.goto(`/projects/${project.id}`);
     await selectTaskList(page);
     await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
+    await openChain(page, task.id);
     await page.clock.runFor(100);
     await expect(inspectTask(page, task.id)).toBeVisible();
     await expect(page.locator('.task-graph')).toHaveAttribute('data-visible-task-count', '50');
@@ -172,9 +174,9 @@ test.describe('Web language journeys', () => {
     expect(await page.locator('.task-dependency-edge path.react-flow__edge-path').evaluateAll((elements) => elements.map((element) => element.getAttribute('d')))).toEqual(paths);
     expect(reads).toEqual(beforeSwitch);
     await page.getByRole('button', { name: '全屏查看', exact: true }).click();
-    const fullscreen = page.locator('.task-graph-fullscreen');
+    const fullscreen = page.locator('.task-chain-dialog-fullscreen');
     await language(fullscreen).selectOption('en');
-    await expect(fullscreen).toHaveAttribute('aria-label', 'Task dependency graph fullscreen view');
+    await expect(fullscreen).toHaveAccessibleName(task.title);
     expect(await visibleState()).toEqual(expandedState);
     await expect(expansion).toHaveAccessibleName('Expand 11 successor tasks and 11 dependencies');
     await expect(page.locator('.graph-reset-overview')).toHaveText('Reset overview');
@@ -353,7 +355,7 @@ test.describe('Web language journeys', () => {
     expect(seed.status()).toBe(201);
     await page.goto(`/projects/${project.id}`);
     await selectTaskList(page);
-    await expect(inspectTask(page, task.id)).toBeVisible();
+    await expect(page.locator(`#task-root-${task.id}`)).toBeVisible();
     await page.clock.pauseAt(new Date('2030-01-01T00:00:00Z'));
     await expect(page.locator('.snapshot-time time')).toHaveAttribute('datetime', /^2030-/);
     await withDependencyFailure(async () => {
@@ -374,6 +376,7 @@ test.describe('Web language journeys', () => {
     await page.getByRole('button', { name: '重试刷新', exact: true }).click();
     await expect(page.locator('.snapshot-error')).toHaveCount(0);
     await page.clock.resume();
+    await openChain(page, task.id);
     for (const locale of ['en', 'zh-CN'] as const) {
       await language(page).selectOption(locale);
       for (const width of [1440, 320]) {
@@ -383,7 +386,7 @@ test.describe('Web language journeys', () => {
         await expect(fullscreenToggle).toBeVisible();
         const selected = await inspectTask(page, task.id).getAttribute('aria-pressed');
         await fullscreenToggle.click();
-        const fullscreen = page.locator('.task-graph-fullscreen');
+        const fullscreen = page.locator('.task-chain-dialog-fullscreen');
         await page.evaluate(() => {
           (window as unknown as { localeStorageFault: { value: string | null } }).localeStorageFault.value = 'write';
         });

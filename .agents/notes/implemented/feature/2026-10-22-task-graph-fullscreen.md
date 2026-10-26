@@ -11,22 +11,26 @@ users must be able to operate and leave that expanded view.
 
 ## Decision
 
-The existing graph toolbar switches its mounted canvas between the inline
-layout and a fixed container filling the browser viewport. The container uses
-modal dialog semantics, background inertness, visible-control Tab cycling and
-an explicit exit button. Escape exits the graph when focus is inside it; exit
-restores focus to the same toolbar button. Layout geometry, node identity and
-React Flow viewport survive the switch. The mode belongs to the mounted graph
+The original toolbar switched a mounted inline canvas into a fixed container
+filling the browser viewport. The
+[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces the inline
+entry with a centered 80% graph dialog and unifies its normal/fullscreen modal
+owner. The same dialog now changes geometry while preserving its canvas. It
+retains modal semantics, background inertness, visible-control Tab cycling and
+explicit fullscreen exit and dialog close controls. Escape leaves graph fullscreen before closing the graph dialog; leaving
+fullscreen restores focus to the same toolbar button. Layout geometry, node identity and
+React Flow viewport survive the switch. The mode belongs to the mounted graph dialog
 and is not persisted.
 
 The centered task detail dialog retains its body portal and appears above the fullscreen
 graph. Its keyboard events do not reach the graph container. The
 [fullscreen-reading decision](2026-10-25-task-detail-fullscreen.md) extends the
 detail view with its own viewport mode: after nested children handle their layer,
-Escape leaves detail fullscreen, closes the detail dialog, then exits the graph.
+Escape leaves detail fullscreen, closes the detail dialog, exits graph
+fullscreen and finally closes the graph dialog, one applicable layer per press.
 No mode switch acquires a second detail scroll lock. When a refresh removes the original node but keeps
-the fullscreen graph, detail focus returns to its exit control before the
-ordinary root/page fallback. Both views acquire the same counted body scroll
+the graph dialog, detail focus returns to its close control before the
+ordinary chain/page fallback. Both views acquire the same counted body scroll
 lock: the final release restores the original overflow value even when a graph
 refresh removes the graph while details remain open. Background inertness is
 restored to its observed state when the graph exits or unmounts.

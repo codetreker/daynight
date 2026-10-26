@@ -35,17 +35,19 @@ counted entries. The [unfinished count decision](2026-10-22-unfinished-task-tab-
 replaces the badge unit with unfinished tasks. Current components give each task
 one membership; toolbars separately report visible/total entries.
 
-Each inner category has its own completed-item filter and page scroll position. The chain
-view retains its original member witness or explicit-collapse choice when tabs change.
-Both lists use the exact newest-first presentation order. Existing expansion
-and completed-chain storage records retain their shapes; tab, standalone
-visibility and scroll positions use independent records. Storage failure leaves
-in-memory interaction available with a visible persistence notice. Page scroll
-positions do not persist graph geometry, pan, zoom, details or fullscreen.
+Each inner category has its own completed-item filter and page scroll position.
+Both lists use the exact newest-first presentation order. Category, standalone
+visibility, completed-chain visibility and scroll positions use independent
+records. Storage failure leaves in-memory interaction available with a visible
+persistence notice. Page positions do not persist graph geometry, pan, zoom,
+details or fullscreen. The original category design retained the inline member
+witness or explicit collapse across switches; the
+[graph-dialog decision](2026-10-26-task-chain-graph-dialog.md) replaces that
+persistent expansion with click-only temporary opening. Leaving either Task
+chains or Task list closes the dialog, and returning leaves it closed.
 Both inner tabpanel wrappers keep stable IDs and hide the inactive category.
-Only active category contents mount, so returning from Standalone tasks to Task
-chains initializes its canvas viewport. The outer Task list subtree remains
-mounted after first use when Overview is selected.
+Only active category contents mount. The outer Task list subtree remains mounted
+after first use when Overview is selected.
 
 This partially supersedes the unified list in the [presentation decision](2026-10-21-task-chain-presentation.md)
 and extends the [browsing preference decision](2026-10-21-task-browsing-preferences.md).
@@ -53,8 +55,9 @@ The [projection decision](2026-10-20-task-graph-projection.md) retains ownership
 complete dependency semantics; the [chain status decision](../bug-fix/2026-10-22-task-chain-status.md)
 continues to own aggregate status. Required behavior and current mechanisms
 belong in the [specification](../../../../docs/spec/daynight-web.md) and
-[design](../../../../docs/design/daynight-web.md). The [interactive mockup](../../../../docs/design/mockups/task-views.html)
-provides final visual styling without a backend.
+[design](../../../../docs/design/daynight-web.md). The original [interactive mockup](../../../../docs/design/mockups/task-views.html)
+retains the earlier inner-category visual baseline; the production-component
+browsing fixture demonstrates current graph dialogs and category behavior.
 
 ## Alternatives
 
@@ -88,9 +91,11 @@ changes.
 Per-project browser records preserve browsing intent across visits while the
 server remains authoritative for a freshly read snapshot. New dependency edits
 can move a task between views or change its representative; original member
-witnesses resolve the surviving component and visible fallback handles absence. Inactive inner-category canvases consume no mounted graph resources, at the
-cost of initializing pan and zoom after category return. Outer section switches
-retain the visited task subtree and its graph state instead. Keyboard tabs,
+witnesses resolve the surviving component during an open graph session and an
+unavailable chain closes that dialog. Inactive inner categories consume no
+mounted graph resources. Outer section switches retain the visited task subtree,
+while graph opening ends on either category or section departure. A new explicit
+opening initializes its pan and zoom. Keyboard tabs,
 native row actions and active-view focus restoration are
 part of the delivered interaction, including empty and all-completed views.
 The actual-backend `project-view-tabs` scenario runs on native and production

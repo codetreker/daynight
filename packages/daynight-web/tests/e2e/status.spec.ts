@@ -1,3 +1,4 @@
+import { closeChain, openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
 import { randomUUID, createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -38,6 +39,7 @@ const open = async (page: Page, project: string, task: string): Promise<void> =>
   if (new URL(page.url()).pathname !== `/projects/${project}`) await page.goto(`/projects/${project}`);
   else {
     if (await detail(page).count() > 0) await detail(page).getByRole('button', { name: /^(关闭任务详情|Close task details)$/, exact: true }).click();
+    await closeChain(page);
     await page.getByRole('button', { name: /^(刷新|Refresh)$/, exact: true }).click();
   }
   await (await response).finished();
@@ -51,8 +53,7 @@ const open = async (page: Page, project: string, task: string): Promise<void> =>
   await page.locator('.completed-chain-control input').check();
   if (standalone) await page.locator(`#standalone-task-${task}`).click();
   else {
-    const root = page.locator(`#task-root-${representative}`);
-    if (await root.getAttribute('aria-expanded') !== 'true') await root.click();
+    await openChain(page, representative);
     await page.locator(`.react-flow__node[data-id="${task}"] .task-node-details`).click();
   }
   await expect(detail(page)).toBeVisible(); await expect(trigger(page)).toBeEnabled();

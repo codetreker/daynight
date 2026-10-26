@@ -1,3 +1,4 @@
+import { openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
 import type { Browser, Locator, Page, Request, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPageUrl } from '../../src/api/client';
@@ -150,6 +151,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
   try {
     await page.goto(`/projects/${project.id}`);
     await selectTaskList(page);
+    await openChain(page, task.id);
     await page.locator(`.react-flow__node[data-id="${task.id}"] .task-node-details`).click();
     const modal = page.locator('.task-detail-dialog');
     await expect(modal.locator('.task-detail-title')).toHaveText(title);

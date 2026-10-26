@@ -1,6 +1,5 @@
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
 
-type Preferences = { readonly expandedRootId: string | null };
 type PreferenceIssue = { readonly kind: "read" | "invalid" | "write"; readonly cause: unknown };
 type InitialPreference<Value> = {
   readonly value: Value | undefined;
@@ -23,14 +22,6 @@ const readPreference = <Value,>(key: string, decode: (value: unknown) => Value):
   }
 };
 
-const expandedRootPreference = (value: unknown): string | null => {
-  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 1 || !("expandedRootId" in value) ||
-    (value.expandedRootId !== null && (typeof value.expandedRootId !== "string" || value.expandedRootId.trim() === ""))) {
-    throw new Error("Invalid project view preferences.");
-  }
-  return value.expandedRootId;
-};
-
 const completedChainPreference = (value: unknown): boolean => {
   if (typeof value !== "boolean") throw new Error("Invalid completed chain visibility preference.");
   return value;
@@ -51,36 +42,6 @@ export const useCompletedChainVisibility = (projectId: string) => {
     }
   }, [key]);
   return { showCompleted, onShowCompletedChange, issue: writeIssue ?? initial.issue };
-};
-
-export const useProjectViewPreferences = (projectId: string, roots: readonly string[] | null, componentByTask: ReadonlyMap<string, string> | null) => {
-  const key = `daynight:project-view:${projectId}`;
-  const [initial] = useState(() => readPreference(key, expandedRootPreference));
-  const [expanded, setExpandedRootId] = useState(initial.value);
-  const [writeIssue, setWriteIssue] = useState<PreferenceIssue | null>(null);
-  const saved = useRef(initial.saved);
-  const representative = expanded === undefined || expanded === null || componentByTask === null ? undefined : componentByTask.get(expanded);
-  const available = representative !== undefined && roots !== null && roots.includes(representative);
-  const expandedRootId = roots === null || expanded === null ? null : available ? representative! : roots[0] ?? null;
-  const witness = available ? expanded! : expandedRootId;
-
-  // Reconcile and save before the rendered rows can receive navigation or reload actions.
-  useLayoutEffect(() => {
-    if (roots === null || roots.length === 0) return;
-    setExpandedRootId(witness);
-    const preferences: Preferences = { expandedRootId: witness };
-    const serialized = JSON.stringify(preferences);
-    if (serialized === saved.current) return;
-    try {
-      window.localStorage.setItem(key, serialized);
-      saved.current = serialized;
-      setWriteIssue(null);
-    } catch (cause) {
-      setWriteIssue({ kind: "write", cause });
-    }
-  }, [key, roots, witness]);
-
-  return { expandedRootId, setExpandedRootId, issue: writeIssue ?? initial.issue };
 };
 
 export type ProjectSection = "overview" | "tasks";

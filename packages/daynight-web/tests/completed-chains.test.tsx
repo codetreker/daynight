@@ -48,7 +48,8 @@ const roots = () => [...document.querySelectorAll('.root-toggle')].map((item) =>
 const graphRequest = vi.fn<(projectId: string, signal: AbortSignal) => Promise<TaskGraph>>();
 const request = graphRequest;
 const count = (label: string) => screen.getByText(label, { selector: '.stat-label' }).parentElement!.querySelector('.stat-number')!.textContent;
-const expansion = () => JSON.parse(window.localStorage.getItem(expansionKey)!);
+const savedExpansion = () => window.localStorage.getItem(expansionKey);
+const closeGraph = () => fireEvent.click(document.querySelector<HTMLButtonElement>('.task-chain-close')!);
 
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
@@ -77,62 +78,70 @@ describe('completed task chain visibility', () => {
     const projection = screen.getByTestId('projection');
     expect([...projection.querySelectorAll('[data-node-id]')].map((item) => item.getAttribute('data-node-id'))).toEqual(['00000000-0000-4000-8000-000000000001', '00000000-0000-4000-8000-000000000002']);
     expect([...projection.querySelectorAll('[data-edge]')].map((item) => item.getAttribute('data-edge'))).toEqual(['00000000-0000-4000-8000-000000000001->00000000-0000-4000-8000-000000000002']);
+    closeGraph();
     checkbox().focus();
     fireEvent.click(checkbox());
     expect(checkbox()).toHaveFocus();
     expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003', 'task-root-00000000-0000-4000-8000-000000000001']);
-    expect(root('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-expanded', 'true');
+    expect(root('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(screen.queryByTestId('projection')).toBeNull();
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it('persists the newest visible fallback when hiding an expanded complete chain', async () => {
+  it('keeps the graph closed when completed-chain visibility changes', async () => {
     window.localStorage.setItem(visibilityKey(), 'true');
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
     fireEvent.click(root('00000000-0000-4000-8000-000000000005'));
+    expect(screen.getByTestId('projection')).toHaveAttribute('data-root-id', '00000000-0000-4000-8000-000000000005');
+    closeGraph();
     checkbox().focus(); fireEvent.click(checkbox());
     expect(checkbox()).toHaveFocus();
-    expect(root('00000000-0000-4000-8000-000000000006')).toHaveAttribute('aria-expanded', 'true');
-    expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000006' });
+    expect(root('00000000-0000-4000-8000-000000000006')).toBeVisible();
+    expect(screen.queryByTestId('projection')).toBeNull();
     fireEvent.click(checkbox());
-    expect(root('00000000-0000-4000-8000-000000000006')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByTestId('projection')).toBeNull();
+    expect(savedExpansion()).toBeNull();
     expect(request).toHaveBeenCalledTimes(1);
   });
 
-  it('remembers visibility across remounts and isolates projects without changing expansion format', async () => {
+  it('remembers visibility across remounts and projects while every graph starts closed', async () => {
     request.mockImplementation(async (id) => graph(seeds, id));
     let view = render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
     fireEvent.click(checkbox()); fireEvent.click(root('00000000-0000-4000-8000-000000000003'));
+    expect(screen.getByTestId('projection')).toBeVisible();
     view.unmount(); view = render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox');
     expect(checkbox()).toBeChecked();
-    expect(root('00000000-0000-4000-8000-000000000003')).toHaveAttribute('aria-expanded', 'true');
-    expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000003' });
+    expect(screen.queryByTestId('projection')).toBeNull();
+    expect(savedExpansion()).toBeNull();
     view.rerender(<ProjectPage projectId={otherProject} />); await selectTaskList();
     await screen.findByRole('checkbox'); expect(checkbox()).not.toBeChecked();
     fireEvent.click(checkbox()); fireEvent.click(checkbox());
     view.rerender(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox'); expect(checkbox()).toBeChecked();
+    expect(screen.queryByTestId('projection')).toBeNull();
     expect(window.localStorage.getItem(visibilityKey(otherProject))).toBe('false');
   });
 
-  it.each(['00000000-0000-4000-8000-000000000003', null])('distinguishes all-complete from empty and preserves saved expansion intent (%s)', async (saved) => {
-    window.localStorage.setItem(expansionKey, JSON.stringify({ expandedRootId: saved }));
+  it.each(['00000000-0000-4000-8000-000000000003', null])('distinguishes all-complete from empty and ignores a saved inline expansion (%s)', async (saved) => {
+    const legacyValue = JSON.stringify({ expandedRootId: saved });
+    window.localStorage.setItem(expansionKey, legacyValue);
     request.mockResolvedValue(graph([seeds[2]!, seeds[3]!, seeds[4]!, seeds[7]!]));
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('heading', { name: '所有任务链已完成' });
     expect(screen.queryByText('还没有任务')).toBeNull();
     expect(count('任务总数')).toBe('4'); expect(count('已完成')).toBe('4');
     expect(screen.getByLabelText('显示 0 条，共 2 条任务链')).toBeVisible();
-    expect(expansion()).toEqual({ expandedRootId: saved });
+    expect(savedExpansion()).toBe(legacyValue);
     fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
     expect(checkbox()).toBeChecked(); expect(checkbox()).toHaveFocus();
     expect(screen.queryByRole('heading', { name: '所有任务链已完成' })).toBeNull();
-    expect(document.querySelectorAll('[aria-expanded="true"]')).toHaveLength(saved === null ? 0 : 1);
-    if (saved !== null) expect(root(saved)).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByTestId('projection')).toBeNull();
+    expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
     fireEvent.click(checkbox()); expect(checkbox()).toHaveFocus();
-    expect(expansion()).toEqual({ expandedRootId: saved });
+    expect(savedExpansion()).toBe(legacyValue);
   });
 
   it('keeps a truly empty project distinct from an all-complete list', async () => {
@@ -142,26 +151,31 @@ describe('completed task chain visibility', () => {
     expect(screen.queryByRole('heading', { name: '所有任务链已完成' })).toBeNull();
   });
 
-  it('preserves intent through a refresh that completes every chain and falls back after a remembered root disappears', async () => {
+  it('closes a graph when refresh hides its completed chain and does not open a replacement', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
     request.mockResolvedValueOnce(graph()).mockResolvedValueOnce(graph(allDone())).mockResolvedValueOnce(resetSnapshot(graph([task('00000000-0000-4000-8000-000000000011', 'todo'), task('00000000-0000-4000-8000-000000000012', 'todo', ['00000000-0000-4000-8000-000000000011'])])));
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
-    fireEvent.click(root('00000000-0000-4000-8000-000000000001')); fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    fireEvent.click(root('00000000-0000-4000-8000-000000000001'));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
     await screen.findByRole('heading', { name: '所有任务链已完成' });
-    expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000001' });
+    expect(screen.queryByTestId('projection')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
-    expect(root('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-expanded', 'true');
+    expect(root('00000000-0000-4000-8000-000000000001')).toBeVisible();
+    expect(screen.queryByTestId('projection')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByRole('checkbox', { name: '显示已完成任务链（0）' });
-    expect(root('00000000-0000-4000-8000-000000000011')).toHaveAttribute('aria-expanded', 'true');
-    expect(expansion()).toEqual({ expandedRootId: '00000000-0000-4000-8000-000000000011' });
+    expect(root('00000000-0000-4000-8000-000000000011')).toBeVisible();
+    expect(screen.queryByTestId('projection')).toBeNull();
+    expect(savedExpansion()).toBeNull();
   });
 
-  it('preserves an explicit collapse while filtering and refreshing', async () => {
-    window.localStorage.setItem(expansionKey, JSON.stringify({ expandedRootId: null }));
+  it('keeps an explicitly closed graph closed while filtering and refreshing', async () => {
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
+    fireEvent.click(root('00000000-0000-4000-8000-000000000001'));
+    closeGraph();
     fireEvent.click(checkbox()); fireEvent.click(checkbox()); fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2));
-    expect(screen.queryByTestId('projection')).toBeNull(); expect(expansion()).toEqual({ expandedRootId: null });
+    expect(screen.queryByTestId('projection')).toBeNull(); expect(savedExpansion()).toBeNull();
   });
 
   it('does not save visibility while initial graph loading or an initial request failure is displayed', async () => {

@@ -1,3 +1,4 @@
+import { closeChain, expectClosedChain, expectOpenChain, openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
 import { decodeTaskGraphJson } from '../../src/api/project-json';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
@@ -140,7 +141,7 @@ const measureBrowserFeedback = async (page: Page, condition: TimingCondition, ac
     const ready = (): boolean => {
       if (condition.kind === 'select') return document.querySelector(`.react-flow__node[data-id="${condition.rootId}"] .task-node[data-inspection="selected"] .task-node-body[aria-pressed="true"]`) !== null;
       if (condition.kind === 'detail') {
-        const dialog = document.querySelector('[role="dialog"]');
+        const dialog = document.querySelector('.task-detail-dialog');
         if (dialog === null) return false;
         const bounds = dialog.getBoundingClientRect();
         const style = getComputedStyle(dialog);
@@ -237,8 +238,7 @@ const measureBrowserFeedback = async (page: Page, condition: TimingCondition, ac
       if (mutations.some((mutation) => mutation.type === 'childList')) countsDirty = true;
       check();
     });
-    const target = condition.kind === 'open' ? document.getElementById(`task-root-${condition.rootId}`)!.closest('.root-row')!
-      : condition.kind === 'detail' ? document.body : document.querySelector('.react-flow__viewport')!;
+    const target = condition.kind === 'open' || condition.kind === 'detail' ? document.body : document.querySelector('.react-flow__viewport')!;
     observer.observe(target, condition.kind === 'detail' ? { childList: true, subtree: true } : {
       childList: condition.kind === 'open', subtree: condition.kind === 'open' || condition.kind === 'select',
       attributes: true, attributeFilter: condition.kind === 'select' ? ['data-inspection', 'aria-pressed', 'class'] : ['style'],
@@ -442,7 +442,8 @@ const measureInteractions = async (page: Page, fixture: CapacityFixture, expansi
   await assertVisibleTopology(page, overview, full);
   expect((await stableGeometry(page)).geometry, 'Selection never expands hidden tasks or changes nodes, routes, paint geometry or viewport').toEqual(beforeSelection.geometry);
   expect(await checkDependencyGeometry(page, overview, info), 'All visible highlighted dependencies retain their native geometry and paint').toEqual({ total: 0, examples: [] });
-  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await expect(page.locator('.task-detail-dialog')).toHaveCount(0);
+  await expectOpenChain(page, fixture.root.id);
   const highlighted = await measureDetailsZoomPan(page, fixture, selectedId, dataset, repetition, overview, full);
   expect(bodyGeometry(await stableGeometry(page)), 'Highlighted Details and navigation retain every visible node and route').toEqual(bodyGeometry(beforeSelection));
   expect(await checkDependencyGeometry(page, overview, info), 'All highlighted dependencies retain complete geometry after immediate zoom and pan').toEqual({ total: 0, examples: [] });
@@ -561,7 +562,8 @@ test.describe('fixed capacity and performance @capacity', () => {
           await expect(page.locator('.stats .stat-label').filter({ hasText: /^待审批$/ })).toHaveCount(0);
           await expect(page.locator('.stat').filter({ has: page.locator('.stat-label', { hasText: /^待处理$/ }) }).locator('.stat-number')).toHaveText(count(1000));
           await selectTaskList(page);
-          if (await page.locator(`#task-root-${fixture.root.id}`).getAttribute('aria-expanded') !== 'true') await page.locator(`#task-root-${fixture.root.id}`).click();
+          await expectClosedChain(page, fixture.root.id);
+          await openChain(page, fixture.root.id);
           await visibleGraph(page, fixture.root.id, overview);
           await assertVisibleTopology(page, overview, full);
           const externalIds = new Set(full.nodes.filter((node) => !full.memberIds.includes(node.id)).map((node) => node.id));
@@ -581,10 +583,10 @@ test.describe('fixed capacity and performance @capacity', () => {
           expect(dataset.networkMs).toBeGreaterThanOrEqual(0);
           const root = page.locator(`#task-root-${fixture.root.id}`);
           for (let repetition = 0; repetition < 5; repetition++) {
-            await expect(root).toHaveAttribute('aria-expanded', 'true');
-            await root.click();
+            await expectOpenChain(page, fixture.root.id);
+            await closeChain(page);
             await expect(page.locator('.task-graph-canvas')).toHaveCount(0);
-            await expect(root).toHaveAttribute('aria-expanded', 'false');
+            await expectClosedChain(page, fixture.root.id);
             await root.scrollIntoViewIfNeeded();
             const repetitionStart = performance.now();
             let interactionMs!: number;
@@ -594,7 +596,7 @@ test.describe('fixed capacity and performance @capacity', () => {
               const expansion = await page.evaluate(({ rootId, start, paintedTime }) => {
                 const measures = (performance.getEntriesByName('daynight:task-layout', 'measure') as PerformanceMeasure[])
                   .filter((measure) => measure.detail?.rootId === rootId && measure.startTime >= start);
-                if (measures.length !== 1) throw new Error('Expected exactly one layout measurement for this collapsed root expansion.');
+                if (measures.length !== 1) throw new Error('Expected exactly one layout measurement for this task-chain modal opening.');
                 const measure = measures[0]!;
                 return {
                   openMs: paintedTime - start,
@@ -620,7 +622,7 @@ test.describe('fixed capacity and performance @capacity', () => {
           }, { message: 'Every observed task synchronization fetch reaches the real network' }).toBe(true);
           const initial = reads.filter((read) => read.pollingCallback === null).length;
           const periodic = reads.filter((read) => read.pollingCallback !== null).length;
-          expect(initial, 'Collapse and reopen reuse the snapshot; only initial load reads outside the polling callback').toBe(1);
+          expect(initial, 'Close and reopen reuse the snapshot; only initial load reads outside the polling callback').toBe(1);
           expect(reads[0]!.pollingCallback).toBeNull();
           expect(new Set(reads.flatMap((read) => read.pollingCallback === null ? [] : [read.pollingCallback])).size).toBe(periodic);
           expect(network, 'Only initial load and actual periodic callbacks read task summaries').toBe(initial + periodic);

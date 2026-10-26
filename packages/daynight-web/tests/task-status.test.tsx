@@ -92,7 +92,14 @@ const mount = async () => {
   await selectTaskList();
   return view;
 };
+const openGraph = async () => {
+  if (document.querySelector('.task-chain-dialog') !== null) return;
+  fireEvent.click(await screen.findByRole('button', { name: /^Task 1/ }));
+};
+const closeGraph = () => { fireEvent.click(screen.getByRole('button', { name: 'Close dependency graph' })); };
+const detailDialog = () => document.querySelector<HTMLElement>('.task-detail-dialog')!;
 const openChild = async () => {
+  await openGraph();
   const node = await screen.findByRole('button', { name: 'Task 2, Details' });
   fireEvent.click(node);
   const dialog = await screen.findByRole('dialog', { name: 'Task 2' });
@@ -117,9 +124,10 @@ describe('status in shared production task details', () => {
     await mount(); let dialog = await openChild();
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
+    closeGraph();
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
-    dialog = screen.getByRole('dialog');
+    dialog = detailDialog();
     await within(dialog).findByRole('heading', { name: 'Task 3' });
     const statusButton = within(dialog).getByRole('button', { name: 'To do' });
     const tab = within(dialog).getByRole('tab', { name: 'Attachments' });
@@ -203,7 +211,8 @@ describe('status in shared production task details', () => {
     const retry = within(denied as HTMLElement).getByRole('button', { name: 'Retry' }); expect(retry).toBeEnabled(); fireEvent.click(retry);
     await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2)); expect(reads).toBe(2); expect(screen.queryByText('Complete description 2')).toBeNull();
     await act(async () => { freshGraph.resolve(graph()); });
-    const resumed = await screen.findByRole('dialog'); const operation = within(resumed).getByRole('region', { name: 'Task status' });
+    await waitFor(() => expect(detailDialog()).toBeInTheDocument());
+    const resumed = detailDialog(); const operation = within(resumed).getByRole('region', { name: 'Task status' });
     expect(operation).toHaveTextContent('The status request outcome is unknown. Check the current task state before another operation.');
     expect(operation).toHaveTextContent('The status request did not receive a confirmed response from the service.');
     expect(within(resumed).queryByRole('button', { name: 'To do' })).toBeNull(); expect(reads).toBe(2);
@@ -241,7 +250,7 @@ describe('status in shared production task details', () => {
       await selectTaskList();
       fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
       fireEvent.click(screen.getByRole('button', { name: new RegExp(title) }));
-      const dialog = screen.getByRole('dialog');
+      const dialog = detailDialog();
       await within(dialog).findByRole('heading', { name: title });
       return dialog;
     };
@@ -282,7 +291,7 @@ describe('status in shared production task details', () => {
     const view = await mount(); await screen.findByRole('tab', { name: 'Standalone tasks' });
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
-    let dialog = screen.getByRole('dialog');
+    let dialog = detailDialog();
     await within(dialog).findByRole('heading', { name: 'Task 3' });
     await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     await within(dialog).findByText('Task status confirmed.');
@@ -290,7 +299,7 @@ describe('status in shared production task details', () => {
     records.set(standalone, { ...current, status, ready: false, version: current.version + 1n, updatedAt: '2026-10-22T00:02:00Z' });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
-    dialog = screen.getByRole('dialog');
+    dialog = detailDialog();
     await within(dialog).findByRole('button', { name: status === 'done' ? 'Done' : 'In progress' });
     expect(within(dialog).queryByText('Task status confirmed.')).toBeNull();
     await waitFor(() => expect(within(dialog).getByRole('button', { name: status === 'done' ? 'Done' : 'In progress' })).toBeEnabled());
@@ -303,6 +312,7 @@ describe('status in shared production task details', () => {
   it('starts a ready graph task once across close/reopen and refreshes rows/counts without losing fullscreen or zoom', async () => {
     const mutation = deferred<TaskDetail>(); vi.mocked(setTaskStatus).mockReturnValueOnce(mutation.promise);
     await mount();
+    await openGraph();
     const inspected = await screen.findByRole('button', { name: 'Task 2, To do' });
     fireEvent.click(inspected);
     expect(inspected).toHaveAttribute('aria-pressed', 'true');
@@ -333,7 +343,7 @@ describe('status in shared production task details', () => {
     expect(within(dialog).queryByText('Blocked', { selector: '.task-detail-blocked' })).toBeNull();
     expect(document.querySelector('.root-status')).toHaveTextContent('In progress');
     expect(document.querySelector('.task-graph-canvas')).toBe(canvas); expect(viewport()).toBe(transform);
-    expect(screen.getByRole('dialog', { name: 'Task dependency graph fullscreen view', hidden: true })).toBeTruthy();
+    expect(document.querySelector('.task-chain-dialog')).toHaveClass('task-chain-dialog-fullscreen');
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.getByRole('button', { name: 'Task 2, Details' })).toHaveFocus());
     expect(inspected).toHaveAttribute('aria-pressed', 'true');
@@ -368,9 +378,10 @@ describe('status in shared production task details', () => {
     const oldSignal = graphRequest.mock.calls[1]![1]; const oldGraph = graph();
     const dialog = await openChild(); await confirmStatus(within(dialog).getByRole('button', { name: 'To do' }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close task details' }));
+    closeGraph();
     fireEvent.click(screen.getByRole('tab', { name: 'Standalone tasks' }));
     fireEvent.click(screen.getByRole('button', { name: /Task 3/ }));
-    const otherDialog = screen.getByRole('dialog');
+    const otherDialog = detailDialog();
     await within(otherDialog).findByRole('heading', { name: 'Task 3' });
     await act(async () => { mutation.resolve(commit()); });
     await waitFor(() => expect(oldSignal.aborted).toBe(true));

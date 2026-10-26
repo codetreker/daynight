@@ -6,6 +6,7 @@ import { getTask, getTaskSync } from '../src/api/client';
 import type { GraphTask, TaskGraph } from '../src/api/types';
 import { ProjectPage } from '../src/features/projects/ProjectPage';
 import { projectChain, type GraphIndex } from '../src/features/task-graph/model';
+import type { RefObject } from 'react';
 
 const localeRender = createLocaleRender('zh-CN');
 const render: typeof localeRender = (ui, options) => localeRender(ui, { ...options, taskCache: true });
@@ -14,21 +15,15 @@ vi.mock('../src/api/client', async (original) => ({
   ...await original<typeof import('../src/api/client')>(), getTask: vi.fn(), getTaskSync: vi.fn(),
   listAttachments: vi.fn(async () => ({ items: [], nextCursor: null })),
 }));
-vi.mock('../src/features/task-graph/TaskGraph', async () => {
-  const { useGraphFullscreen } = await import('../src/features/task-graph/useGraphFullscreen');
-  return { TaskGraph: ({ index, rootId, onOpenTask }: {
-    index: GraphIndex; rootId: string; onOpenTask: (id: string, trigger: HTMLElement) => void;
-  }) => {
-    const { fullscreen, containerRef, toggleRef, onKeyDown, toggle } = useGraphFullscreen();
-    return <div className={`task-graph${fullscreen ? ' task-graph-fullscreen' : ''}`} ref={containerRef} onKeyDown={onKeyDown} role={fullscreen ? 'dialog' : undefined} aria-label={fullscreen ? '任务依赖图全屏查看' : undefined}>
-      <button type="button" className="graph-fullscreen-toggle" ref={toggleRef} onClick={toggle}>{fullscreen ? '退出全屏' : '全屏查看'}</button>
-      {[...projectChain(index, rootId).mainIds].map((id) => (
-    <button key={id} type="button" onClick={(event) => onOpenTask(id, event.currentTarget)}>
-      节点 {index.nodes.get(id)!.titlePreview}
-    </button>
-      ))}</div>;
-  } };
-});
+vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, rootId, onOpenTask, fullscreen }: {
+  index: GraphIndex; rootId: string; onOpenTask: (id: string, trigger: HTMLElement) => void;
+  fullscreen?: { readonly active: boolean; readonly onToggle: () => void; readonly buttonRef: RefObject<HTMLButtonElement | null> };
+}) => <div className="task-graph" key={rootId}>
+  {fullscreen !== undefined && <button type="button" className="graph-fullscreen-toggle" ref={fullscreen.buttonRef} onClick={fullscreen.onToggle}>{fullscreen.active ? '退出全屏' : '全屏查看'}</button>}
+  {[...projectChain(index, rootId).mainIds].map((id) => <button key={id} type="button" onClick={(event) => onOpenTask(id, event.currentTarget)}>
+    节点 {index.nodes.get(id)!.titlePreview}
+  </button>)}
+</div> }));
 
 const projectId = '10000000-0000-0000-0000-000000000001';
 const rootId = '20000000-0000-0000-0000-000000000001';
@@ -117,7 +112,7 @@ const expectModalReleased = () => {
 };
 
 describe('project dialog focus restoration', () => {
-  it('keeps active details focused when a merge replaces their expanded representative row', async () => {
+  it('keeps active details focused when a merge replaces the open chain representative row', async () => {
     window.localStorage.setItem(`daynight:project-view:${projectId}`, JSON.stringify({ expandedRootId: remainingId }));
     const before = [...remainingChain, task(rootId, '原任务链'), task(selectedId, '所选任务', [rootId])].map((item, position) => ({ ...item, createdAt: `2026-10-20T11:59:0${position}Z` }));
     const after = before.map((item) => item.id === selectedId ? { ...item, dependsOn: [rootId, remainingId], blockedBy: [rootId, remainingId] } : item);
@@ -133,19 +128,27 @@ describe('project dialog focus restoration', () => {
     expect(root).toHaveAttribute('inert');
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.click(close);
+    await waitFor(() => expect(document.querySelector('.task-chain-close')).toHaveFocus());
+    expect(document.querySelector('.task-chain-dialog')).toBeVisible();
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.click(document.querySelector('.task-chain-close')!);
     await waitFor(() => expect(document.getElementById(`task-root-${remainingId}`)).toHaveFocus());
     expectModalReleased();
   });
 
-  it('returns focus to fullscreen exit when refresh removes the selected node but retains its graph', async () => {
+  it('returns focus to the graph close control when refresh removes the selected node but retains its fullscreen graph', async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([task(rootId, '原任务链'), task('20000000-0000-0000-0000-000000000005', '保留图节点', [rootId]), ...remainingChain])));
     const { trigger, dialog } = await openDialog(true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
-    const fullscreen = await screen.findByRole('dialog', { name: '任务依赖图全屏查看' });
-    await waitFor(() => expect(within(fullscreen).getByRole('button', { name: '退出全屏' })).toHaveFocus());
+    const fullscreen = document.querySelector<HTMLElement>('.task-chain-dialog-fullscreen')!;
+    await waitFor(() => expect(fullscreen.querySelector('.task-chain-close')).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
     expect(document.querySelector('.task-detail-dialog')).toBeNull();
     expect(root).not.toHaveAttribute('inert');
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(document.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
+    expect(document.querySelector('.task-chain-dialog')).toBeVisible();
     expect(document.body.style.overflow).toBe('hidden');
     fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
     expectModalReleased();
@@ -159,7 +162,7 @@ describe('project dialog focus restoration', () => {
     const { trigger, dialog } = await openDialog(true);
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     await waitFor(() => expect(trigger.isConnected).toBe(false));
-    expect(screen.queryByRole('dialog', { name: '任务依赖图全屏查看' })).toBeNull();
+    expect(document.querySelector('.task-chain-dialog-fullscreen')).toBeNull();
     expect(dialog).toBeVisible();
     expect(root).toHaveAttribute('inert');
     expect(document.body.style.overflow).toBe('hidden');
@@ -185,7 +188,8 @@ describe('project dialog focus restoration', () => {
     if (!keepRemaining) {
       fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
       expect(checkbox).toHaveFocus();
-      expect(screen.getByRole('button', { name: /^原任务链/ })).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByRole('button', { name: /^原任务链/ })).toHaveAttribute('aria-haspopup', 'dialog');
+      expect(document.querySelector('.task-chain-dialog')).toBeNull();
     }
   });
 
@@ -202,15 +206,15 @@ describe('project dialog focus restoration', () => {
     expect(screen.queryByRole('region', { name: '任务依赖链' })).toBeNull();
   });
 
-  it('focuses the newly expanded root after refresh removes the selected chain', async () => {
+  it('focuses a surviving row without opening its graph after refresh removes the selected chain', async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph(remainingChain)));
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '刷新任务图' }));
     const remainingRoot = await screen.findByRole('button', { name: /^保留任务链/ });
     await waitFor(() => expect(remainingRoot).toHaveFocus());
     expect(trigger.isConnected).toBe(false);
-    expect(remainingRoot).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('region', { name: '保留任务链 的任务依赖图' })).toBeVisible();
+    expect(remainingRoot).toHaveAttribute('aria-haspopup', 'dialog');
+    expect(document.querySelector('.task-chain-dialog')).toBeNull();
     expectModalReleased();
   });
 
@@ -219,6 +223,41 @@ describe('project dialog focus restoration', () => {
     const { trigger, dialog } = await openDialog();
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
     await waitFor(() => expect(trigger).toHaveFocus());
+    expect(root).not.toHaveAttribute('inert');
+    expect(document.querySelector('.task-chain-dialog')).toBeVisible();
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.click(document.querySelector('.task-chain-close')!);
+    await waitFor(() => expect(document.getElementById(`task-root-${rootId}`)).toHaveFocus());
     expectModalReleased();
   });
+
+  it('handles one Escape layer at a time from a detail menu through both fullscreen views and the graph dialog', async () => {
+    graphRequest.mockResolvedValue(graph());
+    const { trigger, dialog } = await openDialog(true);
+    const graphDialog = document.querySelector<HTMLElement>('.task-chain-dialog-fullscreen')!;
+    fireEvent.click(within(dialog).getByRole('button', { name: '更多任务操作' }));
+    expect(within(dialog).getByRole('menu')).toBeVisible();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(within(dialog).queryByRole('menu')).toBeNull();
+    expect(dialog).toBeVisible();
+    expect(graphDialog).toHaveClass('task-chain-dialog-fullscreen');
+    fireEvent.click(within(dialog).getByRole('button', { name: '进入全屏' }));
+    expect(dialog).toHaveClass('task-detail-fullscreen');
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    expect(dialog).not.toHaveClass('task-detail-fullscreen');
+    expect(dialog).toBeVisible();
+    expect(graphDialog).toHaveClass('task-chain-dialog-fullscreen');
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => expect(document.querySelector('.task-detail-dialog')).toBeNull());
+    expect(trigger).toHaveFocus();
+    expect(graphDialog).toHaveClass('task-chain-dialog-fullscreen');
+    expect(document.body.style.overflow).toBe('hidden');
+    fireEvent.keyDown(trigger, { key: 'Escape' });
+    expect(graphDialog).not.toHaveClass('task-chain-dialog-fullscreen');
+    expect(graphDialog).toBeVisible();
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await waitFor(() => expect(document.getElementById(`task-root-${rootId}`)).toHaveFocus());
+    expectModalReleased();
+  });
+
 });

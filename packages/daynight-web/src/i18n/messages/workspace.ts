@@ -99,7 +99,6 @@ export type WorkspaceMessages = {
   };
   readonly preferences: {
     readonly section: PreferenceNotices;
-    readonly expanded: PreferenceNotices;
     readonly completedChains: PreferenceNotices;
     readonly tab: PreferenceNotices;
     readonly standalone: PreferenceNotices;

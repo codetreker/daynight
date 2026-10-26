@@ -1,3 +1,4 @@
+import { closeChain, openChain as openChainDialog } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
 import { readFile, writeFile } from 'node:fs/promises';
 import type { Page, Request, TestInfo } from '@playwright/test';
@@ -86,7 +87,7 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
     };
     const syncPath = `/api/v1/projects/${project.id}/task-sync`;
     const readWeb = async (navigate = false) => {
-      if (!navigate) await selectOverview(page);
+      if (!navigate) { await closeChain(page); await selectOverview(page); }
       const requests = new Set<Request>();
       const capture = (request: Request) => {
         const url = new URL(request.url());
@@ -118,9 +119,8 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
     const openChain = async (representative: string) => {
       await selectTaskList(page);
       await page.getByRole('tab', { name: '任务链', exact: true }).click();
-      const toggle = page.locator(`#task-root-${representative}`); await expect(toggle).toBeVisible();
-      if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
-      await expect(toggle).toHaveAttribute('aria-expanded', 'true'); return toggle;
+      await openChainDialog(page, representative);
+      return page.locator(`#task-root-${representative}`);
     };
 
     const ordinary = await complete(await create('普通链交付起点'));

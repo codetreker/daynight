@@ -1,3 +1,4 @@
+import { closeChain, expectClosedChain, expectOpenChain, openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
 import { randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
@@ -163,13 +164,10 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     page.on('response', (response) => { if (new URL(response.url()).pathname === syncPath) delivered += 1; });
     await page.goto(`/projects/${project.id}`);
     const openTimingChain = async () => {
+      await closeChain(page);
       await selectTaskList(page);
-      const toggle = page.locator(`#task-root-${roots[0]!.id}`);
-      await expect(toggle).toBeVisible();
-      if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
-      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      await openChain(page, roots[0]!.id);
       await expect(page.locator('.task-graph-canvas')).toHaveCount(1);
-      await expect(page.locator(`#task-graph-${roots[0]!.id}`)).toBeVisible();
     };
     await openTimingChain();
     const claimed = await record(project.id, crossing.id, 'crossing-before-seed');
@@ -179,8 +177,9 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     expect(seeded.startedAt).not.toBe(claimed.startedAt); expect(seeded.updatedAt).not.toBe(claimed.updatedAt);
     await page.reload();
     await expect(page.getByRole('tab', { name: /^(任务列表|Task list)$/, exact: true })).toHaveAttribute('aria-selected', 'true');
-    await expect(page.locator(`#task-root-${roots[0]!.id}`)).toHaveAttribute('aria-expanded', 'true');
-    await expect(page.locator(`#task-graph-${roots[0]!.id}`)).toBeVisible();
+    await expectClosedChain(page, roots[0]!.id);
+    await openTimingChain();
+    await expectOpenChain(page, roots[0]!.id);
     const ticking = card(page, crossing.id);
     await expect(duration(ticking)).toBeVisible();
     await expect(ticking.locator('.task-stuck-label')).toHaveCount(0);
@@ -226,11 +225,13 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     expect((await record(project.id, crossing.id, 'higher-threshold-preserves-start')).startedAt).toBe(running.startedAt);
     await settings(60); await expect(ticking.locator('.task-stuck-label')).toHaveText('可能卡住了', { timeout: 10_000 });
     expect((await record(project.id, crossing.id, 'lower-threshold-preserves-start')).startedAt).toBe(running.startedAt);
+    await closeChain(page);
     await page.getByRole('tab', { name: '独立任务', exact: true }).click();
     const unknownRunning = page.locator(`#standalone-task-${legacy.id}`);
     await expect(unknownRunning).toContainText('进行中');
     await expect(duration(unknownRunning)).toHaveCount(0); await expect(unknownRunning.locator('.task-stuck-label')).toHaveCount(0);
     await page.getByRole('tab', { name: '任务链', exact: true }).click();
+    await openTimingChain();
     await success(['task', 'set-status', crossing.id, 'done', '--project', project.id, '--if-version', String(running.version)]);
     const completed = await record(project.id, crossing.id, 'completed-freeze');
     expect(completed.startedAt).toBe(running.startedAt); expect(completed.completedAt).not.toBeNull();
@@ -251,6 +252,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     await openTimingChain();
 
     for (const locale of ['zh-CN', 'en'] as const) {
+      await closeChain(page);
       await page.getByRole('combobox', { name: '语言 / Language', exact: true }).selectOption(locale);
       await page.getByRole('tab', { name: locale === 'en' ? 'Task chains' : '任务链', exact: true }).click();
       await openTimingChain();
@@ -276,6 +278,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
         await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         evidence.layouts.push({ locale, width, kind: 'graph' }); await screenshot(page, info, `execution-graph-${locale}-${width}`);
       }
+      await closeChain(page);
       await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务', exact: true }).click();
       const showCompleted = page.locator('.completed-chain-control input'); await showCompleted.check();
       const row = page.locator(`#standalone-task-${standalone.id}`);

@@ -1,6 +1,5 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useI18n } from '../../i18n/LocaleProvider';
-import { LanguageSelector } from '../../i18n/LanguageSelector';
 import { Background, BackgroundVariant, Controls, getViewportForBounds, ReactFlow, useReactFlow, useStore, type Viewport } from '@xyflow/react';
 import { getTaskNodeHeight, layoutGraph, type CanvasLayout } from './layout';
 import { projectChain, tracePrerequisites, type GraphIndex, type ChainProjection } from './model';
@@ -8,13 +7,13 @@ import { TaskNode, type TaskFlowNode } from './TaskNode';
 import { DependencyEdges } from './DependencyEdges';
 import { TaskInspectionContext, useTaskInspection } from './inspection';
 import { createGraphOverview, getTaskExpansion, projectVisibleTasks, reconcileVisibleTasks, type TaskExpansionDirection, type TaskExpansions } from './visibility';
-import { useGraphFullscreen } from './useGraphFullscreen';
 import '@xyflow/react/dist/style.css';
 
 type TaskGraphProps = {
   index: GraphIndex;
   rootId: string;
   onOpenTask: (id: string, trigger: HTMLElement) => void;
+  fullscreen?: { readonly active: boolean; readonly onToggle: () => void; readonly buttonRef: RefObject<HTMLButtonElement | null> };
 };
 
 const emptyHighlight: ReadonlySet<string> = new Set();
@@ -67,9 +66,9 @@ const InitialViewport = ({ geometry, rootId, folded, action, resetButton }: { ge
 
 type CanvasProps = TaskGraphProps & { topologyKey: string; selectedTaskId: string | null; onInspectTask: (id: string) => void; clearInspection: () => void; geometry: CanvasLayout; projection: ChainProjection; visibleIds: ReadonlySet<string>; expansions: ReadonlyMap<string, TaskExpansions>; action: ViewportAction | null; onExpandTask: (id: string, direction: TaskExpansionDirection) => void; onResetOverview: () => void };
 
-const TaskCanvas = ({ index, rootId, onOpenTask, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
+const TaskCanvas = ({ index, rootId, onOpenTask, fullscreen, geometry, projection, visibleIds, expansions, action, onExpandTask, onResetOverview, topologyKey, selectedTaskId, onInspectTask, clearInspection }: CanvasProps) => {
   const { messages: { graph: m } } = useI18n();
-  const { fullscreen, containerRef, toggleRef, onKeyDown, toggle } = useGraphFullscreen();
+  const containerRef = useRef<HTMLDivElement>(null);
   const resetButton = useRef<HTMLButtonElement>(null);
   const focusedControl = useRef<HTMLElement | null>(null);
   useLayoutEffect(() => {
@@ -77,8 +76,8 @@ const TaskCanvas = ({ index, rootId, onOpenTask, geometry, projection, visibleId
     const removedNode = focusedNode != null && containerRef.current?.contains(focusedNode) &&
       !geometry.nodes.some((node) => node.id === focusedNode.dataset.id);
     const detachedControl = focusedControl.current !== null && !focusedControl.current.isConnected && document.activeElement === document.body;
-    if (removedNode || detachedControl) toggleRef.current?.focus();
-  }, [geometry, containerRef, toggleRef]);
+    if (removedNode || detachedControl) (fullscreen?.buttonRef.current ?? resetButton.current)?.focus({ preventScroll: true });
+  }, [geometry, fullscreen]);
   const highlightedIds = useMemo(() => selectedTaskId === null ? emptyHighlight : tracePrerequisites(index, selectedTaskId), [index, selectedTaskId]);
   const inspection = useMemo(() => ({ selectedTaskId, highlightedIds }), [selectedTaskId, highlightedIds]);
   const hiddenUpstreamCount = useMemo(() => [...highlightedIds].filter((id) => !visibleIds.has(id)).length, [highlightedIds, visibleIds]);
@@ -128,7 +127,7 @@ const TaskCanvas = ({ index, rootId, onOpenTask, geometry, projection, visibleId
     </ReactFlow>
   ), [nodes, rootId, topologyKey, geometry, folded, action, clearInspection, m]);
   return (
-    <div className={`task-graph${fullscreen ? ' task-graph-fullscreen' : ''}`} data-hidden-upstream-count={hiddenUpstreamCount} data-visible-task-count={visibleIds.size} data-total-task-count={totalTasks} ref={containerRef} role={fullscreen ? 'dialog' : undefined} aria-modal={fullscreen ? true : undefined} aria-label={fullscreen ? m.fullscreenTitle : undefined} onKeyDown={onKeyDown} onFocusCapture={(event) => { focusedControl.current = event.target as HTMLElement; }}>
+    <div className="task-graph" data-hidden-upstream-count={hiddenUpstreamCount} data-visible-task-count={visibleIds.size} data-total-task-count={totalTasks} ref={containerRef} onFocusCapture={(event) => { focusedControl.current = event.target as HTMLElement; }}>
       <div className="graph-toolbar">
         <div className="graph-toolbar-summary">
           <span>{m.title}</span>
@@ -136,13 +135,12 @@ const TaskCanvas = ({ index, rootId, onOpenTask, geometry, projection, visibleId
           <span className="graph-hidden-prerequisites" role="status">{hiddenUpstreamCount === 0 ? '' : m.hiddenPrerequisites({ count: hiddenUpstreamCount })}</span>
         </div>
         <div className="graph-toolbar-actions">
-          <button className="button graph-fullscreen-toggle" type="button" ref={toggleRef} onClick={toggle}>
+          {fullscreen !== undefined && <button className="button graph-fullscreen-toggle" type="button" ref={fullscreen.buttonRef} onClick={fullscreen.onToggle}>
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true">
-              <path d={fullscreen ? 'M4 9h5V4m6 0v5h5M4 15h5v5m6 0v-5h5' : 'M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5'} />
+              <path d={fullscreen.active ? 'M4 9h5V4m6 0v5h5M4 15h5v5m6 0v-5h5' : 'M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5'} />
             </svg>
-            {fullscreen ? m.exitFullscreen : m.enterFullscreen}
-          </button>
-          {fullscreen && <LanguageSelector />}
+            {fullscreen.active ? m.exitFullscreen : m.enterFullscreen}
+          </button>}
           <button className="button graph-reset-overview" type="button" ref={resetButton} onClick={onResetOverview}>{m.resetOverview}</button>
         </div>
       </div>

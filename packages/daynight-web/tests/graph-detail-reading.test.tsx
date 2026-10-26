@@ -43,7 +43,6 @@ beforeEach(() => {
   root = document.createElement('div');
   root.id = 'root';
   document.body.append(root);
-  window.localStorage.setItem(`daynight:project-view:${graph.project.id}`, JSON.stringify({ expandedRootId: rootId }));
   graphRequest.mockReset().mockResolvedValue(graph);
   vi.mocked(getTask).mockReset().mockResolvedValue(detail);
   vi.mocked(listAttachments).mockReset().mockResolvedValue({ items: [attachment], nextCursor: null });
@@ -74,6 +73,7 @@ describe('graph inspection and detail reading integration', () => {
     const user = userEvent.setup();
     const view = render(<ProjectPage projectId={graph.project.id} />, { container: root });
     await selectTaskList();
+    await user.click(await screen.findByRole('button', { name: /外部上下文 · 链内交付起点/ }));
     await waitFor(() => { expect(root.querySelectorAll('.react-flow__node')).toHaveLength(6); });
     await waitFor(() => { expect(root.querySelector<HTMLElement>('.react-flow__viewport')!.style.transform).not.toBe('translate(0px,0px) scale(1)'); });
     const selected = root.querySelector<HTMLButtonElement>(`.react-flow__node[data-id="${selectedId}"] .task-node-body`)!;
@@ -88,7 +88,7 @@ describe('graph inspection and detail reading integration', () => {
     expect(state.edges.filter((edge) => edge.inspection === 'highlighted')).toHaveLength(4);
     const trigger = within(root.querySelector<HTMLElement>(`.react-flow__node[data-id="${detailNode.id}"]`)!).getByRole('button', { name: `${detail.title}，详情` });
     await user.click(trigger);
-    const dialog = screen.getByRole('dialog');
+    const dialog = await screen.findByRole('dialog', { name: detail.title });
     await within(dialog).findByRole('heading', { name: 'Delivery notes' });
     expect(root).toHaveAttribute('inert');
     expect(within(dialog).getByRole('button', { name: '待处理' })).toBeEnabled();
@@ -96,7 +96,7 @@ describe('graph inspection and detail reading integration', () => {
     const link = within(dialog).getByRole('link', { name: 'Read acceptance guide' });
     expect(link).toHaveAttribute('href', `${attachmentPreviewRoot(graph.project.id, detailNode.id)}docs/guide.md`);
     await user.click(link);
-    expect(screen.getByRole('dialog')).toBe(dialog);
+    expect(screen.getByRole('dialog', { name: detail.title })).toBe(dialog);
     expect(within(dialog).getByRole('tab', { name: '附件' })).toHaveAttribute('aria-selected', 'true');
     const preview = within(dialog).getByRole('group', { name: '附件预览' });
     expect(preview).toHaveFocus();
@@ -106,7 +106,8 @@ describe('graph inspection and detail reading integration', () => {
     expect(readAttachmentText).toHaveBeenCalledExactlyOnceWith(graph.project.id, detailNode.id, attachment.path, expect.any(AbortSignal));
     expect(graphSnapshot(root)).toEqual(state);
     await user.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
-    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: detail.title })).toBeNull();
+    expect(root.querySelector('.task-chain-dialog')).not.toBeNull();
     expect(root).not.toHaveAttribute('inert');
     expect(trigger).toHaveFocus();
     expect(graphSnapshot(view.container)).toEqual(state);

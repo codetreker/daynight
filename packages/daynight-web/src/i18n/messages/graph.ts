@@ -2,10 +2,10 @@ import type { AriaLabelConfig } from '@xyflow/react';
 
 export type GraphMessages = {
   readonly chainList: string;
-  readonly standaloneTask: string;
   readonly rootSummary: (args: { total: number; remaining: number }) => string;
   readonly progress: (args: { done: number; total: number }) => string;
-  readonly rootRegion: (args: { title: string }) => string;
+  readonly chainTitle: string;
+  readonly closeDialog: string;
   readonly showCompletedCount: (args: { count: number }) => string;
   readonly chainSummary: (args: { shown: number; total: number }) => string;
   readonly chainSummaryLabel: (args: { shown: number; total: number }) => string;
@@ -29,7 +29,6 @@ export type GraphMessages = {
   readonly resetOverview: string;
   readonly dependencyGroup: string;
   readonly dependencyLabel: (args: { source: string; target: string; external: boolean }) => string;
-  readonly fullscreenTitle: string;
   readonly title: string;
   readonly counts: (args: { main: number; external: number; visible: number; total: number; edges: number; dependencies: number }) => string;
   readonly enterFullscreen: string;
