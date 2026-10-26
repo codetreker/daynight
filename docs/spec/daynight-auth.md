@@ -220,7 +220,9 @@ IO/数据库错误可见；不承诺撤回已发送字节或中止已准入的�
 | `DAYNIGHT_UNIAUTH_CALLBACK_URL` | 与主站同源的完整精确 callback；无凭据、query、fragment，使用 canonical 非根路径。 |
 
 服务只注册配置的 callback 路径，包括 `/auth/callback` 这样的已登记路径，不额外
-挂载旧别名。路径不能与应用 API、页面、静态资源或健康检查冲突，不接受编码别名、
+挂载旧别名。路径不能与应用 API、页面、静态资源或健康检查冲突，包含使用引导的
+`/setup` 根及全部后代路径；配置和启动验证必须先于路由注册拒绝冲突。已有 callback
+占用该命名空间时须更换路径并同步 UniAuth 登记值。不接受编码别名、
 路由通配符或 dot-segment。返回位置在建立登录事务前拒绝登录入口和实际 callback
 路径，避免认证循环。callback URL 与 UniAuth App 登记值精确匹配，主站 origin
 及 callback 不从 Host、转发 header 或随机 listener 推导。

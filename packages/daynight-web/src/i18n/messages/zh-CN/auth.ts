@@ -25,6 +25,7 @@ export const auth: AuthMessages = {
       loginFailed: "登录未完成。身份服务暂时无法确认你的身份，请重新登录。",
     },
     documentTitle: {
+      setup: "使用引导 · Daynight",
       loading: "正在确认登录 · Daynight", error: "登录暂不可用 · Daynight", login: "登录 · Daynight", device: "授权 CLI · Daynight", invitations: "项目邀请 · Daynight",
       projects: "我的项目 · Daynight", project: "项目任务 · Daynight", settings: "项目设置 · Daynight", members: "项目成员 · Daynight", account: "账户设置 · Daynight", notFound: "页面不存在 · Daynight",
     },

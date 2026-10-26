@@ -41,6 +41,7 @@ export const auth: AuthMessages = {
       loginFailed: "Sign-in was not completed. The identity service could not confirm your identity. Please sign in again.",
     },
     documentTitle: {
+      setup: "Setup guide · Daynight",
       loading: "Checking sign-in · Daynight", error: "Sign-in unavailable · Daynight", login: "Sign in · Daynight",
       device: "Authorize CLI · Daynight", invitations: "Project invitation · Daynight", projects: "My projects · Daynight", project: "Project tasks · Daynight",
       settings: "Project settings · Daynight", members: "Project members · Daynight", account: "Account settings · Daynight", notFound: "Page not found · Daynight",

@@ -186,3 +186,53 @@ func TestInvalidAppCredentialConfigurationPrecedesResourceOpening(t *testing.T) 
 		t.Fatalf("invalid authentication configuration touched storage: %v", err)
 	}
 }
+
+func TestSetupGuideCallbackConflictsPrecedeResourceOpening(t *testing.T) {
+	for _, callbackPath := range []string{"/setup", "/setup/callback", "/setup/nested/callback"} {
+		t.Run(callbackPath, func(t *testing.T) {
+			config := configuredTestConfig()
+			config.UniAuthCallbackURL = config.PublicOrigin + callbackPath
+			config.DatabaseURL = "invalid-database-configuration"
+			config.StorageRoot = filepath.Join(testStorageRoot(t), "unopened-setup-storage")
+			_, loadErr := LoadConfig(configEnvironment(map[string]string{
+				"DAYNIGHT_UNIAUTH_CALLBACK_URL": config.UniAuthCallbackURL,
+			}))
+			validateErr := config.Validate()
+			handler, compositionErr := New(Dependencies{}, config, testLogger())
+			factoryCalled := false
+			runtime, startErr := Start(context.Background(), config, testLogger(), func(Dependencies) (http.Handler, error) {
+				factoryCalled = true
+				return http.NotFoundHandler(), nil
+			})
+			if handler != nil || runtime != nil || factoryCalled {
+				t.Fatal("conflicting setup callback reached route or runtime composition")
+			}
+			for _, err := range []error{loadErr, validateErr, compositionErr, startErr} {
+				var failure *ConfigurationError
+				if !errors.As(err, &failure) || failure.Field != "DAYNIGHT_UNIAUTH_CALLBACK_URL" || failure.Rule != "must not overlap an application API, page, asset, or health route" {
+					t.Fatalf("setup callback conflict lost configuration diagnosis: %v", err)
+				}
+			}
+			if _, err := os.Stat(config.StorageRoot); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("conflicting setup callback touched storage: %v", err)
+			}
+		})
+	}
+}
+
+func TestSetupGuideCallbackReservationPreservesDistinctPaths(t *testing.T) {
+	for _, callbackPath := range []string{"/auth/callback", "/setup-callback", "/setupcallback", "/auth/setup/callback"} {
+		t.Run(callbackPath, func(t *testing.T) {
+			config, err := LoadConfig(configEnvironment(map[string]string{
+				"DAYNIGHT_UNIAUTH_CALLBACK_URL": "https://daynight.example" + callbackPath,
+			}))
+			if err != nil {
+				t.Fatalf("distinct callback path rejected: %v", err)
+			}
+			handler, err := New(Dependencies{}, config, testLogger())
+			if err != nil || handler == nil {
+				t.Fatalf("distinct callback path failed route composition: %v", err)
+			}
+		})
+	}
+}

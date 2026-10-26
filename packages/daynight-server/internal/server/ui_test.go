@@ -64,7 +64,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 		}
 	}
 	for _, target := range []string{
-		"/unknown-private-page", "/projects", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
+		"/unknown-private-page", "/setup/", "/setup/private-child", "/setup-private", "/projects", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
 		"/projects/id/tasks", "/projects/id/tasks/task/unknown", "/projects/id/tasks/task/unknown/file", "/projects/id/tasks/task/attachment/file",
 		"/api/unknown-private-route", "/api/v1/projects/id/unknown", "/assets/", "/assets/missing-private.js",
 		"/assets/%2e%2e/index.html", "/assets/%2findex.html",
@@ -77,6 +77,56 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), "private") {
 		t.Fatalf("UI path leaked to logs: %s", &logs)
+	}
+}
+
+func TestUISetupGuideUsesProductionIndexAndSafeRequestLog(t *testing.T) {
+	var logs bytes.Buffer
+	handler := uiTestHandler(t, &logs)
+	index := projectRequest(handler, http.MethodGet, "/", "")
+	for _, test := range []struct {
+		method string
+		path   string
+		status int
+		route  string
+	}{
+		{http.MethodGet, "/setup", http.StatusOK, "GET /setup"},
+		{http.MethodGet, "/setup?private-query=value", http.StatusOK, "GET /setup"},
+		{http.MethodHead, "/setup", http.StatusOK, "GET /setup"},
+		{http.MethodPost, "/setup", http.StatusMethodNotAllowed, "/setup"},
+		{http.MethodPut, "/setup", http.StatusMethodNotAllowed, "/setup"},
+		{http.MethodPatch, "/setup", http.StatusMethodNotAllowed, "/setup"},
+		{http.MethodDelete, "/setup", http.StatusMethodNotAllowed, "/setup"},
+		{http.MethodOptions, "/setup", http.StatusMethodNotAllowed, "/setup"},
+	} {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			logs.Reset()
+			response := projectRequest(handler, test.method, test.path, "private-body")
+			if response.Code != test.status || response.Header().Get("X-Request-ID") != "project-test" {
+				t.Fatalf("setup route lost response contract: %d %+v", response.Code, response.Header())
+			}
+			if test.status == http.StatusOK {
+				if response.Header().Get("Content-Type") != "text/html; charset=utf-8" || response.Header().Get("Content-Length") != index.Header().Get("Content-Length") || response.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("setup route did not retain index headers: %+v", response.Header())
+				}
+				if test.method == http.MethodHead && response.Body.Len() != 0 || test.method == http.MethodGet && !bytes.Equal(response.Body.Bytes(), index.Body.Bytes()) {
+					t.Fatal("setup route did not return the production index or suppress the HEAD body")
+				}
+			} else {
+				assertProjectError(t, response, http.StatusMethodNotAllowed, "method_not_allowed")
+				if response.Header().Get("Allow") != "GET, HEAD" {
+					t.Fatalf("wrong setup method Allow: %+v", response.Header())
+				}
+			}
+			var entry map[string]any
+			decoder := json.NewDecoder(&logs)
+			if err := decoder.Decode(&entry); err != nil {
+				t.Fatal(err)
+			}
+			if decoder.More() || entry["type"] != "http_request" || entry["route"] != test.route || entry["method"] != test.method || entry["status"] != float64(test.status) || entry["request_id"] != "project-test" || strings.Contains(logs.String(), "private") {
+				t.Fatalf("setup route lost safe single request logging: %+v %s", entry, &logs)
+			}
+		})
 	}
 }
 
@@ -123,7 +173,7 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	for _, target := range []string{
-		"/", "/projects/00000000-0000-4000-8000-000000000099",
+		"/", "/setup", "/projects/00000000-0000-4000-8000-000000000099",
 		"/projects/00000000-0000-4000-8000-000000000099/members",
 		"/projects/00000000-0000-4000-8000-000000000099/settings",
 		"/projects/00000000-0000-4000-8000-000000000099/tasks/00000000-0000-4000-8000-000000000001",
