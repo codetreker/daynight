@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
+import * as configurationFiles from "../../../src/config/files.js";
 import { parseServerConfiguration } from "../../../src/config/server.js";
 import { parseWorkerConfiguration, readWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -10,8 +11,19 @@ const paths = resolveWorkerPaths("/home/worker-user", path.posix);
 const remote = "https://git.example/team/project.git";
 const repo = { remote, path: "../checkout" };
 const parse = (worker: Record<string, unknown>) => parseWorkerConfiguration(stringify({ worker: { repositories: [repo], ...worker } }), paths, path.posix);
+const defaults = { maxConcurrent: 1, pollIntervalMs: 5_000, recoveryLimit: 3, agent: "copilot", model: null, args: [], repositories: [] };
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
+const fixture = async (prefix: string) => {
+  const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
+  await mkdir(temporary, { recursive: true });
+  const directory = await mkdtemp(path.join(temporary, `${prefix} `));
+  directories.push(directory);
+  return { directory, local: resolveWorkerPaths(directory) };
+};
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
 
 describe("worker configuration", () => {
   it("uses a separate namespace and resolves paths relative to the config file", () => {
@@ -57,7 +69,7 @@ describe("worker configuration", () => {
     { pollIntervalMs: 0 }, { pollIntervalMs: 2_147_483_648 }, { pollIntervalMs: false },
     { recoveryLimit: -1 }, { recoveryLimit: 0.5 }, { recoveryLimit: Number.MAX_SAFE_INTEGER + 1 },
     { agent: "claude" }, { agent: null }, { model: "" }, { model: 42 }, { args: "--allow-all" }, { args: [null] },
-    { repositories: {} }, { repositories: [null] }, { repositories: [{ ...repo, projectId: "bad" }] },
+    { repositories: null }, { repositories: {} }, { repositories: [null] }, { repositories: [{ ...repo, projectId: "bad" }] },
     { repositories: [{ ...repo, remote: "https://name:secret@git.example/team/r" }] },
     { repositories: [{ ...repo, path: "~/repo" }] }, { repositories: [{ ...repo, path: "" }] },
     { stateDirectory: "/tmp/state" }, { platform: "windows" }, { timeoutMs: 1 },
@@ -80,11 +92,30 @@ describe("worker configuration", () => {
     [{ ...repo, path: "." }], [{ ...repo, path: "worker/repository" }], [{ ...repo, path: ".." }],
   ])("rejects duplicate or overlapping repository settings %j", (...repositories) => { expect(() => parse({ repositories })).toThrow(); });
 
-  it("requires worker and repositories but supports an empty list for reconciliation of retained claims", () => {
-    expect(() => parseWorkerConfiguration("{}", paths)).toThrow("Worker configuration is missing");
-    expect(() => parseWorkerConfiguration("worker: {}", paths)).toThrow("worker.repositories");
-    expect(() => parseWorkerConfiguration("worker: null", paths)).toThrow("worker must be a mapping");
-    expect(parse({ repositories: [] }).repositories).toEqual([]);
+  it.each([
+    {},
+    { serverUrl: "https://daynight.example" },
+    { review: { repositories: [{ remote: "review-owned", path: "/review-owned" }], copilotModel: "review-model" } },
+    { worker: {} },
+    { worker: { repositories: [] } },
+  ])("uses defaults without implicit repository discovery for %j", (configuration) => {
+    expect(parseWorkerConfiguration(stringify(configuration), paths)).toEqual(defaults);
+  });
+
+  it("preserves configured worker fields when repositories are omitted", () => {
+    expect(parseWorkerConfiguration(stringify({ worker: {
+      agent: "codex", model: "configured-model", args: ["--search"], maxConcurrent: 4, recoveryLimit: 0,
+    } }), paths)).toEqual({
+      ...defaults, agent: "codex", model: "configured-model", args: ["--search"], maxConcurrent: 4, recoveryLimit: 0,
+    });
+  });
+
+  it.each([null, [], false, "worker"])("rejects explicitly invalid worker mappings %j", (worker) => {
+    expect(() => parseWorkerConfiguration(stringify({ worker }), paths)).toThrow("worker must be a mapping");
+  });
+
+  it.each(["", "worker: [", "worker: {}\nworker: {}", "unsupported: true", "worker: {unsupported: true}"])("rejects invalid configuration documents %j", (source) => {
+    expect(() => parseWorkerConfiguration(source, paths)).toThrow();
   });
 
   it("handles Windows absolute and config-relative paths without a runtime-platform override", () => {
@@ -95,11 +126,7 @@ describe("worker configuration", () => {
   });
 
   it("reads once without modifying configuration, cloning repositories or creating worker state", async () => {
-    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
-    await mkdir(temporary, { recursive: true });
-    const directory = await mkdtemp(path.join(temporary, "config "));
-    directories.push(directory);
-    const local = resolveWorkerPaths(directory);
+    const { directory, local } = await fixture("config");
     await mkdir(local.stateDirectory);
     const source = stringify({ worker: { repositories: [{ ...repo, path: "../missing-repo" }] } });
     await writeFile(local.configFile, source);
@@ -110,12 +137,72 @@ describe("worker configuration", () => {
     expect((await readWorkerConfiguration(local)).maxConcurrent).toBe(4);
   });
 
+  it.each([false, true])("uses defaults when configuration is absent without creating files (state directory exists: %j)", async (stateExists) => {
+    const { directory, local } = await fixture("missing");
+    if (stateExists) await mkdir(local.stateDirectory);
+    expect(await readWorkerConfiguration(local)).toEqual(defaults);
+    expect(await readdir(directory)).toEqual(stateExists ? [".daynight"] : []);
+    if (stateExists) expect(await readdir(local.stateDirectory)).toEqual([]);
+  });
+
+  it.each([
+    ["# Connection settings\nserverUrl: https://daynight.example\n", {}],
+    ["# Explicit defaults\nworker: {}\n", {}],
+    ["# Partial worker settings\nworker:\n  maxConcurrent: 4\n", { maxConcurrent: 4 }],
+  ] as const)("reads an existing partial configuration without changing its bytes: %s", async (source, configured) => {
+    const { directory, local } = await fixture("partial");
+    await mkdir(local.stateDirectory);
+    await writeFile(local.configFile, source);
+    expect(await readWorkerConfiguration(local)).toEqual({ ...defaults, ...configured });
+    expect(await readFile(local.configFile, "utf8")).toBe(source);
+    expect(await readdir(local.stateDirectory)).toEqual(["config.yml"]);
+    expect(await readdir(directory)).toEqual([".daynight"]);
+  });
+
+  it("propagates unreadable configuration errors without substituting defaults", async () => {
+    const { directory, local } = await fixture("unreadable");
+    const failure = new Error("Configuration read denied.", { cause: Object.assign(new Error("Permission denied."), { code: "EACCES" }) });
+    vi.spyOn(configurationFiles, "readConfigurationSource").mockRejectedValueOnce(failure);
+    await expect(readWorkerConfiguration(local)).rejects.toBe(failure);
+    expect(await readdir(directory)).toEqual([]);
+  });
+
+  it("rejects invalid filesystem locations without treating them as missing configuration", async () => {
+    const { directory, local } = await fixture("invalid-path");
+    await writeFile(local.stateDirectory, "not a directory");
+    await expect(readWorkerConfiguration(local)).rejects.toThrow("Cannot read configuration file");
+    await rm(local.stateDirectory);
+    await mkdir(local.configFile, { recursive: true });
+    await expect(readWorkerConfiguration(local)).rejects.toThrow("Cannot read configuration file");
+    expect(await readdir(directory)).toEqual([".daynight"]);
+    expect(await readdir(local.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects dangling configuration and ancestor symlinks", async () => {
+    const { directory, local } = await fixture("dangling-link");
+    await mkdir(local.stateDirectory);
+    await symlink(path.join(directory, "missing-config"), local.configFile);
+    await expect(readWorkerConfiguration(local)).rejects.toThrow("Cannot read configuration file");
+    await rm(local.stateDirectory, { recursive: true });
+    await symlink(path.join(directory, "missing-state"), local.stateDirectory);
+    await expect(readWorkerConfiguration(local)).rejects.toThrow("Cannot read configuration file");
+    expect(await readdir(directory)).toEqual([".daynight"]);
+  });
+
+  it.each([false, true])("preserves cancellation before reading configuration (file exists: %j)", async (fileExists) => {
+    const { directory, local } = await fixture("cancelled");
+    const source = "worker: {}\n";
+    if (fileExists) { await mkdir(local.stateDirectory); await writeFile(local.configFile, source); }
+    const controller = new AbortController();
+    const reason = new Error("Configuration read cancelled.");
+    controller.abort(reason);
+    await expect(readWorkerConfiguration(local, controller.signal)).rejects.toBe(reason);
+    expect(await readdir(directory)).toEqual(fileExists ? [".daynight"] : []);
+    if (fileExists) expect(await readFile(local.configFile, "utf8")).toBe(source);
+  });
+
   it("rejects physical aliases between repositories or into state", async () => {
-    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
-    await mkdir(temporary, { recursive: true });
-    const directory = await mkdtemp(path.join(temporary, "aliases "));
-    directories.push(directory);
-    const local = resolveWorkerPaths(directory);
+    const { directory, local } = await fixture("aliases");
     await mkdir(local.stateDirectory);
     const target = path.join(directory, "repository");
     const alias = path.join(directory, "alias");
@@ -130,11 +217,7 @@ describe("worker configuration", () => {
   });
 
   it("distinguishes missing repository destinations with native filesystem rules and removes comparison probes", async () => {
-    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
-    await mkdir(temporary, { recursive: true });
-    const directory = await mkdtemp(path.join(temporary, "destinations "));
-    directories.push(directory);
-    const local = resolveWorkerPaths(directory);
+    const { directory, local } = await fixture("destinations");
     await mkdir(local.stateDirectory);
     await writeFile(local.configFile, stringify({ worker: { repositories: [
       { ...repo, path: "../first" }, { remote: "https://other.example/team/r", path: "../second" },

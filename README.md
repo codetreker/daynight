@@ -110,7 +110,9 @@ selection, startup files and activation.
 Install Git, Herdr 0.9.5 or newer with the supported API, and your selected
 Copilot or Codex CLI. Authenticate Daynight with `daynight login`, configure
 native/provider credentials and the official Herdr integration explicitly, then
-add repositories under `worker` in `~/.daynight/config.yml`:
+select the repositories from which to acquire tasks under `worker` in
+`~/.daynight/config.yml`. Omitted runtime settings use their defaults; an omitted
+repository list selects no repositories:
 
 ```yaml
 worker:
