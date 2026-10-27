@@ -28,7 +28,7 @@ flowchart LR
   Tx --> Snapshot
   Snapshot --> Stable[稳定任务索引与布局]
   Snapshot --> Clock[项目时钟与已保存阈值]
-  Stable --> Cards[Task 卡片和独立任务行]
+  Stable --> Cards[Task 卡片、独立任务行和 Goal 子任务行]
   Clock --> Cards
 ```
 
@@ -142,7 +142,7 @@ ProjectSettingsPanel 按 user/project 键隔离，成员查看权威值，管理
 失败保留明确错误、阻止 Save 并提供只读重试。路由离开或 abort 仅取消旧客户端工作，不能证明远端未提交。
 共享 foreground request guard 保留同用户表单与焦点，换号 generation 使旧读写失效。
 
-`TaskExecutionPresentation` 在图卡片与独立任务行复用耗时、提醒和可访问说明。
+`TaskExecutionPresentation` 在图卡片与独立任务行复用耗时、提醒和可访问说明，并为 Goal 子任务行复用耗时本身。
 进行中为当前服务端显示时间减起点，完成为终点减起点，未知起点不显示耗时。
 共享 `taskExecution` 以 `allowAgents=true`、进行中状态和已知起点作为提醒的必要条件，
 再严格比较原始毫秒值 `elapsed > executionWarningMinutes * 60_000`，格式化仅影响文字。
@@ -153,7 +153,13 @@ ProjectSettingsPanel 按 user/project 键隔离，成员查看权威值，管理
 time 使用 `PT<秒数>S` 语义时长；可见文字对小于一分钟及 d/h/min 或天/小时/分钟做本地化向下取整。
 节点和独立行保留原可访问名称，精确原始起止、耗时和阈值经 aria-describedby/time title 提供。
 独立行的可见新元数据对名称计算隐藏，计时 tick 不改变按钮名称；没有 alert/status/live-region 逐秒广播。
-完成、未知与进行中都保留现有焦点和控制；显式外部边、链外卡片及选中/前置强调不被琥珀提醒覆盖。链汇总没有单任务耗时。
+完成、未知与进行中都保留现有焦点和控制；显式外部边、链外卡片及选中/前置强调不被琥珀提醒覆盖。
+
+`ChainList` 的 memoized `GoalTaskRow` 独立消费 `useTaskExecution`，共享项目已有 provider 和一秒 ticker。
+`todo`、未知起点及完成态未知终点由共享计时判定返回 null，不补造元数据时间；完成值只取持久端点差。
+标题保持独立 `.root-title` 文本，后接 `TaskExecutionDuration`，两者使用行内排版；空间不足时自然换行，耗时允许内部换行且不省略文本，状态及箭头保留各自空间。
+耗时外层对按钮名称计算隐藏，`time` 保留机器可读时长；`tooltip="duration"` 仅显示格式化耗时，避免把图卡片和独立行的阈值或提醒说明带入子任务行。
+局部 tick 不重建整链成员排序、Goal 汇总或任务触发按钮，不改变展开和焦点，也不新增逐行读取或定时器。链汇总没有单任务耗时。
 
 ## 验证与交付
 
@@ -161,6 +167,7 @@ time 使用 `PT<秒数>S` 语义时长；可见文字对小于一分钟及 d/h/m
 项目设置验证覆盖默认值、项目隔离、管理员写入与成员只读、锁后降权、并发单胜者、过期同值冲突、严格输入及设置页面状态。
 卡片用确定性时钟验证 `allowAgents=true` 时 59:59、60:00、60:01 的精确边界，以及 `allowAgents=false` 超阈值时保留耗时且无提醒。验证自动推进、后台恢复、错误墙钟、设置重新判断、完成冻结、未知值、图身份与焦点不变，
 并以真实服务、隔离 PostgreSQL、生产 Web 和实际 CLI 验证真实阈值跨越与完整数据链路；不要求在持续前进的数据库时钟中命中精确相等瞬间。
+Goal 子任务行另覆盖两种许可下的分钟推进、45 分钟完成冻结、待处理和缺少端点隐藏、生命周期更新、可见性恢复、双语多天耗时及窄屏换行，确认共享单个 ticker、名称和焦点稳定。
 
 服务端使用文档规定的 `scripts/check.sh` 与 Go 覆盖率门槛；CLI 与 Web 运行各自 README 规定的类型、测试、构建和适用接受性检查。
 

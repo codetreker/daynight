@@ -448,23 +448,32 @@ unsubscribe and provider unmount release timer/listener work. There is no new
 blur listener, per-card request or server worker. Clock samples and settings stay
 outside graph-index, projection and layout dependencies.
 
-Task cards and standalone rows show live elapsed or frozen completed duration.
-Unknown starts show no inferred duration. For running tasks with `allowAgents=true`,
-an exact millisecond comparison strictly above saved minutes adds amber treatment,
+Task cards, standalone rows and Goal child rows show live elapsed or frozen
+completed duration. Todo tasks and incomplete intervals show no inferred duration.
+On cards and standalone rows, running tasks with `allowAgents=true` use an exact
+millisecond comparison strictly above saved minutes to add amber treatment,
 icon and Possibly stuck / 可能卡住了 while retaining the running status. Tasks
 with `allowAgents=false` retain live duration without warning text, styling or
 accessible warning meaning; completion removes any warning. Localized
 text distinguishes less than one minute and uses floored day/hour/minute units
-without changing comparison. Semantic `time`, its title and `aria-describedby`
-provide exact endpoints, elapsed duration and saved threshold. Button names stay
+without changing comparison. On cards and standalone rows, semantic `time`,
+its title and `aria-describedby` provide exact endpoints, elapsed duration and
+saved threshold. Button names stay
 stable across ticks, and no live region announces every update.
 
 The renderer preserves 220×96/136 cards, independent Details/inspection/expansion
 controls, external context borders and selected/prerequisite
 outlines. A 42px bottom reserve keeps English Details clear of elapsed text.
 Standalone visual timing is excluded from button-name calculation while its
-accessible description retains the warning meaning. Chain headers never claim
-an individual task's duration as aggregate execution time.
+accessible description retains the warning meaning. Goal child rows reuse
+`useTaskExecution` and `TaskExecutionDuration` after their title, with a clock icon
+and muted localized text. The duration-only tooltip omits threshold and warning
+meaning; those remain owned by cards and standalone rows. The timing subtree is
+excluded from the child button name, so ticks preserve its accessible name and
+focus. Inline titles and full duration text wrap within the available width,
+including multi-day values on narrow screens. Rows share the existing project
+clock without per-row timers or requests. Chain headers never claim an individual
+task's duration as aggregate execution time.
 
 While membership loads, the project heading reserves complete action geometry,
 including localized links and the wider administrator badge. Its inaccessible
@@ -613,8 +622,9 @@ priority preserves top-level Goal ordering. Other starting tasks in a merge are
 included, while external prerequisite context is excluded. The
 list always retains `done`, `in_progress` and `todo` children; completed tasks
 remain visible. The chain-level Show completed control applies only to whole
-completed Goals and never filters children. Child rows show their own status
-and applicable ready/blocked markers and open the shared task dialog. The expanded heading offers the representative task's own
+completed Goals and never filters children. Child rows show their own status,
+applicable ready/blocked markers and known execution duration after the title,
+and open the shared task dialog. The expanded heading offers the representative task's own
 details. Aggregate progress still includes that representative. Chain rows
 aggregate only component members: all done means done; otherwise any done or
 in-progress member means in progress; otherwise any todo member means pending;
