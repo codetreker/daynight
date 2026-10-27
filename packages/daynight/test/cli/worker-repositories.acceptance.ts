@@ -92,7 +92,7 @@ const fresh = async () => {
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("Missing worker repository fixture listener.");
   const connection = `serverUrl: http://127.0.0.1:${address.port}\nserverToken: ${token}\n`;
-  const source = `# Existing shared configuration\n${connection}repositories: []\nworker:\n  maxConcurrent: 3\n  agent: codex\n`;
+  const source = `# Existing shared configuration\n${connection}review:\n  repositories: []\nworker:\n  maxConcurrent: 3\n  agent: codex\n`;
   await writeFile(configuration, source, { mode: 0o600 });
   const decoded = async (): Promise<Record<string, unknown>> => parse(await readFile(configuration, "utf8")) as Record<string, unknown>;
   const unchanged = async (expected = source): Promise<void> => {
@@ -121,7 +121,7 @@ it("adds, lists and removes existing remote Projects through the installed launc
   expect(listed.code, listed.stderr).toBe(0);
   expect(listed.stderr).toBe("");
   expect(JSON.parse(listed.stdout)).toEqual(expected);
-  expect(await f.decoded()).toMatchObject({ serverToken: token, repositories: [], worker: { agent: "codex", maxConcurrent: 3, repositories: expected } });
+  expect(await f.decoded()).toMatchObject({ serverToken: token, review: { repositories: [] }, worker: { agent: "codex", maxConcurrent: 3, repositories: expected } });
   const text = await pipe(["worker", "repo", "list"], f.home);
   expect(text.code, text.stderr).toBe(0);
   expect(text.stdout).toContain(firstId);
@@ -130,7 +130,7 @@ it("adds, lists and removes existing remote Projects through the installed launc
   expect((await pipe(["worker", "repo", "add", "--project", firstId], f.home)).code).toBe(0);
   expect(await readFile(f.configuration, "utf8")).toBe(beforeNoop);
   for (const project of projects) expect((await pipe(["worker", "repo", "remove", "--project", project.id], f.home)).code).toBe(0);
-  expect(await f.decoded()).toMatchObject({ serverToken: token, repositories: [], worker: { agent: "codex", maxConcurrent: 3, repositories: [] } });
+  expect(await f.decoded()).toMatchObject({ serverToken: token, review: { repositories: [] }, worker: { agent: "codex", maxConcurrent: 3, repositories: [] } });
   expect((await pipe(["worker", "repo", "list"], f.home)).stdout).toBe("No worker repositories configured.\n");
   expect(await readdir(f.home)).toEqual([".daynight"]);
   expect(await readdir(path.dirname(f.configuration))).toEqual(["config.yml"]);
@@ -223,10 +223,10 @@ it.skipIf(process.platform === "win32")("refuses a concurrent worker repository 
 
 it.skipIf(process.platform === "win32")("preserves unrelated configuration changes made while selecting a Project", async () => {
   const f = await fresh();
-  const concurrent = `# Concurrent independent settings\n${f.connection}pollIntervalMs: 1800\nworker:\n  maxConcurrent: 9\n  agent: codex\n`;
+  const concurrent = `# Concurrent independent settings\n${f.connection}review:\n  pollIntervalMs: 1800\nworker:\n  maxConcurrent: 9\n  agent: codex\n`;
   const result = await terminal(["worker", "repo", "add"], f.home, [{ waitFor: addPrompt, write: { file: f.configuration, contents: concurrent }, input: "a\r" }]);
   expect(result.code, result.stderr).toBe(0);
-  expect(await f.decoded()).toMatchObject({ serverToken: token, pollIntervalMs: 1800, worker: { maxConcurrent: 9, agent: "codex", repositories: projects.map(({ id, repoUrl }) => ({ projectId: id, remote: repoUrl })) } });
+  expect(await f.decoded()).toMatchObject({ serverToken: token, review: { pollIntervalMs: 1800 }, worker: { maxConcurrent: 9, agent: "codex", repositories: projects.map(({ id, repoUrl }) => ({ projectId: id, remote: repoUrl })) } });
   expect(await readdir(f.home)).toEqual([".daynight"]);
   expect(await readdir(path.dirname(f.configuration))).toEqual(["config.yml"]);
 });
