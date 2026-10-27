@@ -1,6 +1,6 @@
 # Worker 架构设计
 
-状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 与 retry/release/transfer/resume 人工管理命令已接入这些模块，服务端使用终止后新执行协议；完整平台验收仍须独立核验。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
+状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run、attach 与 retry/release/transfer/resume 人工管理命令已接入这些模块，服务端使用终止后新执行协议；完整平台验收仍须独立核验。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
 
 ## 目标与当前基础
 
@@ -257,7 +257,7 @@ Herdr daemon 的子进程环境设置 `XDG_CONFIG_HOME=h/c`、`XDG_STATE_HOME=h/
 
 遵守继承 HISTFILE 的 Bash/Zsh 将历史写入私有文件，人工 attachment 也携带同一值。这不是 shell/profile sandbox：自定义 rc 可覆盖变量，其他 shell 的历史规则及 APPDATA 等位置没有通用隔离保证。
 
-私有 config 固定 `onboarding=false` 与 `[session] resume_agents_on_restore=false`；已有内容不匹配时明确拒绝。Herdr 只恢复布局和原生引用，worker 读取管理/终止意图及归属后唯一决定 native 启动/恢复。连接已有实例不停止其存活 agent。人工 attachment 返回同一私有环境的结构化 executable/arguments/environment/unsetEnvironment，不输出全量认证环境，也不等于人工命令已经交付。
+私有 config 固定 `onboarding=false` 与 `[session] resume_agents_on_restore=false`；已有内容不匹配时明确拒绝。Herdr 只恢复布局和原生引用，worker 读取管理/终止意图及归属后唯一决定 native 启动/恢复。连接已有实例不停止其存活 agent。人工 attachment 返回同一私有环境的结构化 executable/arguments/environment/unsetEnvironment，供 `daynight worker attach` 启动客户端，不输出全量认证环境。
 
 `ensureInstance` 先检查两个实际端点，已存活实例须通过 `ping` 的版本/协议/能力检查、`session.snapshot` 和 API/client 两端就绪；仅 ping 不证明布局恢复完成。支持基线为 Herdr 0.9.5、protocol 22；不兼容或权限/协议错误保留现有实例并报告，不能当作不存在而另起服务。确认端点缺席时直接启动一个 detached server，stdout/stderr 写私有文件日志，成功就绪后 unref；已完成启动 Operation 的 dispose 或 follower 取消观察不结束已接管的服务。
 
@@ -341,7 +341,7 @@ Agent 按显式 assignment 和技能规则复用已开始执行，不重认领�
 
 Worker 不再核对 PR 合并、解析业务验收或再次 done。它仅按原 claimId 是否还在成功完整自有清单中决定资源收尾；缺席不分类 task 状态，部分/失败清单不用于删除。原生托管验证、完整验收和证据由 agent 负责，不增加报告或验收解释器。
 
-服务端和 typed client 提供受控 claim 管理。`worker retry/release/transfer/resume` 使用同一执行记录和协调函数：前台存在时由它唯一控制 agent；无前台时命令取得相同实例锁，仅处理指定执行。人工 attach 沿既有 descriptor 进入原会话。Retry 只为同一有效 claim 授权一次额外恢复，累计预算、原冻结配置和资源身份保留；并发或重复请求不累加授权。
+服务端和 typed client 提供受控 claim 管理。`worker retry/release/transfer/resume` 使用同一执行记录和协调函数：前台存在时由它唯一控制 agent；无前台时命令取得相同实例锁，仅处理指定执行。人工通过 `daynight worker attach` 沿既有 descriptor 进入原会话。Retry 只为同一有效 claim 授权一次额外恢复，累计预算、原冻结配置和资源身份保留；并发或重复请求不累加授权。
 
 Release/transfer 先按当前认证身份读取项目权限及具体 task，验证 source owner/admin 决策；当前管理员与 source 的原 userId 分别保留。配置 origin 必须匹配原记录，不向新服务提交旧记录。随后在同一 source 行记录原 claim、精确版本和具体管理意图，抑制普通输入和恢复，完成全部本地终止清理后再提交远端变更。Transfer 保存明确目标身份及新 claimId/worktreeId，不传输 source SQLite 快照、不预登记未授予的 target，也不运输未提交文件或 native history。
 
@@ -387,7 +387,9 @@ Ctrl+C 先取消并等待常规收尾发现循环及全部 per-claim job 结束�
 
 运行时向 stderr 输出生命周期事件，并按启动日期写 worker JSONL。记录 timestamp、kind/message、workerId、实际平台和可用的 origin/project/task/claim、local status、repositoryPath、agent、recovery、cleanup 及 error/cause。已知服务 token 及其编码形式在序列化后脱敏，不记录完整 prompt 或凭据参数；错误和日志写入失败保持可见。数据库保留原暂停/清理错误，日志不参与授权判断。
 
-首次完整 inventory、私有 managed instance 和 snapshot 成功后才打印 attach descriptor，避免人工入口先于 false-auto-restore 配置就绪。操作者在另一终端按 descriptor 的 executable/arguments 启动客户端，仅给该进程应用 environment 并移除 unsetEnvironment 指定的身份。客户端的私有 XDG 选择同一 Herdr；已有 task pane 的原 native XDG 与私有 HISTFILE 不被改写，descriptor 不复制认证值。
+首次完整 inventory、私有 managed instance 和 snapshot 成功后打印 `daynight worker attach` 提示，避免人工入口先于 false-auto-restore 配置就绪。该命令懒加载独立客户端入口，要求交互式终端，不读取业务配置、凭据、SQLite 或 worker 实例锁，不调用服务端。入口复用 attachment descriptor，为客户端应用其 environment 并移除 unsetEnvironment 指定的身份；私有 XDG 选择原 Herdr，已有 task pane 的原 native XDG 与私有 HISTFILE 不被改写。
+
+连接只接受实际存在且兼容的原会话；会话不可用时报告并指向 `daynight worker run`。客户端使用 Herdr 0.9.5 的直接 `client` 模式，跳过可自动启动 daemon 的普通 attach 分派，因此端点检查与连接之间服务消失也不会新建实例。客户端继承终端 stdio，生命周期不受 RPC Operation 的期限约束。正常 detach 保留 daemon 与原 agent；中断只作用于客户端。启动失败、非零退出和信号结果保持可见，不发送 server.stop 或改变 claim。该入口及保留私有目录的取舍见[人工连接决策](../../.agents/notes/implemented/feature/2026-10-27-worker-attach-command.md)。
 
 部署后按一次具体 task 过滤 `taskId` 与 `claimId`，核对 claim→pending/active→pane→清理日志及 SQLite 当前记录；示意：`jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jsonl>`。日志结构须保留这些可查询字段。
 

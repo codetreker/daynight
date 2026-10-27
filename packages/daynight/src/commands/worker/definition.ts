@@ -16,6 +16,11 @@ export const workerDefinition: CommandDefinition = {
     options: [help],
     details: "Read worker settings from ~/.daynight/config.yml at startup.\nState: ~/.daynight/worker/ (fixed to the current user's home directory).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
   }, {
+    name: "attach",
+    description: "Attach an interactive terminal to the running worker's Herdr session",
+    options: [help],
+    details: "Connect to the existing private worker Herdr session. Start it with daynight worker run first. Requires an interactive terminal. Detaching leaves the worker and its agents running.",
+  }, {
     name: "retry",
     description: "Authorize one more recovery attempt for a paused original claim",
     arguments: task,
