@@ -61,7 +61,9 @@ owner marker so a later attempt can revalidate and continue. Only after other
 content is gone does it unlink `.git` and remove the leaf nonrecursively. Once
 the leaf is absent, targeted locked-worktree removal discards its administrative
 registration. Repeating a completed removal succeeds when both are absent.
-Branch and task history remain; done/release/transfer share this terminal rule.
+Branch and task history remain; done/release/withdrawal share this terminal rule.
+The [force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes
+transfer while retaining the same inventory-driven terminal resource cleanup.
 
 An interruption between final pointer unlink and leaf removal leaves a present
 but ambiguous directory. Even an empty leaf with matching inode is refused and

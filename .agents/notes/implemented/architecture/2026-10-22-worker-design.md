@@ -153,7 +153,10 @@ local-records decision replaces that continuity assumption with terminal source
 cleanup and a fresh target execution. The
 [manual-control decision](2026-10-27-worker-manual-control.md) replaces the
 service continuity checks with fresh claim/worktree identities and strict
-rejection of the obsolete confirmation input.
+rejection of the obsolete confirmation input. The
+[force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) then removes
+transfer and uses an atomic manual-control reset, with original worker cleanup
+triggered by complete inventory absence.
 
 Herdr idle/done is only an execution observation. The agent performs task
 acceptance, records evidence and submits final claim-bound done. Conflicting or

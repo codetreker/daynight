@@ -42,7 +42,7 @@ Task creation and general editing use the CLI. The Web app provides browsing,
 status and execution-setting controls, task deletion and attachment management.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
-retry/release/transfer/resume controls. Complete platform acceptance remains
+retry/release/resume controls. Complete platform acceptance remains
 separate from command availability; the
 [requirements](docs/spec/daynight-worker.md) and
 [design](docs/design/daynight-worker.md) define those boundaries.
@@ -154,7 +154,7 @@ session ID. A missing session ID produces Warning and a fresh conversation in th
 same worktree; a known ID uses native resume. Cleanup timers and recovery counts
 are process-local, and restarted agents use current applicable settings.
 
-Stop the runner before `worker retry/release/transfer/resume`; the commands use
+Stop the runner before `worker retry/release/resume`; the commands use
 its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)
 explains version checks, remote-result handling and resource cleanup.
 

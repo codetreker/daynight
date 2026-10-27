@@ -18,7 +18,6 @@ const owner = uuid(1), projectId = uuid(2), taskId = uuid(3), claimId = uuid(4),
 const time = "2026-10-27T00:00:00Z";
 const machine = { id: uuid(7), name: "source" };
 const configuration: ExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 0 };
-const target: Extract<WorkerControlRequest, { kind: "transfer" }>["target"] = { userId: uuid(10), workerId: uuid(11), machine: { id: uuid(12), name: "target" }, platform: "macos", agent: "copilot" };
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-control-tests/", import.meta.url));
 const resources: { directory: string; store: WorkerStore }[] = [];
 const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
@@ -43,7 +42,6 @@ const fixture = (local = true) => {
   const remote: WorkerRemote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => owner), readTask: vi.fn(async () => observed), authorizeControl: vi.fn(async () => {}),
     release: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.status).toBe("active"); order.push("release"); observed = remoteTask({ ...claim, state: "released" }, input.version + 1n); return observed; }),
-    transfer: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.status).toBe("active"); order.push("transfer"); observed = remoteTask({ ...claim, ...input.target, claimId: input.newClaimId, worktreeId: input.worktreeId, phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
     resume: vi.fn(async (_projectId, _taskId, input) => { order.push("resume"); observed = remoteTask({ ...claim, ...input, userId: owner, state: "active", phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
     resolveProject: vi.fn(), ownInventory: vi.fn(), candidates: vi.fn(), claim: vi.fn(), update: vi.fn(),
   };
@@ -52,91 +50,60 @@ const fixture = (local = true) => {
   return { store, project, identity, resourceOwner, remote, options, submit, coordinator, events, order, observe: (task: Task) => { observed = task; }, current: () => store.getTask(identity)! };
 };
 const release = { kind: "release", taskId, claimId, version: 8n } as const;
-const transfer = { kind: "transfer", taskId, claimId, version: 8n, target } as const;
 afterEach(() => {
   vi.restoreAllMocks();
   for (const { store, directory } of resources.splice(0)) { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
 describe("synchronous worker source management", () => {
-  it.each([release, transfer])("stops the source, submits $kind, then deletes only after the grant is confirmed", async (request) => {
+  it.each([release])("stops the source, submits $kind, then deletes only after the grant is confirmed", async (request) => {
     const f = fixture();
     const result = await f.submit(request);
     expect(f.order.filter((entry) => entry !== "management-request")).toEqual(["stop-close", request.kind, "delete-done"]);
     expect(f.coordinator.cleanupSource).toHaveBeenCalledWith(f.identity, { deleteWorktree: false });
     expect(f.coordinator.completeSource).toHaveBeenCalledExactlyOnceWith(f.resourceOwner);
     expect(result.task).toMatchObject({ status: "done", claimId, agent: "copilot", sessionId: null });
-    const input = request.kind === "release" ? vi.mocked(f.remote.release).mock.calls[0]![2] : vi.mocked(f.remote.transfer).mock.calls[0]![2];
+    const input = vi.mocked(f.remote.release).mock.calls[0]![2];
     expect(input).toMatchObject({ claimId, version: 8n, stoppedConfirmed: true });
   });
 
-  it("prints fresh target identities before transfer submission without registering target state", async () => {
-    const f = fixture();
-    const original = vi.mocked(f.remote.transfer).getMockImplementation()!;
-    vi.mocked(f.remote.transfer).mockImplementationOnce(async (...args) => {
-      const input = args[2];
-      expect(input.newClaimId).not.toBe(claimId); expect(input.worktreeId).not.toBe(worktreeId);
-      expect(f.events).toContainEqual(expect.objectContaining({ kind: "management-request", message: expect.stringContaining(input.newClaimId) }));
-      expect(f.events[0]!.message).toContain(input.worktreeId);
-      expect(f.store.listTasks()).toEqual([f.current()]);
-      return original(...args);
-    });
-    await f.submit(transfer);
-    expect(f.store.listTasks()).toHaveLength(1);
-    expect(f.remote.authorizeControl).toHaveBeenNthCalledWith(1, projectId, owner, undefined, f.options.signal);
-    expect(f.remote.authorizeControl).toHaveBeenNthCalledWith(2, projectId, owner, target.userId, f.options.signal);
-  });
-
-  it.each([release, transfer])("checks source permission before any $kind resource changes", async (request) => {
+  it.each([release])("checks source permission before any $kind resource changes", async (request) => {
     const f = fixture(); const denied = new Error("Source membership denied");
     vi.mocked(f.remote.authorizeControl).mockRejectedValue(denied);
     await expect(f.submit(request)).rejects.toBe(denied);
-    expect(f.coordinator.cleanupSource).not.toHaveBeenCalled(); expect(f.remote.release).not.toHaveBeenCalled(); expect(f.remote.transfer).not.toHaveBeenCalled();
+    expect(f.coordinator.cleanupSource).not.toHaveBeenCalled(); expect(f.remote.release).not.toHaveBeenCalled();
     expect(f.current().status).toBe("active");
   });
 
-  it("checks target membership before stopping transfer source", async () => {
-    const f = fixture();
-    vi.mocked(f.remote.authorizeControl).mockImplementation(async (_project, _owner, targetUserId) => { if (targetUserId !== undefined) throw new Error("Target is not a member"); });
-    await expect(f.submit(transfer)).rejects.toThrow("Target is not a member");
-    expect(f.coordinator.cleanupSource).not.toHaveBeenCalled(); expect(f.remote.transfer).not.toHaveBeenCalled();
-  });
-
-  it.each([release, transfer])("preserves a stale explicit version before stopping $kind source", async (request) => {
+  it.each([release])("preserves a stale explicit version before stopping $kind source", async (request) => {
     const f = fixture(); f.observe(remoteTask(claim, 9n));
     await expect(f.submit(request)).rejects.toThrow("explicit task version no longer matches");
-    expect(f.coordinator.cleanupSource).not.toHaveBeenCalled(); expect(f.remote.release).not.toHaveBeenCalled(); expect(f.remote.transfer).not.toHaveBeenCalled();
+    expect(f.coordinator.cleanupSource).not.toHaveBeenCalled(); expect(f.remote.release).not.toHaveBeenCalled();
   });
 
   it("allows an authorized administrator to release another owner's local source", async () => {
     const f = fixture(); vi.mocked(f.remote.currentUserId).mockResolvedValue(uuid(90));
     await f.submit(release);
-    expect(f.remote.authorizeControl).toHaveBeenCalledWith(projectId, owner, undefined, f.options.signal);
+    expect(f.remote.authorizeControl).toHaveBeenCalledWith(projectId, owner, f.options.signal);
     expect(f.current().status).toBe("done");
   });
 
-  it.each([release, transfer])("rejects definite $kind refusal without deleting the source or querying again", async (request) => {
+  it.each([release])("rejects definite $kind refusal without deleting the source or querying again", async (request) => {
     const f = fixture();
     const refusal = new ApiError({ operation: `worker.${request.kind}` }, "response", { cause: new Error("Version conflict"), status: 409, confirmedRefusal: true });
-    if (request.kind === "release") vi.mocked(f.remote.release).mockRejectedValueOnce(refusal);
-    else vi.mocked(f.remote.transfer).mockRejectedValueOnce(refusal);
+    vi.mocked(f.remote.release).mockRejectedValueOnce(refusal);
     await expect(f.submit(request)).rejects.toBe(refusal);
     expect(f.remote.readTask).toHaveBeenCalledOnce(); expect(f.coordinator.completeSource).not.toHaveBeenCalled();
     expect(f.current().status).toBe("active");
   });
 
-  it.each([release, transfer])("recovers a lost $kind response by one GET without replaying the write", async (request) => {
+  it.each([release])("recovers a lost $kind response by one GET without replaying the write", async (request) => {
     const f = fixture();
-    if (request.kind === "release") {
-      const original = vi.mocked(f.remote.release).getMockImplementation()!;
-      vi.mocked(f.remote.release).mockImplementationOnce(async (...args) => { await original(...args); throw new Error("Response lost"); });
-    } else {
-      const original = vi.mocked(f.remote.transfer).getMockImplementation()!;
-      vi.mocked(f.remote.transfer).mockImplementationOnce(async (...args) => { await original(...args); throw new Error("Response lost"); });
-    }
+    const original = vi.mocked(f.remote.release).getMockImplementation()!;
+    vi.mocked(f.remote.release).mockImplementationOnce(async (...args) => { await original(...args); throw new Error("Response lost"); });
     expect((await f.submit(request)).task?.status).toBe("done");
     expect(f.remote.readTask).toHaveBeenCalledTimes(2);
-    expect(request.kind === "release" ? f.remote.release : f.remote.transfer).toHaveBeenCalledOnce();
+    expect(f.remote.release).toHaveBeenCalledOnce();
     expect(f.coordinator.completeSource).toHaveBeenCalledOnce();
   });
 
@@ -154,13 +121,6 @@ describe("synchronous worker source management", () => {
     vi.mocked(f.remote.readTask).mockResolvedValueOnce(remoteTask()).mockRejectedValueOnce(unavailable);
     await expect(f.submit(release)).rejects.toMatchObject({ errors: [lost, unavailable] });
     expect(f.coordinator.completeSource).not.toHaveBeenCalled(); expect(f.current().status).toBe("active");
-  });
-
-  it("does not claim a different transfer won the requested management decision", async () => {
-    const f = fixture();
-    vi.mocked(f.remote.transfer).mockImplementationOnce(async () => { f.observe(remoteTask({ ...claim, claimId: uuid(99) }, 9n)); throw new Error("Response lost"); });
-    await expect(f.submit(transfer)).rejects.toThrow("result is unknown");
-    expect(f.coordinator.completeSource).not.toHaveBeenCalled();
   });
 
   it("retains the source if stopping fails and exposes post-success deletion failure for later run cleanup", async () => {

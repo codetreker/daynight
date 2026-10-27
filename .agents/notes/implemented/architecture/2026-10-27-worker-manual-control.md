@@ -4,13 +4,13 @@ Status: implemented
 
 ## Problem
 
-An operator must be able to retry a paused execution or release, transfer and
+An operator must be able to retry a paused execution or release and
 resume a task without racing the worker's automatic recovery. A process can die
 between source cleanup, a remote ownership change and local acknowledgement.
 Treating that gap as ordinary recovery can restart an already-cleaned source or
-submit the same ownership mutation twice. Source authorization and target
-membership also have different meanings, especially when an administrator
-manages a claim owned by another user.
+submit the same ownership mutation twice. An administrator managing another
+user's claim must retain the execution identity while proving current project
+authority.
 
 The original claim protocol required the source worktree and agent to continue
 after release or transfer. That preserved unpublished work while ownership
@@ -20,7 +20,15 @@ require deleted resources or claim the old native conversation as its own.
 
 ## Decision
 
-Manual commands now require a stopped runner and its exclusive instance lock, with no persistent management intent, under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Release/transfer stop and close before the remote operation and delete the worktree only after confirmed ownership exit. The following preserves the original concurrent-controller design and its durability rationale.
+Manual retry/release/resume commands require a stopped runner and its exclusive
+instance lock, with no persistent management intent, under the
+[simplification decision](../simplification/2026-10-27-worker-claim-records.md).
+Release stops and closes before its remote operation and deletes the worktree
+only after confirmed ownership exit. The
+[force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes transfer
+and adds a Web owner/admin reset without a physical-stop guarantee. The following
+preserves the original transfer/concurrent-controller design and its durability
+rationale as history, not current commands or local storage requirements.
 
 ### Original implementation and rationale
 

@@ -1,4 +1,4 @@
-import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId } from "./client";
+import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, type TaskResponseAdmission } from "./client";
 import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitations, parseMember, parseMembers, parseMemberVersion, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
 import { project, timestamp } from "./parse";
 import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, User } from "./auth-types";
@@ -72,9 +72,13 @@ export const createProject = (input: { readonly name: string; readonly repoUrl: 
   if (input.name.trim() === "" || input.repoUrl.trim() === "" || input.name.includes("\0") || input.repoUrl.includes("\0")) throw new ApiError("protocol");
   return send("/api/v1/projects", "POST", 201, JSON.stringify(input), signal, project, decodeProjectJson);
 };
-export const listMembers = (projectId: string, signal: AbortSignal): Promise<readonly ProjectMember[]> => {
+export const listMembers = (projectId: string, signal: AbortSignal, admission?: TaskResponseAdmission): Promise<readonly ProjectMember[]> => {
   const project = requestId(projectId);
-  return authRead(`${projectUrl(project)}/members`, signal, (data) => parseMembers(data, project), decodeAuthJson);
+  return authOperation(signal, async () => {
+    const response = await request(`${projectUrl(project)}/members`, signal, { headers: { Accept: "application/json" } });
+    if (admission !== undefined) assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+    return json(response, signal, (data) => parseMembers(data, project), decodeAuthJson);
+  });
 };
 export const setMemberRole = (projectId: string, userId: string, input: { readonly version: bigint; readonly role: ProjectRole }, signal: AbortSignal): Promise<ProjectMember> => {
   const project = requestId(projectId), user = requestId(userId);

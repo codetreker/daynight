@@ -297,6 +297,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     const second = tasks[1]!;
     const originalSession = row(second.id)!.session_id!;
     const originalClaim = second.properties.worker!.claimId;
+    const originalClaims = new Map(tasks.map((task) => [task.id, task.properties.worker!]));
     const sentinel = path.join(repositoryPaths[1]!, ".worktrees/daynight", second.id, "uncommitted.txt");
     await writeFile(sentinel, "Keep the original uncommitted task result.\n");
     const sql = new Database(databaseFile, { readonly: true });
@@ -310,7 +311,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     let restartLogOffset = logs.length;
     if (scenario === "inventory-failure") {
       failInventory = true;
-      complete(second);
+      second.properties = { ...second.properties, worker: null };
+      second.status = "todo"; second.ready = true; second.allowAgents = false;
+      second.startedAt = null; second.completedAt = null; second.version += 1n;
       await waitFor("failed own inventory", () => inventoryResponses.some((response) => response.status === 500));
       const processStarts = (await events()).filter((event) => event.kind === "native-start").length;
       await new Promise<void>((resolve) => setTimeout(resolve, 200));
@@ -319,7 +322,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect((await events()).filter((event) => event.kind === "native-start")).toHaveLength(processStarts);
       expect((await events()).some((event) => event.kind === "workspace-close" && event.taskId === second.id)).toBe(false);
       failInventory = false;
-      await waitFor("cleanup after a successful complete inventory", () => row(second.id)?.status === "done");
+      await waitFor("withdrawn claim cleanup after a successful complete inventory", () => row(second.id)?.status === "done");
+      expect(second.properties.worker).toBeNull();
+      expect(second.allowAgents).toBe(false);
       expect(original.child.kill("SIGINT")).toBe(true);
       await expectExit(original.closed, 0);
       await expect(readFile(sentinel)).rejects.toMatchObject({ code: "ENOENT" });
@@ -392,7 +397,8 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       const assignment = assignments[0]!.text!;
       expect(assignment).toContain("worker-managed"); expect(assignment).toContain("using-daynight"); expect(assignment).toContain("execute-task-in-managed");
       expect(assignment).toContain("references/execute-task-in-managed.md"); expect(assignment).not.toContain("worker-fixture-token");
-      expect(JSON.parse(assignment.split("Assignment:")[1]!)).toMatchObject({ projectId: task.projectId, taskId: task.id, claimId: task.properties.worker!.claimId, workerId: task.properties.worker!.workerId, worktreeId: task.properties.worker!.worktreeId, platform: "linux", nativeSessionId: null, configuration: { agent: "codex", model: "fixture-model", args: ["--search"], recoveryLimit: 3 } });
+      const originalClaim = originalClaims.get(task.id)!;
+      expect(JSON.parse(assignment.split("Assignment:")[1]!)).toMatchObject({ projectId: task.projectId, taskId: task.id, claimId: originalClaim.claimId, workerId: originalClaim.workerId, worktreeId: originalClaim.worktreeId, platform: "linux", nativeSessionId: null, configuration: { agent: "codex", model: "fixture-model", args: ["--search"], recoveryLimit: 3 } });
     }
     expect(observed.filter((event) => event.kind === "daemon-start")).toHaveLength(scenario === "inventory-failure" ? 1 : 2);
     expect(observed.filter((event) => event.kind === "daemon-stop")).toHaveLength(scenario === "inventory-failure" ? 1 : 2);

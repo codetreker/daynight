@@ -414,6 +414,22 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.worktrees.has(row.claimId)).toBe(true); expect(f.store.getTask(row)?.status).toBe("active");
   });
 
+
+  it("cleans a force-withdrawn claim from inventory absence when the remote worker record is cleared", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).toEqual(expect.any(String)));
+    const row = f.store.listTasks()[0]!;
+    const original = f.grants.get(row.claimId)!;
+    const withdrawn: Task = { ...original, status: "todo", allowAgents: false, startedAt: null, completedAt: null, version: original.version + 1n, properties: { ...original.properties, worker: null } };
+    f.grants.clear(); f.candidates.splice(0);
+    vi.mocked(f.remote.readTask).mockResolvedValue(withdrawn);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.store.getTask(row)?.status).toBe("done"));
+    expect(f.resources.has(row.claimId)).toBe(false); expect(f.worktrees.has(row.claimId)).toBe(false);
+    expect(f.remote.readTask).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.store.getTask(row)?.sessionId).toBe(row.sessionId);
+  });
+
 });
 
 

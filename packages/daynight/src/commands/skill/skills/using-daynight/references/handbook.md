@@ -106,7 +106,7 @@ new execution interval and clears completion; returning to todo clears both
 endpoints. In_progress to done retains the nullable start and records completion.
 Todo to done records only completion, with unknown duration. Same-status and
 metadata updates preserve timing. Ordinary status changes provide no process ownership,
-release, transfer, stop, or lease semantics. The Web confirms every status choice,
+release, withdrawal, stop, or lease semantics. The Web confirms every status choice,
 including the current status; cancel and Escape submit no request.
 
 **Task deletion.** `task delete <task-id> [--remove-depends] --if-version <version>`

@@ -2,7 +2,7 @@ import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
 import { canonicalId, ProtocolError } from "../../api/parse.js";
-import type { Page, Project, Task, TaskFilters, TaskPlatform, UpdateWorkerClaimInput, WorkerClaimDescriptor, ReleaseWorkerClaimInput, TransferWorkerClaimInput, ResumeWorkerTaskInput } from "../../api/types.js";
+import type { Page, Project, Task, TaskFilters, TaskPlatform, UpdateWorkerClaimInput, WorkerClaimDescriptor, ReleaseWorkerClaimInput, ResumeWorkerTaskInput } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { validateServerToken, validateTokenTransport } from "../../config/server-token.js";
 import { repositoryIdentity } from "../../repository/identity.js";
@@ -12,9 +12,8 @@ export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
-  authorizeControl(projectId: string, originalUserId: string, targetUserId: string | undefined, signal: AbortSignal): Promise<void>;
+  authorizeControl(projectId: string, originalUserId: string, signal: AbortSignal): Promise<void>;
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;
-  transfer(projectId: string, taskId: string, input: TransferWorkerClaimInput, signal: AbortSignal): Promise<Task>;
   resume(projectId: string, taskId: string, input: ResumeWorkerTaskInput, signal: AbortSignal): Promise<Task>;
   resolveProject(repository: { readonly repoUrl: string; readonly projectId?: string }, signal: AbortSignal): Promise<Project>;
   ownInventory(projects: readonly ProjectIdentity[], workerId: string, signal: AbortSignal): Promise<readonly Task[]>;
@@ -79,14 +78,12 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       return principal;
     },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
-    authorizeControl: async (projectId, originalUserId, targetUserId, signal) => {
+    authorizeControl: async (projectId, originalUserId, signal) => {
       const members = await request(signal, (api) => api.listProjectMembers(projectId));
       const current = members.find((member) => member.userId === verifiedUserId());
       if (current === undefined || (current.userId !== originalUserId && current.role !== "admin")) throw new Error("Source management requires its original owner or a current project administrator.");
-      if (targetUserId !== undefined && !members.some((member) => member.userId === targetUserId)) throw new Error("The transfer target must be a current project member.");
     },
     release: (projectId, taskId, input, signal) => request(signal, (api) => api.releaseWorkerClaim(projectId, taskId, input)),
-    transfer: (projectId, taskId, input, signal) => request(signal, (api) => api.transferWorkerClaim(projectId, taskId, input)),
     resume: (projectId, taskId, input, signal) => request(signal, (api) => api.resumeWorkerTask(projectId, taskId, input)),
     resolveProject: async (repository, signal) => {
       const expected = repositoryIdentity(repository.repoUrl);

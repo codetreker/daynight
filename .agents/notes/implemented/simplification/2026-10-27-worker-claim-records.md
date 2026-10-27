@@ -68,11 +68,20 @@ inventory and resource observation starts another attempt. Recovery counts reset
 with the process. Logs diagnose operations and never supply a recovery ledger.
 
 Manual commands require a stopped runner and acquire its same instance lock.
-They synchronously operate on one claim. Release/transfer stop the agent and
+They synchronously operate on one claim. Release stops the agent and
 close its workspace, submit the version-bound remote change, then delete the
 worktree after ownership is confirmed ended. A refusal retains the checkout for
 source recovery. Unknown/interrupted management must be reconciled by the
 operator before restarting run; there is no durable control intent.
+
+The [force-withdrawal decision](../architecture/2026-10-27-worker-force-withdrawal.md)
+removes transfer and exposes a separate Web owner/admin operation. It atomically
+clears the reviewed active/released claim, returns the task to todo, clears timing
+and sets allowAgents=false without asserting that the source process stopped.
+The original worker discovers absence through complete inventory and cleans its
+resources. Release and fresh resume retain their controlled local paths; there
+is no target handoff or local old-schema retirement protocol.
+
 
 This decision supersedes the persistent recovery details in the
 [local records](../architecture/2026-10-26-worker-local-records.md),

@@ -1,7 +1,7 @@
 import { flushSync } from "react-dom";
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from "../features/task-cache/TaskCacheProvider";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
-import { listMembers, logout, me } from "../api/auth";
+import { logout, me } from "../api/auth";
 import type { AuthProvider, CurrentUser, ProjectRole } from "../api/auth-types";
 import { ApiError, invalidateAuthRequests, isAbortError, pauseAuthRequests, subscribeUnauthorized } from "../api/client";
 import type { Project } from "../api/types";
@@ -15,6 +15,7 @@ import { DeviceAuthorizationPage } from "../features/auth/DeviceAuthorizationPag
 import { captureInvitation, clearInvitation } from "../features/auth/invitation";
 import { TaskDetailSessionProvider } from "../features/task-detail/TaskDetailSession";
 import { ProjectPage } from "../features/projects/ProjectPage";
+import { ProjectMembersProvider, useProjectMembers } from "../features/projects/ProjectMembers";
 import { ProjectsPage } from "../features/projects/ProjectsPage";
 import { TaskDetailPage } from "../features/task-detail/TaskDetailPage";
 import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, replaceRoute, type AuthRoute } from "./router";
@@ -45,22 +46,11 @@ const ProjectRoleBadge = ({ role, labels }: { readonly role: ProjectRole | null;
 
 const AuthorizedProject = ({ projectId, user, onOpenMembers }: { readonly projectId: string; readonly user: CurrentUser; readonly onOpenMembers: (project: Project) => void }) => {
   const { messages: { auth: { shell: m, roles } } } = useI18n();
-  const [membership, setMembership] = useState<{ status: "loading" | "ready" | "error" | "unavailable"; role: ProjectRole | null }>({ status: "loading", role: null });
-  const [attempt, setAttempt] = useState(0);
-  useEffect(() => {
-    const controller = new AbortController();
-    setMembership({ status: "loading", role: null });
-    void listMembers(projectId, controller.signal).then((members) => {
-      if (controller.signal.aborted) return;
-      const current = members.find((member) => member.userId === user.id);
-      setMembership(current === undefined ? { status: "unavailable", role: null } : { status: "ready", role: current.role });
-    }).catch((error: unknown) => {
-      if (!controller.signal.aborted && !isAbortError(error)) setMembership({ status: error instanceof ApiError && error.status === 404 ? "unavailable" : "error", role: null });
-    });
-    return () => controller.abort();
-  }, [projectId, user.id, attempt]);
-  if (membership.status === "unavailable") return <AccessUnavailable />;
-  return <>{membership.status === "error" && <div className="notice error" role="alert"><p>{m.permissionsError}</p><button className="button" type="button" onClick={() => setAttempt((value) => value + 1)}>{m.retryPermissions}</button></div>}<ProjectPage projectId={projectId} renderActions={(project) => membership.status === "ready" ? <><ProjectRoleBadge role={membership.role!} labels={roles} /><a className="button" href={`/projects/${projectId}/members`} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenMembers(project); }}>{m.members}</a><a className="button" href={`/projects/${projectId}/settings`} onClick={followLink}>{m.projectSettings}</a></> : <span className="project-title-actions-placeholder" aria-hidden="true"><ProjectRoleBadge role={null} labels={roles} /><span className="button">{m.members}</span><span className="button">{m.projectSettings}</span></span>} /></>;
+  const membership = useProjectMembers(projectId);
+  const current = membership.members.find((member) => member.userId === user.id);
+  const unavailable = membership.status === "ready" && current === undefined || membership.error instanceof ApiError && membership.error.status === 404;
+  if (unavailable) return <AccessUnavailable />;
+  return <>{membership.status === "error" && <div className="notice error" role="alert"><p>{m.permissionsError}</p><button className="button" type="button" onClick={() => membership.retry()}>{m.retryPermissions}</button></div>}<ProjectPage projectId={projectId} renderActions={(project) => membership.status === "ready" ? <><ProjectRoleBadge role={current!.role} labels={roles} /><a className="button" href={`/projects/${projectId}/members`} onClick={(event) => { if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return; event.preventDefault(); onOpenMembers(project); }}>{m.members}</a><a className="button" href={`/projects/${projectId}/settings`} onClick={followLink}>{m.projectSettings}</a></> : <span className="project-title-actions-placeholder" aria-hidden="true"><ProjectRoleBadge role={null} labels={roles} /><span className="button">{m.members}</span><span className="button">{m.projectSettings}</span></span>} /></>;
 };
 
 const ProjectManagementNav = ({ projectId, current }: { readonly projectId: string; readonly current: "settings" | "members" }) => {
@@ -314,7 +304,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} /></div></>;
   if (route.kind === "device") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={() => signOut(returnPath)} onIdentityMismatch={invalidateIdentity} /></div></>;
   return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}<Workspace key={identity} user={session.user} route={route} onSignOut={() => signOut()} blocked={blocked} identityChecking={revalidation !== "idle"}>
-    {cleanupWarning}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <AuthorizedProject key={route.projectId} projectId={route.projectId} user={session.user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={session.user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={session.user} onRemoved={() => navigate("/projects")} /></> : route.kind === "account" ? <AccountPage user={session.user} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
+    {cleanupWarning}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <ProjectMembersProvider key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={session.user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /></ProjectMembersProvider> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={session.user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={session.user} onRemoved={() => navigate("/projects")} /></> : route.kind === "account" ? <AccountPage user={session.user} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
     {creating && <CreateProjectDialog onClose={() => setCreating(false)} onCreated={(project) => { setCreating(false); navigate(`/projects/${project.id}`); }} />}
   </Workspace></TaskDetailSessionProvider></TaskCacheProvider>;
 };

@@ -116,7 +116,7 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
 	ctx := context.Background()
-	owner, target := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
+	owner := workerMember(t, database, project.ID)
 	descriptor := workerDescriptor()
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), descriptor)
 	inventory := func(principal core.Principal, wantClaim string) {
@@ -146,20 +146,23 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 		t.Fatal(err)
 	}
 	inventory(owner, next.ClaimID)
-	targetClaimID := uuid.NewString()
-	task, err = tasks.TransferWorker(ctx, owner, project.ID, task.ID, TransferWorker{Version: task.Version, ClaimID: next.ClaimID, NewClaimID: targetClaimID,
-		Target:     WorkerTarget{UserID: target.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent},
-		WorktreeID: uuid.NewString(), StoppedConfirmed: true})
+	task, err = tasks.WithdrawWorker(ctx, admin, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: next.ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}
 	inventory(owner, "")
-	inventory(target, targetClaimID)
-	task, err = tasks.SetStatus(ctx, target, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &targetClaimID})
+	if task.Properties.Worker != nil || task.AllowAgents {
+		t.Fatal("withdrawn claim remained eligible or retained ownership")
+	}
+	task = updateTask(t, tasks, admin, task, UpdateTask{AllowAgents: pointer(true)})
+	next.ClaimID, next.WorktreeID = uuid.NewString(), uuid.NewString()
+	task = claimWorkerTask(t, tasks, owner, task, next)
+	inventory(owner, next.ClaimID)
+	task, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &next.ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	inventory(target, "")
+	inventory(owner, "")
 	task = setStatusTask(t, tasks, admin, task, core.TaskTodo)
 	fresh := workerDescriptor()
 	fresh.WorkerID = descriptor.WorkerID

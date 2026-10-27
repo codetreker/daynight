@@ -107,7 +107,6 @@ daynight worker repo remove [--project <project-id>]
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
 daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
-daynight worker transfer <task-id> --claim-id <claim-id> --if-version <version> [target options] [--project <project-id>]
 daynight review                     # Show review help
 daynight review run
 daynight review list                 # Also review ls
@@ -1029,7 +1028,7 @@ When the original claim is absent from a successful complete inventory, the
 worker asks its agent to release attributable temporary files, services and
 processes outside the worktree. It waits at most ten minutes for this cleanup
 attempt, stops the agent, closes its workspace, removes the matching worktree
-and marks the local row done. Done, release and transfer have the same terminal
+and marks the local row done. Done, release and force withdrawal have the same terminal
 resource rule. Failed stop or deletion retains responsibility and the error.
 
 Known-target cleanup and shutdown observe that Herdr execution directly;
@@ -1057,7 +1056,7 @@ diagnostic only; they do not supply a second recovery ledger. The
 
 ## Worker manual management
 
-Stop `daynight worker run` before retry, release, transfer or resume. Each command
+Stop `daynight worker run` before retry, release or resume. Each command
 acquires the same instance lock and synchronously handles one specified claim;
 an occupied lock returns an instruction to stop the runner. Management does not
 write a durable intent or coordinate through a background request queue.
@@ -1074,9 +1073,8 @@ and agent type remain; pending rows are started through normal run scheduling.
 After the attempt, run connects to the actual surviving resource. Retry does not
 persist a permit or a cumulative cross-restart budget.
 
-Release and transfer validate current Project access, source owner/admin,
-original claim and exact supplied version. Transfer separately validates the
-target member, automatic permission, platform and prerequisites. Their ordering is:
+Release validates current Project access, source owner/admin, original claim
+and exact supplied version. Its ordering is:
 
 ```text
 notify and stop agent → close workspace → submit remote change
@@ -1106,18 +1104,16 @@ It preserves the explicit manual permission/platform exception, obtains fresh
 claim/worktree identities with current settings, and registers pending with a
 NULL native session ID. Start run to execute it.
 
-```bash
-daynight worker transfer <task-id> --claim-id <source-claim-id> --if-version <version> \
-  --target-user-id <user-id> --target-worker-id <worker-id> \
-  --target-machine-id <machine-id> --target-machine-name <machine-name> \
-  --target-platform <windows|linux|macos> --target-agent <copilot|codex> \
-  --project <project-id>
-```
-
-Transfer preserves in_progress and the ongoing task interval. It installs a new
-claim/worktree identity and permits a different agent type. The receiver only
-registers an actual grant, then starts it normally after any prior claim resources
-are cleaned. No source files, SQLite snapshots or native history are transported.
+Web task details show the current claiming user, machine, agent and phase. The
+original owner or a project admin can confirm **Force withdraw** for active or
+released ownership. This submits the reviewed claim ID and exact version,
+atomically clears worker ownership, returns the task to `todo`, clears both
+execution timestamps and sets `allowAgents=false`. Other task materials remain.
+It requires no stopped confirmation and does not guarantee that the remote agent
+stops immediately. On its next successful complete own-claim inventory, the
+original worker discovers its claim is absent and starts terminal cleanup.
+Automatic selection stays disabled until explicitly enabled again. There is no
+CLI withdrawal command or target-execution handoff.
 
 Fresh IDs are generated and printed before remote submission. An unknown response
 is reconciled by GET without replaying the write. If the result remains unknown

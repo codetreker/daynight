@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
-import type { Task, TaskPlatform, TransferWorkerClaimInput, WorkerClaimDescriptor, WorkerMachine } from "../../api/types.js";
+import type { Task, TaskPlatform, WorkerClaimDescriptor, WorkerMachine } from "../../api/types.js";
 import type { WorkerRepositoryAssignment } from "./coordinator.js";
 import type { WorkerEvent } from "./execution.js";
 import type { WorkerRemote } from "./remote.js";
@@ -10,8 +10,7 @@ import type { ClaimIdentity, LocalTask, ResourceOwner } from "./types.js";
 export type WorkerControlRequest =
   | { kind: "retry"; taskId: string; projectId?: string; claimId: string }
   | { kind: "release"; taskId: string; projectId?: string; claimId: string; version: bigint }
-  | { kind: "resume"; taskId: string; projectId?: string; claimId: string; version: bigint }
-  | { kind: "transfer"; taskId: string; projectId?: string; claimId: string; version: bigint; target: TransferWorkerClaimInput["target"] };
+  | { kind: "resume"; taskId: string; projectId?: string; claimId: string; version: bigint };
 
 type ControlCoordinator = {
   advanceRetry(identity: ClaimIdentity): Promise<void>;
@@ -70,7 +69,7 @@ export const submitWorkerControl = async (options: {
     const project = store.getProject(identity);
     const repository = options.repositories.find((entry) => entry.project.projectId === projectId);
     if (project === null || repository === undefined) throw new Error("Resume requires a configured repository and its current agent settings.");
-    await remote.authorizeControl(projectId, worker.userId, undefined, signal);
+    await remote.authorizeControl(projectId, worker.userId, signal);
     const descriptor: WorkerClaimDescriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent };
     options.emit({ kind: "management-request", message: `Resume ${projectId}/${request.taskId}: previousClaimId=${request.claimId}, claimId=${descriptor.claimId}, worktreeId=${descriptor.worktreeId}.` });
     const granted = await confirmMutation(
@@ -82,7 +81,7 @@ export const submitWorkerControl = async (options: {
   }
   if (source === undefined || source.status === "done") throw new Error("Management requires the original unfinished local execution.");
   if (worker === null || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent) throw new Error("The source claim is no longer the exact active execution on this worker.");
-  await remote.authorizeControl(projectId, worker.userId, undefined, signal);
+  await remote.authorizeControl(projectId, worker.userId, signal);
   if (request.kind === "retry") {
     if (principal !== worker.userId) throw new Error("Retry requires the original authenticated execution owner.");
     if (source.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
@@ -91,22 +90,12 @@ export const submitWorkerControl = async (options: {
     return { task: store.getTask(identity), message: `One recovery attempt completed for claim ${request.claimId}; worker run will connect its actual resources.` };
   }
   exactVersion();
-  if (request.kind === "transfer") await remote.authorizeControl(projectId, worker.userId, request.target.userId, signal);
   signal.throwIfAborted();
   const owner = await coordinator.cleanupSource(identity, { deleteWorktree: false });
-  if (request.kind === "release") {
-    await confirmMutation(
-      () => remote.release(projectId, request.taskId, { claimId: request.claimId, version: request.version, stoppedConfirmed: true }, signal),
-      (task) => matchesTask(task, identity) && task.status === "todo" && task.properties.worker?.claimId === request.claimId && task.properties.worker.state === "released", "release",
-    );
-  } else {
-    const descriptor: WorkerClaimDescriptor = { ...request.target, claimId: randomUUID(), worktreeId: randomUUID() };
-    options.emit({ kind: "management-request", task: source, message: `Transfer ${projectId}/${request.taskId}: sourceClaimId=${request.claimId}, claimId=${descriptor.claimId}, worktreeId=${descriptor.worktreeId}, targetUserId=${request.target.userId}, targetWorkerId=${request.target.workerId}.` });
-    await confirmMutation(
-      () => remote.transfer(projectId, request.taskId, { claimId: request.claimId, version: request.version, stoppedConfirmed: true, newClaimId: descriptor.claimId, worktreeId: descriptor.worktreeId, target: request.target }, signal),
-      (task) => matchesGrant(task, identity, descriptor, request.target.userId), "transfer",
-    );
-  }
+  await confirmMutation(
+    () => remote.release(projectId, request.taskId, { claimId: request.claimId, version: request.version, stoppedConfirmed: true }, signal),
+    (task) => matchesTask(task, identity) && task.status === "todo" && task.properties.worker?.claimId === request.claimId && task.properties.worker.state === "released", "release",
+  );
   await coordinator.completeSource(owner);
   return { task: store.getTask(identity), message: `${request.kind} completed for claim ${request.claimId}; its local resources were removed.` };
 };
