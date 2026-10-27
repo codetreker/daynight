@@ -390,7 +390,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
         expect(heldProjectInventories).toHaveLength(1);
         expect(heldProjectInventories[0]!.writableEnded).toBe(false);
         expect(restartedWorker.child.exitCode).toBeNull();
-        expect(JSON.parse(row(deadlineTask.id).cleanup)).toMatchObject({ ...seededCleanup, result: "timed-out", agentStopped: true, workspaceClosed: true, worktreeDeleted: true });
+        expect(JSON.parse(row(deadlineTask.id).cleanup)).toMatchObject({ ...seededCleanup, result: "timed-out", error: "The original cleanup deadline elapsed; temporary resource cleanup is not proven complete.", agentStopped: true, workspaceClosed: true, worktreeDeleted: true });
         expect(requests.slice(restartRequestOffset).every((request) => request.method === "GET")).toBe(true);
         expect((await events()).filter((event) => event.kind === "native-start")).toHaveLength(2);
       }

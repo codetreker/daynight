@@ -186,7 +186,7 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 [运行时](../../packages/daynight/src/commands/worker/runtime.ts)组合认证、配置、实例锁、本机记录、Git、Herdr、[进程内远端客户端](../../packages/daynight/src/commands/worker/remote.ts)和[协调循环](../../packages/daynight/src/commands/worker/coordinator.ts)。每次远端或本地外部操作有独立 Operation 期限，轮询等待可取消；整个前台进程没有普通一次性命令的总期限。实际平台由 process.platform 映射，未知平台拒绝，WSL Linux 只计 linux。
 
-启动先解析配置、取得排他锁和稳定身份、打开 SQLite 并校验安装包 managed 技能。已授权收尾的发现/job 可立即启动；任何 /me、项目或其他网络请求之前，原已知账号范围的持久收尾仍能推进，未知范围意图保留。运行时使用启动时固定的服务凭据调用既有 GET /api/v1/me，取得认证 userId 后才解析项目、读取自有清单或认领。后续成功响应（包括空分页）均核对既有 Daynight-User-ID 与固定 UID 一致；缺失或不匹配是失败，不产生空清单结论。
+启动先解析配置、取得排他锁和稳定身份、打开 SQLite 并校验安装包 managed 技能。已授权收尾的发现/job 可立即启动；任何 /me、项目或其他网络请求之前，原已知账号范围的持久收尾仍能推进，未知范围意图保留。配置选择的只读 Project 查询可在这层身份建立前执行，但不参与任务归属判断。执行客户端使用启动时固定的服务凭据调用既有 GET /api/v1/me，取得认证 userId 后才解析执行项目、读取自有清单或认领。后续成功响应（包括空分页）均核对既有 Daynight-User-ID 与固定 UID 一致；缺失或不匹配是失败，不产生空清单结论。
 
 本地收尾与服务工作使用不同范围：已提交 cleanup/source control 和正常 shutdown 覆盖同 workerId 的所有原服务记录；清单、候选、认领、新缺席决定和普通恢复只面向当前 serverUrl。切换 serverUrl 后，原服务 A 已提交的本地截止/停止仍继续，不请求 A API，也不向 B 查询 A 的记录；原 scope 始终保留完整 origin/project/task/claim 身份，不增加凭据登记或多服务认领。
 

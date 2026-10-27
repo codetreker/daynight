@@ -38,10 +38,12 @@ not classify exits. Explicit source control and irreversible terminal intent
 precede ordinary recovery. A new claim never protects an old claim with the same
 task ID.
 
-The runtime reuses the existing GET /api/v1/me for the frozen startup credential
-before project or inventory requests. Its user ID pins subsequent successful
-responses through the existing Daynight-User-ID header, including empty list
-pages. The typed client adds a current-user projection and optional expected
+The ownership client reuses the existing GET /api/v1/me for the frozen startup
+credential before execution-project binding, inventory or claim requests. Its
+user ID pins subsequent successful responses through the existing
+Daynight-User-ID header, including empty list pages. Configuration selection
+uses a separate bounded read-only Project query; it grants no task ownership
+and does not establish the execution client's principal. The typed client adds a current-user projection and optional expected
 user-ID admission, not a new server endpoint, account registry or credential
 fingerprint. LocalTask.userId retains the immutable actual claim principal;
 claimAttempt carries the same principal. A stable workerId identifies the OS
