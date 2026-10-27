@@ -250,6 +250,64 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.worktrees.has(owner.claimId)).toBe(true);
   });
 
+  it.each(["foreign service", "unproven ownership"])("reports stable %s worktree warnings once and reports their recurrence", async (kind) => {
+    const f = await fixture(); f.candidates.splice(0);
+    const owners = [700, 710].map((id) => ({ serverOrigin: kind === "foreign service" ? "https://other.example" : origin, projectId: f.project.projectId, taskId: uuid(id), claimId: uuid(id + 1), worktreeId: uuid(id + 2) }));
+    for (const owner of owners) f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    await f.coordinator.tick(); await f.coordinator.tick(); await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
+
+    const changed = { ...owners[0]!, worktreeId: uuid(720) };
+    f.worktrees.set(changed.claimId, { owner: changed, binding: f.bind(changed) });
+    await f.coordinator.tick(); await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(3);
+
+    const retained = [...f.worktrees]; f.worktrees.clear();
+    await f.coordinator.tick();
+    for (const [claimId, worktree] of retained) f.worktrees.set(claimId, worktree);
+    await f.coordinator.tick(); await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(5);
+    expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+  });
+
+  it("retains warning history when a later project makes the snapshot incomplete", async () => {
+    const f = await fixture(); f.candidates.splice(0);
+    const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
+    f.store.registerProject(other);
+    const owner = { serverOrigin: origin, projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
+    const worktree = { owner, binding: f.bind(owner) };
+    f.worktrees.set(owner.claimId, worktree);
+    await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(1);
+
+    f.worktrees.clear();
+    const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+    vi.mocked(f.git.listWorktrees).mockImplementation(async (project, operation) => {
+      if (project.projectId === other.projectId) throw new Error("other repository unreadable");
+      return list(project, operation);
+    });
+    await expect(f.coordinator.tick()).rejects.toThrow("other repository unreadable");
+    vi.mocked(f.git.listWorktrees).mockImplementation(list);
+    f.worktrees.set(owner.claimId, worktree);
+    await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(1);
+  });
+
+  it("keeps independent warning histories during project-scoped shutdown observations", async () => {
+    const f = await fixture(); f.candidates.splice(0);
+    const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
+    f.store.registerProject(other);
+    for (const [index, project] of [f.project, other].entries()) {
+      const owner = { serverOrigin: origin, projectId: project.projectId, taskId: uuid(700 + index * 10), claimId: uuid(701 + index * 10), worktreeId: uuid(702 + index * 10) };
+      f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    }
+    await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
+    await expect(f.coordinator.shutdown()).resolves.toBe(true);
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
+    expect(f.worktrees.size).toBe(2); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  });
+
   it("scopes one source cleanup away from an unrelated Git observation failure", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!;

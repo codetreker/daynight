@@ -38,6 +38,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const controllers = new Map<string, { controller: AbortController; terminal: boolean }>();
   const ending = new Map<string, ResourceOwner>();
   const failures = new Map<string, number>();
+  const snapshotWarnings = new Map<string, Set<string>>();
   let nextRepository = 0;
   let nextPendingProject = 0;
   let shuttingDown = false;
@@ -67,6 +68,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const herdr = scope === undefined ? observed : observed.filter((resource) => resource.owner.projectId === scope.projectId && resource.owner.serverOrigin === options.serverOrigin);
     const owners = new Map<string, ResourceOwner>();
     const proven = new Set([...options.store.listTasks().map(key), ...currentClaims.map(key)]);
+    const currentWarnings = new Map<string, Map<string, string>>();
     const observe = (owner: ResourceOwner): void => {
       if (owner.serverOrigin !== options.serverOrigin) throw new Error("An owned resource belongs to another configured service; retain it and restore its original configuration.");
       if (options.store.getProject(owner) === null) throw new Error(`Restore the project configuration for owned resources in ${owner.projectId}.`);
@@ -76,15 +78,25 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     };
     for (const workspace of herdr) { observe(workspace.owner); proven.add(key(workspace.owner)); }
     for (const project of scope === undefined ? options.store.listProjects() : [scope]) {
+      const warnings = new Map<string, string>();
+      currentWarnings.set(project.projectId, warnings);
+      const warn = (category: string, owner: ResourceOwner, message: string): void => {
+        warnings.set(JSON.stringify([category, owner.serverOrigin, owner.projectId, owner.taskId, owner.claimId, owner.worktreeId]), message);
+      };
       const worktrees = await workerOperation((operation) => options.git.listWorktrees(project, operation), signal);
       for (const worktree of worktrees) {
         if (worktree.owner.serverOrigin !== options.serverOrigin) {
-          options.emit({ kind: "warning", message: `Preserved a worktree from another service in project ${project.projectId}.` });
+          warn("foreign-service", worktree.owner, `Preserved a worktree from another service in project ${project.projectId}.`);
           continue;
         }
         observe(worktree.owner);
-        if (!proven.has(key(worktree.owner))) options.emit({ kind: "warning", message: `Preserved unproven Git ownership for ${key(worktree.owner)}; a static marker does not identify this worker.` });
+        if (!proven.has(key(worktree.owner))) warn("unproven-ownership", worktree.owner, `Preserved unproven Git ownership for ${key(worktree.owner)}; a static marker does not identify this worker.`);
       }
+    }
+    for (const [projectId, warnings] of currentWarnings) {
+      const previous = snapshotWarnings.get(projectId);
+      for (const [identity, message] of warnings) if (!previous?.has(identity)) options.emit({ kind: "warning", message });
+      snapshotWarnings.set(projectId, new Set(warnings.keys()));
     }
     return { herdr, owners, proven };
   };

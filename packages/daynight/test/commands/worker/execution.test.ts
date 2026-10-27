@@ -126,6 +126,131 @@ describe("execution from current Herdr resources", () => {
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 
+  it.each(["codex", "copilot"] as const)("reports %s waiting transitions without repeating stable polls or native turn activity", async (agent) => {
+    const f = await fixture(agent, staleId);
+    const current: Entry = { ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "blocked", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 };
+    f.agents.push(current);
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.kind)).toEqual(["waiting"]);
+    expect(f.events[0]!.message).toContain("daynight worker attach");
+
+    current.agent_status = "working";
+    await f.driver.advance(f.input);
+    current.agent_status = "idle";
+    current.state_change_seq = 10;
+    current.completion_seq = 3;
+    await f.driver.advance(f.input);
+    current.agent_status = "working";
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.kind)).toEqual(["waiting", "reconnected"]);
+
+    current.agent_status = "blocked";
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.kind)).toEqual(["waiting", "reconnected", "waiting"]);
+    expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+  });
+
+  it.each(["codex", "copilot"] as const)("keeps a successful %s startup as the baseline for subsequent polls", async (agent) => {
+    const f = await fixture(agent, savedId);
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.kind)).toEqual(["started"]);
+    expect(f.launches).toHaveLength(1);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it.each(["codex", "copilot"] as const)("reports deferred first %s input once and submits it once after operator intervention", async (agent) => {
+    const f = await fixture(agent, savedId);
+    f.blockOnLaunch();
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.kind)).toEqual(["waiting"]);
+    expect(f.events[0]!.message).toContain("The first managed input");
+    expect(f.events[0]!.message).toContain("daynight worker attach");
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(0);
+
+    f.agents[0]!.agent_status = "idle";
+    f.agents[0]!.interactive_ready = false;
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.kind)).toEqual(["waiting"]);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(0);
+
+    f.agents[0]!.interactive_ready = true;
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.kind)).toEqual(["waiting", "reconnected"]);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+    expect(f.launches).toHaveLength(1);
+  });
+
+  it("reports native identity discovery and changed terminal bindings without repeated stable polls", async () => {
+    const f = await fixture("codex", null);
+    delete f.panes[0]!.agent_session;
+    const current: Entry = { ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 };
+    f.agents.push(current);
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.task!.sessionId)).toEqual([null]);
+
+    current.agent_session = { source: "herdr:codex", agent: "codex", kind: "id", value: staleId };
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.task!.sessionId)).toEqual([null, staleId]);
+
+    current.terminal_id = "replacement-terminal";
+    f.panes[0]!.terminal_id = "replacement-terminal";
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.kind)).toEqual(["reconnected", "reconnected", "reconnected"]);
+    expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+  });
+
+  it("keeps interleaved task observations independent and forgets only the requested claim", async () => {
+    const f = await fixture("codex", staleId);
+    f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "blocked", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
+    const otherOwner = { ...f.input.owner, taskId: uuid(11), claimId: uuid(12), worktreeId: uuid(13) };
+    const otherContext = { ...f.context, ...otherOwner, cwd: path.join(f.input.project.localPath, ".worktrees", "daynight", otherOwner.taskId) };
+    await mkdir(otherContext.cwd, { recursive: true });
+    f.store.registerPending({ ...otherOwner, agent: "codex", sessionId: staleId });
+    const otherInput = { ...f.input, owner: otherOwner, task: f.store.activateTask(otherOwner) };
+    f.workspaces.push({ workspace_id: "other-workspace", label: herdrExecutionLabel(otherContext) });
+    const otherPane = { workspace_id: "other-workspace", pane_id: "other-pane", terminal_id: "other-terminal", tab_id: "other-tab", cwd: otherContext.cwd, agent_status: "unknown" };
+    f.panes.push(otherPane);
+    f.agents.push({ ...otherPane, agent: "codex", name: herdrExecutionAgentName(otherContext), agent_status: "blocked", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0, agent_session: { source: "herdr:codex", agent: "codex", kind: "id", value: staleId } });
+
+    await f.driver.advance(f.input);
+    await f.driver.advance(otherInput);
+    await f.driver.advance(f.input);
+    await f.driver.advance(otherInput);
+    expect(f.events.map((event) => event.task!.taskId)).toEqual([f.input.task.taskId, otherInput.task.taskId]);
+    f.driver.forget(f.input.task);
+    await f.driver.advance(otherInput);
+    await f.driver.advance(f.input);
+    expect(f.events.map((event) => event.task!.taskId)).toEqual([f.input.task.taskId, otherInput.task.taskId, f.input.task.taskId]);
+  });
+
+  it("reports a new claim for the same task independently of the old claim", async () => {
+    const f = await fixture("codex", staleId);
+    const current = { ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "blocked", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 };
+    f.agents.push(current);
+    await f.driver.advance(f.input);
+    f.store.completeTask(f.input.task);
+    const owner = { ...f.input.owner, claimId: uuid(12), worktreeId: uuid(13) };
+    const context = { ...f.context, ...owner };
+    f.store.registerPending({ ...owner, agent: "codex", sessionId: staleId });
+    const input = { ...f.input, owner, task: f.store.activateTask(owner) };
+    f.workspaces[0]!.label = herdrExecutionLabel(context);
+    current.name = herdrExecutionAgentName(context);
+    await f.driver.advance(input);
+    await f.driver.advance(input);
+    expect(f.events.map((event) => event.task!.claimId)).toEqual([f.input.task.claimId, input.task.claimId]);
+  });
+
   it.each(["codex", "copilot"] as const)("uses current live %s state after scheduling observed an inactive pane", async (agent) => {
     const f = await fixture(agent, staleId);
     const scheduled = await f.resources();
