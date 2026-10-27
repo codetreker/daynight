@@ -43,6 +43,13 @@ describe("server configuration projection", () => {
     expect(parseServerConfiguration(`serverUrl: http://localhost:8787\nreview:\n  copilotReasoningEffort: ${value}\n`, paths)).toEqual({ serverUrl: "http://localhost:8787" });
   });
 
+  it("ignores unknown fields while validating known server settings", () => {
+    expect(parseServerConfiguration("serverURL: http://localhost\nfuture: { nested: true }", paths)).toEqual({ serverUrl: "https://daynight.cc" });
+    expect(parseServerConfiguration("future: { nested: true }\nserverUrl: https://service.example\nserverToken: configured-secret", paths)).toEqual({ serverUrl: "https://service.example", serverToken: "configured-secret" });
+    expect(() => parseServerConfiguration("future: true\nserverUrl: null", paths)).toThrow("serverUrl");
+    expect(() => parseServerConfiguration("future: true\nserverToken: false", paths)).toThrow("serverToken");
+  });
+
   it("reports the configuration filename, server field and original URL parse error", () => {
     try {
       parseServerConfiguration("serverUrl: http://[invalid", paths);
@@ -59,7 +66,7 @@ describe("server configuration projection", () => {
     expect(parseServerConfiguration(source, paths)).toEqual({ serverUrl: "https://daynight.cc", ...(source.startsWith("serverToken") ? { serverToken: "default-secret" } : {}) });
   });
 
-  it.each(["serverURL: http://localhost", "serverUrl: http://localhost\nserverUrl: http://other", "review:\n  repositories: [{path: a, path: b}]\nserverUrl: http://localhost"])("retains the shared YAML rejection: %s", (source) => {
+  it.each(["serverUrl: http://localhost\nserverUrl: http://other", "review:\n  repositories: [{path: a, path: b}]\nserverUrl: http://localhost"])("retains the shared YAML rejection: %s", (source) => {
     expect(() => parseServerConfiguration(source, paths)).toThrow(`Invalid configuration file ${paths.configFile}`);
   });
 

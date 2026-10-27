@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { CliContext } from "../../cli/context.js";
 import { CliCancelledError, withCliCancellation } from "../../cli/cancellation.js";
 import { parseConfigurationDocument } from "../../config/document.js";
@@ -43,13 +44,12 @@ export const configureReview = async (
       await updateRepositoryConfiguration(source, candidate, paths, options);
       return candidate;
     });
-    const fingerprint = (mapping: Record<string, unknown>): string => JSON.stringify(
-      ["repositoryRoot", "repositories"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]),
-    );
+    const selectionBaseline = (mapping: Record<string, unknown>): readonly unknown[] =>
+      ["repositoryRoot", "repositories"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]);
     signal.throwIfAborted();
     await updateConfigurationFile(paths, async (currentSource) => {
       const current = currentSource === undefined ? {} : reviewConfigurationMapping(parseConfigurationDocument(currentSource, paths).mapping);
-      if (fingerprint(current) !== fingerprint(baseline)) {
+      if (!isDeepStrictEqual(selectionBaseline(current), selectionBaseline(baseline))) {
         throw new Error("Review configuration changed while prompting. Run the review command again to review the current values.");
       }
       return updateRepositoryConfiguration(currentSource, repository, paths, options);

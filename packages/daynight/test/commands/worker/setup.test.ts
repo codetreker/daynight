@@ -136,6 +136,50 @@ describe("worker setup configuration transaction", () => {
     expect(await readdir(f.paths.stateDirectory)).toEqual(["config.yml"]);
   });
 
+  it.each(["prepare", "save"] as const)("refuses to %s setup when unknown fields alias changed repository values", async (operation) => {
+    for (const location of ["root", "worker", "repository"]) {
+      const source = `${connection}worker:\n  agent: codex\n  repositories: &repos\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../retained\n${location === "repository" ? "      future: *repos\n" : location === "worker" ? "  future: *repos\n" : "future: *repos\n"}`;
+      const f = await fixture(source);
+      await expect((operation === "prepare" ? prepareWorkerSetup : saveWorkerSetup)(f.options))
+        .rejects.toThrow("shared YAML aliases that would change unrelated settings");
+      expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+      expect(await readdir(f.paths.stateDirectory)).toEqual(["config.yml"]);
+    }
+  });
+
+  it("refuses an agent switch that would alter an unknown aliased setting", async () => {
+    const source = `${connection}worker:\n  agent: &native copilot\nfuture: *native\n`;
+    const f = await fixture(source);
+    await expect(saveWorkerSetup(f.options)).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+  });
+
+  it("accepts cyclic unknown values whose decoded data remains unchanged by setup", async () => {
+    const source = `${connection}worker:\n  agent: codex\n  repositories: &repos\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../retained\n      future: *repos\n`;
+    const f = await fixture(source);
+    const options = { ...f.options, projectIds: [uuid(1)] };
+    const plan = await prepareWorkerSetup(options);
+    const saved = await saveWorkerSetup(options);
+    expect(saved).toEqual(plan.configuration);
+    const decoded = parse(await readFile(f.paths.configFile, "utf8"));
+    expect(decoded.worker.repositories[0].future).toBe(decoded.worker.repositories);
+    expect(decoded.worker.repositories).toHaveLength(1);
+  });
+
+  it("preserves unknown root, worker and retained repository metadata through agent resets", async () => {
+    const source = `${connection}future: &metadata { enabled: true }\nworker:\n  future: *metadata\n  agent: copilot\n  model: old-model\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../retained\n      future: *metadata\n      model: old-repository-model\n`;
+    const f = await fixture(source);
+    const saved = await saveWorkerSetup(f.options);
+    expect(saved.agent).toBe("codex");
+    expect(saved.model).toBeNull();
+    expect(saved.repositories[0]!.model).toBeNull();
+    const decoded = parse(await readFile(f.paths.configFile, "utf8"));
+    expect(decoded.future).toEqual({ enabled: true });
+    expect(decoded.worker.future).toEqual(decoded.future);
+    expect(decoded.worker.repositories[0].future).toEqual(decoded.future);
+    expect(await readFile(f.paths.configFile, "utf8")).toContain("future: &metadata { enabled: true }");
+  });
+
   it("preserves unrelated aliases and compatible native model aliases during setup", async () => {
     const f = await fixture(`${connection}review:\n  copilotReasoningEffort: &effort high\n  copilotModel: &sharedModel retained-model\nworker:\n  agent: codex\n  model: *sharedModel\n  args: &sharedArgs [--search]\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../first\n      args: *sharedArgs\n`);
     await saveWorkerSetup(f.options);

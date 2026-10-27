@@ -58,13 +58,15 @@ the original service context. Existing assignments keep their original snapshots
 
 A selection snapshot covers raw worker.repositoryRoot presence and value,
 worker.repositories and service credentials. Setup adds raw global native-field
-presence and values to that fingerprint. Network and prompts hold no
+presence and values to that decoded baseline. Deep comparison handles cyclic
+unknown aliases while retaining presence checks. Network and prompts hold no
 configuration lock. The atomic writer rereads current YAML, refuses related
 changes and preserves unrelated edits and comments. Worker and review clone-root
 edits remain independent. Candidate repositories receive the same type, identity
 and physical path validation as runtime configuration.
 
-Before writing, effective unowned root and worker values must remain equal.
+Before writing, effective unowned root and worker values and unknown fields of
+retained repository entries must remain equal.
 Repo commands own worker.repositories; setup owns agent/model/args/repositories.
 The worker root remains unowned by both updates. Mutating a shared YAML anchor
 can alter review's list or other unowned values even when worker validation
@@ -152,8 +154,9 @@ execution. A selected Project must remain accessible for registration management
 The runtime protects original deadlines while configuration waits and cannot
 rebind an initialized coordinator to changed credentials. Independent roots and
 preserved existing paths keep configuration edits from relocating original work.
-Unknown or invalid configuration remains visible under the runtime's strict
-omission semantics.
+Invalid known configuration remains visible under the runtime's strict omission
+semantics. The later [unknown-field policy](../bug-fix/2026-10-27-ignore-unknown-configuration-fields.md)
+ignores unknown fields during projection and preserves them during edits.
 
 Shared aliases may require separating worker data before changing acquisition
 scope. The refusal preserves original bytes and unaffected aliases. Configuration

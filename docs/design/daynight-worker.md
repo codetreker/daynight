@@ -41,7 +41,7 @@ flowchart TB
 
 ## 配置与目录
 
-共享 `~/.daynight/config.yml` 的根字段 `workerId` 保存稳定随机 UUID。`ensureWorkerIdentity` 在首次缺失时复用现有配置锁和原子替换写入；持锁后重读，避免并发创建不同身份。已有合法值直接复用，不重写文件；非法值明确拒绝，不生成替代身份。配置注释、其他字段及文件权限沿用共享配置写入机制。身份成功持久化后才可进行 claim。
+共享 `~/.daynight/config.yml` 的根字段 `workerId` 保存稳定随机 UUID。`ensureWorkerIdentity` 在首次缺失时复用现有配置锁和原子替换写入；持锁后重读，避免并发创建不同身份。已有合法值直接复用，不重写文件；非法值明确拒绝，不生成替代身份。写入描述声明只拥有根字段 workerId，共享保存入口在锁内比较所有非归属解码值；根循环 alias 等导致无关值变化时拒绝保存，保持原文件。已有身份的只读复用不触发该写入。配置注释、其他字段及文件权限沿用共享配置写入机制。身份成功持久化后才可进行 claim。
 
 Worker 固定使用 `~/.daynight/worker/`，不提供状态路径覆盖。`resolveWorkerPaths` 根据实际用户 home 与平台路径 API 生成路径；review 继续使用自己的路径和锁。服务连接复用 CLI 默认 `https://daynight.cc` 与已保存凭据，`serverUrl` 只在连接测试服务时显式覆盖。
 
@@ -81,7 +81,7 @@ worker:
       args: []
 ```
 
-可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 省略时为 []，显式提供时必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。未知字段、错误类型、重复仓库/项目和重叠路径明确拒绝，不接受 stateDirectory 或其他状态根入口。
+可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 省略时为 []，显式提供时必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。根节点、worker 及其仓库条目的未知字段在运行时忽略，配置编辑保留原 YAML 节点。已知字段的错误类型、重复仓库/项目和重叠路径明确拒绝。stateDirectory 等未知字段不改变固定状态根。
 
 setup 模块拥有交互编排：验证交互终端，读取当前同源配置快照，展示公共环境报告，选择 agent，读取完整可访问 Project 列表并预选已有注册，再校验候选配置与每组不同的实际 native model/args。最终摘要包含保留传输/路径、删除的注册与 native 参数重置，确认后通过 repositories 模块的 setup 更新一次保存。现存 Project 匹配仍只按身份核对，不把保留的 SSH URL 改成等价 HTTPS 地址；root 始终使用 worker 自己的原设置。
 
@@ -93,7 +93,7 @@ setup 模块拥有交互编排：验证交互终端，读取当前同源配置�
 
 Worker 的 repositories 模块读取完整、已认证的远端 Project 列表，新注册显式选择后保存 id、原 repoUrl 和绝对 path。已有注册匹配同一仓库身份时保持原传输 URL、路径与覆盖，remote-only 项只补 projectId，避免把既有 SQLite 绑定改成另一种等价传输地址。普通仓库采用 host/owner/repo 目录；非普通 transport/user/port 和嵌套路径保留各自身份，编码空、百分号和 dot 组件防止目录逃逸或身份折叠。repo list 只读本地，add/remove 使用远端现存 Project，remove 不改变本机任务资源。
 
-worker/config 的 readWorkerConfigurationSnapshot 从一次文件读取捕获原 YAML，并从同一份内容校验 worker 设置及服务/凭据；注册模块只为该快照添加选择指纹。选择快照覆盖 worker.repositoryRoot 的实际存在性和值、worker.repositories 及服务/凭据上下文；setup 还覆盖原始 agent/model/args 字段存在性和值。网络和多选结束后才取共享配置锁；锁内重读、保留无关并发编辑及 YAML 节点，候选源码通过同一类型/身份/物理路径 validator 后原子保存。写入前比较所有非 worker 字段及 worker 中不属于本次操作的有效值：repo 命令只拥有 repositories，setup 拥有 agent/model/args/repositories，root 始终不属于这些更新。共享 alias 传播导致无关值变化时拒绝写入。未受影响的 alias 保留，不把配置校验局限于 worker 自身类型。
+worker/config 的 readWorkerConfigurationSnapshot 从一次文件读取捕获原 YAML，并从同一份内容校验 worker 设置及服务/凭据。注册模块为该快照添加解码后的选择基线，以支持包含循环 alias 的未知字段，并使用深比较检测并发变化。选择快照覆盖 worker.repositoryRoot 的实际存在性和值、worker.repositories 及服务/凭据上下文；setup 还覆盖原始 agent/model/args 字段存在性和值。网络和多选结束后才取共享配置锁；锁内重读、保留无关并发编辑及 YAML 节点，候选源码通过同一类型/身份/物理路径 validator 后原子保存。写入前比较所有非 worker 字段、worker 中不属于本次操作的有效值及保留仓库条目的非归属字段：repo 命令只拥有 repositories 及保留条目的 projectId，setup 拥有 agent/model/args/repositories 及确认重置的仓库原生选项；root 始终不属于这些更新，保留条目的未知字段始终受保护。显式移除拥有整个所选条目。共享 alias 传播导致无关值变化时拒绝写入。未受影响的 alias 保留，不把配置校验局限于 worker 自身类型。
 
 公共 run 命令将项目配置准备回调传入 runtime。首次空配置且无本机数据库时，准备先于实例锁、workerId、SQLite 或 native 控制器；有本机状态时先启动既有 committed-cleanup 发现循环，再等待项目读取/选择，保留已提交原截止。回调完成后立即核对 cancellation，并通过同一中立快照读取服务及 worker 设置；从该次捕获内容核对原 serverUrl/serverToken，再载入其中的配置并要求实际选择仓库。不能分别读取后组合不同来源的服务与仓库/agent 设置；之后的文件修改不改变已捕获的启动快照。协调器通过 getter 使用本次设置的 maxConcurrent。新任务启动等待该边界；已有执行仍使用其冻结配置。
 

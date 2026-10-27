@@ -41,17 +41,35 @@ describe("repository registration", () => {
     expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
   });
 
-  it("resolves explicit relative paths against cwd and keeps YAML comments and settings", async () => {
-    const { paths, options } = await setup("existing", "# Review settings\nreview:\n  pollIntervalMs: 120000 # keep interval\n  copilotModel: auto # keep model\n  copilotReasoningEffort: high # keep reasoning effort\n  repositories:\n    # Existing repository\n    - remote: https://github.com/o/old\n      path: ../old # keep path\n");
+  it("resolves explicit relative paths against cwd and preserves comments, settings and unknown fields", async () => {
+    const { paths, options } = await setup("existing", "# Review settings\nfuture: { enabled: true }\nreview:\n  future: review-owned\n  pollIntervalMs: 120000 # keep interval\n  copilotModel: auto # keep model\n  copilotReasoningEffort: high # keep reasoning effort\n  repositories:\n    # Existing repository\n    - remote: https://github.com/o/old\n      path: ../old # keep path\n      future: repository-owned\n");
     const result = await addRepository({ remote, path: "../my-clone" }, paths, options);
     expect(result.repository.path).toBe(path.resolve(options.workingDirectory, "../my-clone"));
     const source = await readFile(paths.configFile, "utf8");
-    for (const retained of ["# Review settings", "review:\n  pollIntervalMs: 120000 # keep interval", "copilotModel: auto # keep model", "copilotReasoningEffort: high # keep reasoning effort", "# Existing repository", "path: ../old # keep path", "repositoryRoot: ~/daynights"]) {
+    for (const retained of ["# Review settings", "future: { enabled: true }", "future: review-owned", "future: repository-owned", "pollIntervalMs: 120000 # keep interval", "copilotModel: auto # keep model", "copilotReasoningEffort: high # keep reasoning effort", "# Existing repository", "path: ../old # keep path", "repositoryRoot: ~/daynights"]) {
       expect(source).toContain(retained);
     }
     expect((await loadConfiguration(paths)).pollIntervalMs).toBe(120000);
     expect((await loadConfiguration(paths)).copilotModel).toBe("auto");
     expect((await loadConfiguration(paths)).copilotReasoningEffort).toBe("high");
+  });
+
+  it.each(["root", "review", "repository"] as const)("refuses to mutate a repository alias used by an unknown %s field", async (location) => {
+    const source = `review:\n  repositories: &repos\n    - remote: https://github.com/o/old\n      path: ../old\n${location === "repository" ? "      future: *repos\n" : location === "review" ? "  future: *repos\n" : "future: *repos\n"}`;
+    const { paths, options } = await setup(`unknown-alias-${location}`, source);
+    await expect(addRepository({ remote }, paths, options)).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(paths.configFile, "utf8")).toBe(source);
+    expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it("preserves unknown aliases whose decoded values are unaffected by registration", async () => {
+    const source = "future: &metadata { enabled: true }\nreview:\n  future: *metadata\n  repositories:\n    - remote: https://github.com/o/old\n      path: ../old\n      future: *metadata\n";
+    const { paths, options } = await setup("unknown-unchanged-alias", source);
+    await addRepository({ remote }, paths, options);
+    const saved = await readFile(paths.configFile, "utf8");
+    expect(saved).toContain("future: &metadata { enabled: true }");
+    expect(saved.match(/future: \*metadata/g)).toHaveLength(2);
+    expect((await loadConfiguration(paths)).repositories).toHaveLength(2);
   });
 
   it("adds the first review repository to server-only configuration and preserves its YAML and idempotence", async () => {
