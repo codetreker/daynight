@@ -1,4 +1,5 @@
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createCopilotRunner } from "../../../src/commands/review/adapters/copilot.js";
@@ -472,14 +473,25 @@ describe("Copilot skill discovery and phase ownership", () => {
 
   it("shares one deadline across discovery, exclusion and formal review", async () => {
     const f = fixture(); const supervisor = createProcessSupervisor({ graceMs: 500 });
+    // Controlled phase costs keep host process startup from changing the remaining-budget assertion.
+    let monotonicTime = 1_000;
+    vi.spyOn(performance, "now").mockImplementation(() => monotonicTime);
     const timers = vi.spyOn(globalThis, "setTimeout");
-    const start = performance.now(); let mainStartedAt = 0;
-    const outcome = await f.run("hang", { timeoutMs: 700, environment: { ...process.env, FIXTURE_REPORT: f.report, FIXTURE_MODE: "hang", FIXTURE_DISCOVERY: "delay" } },
-      { onProcess: (child, attempt) => { supervisor.onProcess(child, attempt); if (child.spawnargs.some((arg) => arg.startsWith("--session-id="))) mainStartedAt = performance.now(); },
-        stopProcess: supervisor.stop, excludeProcess: supervisor.exclude });
-    expect(mainStartedAt - start).toBeGreaterThan(100);
+    const phases: string[] = [];
+    const outcome = await f.run("hang", { timeoutMs: 700, environment: { ...process.env, FIXTURE_REPORT: f.report, FIXTURE_MODE: "hang" } },
+      { onProcess: (child, attempt) => {
+        supervisor.onProcess(child, attempt);
+        const phase = child.spawnargs.some((arg) => arg.startsWith("--session-id=")) ? "review" : "discovery";
+        phases.push(phase);
+        if (phase === "discovery") monotonicTime += 150;
+      }, stopProcess: supervisor.stop, excludeProcess: async (current, evidence) => {
+        const result = await supervisor.exclude(current, evidence);
+        monotonicTime += 100;
+        return result;
+      } });
+    expect(phases).toEqual(["discovery", "review"]);
     expect(outcome).toMatchObject({ completed: false, interruption: "timeout", directProcessClosed: true });
-    expect(timers.mock.calls.some((call) => typeof call[1] === "number" && call[1] > 100 && call[1] < 600)).toBe(true);
+    expect(timers.mock.calls.map((call) => call[1])).toEqual(expect.arrayContaining([700, 450]));
     await supervisor.exclude(f.store.getReview(f.review.id)!, outcome);
   });
 
