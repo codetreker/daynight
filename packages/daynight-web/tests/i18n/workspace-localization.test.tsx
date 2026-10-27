@@ -148,7 +148,7 @@ describe("workspace localization", () => {
     await selectTaskList();
     await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
     const standaloneTab = screen.getByRole("tab", { name: "Standalone tasks" });
-    const filter = screen.getByRole("checkbox", { name: "Show completed standalone tasks (0)" });
+    const filter = screen.getByRole("checkbox", { name: "Show all" });
     await user.click(filter);
     const row = screen.getByRole("button", { name: /Task 用户数据/ });
     const scroll = vi.spyOn(window, "scrollTo");
@@ -157,7 +157,7 @@ describe("workspace localization", () => {
     await user.selectOptions(selector, "zh-CN");
     expect(screen.getByRole("tab", { name: "独立任务" })).toBe(standaloneTab);
     expect(standaloneTab).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("checkbox", { name: "显示已完成独立任务（0）" })).toBe(filter);
+    expect(screen.getByRole("checkbox", { name: "显示所有" })).toBe(filter);
     expect(filter).toBeChecked();
     expect(screen.getByRole("button", { name: /Task 用户数据/ })).toBe(row);
     expect(graphRequest).toHaveBeenCalledTimes(1);
@@ -207,7 +207,7 @@ describe("workspace localization", () => {
 
   it.each([0, 1, 2])("uses complete standalone count sentences for %i tasks in both languages", (count) => {
     expect(en.workspace.standalone.summary({ visible: count, total: count })).toBe(`Newest first · ${count} / ${count} standalone ${count === 1 ? "task" : "tasks"}`);
-    expect(en.workspace.standalone.hiddenCompleted({ count })).toBe(`${count} completed standalone ${count === 1 ? "task is" : "tasks are"} hidden. Project statistics still include all tasks.`);
+    expect(en.workspace.standalone.hiddenCompleted({ count })).toBe(`${count} completed standalone ${count === 1 ? "task is" : "tasks are"} outside the current filter. Select “Show all” to view them.`);
     expect(zhCN.workspace.standalone.summary({ visible: count, total: count })).toBe(`最新创建在前 · ${count} / ${count} 个独立任务`);
   });
 });

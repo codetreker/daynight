@@ -16,3 +16,11 @@
 @media(max-width:740px){.project-layout{grid-template-columns:minmax(0,1fr);gap:20px}.project-section-tabs{position:static;flex-direction:row;padding:4px;border-radius:8px;background:#eeeef6}.project-section-tab{flex:1;justify-content:center;padding:10px}.project-section-tab[aria-selected=true]{background:#fff;box-shadow:0 1px 3px #17213208}.project-section-heading{margin-bottom:16px}.project-section-heading h2{font-size:15px}.project-section-heading p{font-size:11px}.project-overview .stats{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.project-overview .stat{padding:15px 12px}.project-overview .stat-label,.project-overview .stat-foot{font-size:10px}.project-overview .stat-number{font-size:26px}}
 @media(max-width:740px){.overview-progress{margin-top:22px}.overview-progress-row{grid-template-columns:minmax(0,1fr) 82px 40px;gap:10px;padding:13px 12px}.overview-progress-arrow{display:none}.overview-progress-title,.overview-progress-percent{font-size:12px}.overview-progress-metric{font-size:10px}.overview-progress-scope{font-size:9px}}
 @media(max-width:390px){.overview-progress-row{grid-template-columns:minmax(0,1fr) 64px 32px;gap:7px}.overview-progress-title,.overview-progress-percent{font-size:11px}}
+
+.list-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.list-pagination-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+.list-pagination-page { white-space: nowrap; font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) {
+  .list-pagination { align-items: stretch; }
+  .list-pagination-controls { width: 100%; justify-content: space-between; gap: 8px; }
+}

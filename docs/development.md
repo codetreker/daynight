@@ -287,6 +287,15 @@ pnpm web:build
 pnpm web:test
 ```
 
+For the frontend-only recent-task preview, open
+`/tests/mockups/recent-tasks.html` on the origin printed by `pnpm web:dev`. It
+mounts the production project page, styles and locale catalog with controlled
+read-only synchronization responses. Its `#mixed`, `#completed`, `#empty`,
+`#loading` and `#failure` scenarios cover 20-entry pagination, full Goal children,
+local-calendar recency, 100% recent completion and recovery without a Go service
+or PostgreSQL. These responses demonstrate frontend behavior; they do not prove
+real service or deployment behavior.
+
 For the frontend-only attachment mockup, run `pnpm web:dev` and open
 `/tests/mockups/attachments.html` on the origin printed by Vite. It uses the real
 attachment UI with in-memory metadata and local fixture files; it needs no Go

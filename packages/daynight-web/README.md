@@ -586,24 +586,63 @@ The application implements public `/`, explicit `/login`, the `/projects` index,
 reload, browser back/forward and a generic not-found page. All resource reads use
 the current authenticated identity. A project without a saved section preference
 opens Overview, with six statistics and an overall progress list from the complete
-snapshot. Unfinished ordinary task-chain components each have one row with title,
-completed/total count and a floored integer percentage. The final standalone row
-counts completions within the rolling last seven days; its denominator adds all
-unfinished standalone tasks. Older and unknown completion times are excluded
-from that recent count. The row remains visible while standalone work is
-unfinished. Neither statistic cards nor the task lists change their existing
-full-history semantics. Clicking a progress row selects Task list and the matching
-category, scrolls and focuses the chain row or standalone list, and briefly
-highlights that destination. Explicit positioning wins over the saved category
-scroll for that activation; ordinary later switches retain their usual memory.
-The [progress decision](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)
-owns timing and navigation trade-offs. Its adjacent Task
+snapshot. Its recent rows include every unfinished ordinary task-chain component
+and completed components from the latest seven local calendar days. A row shows
+the representative title, completed/total count and a floored integer percentage.
+A Goal completes only when all ordinary members are done; its last member
+completion determines recency, with external prerequisites excluded. The latest
+known member completion supplies evidence when some historical times are unknown;
+without known recent evidence, completed Goals appear only through Show all.
+The final standalone row combines every unfinished standalone task with known
+completions in the same window. It remains visible at 100% when only recent
+completions remain, as do recent completed Goals. Project statistic cards retain
+full-history totals.
+
+The window includes today and the previous six days in the browser's local time
+zone, starting at local midnight six dates ago. For example, October 27 includes
+completions from October 21 at 00:00 onward. Local date arithmetic preserves
+calendar-day semantics across daylight-saving changes. Current time advances
+from the server sample and monotonic elapsed time after synchronization;
+local-only summaries use their provisional client-time anchor. One project-owned
+deadline updates Overview and Task list together at midnight, pauses while the
+page is hidden, and recalculates on visibility recovery without requiring a new
+snapshot.
+
+Overview, Task chains and Standalone tasks each display 20 top-level entries per
+page. A whole Goal is one entry regardless of expanded children; the single
+standalone aggregate is one Overview entry, placed last across all pages.
+Pagination shows the current item range and filtered total with previous/next
+controls; one-page results have no pager. Each list retains its own page during
+the project visit. Changing Show all resets that list to page one; shrinking
+results clamp the page immediately. These display slices do not truncate the
+cached graph, statistics, Goal progress or dependency context, and do not add
+requests or stored page preferences.
+
+Clicking a progress row selects Task list and the matching category, switches to
+the destination Goal's page, then scrolls, focuses and briefly highlights it.
+The standalone aggregate selects its list's first page. Explicit positioning wins
+over saved category scroll for that activation; later ordinary switches retain
+their usual memory. The [recent browsing decision](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)
+owns the shared window and paging policy; the [progress decision](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)
+retains the original aggregation and navigation rationale. The adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
 left of the selected content; narrow screens use horizontal tabs with matching
 keyboard direction. The outer choice is stored per project in browser
 preferences, so the first render after reload or return already shows the saved
 Overview or Task list selection. It does not change the URL or history. Empty
 projects retain both section destinations.
+
+With `pnpm web:dev`, open the [recent-task preview](tests/mockups/recent-tasks.html)
+at `/tests/mockups/recent-tasks.html`. It mounts the real `ProjectPage`, production
+CSS and locale catalog with controlled read-only task-sync responses. Choose
+`#mixed`, `#completed`, `#empty`, `#loading` or `#failure`; the mixed inventory
+includes 42 visible Goals, 43 visible standalone tasks, an old representative
+with a recently completed child, a Goal with 33 children, calendar cutoffs and
+older/unknown completion history. The completed case retains 100% recent rows.
+Loading release and service recovery controls exercise the corresponding states.
+This frontend-only entry needs no Go service or PostgreSQL and is excluded from
+the production build; it supplies interaction evidence, not real-service
+acceptance.
 
 Both sections use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
@@ -618,7 +657,12 @@ Within Task list, an absent category preference selects Task chains; later
 visits restore the project's last inner category. Both badges count unfinished
 tasks (pending and in progress) from the complete snapshot, independently of
 completed-item visibility, outer/inner selection and the open graph dialog. Their sum
-equals the project's unfinished total; toolbars report visible/total entries.
+equals the project's unfinished total; toolbars report all entries matching the
+current filter against complete category totals, independently of page size.
+Both categories default to all unfinished work plus completions in the local
+calendar window. Their independent Show all controls include all history when
+checked and restore the recent default when cleared. The label has no completed
+count suffix; each choice retains its existing per-project browser record.
 
 Chain membership is an ordinary-edge weak component: `dependsOn` contains all
 prerequisites, while `externalDependsOn` marks edges that do not join
@@ -641,8 +685,8 @@ then `done`; tasks with the same status retain snapshot order. This child
 priority preserves top-level Goal ordering. Other starting tasks in a merge are
 included, while external prerequisite context is excluded. The
 list always retains `done`, `in_progress` and `todo` children; completed tasks
-remain visible. The chain-level Show completed control applies only to whole
-completed Goals and never filters children. Child rows show their own status,
+remain visible. The chain-level Show all control changes whole-Goal visibility
+and never filters children by status or completion date. Child rows show their own status,
 applicable ready/blocked markers and known execution duration after the title,
 and open the shared task dialog. The expanded heading offers the representative task's own
 details. Aggregate progress still includes that representative. Chain rows
@@ -658,7 +702,7 @@ ordering uses its representative's exact `(created_at,id)` service order,
 reversed for newest first without lossy JavaScript timestamp conversion. The
 open graph dialog keeps an original task witness only for the current reading
 session and resolves its component after merges or splits without overwriting
-a valid witness with a new representative. A removed, standalone or hidden
+a valid witness with a new representative. A removed, standalone, filtered or off-page
 witness closes the dialog. Membership changes initialize a new bounded overview
 and framing without remounting a same-representative canvas or active Details.
 A representative change initializes the newly represented graph within the

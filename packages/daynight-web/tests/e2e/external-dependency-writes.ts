@@ -200,7 +200,7 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
     await patchFlags(consumer, []); await patchFlags(consumer, [], 409, beforeCompletion.version); await patchFlags(consumer, [ordinary.id], 400);
     await readWeb();
     await selectTaskList(page);
-    await page.getByRole('checkbox', { name: /显示已完成独立任务/ }).check();
+    await page.getByRole('checkbox', { name: /显示所有/ }).check();
     const completedRow = page.locator(`#standalone-task-${consumer.id}`);
     await expect(completedRow.locator('.root-status')).toHaveText('已完成');
     await expect(completedRow.locator('time.task-duration')).toHaveAttribute('datetime', /^PT\d+\.\d{3}S$/);

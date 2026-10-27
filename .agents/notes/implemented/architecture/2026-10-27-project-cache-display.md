@@ -39,9 +39,12 @@ opening GET before new writes.
 The authenticated scope also participates in visible-state identity, preventing
 a replacement user from observing the previous user's same-project snapshot.
 
-A local wall-time sample and monotonic anchor serve only provisional Overview
-recent-completion classification. Actual task-sync supplies the server sample
-and replaces that time basis. Running execution durations and possible-stall
+A local wall-time sample and monotonic anchor serve only provisional recent
+classification in Overview and Task list. Actual task-sync supplies the server
+sample and replaces that time basis. The [recent browsing
+decision](../feature/2026-10-27-recent-task-pages.md) shares this current-time basis
+across both sections while interpreting calendar boundaries in the browser's
+local time zone. Running execution durations and possible-stall
 warnings remain absent until that sample arrives; completed durations still use
 persisted endpoints. Local time never advances synchronization coverage or
 represents a successful refresh.
