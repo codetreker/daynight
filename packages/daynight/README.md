@@ -314,6 +314,24 @@ records startup-file ownership and installation limits.
 
 ## Configuration setup
 
+The shared configuration file is `~/.daynight/config.yml`. The complete
+[`config.example.yml`](config.example.yml) covers service access, review and worker
+settings with their defaults and optional overrides. It is included at the root
+of the npm package. For an npm global installation, locate it with:
+
+```bash
+npm root --global
+```
+
+Open `@codetreker/daynight/config.example.yml` beneath that directory. Select the
+sections needed for your commands and replace the example repositories and local
+paths. For a new configuration, save the selected settings to
+`~/.daynight/config.yml`; for an existing file, merge them while preserving its
+credential, generated `workerId` and unrelated settings. The example itself is
+not loaded automatically. Repository paths resolve from the configuration
+directory, with the rules in the [worker](#worker-configuration-and-startup) and
+[review](#review-configuration-and-startup) guides.
+
 Project and task commands use `https://daynight.cc` when the configuration file or
 `serverUrl` is absent. A production connection needs no server configuration.
 Run `daynight login` to display an authorization code and open the verification
@@ -974,6 +992,26 @@ pane keeps its original native XDG and private HISTFILE. The descriptor contains
 routing and native-home paths, not a dump of authentication values. Continue in
 the original task pane so the worker can observe the same execution.
 
+Native startup can be waiting at a folder-trust or authorization screen even
+when Herdr reports idle/interactiveReady. The worker checks the current Codex
+input surface before automatic text and Enter, reports a blocking reason and
+keeps the first prompt unsent. It does not choose native trust or change global
+trust configuration. Configure that prerequisite normally in the native tool or
+use the original attached task pane to make the decision explicitly, then leave
+the business composer available for input. This check does not inspect arbitrary
+human draft meaning or prove that a model consumed previously submitted text.
+
+The checked Codex startup/restart layout is the standard/default business
+composer together with a loaded model/reasoning and current-directory footer
+(`model-with-reasoning · current-dir`). Ask text or a version header alone is
+insufficient because provisional startup can show them too. A custom footer,
+cropped footer or otherwise unrecognized visible layout remains unknown; the
+original Operation bounds observation and ends not-submitted if that supported
+surface never appears. In the original session, finish any blocking decision
+and restore the supported standard native layout before requesting public retry.
+The worker does not change the layout, infer arbitrary draft meaning or turn
+this screen check into a native consumption receipt.
+
 For started executions, a successful complete own-claim inventory from the
 original account makes the original claim's absence cause
 the same terminal cleanup for done, release and transfer: request attributable
@@ -1107,11 +1145,37 @@ extra recovery attempt:
 daynight worker retry <task-id> --claim-id <claim-id>
 ```
 
-Retry preserves the original claim, worktree/native identity, frozen settings
-and cumulative recovery count. Concurrent or repeated requests do not accumulate
-extra authorization or launch a second agent. The controller consumes the single
-permit when it performs recovery; a further failure remains visible. Retry
-cannot replace terminal cleanup or recreate an execution that has ended.
+Retry preserves the original claim, worktree/native identity and frozen
+settings, retaining the cumulative recovery count rather than resetting it.
+Concurrent or repeated requests do not accumulate extra authorization or launch
+a second agent. The controller consumes the single permit for that original
+execution; a further failure remains visible. Retry cannot replace terminal
+cleanup or recreate an execution that has ended.
+
+A native launch acknowledged before a blocking startup screen has a specific
+continuation path when its first prompt is durably known unsent. Keep the
+original worker/native session running and use another terminal to attach to
+that original pane. Inspect the reported folder-trust/authorization requirement
+and make the native decision yourself. Once the business composer is available,
+run:
+
+```bash
+daynight worker retry <task-id> --claim-id <original-claim-id> --project <project-id>
+```
+
+The controller first checks the original worktree, full binding, frozen argv,
+workspace/launch evidence, same shell and every saved native key PID. Ordinary
+child-process changes do not replace the original proof. After that read-only
+identity check, it consumes one authorized recovery attempt (the cumulative
+count increases by one, without reset) and can deliver the first prompt once in
+the original native process without another agent.start or conversation. Missing
+an official native ID before the first turn does not by itself block this
+proven-unsent continuation. This is not permission to resend an earlier
+submitted/unknown prompt, infer loss from an empty-looking composer or restart
+an unproven missing-ID conversation. Legacy records with unknown native-process
+role remain fenced; migration does not construct identity from foreground PID
+order. Automated cleanup text and /exit use the same screen boundary; a blocking
+screen is not accepted with Enter merely to finish shutdown.
 
 Management diagnostics identify the original claim and report persisted waiting,
 completion, rejection or unknown results. Interrupting the command retains its

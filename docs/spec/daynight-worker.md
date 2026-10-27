@@ -87,7 +87,8 @@ AND no active claim
 - 单一 `using-daynight` 技能按显式模式选择指令：普通指定任务读取 run-task，managed 执行读取 references/execute-task-in-managed.md，SKILL.md 只保留简短路由。普通执行不加载 managed 详细指令；不能从 properties.worker、cwd 或环境变量推断模式。显式 managed 上下文缺失或不匹配时等待，不回落普通执行。两种入口共享任务输入、范围、交付、验收和证据规则，各自拥有普通或原 claim 的生命周期动作。
 - 启动和恢复前以 task cwd 校验官方 Herdr/native agent 集成及所需原生历史，feature/config 检查保留冻结的相关配置、feature 与 profile 参数及顺序。当前 Codex 0.164.0 的只读 features 命令无法检查 profile 时明确拒绝并保留原因，不能丢弃参数后查默认值。不满足时显示修正方法并暂停；不自动全局安装/修改集成，也不另建配置解析、MCP 或 SDK 引擎。
 - 新 workspace 只有核验的创建 ACK 能取得绑定当前 terminal、owner 和确切 XDG 的环境 receipt；adoption/丢失 ACK 为 null。冷恢复不保留 workspace.env，旧 terminal 的 receipt 不能授权新 native 启动，即使 pane 为空且从未取得 native ID；缺失或不匹配时先返回 rebind-required，不预检、启动或输入。已存活 agent 重连不修改环境。
-- 首条输入不能依赖尚需首个 turn 才产生的官方 native ID。新启动核对原目标、readiness、冻结 argv/config 后只提交一次原 prompt；resume 还核对持久原 ID、必要 history 和确切 resume argv，输入后须取得并核对官方 ID。Blocked 后续输入需要持久的 `initialPromptNotSubmitted:true` 和从空 native-reference 基线取得、含有效 workspaceEvidence 的匹配 launchEvidence，重连或未知结果不授权重发；后续身份观察失败仍保留已知 promptSubmission 与 launchEvidence。
+- 首条输入不能依赖尚需首个 turn 才产生的官方 native ID。新启动核对原目标、冻结 argv/config 及当前业务 composer 可输入 surface 后只提交一次原 prompt；resume 还核对持久原 ID、必要 history 和确切 resume argv，输入后须取得并核对官方 ID。Codex 的 idle/interactiveReady 不足以独立证明正文可输入；当前 same binding 识别到的 Folder access、信任或授权/选择 blocking 不允许自动输入或 Enter，明确保持 not-submitted 和原 launchEvidence。未识别界面在原 Operation 内有界观察，不把超时或空 composer 外观当成已提交/未消费的证明。
+- 已确认原 native 启动、首 prompt 明确未提交且原 worktree/binding/receipt、冻结 argv 与原 native 进程证据匹配的执行，在普通 missing-ID 恢复/rebind 之前保留原会话接续路径。操作者通过原 attach 明确处理原生信任/授权，使业务 composer 可输入后可用 worker retry 授权一次接续；只读核对同 shell 和所有原 native 关键 PID 后，发送前消费一次许可、累计 count 加一而不清零。普通 children 变化不要求覆盖原证明；不重新 agent.start、不更换 conversation 或冻结配置，控制/终止意图仍优先。旧 submitted/unknown 或来源不明的缺 ID 状态仍禁止重放。
 - 对 native 从未提交的准备窗口，协调循环必须在任何可能启动前为具体 claim/workspace 持久记录 never 事实，并在调用启动前持久转为已尝试/未知。结合唯一启动者和实际 owned 普通空 shell、无 pending/native/前台工作，可确认没有原 agent 后关闭/rebind；null 引用或本次 not-submitted 不产生该事实。先前未知 launch 必须取得原停止证明或暂停。
 - 未活动的恢复 pane 若保留旧 native reference，应先确认旧停止/关闭再换新 pane，保留 worktree/native ID/config；不能把旧引用冒充新报告。冷恢复若改变 terminal/shell，原停止观察保持不可变，须分别核对实际 restored 资源、原 native PIDs/旧 shell 已不执行及当前没有原生/前台工作；新空 shell 本身不构成原 agent 停止证明。
 - 开发 task 的 agent 负责实现、验证、提交、工作分支推送、PR、CI/review 反馈、授权合并和合并后验收，并遵守仓库权限、门禁与授权要求。其他允许 Agent 自动执行的 task 遵守其阶段和验收条件。
@@ -107,7 +108,7 @@ AND no active claim
 
 ### W-09：SQLite、退出与恢复
 
-- 固定状态根仅有一份 SQLite，业务表仅为 projects 与 tasks。Projects 保存 origin/project/repo/path 与单个未决 claimAttempt；tasks 每行对应一个实际 claim，保存 pending/active/done、冻结配置、实际资源绑定、nativeExecution 启动/输入/停止事实、恢复次数/暂停/授权、原清理截止与输入/结果、source 管理意图及远端提交结果。schema 2 显式迁移旧记录，缺失证据保持未知。结束行保留，不另建任务台账或通用动作引擎。
+- 固定状态根仅有一份 SQLite，业务表仅为 projects 与 tasks。Projects 保存 origin/project/repo/path 与单个未决 claimAttempt；tasks 每行对应一个实际 claim，保存 pending/active/done、冻结配置、实际资源绑定、nativeExecution 启动/输入/停止事实、恢复次数/暂停/授权、原清理截止与输入/结果、source 管理意图及远端提交结果。schema 3 显式迁移旧记录，旧 stopObservation 的 nativeProcessIds 填 null，不推测原 native 角色；完整 processIds 停止证明、原 scope、配置、预算、deadline 和提交事实保持。结束行保留，不另建任务台账或通用动作引擎。
 - 每条实际 claim 保留原认证 userId，claimAttempt 同时保存该 userId；已知账号值不可替换。项目映射在远端 claim 前保存；取得实际 claim 后先 pending，确认启动条件并提交 active 后才创建资源。同一 origin/project/task 至多一条 active，未收尾执行期间项目绑定不变；服务范围与当次仓库路径随任务保留，不能因换服或改映射而误认资源。
 - 启动和持续对账通过既有 task list 的 workerId 筛选，成功汇总当前认证用户/worker 全部项目与分页的有效 active claim；不附加候选资格条件，不把失败或部分清单当成空集合。原 claimId 不在完整清单就触发相同本地清理，不按 task 状态或单 task GET 分类原因。同 task 新 claim 不保护旧 claim，完成本轮对账后才登记新领取。
 - Worker 的执行归属客户端复用既有 GET /api/v1/me 核验启动凭据的 UID，在执行项目解析、清单及认领请求前固定 principal，并对后续成功响应（包括空页）核对 Daynight-User-ID。配置选择使用单独有界的只读 Project 查询，不建立执行 principal 或授予任务归属。新缺席清理和恢复必须属于原 userId；同 OS 换成另一个账号的空清单不能结束旧账号工作，须保留/暂停。旧范围未知的 terminal/control 意图不可由当前登录补授权；ordinary/shutdown 只可由完整身份匹配的实际自有 claim 学得未知 UID。
@@ -128,6 +129,7 @@ AND no active claim
 - Managed 指令核对启动 prompt 中显式提供的 assignment，复用原已认领执行；普通开始/重开/done 与 managed 原 claim 执行/完成分别归各自入口。共享任务输入、范围、交付、验收和证据规则保持统一所有者。Agent 完成全部任务交付、验收与证据后，最后使用 CLI set-status done 的显式 --claim-id 与观察版本提交既有 PUT status。开发任务仍满足必要 PR、检查/审查、授权合并和验收；等待人工、必要 PR 未合并或验收未满足时保持未完成。Worker 不独立解释业务验收或再次提交 done，只按成功完整自有 claim 清单对账。
 - Agent 负责执行并记录任务验收；其验收文字是执行方声明，不是任意自然语言条件的独立证明。证据缺失、相互冲突或任务明确要求人工验收时保持 task 未完成，在原会话请求处理；不要求通用 Markdown 验收解析器或形式化证明。
 - 原 claim 从自己成功完整清单退出后，统一持久保存最多十分钟的固定截止，通知原 agent 清理 worktree 外明确归属的临时文件/进程；清理结束或原截止到达后，确认 agent 停止、关闭任务 workspace/pane、删除 worktree，最后置本机 done。Done/release/transfer 不保留源 worktree。历史、分支、task 交付引用及 claim/session 标识保留。
+- 清理请求和 /exit 也经过相同自动输入边界，不能以 Enter 默认接受原生信任/授权。Blocking 或无法证明可输入时保留真实未提交/不可用结果，按原截止及原进程证明安全停止资源，不为清理新建 agent 或自动配置 trust。
 - 清理重启沿用原截止和提交结果，不重发未知输入，不创建新清理 agent；pollIntervalMs 只控制服务对账/认领轮询，不延后原清理截止。清理期间继续占并发名额。完成后修改自动执行许可或平台不能改写历史归属和实际平台。
 - 删除失败记录具体错误和待清理状态，重启后只继续清理，不能重新执行已完成任务。清理不能影响其他任务或人工 Herdr。
 

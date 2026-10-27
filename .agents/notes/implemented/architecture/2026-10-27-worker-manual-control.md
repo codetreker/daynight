@@ -108,6 +108,18 @@ configuration, bypasses native provenance or authorizes a second agent. Repeated
 or concurrent requests do not stack permits. Terminal executions require a new
 resume rather than ordinary recovery.
 
+For an acknowledged original launch whose first prompt is durably known unsent,
+retry can continue that input in the original live binding before ordinary
+missing-ID recovery/rebind. Native folder-trust or authorization is resolved
+explicitly in the original attached session; retry itself grants no consent. The
+existing single authorization, frozen configuration and claim permissions
+remain. Read-only same-shell/original-native-key checks precede permit
+consumption; beginRecovery increments cumulative count by one without reset
+before that input. Ordinary children may change without replacing original
+evidence. Retry does not create another agent or permit replay of
+submitted/unknown input, infer loss from an empty-looking composer or replace a
+lost original conversation.
+
 ## Alternatives
 
 **Continue the source worktree and native history after terminal operations.**

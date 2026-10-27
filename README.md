@@ -93,7 +93,11 @@ explains task creation, handoff, execution and Goal workflows.
 
 `dn` is an alias for `daynight`. Use `daynight --help` and each command's
 `--help` for syntax, `daynight update` to update an npm global installation,
-and the [CLI manual](packages/daynight/README.md) for detailed usage.
+and the [CLI manual](packages/daynight/README.md) for detailed usage. The complete
+[configuration example](packages/daynight/config.example.yml) covers service,
+review and worker settings; the
+[configuration guide](packages/daynight/README.md#configuration-setup) explains
+customizing it and locating the copy included in the npm package.
 
 ### Shell completion
 
@@ -151,6 +155,15 @@ Ctrl+C stops original agents through bounded cleanup while retaining unfinished
 claims, worktrees and native history. The
 [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers setup, selection, configuration, recovery and manual management.
+
+If native startup asks for folder trust or another authorization, the worker
+waits without accepting it. Use its private attachment to make that decision in
+the original native session. For an acknowledged original process whose first
+prompt is known unsent and identity is verified, resolve the blocking screen and
+authorize continuation with `daynight worker retry <task-id> --claim-id
+<original-claim-id>`; the worker keeps the original conversation and settings.
+The [worker guide](packages/daynight/README.md#worker-manual-management)
+explains the required original-claim context and uncertain-input limits.
 
 ## Review configuration and startup
 

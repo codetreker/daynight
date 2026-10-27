@@ -4,7 +4,8 @@ import type { Operation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerAgent } from "../../api/types.js";
 import { HerdrAgentActionError } from "./herdr.js";
 import { buildHerdrAgentArguments } from "./herdr/arguments.js";
-import type { HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
+import { herdrExecutionLabel } from "./herdr/agents.js";
+import type { HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, HerdrWorkspaceEvidence, WorkerHerdrAdapter } from "./herdr.js";
 import type { WorkerStore } from "./store.js";
 import type { LocalTask } from "./types.js";
 import type { createWorkerGitManager } from "./worktrees.js";
@@ -53,7 +54,9 @@ export const actualTaskPane = (task: LocalTask, resources: readonly HerdrOwnedWo
   return workspace.panes[0];
 };
 const sameBinding = (left: HerdrTaskBinding, right: HerdrTaskBinding): boolean => left.session === right.session && left.workspaceId === right.workspaceId && left.paneId === right.paneId && left.terminalId === right.terminalId;
+const sameWorkspaceEvidence = (left: HerdrWorkspaceEvidence, right: HerdrWorkspaceEvidence): boolean => sameBinding(left.binding, right.binding) && left.ownerLabel === right.ownerLabel && left.environment.XDG_CONFIG_HOME === right.environment.XDG_CONFIG_HOME && left.environment.XDG_STATE_HOME === right.environment.XDG_STATE_HOME;
 const live = (observation: { kind: string | null; launchPending: boolean; interactiveReady: boolean }): boolean => observation.kind !== null || observation.launchPending || observation.interactiveReady;
+const firstInputWaiting = "The original native launch is waiting before its first managed input; attach to its private session and retry after intervention.";
 
 export const createExecutionDriver = (deps: ExecutionDependencies) => {
   const refresh = (task: LocalTask): LocalTask => {
@@ -71,6 +74,60 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
     }
   };
   const rememberNative = (task: LocalTask, nativeSession: { sessionId: string } | null): LocalTask => nativeSession === null ? refresh(task) : deps.store.bindNativeSession(task, { source: "herdr", sessionId: nativeSession.sessionId }, deps.now());
+  const captureUnsentLaunch = async (task: LocalTask, binding: HerdrTaskBinding, signal?: AbortSignal): Promise<LocalTask> => {
+    if (task.nativeExecution?.stopObservation !== null && task.nativeExecution?.stopObservation !== undefined) return task;
+    const observed = await workerOperation((operation) => deps.herdr.tasks.captureStop(executionContext(task), binding, operation), signal);
+    const recorded = deps.store.recordStopObservation(task, observed, deps.now());
+    if (observed.nativeProcessIds === null) throw new Error("The original native launch has no proven native process identity; its first input remains unsubmitted.");
+    return recorded;
+  };
+  const advanceUnsentInput = async (task: LocalTask, resources: readonly HerdrOwnedWorkspace[], signal?: AbortSignal): Promise<LocalTask> => {
+    const native = task.nativeExecution!;
+    const binding = taskBinding(task);
+    const launch = native.launchEvidence;
+    const workspace = native.workspaceEvidence;
+    const actual = actualTaskPane(task, resources);
+    const context = executionContext(task);
+    const ownerLabel = herdrExecutionLabel(context);
+    if (task.resources.worktree === null || binding === null || actual === undefined || !sameBinding(binding, actual.binding)) throw new Error("The acknowledged native launch no longer has its original worktree and terminal binding; no first input was sent.");
+    if (launch === null || workspace === null || launch.referenceBaseline !== "empty" || launch.agent !== context.agent || launch.ownerLabel !== ownerLabel || workspace.ownerLabel !== ownerLabel || !sameBinding(launch.binding, binding) || !sameBinding(workspace.binding, binding) || !sameWorkspaceEvidence(workspace, launch.workspaceEvidence)) throw new Error("The acknowledged native launch receipt does not match the original execution; no first input was sent.");
+    const matchesArgv = (expected: readonly string[]): boolean => launch.argv.length === expected.length && launch.argv.every((argument, index) => argument === expected[index]);
+    let resumeSessionId: string | undefined;
+    if (!matchesArgv([context.agent, ...buildHerdrAgentArguments(task.configuration!)])) {
+      const originalId = task.resources.nativeSession?.sessionId;
+      if (originalId === undefined || !matchesArgv([context.agent, ...buildHerdrAgentArguments(task.configuration!, originalId)])) throw new Error("The acknowledged native launch does not preserve its frozen invocation; no first input was sent.");
+      resumeSessionId = originalId;
+    }
+    await workerOperation((operation) => deps.git.verifyWorktree(task, operation), signal);
+    const before = await workerOperation((operation) => deps.herdr.tasks.observe(context, binding, operation), signal);
+    const original = native.stopObservation;
+    if (original === null || original.nativeProcessIds === null || !sameBinding(original.binding, binding) || original.ownerLabel !== ownerLabel || original.agent !== context.agent) throw new Error("The original native launch process evidence is unavailable; no first input was sent.");
+    const current = await workerOperation((operation) => deps.herdr.tasks.captureStop(context, binding, operation), signal);
+    const currentNativeIds = current.nativeProcessIds;
+    if (!sameBinding(current.binding, binding) || current.ownerLabel !== ownerLabel || current.agent !== context.agent || current.shellPid !== original.shellPid || currentNativeIds === null || !original.nativeProcessIds.every((processId) => currentNativeIds.includes(processId))) throw new Error("The original native launch is no longer executing in its original shell; no first input was sent.");
+    const expectedSession = task.resources.nativeSession?.sessionId;
+    if ((expectedSession !== undefined && before.nativeSession !== null && before.nativeSession.sessionId !== expectedSession) || (expectedSession !== undefined && current.nativeSessionId !== null && current.nativeSessionId !== expectedSession) || (original.nativeSessionId !== null && current.nativeSessionId !== null && original.nativeSessionId !== current.nativeSessionId)) throw new Error("The original native launch now reports a different conversation; no first input was sent.");
+    task = rememberNative(task, before.nativeSession);
+    if ((task.recovery.pauseReason !== null && !task.recovery.retryAuthorized) || before.status === "blocked") {
+      deps.emit({ kind: "waiting", task, message: "The original native launch is waiting before its first managed input; attach to its private session and retry the paused claim after intervention." });
+      return task;
+    }
+    if (task.recovery.retryAuthorized) task = deps.store.beginRecovery(task, deps.now());
+    const prompt = deps.buildPrompt(task, deps.platform);
+    deps.store.markNativePromptSubmitting(task, deps.now());
+    try {
+      const outcome = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, { configuration: task.configuration!, prompt, initialPromptNotSubmitted: true, launchEvidence: launch, workspaceEvidence: workspace, ...(resumeSessionId === undefined ? {} : { resumeSessionId }) }, operation), signal);
+      deps.store.recordNativeStartOutcome(task, { ...(outcome.launchEvidence === null ? {} : { launchEvidence: outcome.launchEvidence }), promptSubmission: outcome.promptSubmission }, deps.now());
+      if (outcome.kind === "rebind-required") throw new Error(`The original deferred startup input is fenced: ${outcome.reason}.`);
+      task = rememberNative(task, outcome.observation.nativeSession);
+      if (outcome.promptSubmission === "not-submitted") task = deps.store.pauseTask(task, firstInputWaiting, deps.now());
+      deps.emit({ kind: outcome.kind === "waiting" || outcome.promptSubmission === "not-submitted" ? "waiting" : "started", task, message: outcome.promptSubmission === "submitted" ? "The first managed input was submitted to the original native launch without starting another agent." : firstInputWaiting });
+      return refresh(task);
+    } catch (error) {
+      if (error instanceof HerdrAgentActionError) deps.store.recordNativeStartOutcome(task, { ...(error.launchEvidence === null ? {} : { launchEvidence: error.launchEvidence }), promptSubmission: error.promptSubmission === null ? "unknown" : error.promptSubmission }, deps.now());
+      throw error;
+    }
+  };
   const prepareWorkspace = async (task: LocalTask, signal?: AbortSignal) => {
     deps.store.markWorkspaceSubmitting(task, deps.now());
     try { return await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(executionContext(task), operation), signal); }
@@ -110,6 +167,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (task.configuration === null) throw new Error("The original frozen execution configuration is missing; restore it before retrying.");
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized && (task.resources.worktree === null || task.resources.herdr === null)) return task;
       if (task.status !== "active") throw new Error("Only an active execution may prepare resources.");
+      if (task.nativeExecution?.launchSubmission === "acknowledged" && task.nativeExecution.promptSubmission === "not-submitted") return advanceUnsentInput(task, resources, signal);
       const original = actualTaskPane(task, resources);
       if (task.resources.nativeSession === null && task.nativeExecution?.launchSubmission !== "never-submitted") {
         if (original === undefined || (!live(original) && original.nativeSession === null)) throw new Error("The original native session ID is missing; recover its exact history identity before preparing replacement resources.");
@@ -152,25 +210,6 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (live(before)) {
         await rememberStop(task, binding, signal);
         task = refresh(task);
-        const native = task.nativeExecution;
-        if (native?.launchSubmission === "acknowledged" && native.promptSubmission === "not-submitted" && native.launchEvidence !== null && before.status !== "blocked" && (task.recovery.pauseReason === null || task.recovery.retryAuthorized)) {
-          if (task.recovery.retryAuthorized) task = deps.store.beginRecovery(task, deps.now());
-          const originalNativeId = task.resources.nativeSession?.sessionId;
-          const resumedArgv = originalNativeId === undefined ? null : [context.agent, ...buildHerdrAgentArguments(task.configuration!, originalNativeId)];
-          const resumeSessionId = resumedArgv !== null && native.launchEvidence!.argv.length === resumedArgv.length && native.launchEvidence!.argv.every((argument, index) => argument === resumedArgv[index]) ? originalNativeId : undefined;
-          const prompt = deps.buildPrompt(task, deps.platform);
-          deps.store.markNativePromptSubmitting(task, deps.now());
-          try {
-            const outcome = await workerOperation((operation) => deps.herdr.tasks.start(context, binding!, { configuration: task.configuration!, prompt, initialPromptNotSubmitted: true, launchEvidence: native.launchEvidence!, workspaceEvidence: native.workspaceEvidence,
-              ...(resumeSessionId === undefined ? {} : { resumeSessionId }) }, operation), signal);
-            if (outcome.kind === "rebind-required") throw new Error(`The original deferred startup input is fenced: ${outcome.reason}.`);
-            deps.store.recordNativeStartOutcome(task, { ...(outcome.launchEvidence === null ? {} : { launchEvidence: outcome.launchEvidence }), promptSubmission: outcome.promptSubmission }, deps.now());
-            task = rememberNative(task, outcome.observation.nativeSession);
-          } catch (error) {
-            if (error instanceof HerdrAgentActionError) deps.store.recordNativeStartOutcome(task, { ...(error.launchEvidence === null ? {} : { launchEvidence: error.launchEvidence }), promptSubmission: error.promptSubmission === null ? "unknown" : error.promptSubmission }, deps.now());
-            throw error;
-          }
-        }
         deps.emit({ kind: before.status === "blocked" ? "waiting" : "reconnected", task: refresh(task), message: before.status === "blocked" ? "The original agent is waiting for input; attach to its private Herdr session." : "Observed the original live agent without replaying its startup input." });
         return refresh(task);
       }
@@ -201,14 +240,23 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         if (outcome.kind === "reconnected") throw new Error("An unexpected live agent was observed during a fresh launch; its input was retained.");
         deps.store.recordNativeStartOutcome(task, { ...(outcome.launchEvidence === null ? {} : { launchEvidence: outcome.launchEvidence }), promptSubmission: outcome.promptSubmission }, deps.now());
         task = rememberNative(task, outcome.observation.nativeSession);
-        await rememberStop(task, binding, signal);
+        if (outcome.promptSubmission === "not-submitted") {
+          task = await captureUnsentLaunch(task, binding, signal);
+          task = deps.store.pauseTask(task, firstInputWaiting, deps.now());
+        } else await rememberStop(task, binding, signal);
         deps.emit({ kind: outcome.kind === "waiting" ? "waiting" : "started", task: refresh(task), message: task.resources.nativeSession === null ? "Native launch acknowledged; waiting for the original agent." : "Managed startup input submitted to the original native conversation." });
         return refresh(task);
       } catch (error) {
         if (error instanceof HerdrAgentActionError) {
           if (error.action === "agent.start" && error.submission !== "unknown" && error.launchEvidence === null && task.nativeExecution?.launchSubmission === "never-submitted") {
             deps.store.recordNativeLaunchNotSubmitted(task, error.submission === "rejected" ? { definiteRejection: true } : { notSubmitted: true }, deps.now());
-          } else deps.store.recordNativeStartOutcome(task, { ...(error.launchEvidence === null ? {} : { launchEvidence: error.launchEvidence }), promptSubmission: error.promptSubmission === null ? "unknown" : error.promptSubmission }, deps.now());
+          } else {
+            const recorded = deps.store.recordNativeStartOutcome(task, { ...(error.launchEvidence === null ? {} : { launchEvidence: error.launchEvidence }), promptSubmission: error.promptSubmission === null ? "unknown" : error.promptSubmission }, deps.now());
+            if (recorded.nativeExecution?.launchSubmission === "acknowledged" && recorded.nativeExecution.promptSubmission === "not-submitted") {
+              try { await captureUnsentLaunch(recorded, binding, signal); }
+              catch (observationError) { throw new AggregateError([error, observationError], "The first input remains unsubmitted, but original native process observation failed.", { cause: error }); }
+            }
+          }
         }
         throw error;
       }
