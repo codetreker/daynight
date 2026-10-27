@@ -110,19 +110,19 @@ missing frozen configuration retain a paused reservation rather than becoming
 free capacity. Same-claim recovery retains its worktree, native identity and
 configuration. One private Herdr instance serves all task workspaces.
 
-The local store keeps only projects and tasks. Schema 2 adds a concrete nullable
-claimAttempt to each project and nativeExecution facts to each task, with an
-explicit migration that leaves absent original evidence and user scope unknown.
-ClaimAttempt records one unresolved task/claim/worktree/worker/user request,
-exact version and decision configuration before HTTP. An actual matching claim
-materializes pending with the saved configuration and verified principal while
-clearing the attempt in that same transaction. registerPending accepts the
-verified UID explicitly; omitted/null means unknown, not current login. This
-prevents a crash between clearing the request and writing scope from stranding a
-claim that subsequently ends. Definite rejection or proven non-submission can
-clear it; an unknown request cannot be replayed, replaced or cleared because an
-inventory temporarily lacks it. No task row exists before grant, and no new
-table or acquisition queue is introduced.
+The local store keeps only projects and tasks. Schema 2 introduced a concrete
+nullable claimAttempt to each project and nativeExecution facts to each task,
+with an explicit migration that leaves absent original evidence and user scope
+unknown. ClaimAttempt records one unresolved task/claim/worktree/worker/user
+request, exact version and decision configuration before HTTP. An actual
+matching claim materializes pending with the saved configuration and verified
+principal while clearing the attempt in that same transaction. registerPending
+accepts the verified UID explicitly; omitted/null means unknown, not current
+login. This prevents a crash between clearing the request and writing scope from
+stranding a claim that subsequently ends. Definite rejection or proven
+non-submission can clear it; an unknown request cannot be replayed, replaced or
+cleared because an inventory temporarily lacks it. No task row exists before
+grant, and no new table or acquisition queue is introduced.
 
 NativeExecution records the actual terminal, workspace submission, verified
 workspace/launch receipts, launch/prompt submission facts, immutable original
@@ -151,6 +151,13 @@ execution uses read-only discovery of its original owned worktree; a missing
 original cannot be replaced with a fresh empty checkout. The observation guard
 neither grants user scope nor manufactures launch or conversation evidence.
 
+Schema 3 adds nullable nativeProcessIds to the existing stop-observation object
+for exact original-native continuation. Legacy roles migrate to null without
+PID-order or intersection inference, while full processIds remain the stop
+proof. The original UID/origin/configuration, budget/deadline and submitted or
+unknown journals are unchanged. A missing role cannot be used to replace a lost
+conversation; it limits the in-place known-unsent lane instead.
+
 This partially supersedes the memory-only acquisition choice in the
 [local-records decision](2026-10-26-worker-local-records.md). That choice
 avoided preclaim tasks and speculative target records while inventory could
@@ -166,6 +173,23 @@ The agent owns business delivery, acceptance, evidence and final claim-bound
 done. Live reconnection does not repeat startup input. The [Herdr
 adapter](2026-10-26-worker-herdr-adapter.md) owns transport and resource
 observations, and its receipt/stop gates remain authoritative.
+
+An acknowledged original launch with a durably known-unsent first prompt is
+recognized after ordinary control/config/status guards and before missing-ID
+recovery/rebind. Immediate typed refusal and prior waiting outcomes retain the
+original launch/process evidence and pause for explicit public retry. The
+operator resolves native consent through the original attachment; the controller
+checks original worktree, full binding, receipts, frozen argv, same shell and
+all original nativeProcessIds against the current native key set read-only.
+Ordinary children may change without replacing the original proof.
+
+After identity verification and before the one first input, beginRecovery
+consumes the existing retry permit and increments cumulative count instead of
+resetting it. Original process/PTY, conversation and frozen settings remain;
+there is no second native start. Submitted/unknown input or unproven missing-ID
+history remains fenced, and committed control/cleanup/shutdown takes priority
+over business startup input. This adds neither a reporting protocol nor a new
+controller; the adapter's current-surface guard never grants native consent.
 
 Cleanup retains its first deadline and input provenance. A lightweight discovery
 loop inside the foreground process discovers this worker's persisted intents

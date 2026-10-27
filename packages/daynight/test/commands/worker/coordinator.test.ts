@@ -1,4 +1,5 @@
 import path from "node:path";
+import Database from "better-sqlite3";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import * as filesystem from "../../../src/platform/filesystem.js";
 import fsPromises from "node:fs/promises";
@@ -6,6 +7,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { submitWorkerControl } from "../../../src/commands/worker/control.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -14,7 +16,7 @@ import { herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.j
 import { buildHerdrAgentArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { ApiError } from "../../../src/api/client.js";
 import type { Task, WorkerClaim } from "../../../src/api/types.js";
-import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, HerdrWorkspaceEvidence, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
+import type { HerdrAgentObservation, HerdrExecutionContext, HerdrLaunchEvidence, HerdrOwnedWorkspace, HerdrStopObservation, HerdrTaskBinding, HerdrWorkspaceEvidence, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerGitManager, WorkerEvent } from "../../../src/commands/worker/execution.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { LocalTask, ProjectIdentity, WorkerProject, FrozenExecutionConfiguration } from "../../../src/commands/worker/types.js";
@@ -73,7 +75,7 @@ const fixture = async (maxConcurrent = 1, repoCount = 1) => {
       const pane = resources.get(key(context))!.panes[0]!; pane.kind = context.agent; pane.interactiveReady = true; pane.stateChangeSeq = 1; pane.completionSeq = 0; pane.nativeSession = { source: `herdr:${context.agent}`, agent: context.agent, sessionId: input.resumeSessionId ?? uuid(1000 + resourceSequence) };
       return { kind: "started" as const, observation: observation(context, binding), promptSubmission: "submitted" as const, launchEvidence: { binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, argv: [context.agent, ...buildHerdrAgentArguments(input.configuration, input.resumeSessionId)], referenceBaseline: "empty" as const, workspaceEvidence: input.workspaceEvidence } };
     }),
-    captureStop: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => ({ binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: observation(context, binding).nativeSession?.sessionId ?? null, shellPid: 100, processIds: [101], observedAt: clock })),
+    captureStop: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding): Promise<HerdrStopObservation> => ({ binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: observation(context, binding).nativeSession?.sessionId ?? null, shellPid: 100, processIds: [101], nativeProcessIds: [101], observedAt: clock })),
     submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => { order.push("cleanup-input"); expect(store.getTask(context)?.cleanup?.input).toBe("unknown"); const before = observation(context, binding); if (completeCleanup) { const pane = resources.get(key(context))!.panes[0]!; pane.stateChangeSeq! += 2; pane.completionSeq! += 1; } return { submission: "submitted" as const, observation: before }; }),
     confirmEmptyPane: vi.fn(async () => ({ noNativeProcess: true as const })),
     confirmStopped: vi.fn(async () => ({ agentStopped: true as const })),
@@ -111,6 +113,24 @@ const fixture = async (maxConcurrent = 1, repoCount = 1) => {
     buildPrompt: vi.fn((task: LocalTask) => `worker-managed using-daynight execute-task-in-managed ${task.claimId}`), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   return { root, store, projects, candidates, granted, resources, worktrees, git, herdr, tasks, remote, options, order, events, coordinator: createWorkerCoordinator(options), setTime: (value: number) => { clock = value; }, setCompleteCleanup: (value: boolean) => { completeCleanup = value; } };
 };
+
+const gatedFirstInput = (f: Awaited<ReturnType<typeof fixture>>) => {
+  let ready = false; let launches = 0; let inputs = 0; let evidence: HerdrLaunchEvidence | null = null;
+  vi.mocked(f.herdr.tasks.start).mockImplementation(async (context, binding, input) => {
+    const pane = f.resources.get(context.claimId)!.panes[0]!;
+    if (input.initialPromptNotSubmitted !== true) {
+      launches += 1; pane.kind = context.agent; pane.interactiveReady = true; pane.stateChangeSeq = 1; pane.completionSeq = 0; pane.nativeSession = null;
+      evidence = { binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, argv: [context.agent, ...buildHerdrAgentArguments(input.configuration, input.resumeSessionId)], referenceBaseline: "empty", workspaceEvidence: input.workspaceEvidence! };
+    } else {
+      expect(input.launchEvidence).toEqual(evidence); expect(input.configuration).toEqual(f.store.getTask(context)!.configuration);
+    }
+    if (!ready) throw new HerdrAgentActionError("The native folder-trust screen requires intervention before input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted", launchEvidence: evidence! });
+    inputs += 1; pane.nativeSession = { source: `herdr:${context.agent}`, agent: context.agent, sessionId: uuid(1200) };
+    return { kind: "started", observation: { ...pane, binding, kind: context.agent, name: "fixture" }, promptSubmission: "submitted", launchEvidence: evidence };
+  });
+  return { acceptTrust: () => { ready = true; }, nativeLaunches: () => launches, managedInputs: () => inputs };
+};
+const retryOriginal = async (f: Awaited<ReturnType<typeof fixture>>, task: LocalTask) => submitWorkerControl({ store: f.store, remote: f.remote, serverOrigin: origin, workerId, platform: "linux", machine: f.options.machine, repositories: f.options.repositories, request: { kind: "retry", taskId: task.taskId, projectId: task.projectId, claimId: task.claimId }, signal: new AbortController().signal, now: f.options.now });
 
 describe("worker foreground coordinator", () => {
   it("commits claim/pending/active before resources, reconnects without replay, and cleans only after inventory exit", async () => {
@@ -371,7 +391,7 @@ describe("worker foreground coordinator", () => {
       const current = f.resources.get(task.claimId)!.panes[0]!;
       return { kind: "started", observation: { ...current, binding, kind: agent, name: "fixture" }, promptSubmission: "submitted", launchEvidence: input.launchEvidence! };
     });
-    await controller.tick(); expect(f.tasks.start).toHaveBeenCalledTimes(3); expect(f.store.getTask(task)?.nativeExecution?.promptSubmission).toBe("submitted"); expect(f.store.getTask(task)?.resources.nativeSession?.sessionId).toBe(originalId);
+    await retryOriginal(f, f.store.getTask(task)!); await controller.advanceRetry(task); expect(f.tasks.start).toHaveBeenCalledTimes(3); expect(f.store.getTask(task)?.nativeExecution?.promptSubmission).toBe("submitted"); expect(f.store.getTask(task)?.resources.nativeSession?.sessionId).toBe(originalId);
   });
 
   it.each(["terminal", "shutdown"] as const)("cleans an observed replacement after its create receipt was lost during %s", async (kind) => {
@@ -1214,6 +1234,134 @@ describe("worker foreground coordinator", () => {
     expect(await f.coordinator.shutdown()).toBe(true);
     expect(f.store.getTask(task)).toMatchObject({ status: "active", control: { submission: "not-submitted" }, cleanup: { agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
     expect(f.remote.readTask).not.toHaveBeenCalled(); expect(f.remote.release).not.toHaveBeenCalled();
+  });
+
+  it("continues the original acknowledged known-unsent native launch after public retry without a native ID or second start", async () => {
+    const f = await fixture(); const gate = gatedFirstInput(f); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    expect(original).toMatchObject({ status: "active", userId: uuid(2), nativeExecution: { launchSubmission: "acknowledged", promptSubmission: "not-submitted", stopObservation: { shellPid: 100, nativeProcessIds: [101] } }, resources: { nativeSession: null }, recovery: { count: 0, retryAuthorized: false, pauseReason: expect.stringContaining("folder-trust") } });
+    await f.coordinator.tick(); expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(0);
+    gate.acceptTrust(); await retryOriginal(f, original); await f.coordinator.advanceRetry(original);
+    const completedInput = f.store.getTask(original)!;
+    expect(completedInput).toMatchObject({ claimId: original.claimId, worktreeId: original.worktreeId, configuration, nativeExecution: { launchSubmission: "acknowledged", promptSubmission: "submitted", launchEvidence: original.nativeExecution!.launchEvidence, stopObservation: original.nativeExecution!.stopObservation }, resources: { herdr: original.resources.herdr, worktree: original.resources.worktree, nativeSession: { sessionId: uuid(1200) } }, recovery: { count: 1, retryAuthorized: false, pauseReason: null } });
+    expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(1); expect(f.tasks.prepareWorkspace).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce();
+    await expect(retryOriginal(f, original)).rejects.toThrow("paused active execution"); await f.coordinator.tick(); expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(1); expect(f.store.getTask(original)?.recovery.count).toBe(1);
+  });
+
+  it("keeps original native key PIDs while allowing ordinary child-process changes before first input", async () => {
+    const f = await fixture(); let childrenChanged = false;
+    f.tasks.captureStop.mockImplementation(async (context, binding) => ({ binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: null, shellPid: 100, processIds: childrenChanged ? [101, 103] : [101, 102], nativeProcessIds: [101], observedAt: 1000 }));
+    const gate = gatedFirstInput(f); await f.coordinator.tick(); const original = f.store.listTasks()[0]!; childrenChanged = true; gate.acceptTrust(); await retryOriginal(f, original); await f.coordinator.advanceRetry(original);
+    expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(1); expect(f.store.getTask(original)?.nativeExecution?.stopObservation).toMatchObject({ processIds: [101, 102], nativeProcessIds: [101] });
+  });
+
+  it.each(["native-replaced", "terminal-replaced", "native-missing", "receipt-mismatch", "legacy-unknown-key"] as const)("fences known-unsent first input when original launch evidence is not current (%s)", async (failure) => {
+    const f = await fixture(); const gate = gatedFirstInput(f);
+    if (failure === "native-replaced") f.tasks.captureStop.mockImplementation(async (context, binding) => ({ binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: null, shellPid: 100, processIds: [101, 102], nativeProcessIds: [101], observedAt: 1000 }));
+    if (failure === "legacy-unknown-key") f.tasks.captureStop.mockImplementation(async (context, binding) => ({ binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: null, shellPid: 100, processIds: [101], nativeProcessIds: null, observedAt: 1000 }));
+    await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    if (failure === "native-replaced") f.tasks.captureStop.mockImplementation(async (context, binding) => ({ binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: null, shellPid: 100, processIds: [201, 102], nativeProcessIds: [201], observedAt: 1001 }));
+    if (failure === "terminal-replaced") f.resources.get(original.claimId)!.panes[0]!.binding.terminalId = "replacement-terminal";
+    if (failure === "native-missing") f.resources.delete(original.claimId);
+    if (failure === "receipt-mismatch") {
+      const database = new Database(path.join(f.root, "state.sqlite"));
+      try { database.prepare("UPDATE tasks SET native_execution = ? WHERE claim_id = ?").run(JSON.stringify({ ...original.nativeExecution!, launchEvidence: { ...original.nativeExecution!.launchEvidence!, argv: ["codex", "--no-daemon", "--model", "different-model", "--search"] } }), original.claimId); } finally { database.close(); }
+    }
+    gate.acceptTrust(); await retryOriginal(f, original); await f.coordinator.advanceRetry(original);
+    expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(0); expect(f.tasks.prepareWorkspace).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce(); expect(f.store.getTask(original)?.resources.nativeSession).toBeNull();
+    expect(f.store.getTask(original)).toMatchObject({ configuration, nativeExecution: { promptSubmission: "not-submitted" }, recovery: { count: 0, pauseReason: expect.any(String) } });
+  });
+
+  it("preserves acknowledged unsent facts and original error causes when native process observation fails", async () => {
+    const f = await fixture(); gatedFirstInput(f); const failure = new Error("Original process information is unavailable."); f.tasks.captureStop.mockRejectedValueOnce(failure);
+    await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
+    expect(task).toMatchObject({ nativeExecution: { launchSubmission: "acknowledged", promptSubmission: "not-submitted", stopObservation: null }, recovery: { count: 0, pauseReason: expect.stringContaining("process observation failed") } });
+    const error = f.events.find((event) => event.kind === "paused")!.error;
+    expect(error).toBeInstanceOf(AggregateError); expect((error as AggregateError).errors).toContain(failure); expect((error as Error).cause).toBeInstanceOf(HerdrAgentActionError);
+  });
+
+  it.each(["submitted", "unknown"] as const)("does not reinterpret %s first input without native history as known-unsent recovery", async (submission) => {
+    const f = await fixture(); const gate = gatedFirstInput(f); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.store.recordNativeStartOutcome(original, { promptSubmission: submission }, 1000); f.resources.delete(original.claimId); gate.acceptTrust(); await retryOriginal(f, original); await f.coordinator.advanceRetry(original);
+    expect(f.store.getTask(original)).toMatchObject({ nativeExecution: { promptSubmission: submission }, resources: { nativeSession: null }, recovery: { pauseReason: expect.stringContaining("native session ID is missing") } }); expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(0); expect(f.git.prepareWorktree).toHaveBeenCalledOnce();
+  });
+
+  it.each(["release", "shutdown"] as const)("does not use cleanup input to accept a blocked startup screen during %s", async (kind) => {
+    const f = await fixture(); const gate = gatedFirstInput(f); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    f.tasks.submitPrompt.mockRejectedValue(new HerdrAgentActionError("The folder-trust screen blocks automatic cleanup input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" }));
+    if (kind === "release") {
+      const version = f.granted.get(original.claimId)!.version;
+      await submitWorkerControl({ store: f.store, remote: f.remote, serverOrigin: origin, workerId, platform: "linux", machine: f.options.machine, repositories: f.options.repositories, request: { kind: "release", taskId: original.taskId, projectId: original.projectId, claimId: original.claimId, version }, signal: new AbortController().signal, now: f.options.now });
+      await f.coordinator.advanceCommittedCleanups(original); expect(f.store.getTask(original)?.status).toBe("done"); expect(f.remote.release).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+    } else {
+      expect(await f.coordinator.shutdown()).toBe(true); expect(f.store.getTask(original)).toMatchObject({ status: "active", resources: { worktree: original.resources.worktree, nativeSession: null } }); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    }
+    expect(f.store.getTask(original)?.cleanup).toMatchObject({ deadline: 601000, result: "failed", input: "rejected", agentStopped: true, workspaceClosed: true, worktreeDeleted: kind === "release" });
+    expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(0); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(f.tasks.forceStop).toHaveBeenCalledOnce(); expect(f.tasks.closeWorkspace).toHaveBeenCalledOnce();
+  });
+
+  it("persists a legacy waiting result as known-unsent before public retry on the same native launch", async () => {
+    const f = await fixture(); const gate = gatedFirstInput(f); const launch = vi.mocked(f.herdr.tasks.start).getMockImplementation()!;
+    vi.mocked(f.herdr.tasks.start).mockImplementationOnce(async (...args) => {
+      try { return await launch(...args); }
+      catch (error) {
+        expect(error).toBeInstanceOf(HerdrAgentActionError);
+        const [context, binding] = args; const pane = f.resources.get(context.claimId)!.panes[0]!; pane.status = "blocked";
+        return { kind: "waiting", observation: { ...pane, binding, name: "fixture" }, promptSubmission: "not-submitted", launchEvidence: (error as HerdrAgentActionError).launchEvidence };
+      }
+    });
+    await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    expect(original).toMatchObject({ nativeExecution: { launchSubmission: "acknowledged", promptSubmission: "not-submitted", stopObservation: { nativeProcessIds: [101] } }, recovery: { count: 0, pauseReason: expect.stringContaining("waiting before its first managed input") } });
+    const originalStop = original.nativeExecution!.stopObservation;
+    f.resources.get(original.claimId)!.panes[0]!.status = "idle"; gate.acceptTrust(); await f.coordinator.tick(); expect(gate.managedInputs()).toBe(0);
+    await retryOriginal(f, original); await f.coordinator.advanceRetry(original);
+    expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(1); expect(f.store.getTask(original)).toMatchObject({ recovery: { count: 1, retryAuthorized: false, pauseReason: null }, nativeExecution: { promptSubmission: "submitted", stopObservation: originalStop } });
+  });
+
+  it.each(["control", "terminal", "shutdown"] as const)("keeps committed %s intent ahead of a ready known-unsent first input with retry permission", async (intent) => {
+    const f = await fixture(); const gate = gatedFirstInput(f); await f.coordinator.tick(); const original = f.store.listTasks()[0]!; gate.acceptTrust(); await retryOriginal(f, original);
+    if (intent === "control") f.store.recordControlIntent(original, { kind: "release", sourceClaimId: original.claimId, version: f.granted.get(original.claimId)!.version.toString() }, 1000);
+    else f.store.beginCleanup(original, { kind: intent, deadline: 601000 }, 1000);
+    f.tasks.submitPrompt.mockRejectedValue(new HerdrAgentActionError("The original cleanup input remains unavailable.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" }));
+    await f.coordinator.advanceRetry(original);
+    expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(0); expect(f.store.getTask(original)?.recovery.count).toBe(0);
+    if (intent === "shutdown") expect(f.store.getTask(original)).toMatchObject({ status: "active", resources: { worktree: original.resources.worktree, nativeSession: null }, recovery: { pauseReason: expect.stringContaining("no longer has its original worktree and terminal binding") } });
+    else expect(f.store.getTask(original)?.status).toBe("done");
+    expect(f.tasks.forceStop).toHaveBeenCalledOnce(); expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks committed source intent before journaling known-unsent input after process observation", async () => {
+    const f = await fixture(); const gate = gatedFirstInput(f); await f.coordinator.tick(); const original = f.store.listTasks()[0]!; gate.acceptTrust(); await retryOriginal(f, original);
+    const capture = f.tasks.captureStop.getMockImplementation()!;
+    f.tasks.captureStop.mockImplementationOnce(async (...args) => {
+      f.store.recordControlIntent(original, { kind: "release", sourceClaimId: original.claimId, version: f.granted.get(original.claimId)!.version.toString() }, 1000);
+      return capture(...args);
+    });
+    await f.coordinator.advanceRetry(original);
+    expect(f.store.getTask(original)).toMatchObject({ control: { intent: { kind: "release" } }, nativeExecution: { promptSubmission: "not-submitted" } }); expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(0);
+  });
+
+  it.each(["user", "claim", "origin"] as const)("keeps public retry authority ahead of known-unsent continuation when %s changes", async (authority) => {
+    const f = await fixture(); const gate = gatedFirstInput(f); await f.coordinator.tick(); const original = f.store.listTasks()[0]!; gate.acceptTrust();
+    if (authority === "user") vi.mocked(f.remote.currentUserId).mockResolvedValue(uuid(1220));
+    if (authority === "claim") { const task = f.granted.get(original.claimId)!; f.granted.set(original.claimId, { ...task, properties: { ...task.properties, worker: { ...task.properties.worker!, claimId: uuid(1221) } } }); }
+    if (authority === "origin") {
+      await expect(submitWorkerControl({ store: f.store, remote: f.remote, serverOrigin: "https://different-daynight.example", workerId, platform: "linux", machine: f.options.machine, repositories: [], request: { kind: "retry", taskId: original.taskId, projectId: original.projectId, claimId: original.claimId }, signal: new AbortController().signal, now: f.options.now })).rejects.toThrow("different configured service origin");
+    } else await expect(retryOriginal(f, original)).rejects.toThrow(authority === "user" ? "original authenticated execution owner" : "no longer the exact active execution");
+    expect(f.store.getTask(original)).toMatchObject({ userId: original.userId, claimId: original.claimId, worktreeId: original.worktreeId, configuration, nativeExecution: { promptSubmission: "not-submitted" }, recovery: { count: 0, retryAuthorized: false } }); expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(0);
+  });
+
+  it.each(["release", "shutdown"] as const)("stops the original launch after its first official native ID appears during %s", async (kind) => {
+    const f = await fixture(); const gate = gatedFirstInput(f); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    const originalProcessProof = original.nativeExecution!.stopObservation!; expect(originalProcessProof.nativeSessionId).toBeNull(); expect(originalProcessProof.nativeProcessIds).toEqual([101]);
+    gate.acceptTrust(); await retryOriginal(f, original); await f.coordinator.advanceRetry(original);
+    expect(f.store.getTask(original)).toMatchObject({ resources: { nativeSession: { sessionId: uuid(1200) } }, nativeExecution: { stopObservation: originalProcessProof }, recovery: { count: 1 } });
+    if (kind === "release") {
+      await submitWorkerControl({ store: f.store, remote: f.remote, serverOrigin: origin, workerId, platform: "linux", machine: f.options.machine, repositories: f.options.repositories, request: { kind: "release", taskId: original.taskId, projectId: original.projectId, claimId: original.claimId, version: f.granted.get(original.claimId)!.version }, signal: new AbortController().signal, now: f.options.now });
+      await f.coordinator.advanceCommittedCleanups(original); expect(f.store.getTask(original)?.status).toBe("done"); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+    } else {
+      expect(await f.coordinator.shutdown()).toBe(true); expect(f.store.getTask(original)).toMatchObject({ status: "active", resources: { worktree: original.resources.worktree, nativeSession: { sessionId: uuid(1200) } } }); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    }
+    expect(f.store.getTask(original)).toMatchObject({ nativeExecution: { stopObservation: originalProcessProof }, resources: { nativeSession: { sessionId: uuid(1200) } }, cleanup: { deadline: 601000, agentStopped: true, workspaceClosed: true, worktreeDeleted: kind === "release" } }); expect(vi.mocked(f.herdr.tasks.forceStop).mock.calls[0]![2]).toEqual(originalProcessProof); expect(f.tasks.closeWorkspace).toHaveBeenCalledOnce(); expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(1);
   });
 
 });

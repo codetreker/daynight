@@ -5,8 +5,9 @@ import type { Operation } from "../../../api/operation.js";
 import { canonicalId } from "../../../api/parse.js";
 import type { WorkerAgent } from "../../../api/types.js";
 import { normalizeServerUrl } from "../../../config/server.js";
-import { buildHerdrAgentArguments } from "./arguments.js";
+import { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./arguments.js";
 import type { HerdrAgentConfiguration } from "./arguments.js";
+import { codexInputSurface } from "./codex-input.js";
 import { HerdrRpcError } from "./rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "./rpc.js";
 
@@ -20,7 +21,7 @@ export type HerdrPreparedWorkspace = { binding: HerdrTaskBinding; workspaceEvide
 export type HerdrLaunchEvidence = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; argv: readonly string[]; referenceBaseline: "empty"; workspaceEvidence: HerdrWorkspaceEvidence };
 export type HerdrNativeReference = { source: string; agent: WorkerAgent; sessionId: string };
 export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | null; name: string | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null };
-export type HerdrStopObservation = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; nativeSessionId: string | null; shellPid: number; processIds: readonly number[]; observedAt: number };
+export type HerdrStopObservation = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; nativeSessionId: string | null; shellPid: number; processIds: readonly number[]; nativeProcessIds: readonly number[] | null; observedAt: number };
 export type HerdrOwnedWorkspace = { owner: HerdrExecutionOwner; workspaceId: string; panes: { binding: HerdrTaskBinding; cwd: string | null; kind: WorkerAgent | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null }[] };
 export type HerdrAgentPreflight = { verifyStart(input: { context: HerdrExecutionContext; configuration: HerdrAgentConfiguration; resumeSessionId?: string }, operation: Operation): Promise<unknown> };
 export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string }>;
@@ -53,6 +54,23 @@ const nativeProcessEvidence = (value: RecordValue, agent: WorkerAgent): boolean 
     if ((interpreter === "node" || interpreter === "node.exe") && executable(argv[1])) return true;
   }
   return executable(value.argv0) || executable(value.name);
+};
+const nativeInteractiveProcessEvidence = (value: RecordValue, agent: WorkerAgent): boolean => {
+  if (!Array.isArray(value.argv) || !value.argv.every((argument) => typeof argument === "string")) return false;
+  const argv = value.argv as string[];
+  const leaf = (argument: string | undefined) => argument?.split(/[\\/]/).at(-1)?.toLowerCase();
+  const native = (argument: string | undefined) => [agent, `${agent}.exe`, `${agent}.js`].includes(leaf(argument) as string);
+  const offset = native(argv[0]) ? 1 : ["node", "node.exe"].includes(leaf(argv[0]) as string) && native(argv[1]) ? 2 : 0;
+  if (offset === 0) return false;
+  const args = argv.slice(offset);
+  // Only an interactive invocation can fence deferred input. Subcommands such
+  // as `codex exec` and their descendants are not the original UI process.
+  if (agent === "codex" && args[0] === "--no-daemon") args.shift();
+  if (agent === "codex" && args[0] === "resume" && typeof args[1] === "string" && canonicalId(args[1]) !== null) args.splice(0, 2);
+  if (agent === "copilot" && args[0]?.startsWith("--resume=") && canonicalId(args[0].slice("--resume=".length)) !== null) args.shift();
+  if (args[0] === "--model" && typeof args[1] === "string" && args[1] !== "") args.splice(0, 2);
+  try { validateHerdrAgentArguments(agent, args); return true; }
+  catch { return false; }
 };
 const expectedResult = (value: HerdrRpcResult, type: string): HerdrRpcResult => { if (value.type !== type) throw new TypeError(`Expected Herdr ${type} result; received ${value.type}.`); return value; };
 const sameBinding = (left: HerdrTaskBinding, right: HerdrTaskBinding): boolean => left.session === right.session && left.workspaceId === right.workspaceId && left.paneId === right.paneId && left.terminalId === right.terminalId;
@@ -195,11 +213,41 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     try { return expectedResult(await options.rpc.request(method, params, operation), type); }
     catch (cause) { throw classifyMutationError(method, cause); }
   };
+  const visibleCodexSurface = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation) => {
+    const owned = await readOwned(context, binding, operation);
+    const tabId = text(owned.pane!.tab_id, "Input pane tab ID");
+    const result = expectedResult(await options.rpc.request("agent.read", { target: binding.paneId, source: "visible", format: "text", strip_ansi: true }, operation), "pane_read");
+    const read = object(result.read, "Visible native input surface");
+    if (read.pane_id !== binding.paneId || read.workspace_id !== binding.workspaceId || read.tab_id !== tabId || read.source !== "visible" || read.format !== "text") throw new Error("The visible input surface does not identify the original task pane and requested source.");
+    if (typeof read.text !== "string" || typeof read.truncated !== "boolean") throw new TypeError("The visible input surface must contain text and an explicit truncation fact.");
+    counter(read.revision, "Visible input revision");
+    if (read.truncated) throw new Error("The original native input surface was truncated and cannot authorize automatic input.");
+    // Herdr 0.9.5 reports revision zero. It is not a freshness or input receipt.
+    const confirmed = await readOwned(context, binding, operation);
+    if (confirmed.pane!.tab_id !== tabId) throw new Error("The original input pane changed tabs during the visible surface observation.");
+    return codexInputSurface(read.text);
+  };
   const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false): Promise<{ submission: "submitted"; observation: HerdrAgentObservation }> => {
     if (typeof prompt !== "string" || prompt.length === 0) throw new HerdrAgentActionError("The caller prompt must be nonempty text.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-    const before = await observation(context, binding, operation);
-    const knownAgent = before.kind === context.agent || before.nativeSession?.agent === context.agent || (initialPrompt && before.name === herdrExecutionAgentName(context));
-    if (!knownAgent || before.launchPending || (!initialPrompt && before.nativeSession === null) || (initialPrompt && !before.interactiveReady) || before.status === "blocked") throw new HerdrAgentActionError("The original native agent is not ready for input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+    let before: HerdrAgentObservation;
+    const verifyInputAgent = (current: HerdrAgentObservation): void => {
+      const knownAgent = current.kind === context.agent || current.nativeSession?.agent === context.agent || (initialPrompt && current.name === herdrExecutionAgentName(context));
+      if (!knownAgent || current.launchPending || (!initialPrompt && current.nativeSession === null) || (initialPrompt && !current.interactiveReady) || current.status === "blocked") throw new Error("The original native agent is not ready for input.");
+    };
+    try {
+      while (true) {
+        before = await observation(context, binding, operation);
+        verifyInputAgent(before);
+        if (context.agent !== "codex") break;
+        const surface = await visibleCodexSurface(context, binding, operation);
+        if (surface === "blocked") throw new Error("The original Codex input surface requires operator action; automatic input was not submitted.");
+        before = await observation(context, binding, operation);
+        verifyInputAgent(before);
+        if (surface === "composer" || (!initialPrompt && before.status === "working")) break;
+        await wait(operation);
+      }
+      operation.check();
+    } catch (cause) { throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original native input surface could not be verified.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" }); }
     const result = await mutation("agent.prompt", { target: binding.paneId, text: prompt }, "agent_prompted", operation);
     try {
       const returned = object(result.agent, "Prompt agent receipt");
@@ -212,6 +260,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     pid(evidence.shellPid);
     if (evidence.nativeSessionId !== null && canonicalId(evidence.nativeSessionId) === null) throw new Error("The saved native session identity is invalid.");
     if (!Array.isArray(evidence.processIds) || evidence.processIds.length === 0 || new Set(evidence.processIds).size !== evidence.processIds.length || evidence.processIds.some((value) => pid(value) === evidence.shellPid)) throw new Error("The original native process observation is invalid.");
+    if (evidence.nativeProcessIds !== null && (!Array.isArray(evidence.nativeProcessIds) || evidence.nativeProcessIds.length === 0 || new Set(evidence.nativeProcessIds).size !== evidence.nativeProcessIds.length || evidence.nativeProcessIds.some((value) => pid(value) === evidence.shellPid || !evidence.processIds.includes(value)))) throw new Error("The original interactive native process observation is invalid.");
     if (!Number.isSafeInteger(evidence.observedAt) || evidence.observedAt < 0) throw new Error("The original process observation time is invalid.");
   };
   const absentProcesses = async (evidence: HerdrStopObservation, operation: Operation): Promise<void> => {
@@ -423,9 +472,10 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       const processes = info.foreground_processes === undefined ? [] : array(info.foreground_processes, "Foreground processes");
       const records = processes.map((value) => object(value, "Foreground process"));
       const processIds = [...new Set(records.map((value) => pid(value.pid)).filter((value) => value !== shellPid))];
+      const keys = [...new Set(records.filter((value) => pid(value.pid) !== shellPid && nativeInteractiveProcessEvidence(value, context.agent)).map((value) => pid(value.pid)))];
       if (processIds.length === 0) throw new Error("The original native process identities are unavailable; pane absence or an empty process list cannot establish stopped confirmation.");
       if (current.launchPending && (current.name !== herdrExecutionAgentName(context) || !records.some((value) => pid(value.pid) !== shellPid && nativeProcessEvidence(value, context.agent)))) throw new Error("The pending task launch has no concrete original native process evidence.");
-      return { binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: current.nativeSession?.sessionId ?? null, shellPid, processIds, observedAt: Date.now() };
+      return { binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: current.nativeSession?.sessionId ?? null, shellPid, processIds, nativeProcessIds: keys.length === 0 ? null : keys, observedAt: Date.now() };
     },
     requestGracefulStop: (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation) => serialized(binding.paneId, operation, () => submit(context, binding, "/exit", operation)),
     // This observes only the current shell. Historical never-submitted launch state

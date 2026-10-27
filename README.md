@@ -130,6 +130,15 @@ while retaining unfinished claims, worktrees and native history. The
 [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
 
+If native startup asks for folder trust or another authorization, the worker
+waits without accepting it. Use its private attachment to make that decision in
+the original native session. For an acknowledged original process whose first
+prompt is known unsent and identity is verified, resolve the blocking screen and
+authorize continuation with `daynight worker retry <task-id> --claim-id
+<original-claim-id>`; the worker keeps the original conversation and settings.
+The [worker guide](packages/daynight/README.md#worker-manual-management)
+explains the required original-claim context and uncertain-input limits.
+
 ## Review configuration and startup
 
 PR review requires Git, authenticated GitHub CLI and Copilot CLI on `PATH`:
