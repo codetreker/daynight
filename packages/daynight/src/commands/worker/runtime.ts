@@ -8,11 +8,13 @@ import { loadServerConfiguration } from "../../config/server.js";
 import { readWorkerConfiguration } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
 import type { WorkerRepositoryAssignment } from "./coordinator.js";
+import { createWorkerControlDriver, submitWorkerControl } from "./control.js";
+import type { WorkerControlRequest } from "./control.js";
 import { createWorkerDiagnostics } from "./diagnostics.js";
 import { isWorkerCancellation } from "./execution.js";
 import { createWorkerHerdr } from "./herdr.js";
 import { ensureWorkerIdentity } from "./identity.js";
-import { acquireWorkerInstanceLock } from "./instance-lock.js";
+import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
 import { createWorkerPromptBuilder } from "./prompts.js";
 import { createWorkerRemote } from "./remote.js";
@@ -105,7 +107,7 @@ export const runWorker = async (options: {
               if (current === null) throw new Error("The committed cleanup record disappeared.");
               if (current.status === "done" || (current.cleanup === null && current.control === null)) return;
               const state = current.cleanup;
-              if (state !== null && state.result !== null && state.agentStopped && state.workspaceClosed && (state.kind === "shutdown" || state.worktreeDeleted)) return;
+              if (current.control === null && state !== null && state.result !== null && state.agentStopped && state.workspaceClosed && (state.kind === "shutdown" || state.worktreeDeleted)) return;
               const remaining = state === null ? 0 : state.deadline - Date.now();
               try { await delay(remaining > 0 ? Math.max(1, Math.min(1_000, remaining)) : 1_000, undefined, { signal: cancellation.signal }); }
               catch (error) { if (!isWorkerCancellation(error, cancellation.signal)) throw error; }
@@ -178,4 +180,107 @@ export const runWorker = async (options: {
   }
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError(failures, "Worker execution or shutdown failed.");
+};
+
+
+export const runWorkerControl = async (options: {
+  homeDirectory: string; packageDirectory: string; request: WorkerControlRequest;
+  log?: (message: string) => void; signal?: AbortSignal;
+}): Promise<void> => {
+  const platform = currentWorkerPlatform();
+  const paths = resolveWorkerPaths(options.homeDirectory);
+  const cancellation = new AbortController();
+  const cancel = (): void => cancellation.abort(options.signal?.reason);
+  const interrupt = (): void => cancellation.abort(new Error("Worker management interrupted; the persisted intent is retained."));
+  const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGINT", "SIGTERM", "SIGBREAK"] : ["SIGINT", "SIGTERM"];
+  options.signal?.addEventListener("abort", cancel, { once: true });
+  if (options.signal?.aborted) cancel();
+  for (const signal of signals) process.on(signal, interrupt);
+  let lock: Awaited<ReturnType<typeof tryAcquireWorkerInstanceLock>> | undefined;
+  let store: ReturnType<typeof openWorkerStore> | undefined;
+  let git: ReturnType<typeof createWorkerGitManager> | undefined;
+  let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
+  let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
+  const failures: unknown[] = [];
+  try {
+    cancellation.signal.throwIfAborted();
+    const configuration = await readWorkerConfiguration(paths, cancellation.signal);
+    const { serverUrl, serverToken } = await loadServerConfiguration(paths, cancellation.signal);
+    if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
+    lock = await tryAcquireWorkerInstanceLock(paths);
+    const workerId = await ensureWorkerIdentity(paths, cancellation.signal);
+    store = openWorkerStore(paths.databaseFile);
+    const remote = createWorkerRemote({ serverUrl, serverToken });
+    await remote.currentUserId(cancellation.signal);
+    diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
+    const repositories: WorkerRepositoryAssignment[] = [];
+    if (options.request.kind === "resume") {
+      for (const repository of configuration.repositories) {
+        if (options.request.projectId !== undefined && repository.projectId !== undefined && repository.projectId !== options.request.projectId) continue;
+        const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, cancellation.signal);
+        if (options.request.projectId !== undefined && project.id !== options.request.projectId) continue;
+        const binding = store.registerProject({ serverOrigin: serverUrl, projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
+        repositories.push({ project: binding, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
+      }
+    }
+    const result = await submitWorkerControl({ store, remote, serverOrigin: serverUrl, workerId, platform, machine: machineDescription(platform), repositories, request: options.request, signal: cancellation.signal });
+    diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
+    await diagnostics.flush();
+    if (result.task !== null && options.request.kind !== "resume") {
+      const identity = result.task;
+      let lastWaitingState: string | null = null;
+      while (true) {
+        cancellation.signal.throwIfAborted();
+        let task = store.getTask(identity);
+        if (task === null) throw new Error("The managed execution record disappeared.");
+        if (task.control?.submission === "unknown") task = await createWorkerControlDriver({ store, remote, serverOrigin: serverUrl, now: Date.now }).advance(task, cancellation.signal, { submit: false });
+        if (task.status === "done") {
+          diagnostics.emit({ kind: "management-complete", task, message: `Management finished for claim ${task.claimId}; outcome=${task.control?.outcome ?? "ownership-ended"}.` });
+          break;
+        }
+        if (task.control?.submission === "rejected") throw new Error(`Management refused for claim ${task.claimId}: ${task.control.error}. A new explicit decision and version are required.`);
+        if (task.control?.submission === "unknown") throw new Error(`Management result is unknown for claim ${task.claimId}; the original intent and claim identities are retained for reconciliation.`);
+        if (lock === null) lock = await tryAcquireWorkerInstanceLock(paths);
+        if (lock !== null) {
+          if (coordinator === undefined) {
+            await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
+            git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
+            const herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory });
+            const buildPrompt = await createWorkerPromptBuilder(options.packageDirectory);
+            coordinator = createWorkerCoordinator({ store, git, herdr, remote, serverOrigin: serverUrl, workerId, platform, machine: machineDescription(platform), repositories, maxConcurrent: configuration.maxConcurrent, buildPrompt, emit: diagnostics.emit, signal: cancellation.signal });
+          }
+          if (options.request.kind === "retry") {
+            await coordinator.advanceRetry(identity);
+            const retried = store.getTask(identity);
+            if (retried === null) throw new Error("The retried execution record disappeared.");
+            diagnostics.emit({ kind: "retry", task: retried, message: `Explicit recovery processed for claim ${retried.claimId}; count=${retried.recovery.count}; pause=${retried.recovery.pauseReason ?? "none"}.` });
+            break;
+          }
+          await coordinator.advanceCommittedCleanups(identity);
+        } else if (options.request.kind === "retry") {
+          diagnostics.emit({ kind: "retry-authorized", task, message: `Claim ${task.claimId} has one persisted extra recovery authorization; the foreground worker remains its sole controller.` });
+          break;
+        }
+        await diagnostics.flush();
+        const latest = store.getTask(identity);
+        if (latest?.status === "done" || latest?.control?.submission === "unknown" || latest?.control?.submission === "rejected") continue;
+        const waitingState = JSON.stringify({ cleanup: latest?.cleanup, control: latest?.control });
+        if (waitingState !== lastWaitingState) {
+          diagnostics.emit({ kind: "management-waiting", ...(latest === null ? {} : { task: latest }), message: `Waiting for the sole worker controller to finish management of claim ${task.claimId}.` });
+          lastWaitingState = waitingState;
+        }
+        await delay(1_000, undefined, { signal: cancellation.signal });
+      }
+    }
+  } catch (error) { failures.push(error); }
+  finally {
+    try { await git?.dispose(); } catch (error) { failures.push(error); }
+    try { store?.close(); } catch (error) { failures.push(error); }
+    try { await lock?.release(); } catch (error) { failures.push(error); }
+    try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
+    for (const signal of signals) process.off(signal, interrupt);
+    options.signal?.removeEventListener("abort", cancel);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "Worker management or resource disposal failed.");
 };

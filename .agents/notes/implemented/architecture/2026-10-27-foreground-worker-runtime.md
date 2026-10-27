@@ -297,7 +297,8 @@ rejection or a new empty conversation. Component tests, installed-command
 checks, real service behavior and native-agent lifecycle evidence remain
 distinct.
 
-Manual release/transfer/resume/retry commands and the service's existing
-continuity restrictions still require their own delivery. Complete Linux,
+The [manual-control decision](2026-10-27-worker-manual-control.md) adds explicit
+release/transfer/resume/retry consumers and fresh terminal-execution identities
+to these same persistence, serialization and cleanup boundaries. Complete Linux,
 Windows and macOS Goal acceptance is separate from this runtime composition;
 shipping the command does not assert those final results.

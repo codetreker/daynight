@@ -216,7 +216,7 @@ handbook 解释数据与错误背景，具体参数由已安装 CLI help 拥有�
 blocked todo 在设计和接口已清楚时可以预先移交，真实依赖继续阻止执行。已有 true 的
 任务只读复审，失败保留许可并报告调度风险；不会把复审假定为暂停。撤销或停止按
 另外明确的授权及现有控制流程执行。in_progress 的 false 不启用，done 按模式策略
-无需移交，active/released worker 保留所有权和原 worktree/Agent 连续性。
+无需移交。Active worker 保留所有权和原资源；released 保留历史，由有权管理者显式 resume 开始新的 claim/worktree/native session，启用许可不代替该操作。
 
 附件和跨任务文档不受目标 task version 保护。开启前核验所依赖的可变内容，执行时
 再次读取；资料变化后重新审查受影响部分。此边界只提供尽力核对，不引入审查令牌、

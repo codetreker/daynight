@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { isUnstartedPending, openWorkerStore } from "../../../src/commands/worker/store.js";
+import { isUnstartedPending, isUnstartedPendingSource, openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { ControlIntent, FrozenExecutionConfiguration, PendingClaim } from "../../../src/commands/worker/types.js";
 import type { HerdrLaunchEvidence, HerdrStopObservation, HerdrTaskBinding, HerdrWorkspaceEvidence } from "../../../src/commands/worker/herdr/agents.js";
@@ -863,6 +863,20 @@ describe("claim history and frozen configuration", () => {
 });
 
 describe("persistent bounded recovery", () => {
+  it("fences an extra retry decision when another controller has consumed its observed count", () => {
+    const f = fixture(); f.start(); f.bind();
+    f.store.beginRecovery(claim, 30); f.store.beginRecovery(claim, 31);
+    f.store.pauseTask(claim, "Recovery needs attention", 32);
+    const second = open(f.file);
+    expect(f.store.authorizeRecoveryRetryAtCount(claim, 2, 33).recovery).toMatchObject({ count: 2, retryAuthorized: true });
+    expect(second.authorizeRecoveryRetryAtCount(claim, 2, 34).recovery.retryAuthorized).toBe(true);
+    expect(second.beginRecovery(claim, 35).recovery).toEqual({ count: 3, pauseReason: null, retryAuthorized: false });
+    second.pauseTask(claim, "The explicit attempt failed", 36);
+    expect(() => f.store.authorizeRecoveryRetryAtCount(claim, 2, 37)).toThrow("recovery count changed");
+    expect(f.store.getTask(claim)?.recovery).toEqual({ count: 3, pauseReason: "The explicit attempt failed", retryAuthorized: false });
+    expect(f.store.authorizeRecoveryRetryAtCount(claim, 3, 38).recovery).toMatchObject({ count: 3, retryAuthorized: true });
+  });
+
   it("retains the budget and pause through reopen and consumes one explicit extra retry", () => {
     const f = fixture(); f.start(); f.bind();
     expect(f.store.beginRecovery(claim, 30).recovery.count).toBe(1);
@@ -939,6 +953,77 @@ describe("persistent bounded recovery", () => {
 });
 
 describe("irreversible terminal cleanup and source control", () => {
+  it("cleans a proven unstarted controlled successor without activating over its old active claim", () => {
+    const f = fixture(); f.start(); f.bind();
+    f.store.bindUserScope(claim, userId, 24);
+    const successor = { ...claim, claimId: uuid(70), worktreeId: uuid(71) };
+    f.store.registerPending(successor, { kind: "new", configuration }, 25, userId);
+    f.store.recordControlIntent(successor, { kind: "release", sourceClaimId: successor.claimId, version: "11" }, 26);
+    expect(isUnstartedPending(f.store.getTask(successor)!)).toBe(false);
+    expect(isUnstartedPendingSource(f.store.getTask(successor)!)).toBe(true);
+    const second = open(f.file);
+    expect(() => second.confirmUnstartedControlCleanup(successor, { completeHerdrInventory: false, noOwnedResources: true } as never, 600_027, 27)).toThrow("complete Herdr inventory");
+    expect(() => second.confirmUnstartedControlCleanup(successor, { completeHerdrInventory: true, noOwnedResources: false } as never, 600_027, 27)).toThrow("complete Herdr inventory");
+    expect(second.getTask(successor)?.cleanup).toBeNull();
+    const cleaned = second.confirmUnstartedControlCleanup(successor, { completeHerdrInventory: true, noOwnedResources: true }, 600_027, 27);
+    expect(cleaned).toMatchObject({ status: "pending", cleanup: { kind: "terminal", startedAt: 27, deadline: 600_027, result: "completed", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+    expect(f.store.getTask(claim)).toMatchObject({ status: "active", cleanup: null, resources: { worktree: { branch: `daynight/${claim.taskId}` } } });
+    expect(() => second.completeTask(successor, 28)).toThrow("control outcome");
+    second.markControlSubmitting(successor, 11n, 29);
+    second.confirmControlApplied(successor, 12n, 30);
+    expect(second.completeTask(successor, 31).status).toBe("done");
+    expect(f.store.getTask(claim)?.status).toBe("active");
+  });
+
+  it.each(["unscoped", "recovered", "submitted", "active", "no-control"] as const)("refuses an unstarted source shortcut for %s execution evidence", (kind) => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    f.store.registerPending(claim, kind === "recovered" ? { kind: "recovered", configuration } : { kind: "new", configuration }, 10, kind === "unscoped" ? null : userId);
+    if (kind === "active" || kind === "submitted") f.store.activateTask(claim, 20);
+    if (kind === "submitted") {
+      f.store.bindWorktree(claim, { repositoryPath: f.mapping.localPath, commonDirectory: path.join(f.mapping.localPath, ".git"), worktreePath: path.join(f.mapping.localPath, ".worktrees", "daynight", claim.taskId), branch: `daynight/${claim.taskId}` }, 21);
+      f.store.markWorkspaceSubmitting(claim, 21);
+    }
+    if (kind !== "no-control") f.store.recordControlIntent(claim, release, 22);
+    const before = f.store.getTask(claim);
+    expect(() => f.store.confirmUnstartedControlCleanup(claim, { completeHerdrInventory: true, noOwnedResources: true }, 600_023, 23)).toThrow("scoped unstarted pending source");
+    expect(f.store.getTask(claim)).toEqual(before);
+  });
+
+  it("replaces only a definite rejection with a new explicit decision and preserves its completed cleanup", () => {
+    const f = fixture(); f.start(); f.store.recordControlIntent(claim, { ...release, version: "10" }, 24); f.cleanup();
+    expect(() => f.store.replaceRejectedControlIntent(claim, { ...release, version: "11" }, { observedVersion: 11n }, 37)).toThrow("definitely rejected");
+    f.store.markControlSubmitting(claim, 10n, 38);
+    expect(() => f.store.replaceRejectedControlIntent(claim, { ...release, version: "11" }, { observedVersion: 11n }, 39)).toThrow("unknown writes remain fenced");
+    f.store.rejectControlSubmission(claim, "Exact version conflict", 40);
+    close(f.store);
+    const reopened = open(f.file);
+    const cleanup = reopened.getTask(claim)?.cleanup;
+    expect(() => reopened.replaceRejectedControlIntent(claim, { ...release, version: "10" }, { observedVersion: 11n }, 41)).toThrow("newly observed explicit version");
+    const next = reopened.replaceRejectedControlIntent(claim, { ...release, version: "11" }, { observedVersion: 11n }, 42);
+    expect(next.cleanup).toEqual(cleanup);
+    expect(next.control).toEqual({ intent: { ...release, version: "11" }, requestedAt: 42, submission: "not-submitted", submittedAt: null, outcome: null, resultVersion: null, error: null });
+    expect(() => reopened.beginRecovery(claim, 43)).toThrow("control or cleanup intent");
+    expect(() => reopened.markControlSubmitting(claim, 10n, 44)).toThrow("original control decision");
+    expect(reopened.markControlSubmitting(claim, 11n, 45).control?.submission).toBe("unknown");
+  });
+
+  it("uses targeted task proof only for a fully cleaned saved management intent", () => {
+    const f = fixture(); f.start();
+    const ended = { observedClaimId: uuid(50), observedState: "active" } as const;
+    expect(() => f.store.confirmControlOwnershipEndedByTask(claim, ended, 24)).toThrow("Cleanup has not started");
+    f.cleanup();
+    expect(() => f.store.confirmControlOwnershipEndedByTask(claim, ended, 37)).toThrow("source control intent");
+    f.store.recordControlIntent(claim, release, 38);
+    f.store.markControlSubmitting(claim, BigInt(release.version), 39);
+    expect(() => f.store.confirmControlOwnershipEndedByTask(claim, { observedClaimId: claim.claimId, observedState: "active" }, 40)).toThrow("still contains the original active claim");
+    expect(() => f.store.confirmControlOwnershipEndedByTask(claim, { observedClaimId: null, observedState: "released" }, 40)).toThrow("both claim identity and state");
+    expect(() => f.store.confirmControlOwnershipEndedByTask(claim, { observedClaimId: "bad", observedState: "active" }, 40)).toThrow("UUID");
+    expect(f.store.getTask(claim)?.control?.submission).toBe("unknown");
+    const confirmed = f.store.confirmControlOwnershipEndedByTask(claim, ended, 41);
+    expect(confirmed.control).toMatchObject({ submission: "confirmed", outcome: "ownership-ended", submittedAt: 39, resultVersion: null });
+    expect(f.store.completeTask(claim, 42).status).toBe("done");
+  });
+
   it("persists an immutable cleanup turn baseline only after its original input was confirmed", () => {
     const f = fixture(); f.start(); f.bind();
     f.store.beginCleanup(claim, { kind: "terminal", deadline: 630 }, 30);

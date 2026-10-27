@@ -1,5 +1,5 @@
 import { isNonemptyText, isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, User, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, User, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
 
 export class ProtocolError extends Error {
   constructor(message = "The server returned an invalid response.") { super(message); this.name = "ProtocolError"; }
@@ -94,6 +94,23 @@ export const parseUser = (value: unknown): User => {
     emailVerified: data.emailVerified === null ? null : bool(data.emailVerified),
     name: data.name === null ? null : text(data.name), avatarUrl: data.avatarUrl === null ? null : text(data.avatarUrl),
   };
+};
+export const parseProjectMembers = (value: unknown, projectId: string): readonly ProjectMember[] => {
+  const data = fields(value, ["items"]);
+  const members = array(data.items, (value): ProjectMember => {
+    const member = fields(value, ["projectId", "userId", "email", "name", "avatarUrl", "role", "version", "createdAt", "updatedAt"]);
+    const parsed: ProjectMember = {
+      projectId: id(member.projectId), userId: id(member.userId),
+      email: member.email === null ? null : text(member.email), name: member.name === null ? null : text(member.name),
+      avatarUrl: member.avatarUrl === null ? null : text(member.avatarUrl),
+      role: member.role === "admin" || member.role === "member" ? member.role : malformed(),
+      version: resourceVersion(member.version), createdAt: timestamp(member.createdAt), updatedAt: timestamp(member.updatedAt),
+    };
+    if (parsed.projectId !== projectId) return malformed();
+    return parsed;
+  });
+  if (new Set(members.map(({ userId }) => userId)).size !== members.length) return malformed();
+  return members;
 };
 const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
 const workerHerdr = (value: unknown): WorkerHerdr | null => {

@@ -92,7 +92,7 @@ describe("packaged skill resource copy", () => {
       { scenario: "goal-shared-inline-architecture", resource: "references/task-content.md", before: "Do not invent an attachment path for inline content, relocate or copy it merely to satisfy a reference format", after: "Create an attachment and copy inline content before handoff" },
       { scenario: "handoff-no-implicit-authorization", resource: "references/create-task.md", before: "Creation and breakdown do not enable it", after: "Creation and breakdown may enable it" },
       { scenario: "handoff-enabled-reaudit", resource: "references/handoff.md", before: "Keep its permission unchanged", after: "Disable its permission immediately" },
-      { scenario: "handoff-state-and-worker-continuity", resource: "references/handoff.md", before: "confirmed original worktree/Agent continuity", after: "a new worktree and Agent" },
+      { scenario: "handoff-state-and-worker-ownership", resource: "references/handoff.md", before: "only through an authorized management decision", after: "automatically after enabling permission" },
       { scenario: "handoff-concurrency-and-unknown-outcome", resource: "references/handoff.md", before: "reconcile by reads only before considering any new mutation; do not automatically replay it", after: "resubmit the write using the latest version" },
     ];
     for (const mutation of mutations) {

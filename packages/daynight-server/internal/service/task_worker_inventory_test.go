@@ -49,8 +49,8 @@ func TestTaskWorkerInventoryFiltersBeforeLimitAndBindsWorkerAndUser(t *testing.T
 	}
 	manual = updateTask(t, tasks, admin, manual, UpdateTask{AllowAgents: pointer(false), RequiredPlatform: platformChange(pointer(core.PlatformWindows))})
 	descriptor := workerDescriptor()
-	descriptor.WorkerID, descriptor.WorktreeID, descriptor.Agent = workerID, previous.WorktreeID, previous.Agent
-	manual, err = tasks.ResumeWorker(ctx, owner, project.ID, manual.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: manual.Version, WorkerDescriptor: descriptor, ContinuityConfirmed: true}, PreviousClaimID: previous.ClaimID})
+	descriptor.WorkerID = workerID
+	manual, err = tasks.ResumeWorker(ctx, owner, project.ID, manual.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: manual.Version, WorkerDescriptor: descriptor}, PreviousClaimID: previous.ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,8 +140,8 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 	}
 	inventory(owner, "")
 	next := descriptor
-	next.ClaimID = uuid.NewString()
-	task, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: released.Version, WorkerDescriptor: next, ContinuityConfirmed: true}, PreviousClaimID: descriptor.ClaimID})
+	next.ClaimID, next.WorktreeID = uuid.NewString(), uuid.NewString()
+	task, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: released.Version, WorkerDescriptor: next}, PreviousClaimID: descriptor.ClaimID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestTaskWorkerInventoryTracksCurrentClaimAcrossOwnershipChanges(t *testing.
 	targetClaimID := uuid.NewString()
 	task, err = tasks.TransferWorker(ctx, owner, project.ID, task.ID, TransferWorker{Version: task.Version, ClaimID: next.ClaimID, NewClaimID: targetClaimID,
 		Target:     WorkerTarget{UserID: target.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent},
-		WorktreeID: descriptor.WorktreeID, StoppedConfirmed: true, ContinuityConfirmed: true})
+		WorktreeID: uuid.NewString(), StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}

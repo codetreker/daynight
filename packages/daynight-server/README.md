@@ -657,8 +657,8 @@ done, including external edges; reopening done refuses sorted direct active/done
 dependent IDs. No dependent is changed. Status preserves requiredPlatform, PRs,
 other task fields, dependency classifications and attachments. Claim-bound done atomically marks
 the current worker completed; its owner and claim ID must match. Active execution
-returns to todo only through release. Released unfinished work requires original
-resource continuity through automatic acquisition or explicit manual resume. The
+returns to todo only through release. Released tasks begin a new execution through eligible automatic acquisition or
+explicit owner/admin resume, with fresh claim and worktree IDs. The
 old four lifecycle routes are removed.
 
 Execution timing describes the current attempt. Actual entry into in_progress
@@ -754,11 +754,15 @@ existing authentication, exact int64 versions and strict JSON/error handling.
 They do not start processes. Claims use fresh caller-persisted UUIDs; the latest
 ID cannot be reused, and current-owner writes must match the claim. Transfer
 checks source authorization separately from target membership and platform.
-Release preserves original resources; manual resume requires source owner/admin
-and continuity while retaining the explicit manual eligibility exception. The
+Release retains the last resource fields as history after source cleanup. Manual
+resume requires source owner/admin, previousClaimId and fresh claim/worktree IDs
+while retaining the explicit manual eligibility exception. Transfer also uses a
+fresh target worktree ID and permits an explicitly selected target agent.
+Deprecated continuityConfirmed input is rejected rather than ignored. The
 [claim architecture](../../docs/design/daynight-worker-claims.md) owns exact fields
 and refusals. Callers of the in-process typed client reconcile unknown results by GET of
-known task IDs; no reverse owner query or claim table is introduced.
+known task IDs. Automatic cleanup instead requires the complete authenticated
+user/worker active-claim inventory; no claim table is introduced.
 
 | Method | Path | Result |
 |---|---|---|
@@ -771,7 +775,7 @@ known task IDs; no reverse owner query or claim table is introduced.
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, current owner updates execution summary |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/release` | `200`, source owner/admin confirms stopping and returns todo |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/transfer` | `200`, source owner/admin installs validated target ownership |
-| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/resume` | `200`, explicit manual continuation of released original work |
+| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/resume` | `200`, explicit manual new execution of a released task |
 
 Creation accepts required `title`, optional `description`, `dependsOn`,
 `externalDependsOn`, `requiredPlatform` and `properties`; omitted optional values

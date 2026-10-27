@@ -87,7 +87,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 		{"version", nil}, {"version", "1"}, {"version", 0}, {"claimId", nil}, {"claimId", "invalid"}, {"workerId", false},
 		{"machine", nil}, {"machine", []any{}}, {"machine", map[string]any{"id": uuid.NewString()}}, {"machine", map[string]any{"id": true, "name": "x"}},
 		{"machine", map[string]any{"id": uuid.NewString(), "name": "x", "unknown": true}}, {"platform", nil}, {"platform", "freebsd"},
-		{"agent", true}, {"agent", "other"}, {"worktreeId", nil}, {"worktreeId", "invalid"}, {"continuityConfirmed", nil}, {"continuityConfirmed", "true"}, {"userId", uuid.NewString()},
+		{"agent", true}, {"agent", "other"}, {"worktreeId", nil}, {"worktreeId", "invalid"}, {"continuityConfirmed", nil}, {"continuityConfirmed", false}, {"continuityConfirmed", true}, {"continuityConfirmed", "true"}, {"userId", uuid.NewString()},
 	} {
 		body := workerClaimBody(task.Version)
 		body[test.key] = test.value
@@ -128,9 +128,9 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	} {
 		assertProjectError(t, projectRequest(handler, action.method, taskPath(task)+"/worker-claim"+action.suffix, jsonBody(t, action.body)), http.StatusBadRequest, "invalid_input")
 	}
-	for _, field := range []string{"version", "claimId", "target", "userId", "workerId", "machine", "platform", "agent", "stoppedConfirmed", "continuityConfirmed"} {
+	for _, field := range []string{"version", "claimId", "target", "userId", "workerId", "machine", "platform", "agent", "stoppedConfirmed"} {
 		target := map[string]any{"userId": handler.principal.UserID, "workerId": uuid.NewString(), "machine": base["machine"], "platform": "linux", "agent": "codex"}
-		body := map[string]any{"version": task.Version, "claimId": base["claimId"], "newClaimId": uuid.NewString(), "target": target, "worktreeId": base["worktreeId"], "stoppedConfirmed": true, "continuityConfirmed": true}
+		body := map[string]any{"version": task.Version, "claimId": base["claimId"], "newClaimId": uuid.NewString(), "target": target, "worktreeId": uuid.NewString(), "stoppedConfirmed": true}
 		if field == "userId" || field == "workerId" || field == "machine" || field == "platform" || field == "agent" {
 			target[field] = nil
 		} else {
@@ -163,13 +163,39 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 	}
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": old, "stoppedConfirmed": true})), http.StatusOK)
 	if task.Status != "todo" || task.Properties.Worker.State != "released" || task.Properties.Worker.WorktreeID != body["worktreeId"] || task.StartedAt != nil || task.CompletedAt != nil {
-		t.Fatal("release lost retained work or failed to reset task timing")
+		t.Fatal("release lost historical resource identity or failed to reset task timing")
 	}
 	task = updateHTTPTask(t, handler, task, map[string]any{"allowAgents": false, "requiredPlatform": "windows"})
-	body["version"], body["claimId"], body["previousClaimId"], body["continuityConfirmed"] = task.Version, uuid.NewString(), old, true
+	body["version"], body["claimId"], body["previousClaimId"], body["worktreeId"], body["agent"] = task.Version, uuid.NewString(), old, uuid.NewString(), "copilot"
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/resume", jsonBody(t, body)), http.StatusOK)
-	if task.Status != "in_progress" || task.Properties.Worker.State != "active" || task.Properties.Worker.ClaimID != body["claimId"] || task.AllowAgents || task.RequiredPlatform == nil || *task.RequiredPlatform != "windows" || task.Properties.Worker.Platform != "linux" {
+	if task.Status != "in_progress" || task.Properties.Worker.State != "active" || task.Properties.Worker.ClaimID != body["claimId"] || task.Properties.Worker.WorktreeID != body["worktreeId"] || task.Properties.Worker.Agent != "copilot" || task.AllowAgents || task.RequiredPlatform == nil || *task.RequiredPlatform != "windows" || task.Properties.Worker.Platform != "linux" {
 		t.Fatal("explicit manual resume incorrectly applied automatic eligibility filters")
 	}
 	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(task)+"/worker-claim", jsonBody(t, map[string]any{"version": task.Version, "claimId": old, "phase": "executing"})), http.StatusConflict, "claim_conflict")
+}
+
+func TestWorkerHTTPRejectsDeprecatedContinuityInputs(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	project := taskProject(t, handler)
+	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Fresh worker execution"), map[string]any{"allowAgents": true})
+	claim := workerClaimBody(task.Version)
+	rejectContinuity := func(path string, body map[string]any) {
+		t.Helper()
+		for _, value := range []any{nil, false, true, "true"} {
+			body["continuityConfirmed"] = value
+			assertProjectError(t, projectRequest(handler, http.MethodPost, path, jsonBody(t, body)), http.StatusBadRequest, "invalid_input")
+		}
+		delete(body, "continuityConfirmed")
+		if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
+			t.Fatal("deprecated input mutated the task")
+		}
+	}
+	rejectContinuity(taskPath(task)+"/worker-claim", claim)
+	task = claimHTTPWorker(t, handler, task, claim)
+	transfer := map[string]any{"version": task.Version, "claimId": claim["claimId"], "newClaimId": uuid.NewString(), "target": map[string]any{"userId": handler.principal.UserID, "workerId": uuid.NewString(), "machine": claim["machine"], "platform": "linux", "agent": "copilot"}, "worktreeId": uuid.NewString(), "stoppedConfirmed": true}
+	rejectContinuity(taskPath(task)+"/worker-claim/transfer", transfer)
+	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": claim["claimId"], "stoppedConfirmed": true})), http.StatusOK)
+	resume := workerClaimBody(task.Version)
+	resume["previousClaimId"] = claim["claimId"]
+	rejectContinuity(taskPath(task)+"/worker-claim/resume", resume)
 }

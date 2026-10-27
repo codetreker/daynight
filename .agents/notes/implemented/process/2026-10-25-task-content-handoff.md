@@ -55,8 +55,10 @@ supply that authorization themselves.
 Already-enabled tasks receive a read-only re-audit. A failed re-audit preserves
 permission and explicitly reports that scheduling exposure or execution remains;
 revocation or stopping requires its own authorization and existing control flow.
-Running-task permission locks and active/released worker continuity remain in
-force. The mode's done policy reports that no handoff is needed without rewriting
+Running-task permission locks and worker ownership remain in force. The
+[manual-control decision](../architecture/2026-10-27-worker-manual-control.md)
+retains original resources for an active claim and starts fresh resources after
+release; permission handoff does not authorize either lifecycle operation. The mode's done policy reports that no handoff is needed without rewriting
 history. Handoff returns after review and result reconciliation; it does not start
 ordinary or managed execution, select a successor, or add execution and delivery
 authority. The [managed execution decision](../architecture/2026-10-26-managed-task-skill.md)

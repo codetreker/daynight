@@ -5,12 +5,13 @@ import { ApiError } from "../../api/client.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { Task, TaskPlatform, WorkerMachine, WorkerPhase } from "../../api/types.js";
 import { createCleanupDriver } from "./cleanup.js";
+import { createWorkerControlDriver } from "./control.js";
 import { createExecutionDriver, isWorkerCancellation, ownedWorkspace, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, WorkerEvent, WorkerGitManager } from "./execution.js";
 import { HerdrAgentActionError } from "./herdr.js";
 import type { HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
 import type { WorkerRemote } from "./remote.js";
-import { isUnstartedPending } from "./store.js";
+import { isUnstartedPending, isUnstartedPendingSource } from "./store.js";
 import type { WorkerStore } from "./store.js";
 import type { ClaimIdentity, CleanupState, FrozenExecutionConfiguration, LocalTask, WorkerProject } from "./types.js";
 
@@ -56,6 +57,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, platform: options.platform, buildPrompt: options.buildPrompt, emit: options.emit, now };
   const execution = createExecutionDriver(deps);
   const cleanup = createCleanupDriver(deps);
+  const control = createWorkerControlDriver({ store: options.store, remote: options.remote, serverOrigin: options.serverOrigin, now });
   const normalSignal = options.signal === undefined ? new AbortController().signal : options.signal;
   const tails = new Map<string, Promise<void>>();
   let nextRepository = 0;
@@ -108,6 +110,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       task = options.store.confirmControlOwnershipEnded(task, { completeOwnClaimInventory: true, claimAbsent: true }, now());
     }
     return options.store.completeTask(task, now());
+  };
+  const advanceTerminal = async (input: LocalTask, resources: readonly HerdrOwnedWorkspace[], signal: AbortSignal, continueControl = true): Promise<LocalTask> => {
+    let task = latest(input);
+    if (task.control !== null && isUnstartedPendingSource(task)) {
+      if (ownedWorkspace(task, resources) !== undefined) throw new Error("An unstarted controlled source has unexpected Herdr resources; its cleanup cannot be inferred.");
+      task = options.store.confirmUnstartedControlCleanup(task, { completeHerdrInventory: true, noOwnedResources: true }, now() + 600_000, now());
+    } else task = await cleanup.advance(task, resources, "terminal", task.cleanup?.deadline ?? now() + 600_000, signal);
+    if (continueControl && task.control !== null) task = await control.advance(task, signal);
+    return task;
   };
   const publishSummary = async (task: LocalTask, remoteTask: Task): Promise<void> => {
     const worker = remoteTask.properties.worker;
@@ -208,8 +219,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     // No filesystem await may separate this boundary check from materialization.
     if (prospectiveFresh && deferForRemoval()) return null;
     const trace = runtimeTrace || pathTrace;
-    const configuration = configured?.configuration;
-    const fresh = !trace && configuration !== undefined && configuration.agent === worker.agent && worker.phase === "preparing";
+    const configuredExecution = configured?.configuration;
+    const configuration = configuredExecution === undefined ? undefined : configuredExecution.agent === worker.agent ? configuredExecution
+      : { agent: worker.agent, model: null, args: [], recoveryLimit: configuredExecution.recoveryLimit };
+    const fresh = !trace && configuration !== undefined && worker.phase === "preparing";
     const task = options.store.registerPending(identity, fresh ? { kind: "new", configuration } : { kind: "recovered", configuration: null }, now(), authenticatedUserId);
     options.emit({ kind: fresh ? "pending-recovered" : "recovery-paused", task, message: fresh ? "Recovered the actual remote claim before resource creation and froze its effective configuration." : "Recovered an existing claim without its original frozen configuration; execution is paused." });
     return task;
@@ -221,8 +234,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (task.status === "done") return;
       if (task.control !== null || task.cleanup?.kind === "terminal") {
         if (task.userId === null) { pauseForScope(task, unscopedCleanup); return; }
-        task = await cleanup.advance(task, resources, "terminal", now() + 600_000, normalSignal);
-        completeTerminal(task, remoteTask === undefined, authenticatedUserId);
+        task = await advanceTerminal(task, resources, normalSignal, remoteTask !== undefined || task.userId !== authenticatedUserId);
+        if (task.status !== "done") completeTerminal(task, remoteTask === undefined, authenticatedUserId);
         return;
       }
       if (task.userId === null || task.userId !== authenticatedUserId) {
@@ -321,14 +334,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (task.status === "done" || (task.cleanup === null && task.control === null)) return;
         if (task.userId === null && (task.control !== null || task.cleanup?.kind === "terminal")) { pauseForScope(task, unscopedCleanup); return; }
         if (task.cleanup?.result !== null && task.cleanup?.agentStopped && task.cleanup.workspaceClosed && (task.cleanup.kind === "shutdown" || task.cleanup.worktreeDeleted)) {
-          completeTerminal(task, false);
+          if (task.control !== null) task = await control.advance(task, normalSignal);
+          if (task.status !== "done") completeTerminal(task, false);
           return;
         }
-        task = options.store.beginCleanup(task, { kind: task.control !== null ? "terminal" : task.cleanup!.kind, deadline: task.cleanup?.deadline ?? now() + 600_000 }, now());
+        if (!(task.control !== null && isUnstartedPendingSource(task))) task = options.store.beginCleanup(task, { kind: task.control !== null ? "terminal" : task.cleanup!.kind, deadline: task.cleanup?.deadline ?? now() + 600_000 }, now());
         await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
         const resources = await readResources(normalSignal);
-        task = await cleanup.advance(task, resources, task.cleanup!.kind, task.cleanup!.deadline, normalSignal);
-        completeTerminal(task, false);
+        task = task.control !== null ? await advanceTerminal(task, resources, normalSignal) : await cleanup.advance(task, resources, task.cleanup!.kind, task.cleanup!.deadline, normalSignal);
+        if (task.status !== "done") completeTerminal(task, false);
       })));
       for (let index = 0; index < results.length; index += 1) {
         const result = results[index]!;
@@ -345,8 +359,21 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const resources = await readResources();
       const task = latest(identity);
       if (task.userId === null && (kind === "terminal" || task.control !== null || task.cleanup?.kind === "terminal")) return pauseForScope(task, unscopedCleanup);
-      return cleanup.advance(task, resources, kind, now() + 600_000);
+      return task.control !== null ? advanceTerminal(task, resources, normalSignal) : cleanup.advance(task, resources, kind, now() + 600_000);
     }),
+    advanceRetry: async (identity: ClaimIdentity): Promise<LocalTask> => {
+      const authenticatedUserId = await options.remote.currentUserId(normalSignal);
+      const task = latest(identity);
+      if (task.serverOrigin !== options.serverOrigin || task.userId !== authenticatedUserId || task.workerId !== options.workerId) throw new Error("Retry must retain the original service, authenticated user and worker identity.");
+      const remoteTask = await options.remote.readTask(task.projectId, task.taskId, normalSignal);
+      const worker = remoteTask.properties.worker;
+      if (worker?.state !== "active" || worker.claimId !== task.claimId || worker.userId !== task.userId) throw new Error("Retry requires the exact still-active source claim.");
+      await options.remote.authorizeControl(task.projectId, task.userId, undefined, normalSignal);
+      await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
+      const resources = await readResources(normalSignal);
+      await reconcileTask(task, remoteTask, resources, authenticatedUserId);
+      return latest(identity);
+    },
     tick: async (): Promise<void> => {
       if (shuttingDown) return;
       if (ticking) throw new Error("A worker reconciliation is already running.");
@@ -405,12 +432,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           if (isUnstartedPending(task)) return;
         }
         if (task.userId === null && (task.control !== null || task.cleanup?.kind === "terminal")) { pauseForScope(task, unscopedCleanup); throw new Error(unscopedCleanup); }
-        task = options.store.beginCleanup(task, { kind: task.control !== null || task.cleanup?.kind === "terminal" ? "terminal" : "shutdown", deadline }, now());
+        if (!(task.control !== null && isUnstartedPendingSource(task))) task = options.store.beginCleanup(task, { kind: task.control !== null || task.cleanup?.kind === "terminal" ? "terminal" : "shutdown", deadline }, now());
         await workerOperation((operation) => options.herdr.ensureInstance(operation));
         while (true) {
           const resources = await readResources();
-          task = await cleanup.advance(task, resources, task.cleanup!.kind, task.cleanup!.deadline);
-          if (task.cleanup!.agentStopped && task.cleanup!.workspaceClosed) { completeTerminal(task, false); return; }
+          task = task.control !== null ? await advanceTerminal(task, resources, new AbortController().signal, false) : await cleanup.advance(task, resources, task.cleanup!.kind, task.cleanup!.deadline);
+          if (task.cleanup!.agentStopped && task.cleanup!.workspaceClosed) { if (task.status !== "done") completeTerminal(task, false); return; }
           await sleep(Math.max(1, Math.min(250, task.cleanup!.deadline - now())));
         }
       })));

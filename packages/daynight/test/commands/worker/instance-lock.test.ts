@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { acquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
+import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 const directories: string[] = [];
@@ -30,6 +30,7 @@ describe("worker instance ownership", () => {
       try { expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]); }
       finally { database.close(); }
       await expect(acquireWorkerInstanceLock(paths)).rejects.toMatchObject({ cause: { message: expect.stringContaining("still running") } });
+      await expect(tryAcquireWorkerInstanceLock(paths)).resolves.toBeNull();
     } finally { await lock.release(); }
     expect(await readdir(paths.workerDirectory)).toEqual(["state.sqlite"]);
   });
@@ -67,6 +68,7 @@ describe("worker instance ownership", () => {
     await mkdir(paths.workerDirectory, { recursive: true });
     await writeFile(paths.lockFile, "malformed");
     await expect(acquireWorkerInstanceLock(paths)).rejects.toThrow("all managed processes");
+    await expect(tryAcquireWorkerInstanceLock(paths)).rejects.toThrow("all managed processes");
     expect(await readFile(paths.lockFile, "utf8")).toBe("malformed");
   });
 });

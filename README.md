@@ -41,8 +41,9 @@ or run your own service. The interface supports English and Simplified Chinese.
 Task creation and general editing use the CLI. The Web app provides browsing,
 status and execution-setting controls, task deletion and attachment management.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
-explains its configuration and native prerequisites. Manual worker-management
-commands and complete platform acceptance remain separate delivery work; the
+explains configuration, native prerequisites and explicit
+retry/release/transfer/resume controls. Complete platform acceptance remains
+separate from command availability; the
 [requirements](docs/spec/daynight-worker.md) and
 [design](docs/design/daynight-worker.md) define those boundaries.
 
@@ -127,7 +128,7 @@ fixed state under `~/.daynight/worker/` and prints the private Herdr attachment
 descriptor for human input. Ctrl+C stops original agents through bounded cleanup
 while retaining unfinished claims, worktrees and native history. The
 [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
-covers defaults, repository overrides, recovery and attachment.
+covers defaults, repository overrides, recovery, attachment and manual management.
 
 ## Review configuration and startup
 

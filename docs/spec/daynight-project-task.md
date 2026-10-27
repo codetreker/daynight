@@ -13,7 +13,7 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 [方案决策](../../.agents/notes/archived/architecture/2026-10-20-project-task-cli-design.md)。
 
 [预定义属性需求](daynight-task-properties.md)的 server 接口、CLI PR 引用参数和
-完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建/更新输入只提供可写 PR 字段。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有，未增加 worker 人工管理命令。
+完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建/更新输入只提供可写 PR 字段。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有；worker 人工管理命令由 [Worker 需求](daynight-worker.md#w-08人工介入与显式移交)定义。
 
 [附件需求](daynight-task-attachments.md)定义的 `task attachment put/list/read/remove`
 及原始字节读取已实现，复用本文的服务配置和 project 选择。

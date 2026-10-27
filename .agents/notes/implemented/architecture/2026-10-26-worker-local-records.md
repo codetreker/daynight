@@ -79,9 +79,13 @@ Concrete cleanup operations retain the first deadline, input uncertainty,
 result/error and ordered stop/close/delete confirmations. Local done requires
 full terminal cleanup. Release/transfer intent prevents ordinary recovery;
 remote submission requires full cleanup and the original exact version. Unknown
-writes cannot be replayed. Versions persist as exact int64 decimal strings.
-Complete own-claim inventory can confirm original ownership ended without a
-per-task read to classify the exit.
+writes cannot be replayed. A definitely rejected intent can be replaced only by
+a new explicit decision whose exact supplied version matches a freshly read
+task observation. A refusal that did not mutate the task can leave that numeric
+version unchanged; completed cleanup is retained. The [manual-control decision](2026-10-27-worker-manual-control.md) owns
+that narrow transition and targeted management-result reconciliation. Versions
+persist as exact int64 decimal strings. Complete own-claim inventory can confirm
+original ownership ended without a per-task read to classify the automatic exit.
 
 Normal shutdown differs from an ownership exit: after agent stop and workspace
 closure it preserves the original worktree/native/config. For proven unlaunched
@@ -143,10 +147,11 @@ unknown submission facts instead of manufacturing a new fault pause.
 The [foreground runtime](2026-10-27-foreground-worker-runtime.md) consumes these
 identity/storage operations and concrete native facts. The [Git workspace
 manager](2026-10-26-worker-git-workspaces.md) supplies concrete worktree
-observations and returns bindings to this same store. Existing service
-resume/transfer continuity checks still need the management-protocol delivery
-before fresh target execution is available. This local schema does not claim
-that protocol change, native-agent recovery or Windows/macOS runtime acceptance.
+observations and returns bindings to this same store. The
+[manual-control decision](2026-10-27-worker-manual-control.md) composes these
+facts with fresh resume/transfer identities and concrete management commands.
+The local schema alone does not establish native-agent recovery or
+Windows/macOS runtime acceptance.
 Schema 1 migrates explicitly to schema 2; original userId becomes null and
 missing native evidence stays unknown rather than receiving current-login or
 never-submitted defaults. Unknown terminal/control scope cannot be granted

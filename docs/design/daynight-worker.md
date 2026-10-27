@@ -1,12 +1,12 @@
 # Worker 架构设计
 
-状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 已接入这些模块；人工管理命令、相应服务端协议修订和完整平台验收仍待交付。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
+状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 与 retry/release/transfer/resume 人工管理命令已接入这些模块，服务端使用终止后新执行协议；完整平台验收仍须独立核验。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
 
 ## 目标与当前基础
 
 `daynight worker run` 是一个前台常驻 CLI：通过 REST 领取多仓库中允许 Agent 执行的任务，使用系统管理的稳定 worktree 与专用 Herdr 执行，持久化状态并完成恢复和清理。Agent 负责完整交付、验收和最终 claim-bound done，worker 负责归属清单对账、资源与恢复。
 
-设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，认领基础由[归属架构](daynight-worker-claims.md)拥有，前台组合调度由 worker 运行时提供，人工管理命令仍待实现。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
+设计初始源码基线为 `e533b8610ec38522fd5387e4715b573734bd16c2`。交付核对基线为 `2d7fdd1e4e178db17e46da5d3b6c0e4050edf730`：主线具有命令组合、严格 YAML、REST client、任务/属性、项目写事务和 review 的 Git/SQLite 基础；当时鉴权与显式动作生命周期已交付；当前状态由[三状态架构](daynight-task-status.md)拥有，认领基础由[归属架构](daynight-worker-claims.md)拥有，前台组合调度和人工管理复用 worker 的本机记录、协调与资源操作。任务的服务端起止时间及图时钟遵循已交付的[执行时间契约](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/docs/spec/daynight-task-timing.md)，worker DTO 与生命周期扩展须保留该契约。
 
 | 当前基础 | 复用点 |
 |---|---|
@@ -99,7 +99,7 @@ allowAgents: boolean
 requiredPlatform: null | windows | linux | macos
 ```
 
-旧任务经各自迁移取得 `allowAgents=true`、平台 null，保留其他数据、版本和时间；新任务为 `allowAgents=false`，未指定平台时为 null。创建输入拒绝 `allowAgents`，平台接受省略、null 或三个枚举之一。普通 task PATCH 中许可未提供保持、显式 false 关闭、null 和其他类型拒绝；平台未提供保持、枚举设置、null 清除。资源必须显式输出 requiredPlatform，严格 DTO 不以缺字段 fallback 兼容旧数据。许可和平台变化均在 in_progress 锁定，精确版本同值请求不增加版本或时间；普通人工状态设置保持不受两字段限制；现有服务端 released 执行通过显式人工 resume 接续原成果；终止后新执行的目标差异见“Agent 完成与人工操作”。
+旧任务经各自迁移取得 `allowAgents=true`、平台 null，保留其他数据、版本和时间；新任务为 `allowAgents=false`，未指定平台时为 null。创建输入拒绝 `allowAgents`，平台接受省略、null 或三个枚举之一。普通 task PATCH 中许可未提供保持、显式 false 关闭、null 和其他类型拒绝；平台未提供保持、枚举设置、null 清除。资源必须显式输出 requiredPlatform，严格 DTO 不以缺字段 fallback 兼容旧数据。许可和平台变化均在 in_progress 锁定，精确版本同值请求不增加版本或时间；普通人工状态设置保持不受两字段限制；released task 通过显式人工 resume 开始新的执行，不依赖已删除的源成果或原生会话；具体顺序见“Agent 完成与人工操作”。
 
 Web 在任务详情标题下的同一状态行中，左侧显示状态、ready 与可选平台信息，右侧显示单一“自动执行” / “Automatic execution”标签与开关组合。组合控件同时表达服务端已确认的许可状态并提供操作入口；详情仅保留此组合控件，自动执行状态不另设 badge 或下方 Overview 开关。列表中的自动执行状态标记保持其原有用途。实际任务标题直接用于详情顶栏并保留有界的完整文本键盘阅读，长标题与窄屏不覆盖状态或开关；平台等左侧信息仅在左组内换行，右侧控件保持右对齐并与第一行状态顶部对齐。锁定原因通过支持悬停与键盘聚焦的控件 tooltip 展示；错误、未知结果和等待人工输入的反馈由[详情提示层](daynight-web.md#任务详情提示)展示为限时浮动气泡，恢复入口与会话写入保护保持可达。成功反馈由详情中观察到的 pending→confirmed 转换触发，以不参与布局的浮动气泡展示 3 秒；持久 mutation 状态继续归属任务会话，关闭重开不重播已确认结果。
 
@@ -115,7 +115,7 @@ Web 在任务详情标题下的同一状态行中，左侧显示状态、ready �
 GET /api/v1/projects/{project}/tasks?ready=true&allowAgents=true&compatiblePlatform=linux&limit=10
 ```
 
-查询可按 `allowAgents=true|false` 筛选，缺省保留现有全量任务语义。`allowAgents=true` 与 ready、`compatiblePlatform` 在排序/limit 前组合过滤，并加入游标范围。`compatiblePlatform` 包含 null 与相同平台，CLI list/ready 的 `--compatible-platform` 直接映射该查询并保留至每页；客户端拒绝不满足声明条件的响应，不在本地删项。Web 平台确认与既有许可和状态设置共用任务会话，界面与请求机制由[看板设计](daynight-web.md#平台要求与确认下拉框)拥有。沿用服务端创建时间/UUID 顺序。后续 Worker 按空闲名额读取候选，合法冲突后考虑下一个；空页/无兼容候选不占名额。已有未完成 worktree 的候选还需确认本机持有原执行资料，否则跳过并显示需要人工移交，不能在另一机器新建空 worktree。
+查询可按 `allowAgents=true|false` 筛选，缺省保留现有全量任务语义。`allowAgents=true` 与 ready、`compatiblePlatform` 在排序/limit 前组合过滤，并加入游标范围。`compatiblePlatform` 包含 null 与相同平台，CLI list/ready 的 `--compatible-platform` 直接映射该查询并保留至每页；客户端拒绝不满足声明条件的响应，不在本地删项。Web 平台确认与既有许可和状态设置共用任务会话，界面与请求机制由[看板设计](daynight-web.md#平台要求与确认下拉框)拥有。沿用服务端创建时间/UUID 顺序。Worker 按空闲名额读取候选，合法冲突后考虑下一个；空页/无兼容候选不占名额。普通 daemon 跳过 released 候选并继续后续分页。同一仍有效 claim 缺少原执行资料时暂停；终止后的新 claim 使用新资源，规范路径被旧执行占用时等待其清理。
 
 ### 受保护的执行属性与操作
 
@@ -125,9 +125,9 @@ GET /api/v1/projects/{project}/tasks?ready=true&allowAgents=true&compatiblePlatf
 
 完成使用现有 PUT status 的 done 目标及匹配 claimId，要求当前 owner；普通 setter 不能释放 active 执行，也不能开始或完成 released 未完成成果。同版本同状态仍是不修改的成功。没有 worker 记录或仅有 completed 历史的任务保留普通三状态行为。
 
-现有服务端 Release 要求原 owner/admin 与停止确认，返回 todo、清空任务起止时间并保留原资源绑定。现有自动重新认领要求保留 worktreeId/agent 并确认连续性；显式人工 resume 仅允许原 owner/admin 接续 released 成果，保留人工安排不受自动许可/平台过滤的规则。现有 Transfer 由原 owner/admin 提交，服务端核验目标当前成员、平台及原工作区，保持 in_progress 和任务计时，安装新的目标 claim。目标身份与授权提交者分别校验。这些资源连续性条件属于当前服务实现，终止清理目标及所需修订见“Agent 完成与人工操作”。
+Release 要求原 owner/admin 与 stoppedConfirmed，返回 todo、清空任务起止时间，最后资源绑定仅作为历史保留。重新认领和显式人工 resume 使用新 claimId/worktreeId 与本次 agent；resume 核对 released、previousClaimId、ready、原 owner/admin，保留人工安排不受自动许可/平台过滤的规则。Transfer 由原 owner/admin 提交，服务端分别核验目标当前成员、自动许可、平台和依赖，安装目标的新 claimId/worktreeId，允许目标明确不同 agent，保持 in_progress 和任务计时。所有入口严格拒绝 continuityConfirmed。
 
-服务端只校验身份、标识及明确确认，不远程证明机器状态；停止、原成果和会话资料仍须由执行方核实。Daynight fencing 拒绝旧 claim 的写入，不能撤销 Git 托管凭据或终止原进程。失联不自动释放归属。
+服务端校验身份、标识及停止确认，不远程证明机器状态；原 agent 实际停止和本地资源清理由执行方核实。Daynight fencing 拒绝旧 claim 的写入，不能撤销 Git 托管凭据或终止原进程。失联不自动释放归属。
 
 ## SQLite：两个业务表
 
@@ -188,7 +188,7 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 运行时在 /me 和配置仓库的远端解析/准备之前启动轻量收尾发现循环，只为同 workerId 各 origin 已持久保存的 cleanup/source control 意图创建瞬时异步 job；实际推进仍须原 userId 已知，不能借后台继续补授权未知范围的意图。每个完整 origin/project/task/claim 同时至多一个 job，调用 `advanceCommittedCleanups(identity)`；各 job 按自己的原截止独立推进，每次等待最多 1000ms，最近原截止更早时缩短等待。一个 task 的 RPC 等待不阻塞其他 task 的下一次收尾推进，不以等待整批 job 完成作为下一轮前置。同一 task 与普通循环仍共用串行边界，外部步骤各自有界。发现和 job 都在同一前台进程内，不增加持久队列、表、台账或 OS daemon。它们不查询服务以新增缺席判断，也不认领任务；服务读取失败不撤销已有收尾责任，新终止决定仍要求完整 inventory。
 
-同一已核验原账号范围内，自动终止判断仅为原 claimId 缺席；不按 task 状态或单 task GET 分类 done/release/transfer。同 task 的新 claim 不能保护旧 claim。记录中的终止/管理意图不可被普通恢复撤销；显式 source 控制的服务端操作仍由人工管理交付拥有。Herdr 中有本 worker 标记却缺本地行的资源需要原项目绑定才能登记并收尾；归属无法证明时保留并报告。
+同一已核验原账号范围内，自动终止判断仅为原 claimId 缺席；不按 task 状态或单 task GET 分类 done/release/transfer。同 task 的新 claim 不能保护旧 claim。记录中的终止/管理意图不可被普通恢复撤销；显式 source 控制在源本地清理完成后提交服务端操作，并独立核对未知结果。Herdr 中有本 worker 标记却缺本地行的资源需要原项目绑定才能登记并收尾；归属无法证明时保留并报告。
 
 严格证明未启动的 pending 记录可在同账号成功完整清单确认原 claim 缺席后直接 pending→done：没有 cleanup/control、worktree/Herdr/native 资源，workspace/launch/prompt 均未提交且无旧证据。该路径不提升 active、不扫描或删除固定 Git 路径；同 task 旧 claim 的目录不会因此受影响。
 
@@ -329,13 +329,17 @@ Agent 按显式 assignment 和技能规则复用已开始执行，不重认领�
 
 Worker 不再核对 PR 合并、解析业务验收或再次 done。它仅按原 claimId 是否还在成功完整自有清单中决定资源收尾；缺席不分类 task 状态，部分/失败清单不用于删除。原生托管验证、完整验收和证据由 agent 负责，不增加报告或验收解释器。
 
-服务端和 typed client 已提供受控 claim 管理。运行时人工入口由同一协调函数处理，前台存在时由它唯一控制 agent；无前台时先取得相同实例锁，仅处理指定执行。目标操作包括 run、查看/进入原会话、为已暂停执行授权一次 retry，以及显式 release/transfer/resume。
+服务端和 typed client 提供受控 claim 管理。`worker retry/release/transfer/resume` 使用同一执行记录和协调函数：前台存在时由它唯一控制 agent；无前台时命令取得相同实例锁，仅处理指定执行。人工 attach 沿既有 descriptor 进入原会话。Retry 只为同一有效 claim 授权一次额外恢复，累计预算、原冻结配置和资源身份保留；并发或重复请求不累加授权。
 
-Release/transfer 先记录原 claim 和精确版本的管理意图，抑制普通输入和恢复，完成全部本地终止清理后再提交远端变更。Transfer 保存明确目标身份及新 claimId/worktreeId，不传输 source SQLite 快照、不预登记未授予的 target，也不运输未提交文件或 native history。未知结果读取核对，不重放或换 ID。
+Release/transfer 先按当前认证身份读取项目权限及具体 task，验证 source owner/admin 决策；当前管理员与 source 的原 userId 分别保留。配置 origin 必须匹配原记录，不向新服务提交旧记录。随后在同一 source 行记录原 claim、精确版本和具体管理意图，抑制普通输入和恢复，完成全部本地终止清理后再提交远端变更。Transfer 保存明确目标身份及新 claimId/worktreeId，不传输 source SQLite 快照、不预登记未授予的 target，也不运输未提交文件或 native history。
 
-目标实际获得新 claim 后按正常 pending/active 路径冻结自己的配置并创建新 worktree/native 会话。显式 resume 同样是新执行；保留 previousClaimId、owner/admin、ready 和版本检查，不要求旧成果连续。普通 daemon 跳过 released 候选，继续分页而不自动重新认领刚释放的任务。
+远端提交前持久标记 unknown，清理的原十分钟截止与每次 HTTP 的独立有界范围分开；一次性命令的五分钟总预算不能截断该清理。响应丢失后按具体 task/claim、原 version 和保存的新 targetClaimId 核对，不重放或换 ID，读取旧值也不证明在途写入未发生。已清理 source 保持意图，不重建业务 worktree/agent。同一管理命令可在前台仍运行时只读核对 unknown 结果，不取得第二份资源控制权或重新提交。只有明确拒绝的提交可由新明确决定替换；该决定须携重新读取的 task 观察证明，并核对显式 if-version 与观察的精确版本相同。若拒绝未修改 task，版本数值可以保持原值；未知提交不能重置。显式 if-version 始终保持用户决定值。
 
-现有服务端 API 仍要求 released/resume/transfer 的 continuityConfirmed 及原 worktreeId/agent 连续，具体合同由[归属架构](daynight-worker-claims.md)记录。这些约束与终止删除目标存在差异；人工管理协议交付须修订它们，同时保留成员权限、精确版本、停止确认、目标资格及旧 claim fencing。本机存储不声称该服务修订或管理命令已完成。
+管理核对可以用完整 task 证明原 source claim 已结束；这是已授权显式操作的结果核对。自动新增终止决定仍只接受原账号范围内成功完整自有清单的缺席证据，不能借管理员的另一账号清单推断 source 缺席。严格未启动且无资源的 pending source 不为管理清理提升 active 或扫描旧规范路径；同 task 的旧执行仍受原资源身份保护。
+
+目标实际获得新 claim 后按正常 pending/active 路径冻结新执行配置并创建新 worktree/native 会话。没有既有执行痕迹的 transfer grant 遵循远端明确的 agent：与接收方配置类型相同时使用当前有效 model/args，类型不同时冻结远端 agent、model:null、args:[] 与当前 recoveryLimit，不继承另一 agent 的参数。已有 pending 快照不被改写。显式 resume 同样是新执行；保留 previousClaimId、owner/admin、ready 和版本检查，不要求旧成果连续。普通 daemon 跳过 released 候选，继续分页而不自动重新认领刚释放的任务。
+
+[归属架构](daynight-worker-claims.md)拥有终止后新执行的服务端 DTO 与事务规则。历史归属的资源字段不构成活资源证明；continuityConfirmed 为非法输入，新执行不能复用最后 claimId/worktreeId。目标的 agent 类型可明确变更，仍保留成员权限、精确版本、停止确认、目标资格、依赖和旧 claim fencing。
 
 ## 退出、恢复与清理
 
@@ -389,7 +393,7 @@ Ctrl+C 先取消并等待常规收尾发现循环及全部 per-claim job 结束�
 
 Herdr/native 的版本、profile 检查、压缩历史、模型实际生效、认证与 shell/profile 环境边界见上文及[适配决策](../../.agents/notes/implemented/architecture/2026-10-26-worker-herdr-adapter.md)。它们要求针对实际环境核验，不能将一个版本/模型或受控替身的结果外推为完整平台保证。
 
-人工管理命令与终止后新执行的服务端协议仍待其自身交付；完整 Linux、Windows、macOS Goal 验收须覆盖整条链路。前台命令和组件可用不代表这些最终结论已经成立。
+人工管理验证覆盖权限与目标分别校验、旧输入拒绝、源清理中重启、原截止、远端拒绝/版本冲突/响应丢失、已成功但未保存结果、新旧 claim 路径隔离及一次 retry。完整 Linux、Windows、macOS Goal 验收仍须覆盖整条链路；命令和组件可用不代表这些最终结论已经成立。
 
 ## 模型入口大小
 

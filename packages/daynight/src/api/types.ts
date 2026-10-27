@@ -38,6 +38,18 @@ export type Project = {
   readonly updatedAt: string;
 };
 
+export type ProjectMember = {
+  readonly projectId: string;
+  readonly userId: string;
+  readonly email: string | null;
+  readonly name: string | null;
+  readonly avatarUrl: string | null;
+  readonly role: "admin" | "member";
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+
 export type PullRequestProperty = {
   readonly url: string;
   readonly title: string;
@@ -136,7 +148,7 @@ export type WorkerClaimDescriptor = {
   readonly agent: WorkerAgent;
   readonly worktreeId: string;
 };
-export type ClaimWorkerTaskInput = WorkerClaimDescriptor & { readonly version: bigint; readonly continuityConfirmed?: boolean };
+export type ClaimWorkerTaskInput = WorkerClaimDescriptor & { readonly version: bigint };
 export type UpdateWorkerClaimInput = {
   readonly version: bigint;
   readonly claimId: string;
@@ -151,12 +163,10 @@ export type TransferWorkerClaimInput = CompleteWorkerTaskInput & {
   readonly target: Omit<WorkerClaimDescriptor, "claimId" | "worktreeId"> & { readonly userId: string };
   readonly worktreeId: string;
   readonly stoppedConfirmed: true;
-  readonly continuityConfirmed: true;
 };
 export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
   readonly version: bigint;
   readonly previousClaimId: string;
-  readonly continuityConfirmed: true;
 };
 export type TaskFilters = {
   readonly status?: TaskStatus;

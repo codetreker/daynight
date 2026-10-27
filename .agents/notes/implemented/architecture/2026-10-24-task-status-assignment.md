@@ -77,5 +77,5 @@ may carry fresh derived readiness despite unchanged revisions. Current-attempt
 reset intentionally discards an abandoned interval; immutable attempt history is
 a different stored model. The [worker claim foundation](2026-10-24-worker-claim-foundation.md)
 integrates its fencing into the same transaction. Claim-bound done accepts the
-current claim ID; explicit release and resume protect stopped execution and
-resource continuity. Setting a state cannot stop a process.
+current claim ID; explicit release protects stopped execution and resume creates a fresh claim
+and worktree under the [manual-control decision](2026-10-27-worker-manual-control.md). Setting a state cannot stop a process.
