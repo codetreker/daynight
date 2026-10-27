@@ -53,16 +53,18 @@ it("retains local denial after an atomic purge failure and retries storage befor
   const cache = scope(); const otherProject = detail({ projectId: "10000000-0000-4000-8000-000000000002" }); await apply(cache); await apply(cache, otherProject);
   const ticket = await cache.beginSync(projectId, signal()); await saveDetail(cache, ticket, detail(), signal()); const fault = failPurge();
   await expect(cache.revokeProject(ticket, signal())).rejects.toMatchObject({ category: "storage" }); expect(cache.getAuthorizedProject(projectId)).toBeNull(); expect(cache.getAuthorizedProject(otherProject.projectId)).not.toBeNull();
+  expect(cache.canPreviewProject(projectId)).toBe(false); expect(cache.canPreviewProject(otherProject.projectId)).toBe(true);
   await expect(cache.readProject(projectId, signal())).rejects.toMatchObject({ name: "AbortError" }); await expect(cache.beginSync(projectId, signal())).rejects.toMatchObject({ category: "storage" });
   expect(await (await inspect()).get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeDefined();
   await expect(cache.applySync(ticket, taskSyncFromGraph(graphFixture([detail()]), { query: { epoch: ticket.epoch! }, versionForTask: () => 1n }), signal())).rejects.toMatchObject({ name: "AbortError" });
   fault.mockRestore(); const retry = await cache.beginSync(projectId, signal()); expect(retry.epoch).toBeNull(); expect(await (await inspect()).get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined();
-  await apply(cache); expect(cache.getAuthorizedProject(projectId)).not.toBeNull();
+  expect(cache.canPreviewProject(projectId)).toBe(false);
+  await apply(cache); expect(cache.getAuthorizedProject(projectId)).not.toBeNull(); expect(cache.canPreviewProject(projectId)).toBe(true);
 });
 
 it("ignores an old generation's 404 and negative hint after a new history is admitted", async () => {
   const cache = scope(); await apply(cache); const old = await cache.beginSync(projectId, signal()); await apply(cache, detail({ description: "E2" }), true); const current = cache.getAuthorizedProject(projectId);
-  expect(await cache.revokeProject(old, signal())).toBe(false); expect(cache.getAuthorizedProject(projectId)).toBe(current);
+  expect(await cache.revokeProject(old, signal())).toBe(false); expect(cache.getAuthorizedProject(projectId)).toBe(current); expect(cache.canPreviewProject(projectId)).toBe(true);
   const injector = new Channel("daynight-task-cache"); injector.postMessage({ userId: TEST_VIEWER_ID, projectId, userFence: old.userFence, revokedGeneration: old.cacheGeneration }); await Promise.resolve();
   expect(cache.getAuthorizedProject(projectId)).toBe(current); injector.close();
 });

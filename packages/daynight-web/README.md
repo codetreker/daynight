@@ -357,7 +357,13 @@ gate. `canRevokeProject` and `revokeProject` check the captured user fence/gener
 retire local reuse synchronously, and purge only the matching durable generation
 through the existing transaction. Scope-owned cleanup outlives the view; failure
 keeps admission denied, and beginSync retries cleanup before a fresh online sync.
-An old graph receipt alone cannot re-admit the detail.
+An old graph receipt alone cannot re-admit the detail. `canPreviewProject` also
+keeps local summaries hidden after effective withdrawal, deriving eligibility
+from existing retired generations and online authorization. The hook checks it
+both before and after the asynchronous disk read. Same-scope navigation, remounts,
+ordinary hints and failed Retry or polling cannot restore previews, even when
+CAS cleanup preserves a newer durable generation. Successful online sync restores
+authorization without removing the old-generation fences.
 
 Ordinary broadcast hints contain no task content or access grant; authorized
 receivers reread committed stores without another network request. Negative hints

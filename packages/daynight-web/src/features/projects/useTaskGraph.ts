@@ -61,10 +61,10 @@ export const useTaskGraph = (projectId: string) => {
     let ticket: SyncTicket | null = null;
     try {
       ticket = await scope.beginSync(projectId, signal);
-      if (receipt.current === null && ticket.epoch !== null) {
+      if (receipt.current === null && ticket.epoch !== null && scope.canPreviewProject(projectId)) {
         const project = await scope.readProject(projectId, signal);
         if (signal.aborted || revision !== generation.current) return;
-        if (project !== null) {
+        if (project !== null && scope.canPreviewProject(projectId)) {
           const localTime = Date.now();
           const receivedMonotonic = performance.now();
           const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, observedAt: null,

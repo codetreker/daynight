@@ -18,8 +18,15 @@ manifest, user fence, project generation and graph validation. A valid empty
 project renders normally. Missing or invalid baselines retain the initial
 loading path; storage errors remain visible. Background synchronization replaces
 the snapshot atomically, and recoverable errors retain its content with Retry.
-Trusted access withdrawal still clears content and denies reuse until fresh
-online admission.
+Trusted access withdrawal clears content and disables local previews for that
+project within the authenticated scope until successful online recovery.
+`canPreviewProject` derives eligibility from the existing retired-generation
+record and online authorization set. The hook checks it before reading disk and
+again before publishing, so a withdrawal during hydration cannot reveal content.
+Navigation or remounting within that scope preserves the denial. Generation-checked
+cleanup can retain a newer durable set without authorizing its display; ordinary
+hints, failed Retry and polling cannot restore eligibility. Successful `applySync`
+restores online authorization while retaining old-generation fences.
 
 Local summary publication has revision zero, null server observation and null
 successful receipt time. It does not add the project to the scope's online
@@ -71,5 +78,7 @@ required, so this does not introduce an offline authenticated application shell.
 The page and clock model explicitly represent the absence of an online receipt.
 Validation covers publication before a held response, background updates and
 failure, empty and missing caches, scope changes, trusted revocation and timing
-without a server sample. Native-browser verification remains necessary for
+without a server sample. Two-scope races retain a newer durable generation across
+a captured older-generation denial while keeping it hidden during failed recovery,
+navigation and remounts; successful online synchronization restores publication. Native-browser verification remains necessary for
 IndexedDB persistence across page reloads.

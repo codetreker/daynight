@@ -383,6 +383,11 @@ export class TaskCacheScope {
   getSummaryVersion(projectId: string, taskId: string): bigint | null {
     return this.getAuthorizedProject(projectId)?.versions.get(taskId) ?? null;
   }
+  canPreviewProject(projectId: string): boolean {
+    this.assertLive();
+    // A surviving replacement generation cannot undo this scope's observed access withdrawal.
+    return !this.revokedGenerations.has(projectId) || this.authorizedProjects.has(projectId);
+  }
   getAuthorizedProject(projectId: string): CachedProject | null {
     this.assertLive();
     return this.authorizedProjects.has(projectId) ? this.projections.get(projectId) ?? null : null;
