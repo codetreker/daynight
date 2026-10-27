@@ -8,6 +8,7 @@ import { createHerdrAgentManager, herdrExecutionAgentName, herdrExecutionLabel }
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import type { HerdrExecutionContext, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
+import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
 
@@ -210,10 +211,15 @@ describe("execution from current Herdr resources", () => {
 
   it("retains an unknown startup input until the live agent progresses", async () => {
     const f = await fixture("copilot", savedId);
-    const start = f.manager.start;
-    const failure = new HerdrAgentActionError("ACK lost", "agent.prompt", "unknown", { promptSubmission: "unknown" });
-    vi.spyOn(f.manager, "start").mockImplementationOnce(async (...args) => { await start(...args); throw failure; });
-    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    const request = f.rpc.request;
+    const failure = new HerdrRpcError("prompt ACK lost", { method: "agent.prompt", requestId: "prompt", submission: "unknown" });
+    let lost = false;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+      const result = await request(method, params, operation);
+      if (method === "agent.prompt" && !lost) { lost = true; throw failure; }
+      return result;
+    });
+    await expect(f.driver.advance(f.input)).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "unknown", cause: failure });
     await f.driver.advance(f.input);
     await f.driver.advance(f.input);
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
@@ -223,6 +229,32 @@ describe("execution from current Herdr resources", () => {
     await f.driver.advance(f.input);
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(2);
     expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+  });
+
+  it.each(["codex", "copilot"] as const)("delivers the original %s assignment after a lost native-launch ACK", async (agent) => {
+    for (const sessionId of [null, savedId]) {
+      const f = await fixture(agent, sessionId);
+      f.reportOnLaunch(sessionId === null ? freshId : savedId);
+      const request = f.rpc.request;
+      const failure = new HerdrRpcError("launch ACK lost", { method: "agent.start", requestId: "start", submission: "unknown" });
+      let lost = false;
+      vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+        const result = await request(method, params, operation);
+        if (method === "agent.start" && !lost) { lost = true; throw failure; }
+        return result;
+      });
+      await expect(f.driver.advance(f.input)).rejects.toMatchObject({ action: "agent.start", submission: "unknown", promptSubmission: null, cause: failure });
+      expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+      await f.driver.advance(f.input);
+      await f.driver.advance(f.input);
+      const prompts = () => f.calls.filter((call) => call.method === "agent.prompt");
+      expect(prompts()).toHaveLength(1); expect(prompts()[0]!.params.text).toBe("managed assignment");
+      expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+      const current = f.agents[0]!;
+      current.agent_status = "idle"; current.state_change_seq = 3; current.completion_seq = 1;
+      await f.driver.advance(f.input);
+      expect(prompts()).toHaveLength(2); expect(prompts()[1]!.params.text).toContain("worker's periodic check");
+    }
   });
 
   it("rejects an idle agent's mismatched session and an ended local claim before ping", async () => {

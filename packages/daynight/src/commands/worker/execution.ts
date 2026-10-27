@@ -149,23 +149,24 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (task.sessionId === null) deps.emit({ kind: "warning", task, message: "The native session ID is missing; starting a new conversation in the existing task worktree." });
       const assignment: ManagedAssignment = { ...task, serverOrigin: input.owner.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree, configuration: input.configuration };
       const prompt = deps.buildPrompt(assignment, deps.platform);
-      pendingInput.delete(key(task));
-      lastInput.set(key(task), null);
+      pendingInput.set(identity, { binding, prompt });
+      lastInput.delete(identity);
       let observation: HerdrAgentObservation;
       try {
-        let submitted = false;
         observation = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, {
           configuration: input.configuration, prompt,
           ...(assignment.sessionId === null ? {} : { resumeSessionId: assignment.sessionId }),
-          onPromptSubmitted: (receipt) => { lastInput.set(identity, inputState(receipt.observation)); submitted = true; },
+          onPromptSubmitted: (receipt) => { pendingInput.delete(identity); lastInput.set(identity, inputState(receipt.observation)); },
         }, operation), signal);
-        if (!submitted) lastInput.delete(identity);
+        pendingInput.delete(identity);
       } catch (error) {
+        if (pendingInput.has(identity) && error instanceof HerdrAgentActionError && error.action === "agent.prompt" && error.promptSubmission === "unknown") {
+          pendingInput.delete(identity);
+          lastInput.set(identity, null);
+        }
         if (!(error instanceof HerdrAgentActionError) || error.action !== "agent.prompt" || error.promptSubmission !== "not-submitted") throw error;
         observation = await workerOperation((operation) => deps.herdr.tasks.observe(context, binding, operation), signal);
         assertNativeSession(task, observation);
-        pendingInput.set(key(task), { binding, prompt });
-        lastInput.delete(key(task));
       }
       assertNativeSession(task, observation);
       if (observation.nativeSession !== null) task = deps.store.setSessionId(task, observation.nativeSession.sessionId);

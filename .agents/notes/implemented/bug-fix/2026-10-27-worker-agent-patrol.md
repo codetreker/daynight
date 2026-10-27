@@ -31,16 +31,24 @@ observation. The ping preserves task, claim, worktree and authorization, and
 reminds the agent to wait for review and CI. The agent's state cannot complete
 the business task; only its original claim-bound completion does that.
 
+Startup records its original assignment as known unsent in pendingInput before
+calling the adapter, with no last-input baseline. An agent.start error does not
+make prompt submission uncertain: the matching live ready pane still receives
+the pending original assignment, while absent or inactive resources use normal
+recreation. Only an explicit unknown agent.prompt result before a successful
+receipt moves the input to an uncertain marker. A successful serialized live
+reconnect that sends no input clears pending without fabricating a baseline,
+so a later patrol can send a continuation ping.
+
 The driver retains the last input's submission baseline in memory. A successful
 submission supplies the actual observation read immediately before sending
 that input. Startup reports this receipt immediately through onPromptSubmitted,
-before native session discovery, and returns the later observation. Later
-observations cannot overwrite the baseline: a turn that finishes before startup
-returns still constitutes progress and permits the next patrol ping. A later
-observation failure preserves the known receipt and propagates the original
-error; ordinary pings also record successful submission before observing again.
-A startup return that sends no input does not invoke the callback and supplies
-no submission baseline.
+clearing pending and installing the baseline before native session discovery,
+and returns the later observation. Later observations cannot overwrite the
+baseline: a turn that finishes before startup returns still constitutes progress
+and permits the next patrol ping. A later observation failure preserves the
+known receipt and propagates the original error; ordinary pings also record
+successful submission before observing again.
 
 An unchanged observation suppresses another ping, including after an unknown
 submission result. Later current observations drive the next decision; there
