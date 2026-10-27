@@ -39,33 +39,41 @@ const fixture = () => {
   return { store, task, owner, driver, advance, observation, submitPrompt, stopAndClose, removeWorktree, order, events, clock: (value: number) => { time = value; } };
 };
 
-describe("cleanup completion belongs to its submitted notification", () => {
-  it("uses the submission observation after business finished between the round snapshot and prompt", async () => {
+describe("cleanup polling after notification", () => {
+  it("waits for a later patrol even when the pre-submit snapshot was already idle", async () => {
     const f = fixture();
-    expect(await f.advance(f.observation("working", 10, 4))).toBe(false);
     expect(await f.advance(f.observation("idle", 11, 5))).toBe(false);
     expect(f.stopAndClose).not.toHaveBeenCalled(); expect(f.removeWorktree).not.toHaveBeenCalled();
+    expect(await f.advance(f.observation("idle", 11, 5))).toBe(true);
     expect(f.submitPrompt).toHaveBeenCalledOnce();
-    expect(await f.advance(f.observation("idle", 12, 6))).toBe(true);
     expect(f.order).toEqual(["stop-close", "delete"]);
   });
 
-  it("waits for the original deadline when a busy receipt cannot identify the cleanup turn", async () => {
+  it("closes on a later idle patrol after sending the cleanup prompt to a working agent", async () => {
     const f = fixture();
     f.submitPrompt.mockResolvedValueOnce({ submission: "submitted", observation: f.observation("working", 11, 5) });
     expect(await f.advance(f.observation("working", 10, 4))).toBe(false);
-    f.clock(301_000);
-    expect(await f.advance(f.observation("idle", 12, 6))).toBe(false);
-    expect(f.driver.remaining(f.owner)).toBe(300_000);
-    f.clock(600_999);
-    expect(await f.advance(f.observation("idle", 13, 7))).toBe(false);
-    expect(f.driver.remaining(f.owner)).toBe(1); expect(f.stopAndClose).not.toHaveBeenCalled();
-    f.clock(601_000);
-    expect(await f.advance(f.observation("idle", 13, 7))).toBe(true);
+    expect(await f.advance(f.observation("working", 12, 5))).toBe(false);
+    expect(f.stopAndClose).not.toHaveBeenCalled();
+    expect(await f.advance(f.observation("idle", 13, 6))).toBe(true);
     expect(f.submitPrompt).toHaveBeenCalledOnce(); expect(f.order).toEqual(["stop-close", "delete"]);
   });
 
-  it.each(["unknown", "rejected"] as const)("does not attribute business completion after %s notification", async (submission) => {
+  it.each(["working", "blocked", "unknown", "done"])("keeps the original deadline while status remains %s", async (status) => {
+    const f = fixture();
+    expect(await f.advance(f.observation(status, 10, 4))).toBe(false);
+    f.clock(301_000);
+    expect(await f.advance(f.observation(status, 11, 5))).toBe(false);
+    expect(f.driver.remaining(f.owner)).toBe(300_000);
+    f.clock(600_999);
+    expect(await f.advance(f.observation(status, 12, 6))).toBe(false);
+    expect(f.driver.remaining(f.owner)).toBe(1); expect(f.stopAndClose).not.toHaveBeenCalled();
+    f.clock(601_000);
+    expect(await f.advance(f.observation(status, 13, 7))).toBe(true);
+    expect(f.submitPrompt).toHaveBeenCalledOnce(); expect(f.order).toEqual(["stop-close", "delete"]);
+  });
+
+  it.each(["unknown", "rejected"] as const)("keeps the deadline and does not replay a %s notification", async (submission) => {
     const f = fixture(); const failed = new HerdrAgentActionError("Notification failed", "agent.prompt", submission);
     f.submitPrompt.mockRejectedValueOnce(failed);
     expect(await f.advance(f.observation("working", 10, 4))).toBe(false);
@@ -77,20 +85,20 @@ describe("cleanup completion belongs to its submitted notification", () => {
     expect(f.submitPrompt).toHaveBeenCalledOnce();
   });
 
-  it("requires interactive readiness in the successful submission observation", async () => {
+  it.each([[null, 5], [11, null], [null, null]])("closes on later idle without requiring sequence counters %s/%s or input readiness", async (stateChangeSeq, completionSeq) => {
     const f = fixture();
-    f.submitPrompt.mockResolvedValueOnce({ submission: "submitted", observation: f.observation("idle", 11, 5, false) });
+    f.submitPrompt.mockResolvedValueOnce({ submission: "submitted", observation: f.observation("working", stateChangeSeq, completionSeq, false) });
     expect(await f.advance(f.observation("working", 10, 4))).toBe(false);
-    expect(await f.advance(f.observation("idle", 12, 6))).toBe(false);
-    expect(f.stopAndClose).not.toHaveBeenCalled();
+    expect(await f.advance(f.observation("idle", stateChangeSeq, completionSeq, false))).toBe(true);
+    expect(f.order).toEqual(["stop-close", "delete"]);
+    expect(Object.keys(f.store.getTask(f.task)!).sort()).toEqual(["agent", "claimId", "projectId", "sessionId", "status", "taskId"]);
   });
 
-  it.each([[null, 5], [11, null]])("requires both submission counters %s/%s", async (stateChangeSeq, completionSeq) => {
+  it("stops an already inactive pane without sending a cleanup prompt", async () => {
     const f = fixture();
-    f.submitPrompt.mockResolvedValueOnce({ submission: "submitted", observation: f.observation("idle", stateChangeSeq, completionSeq) });
-    expect(await f.advance(f.observation("working", 10, 4))).toBe(false);
-    expect(await f.advance(f.observation("idle", 12, 6))).toBe(false);
-    expect(f.stopAndClose).not.toHaveBeenCalled(); expect(f.removeWorktree).not.toHaveBeenCalled();
-    expect(Object.keys(f.store.getTask(f.task)!).sort()).toEqual(["agent", "claimId", "projectId", "sessionId", "status", "taskId"]);
+    const pane = { ...f.observation("idle", null, null, false), kind: null };
+    const resources: HerdrOwnedWorkspace[] = [{ owner: f.owner, workspaceId: pane.binding.workspaceId, panes: [{ ...pane, cwd: null }] }];
+    expect(await f.driver.advance({ owner: f.owner, project: f.store.getProject(f.owner)!, task: f.task }, resources, true)).toBe(true);
+    expect(f.submitPrompt).not.toHaveBeenCalled(); expect(f.order).toEqual(["stop-close", "delete"]);
   });
 });

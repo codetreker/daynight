@@ -8,7 +8,7 @@ import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
+import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
@@ -32,6 +32,7 @@ const fixture = async (maxConcurrent = 1) => {
   const worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
   const resources = new Map<string, HerdrOwnedWorkspace>();
   const events: WorkerEvent[] = []; const order: string[] = []; let clock = 1000; let sequence = 0;
+  let blockedStartupInput = false;
   const bind = (owner: ResourceOwner): WorktreeBinding => {
     const source = store.getProject(owner)!;
     return { repositoryPath: source.localPath, commonDirectory: path.join(source.localPath, ".git"), worktreePath: path.join(source.localPath, ".worktrees", "daynight", owner.taskId), branch: `daynight/${owner.taskId}` };
@@ -54,17 +55,24 @@ const fixture = async (maxConcurrent = 1) => {
       return binding;
     }),
     observe: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => observe(context, binding)),
-    start: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: { configuration: ExecutionConfiguration; prompt: string; resumeSessionId?: string }) => {
+    start: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput) => {
       order.push("start"); const pane = resources.get(context.claimId)!.panes[0]!;
-      pane.kind = context.agent; pane.status = "working"; pane.interactiveReady = true; pane.stateChangeSeq = 1;
+      pane.kind = context.agent; pane.status = "idle"; pane.interactiveReady = true; pane.stateChangeSeq = 1;
       pane.nativeSession = { source: "herdr", agent: context.agent, sessionId: input.resumeSessionId ?? uuid(1000 + sequence) };
+      if (blockedStartupInput) {
+        blockedStartupInput = false; pane.status = "blocked"; pane.nativeSession = null;
+        throw new HerdrAgentActionError("trust requires input", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+      }
+      input.onPromptSubmitted?.({ submission: "submitted", observation: observe(context, binding) });
+      pane.status = "working"; pane.stateChangeSeq = 2;
       return observe(context, binding);
     }),
-    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => {
+    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string) => {
       order.push("notify"); const pane = resources.get(context.claimId)!.panes[0]!;
-      pane.status = "idle"; pane.interactiveReady = true; pane.stateChangeSeq! += 1; pane.completionSeq! += 1;
       const before = observe(context, binding);
-      pane.stateChangeSeq! += 2; pane.completionSeq! += 1;
+      pane.interactiveReady = true; pane.stateChangeSeq! += 1;
+      if (prompt.startsWith("The controller is stopping this execution")) { pane.status = "idle"; pane.completionSeq! += 1; }
+      else pane.status = "working";
       return { submission: "submitted" as const, observation: before };
     }),
     stopAndClose: vi.fn(async (owner: ResourceOwner) => { order.push("stop-close"); resources.delete(owner.claimId); }),
@@ -83,7 +91,7 @@ const fixture = async (maxConcurrent = 1) => {
     update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker!, ...update } } }; grants.set(current.properties.worker!.claimId, result); return result; }),
   } as unknown as WorkerRemote;
   const options = { store, git, herdr, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, buildPrompt: vi.fn(() => "worker-managed using-daynight execute-task-in-managed"), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
-  return { root, store, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind };
+  return { root, store, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind, blockStartupInput: () => { blockedStartupInput = true; } };
 };
 
 describe("minimal worker resource reconciliation", () => {
@@ -181,13 +189,7 @@ describe("minimal worker resource reconciliation", () => {
 
   it("keeps a definitely unsent first input only in the current process", async () => {
     const f = await fixture();
-    const start = f.tasks.start.getMockImplementation()!;
-    f.tasks.start.mockImplementationOnce(async (context, binding, input) => {
-      await start(context, binding, input);
-      const pane = f.resources.get(context.claimId)!.panes[0]!;
-      pane.status = "blocked"; pane.nativeSession = null;
-      throw new HerdrAgentActionError("trust requires input", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-    });
+    f.blockStartupInput();
     await f.coordinator.tick();
     await eventually(() => expect(f.events.some((event) => event.message.includes("first managed input"))).toBe(true));
     const pane = [...f.resources.values()][0]!.panes[0]!; pane.status = "idle";
@@ -196,19 +198,17 @@ describe("minimal worker resource reconciliation", () => {
     await f.coordinator.tick(); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
   });
 
-  it("does not recover a lost first-input decision from durable state", async () => {
+  it("pings after restart without recovering or replaying a lost first-input decision", async () => {
     const f = await fixture();
-    const start = f.tasks.start.getMockImplementation()!;
-    f.tasks.start.mockImplementationOnce(async (context, binding, input) => {
-      await start(context, binding, input);
-      const pane = f.resources.get(context.claimId)!.panes[0]!; pane.status = "blocked"; pane.nativeSession = null;
-      throw new HerdrAgentActionError("trust requires input", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-    });
+    f.blockStartupInput();
     await f.coordinator.tick(); await eventually(() => expect(f.events.some((event) => event.message.includes("first managed input"))).toBe(true));
     [...f.resources.values()][0]!.panes[0]!.status = "idle";
     const restarted = createWorkerCoordinator(f.options); await restarted.tick();
     await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(2));
-    expect(f.tasks.submitPrompt).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
+    expect(f.tasks.submitPrompt.mock.calls[0]![2]).toContain("worker's periodic check");
+    expect(f.tasks.submitPrompt.mock.calls[0]![2]).not.toBe(f.options.buildPrompt.mock.results[0]!.value);
+    expect(f.tasks.start).toHaveBeenCalledOnce();
   });
 
   it("resets cleanup timing with a new in-memory driver", async () => {

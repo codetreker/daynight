@@ -1,7 +1,7 @@
 import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createWorkerPromptBuilder, workerCleanupPrompt } from "../../../src/commands/worker/prompts.js";
+import { createWorkerPromptBuilder, workerCleanupPrompt, workerPingPrompt } from "../../../src/commands/worker/prompts.js";
 import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
 
 const directories: string[] = [];
@@ -28,6 +28,9 @@ describe("worker managed prompts", () => {
     const { task, build, packageDirectory } = await fixture(); const prompt = build(task, "linux");
     expect(prompt).toContain("environment is worker-managed");
     expect(prompt).toContain("using-daynight skill in execute-task-in-managed mode");
+    expect(prompt).toContain("This is a background task. Do not ask the user any questions.");
+    expect(prompt).toContain("Make decisions autonomously within this assignment and its existing authorization.");
+    expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
     expect(prompt).toContain(JSON.stringify(path.join(packageDirectory, "dist/commands/skill/skills/using-daynight/references/execute-task-in-managed.md")));
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!)).toEqual({ serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: task.worktree.worktreePath, branch: task.worktree.branch, platform: "linux", nativeSessionId: null, configuration: task.configuration });
   });
@@ -53,5 +56,16 @@ describe("worker managed prompts", () => {
     const { task } = await fixture(); const deadline = 601_000; const prompt = workerCleanupPrompt(task, deadline);
     expect(prompt).toContain(task.claimId); expect(prompt).toContain(new Date(deadline).toISOString());
     expect(prompt).toContain("outside the worktree"); expect(prompt).toContain("Preserve the controller-managed worktree");
+  });
+  it("keeps review and CI waits inside the background assignment", async () => {
+    const { task } = await fixture(); const prompt = workerPingPrompt(task);
+    expect(prompt).toContain(task.projectId); expect(prompt).toContain(task.taskId); expect(prompt).toContain(task.claimId);
+    expect(prompt).toContain("original native conversation and worktree");
+    expect(prompt).toContain("do not ask the user any questions");
+    expect(prompt).toContain("Make decisions autonomously within that scope and authorization");
+    expect(prompt).toContain("wait and check it periodically yourself");
+    expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
+    expect(prompt).toContain("all required delivery, acceptance and evidence");
+    expect(prompt).toContain("Reconcile unconfirmed writes");
   });
 });
