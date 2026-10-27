@@ -479,8 +479,11 @@ changes retain all-module selection.
 
 The internal `quality` mode of `scripts/ci.mts` runs the canonical Web Node harness
 and the complete Vitest/V8 suite with its strict statement checker serially,
-each with a 180-second deadline. Only the coverage subprocess uses two workers
+each with a 180-second deadline. Only the coverage subprocess uses four workers
 through its copied environment, retaining the `forks` pool and file isolation.
+The [worker capacity decision](../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+calibrates that existing setting for the dedicated public standard Linux
+runner's four CPUs; it does not change inputs, assertions or coverage gates.
 The `browser` mode installs pinned Chromium and Linux dependencies under the
 existing 600-second bound, then invokes ordinary core acceptance after the job's
 deployment fixture checks. The wrapper checks that each command's owned process

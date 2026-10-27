@@ -1385,9 +1385,11 @@ all-module selection rule.
 `node packages/daynight-web/scripts/ci.mts quality` runs `test:harness` and the complete
 `test:coverage` command serially. Each retains a separate 180-second deadline,
 so harness duration cannot consume the coverage command's budget. Only the
-Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=2`, retaining
+Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retaining
 its `forks` pool, per-file isolation, full product manifest and strict statement
-gate. No file or assertion is omitted.
+gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+calibrates this existing resource setting for the dedicated public standard
+Linux runner's four CPUs. No file or assertion is omitted.
 
 `node packages/daynight-web/scripts/ci.mts browser` installs pinned Chromium and
 Linux dependencies under the

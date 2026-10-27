@@ -18,7 +18,7 @@ const operations = () => {
   }, acceptance: async (controller: AbortController) => { accepted.push(controller); } };
 };
 
-test('quality mode runs the full harness and coverage with their original bounds and worker limit', async () => {
+test('quality mode keeps full checks and deadlines with four coverage workers', async () => {
   const observed = operations();
   const controller = new AbortController();
   await runCi('quality', controller, observed);
@@ -31,7 +31,7 @@ test('quality mode runs the full harness and coverage with their original bounds
     assert.equal(call.options.cwd, repositoryRoot);
     assert.equal(call.options.signal, controller.signal);
   }
-  assert.equal(observed.calls[1]!.options.env!.VITEST_MAX_WORKERS, '2');
+  assert.equal(observed.calls[1]!.options.env!.VITEST_MAX_WORKERS, '4');
   assert.deepEqual(observed.accepted, []);
 });
 

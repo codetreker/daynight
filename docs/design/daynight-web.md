@@ -726,7 +726,9 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 
 质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行完整 `test:harness` 和
 `test:coverage`，每个命令分别限时 180 秒。后者保留全部 Vitest/V8 文件与严格语句覆盖率
-检查；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=2`，`forks` pool 和文件隔离不变。
+检查；只有该子进程的复制环境设置 `VITEST_MAX_WORKERS=4`，`forks` pool 和文件隔离不变。
+该并发数按当前公开仓库的标准 `ubuntu-latest` 独立质量 runner 的 4 CPU 容量校准，依据和
+历史竞争条件见[worker 容量决策](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)。
 仅测试文件逐项通过不足以证明 V8 报告和严格 checker 完成。质量 job 归档原始覆盖率及
 完整源码清单摘要。
 
