@@ -778,12 +778,16 @@ Run `daynight login` for Daynight authentication, then `daynight worker run`.
 When `worker.repositories` is missing or empty, startup reads all existing
 Projects accessible to the current account and presents a terminal multiselect.
 Each choice includes its name, UUID and repository URL. Select at least one
-project; the selection is saved before worker identity, SQLite, Git or Herdr
-resources are created. Existing nonempty configuration starts directly.
+project. A fresh worker saves the selection before creating identity, SQLite,
+Git or Herdr resources. A restarted worker with retained state first establishes
+its existing cleanup controller, so committed cleanup deadlines continue while
+project lookup or selection is pending. New task resources wait for the saved
+selection. Existing nonempty configuration starts directly.
 
 Cancel, unreadable project inventory, an empty project inventory or a failed
-save leaves configuration unchanged and does not start the runtime. In a
-noninteractive process, configure a project explicitly before startup:
+save leaves the selection unchanged and starts no new task execution; existing
+cleanup responsibility remains active. In a noninteractive process, configure
+a project explicitly before startup:
 
 ```bash
 daynight worker repo add --project PROJECT_UUID

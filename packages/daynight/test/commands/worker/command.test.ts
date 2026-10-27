@@ -47,16 +47,18 @@ describe("worker command", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("passes startup home, installed package and frontend output to the foreground runtime", async () => {
+  it("passes startup context and defers repository preparation to the foreground runtime's signal", async () => {
     const { cli, errors } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
     const run = vi.fn<WorkerCommandDependencies["run"]>(async (options) => { options.log?.("worker started\n"); });
     const deps = { ...dependencies(), run };
     await runWorkerCommand(["run"], cli, deps);
-    expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli);
-    expect(deps.prepareRepositories.mock.invocationCallOrder[0]).toBeLessThan(run.mock.invocationCallOrder[0]!);
-    expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function) });
+    expect(deps.prepareRepositories).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function), prepareRepositories: expect.any(Function) });
     expect(errors).toEqual(["worker started\n"]);
+    const signal = new AbortController().signal;
+    await run.mock.calls[0]![0].prepareRepositories!(signal);
+    expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli, signal);
   });
 
   it("registers public help and both shell completions through the shared command tree", async () => {
@@ -77,13 +79,17 @@ describe("worker command", () => {
     expect(renderZshCompletion(transfer)).toContain("('\\''codex'\\'' '\\''copilot'\\'')");
   });
 
-  it("does not start a runtime when repository preparation fails", async () => {
+  it("preserves a repository preparation failure returned through the runtime callback", async () => {
     const { cli } = context();
+    cli.homeDirectory = () => path.resolve("worker-home");
     const deps = dependencies();
     const failure = new Error("Project selection cancelled.");
+    const signal = new AbortController().signal;
     deps.prepareRepositories.mockRejectedValueOnce(failure);
+    deps.run.mockImplementation(async ({ prepareRepositories }) => { await prepareRepositories!(signal); });
     await expect(runWorkerCommand(["run"], cli, deps)).rejects.toBe(failure);
-    expect(deps.run).not.toHaveBeenCalled();
+    expect(deps.run).toHaveBeenCalledOnce();
+    expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli, signal);
     expect(deps.manage).not.toHaveBeenCalled();
   });
 
@@ -126,6 +132,7 @@ describe("worker command", () => {
     await runWorkerCommand([kind, taskId.toUpperCase(), `--claim-id=${claimId.toUpperCase()}`, "--project", projectId.toUpperCase(), ...(kind === "retry" ? [] : ["--if-version", "9223372036854775807"])], cli, deps);
     expect(deps.manage).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function), request: { kind, taskId, claimId, projectId, ...(kind === "retry" ? {} : { version: 9_223_372_036_854_775_807n }) } });
     expect(deps.run).not.toHaveBeenCalled();
+    expect(deps.prepareRepositories).not.toHaveBeenCalled();
     expect(errors).toEqual([`claim=${claimId} waiting\n`]);
   });
 

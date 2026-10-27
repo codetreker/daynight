@@ -90,7 +90,9 @@ worker:
 
 ## Project 选择与仓库配置管理
 
-worker 命令入口在调用前台 runtime 前检查仓库注册。非空配置直接运行；空配置先核验登录，通过现有 typed ApiClient 完整读取远端 Project，释放有界 HTTP operation 后再显示多选。提示框沿用 CliPrompt.selectMany 和 CLI 取消机制，不把用户思考时间纳入 HTTP 总期限。保存成功后 runtime 重新读取完整配置，随后才取得实例锁、生成 workerId 或创建 SQLite、Git、Herdr。取消或失败不启动这些资源。
+worker 命令入口向 runtime 提供明确的仓库配置准备回调，由 runtime 按启动责任安排阶段。非空配置直接运行；首次无持久状态且空配置时，先核验登录、完整读取远端 Project并释放有界 HTTP operation，再显示多选。提示框沿用 CliPrompt.selectMany 和 CLI 取消机制，不把用户思考时间纳入 HTTP 总期限。保存成功后重读配置，随后才取得实例锁、生成 workerId 或创建 SQLite、Git、Herdr。首次取消或失败不创建这些资源。
+
+已有持久状态时，runtime 先取得原实例/身份/SQLite 控制，并启动已提交管理及清理责任的独立推进，再等待空仓库配置准备。这样原十分钟截止不受远端 Project 请求或交互等待影响。选择结束后重读运行设置；若服务地址或凭据已改变则拒绝在旧 coordinator 上继续，避免把新配置送往旧远端上下文。该阶段不获得新 claim 或创建新任务资源；失败进入既有有界退出，原资源、冻结配置和清理责任保持原身份。配置只在本次启动阶段重读，不进行热重载。
 
 worker repo list [--json] 读取本地配置；add/remove [--project <UUID>] 在显式 UUID 或交互多选后操作现存远端 Project。初始选择和新增以远端 id/name/repoUrl 生成选项，删除只显示当前注册且远端可访问的项目。管理接口不创建、修改或删除远端项目；远端读取失败保持配置不变。非交互 run 缺仓库时退出并指引显式 add；无参 add/remove 也需要交互终端。
 

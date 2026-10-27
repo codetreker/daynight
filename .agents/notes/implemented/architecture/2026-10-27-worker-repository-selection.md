@@ -17,11 +17,15 @@ MissingConfigurationFileError represents file absence; malformed explicit
 values, read failures and cancellation remain errors. Reading defaults has no
 network or filesystem mutation effects.
 
-The public worker command prepares an empty repository selection before
-entering the foreground runtime. It reads existing accessible Projects through
-the typed API, then prompts for one or more identities. Project name, UUID and
-repository URL distinguish choices; HTTP operations finish before prompting.
-Only a successful atomic configuration save permits runtime startup.
+The public worker command supplies an explicit configuration-preparation
+callback to the runtime. A fresh worker resolves an empty selection before
+creating persistent or native resources. A restart with retained state first
+establishes its original cleanup controller, so committed deadlines continue
+while remote lookup or selection is pending. New task execution waits for a
+successful atomic save. Existing accessible Projects supply the choices; name,
+UUID and repository URL distinguish them, and HTTP operations finish before
+prompting. Startup settings are reread after preparation, while changed service
+or credential context cannot rebind the already initialized coordinator.
 
 The repo list/add/remove subcommands manage this selection. Add and remove use
 existing remote Project identities, with multiselect for interactive calls and
@@ -56,6 +60,12 @@ claim snapshots keep their meaning. The runtime continues to own original
 claims and resources after this configuration boundary.
 
 ## Alternatives
+
+**Finish project selection before opening any retained state.** This makes cold
+startup side effects easy to avoid, but a held or failed Project request can
+postpone cleanup deadlines already committed by an earlier execution. The
+runtime owns the preparation boundary so fresh startup and retained
+responsibility receive their distinct ordering guarantees.
 
 **Require an empty worker section and repository list.** That makes operators
 spell out values whose default meaning is already known and fails before normal

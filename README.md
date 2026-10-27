@@ -114,7 +114,8 @@ daynight worker run
 
 When no worker repositories are configured, an interactive terminal lists the
 existing Daynight projects you can access. Select one or more projects; their
-project IDs, repository URLs and local paths are saved before the worker starts.
+project IDs, repository URLs and local paths are saved before new tasks start.
+Existing committed cleanup continues while a restarted worker awaits selection.
 The shared `repositoryRoot` defaults to `~/daynights`; ordinary repositories
 use `<root>/<host>/<owner>/<repo>`.
 

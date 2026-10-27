@@ -21,10 +21,13 @@ owns configuration and operation. Review keeps its own database, coordinator and
 lifecycle. Worker composes existing typed HTTP, identity/lock, Git, Herdr and
 managed-skill modules instead of introducing another delivery engine. The
 [Project-selection decision](2026-10-27-worker-repository-selection.md) defines
-default parsing and registration before runtime resources. Omitted settings
-use defaults, explicit invalid values and non-missing file failures remain
-errors, and an empty public startup selection is filled from existing remote
-Projects. Project metadata is not rediscovered on each reconciliation tick.
+default parsing and registration as an explicit runtime preparation phase. Fresh
+startup completes selection before creating persistent or native resources;
+retained state establishes its cleanup controller before waiting on selection,
+so original deadlines still progress. Omitted settings use defaults, explicit
+invalid values and non-missing file failures remain errors, and empty selections
+are filled from existing remote Projects before new task execution. Project
+metadata is not rediscovered on each reconciliation tick.
 
 A single coordinator owns repository rotation, capacity and per-task serial
 advancement. Every inventory/acquisition round reads complete current own-claim

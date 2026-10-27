@@ -10,14 +10,14 @@ import type { WorkerRepositoryCommandRequest } from "./configuration-guide.js";
 import { workerDefinition } from "./definition.js";
 
 export type WorkerCommandDependencies = {
-  prepareRepositories: (context: CliContext) => Promise<void>;
+  prepareRepositories: (context: CliContext, signal?: AbortSignal) => Promise<void>;
   repository: (request: WorkerRepositoryCommandRequest, context: CliContext) => Promise<void>;
-  run: (options: { homeDirectory: string; packageDirectory: string; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
+  run: (options: { homeDirectory: string; packageDirectory: string; log?: (message: string) => void; signal?: AbortSignal; prepareRepositories?: (signal: AbortSignal) => Promise<void> }) => Promise<void>;
   manage: (options: { homeDirectory: string; packageDirectory: string; request: WorkerControlRequest; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
 };
 
 const defaultDependencies: WorkerCommandDependencies = {
-  prepareRepositories: async (context) => (await import("./configuration-guide.js")).ensureWorkerRepositories(context),
+  prepareRepositories: async (context, signal) => (await import("./configuration-guide.js")).ensureWorkerRepositories(context, undefined, signal),
   repository: async (request, context) => (await import("./configuration-guide.js")).runWorkerRepositoryCommand(request, context),
   run: async (options) => (await import("./runtime.js")).runWorker(options),
   manage: async (options) => (await import("./runtime.js")).runWorkerControl(options),
@@ -31,8 +31,7 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   }
   const runtime = () => ({ homeDirectory: context.homeDirectory(), packageDirectory: context.packageDirectory, log: (message: string) => { context.stderr(message); } });
   if (command.command.name === "run") {
-    await dependencies.prepareRepositories(context);
-    await dependencies.run(runtime());
+    await dependencies.run({ ...runtime(), prepareRepositories: (signal) => dependencies.prepareRepositories(context, signal) });
     return;
   }
   const help = `${command.path.join(" ")} --help`;

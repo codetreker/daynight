@@ -205,9 +205,8 @@ it.skipIf(process.platform === "win32")("selects and removes multiple Projects w
 it.skipIf(process.platform === "win32")("cancels the startup Project selector before saving configuration or creating worker resources", async () => {
   const f = await fresh();
   const result = await terminal(["worker", "run"], f.home, [{ waitFor: addPrompt, signal: "SIGTERM" }]);
-  expect(result.code).toBe(1);
+  expect(result.code, result.stderr).toBe(0);
   expect(result.stdout).toBe("");
-  expect(result.stderr).toContain("Worker repository configuration cancelled");
   expect(f.calls).toHaveLength(2);
   await f.unchanged();
 });

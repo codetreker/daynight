@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir } from "node:fs/promises";
+import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import { createOperation } from "../../api/operation.js";
@@ -40,9 +40,18 @@ const machineDescription = (platform: TaskPlatform): WorkerMachine => {
   return { id: `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`, name };
 };
 
+const hasWorkerDatabase = async (file: string): Promise<boolean> => {
+  try { await lstat(file); return true; }
+  catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+    throw error;
+  }
+};
+
 export const runWorker = async (options: {
   homeDirectory: string; packageDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
+  prepareRepositories?: (signal: AbortSignal) => Promise<void>;
 }): Promise<void> => {
   const platform = currentWorkerPlatform();
   const paths = resolveWorkerPaths(options.homeDirectory);
@@ -65,9 +74,21 @@ export const runWorker = async (options: {
   const failures: unknown[] = [];
   try {
     cancellation.signal.throwIfAborted();
-    const configuration = await readWorkerConfiguration(paths, cancellation.signal);
+    let configuration = await readWorkerConfiguration(paths, cancellation.signal);
     const { serverUrl, serverToken } = await loadServerConfiguration(paths, cancellation.signal);
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");
+    const prepareRepositories = async (): Promise<void> => {
+      if (configuration.repositories.length > 0 || options.prepareRepositories === undefined) return;
+      await options.prepareRepositories(cancellation.signal);
+      cancellation.signal.throwIfAborted();
+      const current = await loadServerConfiguration(paths, cancellation.signal);
+      if (current.serverUrl !== serverUrl || current.serverToken !== serverToken) throw new Error("The Daynight service or authentication changed during worker repository configuration; restart the worker with the current configuration.");
+      configuration = await readWorkerConfiguration(paths, cancellation.signal);
+      if (configuration.repositories.length === 0) throw new Error("Worker repository configuration did not select any repositories.");
+    };
+    if (configuration.repositories.length === 0 && options.prepareRepositories !== undefined && !await hasWorkerDatabase(paths.databaseFile)) {
+      await prepareRepositories();
+    }
     lock = await acquireWorkerInstanceLock(paths);
     cancellation.signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, cancellation.signal);
@@ -82,7 +103,7 @@ export const runWorker = async (options: {
     const repositories: WorkerRepositoryAssignment[] = [];
     coordinator = createWorkerCoordinator({
       store, git, herdr, remote, serverOrigin: serverUrl, workerId, platform,
-      machine: machineDescription(platform), repositories, maxConcurrent: configuration.maxConcurrent,
+      machine: machineDescription(platform), repositories, get maxConcurrent() { return configuration.maxConcurrent; },
       buildPrompt, emit, signal: cancellation.signal,
     });
     const cleanupCoordinator = coordinator;
@@ -120,6 +141,8 @@ export const runWorker = async (options: {
         catch (error) { if (!isWorkerCancellation(error, cancellation.signal)) throw error; }
       }
     })().catch((error: unknown) => { if (cleanupFailure === undefined) cleanupFailure = error; cancellation.abort(error); });
+    // We advance persisted cleanup while repository selection waits, preserving its original deadlines.
+    await prepareRepositories();
     emit({ kind: "started", message: `Foreground worker ${workerId} on ${platform}; maxConcurrent=${configuration.maxConcurrent}; pollIntervalMs=${configuration.pollIntervalMs}; logs=${diagnostics.filename}.` });
     await remote.currentUserId(cancellation.signal);
     for (const repository of configuration.repositories) {
