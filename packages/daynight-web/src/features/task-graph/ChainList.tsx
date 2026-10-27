@@ -1,6 +1,8 @@
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { TaskStatus } from '../../api/types';
+import type { GraphTask, TaskStatus } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
+import { useTaskExecution } from '../task-execution/TaskExecutionClock';
+import { TaskExecutionDuration } from '../task-execution/TaskExecutionPresentation';
 import type { GraphIndex } from './model';
 import { TaskChainDialog } from './TaskChainDialog';
 import '../../styles/graph.css';
@@ -24,8 +26,27 @@ type ChainRowProps = Pick<ChainListProps, 'index' | 'onOpenChain' | 'onOpenTask'
   readonly open: boolean;
 };
 
+type GoalTaskRowProps = {
+  readonly task: GraphTask;
+  readonly rootId: string;
+  readonly onOpenTask: ChainListProps['onOpenTask'];
+};
+
+const GoalTaskRow = memo(({ task, rootId, onOpenTask }: GoalTaskRowProps) => {
+  const { messages: { common, workspace: { project } } } = useI18n();
+  const execution = useTaskExecution(task);
+  return <li>
+    <button className="goal-task-row" id={`chain-task-${rootId}-${task.id}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
+      <span className={`goal-task-dot graph-status-${task.status}`} aria-hidden="true" />
+      <span className="root-heading"><span className="root-title">{task.titlePreview}{task.titleTruncated ? '…' : ''}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}</span>
+      <span className="goal-task-status"><span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
+      <svg className="goal-task-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
+    </button>
+  </li>;
+});
+
 const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRowProps) => {
-  const { messages: { graph: m, common, workspace: { project } } } = useI18n();
+  const { messages: { graph: m, common } } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
@@ -59,14 +80,7 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
       <div className="goal-children-heading"><span>{m.childTasks({ count: members.length })}</span>
         <button className="goal-detail-link" type="button" aria-haspopup="dialog" aria-label={m.goalDetailsLabel({ title })} onClick={(event) => onOpenTask(rootId, event.currentTarget)}>{m.goalDetails}</button>
       </div>
-      <ul className="goal-task-list">{members.map((member) => <li key={member.id}>
-        <button className="goal-task-row" id={`chain-task-${rootId}-${member.id}`} type="button" onClick={(event) => onOpenTask(member.id, event.currentTarget)} aria-haspopup="dialog">
-          <span className={`goal-task-dot graph-status-${member.status}`} aria-hidden="true" />
-          <span className="root-heading"><span className="root-title">{member.titlePreview}{member.titleTruncated ? '…' : ''}</span></span>
-          <span className="goal-task-status"><span className={`root-status graph-status-${member.status}`}>{common.status[member.status]}</span>{member.ready && <span className="task-ready">{project.ready}</span>}{member.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
-          <svg className="goal-task-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
-        </button>
-      </li>)}</ul>
+      <ul className="goal-task-list">{members.map((member) => <GoalTaskRow key={member.id} task={member} rootId={rootId} onOpenTask={onOpenTask} />)}</ul>
     </div>
   </li>;
 });

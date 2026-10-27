@@ -29,9 +29,25 @@ chain-external context remains in the graph. The list retains `done`, `in_progre
 completed tasks. The chain-level Show completed control hides or reveals whole
 completed Goals only; it never filters child rows. Standalone completion
 filtering retains its existing individual-task behavior. Child rows show
-individual task status and applicable ready or blocked markers. They open the existing task-detail dialog, and the list heading
-offers the representative task's own details. Aggregate progress still counts
-that representative, so the child count is one less than the aggregate total.
+individual task status, applicable ready or blocked markers and known execution
+duration immediately after the title. They open the existing task-detail dialog,
+and the list heading offers the representative task's own details. Aggregate
+progress still counts that representative, so the child count is one less than
+the aggregate total.
+
+Each memoized child row consumes the existing project execution clock. Running
+intervals advance from the server sample and monotonic elapsed time; completed
+intervals retain their persisted endpoint difference. Todo and incomplete
+intervals have no duration, regardless of automatic-execution permission. A muted
+clock icon and localized semantic time follow the title inline, wrapping full
+text as space requires without covering status or row actions. The timing subtree
+is excluded from the native button name and has no live announcements, preserving
+focus and keyboard access. The shared duration component's duration-only tooltip
+keeps threshold and possible-stall meaning with the existing graph-card and
+standalone-row consumers. No per-row timer, network read or aggregate duration is
+introduced; the [timing requirements](../../../../docs/spec/daynight-task-timing.md)
+and [timing architecture](../../../../docs/design/daynight-task-timing.md) own the
+shared interval and clock contracts.
 
 Each mounted row owns an initially collapsed disclosure choice. Several rows
 can be expanded together. Same-row refreshes update the member list while
@@ -79,7 +95,10 @@ complete component preserves the established membership contract.
 Routine task browsing and dependency inspection have independent controls and
 state. Opening a graph preserves the expanded list and its page position.
 Child-task access shares the existing details, requests and write sessions;
-the list introduces no API, stored task type or preference migration.
+the list introduces no API, stored task type or preference migration. Local child
+timing updates do not rebuild component membership, ordering or aggregate progress.
+Mounted running rows add subscribers to the project clock while sharing its
+single visible-page ticker; completed rows do not subscribe to clock ticks.
 
 An expanded list presents all actual members rather than the graph's bounded
 visible subset. Long chains therefore create long document lists, and narrow

@@ -10,11 +10,14 @@ export const TaskExecutionWarning = () => {
   return <span className="task-stuck-label"><svg viewBox="0 0 12 12" fill="none" aria-hidden="true"><path d="M6 1 11 10H1Z" fill="currentColor" /><path d="M6 4v2.6m0 1.2v.7" stroke="#fff" strokeWidth="1.1" /></svg>{m.possiblyStuck}</span>;
 };
 
-export const TaskExecutionDuration = ({ execution }: { readonly execution: TaskExecution }) => {
+export const TaskExecutionDuration = ({ execution, tooltip = "execution" }: {
+  readonly execution: TaskExecution;
+  readonly tooltip?: "execution" | "duration";
+}) => {
   const { format, messages: { execution: m } } = useI18n();
   const duration = format.duration(execution.elapsedMilliseconds);
   return <time className="task-duration" dateTime={`PT${(execution.elapsedMilliseconds / 1000).toFixed(3)}S`}
-    title={m.description({ ...execution, duration })}><ClockIcon /><span>{duration}</span></time>;
+    title={tooltip === "duration" ? duration : m.description({ ...execution, duration })}><ClockIcon /><span>{duration}</span></time>;
 };
 
 export const TaskExecutionDescription = ({ execution, id }: { readonly execution: TaskExecution; readonly id: string }) => {
