@@ -89,7 +89,7 @@ it("configures review through add-repo and preserves controlled service configur
   expect(review.code, review.stderr).toBe(0);
   expect(review.stdout).toContain("Repository github.com/configuration-acceptance/repository added.");
   expect(review.stdout + review.stderr).not.toContain("configured-secret");
-  expect(await decoded(fixture.configuration)).toMatchObject({ serverUrl: "http://127.0.0.1:8787", serverToken: "configured-secret", repositories: [{ remote, path: path.join(fixture.root, "review clone") }] });
+  expect(await decoded(fixture.configuration)).toMatchObject({ serverUrl: "http://127.0.0.1:8787", serverToken: "configured-secret", review: { repositories: [{ remote, path: path.join(fixture.root, "review clone") }] } });
   const reviewOnly = await fresh();
   const explicitReview = await pipe(["review", "add-repo", remote], reviewOnly.home);
   expect(explicitReview.code, explicitReview.stderr).toBe(0);
@@ -117,7 +117,7 @@ it.skipIf(process.platform === "win32")("first review use configures repositorie
   expect(result.stderr).not.toContain("Server URL");
   expect(result.stderr).not.toContain("Server token");
   expect(result.stdout + result.stderr).not.toContain(secret);
-  expect(await decoded(fixture.configuration)).toMatchObject({ serverToken: secret, repositories: [{ remote }] });
+  expect(await decoded(fixture.configuration)).toMatchObject({ serverToken: secret, review: { repositories: [{ remote }] } });
   expect(await decoded(fixture.configuration)).not.toHaveProperty("serverUrl");
   expect((await stat(fixture.configuration)).mode & 0o777).toBe(0o600);
 });
@@ -141,7 +141,7 @@ it.skipIf(process.platform === "win32")("first review configuration rejects a co
   const fixture = await fresh();
   await mkdir(path.dirname(fixture.configuration));
   await writeFile(fixture.configuration, "serverToken: existing-credential\n");
-  const concurrent = JSON.stringify({ serverToken: "existing-credential", repositories: [{ remote: "https://github.com/Concurrent/Repository.git", path: path.join(fixture.root, "concurrent clone") }] });
+  const concurrent = JSON.stringify({ serverToken: "existing-credential", review: { repositories: [{ remote: "https://github.com/Concurrent/Repository.git", path: path.join(fixture.root, "concurrent clone") }] } });
   const result = await terminal(["review", "list"], fixture.home, [
     { waitFor: reviewPrompt, input: `${remote}\n` },
     { waitFor: pathPrompt, write: { file: fixture.configuration, contents: concurrent }, input: "\n" },

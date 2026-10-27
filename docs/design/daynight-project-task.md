@@ -103,7 +103,7 @@ project/task 不导入 review runtime、SQLite 或外部审查适配器。`proje
 与仓库状态。共享模块不反向导入命令模块。
 
 配置共享层产出 YAML mapping 和文档上下文，拒绝语法、重复 key、非 mapping 及
-未登记顶层字段。review 投影只解析 review 字段；server 投影在文件或 `serverUrl` 缺省时
+未登记顶层字段。review 投影只解析 `review` 节点内的字段；server 投影在文件或 `serverUrl` 缺省时
 使用 `https://daynight.cc`，校验明确提供的地址与可选 `serverToken`。共享层保留 YAML 格式，
 不迁移 review 数据。服务调用不进入配置引导；缺少本地凭据时在网络前提示 `daynight login`。
 已有无效服务值、共享文档错误及读取错误直接暴露。

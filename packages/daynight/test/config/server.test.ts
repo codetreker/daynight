@@ -32,15 +32,15 @@ describe("server configuration projection", () => {
 
   it("requires only serverUrl and leaves review values to review", () => {
     expect(parseServerConfiguration("serverUrl: http://localhost:8787", paths)).toEqual({ serverUrl: "http://localhost:8787" });
-    expect(parseServerConfiguration("serverUrl: http://localhost:8787\nrepositoryRoot: null\nrepositories: false\npollIntervalMs: bad\nmaxConcurrentWorker: 0\nagentTimeoutMs: -1\nmaxAttempts: null\nretryDelayMs: {}", paths)).toEqual({ serverUrl: "http://localhost:8787" });
+    expect(parseServerConfiguration("serverUrl: http://localhost:8787\nreview:\n  repositoryRoot: null\n  repositories: false\n  pollIntervalMs: bad\n  maxConcurrentWorker: 0\n  agentTimeoutMs: -1\n  maxAttempts: null\n  retryDelayMs: {}", paths)).toEqual({ serverUrl: "http://localhost:8787" });
   });
 
   it.each(["null", "42", "true", "[]", "{}", '""', '"model\\u0000name"'])("leaves invalid Copilot model values to review: %s", (value) => {
-    expect(parseServerConfiguration(`serverUrl: http://localhost:8787\ncopilotModel: ${value}\n`, paths)).toEqual({ serverUrl: "http://localhost:8787" });
+    expect(parseServerConfiguration(`serverUrl: http://localhost:8787\nreview:\n  copilotModel: ${value}\n`, paths)).toEqual({ serverUrl: "http://localhost:8787" });
   });
 
   it.each(["null", "42", "true", "[]", "{}", '""', '"effort\\u0000name"'])("leaves invalid Copilot reasoning effort values to review: %s", (value) => {
-    expect(parseServerConfiguration(`serverUrl: http://localhost:8787\ncopilotReasoningEffort: ${value}\n`, paths)).toEqual({ serverUrl: "http://localhost:8787" });
+    expect(parseServerConfiguration(`serverUrl: http://localhost:8787\nreview:\n  copilotReasoningEffort: ${value}\n`, paths)).toEqual({ serverUrl: "http://localhost:8787" });
   });
 
   it("reports the configuration filename, server field and original URL parse error", () => {
@@ -55,11 +55,11 @@ describe("server configuration projection", () => {
     }
   });
 
-  it.each(["repositories: []", "{}", "serverToken: default-secret"])("uses the production origin when serverUrl is omitted: %s", (source) => {
+  it.each(["review:\n  repositories: []", "{}", "serverToken: default-secret"])("uses the production origin when serverUrl is omitted: %s", (source) => {
     expect(parseServerConfiguration(source, paths)).toEqual({ serverUrl: "https://daynight.cc", ...(source.startsWith("serverToken") ? { serverToken: "default-secret" } : {}) });
   });
 
-  it.each(["serverURL: http://localhost", "serverUrl: http://localhost\nserverUrl: http://other", "repositories: [{path: a, path: b}]\nserverUrl: http://localhost"])("retains the shared YAML rejection: %s", (source) => {
+  it.each(["serverURL: http://localhost", "serverUrl: http://localhost\nserverUrl: http://other", "review:\n  repositories: [{path: a, path: b}]\nserverUrl: http://localhost"])("retains the shared YAML rejection: %s", (source) => {
     expect(() => parseServerConfiguration(source, paths)).toThrow(`Invalid configuration file ${paths.configFile}`);
   });
 

@@ -1,10 +1,11 @@
-# Root-level review settings and comments belong to the persisted configuration.
-pollIntervalMs: 60000
-maxConcurrentWorker: 1
-agentTimeoutMs: 1800000
-maxAttempts: 3
-retryDelayMs: 30000
-repositoryRoot: ~/daynights
-repositories:
-  - remote: https://github.com/fixture/review-project.git
-    path: ../fixture-checkout
+# Review settings and comments belong to the persisted configuration.
+review:
+  pollIntervalMs: 60000
+  maxConcurrentWorker: 1
+  agentTimeoutMs: 1800000
+  maxAttempts: 3
+  retryDelayMs: 30000
+  repositoryRoot: ~/daynights
+  repositories:
+    - remote: https://github.com/fixture/review-project.git
+      path: ../fixture-checkout

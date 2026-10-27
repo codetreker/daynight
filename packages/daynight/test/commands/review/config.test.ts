@@ -3,6 +3,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { configurationDefaults, loadConfiguration, parseConfiguration, resolveRepositoryRoot } from "../../../src/commands/review/config.js";
+import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
+import { parseWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 import * as filesystemPaths from "../../../src/platform/filesystem.js";
 import { formatError } from "../../../src/platform/diagnostics.js";
@@ -10,9 +12,30 @@ import { formatError } from "../../../src/platform/diagnostics.js";
 const posixPaths = resolveReviewPaths("/home/Review User 用户", path.posix);
 const repositoryYaml = (remote = "https://github.com/OWNER/REPO.git", localPath = "../code/Repo 用户"): string =>
   `repositories:\n  - remote: ${JSON.stringify(remote)}\n    path: ${JSON.stringify(localPath)}\n`;
-const parse = (source: string) => parseConfiguration(source, posixPaths, path.posix);
+const reviewYaml = (source: string): string => `review:\n${source.split("\n").map((line) => `  ${line}`).join("\n")}`;
+const parse = (source: string) => parseConfiguration(reviewYaml(source), posixPaths, path.posix);
 
 describe("YAML configuration", () => {
+  it.each(["null", "false", "42", "[]", "not-a-mapping"])("rejects an explicit invalid review section: %s", (value) => {
+    expect(() => parseConfiguration(`review: ${value}`, posixPaths, path.posix)).toThrow("review must be a mapping");
+  });
+
+  it.each(["repositoryRoot", "repositories", ...Object.keys(configurationDefaults), "copilotModel", "copilotReasoningEffort"])("rejects the former root field %s even with a valid review section", (field) => {
+    expect(() => parseConfiguration(`${field}: null\n${reviewYaml(repositoryYaml())}`, posixPaths, path.posix)).toThrow("unsupported field");
+  });
+
+  it("uses only review settings when worker and service settings coexist", () => {
+    const source = `serverUrl: invalid-for-server\nworker: { repositories: false, pollIntervalMs: 1 }\n${reviewYaml(repositoryYaml())}`;
+    expect(parseConfiguration(source, posixPaths, path.posix)).toEqual(parse(repositoryYaml()));
+  });
+
+  it("parses both command sections in the shipped configuration example", async () => {
+    const source = await readFile(new URL("../../../config.example.yml", import.meta.url), "utf8");
+    const review = parseConfiguration(source, posixPaths, path.posix);
+    expect(review).toMatchObject({ ...configurationDefaults, repositories: [{ coordinate: "github.com/owner/repo", path: "/home/Review User 用户/daynights/github.com/owner/repo" }] });
+    expect(parseWorkerConfiguration(source, resolveWorkerPaths("/home/Review User 用户", path.posix), path.posix)).toMatchObject({ repositories: [{ path: "/home/Review User 用户/code/repo" }] });
+  });
+
   it("applies numeric defaults only when absent and resolves paths relative to the configuration", () => {
     expect(parse(repositoryYaml())).toEqual({
       ...configurationDefaults,
@@ -28,7 +51,7 @@ describe("YAML configuration", () => {
   });
 
   it.each(["null", "not-an-origin", "{}", "[]", "42"])("leaves invalid serverUrl values to the server projection: %s", (value) => {
-    expect(parse(`serverUrl: ${value}\n${repositoryYaml()}`)).toEqual(parse(repositoryYaml()));
+    expect(parseConfiguration(`serverUrl: ${value}\n${reviewYaml(repositoryYaml())}`, posixPaths, path.posix)).toEqual(parse(repositoryYaml()));
   });
 
   it.each(["auto", "future-provider/model-v9", ' model $(literal) & | %PATH% "quote" '])("preserves an opaque explicit Copilot model: %j", (model) => {
@@ -38,7 +61,7 @@ describe("YAML configuration", () => {
   });
 
   it.each(["null", "", '""', '" \\t "', "42", "true", "[]", "{}", '"model\\u0000name"'])("rejects invalid explicit Copilot model values: %s", (value) => {
-    expect(() => parse(`copilotModel: ${value}\n${repositoryYaml()}`)).toThrow("copilotModel must be a nonempty string without NUL characters");
+    expect(() => parse(`copilotModel: ${value}\n${repositoryYaml()}`)).toThrow("review.copilotModel must be a nonempty string without NUL characters");
   });
 
   it.each(["none", "xhigh", "future-effort", ' effort $(literal) & | %PATH% "quote" '])("preserves opaque reasoning effort without requiring a model: %j", (effort) => {
@@ -54,12 +77,12 @@ describe("YAML configuration", () => {
   });
 
   it.each(["null", "", '""', '" \\t "', "42", "true", "[]", "{}", '"effort\\u0000name"'])("rejects invalid explicit Copilot reasoning effort values: %s", (value) => {
-    expect(() => parse(`copilotReasoningEffort: ${value}\n${repositoryYaml()}`)).toThrow("copilotReasoningEffort must be a nonempty string without NUL characters");
+    expect(() => parse(`copilotReasoningEffort: ${value}\n${repositoryYaml()}`)).toThrow("review.copilotReasoningEffort must be a nonempty string without NUL characters");
   });
 
   it("explains how to configure review when only server access is configured", () => {
-    expect(() => parse("serverUrl: http://localhost:8787\n")).toThrow("Review repositories are not configured; use daynight review add-repo <remote>");
-    expect(() => parse("serverUrl: http://localhost:8787\nmaxConcurrentWorker: 0\n")).toThrow("maxConcurrentWorker must be a positive safe integer");
+    expect(() => parseConfiguration("serverUrl: http://localhost:8787\n", posixPaths, path.posix)).toThrow("Review repositories are not configured; use daynight review add-repo <remote>");
+    expect(() => parseConfiguration("serverUrl: http://localhost:8787\nreview:\n  maxConcurrentWorker: 0\n", posixPaths, path.posix)).toThrow("review.maxConcurrentWorker must be a positive safe integer");
   });
 
   it("validates repositoryRoot as addition metadata without changing runtime configuration", () => {
@@ -70,7 +93,7 @@ describe("YAML configuration", () => {
       expect(() => parse(`repositoryRoot: ${root}\n${repositoryYaml()}`)).toThrow("repositoryRoot");
     }
     const windows = resolveReviewPaths("C:\\Users\\Alice", path.win32);
-    expect(() => parseConfiguration(`repositoryRoot: C:clones\n${repositoryYaml()}`, windows, path.win32)).toThrow("drive-relative");
+    expect(() => parseConfiguration(reviewYaml(`repositoryRoot: C:clones\n${repositoryYaml()}`), windows, path.win32)).toThrow("drive-relative");
   });
 
   it("resolves repositoryRoot against the injected home or configuration directory", () => {
@@ -224,13 +247,13 @@ describe("YAML configuration", () => {
 
   it("uses Windows config-relative paths and rejects exact lexical collisions", () => {
     const windowsPaths = resolveReviewPaths("C:\\Users\\Review User 用户", path.win32);
-    const config = parseConfiguration(repositoryYaml(undefined, "..\\Code\\Repo 用户"), windowsPaths, path.win32);
+    const config = parseConfiguration(reviewYaml(repositoryYaml(undefined, "..\\Code\\Repo 用户")), windowsPaths, path.win32);
     expect(config.repositories[0]!.path).toBe("C:\\Users\\Review User 用户\\Code\\Repo 用户");
-    expect(() => parseConfiguration(`${repositoryYaml(undefined, "C:\\Code\\Repo")}  - remote: https://github.com/o/other\n    path: C:/Code/Repo\n`, windowsPaths, path.win32)).toThrow("same location");
-    expect(() => parseConfiguration(repositoryYaml(undefined, "C:/Users/Review User 用户/.daynight/repo"), windowsPaths, path.win32)).toThrow("must not overlap");
-    expect(parseConfiguration(`${repositoryYaml(undefined, "C:\\Code\\Repo")}  - remote: https://github.com/o/other\n    path: C:/Code/repo\n`, windowsPaths, path.win32).repositories).toHaveLength(2);
+    expect(() => parseConfiguration(reviewYaml(`${repositoryYaml(undefined, "C:\\Code\\Repo")}  - remote: https://github.com/o/other\n    path: C:/Code/Repo\n`), windowsPaths, path.win32)).toThrow("same location");
+    expect(() => parseConfiguration(reviewYaml(repositoryYaml(undefined, "C:/Users/Review User 用户/.daynight/repo")), windowsPaths, path.win32)).toThrow("must not overlap");
+    expect(parseConfiguration(reviewYaml(`${repositoryYaml(undefined, "C:\\Code\\Repo")}  - remote: https://github.com/o/other\n    path: C:/Code/repo\n`), windowsPaths, path.win32).repositories).toHaveLength(2);
     for (const localPath of ["C:repo", "C:"]) {
-      expect(() => parseConfiguration(repositoryYaml(undefined, localPath), windowsPaths, path.win32)).toThrow("drive-relative");
+      expect(() => parseConfiguration(reviewYaml(repositoryYaml(undefined, localPath)), windowsPaths, path.win32)).toThrow("drive-relative");
     }
   });
 });
@@ -255,10 +278,10 @@ describe("configuration loading", () => {
   it("includes the configuration filename and original cause for invalid values", async () => {
     const paths = resolveReviewPaths(path.join(directory, "invalid-values"));
     await mkdir(paths.stateDirectory, { recursive: true });
-    await writeFile(paths.configFile, "maxConcurrentWorker: 0\nrepositories: [{remote: https://github.com/o/r, path: ../repo}]\n");
+    await writeFile(paths.configFile, reviewYaml("maxConcurrentWorker: 0\nrepositories: [{remote: https://github.com/o/r, path: ../repo}]\n"));
     await expect(loadConfiguration(paths)).rejects.toMatchObject({
       message: expect.stringContaining(paths.configFile),
-      cause: { message: expect.stringContaining("maxConcurrentWorker must be a positive safe integer") },
+      cause: { message: expect.stringContaining("review.maxConcurrentWorker must be a positive safe integer") },
     });
   });
 
@@ -266,7 +289,7 @@ describe("configuration loading", () => {
     const home = path.join(directory, "home with 空格");
     const paths = resolveReviewPaths(home);
     await mkdir(paths.stateDirectory, { recursive: true });
-    const source = repositoryYaml();
+    const source = reviewYaml(repositoryYaml());
     await writeFile(paths.configFile, source);
     const probe = vi.spyOn(filesystemPaths, "missingPathsReferToSameDirectory");
     try {
@@ -286,7 +309,7 @@ describe("configuration loading", () => {
     const paths = resolveReviewPaths(home);
     await mkdir(paths.stateDirectory, { recursive: true });
     await symlink(paths.stateDirectory, path.join(home, "alias"), "junction");
-    await writeFile(paths.configFile, repositoryYaml(undefined, "../alias/not-created/repo"));
+    await writeFile(paths.configFile, reviewYaml(repositoryYaml(undefined, "../alias/not-created/repo")));
     await expect(loadConfiguration(paths)).rejects.toThrow("must not overlap");
   });
 
@@ -297,7 +320,7 @@ describe("configuration loading", () => {
     await mkdir(paths.stateDirectory, { recursive: true });
     await mkdir(actual);
     await symlink(actual, path.join(home, "alias"), "junction");
-    await writeFile(paths.configFile, `${repositoryYaml(undefined, "../actual/not-created")}  - remote: https://github.com/o/other\n    path: ../alias/not-created\n`);
+    await writeFile(paths.configFile, reviewYaml(`${repositoryYaml(undefined, "../actual/not-created")}  - remote: https://github.com/o/other\n    path: ../alias/not-created\n`));
     await expect(loadConfiguration(paths)).rejects.toThrow("same location");
   });
 
@@ -307,7 +330,7 @@ describe("configuration loading", () => {
     const ancestor = path.join(home, "Code");
     await mkdir(paths.stateDirectory, { recursive: true });
     await mkdir(ancestor);
-    await writeFile(paths.configFile, `${repositoryYaml(undefined, "../Code/New/Repo")}  - remote: https://github.com/o/other\n    path: ../Code/new/repo\n`);
+    await writeFile(paths.configFile, reviewYaml(`${repositoryYaml(undefined, "../Code/New/Repo")}  - remote: https://github.com/o/other\n    path: ../Code/new/repo\n`));
     const probe = vi.spyOn(filesystemPaths, "missingPathsReferToSameDirectory").mockResolvedValue(true);
     try {
       await expect(loadConfiguration(paths)).rejects.toThrow("same location");
@@ -324,7 +347,7 @@ describe("configuration loading", () => {
     const ancestor = path.join(home, "Code");
     await mkdir(paths.stateDirectory, { recursive: true });
     await mkdir(ancestor);
-    await writeFile(paths.configFile, `${repositoryYaml(undefined, "../Code/New/Repo")}  - remote: https://github.com/o/other\n    path: ../Code/new/repo\n  - remote: https://github.com/o/third\n    path: ../Code/NEW/REPO\n`);
+    await writeFile(paths.configFile, reviewYaml(`${repositoryYaml(undefined, "../Code/New/Repo")}  - remote: https://github.com/o/other\n    path: ../Code/new/repo\n  - remote: https://github.com/o/third\n    path: ../Code/NEW/REPO\n`));
     const probe = vi.spyOn(filesystemPaths, "missingPathsReferToSameDirectory").mockResolvedValue(false);
     try {
       expect((await loadConfiguration(paths)).repositories).toHaveLength(3);
@@ -354,7 +377,7 @@ describe("configuration loading", () => {
         throw error;
       }
     }
-    await writeFile(paths.configFile, `${repositoryYaml(undefined, `../${first}`)}  - remote: https://github.com/o/other\n    path: ${JSON.stringify(`../${second}`)}\n`);
+    await writeFile(paths.configFile, reviewYaml(`${repositoryYaml(undefined, `../${first}`)}  - remote: https://github.com/o/other\n    path: ${JSON.stringify(`../${second}`)}\n`));
     const entries = await readdir(home);
     if (sameDirectory) {
       await expect(loadConfiguration(paths)).rejects.toThrow("same location");
@@ -369,7 +392,7 @@ describe("configuration loading", () => {
     const paths = resolveReviewPaths(home);
     await mkdir(paths.stateDirectory, { recursive: true });
     await symlink(paths.stateDirectory, path.join(home, "STATE-ALIAS"), "junction");
-    await writeFile(paths.configFile, repositoryYaml(undefined, "../STATE-ALIAS/New/Repo"));
+    await writeFile(paths.configFile, reviewYaml(repositoryYaml(undefined, "../STATE-ALIAS/New/Repo")));
     const probe = vi.spyOn(filesystemPaths, "missingPathsReferToSameDirectory");
     try {
       await expect(loadConfiguration(paths)).rejects.toThrow("must not overlap");
@@ -385,7 +408,7 @@ describe("configuration loading", () => {
     const paths = resolveReviewPaths(home);
     await mkdir(paths.stateDirectory, { recursive: true });
     await writeFile(path.join(home, "not-directory"), "file");
-    await writeFile(paths.configFile, repositoryYaml(undefined, "../not-directory/repo"));
+    await writeFile(paths.configFile, reviewYaml(repositoryYaml(undefined, "../not-directory/repo")));
     try {
       await loadConfiguration(paths);
       expect.unreachable("A regular file cannot be a clone directory ancestor.");
@@ -403,7 +426,7 @@ describe("configuration loading", () => {
     const clonePath = path.join(home, "repo");
     await mkdir(paths.stateDirectory, { recursive: true });
     await writeFile(clonePath, "file");
-    await writeFile(paths.configFile, repositoryYaml(undefined, "../repo"));
+    await writeFile(paths.configFile, reviewYaml(repositoryYaml(undefined, "../repo")));
     await expect(loadConfiguration(paths)).rejects.toThrow(`Filesystem path ${clonePath} is not a directory.`);
   });
 });

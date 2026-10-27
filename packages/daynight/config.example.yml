@@ -15,21 +15,22 @@ serverUrl: https://daynight.cc
 # integers, and fields ending in Ms use milliseconds.
 # Only repositoryRoot expands ~. It selects paths for future review add-repo calls
 # without --path and does not relocate repositories already registered below.
-repositoryRoot: ~/daynights
-pollIntervalMs: 60000
-maxConcurrentWorker: 1
-agentTimeoutMs: 1800000
-maxAttempts: 3
-retryDelayMs: 30000
-# Optional review overrides, not defaults. Omission preserves Copilot's choices.
-# Copilot owns supported model names, effort levels and their compatibility.
-# copilotModel: auto
-# copilotReasoningEffort: high
-repositories:
-  - remote: https://github.com/OWNER/REPO.git
-    # Repository paths are absolute or relative to ~/.daynight/, never the launch
-    # directory, and do not expand ~. Keep review clones outside ~/.daynight/.
-    path: ../daynights/github.com/owner/repo
+review:
+  repositoryRoot: ~/daynights
+  pollIntervalMs: 60000
+  maxConcurrentWorker: 1
+  agentTimeoutMs: 1800000
+  maxAttempts: 3
+  retryDelayMs: 30000
+  # Optional review overrides, not defaults. Omission preserves Copilot's choices.
+  # Copilot owns supported model names, effort levels and their compatibility.
+  # copilotModel: auto
+  # copilotReasoningEffort: high
+  repositories:
+    - remote: https://github.com/OWNER/REPO.git
+      # Repository paths are absolute or relative to ~/.daynight/, never the launch
+      # directory, and do not expand ~. Keep review clones outside ~/.daynight/.
+      path: ../daynights/github.com/owner/repo
 
 # Worker configuration. These optional values are the defaults; repositories is
 # required. The selected native agent and Herdr must already be configured.

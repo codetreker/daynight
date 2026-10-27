@@ -20,7 +20,7 @@ describe("worker configuration", () => {
       repositories: [{ ...repo, path: "/home/worker-user/checkout", agent: "copilot", model: null, args: [], recoveryLimit: 3 }],
     });
     expect(parseServerConfiguration(stringify({ worker: { repositories: "not validated by server commands" } }), paths)).toEqual({ serverUrl: "https://daynight.cc" });
-    expect(parseWorkerConfiguration(stringify({ repositories: "review-owned", copilotModel: null, worker: { repositories: [] } }), paths).repositories).toEqual([]);
+    expect(parseWorkerConfiguration(stringify({ review: { repositories: "review-owned", copilotModel: null }, worker: { repositories: [] } }), paths).repositories).toEqual([]);
   });
 
   it("merges same-kind overrides field by field and permits explicit reset to native model defaults", () => {
