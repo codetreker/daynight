@@ -22,6 +22,8 @@ const claimId = "33333333-3333-4333-8333-333333333333";
 const worktreeId = "44444444-4444-4444-8444-444444444444";
 const nativeId = "55555555-5555-4555-8555-555555555555";
 const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a", args: ["--config", "model_reasoning_effort=low", "--no-alt-screen"] };
+const composerScreen = "  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1 Sol default · /task\n";
+const trustScreen = "  Folder access\n  /task\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
 
 const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
@@ -63,6 +65,10 @@ const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment
     }
     if (method === "agent.start") return { type: "agent_started", agent: launch(params), argv: [kind, ...params.args as string[]] };
     if (method === "agent.prompt") { prompts.push(String(params.text)); return { type: "agent_prompted", agent: structuredClone(agents.find((value) => value.pane_id === params.target)) }; }
+    if (method === "agent.read") {
+      const pane = panes.find((value) => value.pane_id === params.target)!;
+      return { type: "pane_read", read: { pane_id: pane.pane_id, workspace_id: pane.workspace_id, tab_id: pane.tab_id, source: "visible", format: "text", text: composerScreen, revision: 0, truncated: false } };
+    }
     if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: params.pane_id, shell_pid: 100, foreground_process_group_id: 100, foreground_processes: (processes.get(String(params.pane_id)) ?? []).map((value) => ({ pid: value, name: value === 100 ? "shell" : kind })) } };
     if (method === "tab.create") {
       const workspace = workspaces.find((value) => value.workspace_id === params.workspace_id)!; const created = addPane(workspace, String(params.label));
@@ -109,6 +115,96 @@ describe("native argument ownership", () => {
 });
 
 describe("task workspace ownership and native input", () => {
+  const visible = (f: Awaited<ReturnType<typeof fixture>>, binding: HerdrTaskBinding, screen: string, extra: Entry = {}): HerdrRpcResult => ({ type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: f.panes.find((pane) => pane.pane_id === binding.paneId)!.tab_id, source: "visible", format: "text", text: screen, revision: 0, truncated: false, ...extra } });
+  it("rejects false idle/readiness on the actual folder trust screen and retains the acknowledged launch", async () => {
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
+    f.hook(async (method, params) => {
+      if (method === "agent.start") { const agent = f.launch(params); agent.agent_status = "idle"; delete agent.agent_session; return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] }; }
+      return method === "agent.read" ? visible(f, binding, trustScreen) : undefined;
+    });
+    let blocked: HerdrAgentActionError | undefined;
+    try { await f.manager.start(f.context, binding, { configuration, workspaceEvidence, prompt: "opaque\nfirst input" }, operation()); } catch (cause) { if (!(cause instanceof HerdrAgentActionError)) throw cause; blocked = cause; }
+    expect(blocked).toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted", launchEvidence: { binding, argv: ["codex", ...buildHerdrAgentArguments(configuration)], referenceBaseline: "empty" } });
+    expect(f.prompts).toEqual([]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+    expect(f.calls.find((call) => call.method === "agent.read")!.params).toEqual({ target: binding.paneId, source: "visible", format: "text", strip_ansi: true });
+    expect((await f.manager.start(f.context, binding, { configuration, workspaceEvidence, prompt: "reconnect" }, operation())).kind).toBe("reconnected");
+    if (blocked?.launchEvidence === null || blocked?.launchEvidence === undefined) throw new Error("Missing acknowledged launch evidence");
+    f.hook(async (method, params) => {
+      if (method === "agent.prompt") { f.prompts.push(String(params.text)); f.agents[0]!.agent_session = { source: "herdr:codex", agent: "codex", kind: "id", value: nativeId }; return { type: "agent_prompted", agent: f.agents[0] }; }
+      return method === "agent.read" ? visible(f, binding, composerScreen) : undefined;
+    });
+    expect((await f.manager.start(f.context, binding, { configuration, workspaceEvidence, prompt: "opaque\nfirst input", initialPromptNotSubmitted: true, launchEvidence: blocked.launchEvidence }, operation())).kind).toBe("started");
+    expect(f.prompts).toEqual(["opaque\nfirst input"]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+  });
+  it.each(["› Ask Codex to do anything", "» Ask Codex to do anything", "› Ask a follow-up question"])("accepts the current business composer variant %s", async (marker) => {
+    const f = await fixture(); const prepared = await f.manager.prepareWorkspace(f.context, operation());
+    f.hook(async (method) => method === "agent.read" ? visible(f, prepared.binding, composerScreen.replace("› Ask Codex to do anything", marker)) : undefined);
+    expect((await f.manager.start(f.context, prepared.binding, { ...prepared, configuration, prompt: "exact\ntext" }, operation())).kind).toBe("started"); expect(f.prompts).toEqual(["exact\ntext"]);
+  });
+  it.each(["~", "~/work/task", "~\\work\\task", "/work/task", "C:\\work\\task", "\\\\server\\share\\task"])("recognizes the default model/directory footer without a visible header: %s", async (directory) => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.hook(async (method) => method === "agent.read" ? visible(f, binding, `› Ask Codex to do anything\n\n  GPT-6.1 Sol low · ${directory}\n`) : undefined);
+    await f.manager.submitPrompt(f.context, binding, "cleanup", operation()); expect(f.prompts).toEqual(["cleanup"]);
+  });
+  it("polls provisional frames within the original operation and never inputs when the budget expires", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); let reads = 0;
+    f.hook(async (method) => method === "agent.read" ? (reads += 1, visible(f, binding, "Resuming session…\n\n› Ask Codex to do anything\n\nloading · /task")) : undefined);
+    await expect(f.manager.submitPrompt(f.context, binding, "cleanup", operation(30))).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted", cause: { kind: "deadline" } });
+    expect(reads).toBeGreaterThan(1); expect(f.prompts).toEqual([]);
+    f.hook(async (method) => method === "agent.read" ? (reads += 1, visible(f, binding, reads < 5 ? "initializing" : composerScreen)) : undefined); reads = 0;
+    await f.manager.submitPrompt(f.context, binding, "once ready", operation()); expect(reads).toBe(5); expect(f.prompts).toEqual(["once ready"]);
+  });
+  it("retains launch provenance when cancellation ends startup surface observation before any input", async () => {
+    const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
+    const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op); let reads = 0;
+    f.hook(async (method) => {
+      if (method !== "agent.read") return undefined;
+      reads += 1; if (reads === 2) controller.abort("stop waiting for the composer");
+      return visible(f, binding, "initializing");
+    });
+    await expect(f.manager.start(f.context, binding, { configuration, workspaceEvidence, prompt: "never attempted" }, op)).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted", launchEvidence: { binding, referenceBaseline: "empty" }, cause: { cause: { kind: "cancelled" } } });
+    expect(f.prompts).toEqual([]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+  });
+  it("does not mistake the configured provisional version header and placeholder for the business composer", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    const provisional = "  >_ OpenAI Codex (v0.164.0)\n  /task\n\n› Ask Codex to do anything\n\n  ? for shortcuts\n";
+    f.hook(async (method) => method === "agent.read" ? visible(f, binding, provisional) : undefined);
+    await expect(f.manager.requestGracefulStop(f.context, binding, operation(25))).rejects.toMatchObject({ submission: "not-submitted", cause: { kind: "deadline" } }); expect(f.prompts).toEqual([]);
+  });
+  it("does not input after the original terminal changes while the visible screen is being read", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.hook(async (method) => { if (method !== "agent.read") return undefined; const result = visible(f, binding, composerScreen); f.panes[0]!.terminal_id = "replaced-terminal"; return result; });
+    await expect(f.manager.submitPrompt(f.context, binding, "must not reach replacement", operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
+  });
+  it("guards cleanup and graceful exit against actual trust even when an official native reference exists", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); f.agents[0]!.agent_status = "working";
+    f.hook(async (method) => method === "agent.read" ? visible(f, binding, trustScreen) : undefined);
+    await expect(f.manager.submitPrompt(f.context, binding, "clean resources", operation())).rejects.toMatchObject({ submission: "not-submitted", promptSubmission: "not-submitted" });
+    await expect(f.manager.requestGracefulStop(f.context, binding, operation())).rejects.toMatchObject({ submission: "not-submitted", promptSubmission: "not-submitted" });
+    expect(f.prompts).toEqual([]);
+    const evidence = await f.manager.captureStop(f.context, binding, operation()); expect(evidence.processIds).toEqual([200]);
+    f.hook(async (method) => { if (method === "pane.close") f.executing.delete(200); return undefined; });
+    await f.manager.forceStop(f.context, binding, evidence, operation()); expect(f.prompts).toEqual([]);
+  });
+  it("preserves working input queueing and does not mistake prior trust text for the current surface", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); f.agents[0]!.agent_status = "working";
+    f.hook(async (method) => method === "agent.read" ? visible(f, binding, "Investigating the words Trust this folder? in a document") : undefined);
+    await f.manager.submitPrompt(f.context, binding, "queue cleanup", operation());
+    f.agents[0]!.agent_status = "idle";
+    f.hook(async (method) => method === "agent.read" ? visible(f, binding, trustScreen + composerScreen) : undefined);
+    await f.manager.requestGracefulStop(f.context, binding, operation()); expect(f.prompts).toEqual(["queue cleanup", "/exit"]);
+  });
+  it.each(["› 1. Yes, proceed\n  2. No\n\nPress enter to confirm or esc to cancel", "› 1. Model A\n  2. Model B\n\nenter select · esc back", "Input disabled", "Viewing sub-agent thread", "› Input disabled", "› Viewing sub-agent — direct input is disabled", "» Viewing sub-agent — direct input is disabled"])("blocks a current modal or disabled surface even while working: %s", async (screen) => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); f.agents[0]!.agent_status = "working";
+    f.hook(async (method) => method === "agent.read" ? visible(f, binding, screen) : undefined);
+    await expect(f.manager.requestGracefulStop(f.context, binding, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
+  });
+  it.each([{ pane_id: "foreign" }, { workspace_id: "foreign" }, { tab_id: "foreign" }, { source: "recent" }, { format: "ansi" }, { revision: undefined }, { truncated: undefined }, { truncated: true }, { text: undefined }])("rejects an invalid visible surface before input: %j", async (extra) => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
+    f.agents[0]!.agent_status = "working";
+    f.hook(async (method) => method === "agent.read" ? visible(f, binding, composerScreen, extra) : undefined);
+    await expect(f.manager.requestGracefulStop(f.context, binding, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted" }); expect(f.prompts).toEqual([]);
+  });
   it("creates and reconciles one full-identity workspace without mutating other workspaces", async () => {
     const f = await fixture(); const { binding, workspaceEvidence } = await f.manager.prepareWorkspace(f.context, operation());
     expect(f.workspaces[0]!.label).toBe(herdrExecutionLabel(f.context));
@@ -502,8 +598,36 @@ describe("native stop evidence and workspace closure", () => {
       { pid: 830828, name: "MainThread", argv: ["/native/lib/@github/copilot-linux-x64/copilot", "--model", "fixed"], cwd: f.context.cwd },
     ] } } : undefined);
     const evidence = await f.manager.captureStop(f.context, binding, operation());
-    expect(evidence).toMatchObject({ shellPid: 830500, processIds: [830816, 830828], nativeSessionId: null, ownerLabel: herdrExecutionLabel(f.context) });
+    expect(evidence).toMatchObject({ shellPid: 830500, processIds: [830816, 830828], nativeProcessIds: [830816, 830828], nativeSessionId: null, ownerLabel: herdrExecutionLabel(f.context) });
     expect(f.calls.some((value) => value.method === "pane.close")).toBe(false);
+  });
+  it("identifies interactive wrapper/main PIDs without requiring transient children to survive", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    const foreground = [
+      { pid: 200, argv: ["node", "/native/bin/codex", ...buildHerdrAgentArguments(configuration)] },
+      { pid: 201, argv: ["/native/vendor/bin/codex", ...buildHerdrAgentArguments(configuration)] },
+      { pid: 202, argv: ["codex", "exec", "--json", "helper"] },
+      { pid: 203, argv: ["sh", "-c", "command"] },
+    ];
+    f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 100, foreground_processes: foreground } } : undefined);
+    const original = await f.manager.captureStop(f.context, binding, operation()); expect(original.processIds).toEqual([200, 201, 202, 203]); expect(original.nativeProcessIds).toEqual([200, 201]);
+    foreground.splice(2, 2, { pid: 204, argv: ["git", "status"] });
+    const current = await f.manager.captureStop(f.context, binding, operation()); expect(current.nativeProcessIds).toEqual([200, 201]); expect(current.processIds).toEqual([200, 201, 204]);
+    for (const nativeProcessIds of [[], [100], [999], [200, 200], undefined]) {
+      await expect(f.manager.confirmStopped(f.context, binding, { ...original, nativeProcessIds: nativeProcessIds as unknown as number[] }, operation())).rejects.toThrow("interactive native process observation");
+    }
+  });
+  it("retains unknown native key identity when only process names or helper subcommands are visible", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    expect((await f.manager.captureStop(f.context, binding, operation())).nativeProcessIds).toBeNull();
+    f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 100, foreground_processes: [{ pid: 200, name: "codex", argv: ["codex", "exec", "a helper"] }] } } : undefined);
+    expect((await f.manager.captureStop(f.context, binding, operation())).nativeProcessIds).toBeNull();
+  });
+  it.each(["codex", "copilot"] as const)("recognizes explicit original-session resume process evidence for %s", async (agent) => {
+    const f = await fixture(agent); const binding = await launch(f);
+    const nativeConfiguration = { ...configuration, agent, args: [] };
+    f.hook(async (method) => method === "pane.process_info" ? { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 100, foreground_processes: [{ pid: 200, argv: [agent, ...buildHerdrAgentArguments(nativeConfiguration, nativeId)] }] } } : undefined);
+    expect((await f.manager.captureStop(f.context, binding, operation())).nativeProcessIds).toEqual([200]);
   });
   it("does not turn a pending launch with no native process evidence into stop proof", async () => {
     const f = await fixture(); const binding = await launch(f); f.agents[0]!.launch_pending = true;
@@ -519,6 +643,20 @@ describe("native stop evidence and workspace closure", () => {
     expect(await f.manager.confirmStopped(f.context, binding, evidence, operation())).toEqual({ agentStopped: true });
     expect(await f.manager.closeWorkspace(f.context, binding, { agentStopped: true }, operation())).toEqual({ workspaceClosed: true });
     expect(await f.manager.closeWorkspace(f.context, binding, { agentStopped: true }, operation())).toEqual({ workspaceClosed: true });
+  });
+  it("keeps pre-input stop evidence valid when the same native process later reports its official ID", async () => {
+    const f = await fixture(); const binding = await launch(f); delete f.agents[0]!.agent_session;
+    f.hook(async (method) => {
+      if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: binding.paneId, shell_pid: 100, foreground_processes: [{ pid: 200, argv: ["codex", ...buildHerdrAgentArguments(configuration)] }] } };
+      if (method === "pane.close") f.executing.delete(200);
+      return undefined;
+    });
+    const evidence = await f.manager.captureStop(f.context, binding, operation()); const saved = structuredClone(evidence);
+    expect(evidence.nativeSessionId).toBeNull(); expect(evidence.nativeProcessIds).toEqual([200]);
+    f.agents[0]!.agent_session = { source: "herdr:codex", agent: "codex", kind: "id", value: nativeId };
+    expect(await f.manager.forceStop(f.context, binding, evidence, operation())).toMatchObject({ agentStopped: true, originalPaneClosed: true });
+    expect(await f.manager.confirmStopped(f.context, binding, evidence, operation())).toEqual({ agentStopped: true });
+    expect(evidence).toEqual(saved); expect(evidence.nativeSessionId).toBeNull();
   });
   it("confirms missing-workspace stop from immutable original evidence after a lost close acknowledgement", async () => {
     const f = await fixture(); const binding = await launch(f); const evidence = await f.manager.captureStop(f.context, binding, operation()); const saved = structuredClone(evidence);
@@ -600,7 +738,7 @@ describe("native stop evidence and workspace closure", () => {
   it("requires original evidence rather than empty process lists or pane absence", async () => {
     const f = await fixture(); const binding = await launch(f); f.processes.set(binding.paneId, [100]);
     await expect(f.manager.captureStop(f.context, binding, operation())).rejects.toThrow("identities are unavailable");
-    const evidence = { binding, ownerLabel: herdrExecutionLabel(f.context), agent: f.context.agent, nativeSessionId: nativeId, shellPid: 100, processIds: [], observedAt: Date.now() };
+    const evidence = { binding, ownerLabel: herdrExecutionLabel(f.context), agent: f.context.agent, nativeSessionId: nativeId, shellPid: 100, processIds: [], nativeProcessIds: null, observedAt: Date.now() };
     await expect(f.manager.forceStop(f.context, binding, evidence, operation())).rejects.toThrow("observation is invalid");
   });
   it("keeps a temporary task anchor until original process absence is proven", async () => {

@@ -55,7 +55,7 @@ const fixture = (nativeSessionId: string | null) => {
       return { kind: "waiting" as const, observation: observation(binding), promptSubmission: "submitted" as const,
         launchEvidence: { binding, ownerLabel: herdrExecutionLabel(execution), agent: execution.agent, argv: [execution.agent, ...buildHerdrAgentArguments(input.configuration, input.resumeSessionId)], referenceBaseline: "empty" as const, workspaceEvidence: input.workspaceEvidence! } };
     }),
-    captureStop: vi.fn(async (_context: HerdrExecutionContext, binding: HerdrTaskBinding) => ({ binding, ownerLabel: herdrExecutionLabel(context), agent: "codex" as const, nativeSessionId: observation(binding).nativeSession?.sessionId ?? null, shellPid: 100, processIds: [101], observedAt: 1000 })),
+    captureStop: vi.fn(async (_context: HerdrExecutionContext, binding: HerdrTaskBinding) => ({ binding, ownerLabel: herdrExecutionLabel(context), agent: "codex" as const, nativeSessionId: observation(binding).nativeSession?.sessionId ?? null, shellPid: 100, processIds: [101], nativeProcessIds: [101], observedAt: 1000 })),
     confirmMissingWorkspaceStopped: vi.fn(async () => ({ agentStopped: true as const })),
     closeWorkspace: vi.fn(async () => ({ workspaceClosed: true as const })),
   };

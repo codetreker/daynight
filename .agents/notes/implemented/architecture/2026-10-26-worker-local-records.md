@@ -147,15 +147,23 @@ unknown submission facts instead of manufacturing a new fault pause.
 The [foreground runtime](2026-10-27-foreground-worker-runtime.md) consumes these
 identity/storage operations and concrete native facts. The [Git workspace
 manager](2026-10-26-worker-git-workspaces.md) supplies concrete worktree
-observations and returns bindings to this same store. The
-[manual-control decision](2026-10-27-worker-manual-control.md) composes these
-facts with fresh resume/transfer identities and concrete management commands.
-The local schema alone does not establish native-agent recovery or
-Windows/macOS runtime acceptance.
-Schema 1 migrates explicitly to schema 2; original userId becomes null and
-missing native evidence stays unknown rather than receiving current-login or
-never-submitted defaults. Unknown terminal/control scope cannot be granted
-retrospectively; ordinary/shutdown scope needs the actual fully matching own
-claim. Strict unstarted pending state remains pending on normal exit, with no
-resource cleanup or active promotion. Unsupported or inconsistent schemas fail
-visibly.
+observations and returns bindings to this same store. The [manual-control
+decision](2026-10-27-worker-manual-control.md) composes these facts with fresh
+resume/transfer identities and concrete management commands. The local schema
+alone does not establish native-agent recovery or Windows/macOS runtime
+acceptance. Current schema is 3. Schema 1 first performs the original schema 2
+migration inside the same immediate transaction; original userId remains unknown
+rather than becoming current login. Schema 2 stopObservation objects gain
+required nullable nativeProcessIds with null legacy value; null nativeExecution
+or null stopObservation stays null. Full processIds, native identity, binding,
+summary, configuration, UID, recovery and cleanup facts are preserved. No
+PID-order or intersection guess supplies the missing native role, and current
+records missing the required field fail validation instead of receiving parser
+fallback. A known native role must be a nonempty unique subset of the full
+processIds, exclude the shell and meet the existing PID validity checks. Missing
+role restricts original-process continuation; it neither weakens full-set stop
+proof nor changes submitted/unknown input into unsent or first launch. Unknown
+terminal/control scope cannot be granted retrospectively; ordinary/shutdown
+scope needs the actual fully matching own claim. Strict unstarted pending state
+remains pending on normal exit, with no resource cleanup or active promotion.
+Unsupported or inconsistent schemas fail visibly.

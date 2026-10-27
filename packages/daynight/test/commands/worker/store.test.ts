@@ -63,7 +63,7 @@ describe("worker SQLite schema and project bindings", () => {
     const pragma = vi.spyOn(Database.prototype, "pragma");
     const { file, store } = fixture();
     const sql = connect(file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(2);
+    expect(sql.pragma("user_version", { simple: true })).toBe(3);
     expect(sql.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
     const syncRead = pragma.mock.calls.findIndex(([statement]) => statement === "synchronous");
@@ -83,9 +83,9 @@ describe("worker SQLite schema and project bindings", () => {
     const { file, store } = fixture();
     close(store);
     const sql = connect(file);
-    sql.pragma("user_version = 3");
-    expect(() => open(file)).toThrow("Unsupported worker SQLite schema version 3");
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    sql.pragma("user_version = 4");
+    expect(() => open(file)).toThrow("Unsupported worker SQLite schema version 4");
+    expect(sql.pragma("user_version", { simple: true })).toBe(4);
     sql.exec("DROP TABLE projects; DROP TABLE tasks; CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('retained')");
     sql.pragma("user_version = 0");
     expect(() => open(file)).toThrow("must not contain existing tables");
@@ -117,7 +117,7 @@ describe("worker SQLite schema and project bindings", () => {
     const sql = connect(f.file);
     sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; ALTER TABLE tasks DROP COLUMN user_id; ALTER TABLE projects DROP COLUMN claim_attempt; UPDATE tasks SET cleanup = json_remove(cleanup, '$.baseline'); PRAGMA user_version = 1;");
     const migrated = open(f.file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(2);
+    expect(sql.pragma("user_version", { simple: true })).toBe(3);
     expect(migrated.getTask(claim)).toEqual({ ...original, userId: null, nativeExecution: null });
     expect(migrated.getProject(project)).toEqual({ ...f.mapping, claimAttempt: null });
     expect(sql.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
@@ -132,6 +132,66 @@ describe("worker SQLite schema and project bindings", () => {
     expect(sql.prepare("SELECT name FROM pragma_table_info('tasks') WHERE name = 'native_execution'").get()).toBeUndefined();
     expect(sql.prepare("SELECT name FROM pragma_table_info('tasks') WHERE name = 'user_id'").get()).toBeUndefined();
     expect(sql.prepare("SELECT claim_id FROM tasks").get()).toEqual({ claim_id: claim.claimId });
+  });
+
+  it.each(["not-submitted", "submitted", "unknown"] as const)("migrates schema two without inventing native PID proof or changing %s input facts", (promptSubmission) => {
+    const f = fixture(); f.start(); f.bind(); f.store.bindUserScope(claim, userId, 24);
+    const binding = { session: "w", workspaceId: "workspace-original", paneId: "pane-original", terminalId: "terminal-original" };
+    const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;
+    const workspaceEvidence = { binding, ownerLabel, environment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } };
+    f.store.bindHerdrExecution(claim, binding, workspaceEvidence, 25); f.store.markNativeLaunchSubmitting(claim, 26);
+    f.store.recordNativeStartOutcome(claim, { launchEvidence: { binding, ownerLabel, agent: "codex", argv: ["codex", "--search", "--no-daemon"], referenceBaseline: "empty", workspaceEvidence }, promptSubmission }, 27);
+    f.store.recordStopObservation(claim, { binding, ownerLabel, agent: "codex", nativeSessionId: null, shellPid: 123, processIds: [125, 124], nativeProcessIds: [124], observedAt: 27 }, 28);
+    f.store.beginRecovery(claim, 29); f.store.pauseTask(claim, "Keep the original pause", 29); f.store.authorizeRecoveryRetry(claim, 29);
+    f.cleanup(); f.store.recordCleanupInputEvidence(claim, { stateChangeSeq: 10, completionSeq: 2 }, 37);
+    f.store.recordControlIntent(claim, release, 38); f.store.markControlSubmitting(claim, BigInt(release.version), 39);
+    const orphan = { ...claim, taskId: uuid(70), claimId: uuid(71), worktreeId: uuid(72) };
+    f.store.beginClaimAttempt(project, { taskId: orphan.taskId, claimId: orphan.claimId, worktreeId: orphan.worktreeId, workerId: orphan.workerId, userId, expectedVersion: "11", configuration });
+    f.store.registerPending(orphan, { kind: "recovered", configuration: null }, 40, null);
+    f.store.registerPending({ ...claim, taskId: uuid(73), claimId: uuid(74), worktreeId: uuid(75) }, { kind: "new", configuration }, 41, userId);
+    const expectedTasks = f.store.listTasks().map((task) => task.nativeExecution === null || task.nativeExecution.stopObservation === null ? task : { ...task, nativeExecution: { ...task.nativeExecution, stopObservation: { ...task.nativeExecution.stopObservation, nativeProcessIds: null } } });
+    const expectedProjects = f.store.listProjects(); close(f.store);
+    const sql = connect(f.file);
+    sql.exec("UPDATE tasks SET native_execution = json_remove(native_execution, '$.stopObservation.nativeProcessIds') WHERE json_type(native_execution, '$.stopObservation') = 'object'; PRAGMA user_version = 2;");
+    const migrated = open(f.file);
+    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(migrated.listTasks()).toEqual(expectedTasks); expect(migrated.listProjects()).toEqual(expectedProjects);
+    expect(migrated.getTask(claim)).toMatchObject({ userId, configuration, nativeExecution: { promptSubmission, stopObservation: { processIds: [125, 124], nativeProcessIds: null } }, cleanup: { input: "submitted", deadline: 600_030, baseline: { stateChangeSeq: 10, completionSeq: 2 } }, control: { submission: "unknown" } });
+    expect(migrated.getTask(orphan)?.nativeExecution).toBeNull();
+    expect(migrated.listTasks().find((task) => task.taskId === uuid(73))?.nativeExecution?.stopObservation).toBeNull();
+    expect(sql.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
+    close(migrated);
+    expect(open(f.file).listTasks()).toEqual(expectedTasks);
+  });
+
+  it("rolls back schema two JSON changes and its version if the migration fails", () => {
+    const f = fixture(); f.start(); f.bind();
+    const binding = { session: "w", workspaceId: "workspace-original", paneId: "pane-original", terminalId: "terminal-original" };
+    const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;
+    f.store.bindHerdrExecution(claim, binding, null, 24);
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET native_execution = json_set(native_execution, '$.launchSubmission', 'unknown', '$.promptSubmission', 'unknown', '$.stopObservation', json(?)) WHERE claim_id = ?").run(JSON.stringify({ binding, ownerLabel, agent: "codex", nativeSessionId: null, shellPid: 123, processIds: [124], observedAt: 25 }), claim.claimId);
+    close(f.store); sql.pragma("user_version = 2");
+    const original = sql.prepare("SELECT * FROM tasks").all();
+    sql.exec("CREATE TRIGGER reject_native_migration AFTER UPDATE OF native_execution ON tasks BEGIN SELECT RAISE(ABORT, 'native migration refused'); END;");
+    expect(() => open(f.file)).toThrow("native migration refused");
+    expect(sql.pragma("user_version", { simple: true })).toBe(2); expect(sql.prepare("SELECT * FROM tasks").all()).toEqual(original);
+  });
+
+  it("does not rewrite an existing schema three database", () => {
+    const f = fixture(); f.start(); f.bind(); f.store.bindUserScope(claim, userId, 24);
+    const binding = { session: "w", workspaceId: "workspace-original", paneId: "pane-original", terminalId: "terminal-original" };
+    const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;
+    f.store.bindHerdrExecution(claim, binding, { binding, ownerLabel, environment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } }, 25);
+    f.store.markNativeLaunchSubmitting(claim, 26);
+    f.store.recordStopObservation(claim, { binding, ownerLabel, agent: "codex", nativeSessionId: null, shellPid: 123, processIds: [124, 125], nativeProcessIds: [124], observedAt: 27 }, 27);
+    const sql = connect(f.file);
+    const originalTasks = sql.prepare("SELECT * FROM tasks").all(); const originalProjects = sql.prepare("SELECT * FROM projects").all();
+    close(f.store); const reopened = open(f.file);
+    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.prepare("SELECT * FROM tasks").all()).toEqual(originalTasks); expect(sql.prepare("SELECT * FROM projects").all()).toEqual(originalProjects);
+    expect(reopened.getTask(claim)?.userId).toBe(userId);
+    expect(reopened.getTask(claim)?.nativeExecution?.stopObservation?.nativeProcessIds).toEqual([124]);
   });
 
   it.each(["pending", "active"] as const)("keeps repository bindings stable while an execution is %s", (status) => {
@@ -374,7 +434,7 @@ describe("native launch receipts and process provenance", () => {
   const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;
   const workspaceEvidence: HerdrWorkspaceEvidence = { binding, ownerLabel, environment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } };
   const launchEvidence: HerdrLaunchEvidence = { binding, ownerLabel, agent: "codex", argv: ["codex", "--search", "--no-daemon"], referenceBaseline: "empty", workspaceEvidence };
-  const stopObservation: HerdrStopObservation = { binding, ownerLabel, agent: "codex", nativeSessionId: null, shellPid: 123, processIds: [124, 125], observedAt: 25 };
+  const stopObservation: HerdrStopObservation = { binding, ownerLabel, agent: "codex", nativeSessionId: null, shellPid: 123, processIds: [124, 125], nativeProcessIds: [124], observedAt: 25 };
   const prepared = () => {
     const f = fixture(); f.start(); f.bind();
     f.store.bindHerdrExecution(claim, binding, workspaceEvidence, 24);
@@ -387,6 +447,34 @@ describe("native launch receipts and process provenance", () => {
     store.confirmAgentStopped(claim, { agentStopped: true }, 33);
     store.confirmWorkspaceClosed(claim, { workspaceClosed: true }, 34);
   };
+
+  it.each([{ nativeProcessIds: null }, { nativeProcessIds: [124] }, { nativeProcessIds: [124, 125] }])("persists explicit native process proof %j", ({ nativeProcessIds }) => {
+    const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25);
+    const observation = { ...stopObservation, nativeProcessIds };
+    f.store.recordStopObservation(claim, observation, 26); close(f.store);
+    expect(open(f.file).getTask(claim)?.nativeExecution?.stopObservation).toEqual(observation);
+  });
+
+  it.each([
+    { value: [], error: "nonempty array" }, { value: "124", error: "nonempty array" },
+    { value: [0], error: "safe integer" }, { value: [-1], error: "safe integer" }, { value: [1.5], error: "safe integer" },
+    { value: [2_147_483_648], error: "supported process identifier range" },
+    { value: [124, 124], error: "unique original process IDs" }, { value: [123], error: "exclude the task shell" }, { value: [126], error: "unique original process IDs" },
+  ])("rejects malformed or unrelated native process proof $value", ({ value, error }) => {
+    const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25);
+    expect(() => f.store.recordStopObservation(claim, { ...stopObservation, nativeProcessIds: value } as never, 26)).toThrow(error);
+    expect(f.store.getTask(claim)?.nativeExecution?.stopObservation).toBeNull();
+  });
+
+  it("rejects a missing nativeProcessIds field in schema three without repairing it while reading", () => {
+    const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25); f.store.recordStopObservation(claim, stopObservation, 26); close(f.store);
+    const sql = connect(f.file);
+    sql.exec("UPDATE tasks SET native_execution = json_remove(native_execution, '$.stopObservation.nativeProcessIds');");
+    const reopened = open(f.file);
+    expect(() => reopened.getTask(claim)).toThrow("Herdr stop observation has invalid fields");
+    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.prepare("SELECT json_type(native_execution, '$.stopObservation.nativeProcessIds') AS kind FROM tasks").get()).toEqual({ kind: null });
+  });
 
   it("preserves submitted startup provenance and pauses a completed shutdown when its original native ID is missing", () => {
     const f = prepared();
@@ -572,7 +660,7 @@ describe("native launch receipts and process provenance", () => {
     f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "submitted" }, 27);
     f.store.recordStopObservation(claim, stopObservation, 28);
     expect(f.store.recordStopObservation(claim, stopObservation, 29).nativeExecution?.stopObservation).toEqual(stopObservation);
-    expect(() => f.store.recordStopObservation(claim, { ...stopObservation, processIds: [126] }, 30)).toThrow("cannot be replaced");
+    expect(() => f.store.recordStopObservation(claim, { ...stopObservation, processIds: [126], nativeProcessIds: [126] }, 30)).toThrow("cannot be replaced");
     close(f.store);
     expect(open(f.file).getTask(claim)?.nativeExecution?.stopObservation).toEqual(stopObservation);
   });
@@ -753,7 +841,7 @@ describe("claim history and frozen configuration", () => {
       { launchSubmission: "unknown" as const }, { launchSubmission: "acknowledged" as const },
       { launchEvidence: { binding, ownerLabel, agent: "codex" as const, argv: ["codex"], referenceBaseline: "empty" as const, workspaceEvidence } },
       { promptSubmission: "unknown" as const }, { promptSubmission: "submitted" as const },
-      { stopObservation: { binding, ownerLabel, agent: "codex" as const, nativeSessionId: null, shellPid: 100, processIds: [101], observedAt: 10 } },
+      { stopObservation: { binding, ownerLabel, agent: "codex" as const, nativeSessionId: null, shellPid: 100, processIds: [101], nativeProcessIds: [101], observedAt: 10 } },
       { summary: { version: "11", herdr: null, nativeSessionId: null, phase: "preparing" as const, submission: "unknown" as const } },
     ];
     for (const mutation of mutations) expect(isUnstartedPending({ ...pending, nativeExecution: { ...native, ...mutation } })).toBe(false);

@@ -98,12 +98,18 @@ const processId = (value: unknown): number => {
   return result;
 };
 const parseStopObservation = (value: unknown): HerdrStopObservation => {
-  const data = record(value, ["binding", "ownerLabel", "agent", "nativeSessionId", "shellPid", "processIds", "observedAt"], "Herdr stop observation");
+  const data = record(value, ["binding", "ownerLabel", "agent", "nativeSessionId", "shellPid", "processIds", "nativeProcessIds", "observedAt"], "Herdr stop observation");
   if (!Array.isArray(data.processIds) || data.processIds.length === 0) throw new Error("The original native process observation must be nonempty.");
   const shellPid = processId(data.shellPid);
   const processIds = data.processIds.map(processId);
   if (new Set(processIds).size !== processIds.length || processIds.includes(shellPid)) throw new Error("The original native process observation contains duplicate or shell process IDs.");
-  return { binding: parseTaskBinding(data.binding), ownerLabel: text(data.ownerLabel, "Stop owner label"), agent: oneOf(data.agent, ["codex", "copilot"], "Stop agent"), nativeSessionId: nullable(data.nativeSessionId, (value) => id(value, "Stopped native session ID")), shellPid, processIds, observedAt: integer(data.observedAt, "Stop observation time") };
+  const nativeProcessIds = nullable(data.nativeProcessIds, (value) => {
+    if (!Array.isArray(value) || value.length === 0) throw new Error("Native process IDs must be a nonempty array.");
+    const native = value.map(processId);
+    if (new Set(native).size !== native.length || native.includes(shellPid) || native.some((entry) => !processIds.includes(entry))) throw new Error("Native process IDs must be unique original process IDs and exclude the task shell.");
+    return native;
+  });
+  return { binding: parseTaskBinding(data.binding), ownerLabel: text(data.ownerLabel, "Stop owner label"), agent: oneOf(data.agent, ["codex", "copilot"], "Stop agent"), nativeSessionId: nullable(data.nativeSessionId, (value) => id(value, "Stopped native session ID")), shellPid, processIds, nativeProcessIds, observedAt: integer(data.observedAt, "Stop observation time") };
 };
 const parseExecutionSummary = (value: unknown): ExecutionSummary => {
   const data = record(value, ["version", "herdr", "nativeSessionId", "phase", "submission"], "Execution summary mutation");
@@ -234,7 +240,7 @@ const schema = `
     PRIMARY KEY(server_origin, project_id, task_id, claim_id), UNIQUE(server_origin, claim_id)
   ) STRICT;
   CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(server_origin, project_id, task_id) WHERE status = 'active';
-  PRAGMA user_version = 2;
+  PRAGMA user_version = 3;
 `;
 
 export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?: number } = {}) => {
@@ -249,13 +255,14 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     if (db.pragma("synchronous", { simple: true }) !== 2) throw new Error("SQLite refused synchronous=FULL.");
     db.transaction(() => {
       const currentVersion = db.pragma("user_version", { simple: true }) as number;
-      if (currentVersion !== 0 && currentVersion !== 1 && currentVersion !== 2) throw new Error(`Unsupported worker SQLite schema version ${currentVersion}; supported version is 2.`);
+      if (currentVersion !== 0 && currentVersion !== 1 && currentVersion !== 2 && currentVersion !== 3) throw new Error(`Unsupported worker SQLite schema version ${currentVersion}; supported version is 3.`);
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[];
       if (currentVersion === 0) {
         if (tables.length !== 0) throw new Error("An unversioned worker database must not contain existing tables.");
         db.exec(schema);
       } else if (!same(tables.map(({ name }) => name), ["projects", "tasks"])) throw new Error("The worker database does not contain its projects/tasks schema.");
       if (currentVersion === 1) db.exec("ALTER TABLE tasks ADD COLUMN native_execution TEXT CHECK(native_execution IS NULL OR json_valid(native_execution)); ALTER TABLE tasks ADD COLUMN user_id TEXT; ALTER TABLE projects ADD COLUMN claim_attempt TEXT CHECK(claim_attempt IS NULL OR json_valid(claim_attempt)); UPDATE tasks SET cleanup = json_set(cleanup, '$.baseline', json('null')) WHERE cleanup IS NOT NULL; PRAGMA user_version = 2;");
+      if (currentVersion === 1 || currentVersion === 2) db.exec("UPDATE tasks SET native_execution = json_set(native_execution, '$.stopObservation.nativeProcessIds', json('null')) WHERE native_execution IS NOT NULL AND json_type(native_execution, '$.stopObservation') = 'object'; PRAGMA user_version = 3;");
       db.prepare(`SELECT ${projectColumns} FROM projects LIMIT 0`).all();
       db.prepare(`SELECT ${taskColumns} FROM tasks LIMIT 0`).all();
     }).immediate();

@@ -84,12 +84,49 @@ receipt cache, environment rename or shell-export adoption protocol.
 Task labels persist origin/project/task/claim/worktree identity and are joined
 to actual workspace/pane/terminal IDs and cwd. Duplicate or ambiguous resources
 fail visibly. Native launch queues argv first and verifies the acknowledged
-target and frozen arguments. Actual interactive readiness authorizes one initial
-caller prompt; the adapter then binds the official native SessionStart
-reference. Explicit resume also requires the durable original ID and necessary
-history, and its reported ID must match after input. Prompt acknowledgement
-proves text-plus-Enter PTY submission, not model receipt or task completion.
-Per-pane mutations are serialized.
+target and frozen arguments. Provider idle/interactive-ready flags alone do not
+authorize text plus Enter. The shared submit boundary checks the current same
+binding and actual visible Codex business-composer surface before mutation. The
+adapter then binds the official native SessionStart reference after the first
+permitted caller input. Explicit resume also requires the durable original ID
+and necessary history, and its reported ID must match after input. Prompt
+acknowledgement proves text-plus-Enter PTY submission, not model receipt or task
+completion. Per-pane mutations are serialized.
+
+First/restart submission requires a usable business-composer surface. Recognized
+folder trust, authorization and selection screens are blocking: the input
+remains not-submitted with original launch evidence, without text, extra Enter
+or native trust changes. Unknown screens are observed within the original
+Operation budget rather than treated as ready after a delay. Non-initial working
+input retains existing queue semantics while still excluding blocking;
+idle/unknown input needs the usable composer surface. Cleanup and /exit share
+this boundary, while force stopping uses original resource proof, not input to
+an authorization screen.
+
+The guard reads the owned agent's visible text through the existing API and
+checks complete/untruncated response shape, pane/workspace/tab association and
+original terminal/cwd again. Missing, malformed or truncated reads are known
+not-submitted before mutation; readable but unknown surfaces use bounded
+observation. A current usable composer takes precedence over old trust
+scrollback. A version banner or a valid revision value, including zero, is not a
+native input-ready event or semantic receipt.
+
+The startup/restart positive predicate supports the checked standard/default
+Codex business layout: a composer plus a nonloading model-with-reasoning and
+current-directory footer. Ask/header text alone is insufficient because a
+provisional startup screen can contain it. Custom or cropped footers and other
+unrecognized visible layouts remain unknown within the original Operation;
+expiry before a supported surface appears is known not-submitted. The operator
+must finish blocking decisions or restore the supported native layout in the
+original session before public retry. This deliberately limits layout support
+without adding an ANSI terminal framework, changing configuration or claiming a
+universal ready/draft/semantic-consumption signal.
+
+This is a narrow current-surface guard, not a terminal framework, arbitrary
+human-draft parser or native consumption receipt. It neither clears manual draft
+text nor reclassifies a previously submitted/unknown prompt because the composer
+looks empty. Native consent is an explicit operator decision in the original
+session or normal prerequisite configuration.
 
 The controller owns the complete startup and restart prompt, including explicit
 worker-managed environment, using-daynight execute-task-in-managed mode and the
@@ -201,6 +238,14 @@ unconfirmed. The adapter does not certify the disappearance of every possible
 escaped temporary tool; agent cleanup and known-process stopping retain their
 separate responsibilities.
 
+Original stop observation retains full processIds for process-stop proof and a
+required nullable nativeProcessIds role fact for in-place native continuation.
+The latter is captured native identity, not the first member of a foreground
+list. Unknown legacy roles remain null; their absence does not narrow the full
+stop proof or authorize a new conversation or submitted-input replay. Nonnull
+roles must be nonempty unique PIDs within the original process set and exclude
+the shell. The local store owns explicit migration, not codec guessing.
+
 This implements the Herdr resource side of the worker design without changing
 the [local-store](2026-10-26-worker-local-records.md) or
 [Git-workspace](2026-10-26-worker-git-workspaces.md) ownership decisions. Git
@@ -217,6 +262,21 @@ start/recovery owner while preserving live-agent reconnection.
 native arguments, and multiline instructions need the terminal paste/Enter
 semantics supplied by agent.prompt. Separating launch readiness from input also
 keeps the acknowledgement boundary explicit.
+
+**Treat native readiness as proof that Enter submits business text.** Codex
+0.164's [directory-trust
+caller](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/onboarding/directory_trust.rs#L73-L128)
+uses an independent onboarding screen before the business composer. The default
+[paste
+handler](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/onboarding/onboarding_screen.rs#L80-L83)
+does nothing for that trust widget, while its [Enter
+handling](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/onboarding/trust_directory.rs#L212-L255)
+can choose the highlighted trust action. Thus an ignored paste followed by Enter
+can approve native consent instead of submitting the assignment. This is a
+separate input owner from the main startup draft/composer pump. Earlier
+successful native input/history observations remain scoped to the sessions and
+readiness conditions exercised; a visible blocking startup screen requires its
+own current-surface check.
 
 **Require a new official session ID before the first input.** Codex 0.164 runs
 SessionStart lazily when preparing the first user turn for both new and resumed
