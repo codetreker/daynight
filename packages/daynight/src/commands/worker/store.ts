@@ -344,6 +344,16 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     getTask,
     listTasks: (): LocalTask[] => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY created_at, server_origin, project_id, task_id, claim_id`).all() as TaskRow[]).map(asTask),
     listUnfinishedTasks: (): LocalTask[] => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE status <> 'done' ORDER BY created_at, server_origin, project_id, task_id, claim_id`).all() as TaskRow[]).map(asTask),
+    recordObservedUnattemptedWorkspace: (owner: PendingClaim, now: number): LocalTask | null => atomic(() => {
+      const key = { ...claimKey(owner), workerId: id(owner.workerId, "Observed worker ID"), worktreeId: id(owner.worktreeId, "Observed worktree ID") };
+      integer(now, "Workspace observation time");
+      const task = getTask(key);
+      if (task === null) return null;
+      if (task.workerId !== key.workerId || task.worktreeId !== key.worktreeId) throw new Error("The observed workspace does not match the original execution's worker and worktree identity.");
+      const native = task.nativeExecution;
+      if (task.status === "done" || task.resources.herdr !== null || native === null || native.workspaceSubmission !== "not-submitted" || native.launchSubmission !== "never-submitted") return task;
+      return writeTask({ ...task, nativeExecution: { ...unknownNativeExecution(), summary: native.summary }, updatedAt: now });
+    }),
     registerPending: (claim: PendingClaim, input: PendingConfiguration, now: number, verifiedUserId: string | null = null): LocalTask => atomic(() => {
       const key = { ...claimKey(claim), workerId: id(claim.workerId, "Worker ID"), worktreeId: id(claim.worktreeId, "Worktree ID") };
       const owner = verifiedUserId === null ? null : id(verifiedUserId, "Verified claim user ID");
@@ -393,7 +403,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     }),
     activatePausedRecovery: (identity: ClaimIdentity, reason: string, now: number): LocalTask => change(identity, now, (task) => {
       if (task.control !== null || task.cleanup !== null) throw new Error("A control or cleanup intent prevents recovery promotion.");
-      if (task.nativeExecution !== null && task.resources.worktree === null && task.resources.herdr === null && task.resources.nativeSession === null) throw new Error("Paused recovery requires unknown original provenance or existing execution resources.");
+      if (task.nativeExecution?.launchSubmission === "never-submitted" && task.resources.worktree === null && task.resources.herdr === null && task.resources.nativeSession === null) throw new Error("Paused recovery requires unknown original provenance or existing execution resources.");
       return { ...task, status: "active", recovery: { ...task.recovery, pauseReason: text(reason, "Recovery pause reason") } };
     }),
     bindWorktree: (identity: ClaimIdentity, binding: WorktreeBinding, now: number): LocalTask => change(identity, now, (task) => {

@@ -36,13 +36,15 @@ runtime decision](2026-10-27-foreground-worker-runtime.md) partially supersedes
 the memory-only part: projects now retain one concrete unresolved claimAttempt,
 including original IDs, authenticated userId, exact version and decision
 configuration, before the outbound mutation. Positive verified ownership that
-fully matches the request is acknowledged before filesystem classification;
-pending, saved configuration, verified userId and attempt clear commit in one
-transaction. Known configuration does not manufacture native provenance: later
-phase/runtime evidence materializes recovered unknown launch history. Unknown
-requests remain fenced; absence alone does not clear them. Transfer still
-persists its target identity in source control intent. The two business tables
-and actual-claim-only task rows remain.
+fully matches the request is acknowledged before Herdr ensure/list or filesystem
+classification; pending, saved configuration, verified userId and attempt clear
+commit in one transaction. Producer-proven pending-before-resources ordering can
+supply new provenance for matching preparing metadata; failed resource
+observation is never an empty-snapshot proof. Known configuration does not
+manufacture native history: later phase/runtime metadata materializes recovered
+unknown launch provenance. Unknown requests remain fenced; absence alone does
+not clear them. Transfer still persists its target identity in source control
+intent. The two business tables and actual-claim-only task rows remain.
 
 registerPending takes an explicit fourth verifiedUserId argument. Omitting it or
 passing null means unknown scope for that call, including orphan evidence; it
@@ -58,6 +60,14 @@ cleanup and source control intent. Status is pending, active or done. A partial
 unique index permits at most one active claim per origin/project/task. Completed
 rows remain history; no event table or alternate execution registry is
 introduced.
+
+Successful full-identity Herdr observations invalidate contradictory unattempted
+workspace/native facts before any lifecycle consumer selects actions. The store
+records an UNKNOWN nativeExecution object and retains its prior summary fence,
+not null; UID/configuration/history/resources/pause/control/cleanup keep their
+meaning. This does not add fields, states or an observation ledger. Unknown
+provenance must retain capacity responsibility and use read-only original Git
+resource discovery rather than authorize creation.
 
 First pending materialization freezes effective agent/model/args/recovery limit.
 A recovered execution missing its original snapshot pauses until that original

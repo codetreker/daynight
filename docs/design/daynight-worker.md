@@ -138,11 +138,15 @@ GET /api/v1/projects/{project}/tasks?ready=true&allowAgents=true&compatiblePlatf
 | `projects` | server_origin/project_id 为键，保存 repo_url/local_path 和可空 claim_attempt（对象字段 claimAttempt）；未收尾执行或未决请求存在时不能改变仓库绑定。 |
 | `tasks` | server_origin/project_id/task_id/claim_id 为键，保存不可变原 user_id、workerId、worktreeId、pending/active/done、原仓库绑定、冻结配置、实际资源、native_execution（对象字段 nativeExecution）、恢复、cleanup、source control 和时间；结束行保留。 |
 
-ClaimAttempt 仅保存一个项目尚未确认结果的具体 claim 请求：taskId/claimId/worktreeId/workerId/userId、精确版本字符串和原决定配置。已核验自有清单或响应完整匹配该不可变请求时，先使用保存的配置确认实际 grant，不等待文件系统/前驱分类；pending、配置、已核验 userId 与 attempt 清除在同一事务提交。没有自身运行痕迹且仍为 preparing 时登记 new 原生来源；已有自身运行痕迹或后续 phase 时登记 recovered 并保留未知 native 来源，已知配置不等于已知启动历史；已有记录的 native 证据和真实暂停也不因这次确认重置。该确认只解除认领请求的不确定性，不越过 active 前驱等待或后续资源归属检查。明确拒绝或已证明未提交也可解除请求；其他未知结果仍阻止该项目再认领，不自动换 ID、重发或依据一次缺席推断未发生。它不是预认领 task 或通用动作日志，不增加表、队列或第二份台账。
+ClaimAttempt 仅保存一个项目尚未确认结果的具体 claim 请求：taskId/claimId/worktreeId/workerId/userId、精确版本字符串和原决定配置。成功完整自有清单中的纯远端事实先处理：完整匹配该不可变请求的 grant 使用保存配置，将 pending、配置、已核验 userId 与 attempt 清除原子提交；允许的既有 ordinary/shutdown UID 学习也在这层完成。这些确认先于 Herdr ensure/list 和任何文件系统等待，Herdr 暂时不可用不能吞掉已验证的实际 grant。
 
-NativeExecution 随原 task 保存 terminalId、workspaceSubmission、workspaceEvidence、launchEvidence、launch/prompt submission、原停止观察和受保护执行摘要的版本/提交结果。Workspace 创建也先保存可能提交状态：未知创建不能因为 snapshot 暂缺而再次调用；找到确切 owned 资源后核对并接回结果，缺环境 receipt 时仍须安全 rebind。创建与输入前先持久保存可能提交的责任；核验的明确未派发结果和实际未知结果分别处理。只有同一未派发尝试的确定证据可恢复 never/not-submitted，旧未知请求不能被当前空 pane 或当前拒绝覆盖。
+Matching attempt 的初始 new 来源来自“pending 提交先于任何资源”的原请求生产顺序，结合 preparing/尚无远端已报告运行痕迹的元数据，不来自失败 snapshot 被假设为空。已有运行元数据或后续 phase 仍使用 recovered/未知 native 来源和原已知配置；已有 native 证据、真实暂停及身份冲突保护不重置。正向确认只解除认领请求的不确定性，不越过前驱等待或资源归属检查。明确拒绝或已证明未提交可解除请求；其他未知结果仍阻止该项目再认领，不自动换 ID、重发或依据一次缺席推断未发生。不增加预认领 task、表、队列或第二份台账。
 
 `registerPending` 的第四个 verifiedUserId 参数与 pending/配置/attempt 确认一起入库；未提供或显式 null 只代表未知，不代表当前登录。不能在清除 attempt 后再分开补 UID，避免认领随即结束时留下无法归属的行。现有 UID、claim 或冻结配置冲突仍拒绝，未知 terminal/control 也不能通过该参数事后补授权；孤立资源和迁移记录继续保持原未知范围。
+
+资源观测与元数据确认分层：每次成功解码的完整 Herdr snapshot 在普通推进、人工 cleanup、已提交收尾或 shutdown 消费生命周期事实之前，都通过同一原身份观测入口。若完整匹配的 owned workspace 与某未结束行“无 Herdr 绑定、workspace 未提交、native 从未启动”的状态矛盾，`recordObservedUnattemptedWorkspace` 先持久写 UNKNOWN nativeExecution 对象，不置 null；保留原 summary（包括 unknown fence）、UID、配置、history、resources、pause、control 和 cleanup。之后才可判断严格未启动、分配新名额或推进资源，未知责任必须先被计入。失败或不完整 snapshot 不构成空资源证明。
+
+Controller 只为已证明 launch never-submitted 的执行调用 Git prepare；未知来源仅以只读 find 核对原 owned worktree，缺失则暂停，不能创建新空 worktree 掩盖历史。该观测入口只记录原事实矛盾，不授予 UID、已派发输入或新会话权限。
 
 每条实际认领记录绑定其原认证 userId，已知值不可替换。迁移后未知范围的 ordinary/shutdown 记录，只有当前成功自有清单中出现完整匹配的实际 claim，才可补绑定用户；比较服务源、task/claim、worker/worktree 及原平台/agent 身份。未知范围的 terminal/control 意图不能由当前登录或后来匹配事后补授权，必须保留并暂停。
 
@@ -172,7 +176,7 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 本地收尾与服务工作使用不同范围：已提交 cleanup/source control 和正常 shutdown 覆盖同 workerId 的所有原服务记录；清单、候选、认领、新缺席决定和普通恢复只面向当前 serverUrl。切换 serverUrl 后，原服务 A 已提交的本地截止/停止仍继续，不请求 A API，也不向 B 查询 A 的记录；原 scope 始终保留完整 origin/project/task/claim 身份，不增加凭据登记或多服务认领。
 
-每轮完整读取当前服务已登记项目中的当前认证 userId/workerId active claim 清单，再确保 Herdr 并枚举 owned 资源。清单不附加 status/ready/allowAgents/platform 过滤，任一项目或页失败则本轮不产生可用于新增终止决定的归属集合。原任务 userId 必须与清单 principal 相同，才可因缺席新建清理或恢复执行；同 OS 的 workerId 不代表同一 Daynight 账号。
+每轮完整读取当前服务已登记项目中的当前认证 userId/workerId active claim 清单，先完成上述纯元数据确认，再确保 Herdr 并通过统一入口枚举/登记 owned 资源观察。清单不附加 status/ready/allowAgents/platform 过滤，任一项目或页失败则本轮不产生可用于新增终止决定的归属集合。原任务 userId 必须与清单 principal 相同，才可因缺席新建清理或恢复执行；同 OS 的 workerId 不代表同一 Daynight 账号。
 
 ```text
 远端自己有、本机没有 → 找回实际 claim → pending / 原执行缺证据暂停
@@ -190,7 +194,7 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 新任务候选同时使用 ready、allowAgents=true 与实际兼容平台，条件在服务端排序和分页前组合；worker 不修改自动执行许可。Released 历史候选跳过但继续分页。仓库之间轮转，同仓库遵守服务端顺序，配置为空或无合格候选不占名额。项目未决 claimAttempt 阻止该项目继续认领，但不替代其他项目的调度。
 
-只有未匹配前置 claimAttempt 正向确认、尚无本地行且没有自身 Herdr/native 执行迹象的 preparing claim，才进入文件系统分类并受稳定前驱移交边界约束。完整匹配请求的实际 grant 已先原子确认，不能被旧路径收尾延后而遗失。文件系统异步核对前保留相关前驱的持久 origin/project/task/claim/worktree 身份、原 repoUrl/repositoryPath 和已有的可选 worktree binding。候选资格不要求 binding 已落库：Git 可能已创建带标记的 leaf，而 SQLite 尚未记录返回值。候选还须匹配同一物理规范路径；它只确定需要等待的移交范围，不代表采纳路径所有权。稳定后的只读 Git 分类仍严格核验完整 claim、root/common/leaf、精确 .git 指针及分支，不以目录存在或相同 task UUID 代替归属证明。
+只有未匹配前置 claimAttempt 正向确认、尚无本地行且没有自身 Herdr/native 执行迹象的 preparing claim，才进入文件系统分类并受稳定前驱移交边界约束。完整匹配请求的实际 grant 在 Herdr/文件系统之前已先原子确认，不能被资源读取失败或旧路径收尾延后而遗失。文件系统异步核对前保留相关前驱的持久 origin/project/task/claim/worktree 身份、原 repoUrl/repositoryPath 和已有的可选 worktree binding。候选资格不要求 binding 已落库：Git 可能已创建带标记的 leaf，而 SQLite 尚未记录返回值。候选还须匹配同一物理规范路径；它只确定需要等待的移交范围，不代表采纳路径所有权。稳定后的只读 Git 分类仍严格核验完整 claim、root/common/leaf、精确 .git 指针及分支，不以目录存在或相同 task UUID 代替归属证明。
 
 若捕获的或当前前驱仍承担 terminal/control 的 worktree 删除责任，或异步核对期间删除边界发生变化，则该尚未物化的新 claim 非阻塞延后，不插入记录或作配置分类；即使删除在此期间开始并已完成、前驱已变 done，也视为边界变化。下一次成功完整 inventory 在稳定后重新考虑。最终检查紧贴 pending 插入且其后没有 await，避免较早的路径观察与较晚的前驱记录拼成新 claim 已执行的结论。已有 pending 及冻结配置不重新分类；匹配 claimAttempt 走前置原子确认，不进入这条延后路径；其他 task 和独立清理截止继续推进，不增加状态、队列或锁。
 
@@ -313,7 +317,7 @@ Herdr 冷恢复可保留 workspace/pane，却重新创建 terminal 和 shell。`
 
 这类已有或未知 native 执行缺少原观察、查询被拒、仍存活或身份不匹配时均不能返回 stopped。必要的强制停止仍严格针对原 binding：在同一 owned workspace 创建一个临时空 tab/pane 作为 anchor，关闭原 agent pane，再确认原 processIds 不再执行，最后才允许关闭 workspace。该 anchor 不启动 agent、不创建第二实例，保留任务工作区直到停止核实完成；中断后沿原绑定及已保存观察续核对。不会用裸持久 PID 直接发 kill，也不声称已证明每个可能逃逸的临时工具都结束。
 
-正常退出处理同 workerId 各 origin 的本地原执行，跳过严格未启动的 pending 后继，保留其 pending 和原认领，不为它们新建 cleanup 或提升 active。其余任务的收尾初始化与推进分别隔离；一个记录的初始化失败不阻止其他已知 agent 停止。账号范围未知的终止意图、无法确认停止或未归属本机未完成记录的 Herdr 资源会使实例停止保持未确认，保留私有实例。
+正常退出对同 workerId 各 origin 的本地原执行分别启动收尾。Active 责任立即各自推进；pending 在各自成功资源观察、矛盾记录和刷新后才判断是否严格未启动，可跳过的后继保留 pending 和原认领，不新建 cleanup 或提升 active。不能先按旧 snapshot 统一筛掉 pending，也不设等待全部 pending 观察的屏障来延误其他任务。各任务的收尾初始化与推进分别隔离；一个记录的初始化失败不阻止其他已知 agent 停止。账号范围未知的终止意图、无法确认停止或未归属本机未完成记录的 Herdr 资源会使实例停止保持未确认，保留私有实例。
 
 整个 worker 的退出在各任务停止后调用 `stopInstance`。server.stop ACK 只表示请求收到；仍须核对 API/client 实际关闭，并在本调用持有 live child handle 时等待其 close。重连实例没有 child handle 时返回 ownedChildClosed:null，不能伪称取得进程退出事件。服务不确定结果只继续观察，不重发 stop 或按持久 PID 杀进程。
 

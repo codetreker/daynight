@@ -313,6 +313,62 @@ describe("durable claim acquisition uncertainty", () => {
   });
 });
 
+describe("observed workspaces invalidate unattempted provenance", () => {
+  it("records a real workspace observation before Git binding and remains unknown across restart", () => {
+    const f = fixture(); f.register();
+    const original = f.store.getTask(claim)!;
+    expect(isUnstartedPending(original)).toBe(true);
+    const observed = f.store.recordObservedUnattemptedWorkspace(claim, 20)!;
+    expect(observed).toEqual({ ...original, nativeExecution: { ...original.nativeExecution, workspaceSubmission: "unknown", launchSubmission: "unknown", promptSubmission: "unknown" }, updatedAt: 20 });
+    expect(isUnstartedPending(observed)).toBe(false);
+    expect(f.store.recordObservedUnattemptedWorkspace(claim, 21)).toEqual(observed);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)).toEqual(observed);
+    const paused = reopened.activatePausedRecovery(claim, "Observed original workspace needs inspection", 22);
+    expect(paused).toMatchObject({ status: "active", resources: { worktree: null, herdr: null, nativeSession: null }, recovery: { count: 0, pauseReason: "Observed original workspace needs inspection" } });
+    expect(() => reopened.markNativeLaunchSubmitting(claim, 23)).toThrow("proven unlaunched");
+  });
+
+  it("preserves unknown summary fences, original history, resources and management facts", () => {
+    const f = fixture(); f.start(); f.store.bindUserScope(claim, userId, 21);
+    f.store.markExecutionSummarySubmitting(claim, { version: "11", herdr: null, nativeSessionId: null, phase: "preparing" }, 22);
+    f.store.pauseTask(claim, "Keep the original pause", 23); f.store.authorizeRecoveryRetry(claim, 24);
+    f.store.recordControlIntent(claim, release, 25);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_026 }, 26);
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession', json(?)), recovery = json_set(recovery, '$.count', 2) WHERE claim_id = ?").run(JSON.stringify({ sessionId: uuid(88), source: "native-history" }), claim.claimId);
+    const original = f.store.getTask(claim)!;
+    const observed = f.store.recordObservedUnattemptedWorkspace(claim, 27)!;
+    expect(observed).toEqual({ ...original, nativeExecution: { ...original.nativeExecution, workspaceSubmission: "unknown", launchSubmission: "unknown", promptSubmission: "unknown" }, updatedAt: 27 });
+    expect(observed.nativeExecution?.summary?.submission).toBe("unknown");
+    expect(observed.resources.nativeSession?.sessionId).toBe(uuid(88));
+    expect(observed.control).toEqual(original.control); expect(observed.cleanup).toEqual(original.cleanup); expect(observed.recovery).toEqual(original.recovery);
+    close(f.store);
+    expect(open(f.file).getTask(claim)).toEqual(observed);
+  });
+
+  it("requires exact observed origin, project, task, claim, worker and worktree scope", () => {
+    const f = fixture(); f.register(); const original = f.store.getTask(claim)!;
+    for (const owner of [{ ...claim, serverOrigin: "https://different.example" }, { ...claim, projectId: uuid(40) }, { ...claim, taskId: uuid(41) }, { ...claim, claimId: uuid(42) }]) expect(f.store.recordObservedUnattemptedWorkspace(owner, 20)).toBeNull();
+    expect(() => f.store.recordObservedUnattemptedWorkspace({ ...claim, workerId: uuid(43) }, 20)).toThrow("worker and worktree identity");
+    expect(() => f.store.recordObservedUnattemptedWorkspace({ ...claim, worktreeId: uuid(44) }, 20)).toThrow("worker and worktree identity");
+    expect(f.store.getTask(claim)).toEqual(original);
+  });
+
+  it("leaves a legitimate in-flight workspace creation and a completed record unchanged", () => {
+    const f = fixture(); f.start();
+    f.store.bindWorktree(claim, { repositoryPath: f.mapping.localPath, commonDirectory: path.join(f.mapping.localPath, ".git"), worktreePath: path.join(f.mapping.localPath, ".worktrees", "daynight", claim.taskId), branch: `daynight/${claim.taskId}` }, 21);
+    const inFlight = f.store.markWorkspaceSubmitting(claim, 22);
+    expect(f.store.recordObservedUnattemptedWorkspace(claim, 23)).toEqual(inFlight);
+    expect(f.store.getTask(claim)?.nativeExecution).toMatchObject({ workspaceSubmission: "unknown", launchSubmission: "never-submitted", promptSubmission: "not-submitted" });
+    const completed = fixture(); completed.register(); completed.store.bindUserScope(claim, userId, 11);
+    const done = completed.store.completeUnstartedPending(claim, { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId }, 12);
+    expect(completed.store.recordObservedUnattemptedWorkspace(claim, 13)).toEqual(done);
+    expect(completed.store.getTask(claim)).toEqual(done);
+  });
+});
+
 describe("native launch receipts and process provenance", () => {
   const binding: HerdrTaskBinding = { session: "w", workspaceId: "workspace-original", paneId: "pane-original", terminalId: "terminal-original" };
   const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;

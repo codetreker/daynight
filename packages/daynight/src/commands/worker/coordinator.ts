@@ -80,6 +80,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const capacity = (): number => options.store.listUnfinishedTasks().filter((task) => task.status === "active").length;
   const workerLocalTasks = (): LocalTask[] => options.store.listUnfinishedTasks().filter((task) => task.workerId === options.workerId);
   const currentOriginTasks = (): LocalTask[] => workerLocalTasks().filter((task) => task.serverOrigin === options.serverOrigin);
+  const readResources = async (signal?: AbortSignal): Promise<HerdrOwnedWorkspace[]> => {
+    const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
+    for (const workspace of resources) {
+      const task = options.store.getTask(workspace.owner);
+      if (task === null || task.status === "done" || task.workerId !== options.workerId || task.worktreeId !== workspace.owner.worktreeId) continue;
+      if (task.resources.herdr === null && task.nativeExecution?.workspaceSubmission === "not-submitted" && task.nativeExecution.launchSubmission === "never-submitted") {
+        const observed = options.store.recordObservedUnattemptedWorkspace({ ...workspace.owner, workerId: options.workerId }, now());
+        if (observed !== null) options.emit({ kind: "resource-provenance-unknown", task: observed, message: "An existing workspace has no original local creation attempt; native launch provenance requires observation." });
+      }
+    }
+    return resources;
+  };
   const pauseForScope = (task: LocalTask, reason: string): LocalTask => {
     const originalReason = task.recovery.pauseReason;
     const retainedReason = originalReason !== null && !scopePauseReasons.has(originalReason) ? originalReason : reason;
@@ -120,27 +132,34 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       options.emit({ kind: "summary-error", task: latest(task), message: "The execution summary was not confirmed; an uncertain write will not be replayed.", error });
     }
   };
+  const acknowledgeInventoryClaim = (remoteTask: Task, authenticatedUserId: string): void => {
+    const worker = remoteTask.properties.worker!;
+    const identity = { serverOrigin: options.serverOrigin, projectId: remoteTask.projectId, taskId: remoteTask.id, claimId: worker.claimId, workerId: worker.workerId, worktreeId: worker.worktreeId };
+    const present = options.store.getTask(identity);
+    const attempt = options.store.getClaimAttempt(identity);
+    if (attempt !== null && attempt.claimId === worker.claimId) {
+      if (attempt.userId !== authenticatedUserId || worker.userId !== authenticatedUserId) throw new Error("The original claim request belongs to another authenticated user; its scope cannot be replaced.");
+      if (attempt.taskId !== remoteTask.id || attempt.workerId !== worker.workerId || attempt.worktreeId !== worker.worktreeId || attempt.configuration.agent !== worker.agent) throw new Error("The observed grant does not match the original claim request and frozen agent.");
+      // An uncleared original request has not crossed the pending commit gate;
+      // its absent local row proves this producer has not started resources.
+      const fresh = present === null && worker.herdr === null && worker.nativeSessionId === null && worker.phase === "preparing";
+      const task = options.store.registerPending(identity, { kind: fresh ? "new" : "recovered", configuration: attempt.configuration }, now(), authenticatedUserId);
+      options.emit({ kind: "pending-recovered", task, message: "The original claim grant and saved configuration were committed locally before resource preparation." });
+      return;
+    }
+    if (present !== null) {
+      const originalIdentityMatches = present.workerId === worker.workerId && present.worktreeId === worker.worktreeId && (present.configuration === null || present.configuration.agent === worker.agent);
+      if (present.userId === null && originalIdentityMatches && present.control === null && present.cleanup?.kind !== "terminal") options.store.bindUserScope(present, authenticatedUserId, now());
+    }
+  };
   const recordRecovered = async (remoteTask: Task, resources: readonly HerdrOwnedWorkspace[], authenticatedUserId: string): Promise<LocalTask | null> => {
     const worker = remoteTask.properties.worker!;
     const identity = { serverOrigin: options.serverOrigin, projectId: remoteTask.projectId, taskId: remoteTask.id, claimId: worker.claimId, workerId: worker.workerId, worktreeId: worker.worktreeId };
     const present = options.store.getTask(identity);
+    if (present !== null) return present;
     const project = options.store.getProject(identity);
     if (project === null) throw new Error(`The original project binding for recovered claim ${worker.claimId} is unavailable.`);
-    const attempt = options.store.getClaimAttempt(identity);
     const runtimeTrace = worker.herdr !== null || worker.nativeSessionId !== null || resources.some(({ owner }) => owner.serverOrigin === identity.serverOrigin && owner.projectId === identity.projectId && owner.taskId === identity.taskId && owner.claimId === identity.claimId);
-    if (attempt !== null && attempt.claimId === worker.claimId) {
-      if (attempt.userId !== authenticatedUserId || worker.userId !== authenticatedUserId) throw new Error("The original claim request belongs to another authenticated user; its scope cannot be replaced.");
-      if (attempt.taskId !== remoteTask.id || attempt.workerId !== worker.workerId || attempt.worktreeId !== worker.worktreeId || attempt.configuration.agent !== worker.agent) throw new Error("The observed grant does not match the original claim request and frozen agent.");
-      const fresh = present === null && !runtimeTrace && worker.phase === "preparing";
-      const task = options.store.registerPending(identity, { kind: fresh ? "new" : "recovered", configuration: attempt.configuration }, now(), authenticatedUserId);
-      options.emit({ kind: "pending-recovered", task, message: "The original claim grant and saved configuration were committed locally before resource preparation." });
-      return task;
-    }
-    if (present !== null) {
-      const originalIdentityMatches = present.workerId === worker.workerId && present.worktreeId === worker.worktreeId && (present.configuration === null || present.configuration.agent === worker.agent);
-      if (present.userId === null && originalIdentityMatches && present.control === null && present.cleanup?.kind !== "terminal") return options.store.bindUserScope(present, authenticatedUserId, now());
-      return present;
-    }
     const configured = options.repositories.find(({ project: selected }) => selected.serverOrigin === identity.serverOrigin && selected.projectId === identity.projectId);
     // Capture original identities before filesystem reads: cleanup may finish while
     // these reads are in flight, and Git creation may precede the binding commit.
@@ -225,7 +244,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         task = await cleanup.advance(task, resources, "shutdown", task.cleanup.deadline, normalSignal);
         if (!task.cleanup!.agentStopped || !task.cleanup!.workspaceClosed || task.cleanup!.result === null) return;
         task = options.store.resumeAfterShutdown(task, now());
-        currentResources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
+        currentResources = await readResources(normalSignal);
       }
       const worker = remoteTask.properties.worker!;
       if (worker.workerId !== task.workerId || worker.worktreeId !== task.worktreeId || worker.platform !== options.platform || (task.configuration !== null && worker.agent !== task.configuration.agent)) {
@@ -239,7 +258,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         return;
       }
       if (task.recovery.pauseReason !== null && scopePauseReasons.has(task.recovery.pauseReason)) task = options.store.clearPause(task, now());
-      if (task.status === "pending" && task.nativeExecution === null) task = task.recovery.pauseReason === null
+      if (task.status === "pending" && task.nativeExecution?.launchSubmission !== "never-submitted") task = task.recovery.pauseReason === null
         ? options.store.activateTask(task, now())
         : options.store.activatePausedRecovery(task, task.recovery.pauseReason, now());
       if (task.status === "pending") {
@@ -307,7 +326,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
         task = options.store.beginCleanup(task, { kind: task.control !== null ? "terminal" : task.cleanup!.kind, deadline: task.cleanup?.deadline ?? now() + 600_000 }, now());
         await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
-        const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
+        const resources = await readResources(normalSignal);
         task = await cleanup.advance(task, resources, task.cleanup!.kind, task.cleanup!.deadline, normalSignal);
         completeTerminal(task, false);
       })));
@@ -323,7 +342,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     },
     cleanupTask: async (identity: ClaimIdentity, kind: CleanupState["kind"] = "terminal"): Promise<LocalTask> => serializeTask(identity, async () => {
       await workerOperation((operation) => options.herdr.ensureInstance(operation));
-      const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
+      const resources = await readResources();
       const task = latest(identity);
       if (task.userId === null && (kind === "terminal" || task.control !== null || task.cleanup?.kind === "terminal")) return pauseForScope(task, unscopedCleanup);
       return cleanup.advance(task, resources, kind, now() + 600_000);
@@ -338,9 +357,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const projects = options.store.listProjects().filter((project) => project.serverOrigin === options.serverOrigin);
         const inventory = await options.remote.ownInventory(projects, options.workerId, normalSignal);
         if (inventory.some((task) => task.properties.worker === null || task.properties.worker.userId !== authenticatedUserId || task.properties.worker.workerId !== options.workerId)) throw new Error("The own-claim inventory does not match its verified authenticated user and worker scope.");
+        for (const task of inventory) acknowledgeInventoryClaim(task, authenticatedUserId);
         const byClaim = new Map(inventory.map((task) => [claimKey({ serverOrigin: options.serverOrigin, projectId: task.projectId, taskId: task.id, claimId: task.properties.worker!.claimId }), task]));
         await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
-        let resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
+        let resources = await readResources(normalSignal);
         for (const task of inventory) await recordRecovered(task, resources, authenticatedUserId);
         for (const workspace of resources) {
           const owner = workspace.owner;
@@ -359,7 +379,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
             options.emit({ kind: "reconciliation-error", task: latest(task), message: "The original execution remains owned locally; reconciliation will preserve its recorded progress.", error });
           }
         }
-        resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
+        resources = await readResources(normalSignal);
         let misses = 0;
         while (!shuttingDown && options.repositories.length > 0 && capacity() < options.maxConcurrent && misses < options.repositories.length) {
           normalSignal.throwIfAborted();
@@ -373,16 +393,22 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     shutdown: async (): Promise<boolean> => {
       shuttingDown = true;
       await Promise.all([...tails.values()]);
-      const tasks = workerLocalTasks().filter((task) => !isUnstartedPending(task));
+      const tasks = workerLocalTasks();
       const deadline = now() + 600_000;
       const results = await Promise.allSettled(tasks.map((input) => serializeTask(input, async () => {
         let task = latest(input);
-        if (task.status === "done" || isUnstartedPending(task)) return;
+        if (task.status === "done") return;
+        if (isUnstartedPending(task)) {
+          await workerOperation((operation) => options.herdr.ensureInstance(operation));
+          await readResources();
+          task = latest(input);
+          if (isUnstartedPending(task)) return;
+        }
         if (task.userId === null && (task.control !== null || task.cleanup?.kind === "terminal")) { pauseForScope(task, unscopedCleanup); throw new Error(unscopedCleanup); }
         task = options.store.beginCleanup(task, { kind: task.control !== null || task.cleanup?.kind === "terminal" ? "terminal" : "shutdown", deadline }, now());
         await workerOperation((operation) => options.herdr.ensureInstance(operation));
         while (true) {
-          const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
+          const resources = await readResources();
           task = await cleanup.advance(task, resources, task.cleanup!.kind, task.cleanup!.deadline);
           if (task.cleanup!.agentStopped && task.cleanup!.workspaceClosed) { completeTerminal(task, false); return; }
           await sleep(Math.max(1, Math.min(250, task.cleanup!.deadline - now())));
@@ -395,7 +421,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       }
       try {
         await workerOperation((operation) => options.herdr.ensureInstance(operation));
-        const remaining = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
+        const remaining = await readResources();
         if (remaining.length > 0) {
           stopped = false;
           options.emit({ kind: "shutdown-error", message: "The private Herdr instance still contains task resources, including any resources without an unfinished local execution; stop cannot be confirmed." });

@@ -116,9 +116,9 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         if (original.nativeSession !== null && task.resources.herdr !== null) task = rememberNative(task, original.nativeSession);
       }
       if (task.resources.worktree === null) {
-        const binding = task.nativeExecution === null
-          ? await workerOperation((operation) => deps.git.findWorktree(task, operation), signal)
-          : await workerOperation((operation) => deps.git.prepareWorktree(task, operation), signal, 180_000);
+        const binding = task.nativeExecution?.launchSubmission === "never-submitted"
+          ? await workerOperation((operation) => deps.git.prepareWorktree(task, operation), signal, 180_000)
+          : await workerOperation((operation) => deps.git.findWorktree(task, operation), signal);
         if (binding === null) throw new Error("The original native launch provenance and owned worktree are unavailable; a fresh worktree cannot substitute for recovery.");
         task = deps.store.bindWorktree(task, binding, deps.now());
       } else await workerOperation((operation) => deps.git.verifyWorktree(task, operation), signal);

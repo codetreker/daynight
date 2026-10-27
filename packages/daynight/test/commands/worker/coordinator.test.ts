@@ -1052,4 +1052,71 @@ describe("worker foreground coordinator", () => {
     await expect(f.coordinator.tick()).rejects.toThrow("does not match the original claim request and frozen agent"); expect(f.store.getClaimAttempt(project)).toEqual(attempt); expect(f.store.listTasks()).toEqual([]); expect(f.tasks.start).not.toHaveBeenCalled();
   });
 
+  it.each([{ stage: "ensure", observed: true }, { stage: "snapshot", observed: true }, { stage: "ensure", observed: false }, { stage: "snapshot", observed: false }] as const)("persists authenticated grant acknowledgement before Herdr $stage failure (observed: $observed)", async ({ stage, observed }) => {
+    const f = await fixture(); const project = f.projects[0]!; const [first, next] = f.candidates.get(project.projectId)!;
+    const claim = vi.mocked(f.remote.claim).getMockImplementation()!;
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (...args) => { await claim(...args); throw new ApiError({ operation: "claim" }, "request", { cause: new Error("Successful claim reply was lost."), outcomeUnconfirmed: true }); });
+    await f.coordinator.tick(); const attempt = f.store.getClaimAttempt(project)!;
+    const identity = { serverOrigin: origin, projectId: project.projectId, taskId: first!.id, claimId: attempt.claimId };
+    if (!observed) f.granted.clear();
+    const failure = new Error(`Herdr ${stage} unavailable.`);
+    if (stage === "ensure") vi.mocked(f.herdr.ensureInstance).mockRejectedValueOnce(failure); else f.tasks.listResources.mockRejectedValueOnce(failure);
+    await expect(f.coordinator.tick()).rejects.toBe(failure);
+    const afterFailure = f.store.getTask(identity); const attemptAfterFailure = f.store.getClaimAttempt(project);
+    expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.tasks.prepareWorkspace).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+    f.granted.clear(); f.candidates.set(project.projectId, [next!]); const restartedConfiguration = { ...configuration, model: "after-Herdr-recovery" };
+    await createWorkerCoordinator({ ...f.options, repositories: [{ project, configuration: restartedConfiguration }] }).tick();
+    if (observed) {
+      expect({ attempt: f.store.getClaimAttempt(project), unfinished: f.store.listUnfinishedTasks().map(({ taskId }) => taskId) }).toEqual({ attempt: null, unfinished: [next!.id] });
+      expect(afterFailure).toMatchObject({ status: "pending", userId: uuid(2), configuration: attempt.configuration, nativeExecution: { launchSubmission: "never-submitted", workspaceSubmission: "not-submitted" }, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(attemptAfterFailure).toBeNull();
+      expect(f.store.getTask(identity)).toMatchObject({ status: "done", configuration: attempt.configuration }); expect(f.remote.claim).toHaveBeenCalledTimes(2);
+    } else {
+      expect(afterFailure).toBeNull(); expect(attemptAfterFailure).toEqual(attempt); expect(f.store.getClaimAttempt(project)).toEqual(attempt); expect(f.store.listUnfinishedTasks()).toEqual([]); expect(f.remote.claim).toHaveBeenCalledOnce();
+    }
+    expect(vi.mocked(f.remote.claim).mock.calls.filter(([candidate]) => candidate.id === first!.id)).toHaveLength(1);
+  });
+
+  it.each(["live-original", "missing-original", "inactive-unknown"] as const)("invalidates request-only fresh proof when a later successful snapshot reveals an existing workspace (%s)", async (mode) => {
+    const f = await fixture(); const project = f.projects[0]!; const claim = vi.mocked(f.remote.claim).getMockImplementation()!;
+    vi.mocked(f.remote.claim).mockImplementationOnce(async (...args) => { await claim(...args); throw new ApiError({ operation: "claim" }, "request", { cause: new Error("Successful claim reply was lost."), outcomeUnconfirmed: true }); });
+    await f.coordinator.tick(); const attempt = f.store.getClaimAttempt(project)!; const identity = { serverOrigin: origin, projectId: project.projectId, taskId: attempt.taskId, claimId: attempt.claimId };
+    f.tasks.listResources.mockRejectedValueOnce(new Error("Snapshot unavailable.")); await expect(f.coordinator.tick()).rejects.toThrow("Snapshot unavailable");
+    expect(f.store.getTask(identity)).toMatchObject({ status: "pending", nativeExecution: { launchSubmission: "never-submitted", workspaceSubmission: "not-submitted" } });
+    const binding = { session: "w", workspaceId: "previous-hidden-workspace", paneId: "previous-hidden-pane", terminalId: "previous-hidden-terminal" };
+    const worktreePath = path.join(project.localPath, ".worktrees", "daynight", attempt.taskId);
+    if (mode !== "missing-original") f.worktrees.set(attempt.claimId, { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath, branch: `daynight/${attempt.taskId}` });
+    f.resources.set(attempt.claimId, { owner: { ...identity, worktreeId: attempt.worktreeId }, workspaceId: binding.workspaceId, panes: [{ binding, cwd: worktreePath, kind: mode === "inactive-unknown" ? null : "codex", status: mode === "inactive-unknown" ? "idle" : "working", launchPending: false, interactiveReady: mode !== "inactive-unknown", nativeSession: mode === "inactive-unknown" ? null : { source: "herdr:codex", agent: "codex", sessionId: uuid(1170) }, stateChangeSeq: 1, completionSeq: 0 }] });
+    if (mode === "inactive-unknown") f.tasks.captureStop.mockRejectedValue(new Error("The original native process identities are unavailable."));
+    await f.coordinator.tick();
+    const observed = f.store.getTask(identity)!; expect(observed.status).toBe("active"); expect(observed.nativeExecution?.launchSubmission).toBe("unknown"); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.tasks.prepareWorkspace).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+    if (mode === "live-original") {
+      expect(f.git.findWorktree).toHaveBeenCalledOnce(); expect(observed.resources.nativeSession?.sessionId).toBe(uuid(1170)); expect(observed.nativeExecution?.stopObservation).not.toBeNull();
+    } else {
+      expect(observed.recovery.pauseReason).not.toBeNull(); f.granted.clear(); f.candidates.set(project.projectId, []); await f.coordinator.tick();
+      expect(f.tasks.confirmEmptyPane).not.toHaveBeenCalled(); expect(f.tasks.closeWorkspace).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      f.resources.delete(attempt.claimId); await createWorkerCoordinator(f.options).tick();
+      expect(f.store.getTask(identity)).toMatchObject({ status: "active", cleanup: { kind: "terminal", agentStopped: false, worktreeDeleted: false } }); expect(f.store.getTask(identity)?.nativeExecution?.launchSubmission).toBe("unknown"); expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    }
+  });
+
+  it("acknowledges a runtime-reported grant with unknown native provenance before Herdr readiness fails", async () => {
+    const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
+    const attempt = { taskId: candidate.id, claimId: uuid(1180), worktreeId: uuid(1181), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration }; f.store.beginClaimAttempt(project, attempt);
+    f.granted.set(attempt.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "reported-workspace", paneId: "reported-pane" }, nativeSessionId: uuid(1182), claimedAt: "2026-10-27T00:00:00Z" } } });
+    vi.mocked(f.herdr.ensureInstance).mockRejectedValueOnce(new Error("Herdr unavailable.")); await expect(f.coordinator.tick()).rejects.toThrow("Herdr unavailable");
+    expect(f.store.getClaimAttempt(project)).toBeNull(); expect(f.store.getTask({ serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: attempt.claimId })).toMatchObject({ userId: uuid(2), configuration, nativeExecution: null, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("observes a pending row before using never-launched proof during independent shutdown (original native attributable: %s)", async (attributable) => {
+    const f = await fixture(); const project = f.projects[0]!; const identity = { serverOrigin: origin, projectId: project.projectId, taskId: uuid(1190), claimId: uuid(1191), worktreeId: uuid(1192), workerId };
+    f.store.registerPending(identity, { kind: "new", configuration }, 1000, uuid(2));
+    const binding = { session: "w", workspaceId: "hidden-at-shutdown", paneId: "hidden-pane", terminalId: "hidden-terminal" }; const worktreePath = path.join(project.localPath, ".worktrees", "daynight", identity.taskId);
+    if (attributable) f.worktrees.set(identity.claimId, { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath, branch: `daynight/${identity.taskId}` });
+    f.resources.set(identity.claimId, { owner: { serverOrigin: origin, projectId: identity.projectId, taskId: identity.taskId, claimId: identity.claimId, worktreeId: identity.worktreeId }, workspaceId: binding.workspaceId, panes: [{ binding, cwd: worktreePath, kind: attributable ? "codex" : null, status: "idle", launchPending: false, interactiveReady: attributable, nativeSession: attributable ? { source: "herdr:codex", agent: "codex", sessionId: uuid(1193) } : null, stateChangeSeq: attributable ? 1 : null, completionSeq: attributable ? 0 : null }] });
+    expect(await f.coordinator.shutdown()).toBe(attributable); expect(f.store.getTask(identity)).toMatchObject({ status: "active", nativeExecution: { launchSubmission: "unknown" }, cleanup: { kind: "shutdown", agentStopped: attributable, workspaceClosed: attributable, worktreeDeleted: false } });
+    if (attributable) { expect(f.tasks.forceStop).toHaveBeenCalledOnce(); expect(f.tasks.closeWorkspace).toHaveBeenCalledOnce(); expect(f.store.getTask(identity)?.resources.nativeSession?.sessionId).toBe(uuid(1193)); }
+    else { expect(f.tasks.forceStop).not.toHaveBeenCalled(); expect(f.tasks.closeWorkspace).not.toHaveBeenCalled(); }
+    expect(f.tasks.confirmEmptyPane).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+  });
+
 });

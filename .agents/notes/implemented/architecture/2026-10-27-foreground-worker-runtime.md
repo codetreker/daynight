@@ -57,15 +57,19 @@ contact the old API with new credentials or query that record against the new
 service. Full origin/project/task/claim scope remains intact, without a
 credential registry or multi-service acquisition mechanism.
 
-A verified own claim matching its immutable project claimAttempt is acknowledged
-before any filesystem wait or existing-row shortcut. The original saved
-configuration is used, and pending/configuration, verified userId and attempt
-clear commit atomically. Preparing with no own runtime trace can receive new
-native provenance; runtime traces or a later phase retain recovered/unknown
-native provenance even though configuration is known. A committed grant must not
-be lost behind predecessor removal or early claim completion. Acknowledgment
-settles ownership/request scope only: existing native provenance and real pauses
-remain, and activation still obeys predecessor and resource-ownership gates.
+Verified remote metadata is acknowledged before Herdr ensure/list and any
+filesystem wait. A full own-inventory claim matching immutable claimAttempt uses
+its saved configuration, verified userId and atomic pending/attempt-clear
+registration. Allowed full-identity ordinary/shutdown UID learning also belongs
+to this metadata layer. Herdr unavailability must not discard successful grant
+knowledge or leave its request fenced.
+
+For matching attempts, initial new provenance follows the producer invariant
+that pending commits before any resources, with preparing/no reported runtime
+metadata. It is not inferred from treating a failed snapshot as empty. Reported
+runtime or later phase keeps recovered/unknown native provenance with known
+configuration. Existing evidence and real pauses remain; acknowledgment does not
+authorize activation past predecessor or resource-ownership gates.
 
 Only an unmatched, unmaterialized prospective-fresh preparing claim without own
 Herdr/native traces enters filesystem classification across a stable predecessor
@@ -131,6 +135,22 @@ uncertainty remains fenced. Neither an empty pane nor a current rejection erases
 an earlier unknown action. These are concrete consumer fields, not a generic
 action log.
 
+Every successful typed Herdr resource snapshot passes one local observation
+wrapper before lifecycle facts are consumed, including ordinary execution,
+manual cleanup, committed cleanup and shutdown. A full-identity owned workspace
+that contradicts an unfinished row's no-Herdr-binding/workspace-not-submitted/
+launch-never provenance is durably recorded through
+recordObservedUnattemptedWorkspace as an UNKNOWN nativeExecution object, not
+null. Original summary, including its unknown-write fence, UID, configuration,
+history, resources, pauses, control and cleanup are preserved. Unknown
+responsibility is accounted for before fresh capacity or strong-unstarted
+selection. Failed/incomplete resource reads do not prove absence.
+
+Git preparation is permitted only for proven launch-never provenance. Unknown
+execution uses read-only discovery of its original owned worktree; a missing
+original cannot be replaced with a fresh empty checkout. The observation guard
+neither grants user scope nor manufactures launch or conversation evidence.
+
 This partially supersedes the memory-only acquisition choice in the
 [local-records decision](2026-10-26-worker-local-records.md). That choice
 avoided preclaim tasks and speculative target records while inventory could
@@ -178,15 +198,19 @@ original bindings, launch/prompt provenance and PID evidence are retained and
 execution pauses. That uncertainty is not reset to never-submitted or an empty
 conversation.
 
-Strictly proven never-started pending successors remain pending on normal exit:
-no cleanup/control, worktree/Herdr/native resources, possible workspace/launch
-submission or original native evidence may exist. They are not promoted to
-active merely to shut down. After a successful complete inventory from the
-matching original principal confirms absence, this resource-free claim can move
-directly pending to done without a Git scan or touching an old claim's path.
-Other tasks' shutdown initialization is isolated so one record's failure does
-not prevent known agents stopping. Untracked resources or unconfirmed scope keep
-the private instance when its safe stop cannot be established.
+Shutdown starts active responsibilities independently and lets each pending
+record observe/refresh through the same contradiction guard before deciding
+strong-unstarted eligibility. There is no global pending-observation barrier
+that postpones other tasks' stop/deadline. Strictly proven never-started pending
+successors remain pending on normal exit: no cleanup/control,
+worktree/Herdr/native resources, possible workspace/launch submission or
+original native evidence may exist. They are not promoted to active merely to
+shut down. After a successful complete inventory from the matching original
+principal confirms absence, this resource-free claim can move directly pending
+to done without a Git scan or touching an old claim's path. Other tasks'
+shutdown initialization is isolated so one record's failure does not prevent
+known agents stopping. Untracked resources or unconfirmed scope keep the private
+instance when its safe stop cannot be established.
 
 Only cancellation causally linked to the current worker signal, including a
 preserved error cause chain, is propagated as normal interruption. It does not
