@@ -1019,6 +1019,23 @@ The saved SQLite session_id still selects resume or fresh startup; an inactive
 pane's retained reference is not saved as a newly observed session ID. A live
 agent keeps its current connection.
 
+Startup and recovery prompts identify the assignment as a background task: the
+agent asks no questions and makes decisions within the task scope and existing
+authorization. While waiting for review or CI, it waits, checks for results and
+continues delivery without ending its execution turn. Fixed native full access
+and folder trust apply to every fresh/resumed process; task delivery remains
+within its existing business authorization.
+
+For a still-owned active claim, each patrol observes the live agent. An
+interactive-ready agent that is not launching and has no first input pending
+receives a continuation ping when idle or done. Working, blocked, unknown and
+not-ready agents remain under observation. The ping preserves the original task,
+claim, worktree and authorization; idle or done does not complete the business
+task. The driver retains the last input observation in memory and suppresses
+repeated input while it is unchanged. Unknown submission results require
+observation before another decision, without blind replay. Terminal cleanup
+suppresses business pings.
+
 A non-NULL saved session ID remains the recovery identity. A different native
 ID reported during startup, live reconnection or before deferred input is an
 error: the saved ID is retained and that input is not sent. A genuine live
@@ -1080,11 +1097,14 @@ worktree deletion validates only its target Git registration and directory.
 Unrelated repository or sibling-worktree registration errors are reported
 separately and do not prevent a healthy agent from stopping.
 
-Early cleanup completion uses only the successful cleanup-prompt receipt's
-idle, interactive-ready observation with both sequence counters present; later
-observations must advance both counters. A prior polling snapshot cannot supply
-that baseline. Busy, unknown, rejected or unattributable notification results
-retain the current bounded wait instead of counting an old task turn as cleanup.
+After the cleanup message is successfully submitted, a subsequent patrol that
+observes idle completes the cleanup turn and proceeds to stop the agent and
+close its workspace. Sequence counters and interactive readiness are not
+required. A pre-notification observation or the submission receipt itself
+cannot finish cleanup. Failed or unknown notification results retain their error
+and the current bounded wait, without automatic replay. Reaching the deadline
+still proceeds through actual stop confirmation. Idle in this exit phase does
+not complete the business task.
 
 Cleanup timing and progress are in memory. Polls do not extend the current
 attempt's deadline; after a crash, the next successful reconciliation observes

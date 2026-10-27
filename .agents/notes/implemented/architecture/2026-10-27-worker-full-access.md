@@ -47,7 +47,7 @@ prefers an exact normalized key before matching other spellings. Writing the
 same normalized keys overrides existing lowercase untrusted entries for the
 task path.
 Node's [Windows
-realpath](https://github.com/nodejs/node/blob/v24.19.0/deps/uv/src/win/fs.c#L3044-L3055)
+realpath](https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/deps/uv/src/win/fs.c#L3044-L3055)
 strips drive and UNC namespace prefixes, while Codex's canonical trust lookup
 can retain them. Supplying both spellings in the same invocation table makes
 either lookup select the trusted entry.

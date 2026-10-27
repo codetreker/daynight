@@ -77,7 +77,8 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 - 存活 agent 保持原连接；重新启动前停止并关闭已存在的 inactive workspace，以当前 native 环境重建，并清空该 pane 遗留的原生引用。会话选择只使用本机保存的 session_id；不把 inactive pane 的旧引用当作新 ID，不增加历史扫描或持久回执。
 - 活 agent 直接连接并观察；需要启动且 session_id 有值则使用记录的 agent 和原生 ID resume；session_id=NULL 时 Warning 后启动全新原生会话，成功取得 ID 写回原行，沿用 task/claim/worktree。该 NULL 规则包括启动成功但 ID 尚未保存的崩溃窗口，不增加历史反查、暂停或人工确认门槛。
 - 本机 session_id 非空时，启动、重连和延后输入前观察到的原生引用必须与其一致；不同 ID 是可见错误，保留原记录并停止该次输入。session_id 为空时可采纳实际存活 agent 的真实 ID，仍不采纳 inactive pane 的旧引用；需要启动的 NULL 分支保持 Warning 后全新会话。
-- 首次启动和明确恢复使用完整 prompt，显式声明 worker-managed、using-daynight、execute-task-in-managed，提供 project/task/claim/worktree 身份、实际路径/branch 和本次配置。适配层递交不透明 prompt；重连活 agent 不重发启动输入。普通技能不推断 managed 模式或加载其详细指令，缺失 assignment 保持等待。
+- 首次启动和明确恢复使用完整 prompt，显式声明 worker-managed、using-daynight、execute-task-in-managed，提供 project/task/claim/worktree 身份、实际路径/branch 和本次配置。Prompt 明确这是后台任务，不向用户提问，任务范围及已有授权内的决定自行处理；等待 review 或 CI 时自行等待、定期检查并继续交付，不因此结束当前轮执行或退出。适配层递交不透明 prompt；重连活 agent 不重发启动输入。普通技能不推断 managed 模式或加载其详细指令，缺失 assignment 保持等待。
+- 定时巡查在原 claim 仍有效时读取当前 agent 状态。已就绪、未在启动的存活 agent 处于 idle 或 done 时发送继续原任务的 ping；working、blocked、unknown、未就绪及尚有首次输入待递交时继续观察。Ping 保留原任务、claim、worktree 和授权，提醒自行等待 review/CI，不能把 agent 的 idle/done 当作业务完成。进程内保留上次输入对应的观察，观察未改变时不重复递交；未知输入结果先观察核对，不盲目重放。进入终止清理后不再发送业务 ping。
 - Copilot 与 Codex 的每次 fresh/resume 启动固定使用 full access，并为本次任务目录启用信任，免除原生工具权限、目录信任及 hook trust 确认。Copilot 使用 `--allow-all --no-ask-user --no-sandbox`，并覆盖本次 workspace 环境为 `COPILOT_ALLOW_ALL=true`、`COPILOT_ASSISTED_APPROVAL=false`；Codex 使用 `--no-daemon`、`--dangerously-bypass-approvals-and-sandbox`、`--dangerously-bypass-hook-trust` 及当前真实任务路径的调用级 trusted 配置。该策略不是可选配置；不能通过 args 降低权限或恢复确认。
 - 固定策略只作用于本次原生命令及任务 workspace，不改写全局 native 配置、凭据或组织/操作系统策略。业务执行和交付仍遵循任务授权；缺失认证、集成或能力明确报错，不降级为等待权限确认。
 - 保留官方 native/Herdr 集成、当前参数和 composer readiness 校验。原生历史可用性由原生命令报告，不扫描 provider 数据库或会话 manifest。已知 ID 恢复失败保持可见，不静默清除 ID。启动输入只提交到可用的业务 composer。
@@ -109,7 +110,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 - Agent 完成全部要求、验收和证据后，最后使用原 claimId 与观察版本通过 task set-status done 提交已有完成操作。必要 PR、授权合并和人工验收未完成时保持任务未完成；worker 不重复解释或提交业务 done。
 - 原 claim 不在成功完整清单时通知 agent 清理可归属的工作区外临时资源，最多等待本次尝试的 10 分钟，再停止进程、关闭 workspace、删除 worktree，最后本机 done。Done/release/强制撤回后的本地结束规则一致，分支与历史保留。
-- 清理完成基线只使用本次成功 submitPrompt 回执中的 idle、interactiveReady 且 stateChangeSeq/completionSeq 非空的 observation，后续两项计数均递增才证明该 turn 完成。旧轮 pane 状态不构成基线；busy、未知、拒绝或不可归属的结果继续按本次既定期限有界等待。
+- 清理消息成功递交后，由后续巡查读取 agent 状态；观察到 idle 即视为该清理轮完成，可以停止 agent 并关闭 workspace，不要求序列计数递增或 interactiveReady。通知前的 idle 和递交回执本身不替代后续巡查；消息失败或结果未知时保留错误，按本次既定期限等待，不自动重发。该 idle 只表示退出清理完成，不提交业务 done。
 - 同进程内的清理 job 保留自己的期限，轮询不重置。重启后按剩余实际资源重新进入清理并重新计时，通知可重复；不为清理新建 agent。已确认归属结束的内存 job 可在后续服务轮询失败时继续；各任务独立有界。
 - 失败保留错误与收尾责任，已不存在的资源可完成对应步骤。读取失败或无法确认停止时不能删除工作区或标 done，清理不影响其他任务与人工 Herdr。
 - 已知目标的清理或退出按对应 Herdr 执行推进，删除仅验证该目标的 Git 工作区。其他仓库或同项目其他 worktree 的注册错误单独报告，不阻塞健康 agent 停止或正常退出。
@@ -124,13 +125,13 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 | 范围 | 必须观察到的结果 |
 |---|---|
-| W-01、W-07 | 配置严格、省略值一致，项目选择明确；managed assignment 完整，正常与 managed 模式互斥；恢复使用保存的 agent 和当前适用配置；两个 provider 的 fresh/resume 均带固定 full access、目录信任参数或环境，冲突参数和缺失能力明确拒绝。 |
+| W-01、W-07 | 配置严格、省略值一致，项目选择明确；managed assignment 完整，正常与 managed 模式互斥；后台 prompt 明确不提问、自主决定及自行等待 review/CI；恢复使用保存的 agent 和当前适用配置；两个 provider 的 fresh/resume 均带固定 full access、目录信任参数或环境，冲突参数和缺失能力明确拒绝。 |
 | W-02、W-03 | 默认许可、双向确认、平台清除、未知结果及候选组合过滤成立，不合格任务不遮挡合格候选。 |
 | W-04、W-05 | 同 task 竞争单赢家；未知 claim 不启动资源或重放；多项目公平调度，等待与收尾占容量，同 task 旧资源形成启动屏障；撤回只允许原 owner/admin，原子重置归属/状态/计时并关闭许可。 |
 | W-06 | Dirty worktree 复用，静态归属、注册、指针与删除核对成立；缺失原成果和外来路径保持可见错误。 |
-| W-07、W-09 | 活进程重连不重发 prompt；已知原生 ID resume；NULL Warning 后新建并保存 ID；空库先建项目映射再找回已有 claim。 |
+| W-07、W-09 | 活进程重连不重发启动 prompt；idle/done 且就绪时 ping，working/blocked/unknown 保持观察，未改变观察和未知回执不触发重复输入；已知原生 ID resume；NULL Warning 后新建并保存 ID；空库先建项目映射再找回已有 claim。 |
 | W-08 | 人工操作与 run 互斥；远端拒绝保留 worktree；成功后本机删除失败可由下次对账收尾；未知结果不重放；Web 强制撤回不声明远端已停，原 worker 下次对账收尾。 |
-| W-09、W-10 | 精确两表与列数，三态/唯一 active；退出保留有效资源；完整清单缺席统一清理；本次十分钟上限及重启重新计时成立。 |
+| W-09、W-10 | 精确两表与列数，三态/唯一 active；退出保留有效资源；完整清单缺席统一清理；清理消息成功递交后的巡查观察到 idle 即推进关闭，缺失或不变计数不阻塞；本次十分钟上限、失败保留责任及重启重新计时成立。 |
 | W-11 | 关联日志、Warning、原错误链和脱敏成立；attach 只连接并保持既有执行；验证关联实际源码、平台和环境。 |
 
 完整平台运行验收要求其实际门禁与端到端结果，组件检查和 schema 验证不能替代。

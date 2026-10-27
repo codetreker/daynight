@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
-import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
+import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrPromptReceipt, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
@@ -193,9 +193,29 @@ describe("direct task resource management", () => {
 
   it("reconnects a surviving native process without launching or sending the assignment again", async () => {
     const f = await fixture(); const binding = await launch(f);
-    await f.manager.start(f.context, binding, { configuration, prompt: "must not repeat" }, operation());
+    let submissions = 0;
+    await f.manager.start(f.context, binding, { configuration, prompt: "must not repeat", onPromptSubmitted: () => { submissions++; } }, operation());
+    expect(submissions).toBe(0);
     expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
     expect(f.prompts).toEqual(["initial"]); expect(f.preflights()).toBe(1);
+  });
+
+  it("reports the acknowledged pre-input observation before startup discovers a completed turn", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const receipts: HerdrPromptReceipt[] = [];
+    f.hook(async (method, params) => {
+      if (method === "agent.prompt") {
+        f.prompts.push(String(params.text));
+        const current = f.agents[0]!;
+        current.agent_status = "idle"; current.state_change_seq = 9; current.completion_seq = 1;
+        return { type: "agent_prompted", agent: current };
+      }
+      if (method === "session.snapshot" && f.prompts.length > 0) expect(receipts).toHaveLength(1);
+      return undefined;
+    });
+    const result = await f.manager.start(f.context, binding, { configuration, prompt: "short turn", onPromptSubmitted: (receipt) => { receipts.push(receipt); } }, operation());
+    expect(receipts).toMatchObject([{ submission: "submitted", observation: { status: "unknown", stateChangeSeq: 7, completionSeq: null } }]);
+    expect(result).toMatchObject({ status: "idle", stateChangeSeq: 9, completionSeq: 1, nativeSession: { sessionId: nativeId } });
   });
 
   it("observes a native process after an unknown start response without replaying the launch", async () => {

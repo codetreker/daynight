@@ -144,7 +144,15 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 
 NULL 分支覆盖上次已经启动但 ID 尚未保存就中断的窗口，沿用 task/claim/worktree。该分支没有历史反查、暂停或人工审批门槛。处理当前可见的同 claim 遗留进程后再启动，避免同时运行两个 agent。已知 ID 的 resume 失败是可见错误，不静默清除 ID。
 
-首次启动和明确恢复使用完整 managed assignment，显式提供 worker-managed 环境、using-daynight、execute-task-in-managed 及 task/claim/worktree 上下文和本次执行配置。连接存活 agent 不重发启动指令。适配层递交调用方给出的不透明 prompt，不选择业务任务或解释验收。
+首次启动和明确恢复使用完整 managed assignment，显式提供 worker-managed 环境、using-daynight、execute-task-in-managed 及 task/claim/worktree 上下文和本次执行配置。Prompt 声明这是后台任务，不向用户提问，任务范围和已有授权内的决定自行处理；等待 review 或 CI 时自行等待、定期检查并继续交付，不结束当前轮执行。连接存活 agent 不重发启动指令。适配层递交调用方给出的不透明 prompt，不选择业务任务或解释验收。
+
+巡查在每个 task 的串行操作内读取当前 agent。原 claim 仍有效、agent 存活、interactiveReady 且未在启动、没有首次输入待递交时，idle/done 触发继续原任务的 ping；working、blocked、unknown 或尚未就绪只观察。Ping 沿用原任务、claim、worktree 和授权，要求自行等待 review/CI；agent 的 idle/done 不作为业务完成凭据。进入终止清理后只推进收尾。
+
+首次输入在调用启动适配层前记录为 pendingInput 中的明确未递交 assignment，此时没有已提交输入基线。agent.start 的错误不表示 prompt 已递交：若后续观察到匹配的存活且就绪 pane，继续递交原 assignment；缺失或 inactive 资源仍走既有重建流程。只有成功回执前明确的 agent.prompt 未知结果，才将这次输入转为不确定标记。启动适配层串行检查后若仅重连已有 live agent、未发送输入，成功返回时清除 pending，保留没有提交基线的事实，后续可按状态发送 ping。
+
+执行驱动在内存保留上次启动或 ping 输入的提交基线。成功递交时，基线只取适配层为这次输入读取的提交前观察。启动适配层在确认递交成功后、查询原生 session ID 前，通过 onPromptSubmitted 回调立即报告该回执，清除 pending 并建立基线；启动返回值仍为后续观察。后续观察不能覆盖输入基线，查询失败也保留已确认的回执；常规 ping 同样先记录成功回执，再读取后续状态。即使 agent 在启动调用返回前已推进并再次进入 idle/done，后续巡查仍能识别这一进展并发送 ping。
+
+观察未变不重复递交，未知递交结果先观察核对，不盲目重放。这些输入记录不写入 SQLite、文件或日志恢复台账，进程重启后按当前资源重新判断。巡查和清理的选择依据见[agent 巡查决策](../../.agents/notes/implemented/bug-fix/2026-10-27-worker-agent-patrol.md)。
 
 每次 fresh/resume 启动都由同一个参数构造器施加固定 full access 策略，配置中的 model/args 不能降低权限或重新启用确认。Copilot 在配置参数后追加 `--allow-all --no-ask-user --no-sandbox`；创建该任务 workspace 及运行只读原生探测时，最后覆盖 `COPILOT_ALLOW_ALL=true`、`COPILOT_ASSISTED_APPROVAL=false`。精确的字符串 `true` 同时免除 Copilot 的交互式目录信任；关闭 assisted approval 避免继承环境恢复权限确认。
 
@@ -171,7 +179,7 @@ Codex 保留 `--no-daemon [resume <session_id>]` 前缀，在配置参数后追�
 → 本机 done
 ```
 
-清理完成的计数基线只取本次 submitPrompt 成功返回的 observation，且必须同时为 idle、interactiveReady，并带有非空 stateChangeSeq/completionSeq。随后观察到两项计数均越过该基线，才可在期限前确认该清理 turn 完成。通知前轮询得到的 pane 状态不作为基线；busy、未知、拒绝或无法归属的通知结果都继续等待本次既定期限，不把旧任务 turn 的结束算作清理完成。这个基线只保存在当前进程。
+清理消息成功递交后，后续巡查观察到 agent 为 idle 即确认该清理轮完成，开始实际停止进程和关闭 workspace。这个判断不依赖 stateChangeSeq/completionSeq 或 interactiveReady；通知前的观察和 submitPrompt 回执本身不完成清理。通知失败或结果未知时保留错误，继续等待本次既定期限，不自动重发。期限届满仍按既有停止确认流程收尾。这个退出阶段的 idle 不表示业务验收完成，worker 仍不提交业务 done。
 
 每个清理 job 的期限与进度只存在内存中，同进程轮询不重置期限。重启后按清单和剩余资源重新进入清理并重新计时，通知可以重复；已不存在的资源可完成对应步骤，失败保留责任。当前进程已确认归属结束的 job 可以在后续服务轮询失败时继续。不同任务分别有界，一个 RPC 不延误其他清理。已知目标的收尾与退出先观察对应的 Herdr 执行并推进停止；删除时只核对该目标的 Git 注册和目录。同项目其他 worktree 或其他仓库的注册问题分别报告，不阻塞可正常观察的 agent 停止或退出。
 
@@ -209,6 +217,6 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 ## 验证边界
 
-真实 SQLite 验证精确列数、枚举、nullable ID、历史行及唯一 active。Git 测试验证 dirty state、静态归属、遗留发现、重开与安全删除。受控 HTTP/Herdr 验证空库项目初始化、未知 claim 结果、重连、指定 ID resume、NULL 新建、容量、清理期限、取消和人工锁互斥。原生启动策略验证两个 provider 的 fresh/resume 完整 argv、Copilot 环境覆盖、Codex 路径编码与 Windows trust key 归一化、冲突参数拒绝及只读能力探测；真实原生会话恢复与三平台完整 Goal 验收仍需各自来源明确的运行证据。
+真实 SQLite 验证精确列数、枚举、nullable ID、历史行及唯一 active。Git 测试验证 dirty state、静态归属、遗留发现、重开与安全删除。受控 HTTP/Herdr 验证空库项目初始化、未知 claim 结果、重连、指定 ID resume、NULL 新建、idle/done 巡查 ping、未改变观察及未知输入去重、容量、清理通知后 idle 推进、清理期限、取消和人工锁互斥。原生启动策略验证两个 provider 的 fresh/resume 完整 argv、Copilot 环境覆盖、Codex 路径编码与 Windows trust key 归一化、冲突参数拒绝及只读能力探测；真实原生会话恢复与三平台完整 Goal 验收仍需各自来源明确的运行证据。
 
 当前模型明确将清理原截止、恢复累计次数、原 model/args 和中断管理意图的跨重启保证收回到进程内。既有详细状态模型的原始理由与替代方案保存在[简化决策](../../.agents/notes/implemented/simplification/2026-10-27-worker-claim-records.md)及其前驱记录中。
