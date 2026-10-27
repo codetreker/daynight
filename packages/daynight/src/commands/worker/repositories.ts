@@ -7,20 +7,15 @@ import type { OperationLimits } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import type { Project } from "../../api/types.js";
 import { parseConfigurationDocument } from "../../config/document.js";
-import { MissingConfigurationFileError } from "../../config/errors.js";
-import { readConfigurationSource, updateConfigurationFile } from "../../config/files.js";
-import { parseServerConfiguration } from "../../config/server.js";
-import type { ServerConfiguration } from "../../config/server.js";
+import { updateConfigurationFile } from "../../config/files.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
-import { validateWorkerConfigurationSource } from "./config.js";
-import type { WorkerConfiguration, WorkerRepositoryConfiguration } from "./config.js";
+import { readWorkerConfigurationSnapshot, validateWorkerConfigurationSnapshotSource, validateWorkerConfigurationSource } from "./config.js";
+import type { WorkerConfigurationSnapshot, WorkerRepositoryConfiguration } from "./config.js";
 import type { WorkerPaths } from "./paths.js";
 
-export type WorkerRepositorySnapshot = ServerConfiguration & {
-  readonly source: string | undefined;
+export type WorkerRepositorySnapshot = WorkerConfigurationSnapshot & {
   readonly fingerprint: string;
-  readonly configuration: WorkerConfiguration;
 };
 
 export type ChangeWorkerRepositoriesOptions = {
@@ -42,20 +37,16 @@ const fingerprint = (mapping: Record<string, unknown>): string => {
   ])).digest("hex");
 };
 
-const snapshotFromSource = async (source: string | undefined, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerRepositorySnapshot> => {
-  const content = source === undefined ? "{}" : source;
-  const configuration = await validateWorkerConfigurationSource(content, paths, signal);
-  const { mapping } = parseConfigurationDocument(content, paths);
-  return { source, fingerprint: fingerprint(mapping), configuration, ...parseServerConfiguration(content, paths) };
+const repositorySnapshot = (snapshot: WorkerConfigurationSnapshot, paths: WorkerPaths): WorkerRepositorySnapshot => {
+  const { mapping } = parseConfigurationDocument(snapshot.source === undefined ? "{}" : snapshot.source, paths);
+  return { ...snapshot, fingerprint: fingerprint(mapping) };
 };
 
-export const readWorkerRepositorySnapshot = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerRepositorySnapshot> => {
-  signal?.throwIfAborted();
-  let source: string | undefined;
-  try { source = await readConfigurationSource(paths, signal); }
-  catch (cause) { if (!(cause instanceof MissingConfigurationFileError)) throw cause; }
-  return snapshotFromSource(source, paths, signal);
-};
+const snapshotFromSource = async (source: string | undefined, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerRepositorySnapshot> =>
+  repositorySnapshot(await validateWorkerConfigurationSnapshotSource(source, paths, signal), paths);
+
+export const readWorkerRepositorySnapshot = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerRepositorySnapshot> =>
+  repositorySnapshot(await readWorkerConfigurationSnapshot(paths, signal), paths);
 
 export const readWorkerProjects = async (
   snapshot: WorkerRepositorySnapshot,

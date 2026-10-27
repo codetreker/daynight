@@ -53,7 +53,7 @@ describe("worker Project registration", () => {
 
   it("preserves comments, aliases, review settings, credentials and existing execution overrides", async () => {
     const old = project(3, "https://github.com/owner/old.git");
-    const source = `${connection}# Shared defaults\npollIntervalMs: 120000 # review-owned\nworker:\n  repositoryRoot: &root ../clones # keep root\n  agent: codex # default\n  model: global-model\n  args: [--search]\n  repositories:\n    # Keep this repository\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: &oldPath ../old\n      agent: copilot\n      model: custom-model\n      args: [] # native defaults\n`;
+    const source = `${connection}# Shared defaults\nreview:\n  pollIntervalMs: 120000 # review-owned\nworker:\n  repositoryRoot: &root ../clones # keep root\n  agent: codex # default\n  model: global-model\n  args: [--search]\n  repositories:\n    # Keep this repository\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: &oldPath ../old\n      agent: copilot\n      model: custom-model\n      args: [] # native defaults\n`;
     const f = await fixture(source);
     if (process.platform !== "win32") await chmod(f.paths.configFile, 0o640);
     const registered = await changeWorkerRepositories({ ...f, projects: [old, project()], addProjectIds: [uuid(1)] });
@@ -65,7 +65,7 @@ describe("worker Project registration", () => {
   });
 
   it.each(["associate", "append", "remove"] as const)("refuses %s when a worker repository anchor is shared with the review list", async (kind) => {
-    const source = `${connection}worker:\n  repositories: &sharedRepositories\n    - remote: ${project().repoUrl}\n      path: ../shared-checkout\nrepositories: *sharedRepositories\n`;
+    const source = `${connection}worker:\n  repositories: &sharedRepositories\n    - remote: ${project().repoUrl}\n      path: ../shared-checkout\nreview:\n  repositories: *sharedRepositories\n`;
     const f = await fixture(source);
     const selected = kind === "append" ? project(2, "https://github.com/owner/second.git") : project();
     const options = kind === "remove" ? { removeProjectIds: [selected.id] } : { addProjectIds: [selected.id] };
@@ -89,14 +89,14 @@ describe("worker Project registration", () => {
   });
 
   it("retains aliases whose values stay outside the repository mutation", async () => {
-    const source = `${connection}worker:\n  model: &sharedModel shared-model\n  repositories: []\ncopilotModel: *sharedModel\n`;
+    const source = `${connection}worker:\n  model: &sharedModel shared-model\n  repositories: []\nreview:\n  copilotModel: *sharedModel\n`;
     const f = await fixture(source);
     await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
     const saved = await readFile(f.paths.configFile, "utf8");
     expect(saved).toContain("model: &sharedModel shared-model");
     expect(saved).toContain("copilotModel: *sharedModel");
     const { mapping } = parseConfigurationDocument(saved, f.paths);
-    expect(mapping.copilotModel).toBe("shared-model");
+    expect((mapping.review as Record<string, unknown>).copilotModel).toBe("shared-model");
     expect((mapping.worker as Record<string, unknown>).model).toBe("shared-model");
   });
 
@@ -112,17 +112,17 @@ describe("worker Project registration", () => {
   });
 
   it("uses the worker clone root independently of review configuration", async () => {
-    const source = `${connection}repositoryRoot: ../review-clones\nworker:\n  repositoryRoot: ../worker-clones\n`;
+    const source = `${connection}review:\n  repositoryRoot: ../review-clones\nworker:\n  repositoryRoot: ../worker-clones\n`;
     const f = await fixture(source);
     const registered = await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
     expect(registered[0]!.path).toBe(path.join(f.homeDirectory, "worker-clones/github.com/owner/repository"));
     const { mapping } = parseConfigurationDocument(await readFile(f.paths.configFile, "utf8"), f.paths);
-    expect(mapping.repositoryRoot).toBe("../review-clones");
+    expect((mapping.review as Record<string, unknown>).repositoryRoot).toBe("../review-clones");
     expect((mapping.worker as Record<string, unknown>).repositoryRoot).toBe("../worker-clones");
   });
 
   it("preserves a concurrent review clone-root change without changing the worker destination", async () => {
-    const source = `${connection}repositoryRoot: ../review-clones\nworker:\n  repositoryRoot: ../worker-clones\n`;
+    const source = `${connection}review:\n  repositoryRoot: ../review-clones\nworker:\n  repositoryRoot: ../worker-clones\n`;
     const f = await fixture(source);
     await writeFile(f.paths.configFile, source.replace("../review-clones", "../updated-review-clones"));
     const registered = await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
@@ -205,7 +205,7 @@ describe("worker Project registration", () => {
 
   it("preserves unrelated edits made while the remote inventory or selection is pending", async () => {
     const f = await fixture();
-    const source = `${connection}# Concurrent settings\nworker:\n  maxConcurrent: 3\n  agent: codex\n  args: [--search]\npollIntervalMs: 90000 # review\n`;
+    const source = `${connection}# Concurrent settings\nworker:\n  maxConcurrent: 3\n  agent: codex\n  args: [--search]\nreview:\n  pollIntervalMs: 90000 # review\n`;
     await writeFile(f.paths.configFile, source);
     const registered = await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
     expect(registered[0]).toMatchObject({ agent: "codex", args: ["--search"] });

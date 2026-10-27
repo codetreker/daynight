@@ -4,7 +4,7 @@ import { parseConfigurationDocument } from "../../config/document.js";
 import { repositoryPathComponent } from "../../repository/location.js";
 import { updateConfigurationFile } from "../../config/files.js";
 import type { ConfigurationUpdate } from "../../config/files.js";
-import { defaultRepositoryRoot, remoteIdentity, resolveRepositoryRoot, validateConfigurationSource, validateRegistrationConfigurationSource } from "./config.js";
+import { defaultRepositoryRoot, remoteIdentity, reviewConfigurationMapping, resolveRepositoryRoot, validateConfigurationSource, validateRegistrationConfigurationSource } from "./config.js";
 import type { RepositoryConfiguration } from "./config.js";
 import { missingPathsReferToSameDirectory, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ReviewPaths } from "./paths.js";
@@ -29,9 +29,9 @@ export const updateRepositoryConfiguration = async (
   options: AddRepositoryOptions,
 ): Promise<ConfigurationUpdate<AddRepositoryResult>> => {
   const existing = source === undefined ? undefined : await validateRegistrationConfigurationSource(source, runtimePaths);
-  const document = source === undefined ? new Document({ repositoryRoot: defaultRepositoryRoot, repositories: [] }) : parseConfigurationDocument(source, runtimePaths).document;
-  const decoded = document.toJS() as Record<string, unknown>;
-  const root = document.has("repositoryRoot") ? decoded.repositoryRoot : defaultRepositoryRoot;
+  const document = source === undefined ? new Document({ review: { repositoryRoot: defaultRepositoryRoot, repositories: [] } }) : parseConfigurationDocument(source, runtimePaths).document;
+  const decoded = reviewConfigurationMapping(document.toJS() as Record<string, unknown>);
+  const root = document.hasIn(["review", "repositoryRoot"]) ? decoded.repositoryRoot : defaultRepositoryRoot;
   const identity = remoteIdentity(input.remote, "remote");
   const previous = existing?.repositories.find((repository) => repository.coordinate === identity.coordinate);
   if (previous !== undefined && input.path === undefined) {
@@ -55,13 +55,13 @@ export const updateRepositoryConfiguration = async (
     }
     throw new Error(`Repository ${identity.coordinate} is already configured at ${previous.path}; the requested path ${repositoryPath} differs.`);
   }
-  if (!document.has("repositoryRoot")) {
-    document.set("repositoryRoot", defaultRepositoryRoot);
+  if (!document.hasIn(["review", "repositoryRoot"])) {
+    document.setIn(["review", "repositoryRoot"], defaultRepositoryRoot);
   }
-  if (!document.has("repositories")) {
-    document.set("repositories", document.createNode([]));
+  if (!document.hasIn(["review", "repositories"])) {
+    document.setIn(["review", "repositories"], document.createNode([]));
   }
-  document.addIn(["repositories"], { remote: input.remote, path: repositoryPath });
+  document.addIn(["review", "repositories"], { remote: input.remote, path: repositoryPath });
   const updatedSource = document.toString();
   const configuration = await validateConfigurationSource(updatedSource, runtimePaths);
   const repository = configuration.repositories.at(-1)!;

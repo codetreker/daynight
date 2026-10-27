@@ -316,7 +316,7 @@ JSON 输出投影。
 ## 按需配置引导
 
 参数和业务值校验先于配置引导，帮助、版本、补全和自更新保持各自独立入口。
-review run/list 在缺少文件或 `repositories` 字段时使用
+review run/list 在缺少文件、`review` 或 `review.repositories` 字段时使用
 `commands/review/configuration-guide.ts` 引导，`config/errors.ts` 区分缺失与非法配置；
 `cli/prompts.ts` 拥有终端输入，`cli/cancellation.ts` 共享输入、信号和关闭生命周期。
 review 仓库登记复用现有更新函数，不复制保存路径。顶层没有 setup 模块或兼容入口。
@@ -348,7 +348,9 @@ SQLite 或审查运行时。引导完成后以原参数调用原操作一次，�
 
 review 的配置仍为 `~/.daynight/config.yml`，SQLite 仍为 `~/.daynight/state.sqlite`；
 会话、锁、日志、缓存和临时文件仍在同一状态目录，PR worktree 仍位于各仓库的
-`.worktrees/`。既有 YAML 字段、状态路径和持久化身份继续使用，不新增命令分区。
+`.worktrees/`。共享 YAML 的根节点由 `serverUrl`、`serverToken`、`workerId`、`worker`
+和 `review` 组成；全部 review 设置位于 `review` mapping，详见
+[review 配置](daynight-review.md#使用方式与配置)。状态路径和持久化身份保持不变。
 review 运行时通过显式 SQLite 迁移从版本 1 升到版本 2，保存远端发布证据和一次性
 conversation 后续轮次，保留旧边界、预算、会话、进程证据及 worktree；只读列表接受
 两个版本并不执行迁移。业务模块归属与磁盘目录归属分别管理，源码整理本身不改变

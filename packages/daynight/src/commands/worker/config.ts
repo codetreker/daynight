@@ -3,6 +3,8 @@ import { canonicalId } from "../../api/parse.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource } from "../../config/files.js";
+import { parseServerConfiguration } from "../../config/server.js";
+import type { ServerConfiguration } from "../../config/server.js";
 import { ancestorIdentities, missingPathsReferToSameDirectory, pathsOverlap, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
@@ -22,6 +24,11 @@ export type WorkerConfiguration = FrozenExecutionConfiguration & {
   maxConcurrent: number;
   pollIntervalMs: number;
   repositories: readonly WorkerRepositoryConfiguration[];
+};
+
+export type WorkerConfigurationSnapshot = ServerConfiguration & {
+  readonly source: string | undefined;
+  readonly configuration: WorkerConfiguration;
 };
 
 export const workerConfigurationDefaults = Object.freeze({
@@ -116,16 +123,32 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
   return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
 };
 
-export const readWorkerConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
+const readWorkerConfigurationSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {
   signal?.throwIfAborted();
-  let source: string;
-  try { source = await readConfigurationSource(paths, signal); }
+  try { return await readConfigurationSource(paths, signal); }
   catch (cause) {
     if (!(cause instanceof MissingConfigurationFileError)) throw cause;
-    source = "{}";
+    return undefined;
   }
-  return validateWorkerConfigurationSource(source, paths, signal);
 };
+
+export const readWorkerConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
+  const source = await readWorkerConfigurationSource(paths, signal);
+  return validateWorkerConfigurationSource(source === undefined ? "{}" : source, paths, signal);
+};
+
+export const validateWorkerConfigurationSnapshotSource = async (
+  source: string | undefined,
+  paths: WorkerPaths,
+  signal?: AbortSignal,
+): Promise<WorkerConfigurationSnapshot> => {
+  const content = source === undefined ? "{}" : source;
+  const configuration = await validateWorkerConfigurationSource(content, paths, signal);
+  return { source, configuration, ...parseServerConfiguration(content, paths) };
+};
+
+export const readWorkerConfigurationSnapshot = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfigurationSnapshot> =>
+  validateWorkerConfigurationSnapshotSource(await readWorkerConfigurationSource(paths, signal), paths, signal);
 
 export const validateWorkerConfigurationSource = async (source: string, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
   signal?.throwIfAborted();

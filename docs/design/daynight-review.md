@@ -32,7 +32,7 @@ daynight review ls
 GitHub 查询、SQLite 初始化、PR 边界选择或运行中配置重载。成功输出说明配置已保存，
 下次启动生效。review 模式加载配置、打开 SQLite、确保配置中的仓库已克隆到本地，
 然后持续轮询 GitHub，并以普通子进程调用 Copilot。有效的运行或列表调用在缺少
-文件或仓库字段时，先通过[客户端配置引导](daynight.md#按需配置引导)登记仓库；
+文件、`review` 节点或 `review.repositories` 字段时，先通过[客户端配置引导](daynight.md#按需配置引导)登记仓库；
 保存后才继续原操作，且不要求服务地址。非交互环境给出 `daynight review add-repo <remote>` 指引。YAML
 语法或结构错误、已有 review 字段无效或读取失败时，显示配置路径及具体原因并
 退出。按下 Ctrl+C 后，停止轮询和启动
@@ -41,40 +41,46 @@ GitHub 查询、SQLite 初始化、PR 边界选择或运行中配置重载。成
 `~/.daynight/config.yml` 的配置示例如下：
 
 ```yaml
-repositoryRoot: ~/daynights
-pollIntervalMs: 60000
-maxConcurrentWorker: 1
-agentTimeoutMs: 1800000
-maxAttempts: 3
-retryDelayMs: 30000
-copilotModel: auto
-copilotReasoningEffort: high
-repositories:
-  - remote: https://github.com/OWNER/REPO.git
-    path: /home/alice/daynights/github.com/owner/repo
+review:
+  repositoryRoot: ~/daynights
+  pollIntervalMs: 60000
+  maxConcurrentWorker: 1
+  agentTimeoutMs: 1800000
+  maxAttempts: 3
+  retryDelayMs: 30000
+  copilotModel: auto
+  copilotReasoningEffort: high
+  repositories:
+    - remote: https://github.com/OWNER/REPO.git
+      path: /home/alice/daynights/github.com/owner/repo
 ```
 
 数值字段省略时使用上述默认值；显式传入的不合理值报错。使用 YAML 1.2 解析器读取
-数据，共享 `config/document.ts` 拒绝语法问题、重复键和未知顶层字段，review 投影
-再校验自己的字段值。同一文件的 `serverUrl` 由独立 server 投影拥有；review 保留它
-且不校验其值。所有 review 数值必须是正的安全整数；毫秒计时字段还必须不超过
+数据，共享 `config/document.ts` 拒绝语法问题、重复键和未知顶层字段，根节点仅接受
+`serverUrl`、`serverToken`、`workerId`、`worker` 和 `review`。review 投影再校验
+`review` mapping、其字段清单及字段值；server 和 worker 投影不校验 `review` 内部值。
+旧顶层 review 字段明确拒绝；已有配置须将全部 review 设置移入 `review` 并删除原条目，
+不自动迁移。节点归属的决策见[review 配置分区](../../.agents/notes/implemented/architecture/2026-10-27-review-configuration-section.md)。
+同一文件的 `serverUrl` 由独立 server 投影拥有；review 保留它且不校验其值。
+所有 review 数值必须是正的安全整数；毫秒计时字段还必须不超过
 `2147483647`。运行和列表的 `repositories` 必须是非空列表，每项只接受 `remote`
-和 `path`，两者均必填。自动引导仅处理文件或 `repositories` 字段缺失，显式空列表
-仍报错。添加命令及交互引导允许已有文件缺少 `repositories`，校验现有 review 设置后
-建立首个完整列表；显式传入无效 review 值仍须拒绝。
+和 `path`，两者均必填。自动引导仅处理文件、`review` 节点或 `review.repositories`
+字段缺失；显式空列表和非 mapping 的 `review` 节点仍报错。添加命令及交互引导允许
+已有文件缺少 `review` 或 `review.repositories`，校验现有 review 设置后建立首个完整
+列表；显式传入无效 review 值仍须拒绝。
 
-`copilotModel` 和 `copilotReasoningEffort` 是两个独立的可选 review 顶层字符串。
+`copilotModel` 和 `copilotReasoningEffort` 是两个独立的可选 `review` 内字符串。
 示例中的 `auto` 和 `high` 均不是默认值。两者都复用 `nonEmptyString` 校验，拒绝
 非字符串、null、空串、纯空白和 NUL，保留合法字符串原值，不维护静态枚举。
 模型名称、账户可用性、推理强度等级及模型兼容性由 Copilot 判断；显式 `auto` 交由
 Copilot 自动选择模型。两个字段均可省略，或只设置一项，或同时设置；省略项不增加
 对应 flag，继续使用 Copilot 自身的选择。运行时在启动读取的全局配置中固定这两个
-值，适用于全部仓库，文件修改在下次启动生效。共享 YAML 键清单识别它们，server
+值，适用于全部仓库，文件修改在下次启动生效。共享 YAML 键清单识别 `review`，server
 投影仍只校验自己的字段；交互引导和仓库登记通过既有文档节点写入机制保留字段与注释。
 验证、默认语义和参数归属由
 [模型选项决策](../../.agents/notes/implemented/feature/2026-10-22-review-copilot-model.md)记录。
 
-`repositoryRoot` 默认是 `~/daynights`，仅属于添加命令的路径选择。根目录接受本机
+`review.repositoryRoot` 默认是 `~/daynights`，仅属于添加命令的路径选择。根目录接受本机
 绝对路径、配置目录相对路径，以及 `~` 或 `~/...` 形式的当前用户主目录展开；不支持
 其他用户的波浪号形式。省略 `--path` 时，命令在根目录下按规范化的 host/owner/name
 生成仓库目录，组件使用确定性的文件系统安全编码，以容纳端口及 Windows 保留名称。
@@ -105,7 +111,9 @@ inode 识别实际位置及祖先关系，处理符号链接和挂载边界。�
 替换配置，保留既有文件的权限模式。校验或替换前的失败保留原文件，并清理本次拥有的
 临时资源。该写锁协调配置命令，不取代人工编辑器的文件管理。
 `commands/review/configuration-guide.ts` 拥有首次交互引导，复用同一登记逻辑和保存协议：
-先收集输入，再持锁重新读取并核对选中的 review 字段，合并无关字段的并发修改后保存。
+先收集输入，再持锁重新读取并核对 `review.repositoryRoot` 与 `review.repositories`，
+合并服务、worker 及其他 review 选项的并发修改后保存。写入定位 `review` 内的文档节点，
+保留已有 YAML 注释和标量别名语义。
 
 将 HTTPS 或 SSH GitHub 远程地址解析为 host/owner/name。地址写法变化或程序重启都
 不得让同一仓库再次初始化。已有克隆与配置不匹配时拒绝使用，不得覆盖；保留其工作

@@ -38,9 +38,11 @@ preparation callback into the runtime. Cold startup prepares an empty selection
 before identity, locks, SQLite, Git or Herdr. A restart with retained state first
 establishes committed-cleanup discovery so persisted deadlines continue while
 Project lookup or prompting waits. New task resources wait for successful
-selection. After preparation, service and credential context must still match;
-worker settings are reread once and maxConcurrent observes those prepared
-settings. Existing assignments keep their original snapshots.
+selection. After preparation, service credentials and worker settings are
+validated from one captured configuration source. The service context must still
+match, and maxConcurrent observes that snapshot's prepared settings. An atomic
+file replacement after capture cannot supply different worker parameters under
+the original service context. Existing assignments keep their original snapshots.
 
 A selection snapshot covers raw worker.repositoryRoot presence and value,
 worker.repositories and service credentials. Network and prompts hold no
@@ -74,6 +76,12 @@ An independent worker root shares path calculations while preserving ownership.
 effects easy to avoid, but held Project requests can postpone existing cleanup
 deadlines. Runtime ownership of the callback gives fresh startup and retained
 responsibility their respective ordering guarantees.
+
+**Read service and worker settings separately after preparation.** An atomic
+configuration replacement between reads can pass the original service check
+while supplying another service's paths and native settings. A single captured
+source provides a consistent decision without holding a lock across startup or
+pretending to detect every future file edit.
 
 **Refresh Project metadata on every worker tick.** Acquisition bindings and
 original execution records already have durable owners. Configuration-time

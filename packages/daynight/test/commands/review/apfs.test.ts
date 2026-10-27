@@ -166,10 +166,10 @@ describe.skipIf(process.platform !== "darwin" || process.env.DAYNIGHT_TEST_APFS 
     ])("uses volume lookup rules for missing destinations %s and %s", async (first, second) => {
       const paths = resolveReviewPaths(homeDirectory);
       await writeFile(paths.configFile, JSON.stringify({
-        repositories: [
+        review: { repositories: [
           { remote: "https://github.com/owner/first", path: first },
           { remote: "https://github.com/owner/second", path: second },
-        ],
+        ] },
       }));
       const originalEntries = await readdir(homeDirectory);
       if (caseSensitive) {
@@ -183,7 +183,7 @@ describe.skipIf(process.platform !== "darwin" || process.env.DAYNIGHT_TEST_APFS 
     it("uses volume lookup rules for state-directory aliases", async () => {
       const paths = resolveReviewPaths(homeDirectory);
       await writeFile(paths.configFile, JSON.stringify({
-        repositories: [{ remote: "https://github.com/owner/repo", path: "../.DAYNIGHT/repo" }],
+        review: { repositories: [{ remote: "https://github.com/owner/repo", path: "../.DAYNIGHT/repo" }] },
       }));
       if (caseSensitive) {
         expect((await loadConfiguration(paths)).repositories).toHaveLength(1);
@@ -198,10 +198,10 @@ describe.skipIf(process.platform !== "darwin" || process.env.DAYNIGHT_TEST_APFS 
       await mkdir(reference);
       expect((await stat(path.join(homeDirectory, "cafe\u0301-reference"))).ino).toBe((await stat(reference)).ino);
       await writeFile(paths.configFile, JSON.stringify({
-        repositories: [
+        review: { repositories: [
           { remote: "https://github.com/owner/first", path: "../New/caf\u00e9" },
           { remote: "https://github.com/owner/second", path: "../New/cafe\u0301" },
-        ],
+        ] },
       }));
       const originalEntries = await readdir(homeDirectory);
       await expect(loadConfiguration(paths)).rejects.toThrow("same location");

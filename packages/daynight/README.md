@@ -364,7 +364,8 @@ commands do not start login, follow redirects with credentials, or automatically
 repeat a write. Reconcile an unconfirmed business mutation before another one.
 
 The first `review run`, `review list` or `review ls` asks for a repository when
-the file or `repositories` field is absent. To configure one in advance, run:
+the file, `review` section or `review.repositories` field is absent. To configure
+one in advance, run:
 
 ```bash
 daynight review add-repo https://github.com/OWNER/REPO.git
@@ -828,11 +829,13 @@ selection. Fresh startup saves the selection before creating worker identity,
 SQLite, Git or Herdr resources. A restarted worker with retained state first
 establishes its cleanup controller, so committed cleanup deadlines continue
 while Project lookup or prompting waits. New task resources wait for successful
-selection. Without terminal input and stderr, configure a Project with
+selection. Startup checks the service and selected worker settings from one
+captured configuration source; changed service or credentials require restarting
+the worker. Without terminal input and stderr, configure a Project with
 `worker repo add --project PROJECT_UUID` before startup.
 
 New paths use `worker.repositoryRoot`, defaulting to `~/daynights`, independently
-of review's top-level `repositoryRoot`. The worker root accepts the current home
+of `review.repositoryRoot`. The worker root accepts the current home
 shortcut (`~` or `~/`), absolute paths and paths relative to `config.yml`; Windows
 also accepts `~\`. Registration resolves that root with the actual home and
 saves absolute paths. Ordinary repositories use `<root>/<host>/<owner>/<repo>`;
@@ -1188,23 +1191,29 @@ cloning, authentication checks, GitHub calls, SQLite initialization and PR bound
 selection belong to review startup. An already running reviewer keeps its loaded
 configuration until its next startup.
 
-The same YAML also accepts the server client's `serverUrl` and optional
-`serverToken` fields. Review validates its own fields independently of server
-business values. The server projection requires a valid HTTP(S) origin and
+All review settings belong under the `review` mapping. The same YAML also
+accepts the server client's `serverUrl` and optional `serverToken` fields, the
+`worker` mapping and generated `workerId`. Review validates its own fields
+independently of server business values. The server projection requires a valid HTTP(S) origin and
 validates any configured token and its transport. The shared parser still rejects
 invalid YAML, duplicate keys and unknown root fields. Registration can add the
 first review repository to a server-only file while preserving its server
-settings and comments.
+settings and comments. Unknown fields inside `review` are rejected by review
+commands. Existing flat review settings must be moved together under `review`,
+including `repositoryRoot`, `repositories`, numeric options and Copilot options;
+remove their old root entries. The old root fields are rejected, with no automatic
+migration.
 
 A configuration with an explicit addition root is:
 
 ```yaml
-repositoryRoot: ~/daynights
-copilotModel: auto
-copilotReasoningEffort: high
-repositories:
-  - remote: https://github.com/OWNER/REPO.git
-    path: ../daynights/github.com/owner/repo
+review:
+  repositoryRoot: ~/daynights
+  copilotModel: auto
+  copilotReasoningEffort: high
+  repositories:
+    - remote: https://github.com/OWNER/REPO.git
+      path: ../daynights/github.com/owner/repo
 ```
 
 `copilotModel` and `copilotReasoningEffort` are independent optional fields for
@@ -1216,11 +1225,11 @@ effort levels and model/effort compatibility; Daynight maintains no static lists
 corresponding override and preserves Copilot's choice, so neither, either or both
 may be configured. Changes take effect on the next `review run` startup. Guided configuration
 and repository registration preserve both fields and YAML comments. The server
-configuration projection recognizes these shared keys without validating their
+configuration projection recognizes the `review` section without validating its
 review-owned values.
 
-`repositoryRoot` defaults to `~/daynights`. It is used only when `add-repo` has no
-`--path`: the command derives filesystem-safe components from the normalized
+`review.repositoryRoot` defaults to `~/daynights`. It is used only when
+`add-repo` has no `--path`: the command derives filesystem-safe components from the normalized
 host/owner/name and saves the resulting absolute repository path. A configured
 root may be absolute, config-directory-relative, or begin with `~` for the current
 OS user's home. Other users' tilde forms are rejected. Changing the root affects

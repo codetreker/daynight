@@ -33,8 +33,9 @@ Explicit repository entries still determine where new tasks may be acquired.
 acquisition selection and its independent worker clone root. The public command
 passes preparation into the runtime: cold startup resolves an empty selection
 before persistent resources; retained state establishes committed cleanup first.
-The original service/credential context is checked before prepared settings are
-loaded for subsequent startup, without changing frozen executions.
+The original service/credential context and prepared worker settings are checked
+from one captured configuration source for subsequent startup, without mixing
+file revisions or changing frozen executions.
 
 A single coordinator owns repository rotation, capacity and per-task serial
 advancement. Every inventory/acquisition round reads complete current own-claim

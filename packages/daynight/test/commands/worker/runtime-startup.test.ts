@@ -1,7 +1,8 @@
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
+import * as configurationFiles from "../../../src/config/files.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -115,6 +116,48 @@ describe("worker repository preparation lifecycle", () => {
     expect(prepareRepositories).toHaveBeenCalledOnce();
     expect(mocks.coordinator).toHaveBeenCalledOnce();
     expect(coordinatorOptions!.maxConcurrent).toBe(5);
+  });
+
+  it("keeps prepared service and acquisition settings from one captured configuration source", async () => {
+    const f = await fixture(true);
+    const controller = new AbortController();
+    const prepared = { ...f.document, worker: { repositories: [f.repository], maxConcurrent: 1, agent: "codex", model: "origin-a-model" } };
+    const nextSource = stringify({ ...prepared,
+      serverUrl: "https://origin-b.example", serverToken: "dn_pat_Zbcdefghijklmnopqrstuvwxyz1234567890",
+      worker: { ...prepared.worker, repositories: [{ ...f.repository, path: path.join(f.homeDirectory, "origin-b-repository") }], model: "origin-b-model" },
+    });
+    const originalRead = configurationFiles.readConfigurationSource;
+    let preparedSaved = false;
+    let replacedAfterCapture = false;
+    const read = vi.spyOn(configurationFiles, "readConfigurationSource").mockImplementation(async (...args) => {
+      const source = await originalRead(...args);
+      if (preparedSaved && !replacedAfterCapture) {
+        await writeFile(`${f.paths.configFile}.next`, nextSource);
+        await rename(`${f.paths.configFile}.next`, f.paths.configFile);
+        replacedAfterCapture = true;
+      }
+      return source;
+    });
+    let coordinatorOptions: WorkerCoordinatorOptions | undefined;
+    mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => {
+      coordinatorOptions = options;
+      return {
+        advanceCommittedCleanups: vi.fn(async () => {}), shutdown: vi.fn(async () => true),
+        tick: vi.fn(async () => { controller.abort(new Error("Prepared snapshot observed.")); }),
+      };
+    });
+    try {
+      await runWorker({ ...f, signal: controller.signal, prepareRepositories: async () => {
+        await writeFile(f.paths.configFile, stringify(prepared));
+        preparedSaved = true;
+      } });
+      expect(replacedAfterCapture).toBe(true);
+      expect(await readFile(f.paths.configFile, "utf8")).toBe(nextSource);
+      expect(mocks.remote.mock.calls[0]![0]).toEqual({ serverUrl: origin, serverToken: token });
+      expect(coordinatorOptions!.serverOrigin).toBe(origin);
+      expect(mocks.git.mock.results[0]!.value.prepareRepository.mock.calls[0]![0]).toMatchObject({ serverOrigin: origin, localPath: f.repository.path });
+      expect(coordinatorOptions!.repositories[0]!.configuration.model).toBe("origin-a-model");
+    } finally { read.mockRestore(); }
   });
 
   it.each(["serverUrl", "serverToken"] as const)("refuses a changed %s after warm configuration instead of rebinding resources", async (field) => {

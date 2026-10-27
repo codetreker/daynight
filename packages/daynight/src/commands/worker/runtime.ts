@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createOperation } from "../../api/operation.js";
 import type { TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { loadServerConfiguration } from "../../config/server.js";
-import { readWorkerConfiguration } from "./config.js";
+import { readWorkerConfiguration, readWorkerConfigurationSnapshot } from "./config.js";
 import { createWorkerCoordinator } from "./coordinator.js";
 import type { WorkerRepositoryAssignment } from "./coordinator.js";
 import { createWorkerControlDriver, submitWorkerControl } from "./control.js";
@@ -81,9 +81,9 @@ export const runWorker = async (options: {
       if (configuration.repositories.length > 0 || options.prepareRepositories === undefined) return;
       await options.prepareRepositories(cancellation.signal);
       cancellation.signal.throwIfAborted();
-      const current = await loadServerConfiguration(paths, cancellation.signal);
+      const current = await readWorkerConfigurationSnapshot(paths, cancellation.signal);
       if (current.serverUrl !== serverUrl || current.serverToken !== serverToken) throw new Error("The Daynight service or authentication changed during worker repository configuration; restart the worker with the current configuration.");
-      configuration = await readWorkerConfiguration(paths, cancellation.signal);
+      configuration = current.configuration;
       if (configuration.repositories.length === 0) throw new Error("Worker repository configuration did not select any repositories.");
     };
     if (configuration.repositories.length === 0 && options.prepareRepositories !== undefined && !await hasWorkerDatabase(paths.databaseFile)) {

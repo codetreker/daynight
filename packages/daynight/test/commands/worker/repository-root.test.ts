@@ -10,7 +10,7 @@ const parse = (repositoryRoot: unknown) => parseWorkerConfiguration(stringify({ 
 describe("worker clone root", () => {
   it("defaults independently of review settings without expanding the current home", () => {
     expect(parseWorkerConfiguration("{}", paths, path.posix).repositoryRoot).toBe("~/daynights");
-    expect(parseWorkerConfiguration(stringify({ repositoryRoot: "/review-only" }), paths, path.posix).repositoryRoot).toBe("~/daynights");
+    expect(parseWorkerConfiguration(stringify({ review: { repositoryRoot: "/review-only" } }), paths, path.posix).repositoryRoot).toBe("~/daynights");
   });
 
   it.each(["~/clones", "~", "../clones", "/clones"])("retains the configured raw root %s", (root) => {

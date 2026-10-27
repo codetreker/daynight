@@ -14,11 +14,11 @@ afterEach(async () => {
 
 describe("shared YAML document boundary", () => {
   it("recognizes each command's fields without imposing its value rules", () => {
-    const source = "# Server settings\nworkerId: null\nworker: malformed\nserverUrl: &server nonsense\nrepositoryRoot: *server # preserved alias\nrepositories: malformed\npollIntervalMs: null\nmaxConcurrentWorker: false\nagentTimeoutMs: []\nmaxAttempts: {}\nretryDelayMs: -1\ncopilotModel: null\ncopilotReasoningEffort: false\n";
+    const source = "# Server settings\nworkerId: null\nworker: malformed\nserverUrl: &server nonsense\nreview:\n  repositoryRoot: *server # preserved alias\n  repositories: malformed\n  pollIntervalMs: null\n  maxConcurrentWorker: false\n  agentTimeoutMs: []\n  maxAttempts: {}\n  retryDelayMs: -1\n  copilotModel: null\n  copilotReasoningEffort: false\n";
     const { document, mapping } = parseConfigurationDocument(source, paths);
-    expect(mapping).toEqual({ workerId: null, worker: "malformed", serverUrl: "nonsense", repositoryRoot: "nonsense", repositories: "malformed", pollIntervalMs: null, maxConcurrentWorker: false, agentTimeoutMs: [], maxAttempts: {}, retryDelayMs: -1, copilotModel: null, copilotReasoningEffort: false });
+    expect(mapping).toEqual({ workerId: null, worker: "malformed", serverUrl: "nonsense", review: { repositoryRoot: "nonsense", repositories: "malformed", pollIntervalMs: null, maxConcurrentWorker: false, agentTimeoutMs: [], maxAttempts: {}, retryDelayMs: -1, copilotModel: null, copilotReasoningEffort: false } });
     expect(document.toString()).toContain("serverUrl: &server nonsense");
-    expect(document.toString()).toContain("repositoryRoot: *server # preserved alias");
+    expect(document.toString()).toContain("review:\n  repositoryRoot: *server # preserved alias");
   });
 
   it.each(["", "null", "[]", "42", "serverUrl"])("requires a mapping: %s", (source) => {
@@ -27,7 +27,7 @@ describe("shared YAML document boundary", () => {
 
   it.each([
     "serverUrl: http://localhost\nserverUrl: http://other\n",
-    "repositories: [{remote: first, remote: second}]\n",
+    "review:\n  repositories: [{remote: first, remote: second}]\n",
     "serverUrl: [\n",
     "serverUrl: !unsupported http://localhost\n",
     "serverUrl: http://localhost\n---\nserverUrl: http://other\n",
