@@ -47,7 +47,9 @@ Bash/Zsh that honor it write their history there. This does not sandbox shell
 profiles: custom rc files may override it, and other shells or APPDATA-based
 history are not universally redirected. The structured attachment descriptor
 contains required routing/native-home/history overrides and identity removals,
-not a full copy of authentication environment values.
+not a full copy of authentication environment values. The [worker attach
+command](../feature/2026-10-27-worker-attach-command.md) consumes that descriptor
+to connect an interactive client to the existing private instance.
 
 Instance readiness checks compatible Herdr version/protocol, a restored snapshot
 and both endpoints. An incompatible or uncertain existing server is retained. A

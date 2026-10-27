@@ -130,15 +130,16 @@ daynight worker run
 ```
 
 The worker runs in the foreground with one execution slot by default. It uses
-fixed state under `~/.daynight/worker/` and prints the private Herdr attachment
-descriptor for human input. Ctrl+C stops original agents through bounded cleanup
-while retaining unfinished claims, worktrees and native history. The
-[worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+fixed state under `~/.daynight/worker/`. Run `daynight worker attach` in another
+terminal to open its private Herdr session for human input. Detaching the client
+leaves ongoing worker tasks running. Ctrl+C in `worker run` stops original
+agents through bounded cleanup while retaining unfinished claims, worktrees and
+native history. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
 
 If native startup asks for folder trust or another authorization, the worker
-waits without accepting it. Use its private attachment to make that decision in
-the original native session. For an acknowledged original process whose first
+waits without accepting it. Use `daynight worker attach` to make that decision
+in the original native session. For an acknowledged original process whose first
 prompt is known unsent and identity is verified, resolve the blocking screen and
 authorize continuation with `daynight worker retry <task-id> --claim-id
 <original-claim-id>`; the worker keeps the original conversation and settings.

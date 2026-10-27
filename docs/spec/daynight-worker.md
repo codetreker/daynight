@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 与 retry/release/transfer/resume 人工管理命令已组合这些模块；终止后新执行的服务端协议已接入，完整平台验收仍须独立核验。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
+本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run、attach 与 retry/release/transfer/resume 人工管理命令已组合这些模块；终止后新执行的服务端协议已接入，完整平台验收仍须独立核验。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
 
 ## 目标与范围
 
@@ -91,7 +91,7 @@ AND no active claim
 
 ### W-08：人工介入与显式移交
 
-- 需要人工输入或授权时保留自动执行许可、平台、claim、worktree、原会话和并发名额，前台显示等待原因及原会话入口；人工通过 Herdr 处理后继续。
+- 需要人工输入或授权时保留自动执行许可、平台、claim、worktree、原会话和并发名额，前台显示等待原因及 `daynight worker attach` 入口；人工在另一交互式终端连接原会话处理后继续。Attach 只连接已有私有 Herdr 会话，不启动 worker、daemon 或 agent；会话不可用时明确提示先运行 `daynight worker run`。该入口不要求 Daynight 登录，不查询服务端、SQLite 或取得 worker 锁。正常 detach 只断开客户端，原执行继续；启动失败和客户端非零退出保持可见。
 - 原执行用户或项目管理员可显式 release/transfer，并受项目访问权限约束。授权提交者与目标分别校验，目标必须是当前项目成员；接收者身份不自动授予替换原归属的权限。
 - `daynight worker retry/release/transfer/resume` 提供显式人工入口。Release/transfer 在任何破坏性清理前核验当前项目访问及原 owner/admin 权限；原执行账号与当前管理员分别处理，不以当前登录身份推断管理权限。
 - 主动管理先在 source 行持久保存具体意图，抑制普通恢复，由前台唯一 coordinator 串行完成原 agent 临时资源清理、真实停止、workspace 关闭和 worktree 删除后，才绑定用户决定的精确版本提交远端变更。没有前台时先取得相同实例锁并执行同一处理函数。单任务管理不停止共享 Herdr 或其他 task。停止或删除失败保留原责任；未知远端结果先核对，不重放、不重建旧业务资源。
@@ -130,7 +130,7 @@ AND no active claim
 
 ### W-11：可观察性与交付验收
 
-- 前台与 JSONL 能够区分 project/task/claim、worker、agent、实际平台、执行/等待/恢复/暂停/清理状态和具体错误。启动时输出私有 Herdr attach descriptor，仅将其 environment/unsetEnvironment 应用到 attach client；已有 task pane 保留自己的原 native XDG 和私有 HISTFILE。日志不携带凭据或完整 prompt。
+- 前台与 JSONL 能够区分 project/task/claim、worker、agent、实际平台、执行/等待/恢复/暂停/清理状态和具体错误。启动时输出 `daynight worker attach` 提示；该命令按私有 Herdr attachment descriptor 仅为客户端应用 environment/unsetEnvironment，已有 task pane 保留自己的原 native XDG 和私有 HISTFILE。日志不携带凭据或完整 prompt。
 - 自动执行许可和平台的 Web 交互遵循对应最终样式原型，保留双语、键盘、焦点和响应式规则，覆盖保存中、禁用、失败、版本冲突和不确定结果核对。
 - 三平台运行、真实 Herdr/agent 行为、受控故障注入和生产端到端结果分别保留来源与验证边界；文档、模拟进程或正常退出不能替代真实会话恢复证明。
 
@@ -145,6 +145,6 @@ AND no active claim
 | W-06、W-08 | 继续和恢复使用原 worktree；人工进入原会话后继续；显式结束统一删除旧 worktree，新 claim 创建新工作区；越权、平台不合格或有效 claim 的资源缺失保持拒绝或暂停。 |
 | W-09 | Ctrl+C、强制结束 worker、Herdr 重启及机器重启后不产生第二个执行 agent；在外部动作结果落库前后注入中断，正确核对实际结果；恢复预算和暂停跨重启保持。 |
 | W-10 | 已核验的开发任务合并并完成合并后验收，原 claim 退出自己清单后删除 worktree 且历史仍在；agent 交付证据不足时不完成；清理失败跨重启只重试清理。 |
-| W-11 | 前台和自动执行许可/平台 UI 展示与真实状态一致；错误、未知结果和人工处理入口可观察；各验收结果能关联到实际源代码、平台与运行环境。 |
+| W-11 | 前台和自动执行许可/平台 UI 展示与真实状态一致；`worker attach` 在交互式终端连接原私有会话，detach 保留原执行，会话缺席不启动新服务且错误可见；错误、未知结果和人工处理入口可观察；各验收结果能关联到实际源代码、平台与运行环境。 |
 
 完整运行时验收要求实际门禁及端到端验收通过，文档不能替代运行时证据。

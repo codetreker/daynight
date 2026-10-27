@@ -210,7 +210,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (live(before)) {
         await rememberStop(task, binding, signal);
         task = refresh(task);
-        deps.emit({ kind: before.status === "blocked" ? "waiting" : "reconnected", task: refresh(task), message: before.status === "blocked" ? "The original agent is waiting for input; attach to its private Herdr session." : "Observed the original live agent without replaying its startup input." });
+        deps.emit({ kind: before.status === "blocked" ? "waiting" : "reconnected", task: refresh(task), message: before.status === "blocked" ? "The original agent is waiting for input; run daynight worker attach in another terminal." : "Observed the original live agent without replaying its startup input." });
         return refresh(task);
       }
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized) return task;

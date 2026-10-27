@@ -251,13 +251,14 @@ records. An unrelated failure remains a failure even after that signal aborts. A
 read-only cancellation followed by confirmed shutdown can therefore resume the
 original native session without a synthetic fault barrier.
 
-The public attachment descriptor is advertised only after complete inventory and
-managed private-instance/snapshot readiness. It applies routing variables only
-to the attach client. It does not change the existing task pane's original
-native XDG or private HISTFILE. It exposes required paths and identity removals,
-without copying credentials. Diagnostics correlate original IDs, local state,
-recovery and cleanup errors; neither diagnostics nor terminal idle/done
-authorize task completion.
+The public `daynight worker attach` hint is advertised only after complete
+inventory and managed private-instance/snapshot readiness. The [attach
+command](../feature/2026-10-27-worker-attach-command.md) consumes the existing
+attachment descriptor, applies routing variables and identity removals only to
+the client, and leaves each existing task pane's native XDG and private HISTFILE
+unchanged. It does not load worker business state or server credentials.
+Diagnostics correlate original IDs, local state, recovery and cleanup errors;
+neither diagnostics nor terminal idle/done authorize task completion.
 
 ## Alternatives
 

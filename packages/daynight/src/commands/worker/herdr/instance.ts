@@ -130,13 +130,15 @@ const ordinaryDirectory = async (directory: string): Promise<void> => {
   const entry = await lstat(directory);
   if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error(`Private Herdr directory ${directory} must be an ordinary directory.`);
 };
+const verifyConfiguration = async (paths: HerdrInstancePaths): Promise<void> => {
+  const entry = await lstat(paths.configurationFile);
+  if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Private Herdr configuration ${paths.configurationFile} must be an ordinary file.`);
+  if (await readFile(paths.configurationFile, "utf8") !== managedConfiguration) throw new Error(`Private Herdr configuration ${paths.configurationFile} differs from the managed configuration; inspect it before starting the worker.`);
+};
 const ensureConfiguration = async (paths: HerdrInstancePaths): Promise<void> => {
   await ordinaryDirectory(paths.privateDirectory);
-  try {
-    const entry = await lstat(paths.configurationFile);
-    if (!entry.isFile() || entry.isSymbolicLink()) throw new Error(`Private Herdr configuration ${paths.configurationFile} must be an ordinary file.`);
-    if (await readFile(paths.configurationFile, "utf8") !== managedConfiguration) throw new Error(`Private Herdr configuration ${paths.configurationFile} differs from the managed configuration; inspect it before starting the worker.`);
-  } catch (error) {
+  try { await verifyConfiguration(paths); }
+  catch (error) {
     if (!missing(error)) throw error;
     await replaceFileAtomically(paths.configurationFile, managedConfiguration, 0o600);
   }
@@ -247,6 +249,20 @@ export const createHerdrInstance = (options: {
     paths, environment, rpc,
     attachment: { executable, arguments: ["--session", session], environment: attachmentEnvironment, unsetEnvironment: [...inheritedIdentity] } satisfies HerdrAttachment,
     ensure,
+    connect: async (operation: Operation): Promise<HerdrInstanceReady> => {
+      const scope = bounded(operation, 30_000);
+      try {
+        try { await verifyConfiguration(paths); }
+        catch (cause) {
+          if (missing(cause)) throw new Error("The worker Herdr session is not running. Start it with daynight worker run.", { cause });
+          throw cause;
+        }
+        const existing = await endpoints(scope);
+        if (!existing.api && !existing.client) throw new Error("The worker Herdr session is not running. Start it with daynight worker run.");
+        if (!existing.api || !existing.client) throw new Error("The private Herdr instance has only one reachable endpoint; its startup or shutdown remains unconfirmed.");
+        return { ...await ready(scope), reconnected: true };
+      } finally { scope.dispose(); }
+    },
     stop: async (operation: Operation): Promise<HerdrInstanceStopped> => {
       const scope = bounded(operation, 15_000);
       let requestFailure: unknown;

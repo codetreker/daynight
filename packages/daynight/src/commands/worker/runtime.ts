@@ -138,7 +138,7 @@ export const runWorker = async (options: {
       try {
         await coordinator.tick();
         if (!attachmentShown) {
-          emit({ kind: "attach", message: `Original ready private Herdr session: ${JSON.stringify(herdr.attachment)}. Apply its environment and unsetEnvironment only to the attach process.` });
+          emit({ kind: "attach", message: "Original ready private Herdr session: run daynight worker attach in another terminal for input." });
           attachmentShown = true;
         }
       }

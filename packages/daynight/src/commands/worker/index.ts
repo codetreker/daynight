@@ -9,11 +9,13 @@ import type { WorkerControlRequest } from "./control.js";
 import { workerDefinition } from "./definition.js";
 
 export type WorkerCommandDependencies = {
+  attach: (options: { homeDirectory: string }) => Promise<void>;
   run: (options: { homeDirectory: string; packageDirectory: string; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
   manage: (options: { homeDirectory: string; packageDirectory: string; request: WorkerControlRequest; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
 };
 
 const defaultDependencies: WorkerCommandDependencies = {
+  attach: async (options) => (await import("./attach.js")).attachWorker(options),
   run: async (options) => (await import("./runtime.js")).runWorker(options),
   manage: async (options) => (await import("./runtime.js")).runWorkerControl(options),
 };
@@ -22,6 +24,10 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   const command = parseCommand(workerDefinition, args, ["daynight", "worker"], "daynight worker --help");
   if (command.kind !== "run") {
     context.stdout(renderCommandHelp(command.command, command.path));
+    return;
+  }
+  if (command.command.name === "attach") {
+    await dependencies.attach({ homeDirectory: context.homeDirectory() });
     return;
   }
   const runtime = () => ({ homeDirectory: context.homeDirectory(), packageDirectory: context.packageDirectory, log: (message: string) => { context.stderr(message); } });
