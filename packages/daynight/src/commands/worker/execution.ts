@@ -5,6 +5,7 @@ import type { TaskPlatform } from "../../api/types.js";
 import { HerdrAgentActionError } from "./herdr.js";
 import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "./herdr.js";
 import type { ManagedAssignment } from "./prompts.js";
+import { workerPingPrompt } from "./prompts.js";
 import type { WorkerStore } from "./store.js";
 import type { ExecutionConfiguration, LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 import type { createWorkerGitManager } from "./worktrees.js";
@@ -64,8 +65,26 @@ const assertNativeSession = (task: LocalTask, observation: HerdrAgentObservation
 
 export const createExecutionDriver = (deps: ExecutionDependencies) => {
   const pendingInput = new Map<string, { binding: HerdrTaskBinding; prompt: string }>();
+  const lastInput = new Map<string, string | null>();
   const observations = new Map<string, string>();
   const key = (task: Pick<LocalTask, "projectId" | "taskId" | "claimId">): string => `${task.projectId}/${task.taskId}/${task.claimId}`;
+  const inputState = (observation: HerdrAgentObservation): string => {
+    const { session, workspaceId, paneId, terminalId } = observation.binding;
+    return JSON.stringify([session, workspaceId, paneId, terminalId, observation.status, observation.stateChangeSeq, observation.completionSeq]);
+  };
+  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
+    const identity = key(task);
+    lastInput.set(identity, inputState(observed));
+    try {
+      const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation), signal);
+      lastInput.set(identity, inputState(receipt.observation));
+      return await workerOperation((operation) => deps.herdr.tasks.observe(context, observed.binding, operation), signal);
+    } catch (error) {
+      if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") lastInput.delete(identity);
+      else lastInput.set(identity, null);
+      throw error;
+    }
+  };
   const reportObservation = (task: LocalTask, observation: HerdrAgentObservation, started = false): void => {
     const identity = key(task);
     const pending = pendingInput.has(identity);
@@ -85,7 +104,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
     });
   };
   return {
-    forget: (task: LocalTask): void => { pendingInput.delete(key(task)); observations.delete(key(task)); },
+    forget: (task: LocalTask): void => { pendingInput.delete(key(task)); lastInput.delete(key(task)); observations.delete(key(task)); },
     advance: async (input: ExecutionInput, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
       let task = deps.store.getTask(input.task);
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
@@ -99,16 +118,22 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (actual !== undefined && liveAgent(actual)) {
         let observed = await workerOperation((operation) => deps.herdr.tasks.observe(context, actual.binding, operation), signal);
         assertNativeSession(task, observed);
-        const pending = pendingInput.get(key(task));
+        const identity = key(task);
+        // A prompt ACK precedes native input consumption. Retain its observed turn
+        // until native progress makes another continuation a new decision.
+        if (lastInput.has(identity) && lastInput.get(identity) === null) lastInput.set(identity, inputState(observed));
+        if (observed.status === "working") lastInput.delete(identity);
+        const pending = pendingInput.get(identity);
         if (pending !== undefined && pending.binding.terminalId === actual.binding.terminalId && pending.binding.paneId === actual.binding.paneId && observed.status !== "blocked" && observed.interactiveReady && !observed.launchPending) {
-          pendingInput.delete(key(task));
+          pendingInput.delete(identity);
           try {
-            await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, actual.binding, pending.prompt, operation), signal);
-            observed = await workerOperation((operation) => deps.herdr.tasks.observe(context, actual.binding, operation), signal);
+            observed = await submitInput(task, context, observed, pending.prompt, signal);
           } catch (error) {
-            if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") pendingInput.set(key(task), pending);
+            if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") pendingInput.set(identity, pending);
             throw error;
           }
+        } else if (pending === undefined && (observed.status === "idle" || observed.status === "done") && observed.interactiveReady && !observed.launchPending && lastInput.get(identity) !== inputState(observed)) {
+          observed = await submitInput(task, context, observed, workerPingPrompt(task), signal);
         }
         assertNativeSession(task, observed);
         if (observed.nativeSession !== null) task = deps.store.setSessionId(task, observed.nativeSession.sessionId);
@@ -127,6 +152,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       const assignment: ManagedAssignment = { ...task, serverOrigin: input.owner.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree, configuration: input.configuration };
       const prompt = deps.buildPrompt(assignment, deps.platform);
       pendingInput.delete(key(task));
+      lastInput.set(key(task), null);
       let observation: HerdrAgentObservation;
       try {
         observation = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, {
@@ -138,8 +164,10 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         observation = await workerOperation((operation) => deps.herdr.tasks.observe(context, binding, operation), signal);
         assertNativeSession(task, observation);
         pendingInput.set(key(task), { binding, prompt });
+        lastInput.delete(key(task));
       }
       assertNativeSession(task, observation);
+      if (!pendingInput.has(key(task))) lastInput.set(key(task), inputState(observation));
       if (observation.nativeSession !== null) task = deps.store.setSessionId(task, observation.nativeSession.sessionId);
       reportObservation(task, observation, true);
       return observation;

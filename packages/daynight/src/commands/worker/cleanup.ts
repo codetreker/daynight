@@ -7,7 +7,7 @@ import { workerCleanupPrompt } from "./prompts.js";
 import type { LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 
 export type CleanupInput = { owner: ResourceOwner; project: WorkerProject; task?: LocalTask };
-type CleanupAttempt = { deadline: number; notified: boolean; baseline: { stateChangeSeq: number; completionSeq: number } | null };
+type CleanupAttempt = { deadline: number; notified: boolean; submitted: boolean };
 const key = (owner: ResourceOwner): string => `${owner.projectId}/${owner.taskId}/${owner.claimId}`;
 
 export const createCleanupDriver = (deps: ExecutionDependencies) => {
@@ -17,7 +17,7 @@ export const createCleanupDriver = (deps: ExecutionDependencies) => {
       const identity = key(input.owner);
       let attempt = attempts.get(identity);
       if (attempt === undefined) {
-        attempt = { deadline: deps.now() + 600_000, notified: false, baseline: null };
+        attempt = { deadline: deps.now() + 600_000, notified: false, submitted: false };
         attempts.set(identity, attempt);
         deps.emit({ kind: "cleanup-started", ...(input.task === undefined ? {} : { task: input.task }), message: `Cleaning claim ${input.owner.claimId}; this attempt has a ten-minute deadline.` });
       }
@@ -33,19 +33,14 @@ export const createCleanupDriver = (deps: ExecutionDependencies) => {
           if (liveAgent(pane) && !attempt.notified && deps.now() < attempt.deadline) {
             attempt.notified = true;
             try {
-              const { observation } = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, pane.binding, workerCleanupPrompt(input.owner, attempt!.deadline), operation), signal, Math.max(1, Math.min(30_000, attempt.deadline - deps.now())));
-              if (observation.status === "idle" && observation.interactiveReady
-                && observation.stateChangeSeq !== null
-                && observation.completionSeq !== null) {
-                attempt.baseline = { stateChangeSeq: observation.stateChangeSeq, completionSeq: observation.completionSeq };
-              }
+              await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, pane.binding, workerCleanupPrompt(input.owner, attempt!.deadline), operation), signal, Math.max(1, Math.min(30_000, attempt.deadline - deps.now())));
+              attempt.submitted = true;
             } catch (error) {
               deps.emit({ kind: "cleanup-notification-error", ...(input.task === undefined ? {} : { task: input.task }), message: "Cleanup notification failed; the current bounded cleanup attempt continues.", error });
             }
+            if (deps.now() < attempt.deadline) return false;
           }
-          const completed = attempt.baseline !== null && (pane.status === "idle" || pane.status === "done")
-            && pane.stateChangeSeq !== null && pane.stateChangeSeq > attempt.baseline.stateChangeSeq
-            && pane.completionSeq !== null && pane.completionSeq > attempt.baseline.completionSeq;
+          const completed = attempt.submitted && pane.status === "idle";
           if (liveAgent(pane) && !completed && deps.now() < attempt.deadline) return false;
           await workerOperation((operation) => deps.herdr.tasks.stopAndClose(context, pane.binding, operation), signal);
         }

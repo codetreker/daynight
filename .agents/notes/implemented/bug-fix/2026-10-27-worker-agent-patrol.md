@@ -1,0 +1,82 @@
+# Agent Note: Worker Agent Patrol and Shutdown
+
+Status: implemented
+
+## Problem
+
+A live native agent can finish an execution turn while its assigned task still
+requires review, CI or subsequent delivery. Reconnecting that process does not
+make it resume work. The worker must distinguish this unfinished business task
+from an agent that has finished the requested shutdown cleanup.
+
+Cleanup also needs a usable completion signal when native state sequence
+counters are absent or do not advance. Requiring both counters can leave an
+idle agent occupying its cleanup slot until the full deadline.
+
+## Decision
+
+The [worker design](../../../../docs/design/daynight-worker.md) keeps business
+continuation and termination as separate phases of the same claim. Startup and
+recovery prompts declare a background assignment, require autonomous decisions
+within its scope and existing authorization, and prohibit questions. Waiting
+for review or CI remains ongoing execution: the agent waits, checks results and
+continues delivery without ending the turn. This does not grant authorization
+for unrelated work or bypass native trust and permission requirements.
+
+For a still-owned active claim, a patrol reads the current agent inside the
+existing serialized task operation. A live, interactive-ready agent in idle or
+done receives a continuation ping when it is not launching and has no first
+input pending. Working, blocked, unknown and not-ready states remain under
+observation. The ping preserves task, claim, worktree and authorization, and
+reminds the agent to wait for review and CI. The agent's state cannot complete
+the business task; only its original claim-bound completion does that.
+
+The driver retains the observation associated with the last input in memory.
+An unchanged observation suppresses another ping, including after an unknown
+submission result. Later current observations drive the next decision; there
+is no persistent input ledger or automatic replay of an uncertain write.
+Termination suppresses business pings.
+
+After successful submission of a cleanup message, a subsequent patrol that
+observes idle considers that cleanup turn finished and proceeds to stop the
+agent and close its workspace. This observation does not require sequence
+counter advancement or interactive readiness. The pre-notification observation
+and the submission receipt itself do not finish cleanup. Failed or unknown
+notification results preserve their error and the existing ten-minute deadline;
+they do not trigger automatic replay. Actual process-stop confirmation and Git
+ownership checks still precede destructive cleanup.
+
+This decision partially supersedes the cleanup completion criterion in the
+[claim record decision](../simplification/2026-10-27-worker-claim-records.md).
+Its original counter requirement aimed to distinguish the requested cleanup
+from an older business turn. The worker now accepts a fresh idle observation
+after successful notification as sufficient for its bounded shutdown phase.
+The local schema, claim ownership, recovery and restart guarantees remain with
+that decision.
+
+## Alternatives
+
+**Only reconnect a live agent.** It preserves the native process and avoids
+startup replay, but leaves an idle unfinished assignment without an instruction
+to continue. A dedicated continuation ping preserves that identity while
+providing the missing wake-up.
+
+**Keep cleanup sequence-counter baselines.** Both counters can attribute a new
+turn when the native integration provides them, but missing or unchanged
+counters make an already idle cleanup wait until the deadline. The shutdown
+phase uses the requested fresh idle observation and retains actual stopping
+confirmation before resource deletion.
+
+## Consequences
+
+Review and CI waits remain with the assigned agent. The worker still owns
+claim reconciliation and resources, without interpreting business acceptance
+or introducing another scheduler, durable journal or public setting. Prompt
+instructions cannot prove that a native agent follows the wait policy; native
+runtime evidence remains distinct from controlled component checks.
+
+Idle has a phase-specific consequence: it wakes an unfinished active assignment
+and finishes an already notified cleanup turn. A fresh idle observation is a
+shutdown signal, not proof that the native model consumed the cleanup text.
+Unknown notification results retain the deadline. The continuation observation
+is process-local, so restarting the worker does not provide exactly-once input.

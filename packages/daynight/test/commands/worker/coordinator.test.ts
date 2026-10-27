@@ -60,11 +60,12 @@ const fixture = async (maxConcurrent = 1) => {
       pane.nativeSession = { source: "herdr", agent: context.agent, sessionId: input.resumeSessionId ?? uuid(1000 + sequence) };
       return observe(context, binding);
     }),
-    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => {
+    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string) => {
       order.push("notify"); const pane = resources.get(context.claimId)!.panes[0]!;
-      pane.status = "idle"; pane.interactiveReady = true; pane.stateChangeSeq! += 1; pane.completionSeq! += 1;
       const before = observe(context, binding);
-      pane.stateChangeSeq! += 2; pane.completionSeq! += 1;
+      pane.interactiveReady = true; pane.stateChangeSeq! += 1;
+      if (prompt.startsWith("The controller is stopping this execution")) { pane.status = "idle"; pane.completionSeq! += 1; }
+      else pane.status = "working";
       return { submission: "submitted" as const, observation: before };
     }),
     stopAndClose: vi.fn(async (owner: ResourceOwner) => { order.push("stop-close"); resources.delete(owner.claimId); }),
@@ -196,7 +197,7 @@ describe("minimal worker resource reconciliation", () => {
     await f.coordinator.tick(); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
   });
 
-  it("does not recover a lost first-input decision from durable state", async () => {
+  it("pings after restart without recovering or replaying a lost first-input decision", async () => {
     const f = await fixture();
     const start = f.tasks.start.getMockImplementation()!;
     f.tasks.start.mockImplementationOnce(async (context, binding, input) => {
@@ -208,7 +209,10 @@ describe("minimal worker resource reconciliation", () => {
     [...f.resources.values()][0]!.panes[0]!.status = "idle";
     const restarted = createWorkerCoordinator(f.options); await restarted.tick();
     await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(2));
-    expect(f.tasks.submitPrompt).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
+    expect(f.tasks.submitPrompt.mock.calls[0]![2]).toContain("worker's periodic check");
+    expect(f.tasks.submitPrompt.mock.calls[0]![2]).not.toBe(f.options.buildPrompt.mock.results[0]!.value);
+    expect(f.tasks.start).toHaveBeenCalledOnce();
   });
 
   it("resets cleanup timing with a new in-memory driver", async () => {

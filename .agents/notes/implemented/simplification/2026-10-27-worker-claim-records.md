@@ -84,12 +84,14 @@ validate only the target Git worktree when deleting. Sibling or unrelated Git
 registration problems remain diagnostics, without preventing healthy agents
 from stopping. Resource discovery still reports those problems separately.
 
-Cleanup completion counters use only the successful submitPrompt receipt's
-idle, interactive-ready observation with both counters present. Later observations
-must advance both counters. A pre-notification polling snapshot cannot attribute
-the end of an old business turn to this cleanup request; busy, unknown, rejected
-or otherwise unattributable results retain the current deadline's bounded wait.
-The baseline remains process-local.
+The cleanup criterion originally required an idle, interactive-ready
+submitPrompt receipt and later advancement of both sequence counters to avoid
+counting an old business turn as the requested cleanup. The
+[agent patrol decision](../bug-fix/2026-10-27-worker-agent-patrol.md) supersedes
+that criterion: successful notification followed by a fresh idle observation
+allows stopping, without requiring counters or interactive readiness. Notification
+failures and unknown results retain the bounded deadline and visible error.
+Input observations and cleanup progress remain process-local.
 
 Configuration and recovery/cleanup state are process-local. A restarted process
 uses the current applicable model/args for the recorded agent type. Cleanup has
