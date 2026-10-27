@@ -430,6 +430,31 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.store.getTask(row)?.sessionId).toBe(row.sessionId);
   });
 
+
+  it.each(["readable Git", "corrupt sibling"])("settles a cached stop before completing an absent claim with %s and no remaining workspace", async (discovery) => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).toEqual(expect.any(String)));
+    const row = f.store.listTasks()[0]!;
+    const owner = f.worktrees.get(row.claimId)!.owner;
+    const binding = f.resources.get(row.claimId)!.panes[0]!.binding;
+    const pending = [{ context: { ...owner, cwd: f.bind(owner).worktreePath }, binding }];
+    f.tasks.pendingStops.mockImplementation(() => [...pending]);
+    f.grants.clear(); f.candidates.splice(0); f.resources.clear(); f.worktrees.clear();
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    f.tasks.stopAndClose.mockImplementation(async () => { await wait; pending.splice(0); });
+    if (discovery === "corrupt sibling") vi.mocked(f.git.listWorktrees).mockRejectedValue(new Error("unregistered sibling reservation"));
+    try {
+      if (discovery === "corrupt sibling") await expect(f.coordinator.tick()).rejects.toThrow("unregistered sibling reservation");
+      else await f.coordinator.tick();
+      expect(f.store.getTask(row)?.status).toBe("active");
+      await eventually(() => expect(f.tasks.stopAndClose).toHaveBeenCalledOnce());
+      expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    } finally { release(); }
+    await eventually(() => expect(f.store.getTask(row)?.status).toBe("done"));
+    expect(pending).toHaveLength(0); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+  });
+
 });
 
 

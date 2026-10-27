@@ -168,8 +168,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const inventory = await ownInventory(normalSignal);
     await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
     const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
-    for (const workspace of observed) {
-      const owner = workspace.owner;
+    const knownOwners = [...observed.map((workspace) => workspace.owner), ...options.herdr.tasks.pendingStops().map((stop) => stop.context)];
+    for (const owner of knownOwners) {
       if (owner.serverOrigin !== options.serverOrigin || options.store.getProject(owner) === null || inventory.has(key(owner))) continue;
       ending.set(key(owner), owner);
       const running = controllers.get(key(owner));
