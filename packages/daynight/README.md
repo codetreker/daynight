@@ -335,7 +335,11 @@ directory, with the rules in the [worker](#worker-configuration-and-startup) and
 Unknown fields at the root, in `review` or `worker`, and in their repository
 entries are ignored at runtime and preserved by CLI configuration edits. Known
 fields retain their type and value checks. Invalid YAML, duplicate keys and
-invalid mapping structures remain errors.
+invalid mapping structures remain errors. Review and worker repository edits and
+credential updates compare decoded values outside the fields they own before
+saving. If shared YAML aliases would change an unrelated value, the write fails
+and retains the original file; separate those aliases before retrying. Unaffected
+aliases remain valid.
 
 Project and task commands use `https://daynight.cc` when the configuration file or
 `serverUrl` is absent. A production connection needs no server configuration.

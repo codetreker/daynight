@@ -14,6 +14,14 @@ Configuration readers ignore unknown fields at the root, in `review` and
 `worker`, and in their repository entries. Each projection constructs its runtime
 configuration from known fields. The original YAML document retains unknown
 nodes, so targeted configuration writes preserve their values and comments.
+Review and worker repository edits and credential updates compare decoded values
+outside their owned fields before saving. Shared aliases that would mutate
+unrelated values cause refusal before replacement, preserving the original file.
+Unaffected aliases remain valid. The comparison mechanism is shared by these
+writers; each writer declares the fields it owns. Repository operations also
+protect unknown data in retained entries. Removing a selected registration owns
+that entire entry; changes to unknown data in remaining entries are refused.
+Concurrency comparisons handle cyclic alias graphs without JSON serialization.
 
 YAML syntax, duplicate keys, decoding failures and required mapping structures
 remain validated. Known fields retain their existing type, range, identity and
@@ -37,11 +45,18 @@ The same field policy applies at each configuration mapping they consume.
 settings that another consumer needs. Explicit runtime projections already avoid
 using unknown data without changing its stored representation.
 
+**Treat alias text as sufficient preservation.** An alias can keep its spelling
+while its referenced repository list or credential changes. Preserving decoded
+values is required to leave another consumer's settings intact. Refusing the
+affected write reuses the worker ownership rule without introducing anchor
+rewriting or losing comments.
+
 ## Consequences
 
 Commands can share a configuration with unrecognized extensions. Configuration
-edits preserve unrelated data and retain the existing lock, atomic replacement
-and alias safeguards. Invalid YAML remains a document failure even when it
+edits preserve unrelated data and retain the existing lock and atomic
+replacement safeguards. A shared alias can require manual separation before a
+repository edit or credential update; refusal keeps the original bytes intact. Invalid YAML remains a document failure even when it
 appears within an unknown field.
 
 Misspelled optional keys are ignored and the corresponding omitted known field

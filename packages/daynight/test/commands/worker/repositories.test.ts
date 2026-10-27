@@ -65,6 +65,42 @@ describe("worker Project registration", () => {
     if (process.platform !== "win32") expect((await stat(f.paths.configFile)).mode & 0o777).toBe(0o600);
   });
 
+  it.each(["root", "worker", "repository"] as const)("refuses to mutate repository aliases used by unknown %s fields", async (location) => {
+    const old = project(3, "https://github.com/owner/old.git");
+    const source = `${connection}worker:\n  repositories: &repos\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: ../old\n${location === "repository" ? "      future: *repos\n" : location === "worker" ? "  future: *repos\n" : "future: *repos\n"}`;
+    const f = await fixture(source);
+    await expect(changeWorkerRepositories({ ...f, projects: [old, project()], addProjectIds: [uuid(1)] }))
+      .rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+    expect(await readdir(f.paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it.each([false, true])("associates an existing Project only when its unknown values stay unchanged (shared entry: %j)", async (sharedEntry) => {
+    const source = `${connection}worker:\n  repositories:\n    - &entry\n      remote: ${project().repoUrl}\n      path: ../old\n      future: ${sharedEntry ? "*entry" : "{ enabled: true }"}\n`;
+    const f = await fixture(source);
+    const update = changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
+    if (sharedEntry) {
+      await expect(update).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+      expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+    } else {
+      expect((await update)[0]!.projectId).toBe(uuid(1));
+      const { mapping } = parseConfigurationDocument(await readFile(f.paths.configFile, "utf8"), f.paths);
+      expect(mapping.worker).toMatchObject({ repositories: [{ projectId: uuid(1), future: { enabled: true } }] });
+    }
+  });
+
+  it("removes selected repository entries with their unknown aliases while preserving retained entries", async () => {
+    const old = project(3, "https://github.com/owner/old.git");
+    const source = `${connection}worker:\n  repositories: &repos\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: ../old\n      future: *repos\n    - projectId: ${uuid(1)}\n      remote: ${project().repoUrl}\n      path: ../retained\n      future: &metadata { enabled: true }\n  future: *metadata\n`;
+    const f = await fixture(source);
+    const registered = await changeWorkerRepositories({ ...f, projects: [old, project()], removeProjectIds: [old.id] });
+    expect(registered).toHaveLength(1);
+    expect(registered[0]!.projectId).toBe(uuid(1));
+    const saved = await readFile(f.paths.configFile, "utf8");
+    expect(saved).toContain("future: &metadata { enabled: true }");
+    expect(saved).toContain("future: *metadata");
+  });
+
   it.each(["associate", "append", "remove"] as const)("refuses %s when a worker repository anchor is shared with the review list", async (kind) => {
     const source = `${connection}worker:\n  repositories: &sharedRepositories\n    - remote: ${project().repoUrl}\n      path: ../shared-checkout\nreview:\n  repositories: *sharedRepositories\n`;
     const f = await fixture(source);

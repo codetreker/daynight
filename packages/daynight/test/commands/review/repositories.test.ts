@@ -54,6 +54,24 @@ describe("repository registration", () => {
     expect((await loadConfiguration(paths)).copilotReasoningEffort).toBe("high");
   });
 
+  it.each(["root", "review", "repository"] as const)("refuses to mutate a repository alias used by an unknown %s field", async (location) => {
+    const source = `review:\n  repositories: &repos\n    - remote: https://github.com/o/old\n      path: ../old\n${location === "repository" ? "      future: *repos\n" : location === "review" ? "  future: *repos\n" : "future: *repos\n"}`;
+    const { paths, options } = await setup(`unknown-alias-${location}`, source);
+    await expect(addRepository({ remote }, paths, options)).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(paths.configFile, "utf8")).toBe(source);
+    expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it("preserves unknown aliases whose decoded values are unaffected by registration", async () => {
+    const source = "future: &metadata { enabled: true }\nreview:\n  future: *metadata\n  repositories:\n    - remote: https://github.com/o/old\n      path: ../old\n      future: *metadata\n";
+    const { paths, options } = await setup("unknown-unchanged-alias", source);
+    await addRepository({ remote }, paths, options);
+    const saved = await readFile(paths.configFile, "utf8");
+    expect(saved).toContain("future: &metadata { enabled: true }");
+    expect(saved.match(/future: \*metadata/g)).toHaveLength(2);
+    expect((await loadConfiguration(paths)).repositories).toHaveLength(2);
+  });
+
   it("adds the first review repository to server-only configuration and preserves its YAML and idempotence", async () => {
     const source = "# Shared connection\nserverUrl: &connection http://localhost:8787/ # keep origin\n";
     const { paths, options } = await setup("server-only", source);

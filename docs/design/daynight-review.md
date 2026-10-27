@@ -75,7 +75,7 @@ review 投影校验 `review` mapping 及已知字段值；server 和 worker 投�
 模型名称、账户可用性、推理强度等级及模型兼容性由 Copilot 判断；显式 `auto` 交由
 Copilot 自动选择模型。两个字段均可省略，或只设置一项，或同时设置；省略项不增加
 对应 flag，继续使用 Copilot 自身的选择。运行时在启动读取的全局配置中固定这两个
-值，适用于全部仓库，文件修改在下次启动生效。共享 YAML 键清单识别 `review`，server
+值，适用于全部仓库，文件修改在下次启动生效。共享 YAML 文档解析器读取 `review`，server
 投影仍只校验自己的字段；交互引导和仓库登记通过既有文档节点写入机制保留字段与注释。
 验证、默认语义和参数归属由
 [模型选项决策](../../.agents/notes/implemented/feature/2026-10-22-review-copilot-model.md)记录。
@@ -103,16 +103,20 @@ inode 识别实际位置及祖先关系，处理符号链接和挂载边界。�
 
 同一规范化仓库的重复添加若省略 `--path`，直接复用保存的路径，不重新应用根目录；
 显式指定同一实际路径时同样不重写配置，指定不同路径则报错。
-添加命令修改 YAML 文档节点以保留已有设置和注释；`config/files.ts` 统一负责配置
-读取、独立写锁和保留权限的原子替换。`config.yml.lock` 是独立于
+添加命令修改 YAML 文档节点以保留已有设置和注释；保存前比较 `review.repositoryRoot` 和
+`review.repositories` 之外的解码值，并单独比较保留仓库条目的未知字段。根节点、其他 review
+字段及保留条目的未知字段均受保护。共享 alias 连带改变非归属值时拒绝保存，保持原文件；
+未受影响的合法 alias 继续保留。
+`config/files.ts` 统一负责配置读取、独立写锁和保留权限的原子替换。`config.yml.lock` 是独立于
 `instance.lock` 的配置写锁，覆盖读取、校验和替换全过程；占用时立即明确报错。
 异常退出后必须确认没有配置写入者，再人工移除该锁。现有配置必须是普通文件；
 修改时拒绝符号链接及其他文件类型。保存先在同目录写入唯一临时文件，再以 rename
 替换配置，保留既有文件的权限模式。校验或替换前的失败保留原文件，并清理本次拥有的
 临时资源。该写锁协调配置命令，不取代人工编辑器的文件管理。
 `commands/review/configuration-guide.ts` 拥有首次交互引导，复用同一登记逻辑和保存协议：
-先收集输入，再持锁重新读取并核对 `review.repositoryRoot` 与 `review.repositories`，
-合并服务、worker 及其他 review 选项的并发修改后保存。写入定位 `review` 内的文档节点，
+先收集输入，再持锁重新读取并深比较 `review.repositoryRoot` 与 `review.repositories` 的存在性及值；
+比较支持未知字段中的循环 alias。确认没有相关并发变化后，合并服务、worker 及其他 review
+选项的并发修改并保存。写入定位 `review` 内的文档节点，
 保留已有 YAML 注释和标量别名语义。
 
 将 HTTPS 或 SSH GitHub 远程地址解析为 host/owner/name。地址写法变化或程序重启都

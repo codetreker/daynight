@@ -95,6 +95,20 @@ describe("review configuration guide", () => {
     });
   });
 
+  it("refuses an alias introduced during prompting that would change an unknown setting", async () => {
+    const original = "review:\n  repositories: &repos\n    - remote: https://github.com/o/old\n      path: ../old\n";
+    const concurrent = `${original}future: *repos\n`;
+    const { context, paths } = await fixture(original);
+    answers(context, []);
+    context.prompt!.ask = vi.fn().mockResolvedValueOnce("https://github.com/o/new").mockImplementationOnce(async () => {
+      await writeFile(paths.configFile, concurrent);
+      return "";
+    });
+    await expect(configureReview(context)).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(paths.configFile, "utf8")).toBe(concurrent);
+    expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
   it.each(["review: null", "review: []", "review: false"])("rejects malformed review configuration without prompting: %s", async (source) => {
     const { context, paths } = await fixture(source);
     const ask = answers(context, []);

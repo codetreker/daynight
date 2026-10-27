@@ -1,5 +1,6 @@
 import path from "node:path";
 import { Document } from "yaml";
+import { verifyConfigurationUpdate } from "../../config/ownership.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { repositoryPathComponent } from "../../repository/location.js";
 import { updateConfigurationFile } from "../../config/files.js";
@@ -30,7 +31,8 @@ export const updateRepositoryConfiguration = async (
 ): Promise<ConfigurationUpdate<AddRepositoryResult>> => {
   const existing = source === undefined ? undefined : await validateRegistrationConfigurationSource(source, runtimePaths);
   const document = source === undefined ? new Document({ review: { repositoryRoot: defaultRepositoryRoot, repositories: [] } }) : parseConfigurationDocument(source, runtimePaths).document;
-  const decoded = reviewConfigurationMapping(document.toJS() as Record<string, unknown>);
+  const mapping = document.toJS() as Record<string, unknown>;
+  const decoded = reviewConfigurationMapping(mapping);
   const root = document.hasIn(["review", "repositoryRoot"]) ? decoded.repositoryRoot : defaultRepositoryRoot;
   const identity = remoteIdentity(input.remote, "remote");
   const previous = existing?.repositories.find((repository) => repository.coordinate === identity.coordinate);
@@ -63,6 +65,10 @@ export const updateRepositoryConfiguration = async (
   }
   document.addIn(["review", "repositories"], { remote: input.remote, path: repositoryPath });
   const updatedSource = document.toString();
+  verifyConfigurationUpdate(mapping, updatedSource, runtimePaths, {
+    section: "review", fields: ["repositoryRoot", "repositories"],
+    retainedSequence: { field: "repositories", identity: "remote", fields: [] },
+  });
   const configuration = await validateConfigurationSource(updatedSource, runtimePaths);
   const repository = configuration.repositories.at(-1)!;
   return { result: { repository, added: true }, source: updatedSource };

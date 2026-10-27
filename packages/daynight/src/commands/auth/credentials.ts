@@ -1,4 +1,5 @@
 import { Document } from "yaml";
+import { verifyConfigurationUpdate } from "../../config/ownership.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { updateConfigurationFile } from "../../config/files.js";
 import type { ConfigurationPaths } from "../../config/paths.js";
@@ -19,5 +20,7 @@ export const updateCredential = async (
   const document = current?.document ?? new Document({});
   if (token === undefined) document.delete("serverToken");
   else document.set("serverToken", token);
-  return { result: undefined, source: document.toString() };
+  const updatedSource = document.toString();
+  verifyConfigurationUpdate(mapping, updatedSource, paths, { fields: ["serverToken"] });
+  return { result: undefined, source: updatedSource };
 }, signal);

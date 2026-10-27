@@ -56,6 +56,8 @@ Copilot 作为子进程启动。
 无需设置服务地址。空列表和其他无效 review 值仍须报错。非交互环境缺配置时给出
 `daynight review add-repo <remote>` 指引。添加命令和交互引导可向仅含 server
 或 worker 配置的文件登记首个仓库，保留已有字段、注释及原有 review 字段语义。
+登记和交互引导若因共享 YAML alias 改变未知字段或其他非归属字段的解码值，必须拒绝保存并
+保留原文件；未受影响的 alias 保持有效。
 
 `daynight review add-repo <remote> [--path <path>]` 负责读取、校验和保存配置。配置不存在时
 自动创建；已有配置中的其他设置和 YAML 注释须保留。命令不执行 clone、认证检查、

@@ -87,7 +87,7 @@ worker:
 
 Worker 的 repositories 模块读取完整、已认证的远端 Project 列表，新注册显式选择后保存 id、原 repoUrl 和绝对 path。已有注册匹配同一仓库身份时保持原传输 URL、路径与覆盖，remote-only 项只补 projectId，避免把既有 SQLite 绑定改成另一种等价传输地址。普通仓库采用 host/owner/repo 目录；非普通 transport/user/port 和嵌套路径保留各自身份，编码空、百分号和 dot 组件防止目录逃逸或身份折叠。repo list 只读本地，add/remove 使用远端现存 Project，remove 不改变本机任务资源。
 
-worker/config 的 readWorkerConfigurationSnapshot 从一次文件读取捕获原 YAML，并从同一份内容校验 worker 设置及服务/凭据；注册模块只为该快照添加选择指纹。选择快照覆盖 worker.repositoryRoot 的实际存在性和值、worker.repositories 及服务/凭据上下文。网络和多选结束后才取共享配置锁；锁内重读、保留无关并发编辑及 YAML 节点，候选源码通过同一类型/身份/物理路径 validator 后原子保存。写入前比较所有非 worker 字段及 worker 中除 repositories 之外的有效值；共享 alias 传播导致无关值变化时拒绝写入。未受影响的 alias 保留，不把配置校验局限于 worker 自身类型。
+worker/config 的 readWorkerConfigurationSnapshot 从一次文件读取捕获原 YAML，并从同一份内容校验 worker 设置及服务/凭据；注册模块为该快照添加解码后的选择基线，以支持包含循环 alias 的未知字段，并使用深比较检测并发变化。选择快照覆盖 worker.repositoryRoot 的实际存在性和值、worker.repositories 及服务/凭据上下文。网络和多选结束后才取共享配置锁；锁内重读、保留无关并发编辑及 YAML 节点，候选源码通过同一类型/身份/物理路径 validator 后原子保存。写入前比较所有非 worker 字段、worker 中除 repositories 之外的有效值及保留仓库条目的未知字段；显式移除拥有整个所选条目。共享 alias 传播导致无关值变化时拒绝写入。未受影响的 alias 保留，不把配置校验局限于 worker 自身类型。
 
 公共 run 命令将项目配置准备回调传入 runtime。首次空配置且无本机数据库时，准备先于实例锁、workerId、SQLite 或 native 控制器；有本机状态时先启动既有 committed-cleanup 发现循环，再等待项目读取/选择，保留已提交原截止。回调完成后立即核对 cancellation，并通过同一中立快照读取服务及 worker 设置；从该次捕获内容核对原 serverUrl/serverToken，再载入其中的配置并要求实际选择仓库。不能分别读取后组合不同来源的服务与仓库/agent 设置；之后的文件修改不改变已捕获的启动快照。协调器通过 getter 使用本次设置的 maxConcurrent。新任务启动等待该边界；已有执行仍使用其冻结配置。
 
