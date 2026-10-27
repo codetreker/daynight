@@ -25,6 +25,9 @@ full-history semantics.
 
 The window uses the snapshot's server observation plus monotonic elapsed time,
 with precise completion boundaries and a deadline for the next relevant change.
+The [local summary display decision](../architecture/2026-10-27-project-cache-display.md)
+allows provisional classification using client wall time before that first live
+sample; successful synchronization replaces this provisional time basis.
 Visibility recovery recomputes the window even without another successful sync;
 inactive Overview releases its display timer. Execution-duration subscriptions
 keep their separate owner. This extends the [section decision](2026-10-25-project-overview-task-sections.md)
@@ -67,7 +70,8 @@ in-project positioning action.
 Readers can compare unfinished outcomes and move directly to their task group.
 The recent aggregate can change as completed work ages out even when task data
 is unchanged. Completion timestamps without a known time cannot establish
-recency. The server time anchor avoids device-clock skew, while monotonic time
+recency. Provisional local classification can reflect device-clock skew until
+the first successful sync. The server time anchor then avoids that skew, while monotonic time
 and visibility recovery keep deadline work independent of polling success.
 
 Explicit navigation overrides saved scroll for one activation only. Ordinary

@@ -335,8 +335,15 @@ business versions remain bigint. The default ten-second server overlap can
 repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
 invalidate detail records, replace published indexes or broadcast.
 
-The current mount requires its own successful online project sync before private
-cache publication. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
+After identity verification, a project publishes its validated local summary
+snapshot while task-sync runs in the background. Valid empty snapshots render
+normally; missing or invalid baselines retain loading until synchronization.
+Recoverable sync failures retain visible summaries and expose Retry. Summary
+publication does not authorize detail bodies or task writes: those still require
+this mount's successful online project sync. A local-only detail mount keeps its
+visibility gate local and leaves shared session observation unchanged, so an
+already accepted operation can finish preparation in its original authorized
+history; this mount's first live receipt still requires its own opening GET. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
 mutation responses. A verified different principal synchronously releases old content
 and starts identity verification. Headerless or malformed-principal errors retain
 valid cached content. Project-sync not_found, a trusted not_found for a task known
@@ -350,7 +357,13 @@ gate. `canRevokeProject` and `revokeProject` check the captured user fence/gener
 retire local reuse synchronously, and purge only the matching durable generation
 through the existing transaction. Scope-owned cleanup outlives the view; failure
 keeps admission denied, and beginSync retries cleanup before a fresh online sync.
-An old graph receipt alone cannot re-admit the detail.
+An old graph receipt alone cannot re-admit the detail. `canPreviewProject` also
+keeps local summaries hidden after effective withdrawal, deriving eligibility
+from existing retired generations and online authorization. The hook checks it
+both before and after the asynchronous disk read. Same-scope navigation, remounts,
+ordinary hints and failed Retry or polling cannot restore previews, even when
+CAS cleanup preserves a newer durable generation. Successful online sync restores
+authorization without removing the old-generation fences.
 
 Ordinary broadcast hints contain no task content or access grant; authorized
 receivers reread committed stores without another network request. Negative hints
@@ -429,6 +442,13 @@ unknown, reconciling and exact-version gates remain. The
 owns the complete admission, race, budget and failure rules.
 
 ## Task execution time and possible stalls
+
+A local-only snapshot has revision zero and no server clock or successful receipt.
+It displays neither a refreshed timestamp nor running durations or stall warnings;
+completed durations still use their persisted endpoints. Overview uses client wall
+time for provisional recent-completion classification, then switches to the live
+server sample. This provisional time never establishes execution time or sync
+coverage.
 
 `useTaskGraph` captures `receivedMonotonic` immediately after decoding task-sync,
 before IDB application or index work, and pairs it with that response's database
@@ -844,8 +864,8 @@ response updates the mount's clock receipt, including duplicate-only responses.
 Detail content follows its own summary business version and project generation;
 unchanged receipts do not cause GETs or detail writes. Receipt-driven recovery
 still retries failed reads and raw graph disagreements. `GraphSnapshot.revision`
-is the successful mount-local receipt and online-admission signal, not a task
-version or durable commit counter. Equivalent
+is zero for local-only summaries; positive values are the successful mount-local
+receipt and online-admission signal, not a task version or durable commit counter. Equivalent
 task data retains its index and layout; settings-only changes update Project
 metadata without rebuilding task projections, and changed intrinsic data replaces
 statistics and both task-category lists together. The
@@ -1629,7 +1649,7 @@ scenario annotations validated in each target's report.
 | W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained task-list subtree and closed graph dialog across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/scroll restoration and temporary graph-dialog opening, dependency reclassification and consistent full refresh |
 | W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: Goal disclosure with complete unique child rows and direct task details, independent explicit 80% graph dialog and narrow-screen gutters, list/focus/scroll restoration, complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and detail/viewport actions |
 | W8, TI12–TI14 | `detail-navigation`, `refresh-staleness`, `task-detail-page`: shared complete dialog/page content and actions, title-bar/attachment popouts, task/tab/file history, query-preserving login, nested confirmations, precise/conflicting/unknown writes, automatic full-detail reads and retained geometry/state |
-| W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, correlated errors, empty/not-found states, delayed request replacement and complete size refusal |
+| W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, cached content with correlated refresh errors across reload, cold-cache initial failure/loading, empty/not-found states, cached project navigation during delayed sync with request cancellation, and complete size refusal |
 | W10 | Native and container functional targets, exact image identity and dev-ci cleanup receipt |
 | W11 | Strict raw Go/V8 coverage reports, validated complete browser/performance receipts and the final `checks` result |
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |

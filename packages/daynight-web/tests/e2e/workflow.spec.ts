@@ -1392,6 +1392,17 @@ test('refresh-staleness', scenario('refresh-staleness'), async ({ page, api: req
 
 test('failure-recovery', scenario('failure-recovery'), async ({ page, api: request }, info) => {
   await page.clock.install({ time: new Date('2029-01-01T00:00:00Z') });
+  const uncached = await createProject(request, { name: `Initial recovery ${randomUUID()}` });
+  await withDependencyFailure(async () => {
+    await page.goto(`/projects/${uncached.id}`);
+    await expect(page.getByRole('heading', { name: '项目加载失败' })).toBeVisible();
+    await expect(page.getByRole('region', { name: '项目任务统计' })).toHaveCount(0);
+    await expect(page.getByRole('alert')).not.toContainText('task_dependencies');
+  });
+  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await expect(page.getByRole('heading', { name: uncached.name, exact: true })).toBeVisible();
+  await expect(stat(page, '任务总数')).toHaveText('0');
+  await expect(page.getByRole('alert')).toHaveCount(0);
   const project = await createProject(request, { name: `Recovery ${randomUUID()}` });
   await openTaskProject(page, project.id, project.name);
   await expect(page.getByRole('heading', { name: '还没有任务' })).toBeVisible();
@@ -1457,10 +1468,15 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
     await expect(page.locator('.snapshot-time time')).toHaveAttribute('datetime', receipt!);
     await expect(page.getByRole('alert', { includeHidden: true })).not.toContainText('task_dependencies');
     await page.reload();
-    await expect(page.getByRole('heading', { name: '项目加载失败' })).toBeVisible();
-    await expect(page.getByRole('region', { name: '项目任务统计' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
+    await expect(stat(page, '任务总数')).toHaveText('2');
+    await expect(stat(page, '已完成')).toHaveText('2');
+    await expect(page.getByRole('status', { name: '正在加载任务图' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: '刷新失败' })).toBeVisible();
+    await expect(page.getByText('仍显示上次成功读取的数据。')).toBeVisible();
+    await expect(page.locator('.snapshot-time time')).toHaveCount(0);
   });
-  await page.getByRole('button', { name: '重试', exact: true }).click();
+  await page.getByRole('button', { name: '重试刷新', exact: true }).click();
   await expect(page.getByRole('heading', { name: project.name, exact: true })).toBeVisible();
   await expect(stat(page, '已完成')).toHaveText('2');
   await expect(page.getByRole('alert')).toHaveCount(0);
@@ -1476,7 +1492,18 @@ test('deep-links', scenario('deep-links'), async ({ page, api: request }, info) 
   const second = await createProject(request, { name: `Route second ${randomUUID()}` });
   await createTask(request, first.id, { title: '首项目任务' });
   await createTask(request, second.id, { title: '次项目任务' });
-  await openProject(page, first.id, first.name);
+  const initialSync = await holdProjectSync(page, first.id);
+  try {
+    const navigation = await page.goto(`/projects/${first.id}`);
+    expect(navigation?.status()).toBe(200);
+    await initialSync.requested();
+    await expect(page.getByRole('status', { name: '正在加载任务图' })).toBeVisible();
+    await expect(page.getByRole('region', { name: '项目任务统计' })).toHaveCount(0);
+    await expect(page.getByRole('heading', { name: first.name, exact: true })).toHaveCount(0);
+    initialSync.release();
+    await expect(page.getByRole('heading', { name: first.name, exact: true })).toBeVisible();
+    await expect(stat(page, '任务总数')).toHaveText('1');
+  } finally { await initialSync.close(); }
   const reload = await page.reload();
   expect(reload?.status()).toBe(200);
   await expect(page.getByRole('heading', { name: first.name, exact: true })).toBeVisible();
@@ -1507,9 +1534,11 @@ test('deep-links', scenario('deep-links'), async ({ page, api: request }, info) 
   try {
     await page.evaluate((path) => { history.pushState(null, '', path); window.dispatchEvent(new PopStateEvent('popstate')); }, `/projects/${first.id}`);
     await within(fetched.promise, 'real graph response fetch');
-    await expect(page.getByRole('status', { name: '正在加载任务图' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: first.name, exact: true })).toBeVisible();
+    await expect(stat(page, '任务总数')).toHaveText('1');
+    await expect(page.getByRole('status', { name: '正在加载任务图' })).toHaveCount(0);
+    await expect(page.locator('.snapshot-time time')).toHaveCount(0);
     await expect(page.getByRole('heading', { name: second.name, exact: true })).toHaveCount(0);
-    await expect(page.getByRole('region', { name: '项目任务统计' })).toHaveCount(0);
     await page.goBack();
     await expect(page.getByRole('heading', { name: second.name, exact: true })).toBeVisible();
     await expect.poll(() => aborted.length).toBe(1);

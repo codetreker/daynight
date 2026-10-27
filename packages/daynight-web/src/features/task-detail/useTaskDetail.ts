@@ -13,14 +13,14 @@ export const useTaskDetail = (projectId: string, taskId: string, revision: numbe
   const generation = sessions.projectGeneration(projectId);
   const blockedRead = state.mutation.phase === "pending" || state.mutation.phase === "unknown" || state.mutation.reconciling;
   useEffect(() => {
-    const refresh = opened.current?.sessions === sessions && opened.current.projectId === projectId && opened.current.taskId === taskId;
+    if (revision <= 0) return;
     const previous = opened.current;
-    const opening = !refresh || previous === null || previous.revision <= 0;
-    if (revision > 0 && opening) sessions.requireOpeningRead(projectId, taskId);
-    const needsRead = sessions.observe(projectId, taskId, observedTask, revision > 0 && generation !== null);
+    const opening = previous === null || previous.sessions !== sessions || previous.projectId !== projectId || previous.taskId !== taskId;
+    if (opening) sessions.requireOpeningRead(projectId, taskId);
+    const needsRead = sessions.observe(projectId, taskId, observedTask, generation !== null);
     opened.current = { sessions, projectId, taskId, revision, version, generation, blockedRead };
     const newReceipt = previous?.revision !== revision;
-    if (revision > 0 && !blockedRead && (opening || previous?.generation !== generation || needsRead && (previous?.version !== version || newReceipt || previous?.blockedRead === true))) {
+    if (!blockedRead && (opening || previous?.generation !== generation || needsRead && (previous?.version !== version || newReceipt || previous?.blockedRead === true))) {
       sessions.load(projectId, taskId, revision, opening ? "open" : "automatic");
     }
   }, [sessions, projectId, taskId, revision, observedTask, blockedRead, version, generation]);

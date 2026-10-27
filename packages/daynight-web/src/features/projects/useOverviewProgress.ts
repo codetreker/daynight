@@ -4,7 +4,8 @@ import type { GraphSnapshot } from "./useTaskGraph";
 
 export const useOverviewProgress = (snapshot: GraphSnapshot, chainIds: readonly string[], standaloneIds: readonly string[], active: boolean) => {
   const [tick, setTick] = useState(0);
-  const now = () => overviewTimestamp(snapshot.observedAt) + BigInt(Math.floor((performance.now() - snapshot.receivedMonotonic) * 1_000_000));
+  const reference = snapshot.observedAt === null ? BigInt(snapshot.localTime) * 1_000_000n : overviewTimestamp(snapshot.observedAt);
+  const now = () => reference + BigInt(Math.floor((performance.now() - snapshot.receivedMonotonic) * 1_000_000));
   const progress = overviewProgress(snapshot.index, chainIds, standaloneIds, now());
   const nextUpdateAt = progress.nextUpdateAt;
 
@@ -21,7 +22,7 @@ export const useOverviewProgress = (snapshot: GraphSnapshot, chainIds: readonly 
     }
     document.addEventListener("visibilitychange", onVisibility);
     return () => { cancel(); document.removeEventListener("visibilitychange", onVisibility); };
-  }, [active, snapshot.observedAt, snapshot.receivedMonotonic, snapshot.index, chainIds, standaloneIds, nextUpdateAt, tick]);
+  }, [active, reference, snapshot.receivedMonotonic, snapshot.index, chainIds, standaloneIds, nextUpdateAt, tick]);
 
   return progress;
 };

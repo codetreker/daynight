@@ -181,7 +181,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     <>
       <div className="project-navigation">
         <a className="back-link" href="/projects" onClick={backToProjects}>{m.back}</a>
-        {snapshot !== null && (
+        {snapshot !== null && snapshot.receivedAt !== null && (
           <p className="snapshot-time"><time dateTime={new Date(snapshot.receivedAt).toISOString()}>{m.lastRefreshed({ time: format.time(snapshot.receivedAt) })}</time></p>
         )}
       </div>

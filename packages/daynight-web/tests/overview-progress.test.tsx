@@ -12,7 +12,7 @@ const observedAt = "2026-10-26T12:00:00.123456789Z";
 const cutoff = "2026-10-19T12:00:00.123456789Z";
 type Seed = { readonly id: string; readonly status: TaskStatus; readonly completedAt?: string | null;
   readonly dependsOn?: readonly string[]; readonly externalDependsOn?: readonly string[]; readonly titleTruncated?: boolean };
-const snapshot = (seeds: readonly Seed[], observed = observedAt): GraphSnapshot => {
+const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphSnapshot, { observedAt: string }> => {
   const tasks: GraphTask[] = seeds.map((seed) => {
     const dependsOn = seed.dependsOn === undefined ? [] : seed.dependsOn;
     const blockedBy = dependsOn.filter((id) => seeds.find((task) => task.id === id)!.status !== "done");
@@ -86,6 +86,19 @@ describe("overview progress counting", () => {
 
 describe("overview rolling completion window", () => {
   const expiring = () => snapshot([{ id: "todo", status: "todo" }, { id: "done", status: "done", completedAt: "2026-10-19T12:00:00.124456789Z" }]);
+
+  it("uses the cached display's local reference until a server receipt reanchors the rolling window", () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, "now").mockReturnValue(0);
+    const live = snapshot([{ id: "todo", status: "todo" }, { id: "done", status: "done", completedAt: "2026-10-25T12:00:00Z" }]);
+    const cached: GraphSnapshot = { ...live, observedAt: null, receivedAt: null, revision: 0, localTime: Date.parse("2026-11-02T12:00:00Z") };
+    const { chainIds, standaloneIds } = categories(live);
+    const { result, rerender, unmount } = renderHook(({ value }: { value: GraphSnapshot }) => useOverviewProgress(value, chainIds, standaloneIds, true), { initialProps: { value: cached as GraphSnapshot } });
+    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0 });
+    rerender({ value: live });
+    expect(result.current.standalone).toEqual({ done: 1, total: 2, percent: 50 });
+    unmount(); expect(vi.getTimerCount()).toBe(0);
+  });
 
   it("expires a completion after the exact boundary with an unchanged snapshot and no client wall-clock dependency", () => {
     vi.useFakeTimers(); let monotonic = 0;

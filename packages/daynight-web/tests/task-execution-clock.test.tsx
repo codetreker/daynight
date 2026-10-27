@@ -119,7 +119,7 @@ describe("project execution clock ownership", () => {
     const clock = createTaskExecutionClock(input(), platform.api);
     const observations: Array<{ clock: number; warning: number; elapsed: number }> = [];
     const remove = clock.subscribeRunning(() => observations.push({ clock: clock.getSnapshot().warningMinutes,
-      warning: clock.getWarningSnapshot().warningMinutes, elapsed: clock.getSnapshot().serverMilliseconds - epoch }));
+      warning: clock.getWarningSnapshot().warningMinutes, elapsed: clock.getSnapshot().serverMilliseconds! - epoch }));
     const settings = vi.fn(); const removeSettings = clock.subscribeSettings(settings);
     platform.elapse(700);
     clock.update({ observedAt: new Date(epoch + 5_000).toISOString(), receivedMonotonic: 300, warningMinutes: 2 });
@@ -135,6 +135,24 @@ describe("project execution clock ownership", () => {
 });
 
 describe("execution clock provider", () => {
+  it("keeps cached running time unknown and completed intervals available until a live sample arrives", () => {
+    vi.useFakeTimers();
+    vi.spyOn(performance, "now").mockReturnValue(0);
+    const graph = snapshot();
+    let current: GraphSnapshot = { ...graph, observedAt: null, receivedAt: null, revision: 0, localTime: Date.parse("2055-01-01T00:00:00Z") };
+    const wrapper = ({ children }: { children: ReactNode }) => <TaskExecutionClockProvider projectId={projectId} snapshot={current}>{children}</TaskExecutionClockProvider>;
+    const completed: ExecutionTask = { ...running, status: "done", completedAt: new Date(epoch + 60_000).toISOString() };
+    const { result, rerender, unmount } = renderHook(() => ({ running: useTaskExecution(running), completed: useTaskExecution(completed) }), { wrapper });
+    expect(result.current.running).toBeNull();
+    expect(result.current.completed).toMatchObject({ kind: "completed", elapsedMilliseconds: 60_000 });
+    expect(vi.getTimerCount()).toBe(0);
+    current = snapshot(new Date(epoch + 3_601_000).toISOString());
+    rerender();
+    expect(result.current.running).toMatchObject({ kind: "running", elapsedMilliseconds: 3_601_000, overdue: true });
+    expect(vi.getTimerCount()).toBe(1);
+    unmount(); expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("includes commit delay and fresh server receipts while ignoring the client wall clock", () => {
     vi.useFakeTimers();
     let monotonic = 1_700;
