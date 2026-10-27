@@ -76,6 +76,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 - Herdr 私有 XDG 与端点隔离；task native 环境保留调用方原 XDG set/unset 和认证目录。Bash/Zsh HISTFILE 使用私有文件；自定义 rc 和其他 shell 不在通用历史隔离保证内。
 - 存活 agent 保持原连接；重新启动前停止并关闭已存在的 inactive workspace，以当前 native 环境重建，并清空该 pane 遗留的原生引用。会话选择只使用本机保存的 session_id；不把 inactive pane 的旧引用当作新 ID，不增加历史扫描或持久回执。
 - 活 agent 直接连接并观察；需要启动且 session_id 有值则使用记录的 agent 和原生 ID resume；session_id=NULL 时 Warning 后启动全新原生会话，成功取得 ID 写回原行，沿用 task/claim/worktree。该 NULL 规则包括启动成功但 ID 尚未保存的崩溃窗口，不增加历史反查、暂停或人工确认门槛。
+- 本机 session_id 非空时，启动、重连和延后输入前观察到的原生引用必须与其一致；不同 ID 是可见错误，保留原记录并停止该次输入。session_id 为空时可采纳实际存活 agent 的真实 ID，仍不采纳 inactive pane 的旧引用；需要启动的 NULL 分支保持 Warning 后全新会话。
 - 首次启动和明确恢复使用完整 prompt，显式声明 worker-managed、using-daynight、execute-task-in-managed，提供 project/task/claim/worktree 身份、实际路径/branch 和本次配置。适配层递交不透明 prompt；重连活 agent 不重发启动输入。普通技能不推断 managed 模式或加载其详细指令，缺失 assignment 保持等待。
 - 保留官方 native/Herdr 集成、当前参数和 composer readiness 校验；自动输入不接受原生信任/授权。原生历史可用性由原生命令报告，不扫描 provider 数据库或会话 manifest。已知 ID 恢复失败保持可见，不静默清除 ID。
 - 进程中的启动回执、输入提交和停止观察只保留内存，重启不承诺启动输入恰好一次。需要人工授权时通过原 worker attach 操作；输入与临时资源清理不能变成自动接受 trust 的入口。

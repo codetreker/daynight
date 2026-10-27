@@ -141,6 +141,10 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       const task = needTask(identity);
       if (task.status === "done") throw new Error("The local execution is already done.");
       const nativeSessionId = id(sessionId, "Native session ID");
+      if (task.sessionId !== null) {
+        if (task.sessionId !== nativeSessionId) throw new Error("The claimed task is already bound to a different native session.");
+        return task;
+      }
       db.prepare("UPDATE tasks SET session_id = @sessionId WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId").run({ ...claimKey(task), sessionId: nativeSessionId });
       return needTask(task);
     }),

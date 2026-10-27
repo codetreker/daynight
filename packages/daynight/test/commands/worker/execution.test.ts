@@ -42,6 +42,8 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   let sequence = 0;
   const executing = new Set<number>();
   let closeFailure: Error | undefined;
+  let launchReference: string | undefined;
+  let blockedLaunch = false;
   let hook: { paneId: string; sessionId: string; remaining: number } | undefined;
   const rpc: HerdrRpcClient = { request: async (method, params, operation): Promise<HerdrRpcResult> => {
     operation.check(); calls.push({ method, params: structuredClone(params) });
@@ -67,7 +69,8 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
     if (method === "pane.process_info") return { type: "pane_process_info", process_info: { pane_id: params.pane_id, shell_pid: 100, foreground_processes: [{ pid: 100 }] } };
     if (method === "agent.start") {
       const pane = panes.find((entry) => entry.pane_id === params.pane_id)!;
-      const current = { ...pane, agent, name: params.name, agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 };
+      const current: Entry = { ...pane, agent, name: params.name, agent_status: blockedLaunch ? "blocked" : "idle", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 };
+      if (launchReference !== undefined) current.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: launchReference };
       agents.push(current); launches.push({ environment: environments.get(String(params.pane_id))!, args: params.args as string[], paneId: String(params.pane_id) });
       return { type: "agent_started", agent: current, argv: [agent, ...params.args as string[]] };
     }
@@ -90,7 +93,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, platform: "linux", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
   const input: ExecutionInput = { task, project, owner, configuration };
   const resources = async () => { const operation = createOperation(); try { return await manager.listResources(operation); } finally { operation.dispose(); } };
-  return { root, store, input, context, manager, resources, events, calls, launches, nativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, driver: createExecutionDriver(dependencies) };
+  return { root, store, input, context, manager, resources, events, calls, launches, nativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, driver: createExecutionDriver(dependencies) };
 };
 
 describe("execution from current Herdr resources", () => {
@@ -130,6 +133,36 @@ describe("execution from current Herdr resources", () => {
     f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
     const result = await f.driver.advance(f.input);
     expect(result.binding).toEqual(f.binding);
+    expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+  });
+
+  it.each(["codex", "copilot"] as const)("keeps the saved %s session after a rejected resume and later mismatched live observation", async (agent) => {
+    const f = await fixture(agent, savedId); f.reportOnLaunch(staleId);
+    await expect(f.driver.advance(f.input)).rejects.toThrow(/native session/);
+    expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
+    await expect(f.driver.advance(f.input)).rejects.toThrow(/native session/);
+    expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+  });
+
+  it.each(["codex", "copilot"] as const)("rejects a mismatched live %s session before sending a deferred first prompt", async (agent) => {
+    const f = await fixture(agent, savedId); f.blockOnLaunch();
+    const blocked = await f.driver.advance(f.input);
+    expect(blocked.status).toBe("blocked"); expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    f.agents[0]!.agent_status = "idle";
+    f.agents[0]!.agent_session = { source: `herdr:${agent}`, agent, kind: "id", value: staleId };
+    await expect(f.driver.advance(f.input)).rejects.toThrow(/native session/);
+    expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+  });
+
+  it.each(["codex", "copilot"] as const)("binds an unknown NULL session to a genuine live %s observation", async (agent) => {
+    const f = await fixture(agent, null);
+    f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
+    await f.driver.advance(f.input);
+    expect(f.store.getTask(f.input.task)?.sessionId).toBe(staleId);
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 

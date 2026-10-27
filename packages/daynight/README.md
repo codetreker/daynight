@@ -1015,6 +1015,11 @@ The saved SQLite session_id still selects resume or fresh startup; an inactive
 pane's retained reference is not saved as a newly observed session ID. A live
 agent keeps its current connection.
 
+A non-NULL saved session ID remains the recovery identity. A different native
+ID reported during startup, live reconnection or before deferred input is an
+error: the saved ID is retained and that input is not sent. A genuine live
+agent's ID may fill a NULL record; inactive pane references remain excluded.
+
 The NULL rule also covers interruption before a newly started native ID was saved.
 It retains the task, claim and worktree and requires no history scan or approval
 gate. A failed resume of a known ID remains an error. Launch/input receipts,

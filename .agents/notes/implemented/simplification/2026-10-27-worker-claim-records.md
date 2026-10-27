@@ -46,7 +46,12 @@ A live agent is reconnected without replaying its startup prompt. A native
 process that needs starting resumes the recorded ID when present. A NULL ID
 emits Warning and starts a fresh native conversation in the same task, claim and
 worktree, then saves its ID. It has no history-search, pause or approval gate.
-Known-ID native resume errors remain visible.
+Known-ID native resume errors remain visible. A non-NULL saved ID is also
+validated against every reported native reference before binding it or sending
+deferred input. A mismatch remains an error and retains the original ID, so a
+later live reconnect cannot turn a failed resume into another conversation.
+A genuine live observation may fill a NULL row; inactive retained references
+are still excluded.
 
 An existing inactive workspace is stopped/closed and recreated with the native
 launch environment before starting a fresh or resumed process. Herdr 0.9.5

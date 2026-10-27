@@ -149,13 +149,16 @@ describe("worker claim and native session index", () => {
     expect(() => store.registerPending({ ...claim, agent: "copilot" })).toThrow("different agent");
   });
 
-  it("can materialize an observed native identity and explicitly save a new one", () => {
-    const { store, project } = fixture();
+  it("retains a known native identity and rejects a different observed session", () => {
+    const { file, store, project } = fixture();
     store.registerProject(project);
     expect(store.registerPending({ ...claim, agent: "copilot", sessionId: uuid(8) }).sessionId).toBe(uuid(8));
-    expect(store.setSessionId(claim, uuid(9)).sessionId).toBe(uuid(9));
+    const concurrent = open(file);
+    expect(store.setSessionId(claim, uuid(8)).sessionId).toBe(uuid(8));
+    expect(() => concurrent.setSessionId(claim, uuid(9))).toThrow("different native session");
     expect(() => store.setSessionId(claim, "bad")).toThrow("Native session ID must be a UUID");
-    expect(store.getTask(claim)?.sessionId).toBe(uuid(9));
+    expect(store.getTask(claim)?.sessionId).toBe(uuid(8));
+    expect(concurrent.getTask(claim)?.sessionId).toBe(uuid(8));
   });
 
   it("permits only one active claim for the same project and task across connections", () => {
