@@ -20,6 +20,10 @@ require deleted resources or claim the old native conversation as its own.
 
 ## Decision
 
+Manual commands now require a stopped runner and its exclusive instance lock, with no persistent management intent, under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Release/transfer stop and close before the remote operation and delete the worktree only after confirmed ownership exit. The following preserves the original concurrent-controller design and its durability rationale.
+
+### Original implementation and rationale
+
 The public `worker retry/release/transfer/resume` commands use the existing
 [foreground coordinator](2026-10-27-foreground-worker-runtime.md),
 [local records](2026-10-26-worker-local-records.md),
@@ -146,6 +150,10 @@ mechanism. One count-bound permit adds the requested attempt while keeping
 fault history and original execution identity.
 
 ## Consequences
+
+The [current simplification](../simplification/2026-10-27-worker-claim-records.md) owns the delivered storage and restart trade-offs. The original consequences below belong to the detailed model retained here as decision history.
+
+### Original consequences
 
 Source cleanup survives CLI or worker interruption and cannot be undone by
 ordinary recovery. Unknown remote outcomes remain explicit, and other tasks

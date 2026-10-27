@@ -28,7 +28,7 @@ directories, and environment variables do not establish that mode.
 Each execution reference owns its lifecycle. Ordinary execution handles its
 version-bound start, recovery, and completion. Managed execution validates the
 supplied project, task, original claim and worktree identities, branch, and
-frozen configuration, preserves the already-started execution, and submits its
+invocation configuration, preserves the already-started execution, and submits its
 final version-bound completion through the existing explicit `--claim-id` API.
 Missing or mismatched managed context leaves the invocation waiting. Rejection
 or an unknown result does not select ordinary execution or replay the write.

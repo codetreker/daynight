@@ -112,8 +112,8 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     obligation: "Route only explicit worker startup assignments to managed instructions and verify the original claim without an ordinary fallback.",
     propositions: [
       { resource: "SKILL.md", section: "## Select a mode", requires: [/worker-managed/, /using-daynight/, /execute-task-in-managed/, /startup prompt/, /ordinary/i] },
-      { resource: "references/execute-task-in-managed.md", section: "## Establish the assignment", requires: [/projectId/, /taskId/, /claimId/, /worktreeId/, /branch/, /frozen/, /missing|incomplete/, /mismatch/, /return waiting without task or business writes/, /Do not.*(?:infer|guess)|not.*(?:infer|guess)/] },
-      { resource: "references/execute-task-in-managed.md", section: "## Verify the existing execution", requires: [/in_progress/, /active/, /with the supplied `claimId` and `worktreeId`/, /branch/, /frozen/, /never substitute/] },
+      { resource: "references/execute-task-in-managed.md", section: "## Establish the assignment", requires: [/projectId/, /taskId/, /claimId/, /worktreeId/, /branch/, /configuration selected for this invocation/, /missing|incomplete/, /mismatch/, /return waiting without task or business writes/, /Do not.*(?:infer|guess)|not.*(?:infer|guess)/] },
+      { resource: "references/execute-task-in-managed.md", section: "## Verify the existing execution", requires: [/in_progress/, /active/, /with the supplied `claimId` and `worktreeId`/, /branch/, /configuration supplied for this invocation/, /current settings appropriate to the recorded agent/, /never substitute/] },
     ],
   },
   {

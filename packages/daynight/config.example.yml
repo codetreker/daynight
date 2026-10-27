@@ -45,7 +45,9 @@ worker:
   model: null
   args: []
   # maxConcurrent and pollIntervalMs are positive integers; pollIntervalMs uses
-  # milliseconds. recoveryLimit is nonnegative and applies to the whole worker.
+  # milliseconds. recoveryLimit is nonnegative; automatic recovery counts are
+  # process-local and reset when the worker restarts. Restarted agents use current
+  # settings for their recorded agent type, while native session IDs remain saved.
   repositories:
     - remote: https://github.com/OWNER/REPO.git
       # Paths follow the same config-directory-relative rule as review paths.

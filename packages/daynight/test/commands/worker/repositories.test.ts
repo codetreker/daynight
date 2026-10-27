@@ -152,26 +152,21 @@ describe("worker Project registration", () => {
     expect(await readFile(f.paths.configFile, "utf8")).toContain("path: ../original");
   });
 
-  it.each([
-    { explicitProject: true, retained: "task" }, { explicitProject: true, retained: "claimAttempt" },
-    { explicitProject: false, retained: "task" }, { explicitProject: false, retained: "claimAttempt" },
-  ] as const)("retains the original transport across restart with explicitProject=$explicitProject and $retained", async ({ explicitProject, retained }) => {
+  it.each([true, false])("retains the original transport and active native session across restart with explicitProject=%s", async (explicitProject) => {
     const remote = "git@github.com:owner/repository.git";
     const source = `${connection}worker:\n  repositories:\n    - remote: ${remote} # Keep SSH transport\n      path: ../original\n      agent: codex\n      model: original-model\n${explicitProject ? `      projectId: ${uuid(1)}\n` : ""}`;
     const f = await fixture(source);
-    const binding = { serverOrigin: f.snapshot.serverUrl, projectId: uuid(1), repoUrl: remote, localPath: f.snapshot.configuration.repositories[0]!.path };
-    const claim = { serverOrigin: binding.serverOrigin, projectId: binding.projectId, taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5) };
-    const configuration = { agent: "codex" as const, model: "original-model", args: [], recoveryLimit: 3 };
-    const attempt = { taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId, workerId: claim.workerId, userId: uuid(6), expectedVersion: "1", configuration };
+    const binding = { projectId: uuid(1), repoUrl: remote, localPath: f.snapshot.configuration.repositories[0]!.path };
+    const claim = { projectId: binding.projectId, taskId: uuid(2), claimId: uuid(3) };
+    const sessionId = uuid(7);
     await mkdir(f.paths.workerDirectory);
     const original = openWorkerStore(f.paths.databaseFile);
     let originalTask: ReturnType<typeof original.getTask>;
     try {
       original.registerProject(binding);
-      if (retained === "task") {
-        original.registerPending(claim, { kind: "new", configuration }, 10, uuid(6));
-        original.activateTask(claim, 20);
-      } else original.beginClaimAttempt(binding, attempt);
+      original.registerPending({ ...claim, agent: "codex" });
+      original.activateTask(claim);
+      original.setSessionId(claim, sessionId);
       originalTask = original.getTask(claim);
     } finally { original.close(); }
     await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
@@ -182,10 +177,9 @@ describe("worker Project registration", () => {
     const saved = (await readWorkerConfiguration(f.paths)).repositories[0]!;
     const reopened = openWorkerStore(f.paths.databaseFile);
     try {
-      expect(reopened.registerProject({ serverOrigin: binding.serverOrigin, projectId: saved.projectId!, repoUrl: saved.remote, localPath: saved.path }))
-        .toEqual({ ...binding, claimAttempt: retained === "claimAttempt" ? attempt : null });
+      expect(reopened.registerProject({ projectId: saved.projectId!, repoUrl: saved.remote, localPath: saved.path })).toEqual(binding);
       expect(reopened.getTask(claim)).toEqual(originalTask);
-      expect(reopened.getClaimAttempt(binding)).toEqual(retained === "claimAttempt" ? attempt : null);
+      expect(reopened.getTask(claim)).toMatchObject({ status: "active", agent: "codex", sessionId });
       expect(saved).toMatchObject({ remote, path: binding.localPath, agent: "codex", model: "original-model" });
     } finally { reopened.close(); }
   });

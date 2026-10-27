@@ -1,8 +1,6 @@
 import path from "node:path";
-import { open, readdir, realpath } from "node:fs/promises";
-import { parse as parseYaml } from "yaml";
+import { open } from "node:fs/promises";
 import type { Operation } from "../../../api/operation.js";
-import { canonicalId } from "../../../api/parse.js";
 import { validateHerdrAgentArguments } from "./arguments.js";
 import { runHerdrCommand } from "./command.js";
 import type { HerdrCommand, HerdrCommandResult } from "./command.js";
@@ -14,14 +12,11 @@ export type HerdrNativeStart = {
   configuration: { agent: NativeAgent; model: string | null; args: readonly string[] };
   resumeSessionId?: string;
 };
-export type NativeHistoryEvidence = { path: string; sessionId: string; cwd: string };
 export type HerdrNativePreflight = {
   agent: NativeAgent;
   version: string;
   nativeHome: string;
-  sqliteHome: string | null;
   integrationConfigured: true;
-  history: NativeHistoryEvidence | null;
 };
 type CommandRunner = (command: HerdrCommand, operation: Operation) => Promise<HerdrCommandResult>;
 const metadataLimit = 1_048_576;
@@ -69,56 +64,6 @@ const readMetadata = async (file: string, operation: Operation, firstLine = fals
     operation.check();
     return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
   } finally { await handle.close(); }
-};
-const sameCwd = async (actual: unknown, expected: string): Promise<string> => {
-  if (typeof actual !== "string" || !path.isAbsolute(actual)) throw new Error("The original native history has no absolute working directory.");
-  const [left, right] = await Promise.all([realpath(actual), realpath(expected)]);
-  if (left !== right) throw new Error("The original native history belongs to a different working directory; it cannot resume this claim.");
-  return right;
-};
-const sessionId = (value: string): string => {
-  const id = canonicalId(value);
-  if (id === null) throw new Error("A native resume session must be an exact UUID.");
-  return id;
-};
-const codexHistory = async (root: string, id: string, cwd: string, operation: Operation): Promise<NativeHistoryEvidence> => {
-  const candidates: string[] = [];
-  let visited = 0;
-  const walk = async (directory: string, depth: number): Promise<void> => {
-    operation.check();
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      operation.check();
-      if (++visited > 100_000) throw new Error("The Codex history manifest scan exceeded its supported entry limit.");
-      const target = path.join(directory, entry.name);
-      if (entry.isDirectory() && depth < 3) await walk(target, depth + 1);
-      else if (entry.isFile() && (entry.name.endsWith(`-${id}.jsonl`) || entry.name.endsWith(`-${id}.jsonl.gz`) || entry.name.endsWith(`-${id}.jsonl.zst`))) candidates.push(target);
-    }
-  };
-  await walk(path.join(root, "sessions"), 0);
-  if (candidates.length !== 1) throw new Error(`The original Codex session ${id} must have exactly one readable rollout manifest; found ${candidates.length}.`);
-  const file = candidates[0]!;
-  if (!file.endsWith(".jsonl")) throw new Error("Compressed Codex rollout manifests are not supported by this adapter; retain the original native history and inspect its format.");
-  const event = json(await readMetadata(file, operation, true), "Codex session metadata");
-  const payload = mapping(event.payload, "Codex session metadata payload");
-  if (event.type !== "session_meta" || payload.id !== id) throw new Error("The original Codex rollout manifest does not identify the requested session.");
-  return { path: file, sessionId: id, cwd: await sameCwd(payload.cwd, cwd) };
-};
-const copilotHistory = async (root: string, id: string, cwd: string, operation: Operation): Promise<NativeHistoryEvidence> => {
-  const directory = path.join(root, "session-state", id);
-  const workspaceFile = path.join(directory, "workspace.yaml");
-  const source = await readMetadata(workspaceFile, operation);
-  let decoded: unknown;
-  try { decoded = parseYaml(source) as unknown; }
-  catch { throw new Error("The original Copilot workspace metadata is invalid; inspect the native history without exposing its contents."); }
-  const workspace = mapping(decoded, "Copilot workspace metadata");
-  if (workspace.id !== id) throw new Error("The original Copilot workspace metadata does not identify the requested session.");
-  await sameCwd(workspace.cwd, cwd);
-  const file = path.join(directory, "events.jsonl");
-  const event = json(await readMetadata(file, operation, true), "Copilot session event");
-  const data = mapping(event.data, "Copilot session event data");
-  const context = mapping(data.context, "Copilot session event context");
-  if (event.type !== "session.start" || data.sessionId !== id) throw new Error("The original Copilot event history does not identify the requested session.");
-  return { path: file, sessionId: id, cwd: await sameCwd(context.cwd, cwd) };
 };
 const hookCommand = (file: string, agent: NativeAgent, platform: NodeJS.Platform): string => {
   const command = platform === "win32" ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${file.replaceAll('"', '\\"')}"` : `bash '${file.replaceAll("'", "'\"'\"'")}'`;
@@ -168,7 +113,6 @@ export const createHerdrPreflight = (options: {
   const environment = { ...options.environment };
   const runCommand = options.runCommand === undefined ? runHerdrCommand : options.runCommand;
   return {
-    // Native manifests establish prerequisites; only the subsequent official hook report and actual resume establish runtime continuity.
     verifyStart: async (input: HerdrNativeStart, operation: Operation): Promise<HerdrNativePreflight> => {
       operation.check();
       const agent = input.configuration.agent;
@@ -176,7 +120,6 @@ export const createHerdrPreflight = (options: {
       const cwd = absolute(input.context.cwd, "Native working directory");
       validateHerdrAgentArguments(agent, input.configuration.args);
       const root = nativeHome(agent, environment, home);
-      const sqliteHome = agent === "codex" ? environment.CODEX_SQLITE_HOME === undefined ? root : absolute(environment.CODEX_SQLITE_HOME, "CODEX_SQLITE_HOME") : null;
       const versionText = (await runCommand({ file: agent, args: ["--version"], environment, cwd }, operation)).stdout;
       const versionMatch = agent === "codex" ? /^codex-cli (\d+\.\d+\.\d+)(?:\s|$)/m.exec(versionText) : /^GitHub Copilot CLI (\d+\.\d+\.\d+)(?:[.\s]|$)/m.exec(versionText);
       if (versionMatch === null) throw new Error(`Cannot identify the installed ${agent} executable version.`);
@@ -216,13 +159,8 @@ export const createHerdrPreflight = (options: {
         const effective = json((await runCommand({ file: agent, args: ["config", "hooks"], environment, cwd }, operation)).stdout, "Copilot effective hooks configuration");
         if (!configuredHook(effective, expected, agent, platform)) throw new Error("Copilot SessionStart does not invoke the installed official Herdr hook; configure it explicitly.");
       }
-      let history: NativeHistoryEvidence | null = null;
-      if (input.resumeSessionId !== undefined) {
-        const id = sessionId(input.resumeSessionId);
-        history = agent === "codex" ? await codexHistory(root, id, cwd, operation) : await copilotHistory(root, id, cwd, operation);
-      }
       operation.check();
-      return { agent, version: versionMatch[1]!, nativeHome: root, sqliteHome, integrationConfigured: true, history };
+      return { agent, version: versionMatch[1]!, nativeHome: root, integrationConfigured: true };
     },
   };
 };

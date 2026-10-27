@@ -5,7 +5,7 @@ const claim: CommandOption = { names: ["--claim-id"], description: "Identify the
 const project: CommandOption = { names: ["--project"], description: "Identify the task's project explicitly", value: { name: "project-id", kind: "text" } };
 const version: CommandOption = { names: ["--if-version"], description: "Use exactly this observed task version", value: { name: "version", kind: "text" }, required: true };
 const task = [{ name: "task-id", description: "Task UUID" }];
-const controlDetails = "The original claim must have a matching local record. Persist the source management decision, then let the sole worker controller clean its agent, workspace and worktree before the version-bound remote operation. Cleanup keeps its original deadline of at most 10 minutes. An unknown remote result is reconciled without replaying the write. A definite refusal requires a new explicit decision with a freshly observed version.";
+const controlDetails = "Stop worker run first. The command takes the same exclusive instance lock and manages one original claim synchronously. Stop its agent and close its workspace, submit the version-bound remote operation, then delete its worktree after ownership ends. Cleanup waits at most 10 minutes per attempt. An unknown remote result is read back without replaying the write; reconcile an interrupted result before restarting the runner.";
 
 export const workerDefinition: CommandDefinition = {
   name: "worker",
@@ -41,10 +41,10 @@ export const workerDefinition: CommandDefinition = {
     options: [help],
   }, {
     name: "retry",
-    description: "Authorize one more recovery attempt for a paused original claim",
+    description: "Attempt recovery once for an active original claim",
     arguments: task,
     options: [claim, project, help],
-    details: "Retain the original execution identity, frozen configuration and recovery count. Repeated requests do not accumulate extra attempts. The foreground worker remains the sole agent controller; without it, the command acquires the same instance lock.",
+    details: "Stop worker run first. Attempt one reconnection or recovery for the active claim under the same exclusive lock. Keep its recorded agent and native session ID, using current applicable settings. A missing session ID logs a warning and starts a fresh conversation. Pending claims use normal run scheduling.",
   }, {
     name: "release",
     description: "Clean the original execution and release its claim to todo",
@@ -63,13 +63,13 @@ export const workerDefinition: CommandDefinition = {
       { names: ["--target-platform"], description: "Target worker's actual platform", value: { name: "platform", kind: "text", choices: ["windows", "linux", "macos"] }, required: true },
       { names: ["--target-agent"], description: "Agent type for the target's new execution", value: { name: "agent", kind: "text", choices: ["codex", "copilot"] }, required: true },
       project, help],
-    details: `${controlDetails}\nThe target must remain a project member and satisfy automatic permission, platform and dependency requirements. A fresh claim and worktree identity are saved before submission. The target starts normally after receiving the grant; no source files or native history are transported.`,
+    details: `${controlDetails}\nThe target must remain a project member and satisfy automatic permission, platform and dependency requirements. Fresh claim and worktree identities are printed before submission. The target starts normally after receiving the grant; no source files or native history are transported.`,
   }, {
     name: "resume",
     description: "Start a released task as a fresh execution on this worker",
     arguments: task,
     options: [claim, version, project, help],
-    details: "--claim-id identifies the previous released claim. The original owner or a project admin may explicitly resume a ready task, including the manual permission/platform exception. Use a fresh claim, worktree identity and native conversation with this worker's current effective configuration. The source worktree and native history are not required. The exact --if-version is never replaced; uncertain writes are reconciled without replay.",
+    details: "Stop worker run first. --claim-id identifies the previous released claim. The original owner or a project admin may explicitly resume a ready task, including the manual permission/platform exception. Use a fresh claim, worktree identity and native conversation with this worker's current effective configuration. The source worktree and native history are not required. The exact --if-version is never replaced; uncertain writes are reconciled without replay.",
   }],
   options: [help],
   details: "Run daynight worker <command> --help for command usage.\nState: ~/.daynight/worker/ (fixed to the current user's home directory).",

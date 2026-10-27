@@ -109,8 +109,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       const owner = verifiedUserId();
       const selected = new Map<string, ProjectIdentity>();
       for (const project of projects) {
-        if (normalizeServerUrl(project.serverOrigin) !== serverOrigin) throw new Error(`Worker project ${project.projectId} belongs to a different service origin.`);
-        const projectId = canonicalId(project.projectId);
+          const projectId = canonicalId(project.projectId);
         if (projectId === null) throw new Error("Worker project ID must be a hyphenated UUID.");
         selected.set(projectId, project);
       }

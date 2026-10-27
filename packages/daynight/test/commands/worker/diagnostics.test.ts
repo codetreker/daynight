@@ -15,7 +15,7 @@ it("writes ordered JSONL and foreground errors without leaking credentials throu
   const output: string[] = [];
   const token = 'service-secret-"\\should-stay-private';
   const logger = await createWorkerDiagnostics({ paths: resolveWorkerPaths(home), workerId: "00000000-0000-4000-8000-000000000001", platform: "linux", secrets: [token], log: (text) => { output.push(text); } });
-  logger.emit({ kind: "start", message: "Started." });
+  logger.emit({ kind: "start", message: "Started.", task: { projectId: "project", taskId: "task", claimId: "claim", status: "active", agent: "codex", sessionId: "native-session" } });
   logger.emit({ kind: "error", message: `Request failed: ${token}.`, error: new Error("Connection failed.", { cause: new Error(`Bearer ${token} https://name:password@example.test`) }) });
   await logger.flush();
   const text = await readFile(logger.filename, "utf8");
@@ -25,6 +25,8 @@ it("writes ordered JSONL and foreground errors without leaking credentials throu
   expect(output.join("")).not.toContain("password");
   const records = text.trim().split("\n").map((line) => JSON.parse(line));
   expect(records.map((record) => record.kind)).toEqual(["start", "error"]);
+  expect(records[0]).toMatchObject({ projectId: "project", taskId: "task", claimId: "claim", agent: "codex", sessionId: "native-session", status: "active" });
+  expect(records[0]).not.toHaveProperty("cleanup");
   expect(records[1].error.cause.message).toContain("[redacted]");
   expect(JSON.stringify(records)).not.toContain("should-stay-private");
   expect(records.every((record) => record.workerId === "00000000-0000-4000-8000-000000000001" && record.platform === "linux")).toBe(true);

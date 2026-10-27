@@ -36,17 +36,15 @@ current target member.
 Callers generate a fresh claim UUID for each acquisition or transfer and never
 reuse it. The service rejects the latest ID's reuse and requires the current
 claim plus an exact task version for subsequent writes. The foundation
-originally required persisting that ID before either operation; the
-[local-records decision](2026-10-26-worker-local-records.md) separated actual
-task registration from acquisition intent and initially kept request identity in
-memory. The [foreground runtime](2026-10-27-foreground-worker-runtime.md) now
-persists one concrete unresolved claimAttempt in the project before HTTP while
-still creating no preclaim task or extra table. Complete own-claim inventory
-recovers actual ownership without replay. Transfer retains its target identity
-in source control intent before the remote write. Claim IDs are public
-correlation and fencing identifiers, not secret machine credentials. There is no
-historical claim registry or additional generation counter. Released/completed
-records retain the last execution information.
+originally required persisting that ID before either operation; local records
+then separated actual grants from in-memory acquisition, and the first
+foreground runtime introduced durable claimAttempt and control intent. The
+[six-column simplification](../simplification/2026-10-27-worker-claim-records.md)
+returns request identity to the current process: unknown results are observed
+through complete inventory or explicit task GET without replay. No preclaim task
+or historical registry is added. Claim IDs are public fencing/correlation
+identifiers, not credentials. Released/completed records retain the last execution.
+
 
 The typed in-process API client owns HTTP operations and response parsing. The
 foundation originally used known task IDs persisted locally or explicitly

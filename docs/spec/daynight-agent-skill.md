@@ -255,8 +255,8 @@ CI、review、合并等待及 subagent 协作仍属于当前任务。外部介�
 `references/execute-task-in-managed.md` 是独立执行入口，消费 worker 启动 prompt 中
 显式指定的运行环境、技能、模式和 assignment。它不先执行普通 run-task 再跳过步骤。
 Assignment 包括 projectId、taskId、claimId、worktreeId、实际 worktree 路径和 branch，
-以及该执行冻结的有效配置。先读完整任务并核对 project/task、in_progress、active
-worker claim 及 worktreeId，再核对真实工作目录、分支与冻结配置。上下文缺失或不匹配
+以及本次启动或恢复所用的有效配置。先读完整任务并核对 project/task、in_progress、active
+worker claim 及 worktreeId，再核对真实工作目录、分支与给定配置。上下文缺失或不匹配
 时等待，不降级普通认领、开始或任务选择；模式声明不能替代服务端权限和精确版本保护。
 
 同 claim 已 completed 且 task done 时报告已有结果，不重新执行。恢复及任务写入前刷新
@@ -268,9 +268,10 @@ worker claim 及 worktreeId，再核对真实工作目录、分支与冻结配�
 允许范围内的编辑、提交、推送及授权合并使用给定系统工作区；agent 不创建、切换或
 删除其 worktree/branch，不关闭 workspace。避免会切换或删除分支的合并选项。Worker
 拥有系统资源收尾和后继调度；明确清理请求只处理其范围内可归属的 worktree 外临时资源。
-仅重连存活 agent 不意味着重新发送启动 prompt；确需重新启动时沿用原模式、assignment、
-工作区、native history 和冻结配置。实际 prompt 组装、递交与原生恢复由 worker 运行时
-和 Herdr 接入承担，技能文档和模拟检查不能替代这些运行结果。
+仅重连存活 agent 不意味着重新发送启动 prompt；确需重新启动时沿用原模式、assignment
+和工作区，由 worker 根据记录的 agent/session_id 和当前适用配置选择原生恢复；session_id
+为空时 Warning 后新建会话。实际 prompt 组装、递交与原生恢复由 worker 运行时和 Herdr
+接入承担，技能文档和模拟检查不能替代这些运行结果。
 
 完成全部共同交付准备后，重读完整任务并核对原 active claim，最后使用显式
 `--claim-id` 与观察 `--if-version` 提交 done。这是最终 task mutation，确认服务结果的

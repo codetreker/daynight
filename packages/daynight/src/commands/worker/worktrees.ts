@@ -6,13 +6,13 @@ import { normalizeServerUrl } from "../../config/server.js";
 import { runRepositoryGit } from "../../repository/git.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
-import type { LocalTask, WorkerProject, WorktreeBinding } from "./types.js";
+import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 
 type GitRunner = typeof runRepositoryGit;
-type Owner = { serverOrigin: string; projectId: string; taskId: string; claimId: string; worktreeId: string; leaf: string; root: string; common: string };
+type Owner = ResourceOwner & { leaf: string; root: string; common: string };
 type Registration = { directory: string; marker: string | null; pointer: string; common: string };
 export type WorkerRepository = { root: string; commonDirectory: string; rootIdentity: string; commonIdentity: string };
-export type WorktreeRemovalProof = { terminal: true; agentStopped: true; workspaceClosed: true };
+export type OwnedWorktree = { owner: ResourceOwner; binding: WorktreeBinding };
 const prefix = "daynight-worker:";
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const line = (value: string): string => value.replace(/\r?\n$/, "");
@@ -45,7 +45,7 @@ const ensureDirectory = async (target: string): Promise<void> => {
   catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
   if (await directory(target) === null) throw new Error(`Managed directory ${target} disappeared.`);
 };
-const coordinates = (task: LocalTask) => ({ serverOrigin: normalizeServerUrl(task.serverOrigin), projectId: uuid(task.projectId, "Project ID"), taskId: uuid(task.taskId, "Task ID"), claimId: uuid(task.claimId, "Claim ID"), worktreeId: uuid(task.worktreeId, "Worktree ID") });
+const coordinates = (owner: ResourceOwner): ResourceOwner => ({ serverOrigin: normalizeServerUrl(owner.serverOrigin), projectId: uuid(owner.projectId, "Project ID"), taskId: uuid(owner.taskId, "Task ID"), claimId: uuid(owner.claimId, "Claim ID"), worktreeId: uuid(owner.worktreeId, "Worktree ID") });
 const markerOwner = (marker: string): Owner => {
   if (!marker.startsWith(prefix)) throw new Error("The task worktree has a different ownership marker.");
   const value: unknown = JSON.parse(marker.slice(prefix.length));
@@ -54,9 +54,10 @@ const markerOwner = (marker: string): Owner => {
   if (Object.keys(value).length !== fields.length || fields.some((field) => !Object.hasOwn(value, field) || typeof (value as Record<string, unknown>)[field] !== "string")) throw new Error("The task worktree ownership marker is invalid.");
   const owner = value as Owner;
   for (const field of ["leaf", "root", "common"] as const) if (!/^\d+:\d+$/.test(owner[field])) throw new Error("The task worktree ownership fingerprint is invalid.");
+  if (Object.entries(coordinates(owner)).some(([key, value]) => owner[key as keyof Owner] !== value)) throw new Error("The task worktree ownership coordinates are not canonical.");
   return owner;
 };
-const sameCoordinates = (owner: Owner, task: LocalTask): boolean => Object.entries(coordinates(task)).every(([key, value]) => owner[key as keyof Owner] === value);
+const sameCoordinates = (owner: Owner, identity: ResourceOwner): boolean => Object.entries(coordinates(identity)).every(([key, value]) => owner[key as keyof Owner] === value);
 
 export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; removeDirectory?: typeof rm }) => {
   const temporaryDirectory = absolute(options.temporaryDirectory, "Git temporary directory");
@@ -98,11 +99,10 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     if (commonIdentity === null) throw new Error("The Git common directory is missing.");
     return { root, commonDirectory, rootIdentity, commonIdentity };
   };
-  const projectFor = (task: LocalTask): WorkerProject => ({ serverOrigin: task.serverOrigin, projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath });
-  const bindingFor = (task: LocalTask, repository: WorkerRepository): WorktreeBinding => ({ repositoryPath: task.repositoryPath, commonDirectory: repository.commonDirectory, worktreePath: path.join(repository.root, ".worktrees", "daynight", coordinates(task).taskId), branch: `daynight/${coordinates(task).taskId}` });
-  const validateBinding = (task: LocalTask, expected: WorktreeBinding): void => {
-    const original = task.resources.worktree;
-    if (original !== null && Object.entries(expected).some(([key, value]) => original[key as keyof WorktreeBinding] !== value)) throw new Error("The task's original worktree binding differs from its actual repository or fixed path.");
+  const bindingFor = (project: WorkerProject, owner: ResourceOwner, repository: WorkerRepository): WorktreeBinding => {
+    const identity = coordinates(owner);
+    if (identity.projectId !== uuid(project.projectId, "Project ID")) throw new Error("The resource owner does not belong to this project.");
+    return { repositoryPath: project.localPath, commonDirectory: repository.commonDirectory, worktreePath: path.join(repository.root, ".worktrees", "daynight", identity.taskId), branch: `daynight/${identity.taskId}` };
   };
   const registrations = async (repository: WorkerRepository, target: string): Promise<Registration[]> => {
     const family = path.join(repository.commonDirectory, "worktrees");
@@ -121,9 +121,8 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     }
     return result;
   };
-  const inspectWorktree = async (task: LocalTask, repository: WorkerRepository, operation: Operation, terminal: boolean) => {
-    const binding = bindingFor(task, repository);
-    validateBinding(task, binding);
+  const inspectWorktree = async (project: WorkerProject, identity: ResourceOwner, repository: WorkerRepository, operation: Operation, terminal: boolean) => {
+    const binding = bindingFor(project, identity, repository);
     for (const parent of [path.join(repository.root, ".worktrees"), path.join(repository.root, ".worktrees", "daynight")]) {
       await directory(parent);
     }
@@ -137,7 +136,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     }
     if (registration.marker === null) throw new Error("The task worktree has no ownership marker; it was retained.");
     const owner = markerOwner(registration.marker);
-    if (!sameCoordinates(owner, task) || owner.root !== repository.rootIdentity || owner.common !== repository.commonIdentity || await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree ownership marker or repository identity does not match this claim.");
+    if (!sameCoordinates(owner, identity) || owner.root !== repository.rootIdentity || owner.common !== repository.commonIdentity || await directory(registration.common) !== repository.commonIdentity) throw new Error("The task worktree ownership marker or repository identity does not match this claim.");
     if (leaf !== null) {
       const pointer = await ordinaryFile(path.join(binding.worktreePath, ".git"));
       if (pointer === null) throw new Error("The original worktree Git pointer is missing; the present directory cannot be attributed safely and was retained.");
@@ -145,7 +144,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       if (!pointer.startsWith("gitdir: ") || path.resolve(binding.worktreePath, pointer.slice(8)) !== registration.directory) throw new Error("The original worktree Git pointer has changed.");
       const common = await git(binding.worktreePath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], operation);
       if (await directory(common) !== repository.commonIdentity) throw new Error("The task worktree belongs to another Git repository.");
-      if (!terminal) await validateOrigin(binding.worktreePath, task.repoUrl, operation);
+      if (!terminal) await validateOrigin(binding.worktreePath, project.repoUrl, operation);
     }
     const branch = await git(repository.root, [`--git-dir=${registration.directory}`, "symbolic-ref", "--quiet", "HEAD"], operation);
     if (branch !== `refs/heads/${binding.branch}`) throw new Error("The task worktree no longer uses its original task branch.");
@@ -163,18 +162,16 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       }
       return inspectRepository(project, operation);
     },
-    prepareWorktree: async (task: LocalTask, operation: Operation): Promise<WorktreeBinding> => {
-      if (task.status !== "active" || task.cleanup !== null || task.control !== null) throw new Error("Worktree preparation requires an active execution without cleanup or control intent.");
-      const repository = await inspectRepository(projectFor(task), operation);
+    prepareWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding> => {
+      const repository = await inspectRepository(project, operation);
       const parent = path.join(repository.root, ".worktrees");
       await ensureDirectory(parent);
       await ensureDirectory(path.join(parent, "daynight"));
-      const before = await inspectWorktree(task, repository, operation, false);
+      const before = await inspectWorktree(project, owner, repository, operation, false);
       if (before.registration !== null) {
         if (before.leaf === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
         return before.binding;
       }
-      if (task.resources.worktree !== null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
       const names = (await git(repository.root, ["for-each-ref", "--format=%(refname)", `refs/heads/${before.binding.branch}`], operation)).split("\n");
       const reference = `refs/heads/${before.binding.branch}`;
       if (names.some((name) => name.startsWith(`${reference}/`))) throw new Error("An existing branch namespace conflicts with the task branch.");
@@ -183,31 +180,71 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       await mkdir(before.binding.worktreePath);
       const leaf = await directory(before.binding.worktreePath);
       if (leaf === null) throw new Error("The reserved task worktree directory disappeared.");
-      const marker = `${prefix}${JSON.stringify({ ...coordinates(task), leaf, root: repository.rootIdentity, common: repository.commonIdentity } satisfies Owner)}`;
+      const marker = `${prefix}${JSON.stringify({ ...coordinates(owner), leaf, root: repository.rootIdentity, common: repository.commonIdentity } satisfies Owner)}`;
       const branchArgs = !existing ? ["-b", before.binding.branch, "--", before.binding.worktreePath, "HEAD"] : ["--", before.binding.worktreePath, before.binding.branch];
       await git(repository.root, ["worktree", "add", "--lock", "--reason", marker, ...branchArgs], operation);
-      const after = await inspectWorktree(task, repository, operation, false);
+      const after = await inspectWorktree(project, owner, repository, operation, false);
       if (after.leaf === null || after.registration === null) throw new Error("Git did not create the expected owned task worktree.");
       return after.binding;
     },
-    verifyWorktree: async (task: LocalTask, operation: Operation): Promise<WorktreeBinding> => {
-      if (task.resources.worktree === null) throw new Error("Recovery requires the original persisted worktree binding.");
-      const repository = await inspectRepository(projectFor(task), operation);
-      const result = await inspectWorktree(task, repository, operation, false);
+    verifyWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding> => {
+      const repository = await inspectRepository(project, operation);
+      const result = await inspectWorktree(project, owner, repository, operation, false);
       if (result.leaf === null || result.registration === null) throw new Error("The original task worktree is missing; it cannot be recreated as recovery.");
       return result.binding;
     },
-    findWorktree: async (task: LocalTask, operation: Operation): Promise<WorktreeBinding | null> => {
-      const repository = await inspectRepository(projectFor(task), operation);
-      const result = await inspectWorktree(task, repository, operation, task.cleanup !== null || task.control !== null);
+    findWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<WorktreeBinding | null> => {
+      const repository = await inspectRepository(project, operation);
+      const result = await inspectWorktree(project, owner, repository, operation, true);
       if (result.registration === null) return null;
       if (result.leaf === null) throw new Error("The original task worktree is missing; its ownership registration was retained.");
       return result.binding;
     },
-    removeWorktree: async (task: LocalTask, proof: WorktreeRemovalProof, operation: Operation): Promise<void> => {
-      if (proof.terminal !== true || proof.agentStopped !== true || proof.workspaceClosed !== true) throw new Error("Worktree removal requires terminal cleanup, confirmed agent stop and workspace closure.");
-      const repository = await inspectRepository(projectFor(task), operation);
-      let result = await inspectWorktree(task, repository, operation, true);
+    listWorktrees: async (project: WorkerProject, operation: Operation): Promise<OwnedWorktree[]> => {
+      const repository = await inspectRepository(project, operation);
+      const namespace = path.join(repository.root, ".worktrees", "daynight");
+      await directory(path.dirname(namespace));
+      const present = new Set<string>();
+      const physical = await resolvePhysicalDirectory(namespace);
+      const physicalNamespace = path.join(physical.ancestorPath, ...physical.missingComponents);
+      if (await directory(namespace) !== null) {
+        for (const entry of await readdir(namespace, { withFileTypes: true })) {
+          operation.check();
+          if (canonicalId(entry.name) !== entry.name) continue;
+          await directory(path.join(namespace, entry.name));
+          present.add(path.join(physicalNamespace, entry.name));
+        }
+      }
+      const family = path.join(repository.commonDirectory, "worktrees");
+      const result: OwnedWorktree[] = [];
+      const entries = await directory(family) === null ? [] : await readdir(family, { withFileTypes: true });
+      for (const entry of entries) {
+        operation.check();
+        if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
+        const admin = path.join(family, entry.name);
+        const marker = await ordinaryFile(path.join(admin, "locked"));
+        const pointer = await ordinaryFile(path.join(admin, "gitdir"));
+        const target = pointer === null ? null : path.resolve(admin, pointer);
+        if (marker === null || !marker.startsWith(prefix)) {
+          if (target !== null && path.basename(target) === ".git" && path.dirname(path.dirname(target)) === physicalNamespace && canonicalId(path.basename(path.dirname(target))) === path.basename(path.dirname(target))) {
+            throw new Error("The reserved task worktree has no recognized ownership registration; it was retained.");
+          }
+          continue;
+        }
+        const owner = coordinates(markerOwner(marker));
+        const expectedPointer = path.join(physicalNamespace, owner.taskId, ".git");
+        if (target !== expectedPointer) throw new Error("The owned task worktree registration does not point to its fixed task path.");
+        const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, true);
+        if (observed.registration === null || observed.registration.directory !== admin) throw new Error("The owned task worktree registration is ambiguous.");
+        present.delete(path.dirname(expectedPointer));
+        if (owner.projectId === project.projectId) result.push({ owner, binding: observed.binding });
+      }
+      if (present.size > 0) throw new Error("A reserved task directory has no recognized ownership registration; it was retained.");
+      return result.sort((left, right) => left.owner.taskId.localeCompare(right.owner.taskId) || left.owner.claimId.localeCompare(right.owner.claimId));
+    },
+    removeWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<void> => {
+      const repository = await inspectRepository(project, operation);
+      let result = await inspectWorktree(project, owner, repository, operation, true);
       if (result.registration === null) return;
       // Device/inode values can be reused after deletion, so the Git pointer must survive recursive cleanup.
       // Its final unlink and nonrecursive rmdir may leave an ambiguous empty leaf, which is retained on retry.
@@ -222,10 +259,10 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         await rmdir(result.binding.worktreePath);
       }
       operation.check();
-      result = await inspectWorktree(task, repository, operation, true);
+      result = await inspectWorktree(project, owner, repository, operation, true);
       if (result.leaf !== null) throw new Error("The original task worktree directory still exists after removal.");
       if (result.registration !== null) await git(repository.root, ["worktree", "remove", "--force", "--force", "--", result.binding.worktreePath], operation);
-      result = await inspectWorktree(task, repository, operation, true);
+      result = await inspectWorktree(project, owner, repository, operation, true);
       if (result.leaf !== null || result.registration !== null) throw new Error("The original task worktree removal is incomplete.");
     },
     dispose: async (): Promise<void> => { if (hooks !== null) { await rm(await hooks, { recursive: true }); hooks = null; } },
