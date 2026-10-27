@@ -1,6 +1,6 @@
 {
   "name": "@codetreker/daynight",
-  "version": "0.21.13",
+  "version": "0.21.14",
   "description": "A client command toolkit for development workflows",
   "repository": {
     "type": "git",
@@ -13,7 +13,8 @@
     "dn": "dist/main.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "config.example.yml"
   ],
   "engines": {
     "node": ">=22"
