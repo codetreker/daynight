@@ -108,26 +108,26 @@ selection, startup files and activation.
 ## Worker configuration and startup
 
 Install Git, Herdr 0.9.5 or newer with the supported API, and your selected
-Copilot or Codex CLI. Authenticate Daynight with `daynight login`, configure
-native/provider credentials and the official Herdr integration explicitly, then
-select the repositories from which to acquire tasks under `worker` in
-`~/.daynight/config.yml`. Omitted runtime settings use their defaults; an omitted
-repository list selects no repositories:
-
-```yaml
-worker:
-  repositories:
-    - remote: https://github.com/OWNER/REPO.git
-      path: ../code/repo
-```
-
-The path is relative to the configuration directory. Matching Daynight projects
-must already exist; use an explicit `projectId` when repository discovery is
-ambiguous. Choose tasks with automatic execution enabled, then start:
+Copilot or Codex CLI. Configure native/provider credentials and the official
+Herdr integration explicitly, then select existing Daynight Projects:
 
 ```bash
+daynight login
+daynight worker repo add
 daynight worker run
 ```
+
+`repo add` lists accessible Projects for multiselection. Use `--project
+PROJECT_UUID` for an explicit noninteractive registration; `worker repo list`
+and `worker repo remove` inspect or change the selection. With an empty
+repository list, interactive `worker run` also guides Project selection before
+starting new tasks. A restarted worker continues committed cleanup while that
+selection waits.
+
+New registrations use `worker.repositoryRoot`, defaulting to `~/daynights`, and
+keep existing paths when the root changes. Review's clone-root setting is
+independent. Projects must already exist, and their tasks need automatic
+execution permission before the worker can acquire them.
 
 The worker runs in the foreground with one execution slot by default. It uses
 fixed state under `~/.daynight/worker/`. Run `daynight worker attach` in another

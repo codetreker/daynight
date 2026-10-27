@@ -1,6 +1,7 @@
 import path from "node:path";
 import { Document } from "yaml";
 import { parseConfigurationDocument } from "../../config/document.js";
+import { repositoryPathComponent } from "../../repository/location.js";
 import { updateConfigurationFile } from "../../config/files.js";
 import type { ConfigurationUpdate } from "../../config/files.js";
 import { defaultRepositoryRoot, remoteIdentity, resolveRepositoryRoot, validateConfigurationSource, validateRegistrationConfigurationSource } from "./config.js";
@@ -11,15 +12,6 @@ import type { ReviewPaths } from "./paths.js";
 export type AddRepositoryInput = { remote: string; path?: string };
 export type AddRepositoryOptions = { workingDirectory: string; homeDirectory: string };
 export type AddRepositoryResult = { repository: RepositoryConfiguration; added: boolean };
-
-const repositoryPathComponent = (component: string): string => {
-  let escaped = component.replace(/[<>:"/\\|?*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
-    .replace(/\.+$/, (dots) => "%2E".repeat(dots.length));
-  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(escaped)) {
-    escaped = `%${escaped.charCodeAt(0).toString(16).toUpperCase()}${escaped.slice(1)}`;
-  }
-  return escaped;
-};
 
 const sameDirectory = async (first: string, second: string): Promise<boolean> => {
   const [left, right] = await Promise.all([resolvePhysicalDirectory(first), resolvePhysicalDirectory(second)]);

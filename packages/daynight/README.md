@@ -100,6 +100,9 @@ daynight logout                      # Revoke and remove the current CLI credent
 daynight worker                     # Show worker help
 daynight worker run                 # Run until interrupted
 daynight worker attach              # Open the worker Herdr session
+daynight worker repo list [--json]
+daynight worker repo add [--project <project-id>]
+daynight worker repo remove [--project <project-id>]
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
 daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
@@ -793,12 +796,65 @@ integration/history instead of installing or changing global native settings.
 Git transport and tools used by the task, such as authenticated GitHub CLI for
 PR delivery, must also be ready.
 
-Run `daynight login` for Daynight authentication. To select repositories for new
-task acquisition, add entries under the optional `worker` mapping in the shared
-`~/.daynight/config.yml`, preserving existing connection and review settings:
+Run `daynight login` for Daynight authentication, then select one or more
+existing accessible Projects:
+
+```bash
+daynight worker repo add
+daynight worker repo list
+daynight worker repo remove
+```
+
+Add and remove list remote Projects for multiselection. Each choice includes its
+name, UUID and repository URL. Add saves the selected Project ID, original
+server repository URL and an absolute local path. Remove changes configuration
+only: clones, claims, worktrees, native history and frozen execution settings
+remain. A running worker reads its next selection at startup, without hot reload.
+For scripts, identify one accessible existing Project explicitly:
+
+```bash
+daynight worker repo add --project PROJECT_UUID
+daynight worker repo remove --project PROJECT_UUID
+daynight worker repo list --json
+```
+
+`list` reads local registrations without remote discovery. Add and remove
+operate on existing accessible remote Projects, not raw Git URLs or new Project
+creation. Cancellation, empty choices, authentication or API failures, invalid
+selections and save failures leave the selection unchanged.
+
+An empty repository list makes interactive `worker run` offer the same Project
+selection. Fresh startup saves the selection before creating worker identity,
+SQLite, Git or Herdr resources. A restarted worker with retained state first
+establishes its cleanup controller, so committed cleanup deadlines continue
+while Project lookup or prompting waits. New task resources wait for successful
+selection. Without terminal input and stderr, configure a Project with
+`worker repo add --project PROJECT_UUID` before startup.
+
+New paths use `worker.repositoryRoot`, defaulting to `~/daynights`, independently
+of review's top-level `repositoryRoot`. The worker root accepts the current home
+shortcut (`~` or `~/`), absolute paths and paths relative to `config.yml`; Windows
+also accepts `~\`. Registration resolves that root with the actual home and
+saves absolute paths. Ordinary repositories use `<root>/<host>/<owner>/<repo>`;
+generic transport, user, port or nested-path identities retain distinct encoded
+coordinates. Existing Project paths and agent overrides survive repeat add and
+root edits.
+
+Network and interaction hold no configuration lock. The atomic writer rereads
+current YAML, preserves comments and unrelated edits, and refuses changed
+worker root, repository selection or service credentials. Save also rejects
+shared YAML aliases that would alter unrelated effective settings; separate the
+worker data from those aliases before retrying. Unaffected aliases remain valid.
+Repository identities, Project IDs and logical or physical paths must remain
+distinct, including the Daynight state directory. These commands do not clone
+repositories, acquire tasks or start Herdr.
+
+For explicit repository paths and runtime overrides, retain the shared
+connection and review settings and configure `worker` directly:
 
 ```yaml
 worker:
+  repositoryRoot: ~/daynights
   maxConcurrent: 1
   pollIntervalMs: 5000
   recoveryLimit: 3
@@ -823,17 +879,17 @@ rewrite configuration files. Explicit `null` in non-nullable fields, malformed
 settings, filesystem errors and cancellation remain errors; `model: null` keeps
 its documented clearing semantics.
 
-Each repository entry requires `remote` and `path`, with optional `projectId`,
-`agent`, `model` and `args`. Configure entries before acquiring new tasks. The
+Each explicit repository entry requires `remote` and `path`, with optional
+`projectId`, `agent`, `model` and `args`. The
 service project must already exist and match the repository. Add `projectId`
 when more than one project matches. Missing local repositories are cloned;
 existing roots and origins are verified without resetting their files or
 branches. Use the native authentication configuration for credentials, keeping
 credentials out of repository URLs and argument lists.
 
-Paths are absolute or relative to the configuration file's directory, never
-the launch directory. Tilde expansion and drive-relative Windows paths are
-rejected. Repository identities, project IDs and paths cannot duplicate or
+Repository entry paths are absolute or relative to the configuration file's
+directory, never the launch directory. They do not expand tilde and reject
+drive-relative Windows paths. Repository identities, project IDs and paths cannot duplicate or
 overlap, including the fixed Daynight state directory. Unknown worker fields,
 wrong types, invalid arguments and unsupported path shapes fail visibly.
 `maxConcurrent` is a positive integer, `recoveryLimit` is nonnegative and

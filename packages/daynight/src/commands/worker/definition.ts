@@ -14,12 +14,31 @@ export const workerDefinition: CommandDefinition = {
     name: "run",
     description: "Run the foreground task worker until interrupted",
     options: [help],
-    details: "Read worker settings from ~/.daynight/config.yml at startup.\nState: ~/.daynight/worker/ (fixed to the current user's home directory).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
+    details: "Read worker settings from ~/.daynight/config.yml at startup.\nWith no configured repositories, select existing remote Projects interactively before startup.\nFor noninteractive configuration, run daynight worker repo add --project <project-id>.\nState: ~/.daynight/worker/ (fixed to the current user's home directory).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
   }, {
     name: "attach",
     description: "Attach an interactive terminal to the running worker's Herdr session",
     options: [help],
     details: "Connect to the existing private worker Herdr session. Start it with daynight worker run first. Requires an interactive terminal. Detaching leaves the worker and its agents running.",
+  }, {
+    name: "repo",
+    description: "Manage repositories selected from existing Daynight Projects",
+    commands: [{
+      name: "list",
+      description: "List configured worker repositories",
+      options: [{ names: ["--json"], description: "Print configured repository summaries as JSON" }, help],
+    }, {
+      name: "add",
+      description: "Select existing remote Projects for the next worker startup",
+      options: [{ names: ["--project"], description: "Add this existing accessible Project without prompting", value: { name: "project-id", kind: "text" } }, help],
+      details: "Without --project, select one or more accessible remote Projects interactively.\nRepository paths use worker.repositoryRoot (default: ~/daynights).\nChanges apply at the next worker startup; this command does not clone or start tasks.",
+    }, {
+      name: "remove",
+      description: "Remove configured repositories using existing remote Projects",
+      options: [{ names: ["--project"], description: "Remove this existing accessible Project without prompting", value: { name: "project-id", kind: "text" } }, help],
+      details: "Without --project, select one or more configured, accessible remote Projects interactively.\nChanges apply at the next worker startup. Existing claims, files and running tasks are retained.",
+    }],
+    options: [help],
   }, {
     name: "retry",
     description: "Authorize one more recovery attempt for a paused original claim",

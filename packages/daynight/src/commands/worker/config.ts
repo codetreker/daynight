@@ -6,6 +6,7 @@ import { readConfigurationSource } from "../../config/files.js";
 import { ancestorIdentities, missingPathsReferToSameDirectory, pathsOverlap, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
+import { defaultRepositoryRoot, validateRepositoryRoot } from "../../repository/location.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { WorkerPaths } from "./paths.js";
 import type { FrozenExecutionConfiguration } from "./types.js";
@@ -17,12 +18,14 @@ export type WorkerRepositoryConfiguration = FrozenExecutionConfiguration & {
 };
 
 export type WorkerConfiguration = FrozenExecutionConfiguration & {
+  repositoryRoot: string;
   maxConcurrent: number;
   pollIntervalMs: number;
   repositories: readonly WorkerRepositoryConfiguration[];
 };
 
 export const workerConfigurationDefaults = Object.freeze({
+  repositoryRoot: defaultRepositoryRoot,
   maxConcurrent: 1,
   pollIntervalMs: 5_000,
   recoveryLimit: 3,
@@ -77,7 +80,10 @@ const repositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathA
 export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pathApi: PathApi = path): WorkerConfiguration => {
   const { mapping: root } = parseConfigurationDocument(source, paths);
   const worker = Object.hasOwn(root, "worker") ? mapping(root.worker, "worker") : {};
-  keys(worker, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "agent", "model", "args", "repositories"], "worker");
+  keys(worker, ["repositoryRoot", "maxConcurrent", "pollIntervalMs", "recoveryLimit", "agent", "model", "args", "repositories"], "worker");
+  const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
+    ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
+    : workerConfigurationDefaults.repositoryRoot;
   const effective = agentConfiguration(worker, "worker", {
     agent: workerConfigurationDefaults.agent, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
   });
@@ -107,7 +113,7 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     }
     return { ...agentConfiguration(repository, field, effective), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
-  return { ...effective, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
+  return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
 };
 
 export const readWorkerConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
@@ -118,6 +124,10 @@ export const readWorkerConfiguration = async (paths: WorkerPaths, signal?: Abort
     if (!(cause instanceof MissingConfigurationFileError)) throw cause;
     source = "{}";
   }
+  return validateWorkerConfigurationSource(source, paths, signal);
+};
+
+export const validateWorkerConfigurationSource = async (source: string, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
   signal?.throwIfAborted();
   const configuration = parseWorkerConfiguration(source, paths);
   const physicalPaths: PhysicalDirectory[] = [];

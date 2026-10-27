@@ -74,19 +74,20 @@ else if(args.includes('features'))process.stdout.write('hooks stable true\n');
 else throw new Error('Only metadata commands are permitted in this fixture');
 `;
 
-it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline", "independent-cleanup-deadlines", "account-scope", "origin-cleanup", "origin-shutdown"] as const)("runs the installed worker through claim, managed launch and %s", async (scenario) => {
+it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cleanup-deadline", "independent-cleanup-deadlines", "account-scope", "origin-cleanup", "origin-shutdown", "empty-repositories-cleanup-deadline"] as const)("runs the installed worker through claim, managed launch and %s", async (scenario) => {
   const accountScope = scenario === "account-scope";
   const originCleanup = scenario === "origin-cleanup";
   const originShutdown = scenario === "origin-shutdown";
   const originChanged = originCleanup || originShutdown;
+  const emptyRepositories = scenario === "empty-repositories-cleanup-deadline";
   const parallelDeadlines = scenario === "independent-cleanup-deadlines";
-  const committedDeadline = scenario === "committed-cleanup-deadline" || parallelDeadlines || originCleanup;
+  const committedDeadline = scenario === "committed-cleanup-deadline" || parallelDeadlines || originCleanup || emptyRepositories;
   const scratch = path.join(primary, ".tmp");
   await mkdir(scratch, { recursive: true });
   const home = await mkdtemp(path.join(scratch, "w"));
   const eventsFile = path.join(home, "events.jsonl");
   const databaseFile = path.join(home, ".daynight/worker/state.sqlite");
-  const evidenceName = originChanged ? `installed-worker-${scenario}` : accountScope ? "installed-worker-account-scope" : parallelDeadlines ? "installed-worker-independent-deadlines" : committedDeadline ? "installed-worker-committed-deadline" : "installed-worker-acceptance";
+  const evidenceName = originChanged || emptyRepositories ? `installed-worker-${scenario}` : accountScope ? "installed-worker-account-scope" : parallelDeadlines ? "installed-worker-independent-deadlines" : committedDeadline ? "installed-worker-committed-deadline" : "installed-worker-acceptance";
   const evidenceFile = path.join(workspace, ".tmp", `${evidenceName}.json`);
   const cleanupEvidenceFile = path.join(workspace, ".tmp", scenario === "startup-interrupt" ? "installed-worker-cleanup.json" : `${evidenceName}-cleanup.json`);
   const cleanupGateFile = path.join(home, "cleanup-ack-gate");
@@ -98,6 +99,9 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
   let failure: unknown;
   let holdProjectReads = false;
   let heldProjectReads = 0;
+  const heldProjectInventories: ServerResponse[] = [];
+  let holdProjectInventory = false;
+  let guideWitness: { configuration: string; discoveryHeldAt: number; cleanupCompletedWhileHeldAt: number | null; discoveryFailedAt: number | null } | null = null;
   let failInventoryReads = false;
   let seededCleanup: CleanupState | null = null;
   let peerCleanup: CleanupState | null = null;
@@ -110,6 +114,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
   let alternateServer: ReturnType<typeof createServer> | undefined;
   let originScopeWitness: { originalOrigin: string; currentOrigin: string; sourceRequestsAtClosure: number; originalResources: string; originalConfiguration: string; preShutdownNativeProcessIds: number[]; preShutdownStatus: string | null; preShutdownCleanup: string | null } | null = null;
   const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
+  const alternateProject: Project = { ...projects[0]!, id: uuid(300), name: "Current-origin inert Project" };
   const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: true, requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
   const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json", ...(status >= 200 && status < 300 ? { "Daynight-User-ID": principal } : {}) }); response.end(stringifyApiJson(value)); };
   const refusal = (response: ServerResponse): void => send(response, { error: { code: "version_conflict", message: "Fixture version conflict", requestId: "worker-fixture" } }, 409);
@@ -126,6 +131,11 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       if (authenticatedUser !== principal) { send(response, { error: { code: "unauthorized", message: "Fixture authentication mismatch", requestId: "worker-auth-fixture" } }, 401); return; }
       requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, userId: authenticatedUser, serverOrigin: sourceOrigin, ...(task === undefined ? {} : { taskId: task.id }) });
       if (url.pathname === "/api/v1/me" && request.method === "GET") { send(response, { id: principal, email: null, emailVerified: null, name: null, avatarUrl: null }); return; }
+      if (url.pathname === "/api/v1/projects" && request.method === "GET" && holdProjectInventory) {
+        guideWitness!.discoveryHeldAt = Date.now();
+        heldProjectInventories.push(response);
+        return;
+      }
       if (project !== undefined && parts.length === 5 && request.method === "GET") {
         if (holdProjectReads) { heldProjectReads++; return; }
         send(response, project); return;
@@ -175,10 +185,10 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       await new Promise<void>((resolve) => setTimeout(resolve, 25));
     }
   };
-  const expectNormalExit = async (closed: Promise<number | null>): Promise<void> => {
+  const expectExit = async (closed: Promise<number | null>, expectedCode: number): Promise<void> => {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const code = await Promise.race([closed, new Promise<never>((_resolve, reject) => { timeout = setTimeout(() => reject(new Error(`Installed worker shutdown timed out.\n${logs.join("")}`)), 20_000); })]).finally(() => { if (timeout !== undefined) clearTimeout(timeout); });
-    expect(code, logs.join("")).toBe(0);
+    expect(code, logs.join("")).toBe(expectedCode);
   };
   try {
     installed = await createInstalledCli();
@@ -236,7 +246,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     if (accountScope || originShutdown) await writeFile(sentinelFile, "Uncommitted result belonging to authenticated user A.\n");
     if (accountScope) {
       expect(originalWorker.child.kill("SIGINT")).toBe(true);
-      await expectNormalExit(originalWorker.closed);
+      await expectExit(originalWorker.closed, 0);
       const original = row(tasks[1]!.id);
       expect(original.user_id).toBe(uuid(100));
       expect(original.status).toBe("active");
@@ -252,7 +262,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       expect(await originalWorker.closed).toBeNull();
     }
     expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(accountScope ? 1 : 0);
-    holdProjectReads = !accountScope && !originChanged;
+    holdProjectReads = !accountScope && !originChanged && !emptyRepositories;
     const restartRequestOffset = requests.length;
     if (committedDeadline) {
       const deadline = Date.now() + 2_000;
@@ -275,6 +285,15 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
         task.properties = { ...task.properties, worker: { ...task.properties.worker!, state: "completed" } };
       }
     }
+    if (emptyRepositories) {
+      const configFile = path.join(home, ".daynight/config.yml");
+      const configuration = parseYaml(await readFile(configFile, "utf8")) as { worker: { repositories: unknown[] } };
+      configuration.worker.repositories = [];
+      const source = yaml(configuration);
+      await writeFile(configFile, source);
+      holdProjectInventory = true;
+      guideWitness = { configuration: source, discoveryHeldAt: 0, cleanupCompletedWhileHeldAt: null, discoveryFailedAt: null };
+    }
     if (originChanged) {
       const original = row(tasks[1]!.id);
       expect(original.server_origin).toBe(sourceOrigin);
@@ -284,12 +303,17 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
         const address = alternateServer!.address();
         if (address === null || typeof address === "string") throw new Error("Missing alternate worker origin.");
         requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, userId: principal, serverOrigin: `http://127.0.0.1:${address.port}` });
-        if (request.headers.authorization !== "Bearer worker-fixture-token" || request.method !== "GET" || url.pathname !== "/api/v1/me") {
-          logs.push(`Unexpected alternate-origin request ${request.method} ${url.pathname}\n`);
-          send(response, { error: { code: "forbidden", message: "Alternate origin only provides current identity", requestId: "worker-origin-fixture" } }, 403);
-          return;
+        if (request.headers.authorization === "Bearer worker-fixture-token" && request.method === "GET") {
+          if (url.pathname === "/api/v1/me") { send(response, { id: uuid(100), email: null, emailVerified: null, name: null, avatarUrl: null }); return; }
+          if (url.pathname === `/api/v1/projects/${alternateProject.id}`) { send(response, alternateProject); return; }
+          if (url.pathname === `/api/v1/projects/${alternateProject.id}/tasks`) {
+            if (url.searchParams.has("workerId")) inventoryResponses.push({ userId: principal, projectId: alternateProject.id, itemCount: 0, status: 200 });
+            send(response, { items: [], nextCursor: null });
+            return;
+          }
         }
-        send(response, { id: uuid(100), email: null, emailVerified: null, name: null, avatarUrl: null });
+        logs.push(`Unexpected alternate-origin request ${request.method} ${url.pathname}\n`);
+        send(response, { error: { code: "forbidden", message: "Alternate origin only provides current identity and its inert Project", requestId: "worker-origin-fixture" } }, 403);
       });
       await new Promise<void>((resolve) => alternateServer!.listen(0, "127.0.0.1", resolve));
       const address = alternateServer.address();
@@ -300,7 +324,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       const configuration = parseYaml(await readFile(configFile, "utf8")) as { serverUrl: string; worker: { pollIntervalMs: number; repositories: unknown[] } };
       configuration.serverUrl = alternateOrigin;
       configuration.worker.pollIntervalMs = 3_600_000;
-      configuration.worker.repositories = [];
+      configuration.worker.repositories = [{ remote: alternateProject.repoUrl, path: repositoryPaths[0], projectId: alternateProject.id }];
       await writeFile(configFile, yaml(configuration));
       await new Promise<void>((resolve, reject) => { server.close((error) => error === undefined ? resolve() : reject(error)); server.closeAllConnections(); });
       sourceServerClosed = true;
@@ -320,12 +344,15 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       expect(tasks[1]!.properties.worker).toMatchObject({ state: "active", userId: uuid(100), claimId: accountScopeWitness!.originalClaimId });
       expect(requests.slice(restartRequestOffset).every((request) => request.userId === principal && request.method === "GET")).toBe(true);
     } else if (originChanged) {
-      await waitFor("new origin identity and successful empty configured project scope", () => requests.some((request) => request.serverOrigin === originScopeWitness!.currentOrigin && request.path === "/api/v1/me") && logs.slice(restartLogOffset).some((line) => line.includes("Original ready private Herdr session")));
+      await waitFor("new origin identity and successful empty configured project scope", () => requests.some((request) => request.serverOrigin === originScopeWitness!.currentOrigin && request.path === "/api/v1/me") && inventoryResponses.some((response) => response.projectId === alternateProject.id && response.itemCount === 0 && response.status === 200) && logs.slice(restartLogOffset).some((line) => line.includes("Original ready private Herdr session")));
       expect(row(tasks[1]!.id).server_origin).toBe(sourceOrigin);
       expect(requests.filter((request) => request.serverOrigin === sourceOrigin)).toHaveLength(originScopeWitness!.sourceRequestsAtClosure);
-      expect(requests.filter((request) => request.serverOrigin === originScopeWitness!.currentOrigin).every((request) => request.method === "GET" && request.path === "/api/v1/me")).toBe(true);
+      expect(requests.filter((request) => request.serverOrigin === originScopeWitness!.currentOrigin).every((request) => {
+        const pathname = new URL(request.path, "http://localhost").pathname;
+        return request.method === "GET" && ["/api/v1/me", `/api/v1/projects/${alternateProject.id}`, `/api/v1/projects/${alternateProject.id}/tasks`].includes(pathname);
+      })).toBe(true);
       const sql = new Database(databaseFile, { readonly: true });
-      try { expect(sql.prepare("SELECT count(*) AS count FROM projects WHERE server_origin=?").get(originScopeWitness!.currentOrigin)).toEqual({ count: 0 }); }
+      try { expect(sql.prepare("SELECT project_id,repo_url,local_path FROM projects WHERE server_origin=?").all(originScopeWitness!.currentOrigin)).toEqual([{ project_id: alternateProject.id, repo_url: alternateProject.repoUrl, local_path: repositoryPaths[0] }]); }
       finally { sql.close(); }
       if (originShutdown) {
         const retained = row(tasks[1]!.id);
@@ -339,6 +366,12 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
         expect((await events()).some((event) => event.kind === "native-stop" && event.taskId === tasks[1]!.id)).toBe(false);
         expect(await readFile(sentinelFile, "utf8")).toContain("Uncommitted result belonging to authenticated user A.");
       }
+    } else if (emptyRepositories) {
+      await waitFor("existing-database worker held during initial Project selection", () => heldProjectInventories.length > 0);
+      expect(guideWitness!.discoveryHeldAt).toBeGreaterThan(0);
+      expect(heldProjectInventories).toHaveLength(1);
+      expect(heldProjectInventories[0]!.writableEnded).toBe(false);
+      expect(await readFile(path.join(home, ".daynight/config.yml"), "utf8")).toBe(guideWitness!.configuration);
     } else await waitFor("restarted worker held during project discovery", () => heldProjectReads > 0);
     if (committedDeadline) {
       const deadlineTask = parallelDeadlines ? first : tasks[1]!;
@@ -349,9 +382,19 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       const stop = (await events()).find((event) => event.kind === "native-stop" && event.taskId === deadlineTask.id)!;
       expect(stop.timestamp).toBeGreaterThanOrEqual(seededCleanup!.deadline);
       expect(stop.timestamp).toBeLessThanOrEqual(seededCleanup!.deadline + 5_000);
-      expect(requests.slice(restartRequestOffset).some((request) => request.path.includes("workerId="))).toBe(false);
+      expect(requests.slice(restartRequestOffset).some((request) => request.path.includes("workerId=") && (!originChanged || request.serverOrigin === sourceOrigin))).toBe(false);
       expect((await events()).filter((event) => event.kind === "prompt" && event.taskId === deadlineTask.id)).toHaveLength(1);
       expect((await events()).filter((event) => event.kind === "daemon-stop")).toHaveLength(0);
+      if (emptyRepositories) {
+        guideWitness!.cleanupCompletedWhileHeldAt = cleanupCompletedAt;
+        expect(guideWitness!.discoveryHeldAt).toBeLessThanOrEqual(stop.timestamp);
+        expect(heldProjectInventories).toHaveLength(1);
+        expect(heldProjectInventories[0]!.writableEnded).toBe(false);
+        expect(restartedWorker.child.exitCode).toBeNull();
+        expect(JSON.parse(row(deadlineTask.id).cleanup)).toMatchObject({ ...seededCleanup, result: "timed-out", error: "The original cleanup deadline elapsed; temporary resource cleanup is not proven complete.", agentStopped: true, workspaceClosed: true, worktreeDeleted: true });
+        expect(requests.slice(restartRequestOffset).every((request) => request.method === "GET")).toBe(true);
+        expect((await events()).filter((event) => event.kind === "native-start")).toHaveLength(2);
+      }
       if (parallelDeadlines) {
         const held = (await events()).find((event) => event.kind === "cleanup-ack-held" && event.taskId === tasks[1]!.id)!;
         expect(held.timestamp).toBeLessThan(stop.timestamp);
@@ -366,8 +409,17 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
         await waitFor("peer cleanup after its original acknowledgement is released", () => row(tasks[1]!.id).status === "done", 8_000);
       }
     }
-    expect(restartedWorker.child.kill("SIGINT")).toBe(true);
-    await expectNormalExit(restartedWorker.closed);
+    if (emptyRepositories) {
+      guideWitness!.discoveryFailedAt = Date.now();
+      holdProjectInventory = false;
+      for (const response of heldProjectInventories) send(response, { error: { code: "forbidden", message: "Fixture Project discovery refused after original cleanup.", requestId: "worker-guide-fixture" } }, 403);
+      await expectExit(restartedWorker.closed, 1);
+      expect(logs.slice(restartLogOffset).join("")).toContain("forbidden");
+      expect(await readFile(path.join(home, ".daynight/config.yml"), "utf8")).toBe(guideWitness!.configuration);
+    } else {
+      expect(restartedWorker.child.kill("SIGINT")).toBe(true);
+      await expectExit(restartedWorker.closed, 0);
+    }
     const observed = await events();
     expect(observed.filter((event) => event.kind === "fixture-error")).toEqual([]);
     expect(observed.filter((event) => event.kind === "native-start").map((event) => event.taskId)).toEqual(tasks.map((task) => task.id));
@@ -439,7 +491,32 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
       expect(unfinished.server_origin).toBe(sourceOrigin);
       expect(requests.filter((request) => request.serverOrigin === sourceOrigin)).toHaveLength(originScopeWitness!.sourceRequestsAtClosure);
     }
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: originChanged ? "Installed public launcher, real Git/SQLite/HTTP; origin A unavailable after worker crash, origin B identity-only service with no configured repositories" : accountScope ? "Installed public launcher, real Git/SQLite/HTTP; normal user A shutdown then user B authentication with successful empty own inventory and scope pause" : "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET", nativeAgentExecution: false, receipt: installed.receipt, requests, inventoryResponses, events: observed, first: row(first.id), unfinished, ...(accountScopeWitness === null ? {} : { accountScopeWitness }), ...(originScopeWitness === null ? {} : { originScopeWitness: { ...originScopeWitness, sourceServerClosed, configuredRepositoryCount: 0, persistedCurrentOriginProjectCount: 0 } }), ...(seededCleanup === null ? {} : { injection: { method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision", cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: holdProjectReads, inventoryFaultEnabled: failInventoryReads, inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length, cleanupCompletedAt, processingAllowanceMs: 5_000, ...(peerCleanup === null ? {} : { peerCleanup, peerPendingWitness }) } }), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
+    const method = originChanged
+      ? "Installed public launcher, real Git/SQLite/HTTP; origin A unavailable after worker crash, origin B supplies current identity and one configured inert Project with empty own-claim inventory"
+      : emptyRepositories
+        ? "Installed public launcher, real Git/SQLite/HTTP; existing database and empty repositories; original cleanup deadline advances while initial Project discovery is held, then discovery fails"
+        : accountScope
+          ? "Installed public launcher, real Git/SQLite/HTTP; normal user A shutdown then user B authentication with successful empty own inventory and scope pause"
+          : "Installed public launcher, real Git/SQLite/HTTP; controlled Herdr and Codex metadata/native-process substitutes; SIGKILL then restart held in project GET";
+    await writeFile(evidenceFile, JSON.stringify({
+      outcome: "passed", scenario, method, nativeAgentExecution: false, receipt: installed.receipt,
+      requests, inventoryResponses, events: observed, first: row(first.id), unfinished,
+      ...(accountScopeWitness === null ? {} : { accountScopeWitness }),
+      ...(originScopeWitness === null ? {} : { originScopeWitness: {
+        ...originScopeWitness, sourceServerClosed, configuredRepositoryCount: 1,
+        persistedCurrentOriginProjectCount: 1, freshCurrentOriginProjectId: alternateProject.id,
+      } }),
+      ...(guideWitness === null ? {} : { guideWitness }),
+      ...(seededCleanup === null ? {} : { injection: {
+        method: "Controlled SQL historical terminal-intent injection; this is not an observed prior remote-absence decision",
+        cleanup: seededCleanup, pollIntervalMs: 3_600_000, projectReadHeld: holdProjectReads,
+        projectInventoryHeldDuringCleanup: emptyRepositories, inventoryFaultEnabled: failInventoryReads,
+        inventoryRequestsAfterRestart: requests.slice(restartRequestOffset).filter((request) => request.path.includes("workerId=")).length,
+        cleanupCompletedAt, processingAllowanceMs: 5_000,
+        ...(peerCleanup === null ? {} : { peerCleanup, peerPendingWitness }),
+      } }),
+      limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"],
+    }, null, 2));
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });
