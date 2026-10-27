@@ -1,6 +1,8 @@
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { OperationError } from "../../../src/api/operation.js";
+import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
@@ -321,4 +323,30 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.tasks.start).toHaveBeenCalledOnce();
   });
 
+});
+
+
+describe("worker cancellation classification", () => {
+  it("recognizes an aggregate made entirely of the current shutdown cancellations", () => {
+    const controller = new AbortController(); const reason = new Error("Worker operation interrupted."); controller.abort(reason);
+    const first = new OperationError("cancelled", { cause: reason });
+    const second = new Error("Endpoint request stopped", { cause: new OperationError("cancelled", { cause: reason }) });
+    expect(isWorkerCancellation(new AggregateError([first, second], "Both endpoints could not be inspected"), controller.signal)).toBe(true);
+    expect(isWorkerCancellation(new AggregateError([new AggregateError([first, second], "Concurrent cancellation")], "Shutdown"), controller.signal)).toBe(true);
+  });
+
+  it("preserves a real endpoint failure mixed with cancellation", () => {
+    const controller = new AbortController(); const reason = new Error("Worker operation interrupted."); controller.abort(reason);
+    const cancellation = new OperationError("cancelled", { cause: reason });
+    expect(isWorkerCancellation(new AggregateError([cancellation, new Error("Endpoint configuration invalid")], "Endpoints failed", { cause: reason }), controller.signal)).toBe(false);
+    expect(isWorkerCancellation(new AggregateError([], "No endpoint observations", { cause: reason }), controller.signal)).toBe(false);
+  });
+
+  it("does not suppress another operation's cancellation or errors before shutdown", () => {
+    const controller = new AbortController(); const reason = new Error("Worker operation interrupted.");
+    const cancellation = new OperationError("cancelled", { cause: reason });
+    expect(isWorkerCancellation(new AggregateError([cancellation], "Not shutting down"), controller.signal)).toBe(false);
+    controller.abort(reason);
+    expect(isWorkerCancellation(new AggregateError([new OperationError("cancelled", { cause: new Error("Another operation") })], "Foreign cancellation"), controller.signal)).toBe(false);
+  });
 });

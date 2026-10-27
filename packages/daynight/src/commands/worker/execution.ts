@@ -24,7 +24,7 @@ export type ExecutionDependencies = {
 };
 export const isWorkerCancellation = (error: unknown, signal: AbortSignal): boolean => {
   if (!signal.aborted) return false;
-  if (error instanceof AggregateError && error.errors.some((failure) => !isWorkerCancellation(failure, signal))) return false;
+  if (error instanceof AggregateError) return error.errors.length > 0 && error.errors.every((failure) => isWorkerCancellation(failure, signal));
   return error === signal.reason || (error instanceof OperationError && error.kind === "cancelled" && error.cause === signal.reason)
     || (error instanceof Error && error.cause !== undefined && isWorkerCancellation(error.cause, signal));
 };
