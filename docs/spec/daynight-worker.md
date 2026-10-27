@@ -14,8 +14,11 @@ Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓�
 
 - `daynight worker run` 与现有 `review run` 一样在前台运行，支持 Linux、macOS 和 Windows。
 - 配置支持多个仓库的地址与本地路径；路径不存在时由系统克隆准备，已存在路径须核对仓库身份并保留已有工作。冲突或身份不明确时显示错误。
-- worker mapping 使用 maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories；运行参数默认值分别为 1、5000、3、copilot、null、[]。配置文件、worker mapping 或可选字段省略时采用同样默认值；repositories 省略时为空数组，不隐式发现仓库或沿用 review 仓库。每个仓库的 remote/path 必填，可给 projectId 和 agent/model/args 覆盖。
+- worker mapping 使用 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories；运行参数默认值分别为 1、5000、3、copilot、null、[]。配置文件、worker mapping 或可选字段省略时采用同样默认值；repositories 省略时为空数组，不隐式发现仓库或沿用 review 仓库。每个仓库的 remote/path 必填，可给 projectId 和 agent/model/args 覆盖。
 - 只有配置文件确实不存在才按文件缺省处理；非 nullable 字段的显式 null、未知字段、错误类型、读取故障和取消均明确失败，model:null 保留清除模型设置的语义。配置读取不创建或重写配置文件。重复/重叠仓库与状态路径拒绝；相对路径以 config.yml 目录解析，不展开 tilde。
+- `worker repo list [--json]` 读取本地注册；`worker repo add/remove [--project <UUID>]` 仅选择远端现存且有权访问的 Project。省略 project 参数时显示名称、完整 UUID、repoUrl 的多选，至少选择一项；显式 UUID 可非交互执行。新增保存 projectId、原 repoUrl 和绝对 path；匹配已有注册时保留原传输 URL、路径与覆盖，remote-only 注册只补 projectId。Remove 只移除选择，不删除 clone、claim、worktree、native history 或冻结配置。
+- `worker.repositoryRoot` 默认 ~/daynights，独立于 review 的仓库根设置。原字符串通过严格路径校验，只在新增注册时用实际用户 home 和配置目录展开；根设置改变不移动已有注册。配置写入只修改 worker.repositories，锁内重读并拒绝相关根、仓库或服务/凭据变动，保留无关字段、注释和合法 alias。共享 YAML alias 会改变本次操作不拥有的有效值时拒绝保存，保持原文件。
+- 空仓库的交互式 `worker run` 在启动新任务前引导选择远端 Project。首次无持久状态时，保存选择先于身份、SQLite、Git 和 Herdr；已有状态时先建立原清理控制器，在项目读取或选择等待期间继续原截止。网络和交互不持配置锁；失败或取消不产生部分选择或新任务资源。非交互空配置给出 repo add --project 指引。选择结束后从同一份配置核对服务/认证上下文并载入 worker 设置，不得将原服务凭据与另一份来源的仓库或 agent 参数组合；新设置作用于本次后续启动。
 - 配置包含覆盖全部仓库的最大并发，以及全局默认 agent、模型、参数和仓库覆盖值。Worker 在启动或重启时加载配置，不进行热重载。实际取得 claim 后，首次 pending 物化时持久冻结有效执行配置；继续、重试及重启恢复沿用该配置，重新加载的配置作用于后续新 claim。已开始执行却缺原配置时暂停核对，不替换为新默认值。
 - 首次启动随机生成稳定 `workerId`，使用共享配置锁与原子替换保存至 `~/.daynight/config.yml`；已有合法身份重启复用，非法值明确拒绝。身份持久化后才允许 claim。
 - 每个用户环境一个 worker，固定 `~/.daynight/worker/` 保存独立 SQLite、实例锁、日志、Herdr 数据和临时资源，不提供状态根覆盖入口。存活的第二实例明确拒绝；失效 worker 锁不证明原生 agent 已停。启动前校验实际 Herdr 端点，路径等条件不满足时明确报告。

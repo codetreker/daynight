@@ -3,9 +3,12 @@ import { canonicalId } from "../../api/parse.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource } from "../../config/files.js";
+import { parseServerConfiguration } from "../../config/server.js";
+import type { ServerConfiguration } from "../../config/server.js";
 import { ancestorIdentities, missingPathsReferToSameDirectory, pathsOverlap, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
+import { defaultRepositoryRoot, validateRepositoryRoot } from "../../repository/location.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { WorkerPaths } from "./paths.js";
 import type { FrozenExecutionConfiguration } from "./types.js";
@@ -17,12 +20,19 @@ export type WorkerRepositoryConfiguration = FrozenExecutionConfiguration & {
 };
 
 export type WorkerConfiguration = FrozenExecutionConfiguration & {
+  repositoryRoot: string;
   maxConcurrent: number;
   pollIntervalMs: number;
   repositories: readonly WorkerRepositoryConfiguration[];
 };
 
+export type WorkerConfigurationSnapshot = ServerConfiguration & {
+  readonly source: string | undefined;
+  readonly configuration: WorkerConfiguration;
+};
+
 export const workerConfigurationDefaults = Object.freeze({
+  repositoryRoot: defaultRepositoryRoot,
   maxConcurrent: 1,
   pollIntervalMs: 5_000,
   recoveryLimit: 3,
@@ -77,7 +87,10 @@ const repositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathA
 export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pathApi: PathApi = path): WorkerConfiguration => {
   const { mapping: root } = parseConfigurationDocument(source, paths);
   const worker = Object.hasOwn(root, "worker") ? mapping(root.worker, "worker") : {};
-  keys(worker, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "agent", "model", "args", "repositories"], "worker");
+  keys(worker, ["repositoryRoot", "maxConcurrent", "pollIntervalMs", "recoveryLimit", "agent", "model", "args", "repositories"], "worker");
+  const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
+    ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
+    : workerConfigurationDefaults.repositoryRoot;
   const effective = agentConfiguration(worker, "worker", {
     agent: workerConfigurationDefaults.agent, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
   });
@@ -107,17 +120,37 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
     }
     return { ...agentConfiguration(repository, field, effective), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
-  return { ...effective, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
+  return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
+};
+
+const readWorkerConfigurationSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {
+  signal?.throwIfAborted();
+  try { return await readConfigurationSource(paths, signal); }
+  catch (cause) {
+    if (!(cause instanceof MissingConfigurationFileError)) throw cause;
+    return undefined;
+  }
 };
 
 export const readWorkerConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
-  signal?.throwIfAborted();
-  let source: string;
-  try { source = await readConfigurationSource(paths, signal); }
-  catch (cause) {
-    if (!(cause instanceof MissingConfigurationFileError)) throw cause;
-    source = "{}";
-  }
+  const source = await readWorkerConfigurationSource(paths, signal);
+  return validateWorkerConfigurationSource(source === undefined ? "{}" : source, paths, signal);
+};
+
+export const validateWorkerConfigurationSnapshotSource = async (
+  source: string | undefined,
+  paths: WorkerPaths,
+  signal?: AbortSignal,
+): Promise<WorkerConfigurationSnapshot> => {
+  const content = source === undefined ? "{}" : source;
+  const configuration = await validateWorkerConfigurationSource(content, paths, signal);
+  return { source, configuration, ...parseServerConfiguration(content, paths) };
+};
+
+export const readWorkerConfigurationSnapshot = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfigurationSnapshot> =>
+  validateWorkerConfigurationSnapshotSource(await readWorkerConfigurationSource(paths, signal), paths, signal);
+
+export const validateWorkerConfigurationSource = async (source: string, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
   signal?.throwIfAborted();
   const configuration = parseWorkerConfiguration(source, paths);
   const physicalPaths: PhysicalDirectory[] = [];
