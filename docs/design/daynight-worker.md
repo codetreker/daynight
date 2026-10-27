@@ -83,11 +83,17 @@ worker:
 
 可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 省略时为 []，显式提供时必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。未知字段、错误类型、重复仓库/项目和重叠路径明确拒绝，不接受 stateDirectory 或其他状态根入口。
 
+setup 模块拥有交互编排：验证交互终端，读取当前同源配置快照，展示公共环境报告，选择 agent，读取完整可访问 Project 列表并预选已有注册，再校验候选配置与每组不同的实际 native model/args。最终摘要包含保留传输/路径、删除的注册与 native 参数重置，确认后通过 repositories 模块的 setup 更新一次保存。现存 Project 匹配仍只按身份核对，不把保留的 SSH URL 改成等价 HTTPS 地址；root 始终使用 worker 自己的原设置。
+
+环境检查复用 Herdr preflight 中的原生版本、目录、运行时、hook asset、有效 SessionStart 及 Codex hooks/隔离能力检查。公共报告还检查平台、Node、Git、Herdr 版本、私有端点和随包 managed 技能；候选 integration 状态通过只读 herdr integration status 获取，不为检查启动私有实例。运行时仍使用 typed RPC integration.list 和原生历史核验。检查位于 setup 启动目录，未来 worktree 的 provider/trust/真实启动及 live 协议能力保持未验证。
+
+独立探测返回结构化通过、缺项或未验证结果；全部已启动的探测用 allSettled 等待收尾。普通缺项可给修复指引并保存配置；命令清理的 AggregateError 及其 cause 链始终优先于普通缺项或取消，保留可能仍在运行的原进程责任，不把未确认收尾报告为正常中断。
+
 `worker.repositoryRoot` 是 worker 自己拥有的原始字符串，默认 ~/daynights；解析校验类型、控制字符、home shortcut 和 Windows drive-relative 形状，不从 WorkerPaths 推断 home，也不读取 review 的 root 或仓库列表。配置中的原拼写保持不变；新增注册才通过调用方传入的实际 home 展开为绝对目录，已有注册不随 root 移动。repository/location 只共享默认字面值、根解析及便携目录组件与通用 remote 位置计算；review 继续拥有自己的读取、写入和诊断字段。
 
 Worker 的 repositories 模块读取完整、已认证的远端 Project 列表，新注册显式选择后保存 id、原 repoUrl 和绝对 path。已有注册匹配同一仓库身份时保持原传输 URL、路径与覆盖，remote-only 项只补 projectId，避免把既有 SQLite 绑定改成另一种等价传输地址。普通仓库采用 host/owner/repo 目录；非普通 transport/user/port 和嵌套路径保留各自身份，编码空、百分号和 dot 组件防止目录逃逸或身份折叠。repo list 只读本地，add/remove 使用远端现存 Project，remove 不改变本机任务资源。
 
-worker/config 的 readWorkerConfigurationSnapshot 从一次文件读取捕获原 YAML，并从同一份内容校验 worker 设置及服务/凭据；注册模块只为该快照添加选择指纹。选择快照覆盖 worker.repositoryRoot 的实际存在性和值、worker.repositories 及服务/凭据上下文。网络和多选结束后才取共享配置锁；锁内重读、保留无关并发编辑及 YAML 节点，候选源码通过同一类型/身份/物理路径 validator 后原子保存。写入前比较所有非 worker 字段及 worker 中除 repositories 之外的有效值；共享 alias 传播导致无关值变化时拒绝写入。未受影响的 alias 保留，不把配置校验局限于 worker 自身类型。
+worker/config 的 readWorkerConfigurationSnapshot 从一次文件读取捕获原 YAML，并从同一份内容校验 worker 设置及服务/凭据；注册模块只为该快照添加选择指纹。选择快照覆盖 worker.repositoryRoot 的实际存在性和值、worker.repositories 及服务/凭据上下文；setup 还覆盖原始 agent/model/args 字段存在性和值。网络和多选结束后才取共享配置锁；锁内重读、保留无关并发编辑及 YAML 节点，候选源码通过同一类型/身份/物理路径 validator 后原子保存。写入前比较所有非 worker 字段及 worker 中不属于本次操作的有效值：repo 命令只拥有 repositories，setup 拥有 agent/model/args/repositories，root 始终不属于这些更新。共享 alias 传播导致无关值变化时拒绝写入。未受影响的 alias 保留，不把配置校验局限于 worker 自身类型。
 
 公共 run 命令将项目配置准备回调传入 runtime。首次空配置且无本机数据库时，准备先于实例锁、workerId、SQLite 或 native 控制器；有本机状态时先启动既有 committed-cleanup 发现循环，再等待项目读取/选择，保留已提交原截止。回调完成后立即核对 cancellation，并通过同一中立快照读取服务及 worker 设置；从该次捕获内容核对原 serverUrl/serverToken，再载入其中的配置并要求实际选择仓库。不能分别读取后组合不同来源的服务与仓库/agent 设置；之后的文件修改不改变已捕获的启动快照。协调器通过 getter 使用本次设置的 maxConcurrent。新任务启动等待该边界；已有执行仍使用其冻结配置。
 

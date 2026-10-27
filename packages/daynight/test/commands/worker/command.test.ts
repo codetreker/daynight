@@ -24,6 +24,7 @@ const taskId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const claimId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const projectId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const dependencies = () => ({
+  setup: vi.fn<WorkerCommandDependencies["setup"]>(async () => {}),
   attach: vi.fn<WorkerCommandDependencies["attach"]>(async () => {}),
   prepareRepositories: vi.fn<WorkerCommandDependencies["prepareRepositories"]>(async () => {}),
   repository: vi.fn<WorkerCommandDependencies["repository"]>(async () => {}),
@@ -32,7 +33,7 @@ const dependencies = () => ({
 });
 
 describe("worker command", () => {
-  it.each([[], ["--help"], ["-h"], ...["run", "attach", "repo", "retry", "release", "transfer", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
+  it.each([[], ["--help"], ["-h"], ...["setup", "run", "attach", "repo", "retry", "release", "transfer", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
     ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
     const deps = dependencies();
@@ -41,7 +42,7 @@ describe("worker command", () => {
     for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
-  it.each([["attach", "extra"], ["attach", "--session", "w"], ["attach", "--claim-id", claimId], ["run", "extra"], ["run", "--config", "elsewhere"], ["run", "--platform", "linux"], ["run", "--state-directory", "elsewhere"], ["run", "--version"], ["other"]])("rejects invalid syntax before runtime startup %j", async (...args) => {
+  it.each([["setup", "extra"], ["setup", "--agent", "codex"], ["attach", "extra"], ["attach", "--session", "w"], ["attach", "--claim-id", claimId], ["run", "extra"], ["run", "--config", "elsewhere"], ["run", "--platform", "linux"], ["run", "--state-directory", "elsewhere"], ["run", "--version"], ["other"]])("rejects invalid syntax before runtime startup %j", async (...args) => {
     const { cli } = context();
     const run = vi.fn(async () => {});
     await expect(runWorkerCommand(args, cli, { ...dependencies(), run })).rejects.toThrow();
@@ -62,6 +63,14 @@ describe("worker command", () => {
     expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli, signal);
   });
 
+  it("routes setup without inspecting home or loading a worker controller", async () => {
+    const { cli } = context();
+    const deps = dependencies();
+    await runWorkerCommand(["setup"], cli, deps);
+    expect(deps.setup).toHaveBeenCalledExactlyOnceWith(cli);
+    for (const [name, action] of Object.entries(deps)) if (name !== "setup") expect(action).not.toHaveBeenCalled();
+  });
+
   it("attaches using only the current home without loading the task controller", async () => {
     const { cli } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
@@ -77,10 +86,10 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["run", "attach", "repo", "retry", "release", "transfer", "resume"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["setup", "run", "attach", "repo", "retry", "release", "transfer", "resume"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('run' 'attach' 'repo' 'retry' 'release' 'transfer' 'resume')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('setup' 'run' 'attach' 'repo' 'retry' 'release' 'transfer' 'resume')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
     expect(renderZshCompletion(commandTree)).toContain("repo:Manage repositories selected from existing Daynight Projects");
     expect(renderZshCompletion(commandTree)).toContain("--target-agent");

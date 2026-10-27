@@ -1,4 +1,4 @@
-# Agent Note: Worker Project Registration
+# Agent Note: Worker Setup and Project Registration
 
 Status: implemented
 
@@ -8,13 +8,22 @@ A worker's acquisition scope needs an explicit operator choice. Repeating Git
 addresses and clone locations duplicates Project identity already held by the
 service, while automatically selecting every accessible Project makes service
 membership determine which repositories can receive new task executions.
-Configuration interaction must also preserve cleanup deadlines already accepted
-by an earlier execution.
+Operators also need to identify missing local prerequisites and understand which
+native settings apply to the selected scope. Configuration interaction must
+preserve cleanup deadlines already accepted by an earlier execution.
 
 ## Decision
 
-The worker selects existing accessible Daynight Projects. The repo list/add/remove
-commands inspect or change the saved acquisition scope; add and remove offer
+The interactive worker setup command reports local prerequisites, selects one
+native agent and offers existing accessible Projects with current selections
+checked. Candidate configuration preserves existing transports and paths, retains
+compatible native settings and clears incompatible global or per-Project values
+when switching agent. The summary shows the complete selection, removals and
+native resets before a final confirmation. Agent defaults and the complete
+Project scope are saved in one atomic update; the selected agent applies to all
+selected Projects. Running assignments keep their original frozen settings.
+
+The repo list/add/remove commands inspect or change the saved acquisition scope; add and remove offer
 multiselection, or an explicit --project UUID for noninteractive use. Choices show
 the name, complete UUID and repository URL. New registrations save the server's
 original repoUrl, explicit projectId and an absolute local path. Matching existing
@@ -48,20 +57,46 @@ file replacement after capture cannot supply different worker parameters under
 the original service context. Existing assignments keep their original snapshots.
 
 A selection snapshot covers raw worker.repositoryRoot presence and value,
-worker.repositories and service credentials. Network and prompts hold no
+worker.repositories and service credentials. Setup adds raw global native-field
+presence and values to that fingerprint. Network and prompts hold no
 configuration lock. The atomic writer rereads current YAML, refuses related
 changes and preserves unrelated edits and comments. Worker and review clone-root
 edits remain independent. Candidate repositories receive the same type, identity
 and physical path validation as runtime configuration.
 
 Before writing, effective unowned root and worker values must remain equal.
-Only worker.repositories belongs to these commands. Mutating a shared YAML
-anchor can alter review's list or worker native arguments even when worker
-repository validation passes, so such changes are rejected without writing.
+Repo commands own worker.repositories; setup owns agent/model/args/repositories.
+The worker root remains unowned by both updates. Mutating a shared YAML anchor
+can alter review's list or other unowned values even when worker validation
+passes, so such changes are rejected without writing.
 Aliases whose unrelated values remain unchanged are preserved. Registration
 never clones, opens SQLite, launches native resources or acquires a claim.
 
+Setup shares native prerequisite checks with the runtime's [Herdr
+adapter](2026-10-26-worker-herdr-adapter.md). Local version, directory, runtime,
+hook and effective-settings checks use bounded read-only commands; official
+integration state is inspected through offline herdr integration status. The
+runtime retains its typed RPC and original-history gates. Independent reports
+are collected together, and missing selected prerequisites allow saving with a
+repair instruction. Provider authentication, future task-directory trust, hook
+execution and live daemon capabilities remain unverified.
+
+Every launched probe settles before inspection returns. Cleanup failures,
+including wrapped AggregateError causes, remain failures even during cancellation.
+They cannot be reduced to ordinary missing tools or normal interruption. Setup
+does not launch the worker, daemon or native agents, install tools, log in or
+create execution resources.
+
 ## Alternatives
+
+**Save agent choice and Project selection separately.** Failure or cancellation
+between writes can leave a partly applied setup. One final lock-time merge keeps
+both choices together while preserving unrelated configuration edits.
+
+**Start a private daemon for prerequisite inspection.** That would require
+runtime ownership and persistent resources, including possible interaction with
+a running worker. Official offline status and local hooks suffice for setup;
+live protocol and real execution remain runtime checks.
 
 **Choose every accessible Project automatically.** This removes interaction but
 lets membership changes silently expand acquisition scope. Persisting an explicit
@@ -108,8 +143,9 @@ validation and preserve the original configuration.
 
 ## Consequences
 
-Project selection remains explicit, available to scripts and constrained by
-current service access. Missing terminal input, cancellation, incomplete remote
+Setup makes local missing prerequisites and effective native choices visible
+before one confirmed save. Project selection remains explicit, available to
+scripts and constrained by current service access. Missing terminal input, cancellation, incomplete remote
 inventory and failed writes cannot produce a partial selection or new task
 execution. A selected Project must remain accessible for registration management.
 

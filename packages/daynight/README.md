@@ -98,6 +98,7 @@ daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
 daynight worker                     # Show worker help
+daynight worker setup               # Check prerequisites and choose an agent and Projects
 daynight worker run                 # Run until interrupted
 daynight worker attach              # Open the worker Herdr session
 daynight worker repo list [--json]
@@ -788,17 +789,51 @@ instance. The agent owns task delivery, acceptance, evidence and final
 claim-bound completion. The worker owns concurrency, resources, recovery and
 cleanup based on its current claim inventory.
 
-Install Git, Herdr 0.9.5 or newer with protocol 22 capabilities, and the selected
-native agent on PATH. Native/provider authentication and the current official
+Start with interactive setup:
+
+```bash
+daynight login
+daynight worker setup
+daynight worker run
+```
+
+`setup` requires terminal input and stderr. It reports environment checks and
+repair instructions, asks which native agent should execute tasks, then lists
+existing accessible Projects with their names, UUIDs and repository URLs. Select
+at least one Project. Current Projects are preselected when setup runs again.
+The final selection replaces the worker's acquisition list, and the chosen
+agent applies to every selected Project.
+
+Matching registrations keep their exact transport URLs and local paths. Compatible
+native models and arguments survive; switching agent type clears incompatible
+global and per-Project values. Before saving, setup shows Projects and paths,
+removed registrations and native-setting resets, then asks for confirmation.
+Agent settings and the complete Project selection are saved in one atomic
+update. Cancellation, invalid choices, inaccessible Project inventory, related
+concurrent edits or write failures leave the configuration unchanged.
+
+Local diagnostics inspect tools and integration settings without starting Herdr
+or native agents. Independent missing prerequisites are reported together, and
+selected-agent checks use the effective retained argument configurations in the
+setup launch directory. Missing native prerequisites still allow saving with a
+repair-needed result. Executable versions and hook configuration do not prove
+provider authentication, future task-directory trust, hook execution, live Herdr
+protocol capabilities, Git access or completed task delivery. Setup does not
+install tools, edit provider configuration, sign in, clone repositories, open
+worker state or acquire tasks. Unconfirmed probe-process cleanup is a failure,
+including during cancellation.
+
+Worker execution requires Git, Herdr 0.9.5 or newer with protocol 22 capabilities,
+and the selected native agent on PATH. Native/provider authentication and the current official
 Herdr SessionStart integration must be configured explicitly. Codex needs the
 hooks feature and `--no-daemon`; Unix hook scripts need bash and python3, while
-Windows hooks need PowerShell. The worker reports missing capabilities or
+Windows hooks need PowerShell. Inspect the official integration with
+`herdr integration status`. The worker reports missing capabilities or
 integration/history instead of installing or changing global native settings.
 Git transport and tools used by the task, such as authenticated GitHub CLI for
 PR delivery, must also be ready.
 
-Run `daynight login` for Daynight authentication, then select one or more
-existing accessible Projects:
+Manage individual Project registrations with:
 
 ```bash
 daynight worker repo add
