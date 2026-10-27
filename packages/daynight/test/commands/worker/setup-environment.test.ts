@@ -100,7 +100,10 @@ describe("worker setup environment inspection", () => {
 
   it("reports an overlong private socket while continuing the rest of the inspection", async () => {
     const f = await fixture();
-    const checks = await inspectWorkerEnvironment({ ...f.options, paths: resolveWorkerPaths(`/user/${"x".repeat(150)}`) }, f.dependencies);
+    const paths = resolveWorkerPaths(`/user/${"x".repeat(150)}`, path.posix);
+    expect(path.posix.isAbsolute(paths.herdrDirectory)).toBe(true);
+    expect(path.posix.isAbsolute(paths.logsDirectory)).toBe(true);
+    const checks = await inspectWorkerEnvironment({ ...f.options, paths }, f.dependencies);
     expect(checks.find(({ label }) => label === "Private Herdr endpoint")).toMatchObject({ status: "missing", detail: expect.stringContaining("socket exceeds") });
     expect(checks.find(({ label }) => label === "Git")?.status).toBe("passed");
   });
