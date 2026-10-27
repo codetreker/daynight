@@ -99,7 +99,7 @@ const fixtureProcessAlive = async (pid: number): Promise<boolean> => {
   try {
     const stat = await readFile(`/proc/${pid}/stat`, "utf8");
     return stat.slice(stat.lastIndexOf(") ") + 2, stat.lastIndexOf(") ") + 3) !== "Z";
-  } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
+  } catch (error) { if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ESRCH")) return false; throw error; }
 };
 
 const cleanupFixtureProcesses = async (observed: readonly Event[], eventsFile: string): Promise<{ pid: number; outcome: "absent" | "stopped" }[]> => {
@@ -109,7 +109,7 @@ const cleanupFixtureProcesses = async (observed: readonly Event[], eventsFile: s
     if (!await fixtureProcessAlive(pid)) { result.push({ pid, outcome: "absent" }); continue; }
     let environment: string;
     try { environment = await readFile(`/proc/${pid}/environ`, "utf8"); }
-    catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") { result.push({ pid, outcome: "absent" }); continue; } throw error; }
+    catch (error) { if (error instanceof Error && "code" in error && (error.code === "ENOENT" || error.code === "ESRCH")) { result.push({ pid, outcome: "absent" }); continue; } throw error; }
     if (!environment.split("\0").includes(`FIXTURE_EVENTS=${eventsFile}`)) throw new Error(`The fixture PID ${pid} was reused; the unrelated process was retained.`);
     try { process.kill(pid, "SIGKILL"); }
     catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
