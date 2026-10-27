@@ -4,14 +4,14 @@ import { createApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
 import type { OperationLimits } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
-import type { Project } from "../../api/types.js";
+import type { Project, WorkerAgent } from "../../api/types.js";
 import { verifyConfigurationUpdate } from "../../config/ownership.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { updateConfigurationFile } from "../../config/files.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { repositoryLocation, resolveRepositoryRoot } from "../../repository/location.js";
 import { readWorkerConfigurationSnapshot, validateWorkerConfigurationSnapshotSource, validateWorkerConfigurationSource } from "./config.js";
-import type { WorkerConfigurationSnapshot, WorkerRepositoryConfiguration } from "./config.js";
+import type { WorkerConfiguration, WorkerConfigurationSnapshot, WorkerRepositoryConfiguration } from "./config.js";
 import type { WorkerPaths } from "./paths.js";
 
 export type WorkerRepositorySnapshot = WorkerConfigurationSnapshot & {
@@ -28,12 +28,38 @@ export type ChangeWorkerRepositoriesOptions = {
   readonly signal?: AbortSignal;
 };
 
+export type WorkerSetupOptions = {
+  readonly paths: WorkerPaths;
+  readonly homeDirectory: string;
+  readonly snapshot: WorkerRepositorySnapshot;
+  readonly projects: readonly Project[];
+  readonly projectIds: readonly string[];
+  readonly agent: WorkerAgent;
+  readonly signal?: AbortSignal;
+};
+
+export type WorkerSetupPlan = {
+  readonly configuration: WorkerConfiguration;
+  readonly removedRepositories: readonly WorkerRepositoryConfiguration[];
+  readonly resetRepositories: readonly WorkerRepositoryConfiguration[];
+  readonly resetGlobalNativeSettings: boolean;
+};
+
 const registrationBaseline = (mapping: Record<string, unknown>): readonly unknown[] => {
   const worker = mapping.worker as Record<string, unknown> | undefined;
   const fields = ["serverUrl", "serverToken"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]);
   return [
     ...fields, ["worker.repositoryRoot", worker !== undefined && Object.hasOwn(worker, "repositoryRoot"), worker?.repositoryRoot],
     ["worker.repositories", worker !== undefined && Object.hasOwn(worker, "repositories"), worker?.repositories],
+  ];
+};
+
+const setupBaseline = (source: string | undefined, paths: WorkerPaths): readonly unknown[] => {
+  const { mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
+  const worker = mapping.worker as Record<string, unknown> | undefined;
+  return [
+    registrationBaseline(mapping),
+    ...["agent", "model", "args"].map((field) => [field, worker !== undefined && Object.hasOwn(worker, field), worker?.[field]]),
   ];
 };
 
@@ -102,6 +128,79 @@ const registeredProjectIndex = (repositories: readonly WorkerRepositoryConfigura
     }
   }
   return index;
+};
+
+const prepareSetupSource = async (source: string | undefined, options: WorkerSetupOptions): Promise<WorkerSetupPlan & { source: string }> => {
+  const { paths, signal } = options;
+  signal?.throwIfAborted();
+  if (!path.isAbsolute(options.homeDirectory)) throw new Error("The current user's home directory must be an absolute path.");
+  if (options.agent !== "codex" && options.agent !== "copilot") throw new Error("Choose Codex or Copilot as the worker agent.");
+  if (new Set(options.projectIds).size !== options.projectIds.length) throw new Error("Select distinct Projects for worker setup.");
+  const projects = selectedProjects(options.projectIds, options.projects);
+  const current = await snapshotFromSource(source, paths, signal);
+  const { document, mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
+  const root = resolveRepositoryRoot(current.configuration.repositoryRoot, paths, options.homeDirectory, "worker.repositoryRoot");
+  const retained = new Map<number, Project>();
+  const additions: Project[] = [];
+  for (const project of projects) {
+    const index = registeredProjectIndex(current.configuration.repositories, project);
+    if (index === -1) { additions.push(project); continue; }
+    if (retained.has(index)) throw new Error("Selected Projects share the same repository identity.");
+    retained.set(index, project);
+  }
+  if (!document.has("worker")) document.set("worker", document.createNode({}));
+  if (!document.hasIn(["worker", "repositories"])) document.setIn(["worker", "repositories"], document.createNode([]));
+  const resetGlobalNativeSettings = current.configuration.agent !== options.agent &&
+    (document.hasIn(["worker", "model"]) || document.hasIn(["worker", "args"]));
+  if (current.configuration.agent !== options.agent) {
+    document.deleteIn(["worker", "model"]);
+    document.deleteIn(["worker", "args"]);
+  }
+  document.setIn(["worker", "agent"], options.agent);
+  const removedRepositories: WorkerRepositoryConfiguration[] = [];
+  const resetRepositories: WorkerRepositoryConfiguration[] = [];
+  for (let index = current.configuration.repositories.length - 1; index >= 0; index -= 1) {
+    const repository = current.configuration.repositories[index]!;
+    const project = retained.get(index);
+    if (project === undefined) {
+      document.deleteIn(["worker", "repositories", index]);
+      removedRepositories.unshift(repository);
+      continue;
+    }
+    document.setIn(["worker", "repositories", index, "projectId"], project.id);
+    document.deleteIn(["worker", "repositories", index, "agent"]);
+    if (repository.agent !== options.agent) {
+      document.deleteIn(["worker", "repositories", index, "model"]);
+      document.deleteIn(["worker", "repositories", index, "args"]);
+      resetRepositories.unshift(repository);
+    }
+  }
+  for (const project of additions) document.addIn(["worker", "repositories"], {
+    projectId: project.id, remote: project.repoUrl, path: repositoryLocation(project.repoUrl, root),
+  });
+  const updatedSource = document.toString();
+  verifyConfigurationUpdate(mapping, updatedSource, paths, {
+    section: "worker", fields: ["agent", "model", "args", "repositories"],
+    retainedSequence: { field: "repositories", identity: "remote", fields: ["projectId", "agent", "model", "args"] },
+  });
+  const configuration = await validateWorkerConfigurationSource(updatedSource, paths, signal);
+  return { source: updatedSource, configuration, removedRepositories, resetRepositories, resetGlobalNativeSettings };
+};
+
+export const prepareWorkerSetup = async (options: WorkerSetupOptions): Promise<WorkerSetupPlan> => {
+  const { source: _source, ...plan } = await prepareSetupSource(options.snapshot.source, options);
+  return plan;
+};
+
+export const saveWorkerSetup = async (options: WorkerSetupOptions): Promise<WorkerConfiguration> => {
+  const expected = setupBaseline(options.snapshot.source, options.paths);
+  return updateConfigurationFile(options.paths, async (source) => {
+    if (!isDeepStrictEqual(setupBaseline(source, options.paths), expected)) {
+      throw new Error("Worker agent, repository configuration or service credentials changed during setup. Run daynight worker setup again with the current configuration.");
+    }
+    const prepared = await prepareSetupSource(source, options);
+    return { source: prepared.source, result: prepared.configuration };
+  }, options.signal);
 };
 
 export const changeWorkerRepositories = async (options: ChangeWorkerRepositoriesOptions): Promise<readonly WorkerRepositoryConfiguration[]> => {

@@ -14,7 +14,7 @@ Configuration readers ignore unknown fields at the root, in `review` and
 `worker`, and in their repository entries. Each projection constructs its runtime
 configuration from known fields. The original YAML document retains unknown
 nodes, so targeted configuration writes preserve their values and comments.
-Review and worker repository edits and credential updates compare decoded values
+Review and worker repository edits, worker setup and credential updates compare decoded values
 outside their owned fields before saving. Shared aliases that would mutate
 unrelated values cause refusal before replacement, preserving the original file.
 Unaffected aliases remain valid. The comparison mechanism is shared by these
