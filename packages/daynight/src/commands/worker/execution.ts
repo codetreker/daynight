@@ -64,9 +64,28 @@ const assertNativeSession = (task: LocalTask, observation: HerdrAgentObservation
 
 export const createExecutionDriver = (deps: ExecutionDependencies) => {
   const pendingInput = new Map<string, { binding: HerdrTaskBinding; prompt: string }>();
+  const observations = new Map<string, string>();
   const key = (task: Pick<LocalTask, "projectId" | "taskId" | "claimId">): string => `${task.projectId}/${task.taskId}/${task.claimId}`;
+  const reportObservation = (task: LocalTask, observation: HerdrAgentObservation, started = false): void => {
+    const identity = key(task);
+    const pending = pendingInput.has(identity);
+    const blocked = observation.status === "blocked";
+    const waiting = pending || blocked;
+    const { session, workspaceId, paneId, terminalId } = observation.binding;
+    const state = JSON.stringify([session, workspaceId, paneId, terminalId, task.agent, task.sessionId, waiting, pending]);
+    if (!started && observations.get(identity) === state) return;
+    observations.set(identity, state);
+    deps.emit({
+      kind: waiting ? "waiting" : started ? "started" : "reconnected",
+      task,
+      message: pending ? "The first managed input is waiting in this worker process; use daynight worker attach to resolve the native screen."
+        : blocked ? "The native agent is waiting for input; use daynight worker attach."
+        : started ? "Started the managed task conversation."
+        : "Connected to the existing agent without repeating its managed assignment.",
+    });
+  };
   return {
-    forget: (task: LocalTask): void => { pendingInput.delete(key(task)); },
+    forget: (task: LocalTask): void => { pendingInput.delete(key(task)); observations.delete(key(task)); },
     advance: async (input: ExecutionInput, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
       let task = deps.store.getTask(input.task);
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
@@ -93,7 +112,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         }
         assertNativeSession(task, observed);
         if (observed.nativeSession !== null) task = deps.store.setSessionId(task, observed.nativeSession.sessionId);
-        deps.emit({ kind: observed.status === "blocked" ? "waiting" : "reconnected", task, message: "Connected to the existing agent without repeating its managed assignment." });
+        reportObservation(task, observed);
         return observed;
       }
       if (actual !== undefined) {
@@ -119,11 +138,10 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         observation = await workerOperation((operation) => deps.herdr.tasks.observe(context, binding, operation), signal);
         assertNativeSession(task, observation);
         pendingInput.set(key(task), { binding, prompt });
-        deps.emit({ kind: "waiting", task, message: "The first managed input is waiting in this worker process; use daynight worker attach to resolve the native screen." });
       }
       assertNativeSession(task, observation);
       if (observation.nativeSession !== null) task = deps.store.setSessionId(task, observation.nativeSession.sessionId);
-      deps.emit({ kind: observation.status === "blocked" ? "waiting" : "started", task, message: observation.status === "blocked" ? "The native agent is waiting for input; use daynight worker attach." : "Started the managed task conversation." });
+      reportObservation(task, observation, true);
       return observation;
     },
   };

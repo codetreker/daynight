@@ -1076,8 +1076,15 @@ worktrees, session IDs and active/pending rows remain for the next run. The
 private instance stops last; exit failures remain visible.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
-known session ID. Startup prints the log location and attach guidance. Logs are
-diagnostic only; they do not supply a second recovery ledger. The
+known session ID. Startup prints the log location and attach guidance. Routine
+observations report the first connection and changes to a claim’s waiting or
+executing phase, terminal or native session. Unchanged polls stay quiet, including
+the first poll after a successful start. Claims are tracked independently.
+Resource-preservation warnings appear once while continuously observed and
+appear again if they clear and return. Actual starts, recoveries, cleanup, manual
+operations and failed attempts remain visible. This reporting state lasts for
+the current process. Logs are diagnostic only; they do not supply a second
+recovery ledger. The
 [worker requirements](../../docs/spec/daynight-worker.md) and
 [design](../../docs/design/daynight-worker.md) own full behavior and validation.
 
