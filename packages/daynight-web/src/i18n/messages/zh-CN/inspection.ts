@@ -1,6 +1,23 @@
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  claim: {
+    active: "当前认领", released: "已释放的认领", machine: "机器", agent: "Agent",
+    phase: { preparing: "准备中", executing: "执行中", verifying: "验证中", completing: "完成中", waiting: "等待中", paused: "已暂停" },
+    membersLoading: "正在读取认领用户与操作权限…", membersError: "无法读取认领用户资料与撤回权限。", retryMembers: "重试成员资料", formerMember: "原项目成员",
+    withdraw: "强制撤回", title: "强制撤回这个任务？", question: "确认清除本次执行归属，并将任务退回待处理吗？",
+    explanation: "将清除认领和执行起止时间，并关闭自动执行。Worker 下次成功同步后开始清理原执行；远端 agent 在清理停止它之前仍可能继续运行，此操作无法保证立即停止。",
+    pending: "正在撤回执行归属。可以关闭详情，结果会保留。",
+    confirmed: "认领已撤回，任务已退回待处理，自动执行已关闭。",
+    conflict: "任务已变化。请检查当前认领，再次撤回需要重新确认。",
+    unknown: "撤回结果尚未确认。再次操作前，请先检查当前任务。",
+    reconciled: "已读取当前任务。再次操作前，请检查其认领与自动执行设置。",
+    checking: "正在检查当前任务…", checkState: "检查当前任务", checkFailed: "暂时无法读取当前任务，检查成功前无法再次修改。",
+    networkError: "未能取得可确认的撤回响应。", protocolError: "服务响应无法确认撤回结果。",
+    versionConflict: "任务版本已变化，本次撤回未能生效。", claimConflict: "本次执行归属已失效。",
+    refused: "服务拒绝撤回。只有认领用户或项目管理员可以撤回当前执行归属。", requestFailed: "撤回请求失败。",
+  },
+
   mermaid: {
     loading: "正在渲染流程图…", diagram: "流程图", source: "查看 Mermaid 源码",
     failed: "无法渲染此流程图，请检查下方 Mermaid 源码。",

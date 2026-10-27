@@ -3,8 +3,6 @@ import type { CliContext } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
 import { canonicalId } from "../../api/parse.js";
 import { parseVersionArgument } from "../../api/json.js";
-import { isNonemptyText } from "../../platform/text.js";
-import type { TaskPlatform, WorkerAgent } from "../../api/types.js";
 import type { WorkerControlRequest } from "./control.js";
 import { workerDefinition } from "./definition.js";
 
@@ -50,15 +48,7 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
     let version: bigint;
     try { version = parseVersionArgument(option("--if-version")); }
     catch (cause) { throw new UsageError(cause instanceof Error ? cause.message : String(cause), help); }
-    if (command.command.name === "transfer") {
-      const machineName = option("--target-machine-name");
-      if (!isNonemptyText(machineName)) throw new UsageError("Target machine name must be valid nonempty text.", help);
-      request = { ...original, kind: "transfer", version, target: {
-        userId: uuid(option("--target-user-id"), "Target user ID"), workerId: uuid(option("--target-worker-id"), "Target worker ID"),
-        machine: { id: uuid(option("--target-machine-id"), "Target machine ID"), name: machineName },
-        platform: option("--target-platform") as TaskPlatform, agent: option("--target-agent") as WorkerAgent,
-      } };
-    } else request = { ...original, kind: command.command.name as "release" | "resume", version };
+    request = { ...original, kind: command.command.name as "release" | "resume", version };
   }
   await dependencies.manage({ ...runtime(), request });
 };

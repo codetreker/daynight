@@ -4,13 +4,12 @@ Status: implemented
 
 ## Problem
 
-An operator must be able to retry a paused execution or release, transfer and
+An operator must be able to retry a paused execution or release and
 resume a task without racing the worker's automatic recovery. A process can die
 between source cleanup, a remote ownership change and local acknowledgement.
 Treating that gap as ordinary recovery can restart an already-cleaned source or
-submit the same ownership mutation twice. Source authorization and target
-membership also have different meanings, especially when an administrator
-manages a claim owned by another user.
+submit the same ownership mutation twice. An administrator managing another user's claim must retain the original
+execution scope while proving current project authority.
 
 The original claim protocol required the source worktree and agent to continue
 after release or transfer. That preserved unpublished work while ownership
@@ -20,7 +19,7 @@ require deleted resources or claim the old native conversation as its own.
 
 ## Decision
 
-The public `worker retry/release/transfer/resume` commands use the existing
+The public `worker retry/release/resume` commands use the existing
 [foreground coordinator](2026-10-27-foreground-worker-runtime.md),
 [local records](2026-10-26-worker-local-records.md),
 [Git resources](2026-10-26-worker-git-workspaces.md) and
@@ -31,18 +30,19 @@ owns their control flow and the
 HTTP fields and transactions. This decision partially supersedes the resource
 continuity requirement in the
 [claim foundation](2026-10-24-worker-claim-foundation.md); its permissions,
-exact-version protection, stopped confirmation and claim fencing remain.
+exact-version protection, release stopped confirmation and claim fencing remain.
+The [force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) later
+removes transfer and provides Web reset without source-machine access; it does
+not replace the controlled release and fresh resume paths.
 
-Release/transfer validate current project access and source owner/admin
-permission before destructive cleanup. Transfer separately validates the target
-member. Current administrator credentials do not rewrite the source record's
+Release validates current project access and source owner/admin
+permission before destructive cleanup. Current administrator credentials do not rewrite the source record's
 immutable original userId, and `/me` alone does not establish admin authority.
 The configured service origin must match the source remote scope.
 
 The command atomically saves a concrete control intent in the original task
 row before ordinary resource recovery can proceed. It includes the source
-claim, exact supplied version and, for transfer, generated target claim/worktree
-IDs plus the explicit target descriptor. A foreground singleton polls this same
+claim and exact supplied version. A foreground singleton polls this same
 SQLite and serializes target resource actions. If no foreground controller owns
 the instance lock, the command acquires that same lock and runs the same
 coordinator for the selected execution. No IPC service, second task registry or
@@ -60,8 +60,7 @@ not truncate the ten-minute resource deadline.
 
 Control submission transitions from not-submitted to unknown before HTTP, then
 to confirmed or a definite rejection. Unknown outcomes are reconciled with a
-targeted task read using the original source claim, exact decision and saved
-target claim ID. The same command may perform that read-only reconciliation
+targeted task read using the original source claim and exact release decision. The same command may perform that read-only reconciliation
 while the foreground worker retains resource control. A read of the old value
 does not prove that the write was never submitted and does not permit replay. A concrete management read can also prove
 that the original claim ended. This explicit result reconciliation does not
@@ -79,27 +78,20 @@ confirmed control outcome. The supplied `--if-version` remains the decision
 version rather than being refreshed during cleanup.
 
 The service and typed client reject deprecated `continuityConfirmed` input.
-Every acquisition after a historical execution, explicit resume and transfer
-uses a fresh claimId and worktreeId; the target agent may differ. Resume still
+Every acquisition after a historical execution and explicit resume
+uses a fresh claimId and worktreeId; the agent may differ. Resume still
 requires released/todo, matching previousClaimId, readiness and original
 owner/admin, while retaining the explicit manual automatic-permission/platform
-exception. Transfer still separately checks source authority, current target
-membership, automatic permission, platform and dependencies. Release clears the
-task's execution interval; transfer preserves in_progress and timing. All old
-claim writes remain fenced.
+exception. Release clears the task's execution interval. All old claim writes
+remain fenced.
 
 Resume persists its new IDs and effective configuration in the existing
 project claimAttempt before its one remote request. Only an actual verified
 grant commits pending with the new configuration and authenticated owner;
-unknown results retain the same attempt. The receiver of a transfer likewise
-discovers an actual granted claim and follows normal pending→active resource
-creation. A trace-free new transfer grant honors its explicit remote agent. If the
-receiver configuration selects the other type, pending freezes that remote agent
-with null model, empty args and the current recovery limit; matching types use
-the current effective settings. Existing pending snapshots are unchanged. New
-executions use fresh native conversations and wait if the fixed task path is
-still occupied. No source snapshot, target pre-registration or
-native-history transport is introduced. Ordinary acquisition continues to skip
+unknown results retain the same attempt. New executions use fresh native
+conversations and wait if the fixed task path is still occupied. No source
+snapshot, target pre-registration or native-history transport is introduced.
+Ordinary acquisition continues to skip
 released tasks and paginate to later candidates.
 
 Retry is a count-bound, atomically granted single recovery permit on the same

@@ -40,6 +40,6 @@ ready 仍为 todo 且全部前置完成。统计满足 `total = todo + inProgres
 
 创建任务只登记工作，不启动执行。在用户已授权的任务或 Goal 范围内，明确指定的 ready todo 满足阶段资料后可设置 in_progress；实际验收和必要授权交付后设置 done。已有执行授权的范围持续有效，但普通 run-task 每次只处理一个指定任务，完成或等待后返回；状态与 ready 不触发后继选择，也不以其他字段重建审批机制。
 
-allowAgents 继续只约束自动发现选择；用户明确指定的任务可沿用手工状态操作，自动调度由 worker 承担。普通 setter 不停止进程或代替 release/transfer。Worker 在启动 prompt 中显式指定 worker-managed 环境、using-daynight 技能和 execute-task-in-managed 模式，并提供原 claim/worktree 等 assignment；对应专属指令复用已认领执行，不重新开始或选择后继，全部交付与验收成立后最后以显式 --claim-id 和观察版本完成。普通指令不加载 managed 详细规则，不凭任务 worker 属性推断执行模式。active 执行实际完成须提供匹配 claimId 并由 owner 提交；退回 todo 须显式 release。released 未完成成果不能用普通状态设置开始或完成，原 owner/admin 通过显式人工 resume 确认原工作区连续性；该入口保留人工执行许可/平台例外。当前版本同状态仍是 no-op。completed 历史不阻止普通重开，也不会因重开变为 active。PR 审查批准和文档提案生命周期独立于被删除的任务状态。
+allowAgents 继续只约束自动发现选择；用户明确指定的任务可沿用手工状态操作，自动调度由 worker 承担。普通 setter 不停止进程或代替 release/withdraw。Worker 在启动 prompt 中显式指定 worker-managed 环境、using-daynight 技能和 execute-task-in-managed 模式，并提供原 claim/worktree 等 assignment；对应专属指令复用已认领执行，不重新开始或选择后继，全部交付与验收成立后最后以显式 --claim-id 和观察版本完成。普通指令不加载 managed 详细规则，不凭任务 worker 属性推断执行模式。active 执行实际完成须提供匹配 claimId 并由 owner 提交；退回 todo 须显式 release，或通过强制撤回同时清除归属、关闭自动执行并清空执行时间。released 未完成成果不能用普通状态设置开始或完成，原 owner/admin 通过显式人工 resume 开始新的 claim/worktree/native 执行；该入口保留人工执行许可/平台例外。当前版本同状态仍是 no-op。completed 历史不阻止普通重开，也不会因重开变为 active。PR 审查批准和文档提案生命周期独立于被删除的任务状态。
 
 验证覆盖九种状态组合、精确大版本与同状态、全部边类型的开始/退回竞争、时间/回滚、旧数据迁移及重复启动、旧状态拒绝、三状态统计和分页、权限、资料保全及 Web 会话。最终使用真实 PostgreSQL、打包安装 CLI 和生产 Web 验证跨端互读及重启持久化；原型检查只证明模拟交互。适用模块门禁与覆盖率要求保持。

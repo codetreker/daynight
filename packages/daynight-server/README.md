@@ -752,12 +752,16 @@ receipts and fixed-capacity gates are in the
 Worker operations return complete Task resources with 200 and no-store, preserving
 existing authentication, exact int64 versions and strict JSON/error handling.
 They do not start processes. Claims use fresh caller-persisted UUIDs; the latest
-ID cannot be reused, and current-owner writes must match the claim. Transfer
-checks source authorization separately from target membership and platform.
+ID cannot be reused while retained, and current-owner writes must match the claim.
 Release retains the last resource fields as history after source cleanup. Manual
 resume requires source owner/admin, previousClaimId and fresh claim/worktree IDs
-while retaining the explicit manual eligibility exception. Transfer also uses a
-fresh target worktree ID and permits an explicitly selected target agent.
+while retaining the explicit manual eligibility exception. Force withdrawal accepts
+the exact version and matching active/released claim ID from its original owner
+or a project admin who remains a member. It atomically clears worker, returns
+todo, clears execution timing and sets allowAgents=false, preserving other
+materials. It requires no stoppedConfirmed and does not guarantee immediate
+remote process stopping; the original worker discovers absence through its
+complete own-claim inventory and performs terminal cleanup.
 Deprecated continuityConfirmed input is rejected rather than ignored. The
 [claim architecture](../../docs/design/daynight-worker-claims.md) owns exact fields
 and refusals. Callers of the in-process typed client reconcile unknown results by GET of
@@ -774,7 +778,7 @@ user/worker active-claim inventory; no claim table is introduced.
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, atomic automatic acquisition |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, current owner updates execution summary |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/release` | `200`, source owner/admin confirms stopping and returns todo |
-| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/transfer` | `200`, source owner/admin installs validated target ownership |
+| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/withdraw` | `200`, owner/admin clears active/released ownership, returns todo and disables automatic execution |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim/resume` | `200`, explicit manual new execution of a released task |
 
 Creation accepts required `title`, optional `description`, `dependsOn`,

@@ -18,6 +18,9 @@ import { TaskDetailReading } from './TaskDetailReading';
 import { TaskDetailActions } from './TaskDetailActions';
 import { matchesPlatformReview, TaskPlatformConfirmation, TaskPlatformFeedback, TaskPlatformSelect, type PlatformConfirmation } from './TaskPlatform';
 import { TaskId } from './TaskId';
+import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
+import { useProjectMembers } from '../projects/ProjectMembers';
+import { mayWithdrawClaim, matchesWithdrawalReview, TaskClaimSummary, TaskWithdrawalConfirmation, TaskWithdrawalFeedback, type WithdrawalConfirmation } from './TaskClaim';
 import { TaskCopyButton } from './TaskCopyButton';
 import { matchesDeletionReview, TaskDeletionConfirmation, TaskDeletionFeedback, type DeletionConfirmation } from './TaskDeletion';
 import { TaskPullRequests } from './TaskPullRequests';
@@ -86,12 +89,19 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const m = messages.inspection.detail;
   const task = useTaskDetail(projectId, taskId, snapshot.revision, snapshot.index.nodes.get(taskId));
   const { detail, status, error, retry } = task;
-  type TaskConfirmationState = DeletionConfirmation | StatusConfirmation | (AgentPermissionConfirmation & { readonly kind: 'allowAgents' }) |
+  const worker = detail?.properties.worker;
+  const currentClaim = worker !== undefined && worker !== null && worker.state !== 'completed' ? worker : null;
+  const membership = useProjectMembers(projectId, currentClaim !== null);
+  const viewer = useTaskCacheScope();
+  const mayWithdraw = currentClaim !== null && membership.status === 'ready' && mayWithdrawClaim(currentClaim, viewer.userId, membership.members);
+  type TaskConfirmationState = DeletionConfirmation | StatusConfirmation | WithdrawalConfirmation | (AgentPermissionConfirmation & { readonly kind: 'allowAgents' }) |
     (PlatformConfirmation & { readonly kind: 'requiredPlatform' });
   const [confirmation, setConfirmation] = useState<TaskConfirmationState | null>(null);
   const requestConfirmation = (review: TaskConfirmationState): void => setConfirmation((current) => current === null ? review : current);
   const confirmationValid = confirmation !== null && (confirmation.kind === 'delete'
     ? matchesDeletionReview(confirmation, detail) && task.canDelete
+    : confirmation.kind === 'withdraw'
+    ? matchesWithdrawalReview(confirmation, detail) && task.canWithdrawClaim && mayWithdraw
     : confirmation.kind === 'status'
     ? matchesStatusReview(confirmation, detail) && task.canSetStatus
     : confirmation.kind === 'allowAgents' ? matchesAgentPermissionReview(confirmation, detail) && task.canSetAgentPermission
@@ -102,6 +112,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
     if (confirmation === null || !confirmationValid) return;
     setConfirmation(null);
     if (confirmation.kind === 'delete') task.deleteTask(confirmation.detail.version, confirmation.removeDepends);
+    else if (confirmation.kind === 'withdraw') task.withdrawClaim(confirmation.claimId, confirmation.detail.version);
     else if (confirmation.kind === 'status') task.setStatus(confirmation.status, confirmation.detail.version);
     else if (confirmation.kind === 'allowAgents') task.setAgentPermission(confirmation.allowAgents, confirmation.detail.version);
     else task.setRequiredPlatform(confirmation.requiredPlatform, confirmation.detail.version);
@@ -256,6 +267,8 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                   <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />
                 </div>
+                {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry}
+                  canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => requestConfirmation({ kind: 'withdraw', detail, claimId: currentClaim.claimId }) } : {})} />}
               </div>
               <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
                 <div className="task-detail-columns">
@@ -293,6 +306,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
         </div>
         <footer className="task-detail-footer">{m.footer}</footer>
         {status !== 'deleted' && <TaskDeletionFeedback key={`${scope}/deletion`} mutation={task.mutation} onReconcile={task.reconcile} />}
+        <TaskWithdrawalFeedback key={`${scope}/withdrawal`} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskStatusFeedback key={`${scope}/status`} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskAgentPermissionFeedback key={`${scope}/permission`} id={automationFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
         <TaskPlatformFeedback key={`${scope}/platform`} id={platformFeedbackId} detail={detail} mutation={task.mutation} onReconcile={task.reconcile} />
@@ -314,7 +328,9 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
         </TaskDetailNotice>
         </TaskDetailNotifications>
       </Surface>
-      {confirmation !== null && confirmationValid && (confirmation.kind === 'delete'
+      {confirmation !== null && confirmationValid && (confirmation.kind === 'withdraw'
+        ? <TaskWithdrawalConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
+        : confirmation.kind === 'delete'
         ? <TaskDeletionConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />
         : confirmation.kind === 'status'
         ? <TaskStatusConfirmation confirmation={confirmation} owner={dialogRef} fallbackFocus={titleRef} onCancel={() => setConfirmation(null)} onConfirm={confirm} />

@@ -26,7 +26,7 @@ const projectId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const dependencies = () => ({ attach: vi.fn<WorkerCommandDependencies["attach"]>(async () => {}), run: vi.fn<WorkerCommandDependencies["run"]>(async () => {}), manage: vi.fn<WorkerCommandDependencies["manage"]>(async () => {}) });
 
 describe("worker command", () => {
-  it.each([[], ["--help"], ["-h"], ...["run", "attach", "retry", "release", "transfer", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
+  it.each([[], ["--help"], ["-h"], ...["run", "attach", "retry", "release", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
     const run = vi.fn(async () => { throw new Error("Help must not run a worker."); });
     await runWorkerCommand(args, cli, { ...dependencies(), run });
@@ -65,15 +65,12 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["run", "attach", "retry", "release", "transfer", "resume"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["run", "attach", "retry", "release", "resume"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('run' 'attach' 'retry' 'release' 'transfer' 'resume')");
-    expect(renderZshCompletion(commandTree)).toContain("--target-agent");
-    const transfer = definition.commands!.find(({ name }) => name === "transfer")!;
-    expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('codex' 'copilot')");
-    expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('windows' 'linux' 'macos')");
-    expect(renderZshCompletion(transfer)).toContain("('\\''codex'\\'' '\\''copilot'\\'')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('run' 'attach' 'retry' 'release' 'resume')");
+    expect(renderBashCompletion(commandTree)).not.toContain("--target-agent");
+    expect(renderZshCompletion(commandTree)).not.toContain("--target-agent");
   });
 
   it.each(["retry", "release", "resume"] as const)("passes canonical %s identity and exact int64 version to the shared controller", async (kind) => {
@@ -87,13 +84,6 @@ describe("worker command", () => {
     expect(errors).toEqual([`claim=${claimId} waiting\n`]);
   });
 
-  it("passes a separately identified fresh transfer target without inventing target resources", async () => {
-    const { cli } = context();
-    cli.homeDirectory = () => path.resolve("worker-home");
-    const deps = dependencies();
-    await runWorkerCommand(["transfer", taskId, "--claim-id", claimId, "--if-version", "9007199254740993", "--target-user-id", projectId.toUpperCase(), "--target-worker-id", taskId, "--target-machine-id", claimId, "--target-machine-name", "Target machine", "--target-platform", "windows", "--target-agent", "copilot"], cli, deps);
-    expect(deps.manage.mock.calls[0]![0].request).toEqual({ kind: "transfer", taskId, claimId, version: 9_007_199_254_740_993n, target: { userId: projectId, workerId: taskId, machine: { id: claimId, name: "Target machine" }, platform: "windows", agent: "copilot" } });
-  });
 
   it.each([
     ["retry", taskId], ["retry", "invalid", "--claim-id", claimId], ["retry", taskId, "--claim-id", "invalid"],

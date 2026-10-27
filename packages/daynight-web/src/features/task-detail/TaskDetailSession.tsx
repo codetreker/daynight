@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
-import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, setTaskAgentPermission, setTaskRequiredPlatform, setTaskStatus } from "../../api/client";
+import { ApiError, authRequestsPaused, deleteTask, getTask, isAbortError, setTaskAgentPermission, setTaskRequiredPlatform, setTaskStatus, withdrawWorkerClaim } from "../../api/client";
 import { isTaskStale } from "./freshness";
 import type { ExecutionPlatform, GraphTask, TaskDetail, TaskStatus } from "../../api/types";
 import { TaskCacheError } from "../task-cache/database";
@@ -7,7 +7,7 @@ import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import type { SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 import { materializeDetail, readCachedDetail, saveDetail, validateDetailSummary, type DetailAdmission } from "./detail-cache";
 
-export type TaskMutationOperation = { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint };
+export type TaskMutationOperation = { readonly action: "withdraw"; readonly claimId: string; readonly version: bigint } | { readonly action: "delete"; readonly version: bigint; readonly removeDepends: boolean } | { readonly action: "status"; readonly status: TaskStatus; readonly version: bigint } | { readonly action: "allowAgents"; readonly allowAgents: boolean; readonly version: bigint } | { readonly action: "requiredPlatform"; readonly requiredPlatform: ExecutionPlatform | null; readonly version: bigint };
 type TaskMutationReview = { readonly detail: TaskDetail; readonly cacheGeneration: string };
 class TaskMutationReviewExpired extends Error {}
 export type TaskMutationState = {
@@ -62,6 +62,7 @@ export const canDeleteTask = (state: DetailState): boolean => canMutate(state);
 export const canSetStatus = (state: DetailState): boolean => canMutate(state);
 export const canSetAgentPermission = (state: DetailState): boolean => state.detail !== null && state.detail.status !== "in_progress" && canMutate(state);
 export const canSetRequiredPlatform = canSetAgentPermission;
+export const canWithdrawClaim = (state: DetailState): boolean => canMutate(state) && state.detail!.properties.worker !== null && state.detail!.properties.worker.state !== "completed";
 
 const sameIds = (left: readonly string[], right: readonly string[]): boolean => left.length === right.length && left.every((id) => right.includes(id));
 const workerDescriptor = (worker: TaskDetail["properties"]["worker"]): string => JSON.stringify(worker === null ? null : [
@@ -69,8 +70,8 @@ const workerDescriptor = (worker: TaskDetail["properties"]["worker"]): string =>
   worker.platform, worker.agent, worker.worktreeId, worker.phase,
   worker.herdr === null ? null : [worker.herdr.session, worker.herdr.workspaceId, worker.herdr.paneId], worker.nativeSessionId, worker.claimedAt,
 ]);
-const preservesMaterials = (before: TaskDetail, after: TaskDetail): boolean => before.title === after.title && before.description === after.description &&
-  before.createdAt === after.createdAt && workerDescriptor(before.properties.worker) === workerDescriptor(after.properties.worker) &&
+const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorker = true): boolean => before.title === after.title && before.description === after.description &&
+  before.createdAt === after.createdAt && (!preserveWorker || workerDescriptor(before.properties.worker) === workerDescriptor(after.properties.worker)) &&
   before.properties.pullRequests.length === after.properties.pullRequests.length && before.properties.pullRequests.every((item, index) => {
     const other = after.properties.pullRequests[index]!;
     return item.url === other.url && item.title === other.title;
@@ -412,6 +413,11 @@ export class TaskDetailSessions {
     if (!canSetRequiredPlatform(state) || state.detail!.version !== version || state.detail!.requiredPlatform === requiredPlatform) return;
     this.performMutation(projectId, taskId, { action: "requiredPlatform", requiredPlatform, version });
   }
+  withdrawClaim(projectId: string, taskId: string, claimId: string, version: bigint): void {
+    const state = this.writableState(projectId, taskId);
+    if (!canWithdrawClaim(state) || state.detail!.version !== version || state.detail!.properties.worker!.claimId !== claimId) return;
+    this.performMutation(projectId, taskId, { action: "withdraw", claimId, version });
+  }
   deleteTask(projectId: string, taskId: string, version: bigint, removeDepends: boolean): void {
     const state = this.writableState(projectId, taskId);
     if (!canDeleteTask(state) || state.detail!.version !== version) return;
@@ -528,7 +534,9 @@ export class TaskDetailSessions {
         const response = await this.runMutationStage(projectId, taskId, operation, () => {
           this.assertMutationReview(projectId, taskId, operation, review, requestTicket);
           submitted = true;
-          return operation.action === "allowAgents"
+          return operation.action === "withdraw"
+            ? withdrawWorkerClaim(projectId, taskId, operation.claimId, operation.version, signal, admission)
+            : operation.action === "allowAgents"
             ? setTaskAgentPermission(projectId, taskId, operation.allowAgents, operation.version, signal, admission)
             : operation.action === "requiredPlatform"
               ? setTaskRequiredPlatform(projectId, taskId, operation.requiredPlatform, operation.version, signal, admission)
@@ -544,12 +552,14 @@ export class TaskDetailSessions {
             return;
           }
           const preservesTiming = detail.startedAt === previous.startedAt && detail.completedAt === previous.completedAt;
-          const validResult = operation.action === "allowAgents"
+          const validResult = operation.action === "withdraw"
+            ? detail.status === "todo" && !detail.allowAgents && detail.properties.worker === null && detail.startedAt === null && detail.completedAt === null && detail.requiredPlatform === previous.requiredPlatform
+            : operation.action === "allowAgents"
             ? detail.status === previous.status && detail.allowAgents === operation.allowAgents && detail.requiredPlatform === previous.requiredPlatform && preservesTiming
             : operation.action === "requiredPlatform"
               ? detail.status === previous.status && detail.requiredPlatform === operation.requiredPlatform && detail.allowAgents === previous.allowAgents && preservesTiming
               : detail.status === operation.status && detail.allowAgents === previous.allowAgents && detail.requiredPlatform === previous.requiredPlatform && validStatusTiming(previous, detail, operation.status);
-          if (detail.projectId !== projectId || detail.id !== taskId || !validResult || !preservesMaterials(previous, detail) || detail.version !== committedVersion) throw new ApiError("protocol");
+          if (detail.projectId !== projectId || detail.id !== taskId || !validResult || !preservesMaterials(previous, detail, operation.action !== "withdraw") || detail.version !== committedVersion) throw new ApiError("protocol");
           validated = true;
           confirmed = true;
           entry.committedVersion = detail.version;

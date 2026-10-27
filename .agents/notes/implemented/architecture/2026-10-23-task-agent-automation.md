@@ -59,7 +59,9 @@ is read, without automatic resubmission.
 Permission changes use the existing member authorization and project
 transaction lock. Exact-version same-value PATCH preserves version and time;
 stale versions still fail. Actual changes during `in_progress` fail, including
-human-input waits. Disabling permission does not stop or transfer execution.
+human-input waits. Disabling permission does not stop or withdraw execution.
+The separate [force-withdrawal operation](2026-10-27-worker-force-withdrawal.md)
+atomically clears claim ownership, returns todo and disables permission.
 Worker and bundled agent workflows may not enable permission themselves.
 Confirmation records deliberate operation intent; session and PAT credentials
 identify a principal without proving a physical human is operating the client.

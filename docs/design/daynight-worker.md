@@ -1,6 +1,6 @@
 # Worker 架构设计
 
-状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run、attach 与 retry/release/transfer/resume 人工管理命令已接入这些模块，服务端使用终止后新执行协议；完整平台验收仍须独立核验。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
+状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run、attach 与 retry/release/resume 人工管理命令已接入这些模块，服务端使用终止后新执行协议；完整平台验收仍须独立核验。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
 
 ## 目标与当前基础
 
@@ -32,7 +32,7 @@ flowchart TB
 
 | 组件 | 唯一职责 |
 |---|---|
-| 服务端 | 任务自动执行许可/平台、ready、认证权限、原子 claim、归属更新、完成与移交。 |
+| 服务端 | 任务自动执行许可/平台、ready、认证权限、原子 claim、归属更新、完成与强制撤回。 |
 | Worker | 轮转与名额、worktree、Herdr 启停、状态观察、恢复、自有 claim 清单对账及清理。 |
 | Agent | 实现、测试、提交、PR、CI/review 修复、授权合并、任务验收及最终 claim-bound done；维护正常 task 资料。 |
 | Herdr | PTY、agent 启动/输入/状态及原生会话引用。 |
@@ -105,7 +105,7 @@ Web 在任务详情标题下的同一状态行中，左侧显示状态、ready �
 
 每次开启或关闭都打开对应确认框；确认按钮直接提交目标值及打开确认框时观察到的精确 version。取消、Escape 或关闭不提交，开关保持服务端已确认值；请求成功后安装完整返回 task 并刷新图。修改与 status 共用单 task 写入控制，提交或结果不确定期间阻止重复写入；确认拒绝保留原值，版本冲突读取最新状态并要求重新决定，断连/5xx/协议错误先核对实际结果，不自动重发。任务切换、关闭详情和后台刷新保持请求归属，已提交操作不依赖弹框仍然挂载。
 
-开启框说明 worker 可在任务处于 todo、依赖完成并符合运行条件时自动领取；关闭框说明 worker 将不再自动领取。自动执行许可与 ready 独立，手工 set-status 与普通元数据修改均保留许可。实际切换在 `in_progress` 拒绝；权限和版本检查先于同值判定，精确版本同值 PATCH 返回原 task，不增加版本或更新时间。关闭许可不隐式停止执行或移交资源。
+开启框说明 worker 可在任务处于 todo、依赖完成并符合运行条件时自动领取；关闭框说明 worker 将不再自动领取。自动执行许可与 ready 独立，手工 set-status 与普通元数据修改均保留许可。实际切换在 `in_progress` 拒绝；权限和版本检查先于同值判定，精确版本同值 PATCH 返回原 task，不增加版本或更新时间。关闭许可不隐式停止执行或撤回归属。
 
 确认表示明确操作意图，不能从 session/PAT 类型推断物理人工。CLI/skill 禁止自动 worker 自行启用许可，操作沿用现有项目成员写权限。Web 的双向确认、状态展示和失败交互遵循本节的布局与操作规则，具体组件与工作空间请求归属由[看板设计](daynight-web.md#自动执行许可与确认)拥有。CLI update/list/ready 的 `--allow-agents true|false` 映射到该普通更新或查询字段。Worker 自动候选同时使用 true 与实际平台兼容筛选，认领由服务端事务重验许可、ready、平台、版本及归属；明确由用户指定的单任务执行沿用人工状态设置。已有 released 归属时使用显式人工 resume，自动选出的 ID 不属于人工例外。普通技能不承担自动候选选择或连续调度。
 
@@ -121,17 +121,17 @@ GET /api/v1/projects/{project}/tasks?ready=true&allowAgents=true&compatiblePlatf
 
 完整 Task 的 properties 包含 pullRequests 与 worker:null|WorkerClaim。worker 记录 state=active/released/completed、用户、worker/机器、实际平台、agent、worktreeId、阶段和已取得的 Herdr/原生会话；普通 create/PATCH 不能写该字段。PR 与归属更新相互保留，图仍不包含属性。
 
-[归属架构](daynight-worker-claims.md)拥有严格 DTO、文本迁移和完整 HTTP 契约。自动 POST worker-claim 在项目写锁内重验成员、精确版本、ready、allowAgents、平台和无 active claim；PATCH 只允许当前 owner 更新当前 claim 的执行摘要。自动初次认领为每次请求生成新的、不复用的 claimId；稳定 workerId 与项目映射先持久保存，具体 claim 请求的标识、版本和决定配置保存在 projects.claimAttempt 后才提交 HTTP。实际远端 claim 确认后才写 pending，没有领取前任务行或额外表。未知认领不重放，也不因清单暂时缺席清除；通过成功完整的自己 claim 清单找回实际归属。Transfer 的 targetClaimId 则随 source 管理意图先持久保存。服务端保留最后记录并拒绝其 ID 被重新使用。
+[归属架构](daynight-worker-claims.md)拥有严格 DTO、文本迁移和完整 HTTP 契约。自动 POST worker-claim 在项目写锁内重验成员、精确版本、ready、allowAgents、平台和无 active claim；PATCH 只允许当前 owner 更新当前 claim 的执行摘要。自动初次认领为每次请求生成新的、不复用的 claimId；稳定 workerId 与项目映射先持久保存，具体 claim 请求的标识、版本和决定配置保存在 projects.claimAttempt 后才提交 HTTP。实际远端 claim 确认后才写 pending，没有领取前任务行或额外表。未知认领不重放，也不因清单暂时缺席清除；通过成功完整的自己 claim 清单找回实际归属。归属记录保留期间服务端拒绝其 ID 被重新使用；调用方始终生成不复用的新 ID。
 
 完成使用现有 PUT status 的 done 目标及匹配 claimId，要求当前 owner；普通 setter 不能释放 active 执行，也不能开始或完成 released 未完成成果。同版本同状态仍是不修改的成功。没有 worker 记录或仅有 completed 历史的任务保留普通三状态行为。
 
-Release 要求原 owner/admin 与 stoppedConfirmed，返回 todo、清空任务起止时间，最后资源绑定仅作为历史保留。重新认领和显式人工 resume 使用新 claimId/worktreeId 与本次 agent；resume 核对 released、previousClaimId、ready、原 owner/admin，保留人工安排不受自动许可/平台过滤的规则。Transfer 由原 owner/admin 提交，服务端分别核验目标当前成员、自动许可、平台和依赖，安装目标的新 claimId/worktreeId，允许目标明确不同 agent，保持 in_progress 和任务计时。所有入口严格拒绝 continuityConfirmed。
+Release 要求原 owner/admin 与 stoppedConfirmed，返回 todo、清空任务起止时间，最后资源绑定仅作为历史保留。重新认领和显式人工 resume 使用新 claimId/worktreeId 与本次 agent；resume 核对 released、previousClaimId、ready、原 owner/admin，保留人工安排不受自动许可/平台过滤的规则。强制撤回由当前项目成员中的原 owner/admin 提交 claimId 和精确 version，无需 stoppedConfirmed；active/released 归属在同一事务清除 worker、返回 todo、清空执行时间并设置 allowAgents=false，其他资料保持，completed/null 拒绝。所有入口严格拒绝 continuityConfirmed。
 
-服务端校验身份、标识及停止确认，不远程证明机器状态；原 agent 实际停止和本地资源清理由执行方核实。Daynight fencing 拒绝旧 claim 的写入，不能撤销 Git 托管凭据或终止原进程。失联不自动释放归属。
+服务端校验身份、标识及 release 的停止确认，不远程证明机器状态；原 agent 实际停止和本地资源清理由执行方核实。Daynight fencing 拒绝旧 claim 的写入，不能撤销 Git 托管凭据或终止原进程。失联不自动释放归属。强制撤回允许先清除远端归属，原 worker 下一次成功完整自有清单发现缺席后开始终止清理；Web 确认说明不保证远端 agent 立即停止。
 
 ## SQLite：两个业务表
 
-[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)使用 WAL、`synchronous=FULL`、`STRICT` 表及短 `BEGIN IMMEDIATE` 事务。当前 schema 为 3；schema 1 先执行原 schema 2 迁移，增加具体 native 执行事实、原认证 user_id、项目未决 claim 请求和 cleanup 输入基线，再在同一立即事务迁移至 3。Schema 2 的现有 stopObservation 对象新增必填 nullable nativeProcessIds，旧值填 null，不从 processIds 的位置或交集猜测。已有 UID、binding、完整 PID、配置、history、预算、deadline 及提交事实不变；nativeExecution/stopObservation 原为 null 时保持 null。缺失的原生角色和账号范围不能迁移成接续权限、从未启动或当前登录用户。未知 schema 或不符合预期的数据库明确拒绝，不以新空库掩盖损坏。
+[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)使用 WAL、`synchronous=FULL`、`STRICT` 表及短 `BEGIN IMMEDIATE` 事务。当前 schema 为 4；schema 1 先执行原 schema 2 迁移，增加具体 native 执行事实、原认证 user_id、项目未决 claim 请求和 cleanup 输入基线，再在同一立即事务迁移至 3。Schema 2 的现有 stopObservation 对象新增必填 nullable nativeProcessIds，旧值填 null，不从 processIds 的位置或交集猜测。已有 UID、binding、完整 PID、配置、history、预算、deadline 及提交事实不变；nativeExecution/stopObservation 原为 null 时保持 null。缺失的原生角色和账号范围不能迁移成接续权限、从未启动或当前登录用户。Schema 3 至 4 为 cleanup 增加严格 claimEnded：原 terminal 且无 control、或 control 已 confirmed 的记录保存既有归属结束事实，其余保持 false。迁移清除旧 transfer control；未结束源执行保留既有 terminal cleanup，缺少时以原 requestedAt 和 requestedAt+600000 建立终止清理，设置需 Web 强制撤回的暂停并清除 retry 授权，不延长既有截止。迁移不提交远端请求；原 claim 已结束时按完整清单收尾，仍有效时保留责任等待撤回。未知 schema 或不符合预期的数据库明确拒绝，不以新空库掩盖损坏。
 
 | 表 | 持久事实 |
 |---|---|
@@ -162,9 +162,9 @@ Controller 只为已证明 launch never-submitted 的执行调用 Git prepare；
 
 恢复记录保存累计 count、pauseReason 和一次 retryAuthorized。`beginRecovery` 原子检查预算并消耗一次恢复；超限或暂停需明确授权，重启不清零。有 cleanup/control 意图时拒绝普通恢复与重试，避免重新启动正在结束的业务。
 
-Cleanup 保存 `terminal|shutdown`、原开始/截止、清理输入的 not-submitted/unknown/submitted/rejected/unavailable、输入前观察基线、结果、具体错误，以及 agentStopped/workspaceClosed/worktreeDeleted 三个有序确认。先记录 unknown 再提交输入；未知输入不自动重发，截止后不再提交。重复开始或从 shutdown 升为 terminal 均不能延长原截止。`completeTask` 必须取得 terminal 结果、原 agent 已停、workspace 已关和 worktree 已删除；任何失败保留责任。
+Cleanup 保存 `terminal|shutdown`、必填 claimEnded、原开始/截止、清理输入的 not-submitted/unknown/submitted/rejected/unavailable、输入前观察基线、结果、具体错误，以及 agentStopped/workspaceClosed/worktreeDeleted 三个有序确认。先记录 unknown 再提交输入；未知输入不自动重发，截止后不再提交。重复开始或从 shutdown 升为 terminal 均不能延长原截止。claimEnded 只在完整原账号自有清单确认缺席、或显式 release 已确认结束时持久置 true；开始本地管理清理不证明远端归属结束。`completeTask` 必须同时取得 claimEnded=true、terminal 结果、原 agent 已停、workspace 已关和 worktree 已删除；已确认归属结束的清理可以离线继续，任何失败保留责任。
 
-Source control 只保存 release/transfer 的具体意图、原版本、target 身份及提交/结果，不提供任意动作日志。版本以精确 int64 十进制字符串持久化；远端提交要求本地完整终止清理且匹配原决定版本，未知写入不能重放。成功完整自有清单确认原 claim 缺席也能确认 ownership-ended，无须读取 task 状态分类。清理已完成而控制结果未确认时，不能置本机 done 或重建原资源。
+Source control 只保存 release 的具体意图、原版本及提交/结果，不提供任意动作日志。版本以精确 int64 十进制字符串持久化；远端提交要求本地完整终止清理且匹配原决定版本，未知写入不能重放。成功完整自有清单确认原 claim 缺席也能确认 ownership-ended，无须读取 task 状态分类。清理已完成而控制结果未确认时，不能置本机 done 或重建原资源。
 
 `resumeAfterShutdown` 仅消费已经记录结果、原 agent 停止及 workspace 关闭的正常退出。已证明 native 从未启动，或已有确切原 native ID 时，可清除旧 Herdr 绑定供同一执行恢复，保留 worktree/native/config、恢复计数、原暂停与重试授权；正常重启不消耗故障恢复预算。如果 native 可能已启动却没有确切原 ID，则保留原 Herdr 绑定、launch/prompt 和 PID 证据并暂停，不能重置成首次启动。消费 shutdown 后，普通执行前必须重新枚举 Herdr，不能继续使用关闭 workspace 之前的 snapshot。Terminal 不可恢复为普通执行；外部资源核对仍由调用者负责。
 
@@ -188,13 +188,13 @@ Source control 只保存 release/transfer 的具体意图、原版本、target �
 
 运行时在 /me 和配置仓库的远端解析/准备之前启动轻量收尾发现循环，只为同 workerId 各 origin 已持久保存的 cleanup/source control 意图创建瞬时异步 job；实际推进仍须原 userId 已知，不能借后台继续补授权未知范围的意图。每个完整 origin/project/task/claim 同时至多一个 job，调用 `advanceCommittedCleanups(identity)`；各 job 按自己的原截止独立推进，每次等待最多 1000ms，最近原截止更早时缩短等待。一个 task 的 RPC 等待不阻塞其他 task 的下一次收尾推进，不以等待整批 job 完成作为下一轮前置。同一 task 与普通循环仍共用串行边界，外部步骤各自有界。发现和 job 都在同一前台进程内，不增加持久队列、表、台账或 OS daemon。它们不查询服务以新增缺席判断，也不认领任务；服务读取失败不撤销已有收尾责任，新终止决定仍要求完整 inventory。
 
-同一已核验原账号范围内，自动终止判断仅为原 claimId 缺席；不按 task 状态或单 task GET 分类 done/release/transfer。同 task 的新 claim 不能保护旧 claim。记录中的终止/管理意图不可被普通恢复撤销；显式 source 控制在源本地清理完成后提交服务端操作，并独立核对未知结果。Herdr 中有本 worker 标记却缺本地行的资源需要原项目绑定才能登记并收尾；归属无法证明时保留并报告。
+同一已核验原账号范围内，自动终止判断仅为原 claimId 缺席；不按 task 状态或单 task GET 分类 done/release/withdraw。同 task 的新 claim 不能保护旧 claim。记录中的终止/管理意图不可被普通恢复撤销；显式 source 控制在源本地清理完成后提交服务端操作，并独立核对未知结果。Herdr 中有本 worker 标记却缺本地行的资源需要原项目绑定才能登记并收尾；归属无法证明时保留并报告。
 
 严格证明未启动的 pending 记录可在同账号成功完整清单确认原 claim 缺席后直接 pending→done：没有 cleanup/control、worktree/Herdr/native 资源，workspace/launch/prompt 均未提交且无旧证据。该路径不提升 active、不扫描或删除固定 Git 路径；同 task 旧 claim 的目录不会因此受影响。
 
 新任务候选同时使用 ready、allowAgents=true 与实际兼容平台，条件在服务端排序和分页前组合；worker 不修改自动执行许可。Released 历史候选跳过但继续分页。仓库之间轮转，同仓库遵守服务端顺序，配置为空或无合格候选不占名额。项目未决 claimAttempt 阻止该项目继续认领，但不替代其他项目的调度。
 
-只有未匹配前置 claimAttempt 正向确认、尚无本地行且没有自身 Herdr/native 执行迹象的 preparing claim，才进入文件系统分类并受稳定前驱移交边界约束。完整匹配请求的实际 grant 在 Herdr/文件系统之前已先原子确认，不能被资源读取失败或旧路径收尾延后而遗失。文件系统异步核对前保留相关前驱的持久 origin/project/task/claim/worktree 身份、原 repoUrl/repositoryPath 和已有的可选 worktree binding。候选资格不要求 binding 已落库：Git 可能已创建带标记的 leaf，而 SQLite 尚未记录返回值。候选还须匹配同一物理规范路径；它只确定需要等待的移交范围，不代表采纳路径所有权。稳定后的只读 Git 分类仍严格核验完整 claim、root/common/leaf、精确 .git 指针及分支，不以目录存在或相同 task UUID 代替归属证明。
+只有未匹配前置 claimAttempt 正向确认、尚无本地行且没有自身 Herdr/native 执行迹象的 preparing claim，才进入文件系统分类并受稳定前驱清理边界约束。完整匹配请求的实际 grant 在 Herdr/文件系统之前已先原子确认，不能被资源读取失败或旧路径收尾延后而遗失。文件系统异步核对前保留相关前驱的持久 origin/project/task/claim/worktree 身份、原 repoUrl/repositoryPath 和已有的可选 worktree binding。候选资格不要求 binding 已落库：Git 可能已创建带标记的 leaf，而 SQLite 尚未记录返回值。候选还须匹配同一物理规范路径；它只确定需要等待的清理范围，不代表采纳路径所有权。稳定后的只读 Git 分类仍严格核验完整 claim、root/common/leaf、精确 .git 指针及分支，不以目录存在或相同 task UUID 代替归属证明。
 
 若捕获的或当前前驱仍承担 terminal/control 的 worktree 删除责任，或异步核对期间删除边界发生变化，则该尚未物化的新 claim 非阻塞延后，不插入记录或作配置分类；即使删除在此期间开始并已完成、前驱已变 done，也视为边界变化。下一次成功完整 inventory 在稳定后重新考虑。最终检查紧贴 pending 插入且其后没有 await，避免较早的路径观察与较晚的前驱记录拼成新 claim 已执行的结论。已有 pending 及冻结配置不重新分类；匹配 claimAttempt 走前置原子确认，不进入这条延后路径；其他 task 和独立清理截止继续推进，不增加状态、队列或锁。
 
@@ -230,7 +230,7 @@ Git 创建成功而 SQLite 尚未保存 binding 时，可凭完整原标记和�
 
 终止清理仍核对原仓库、完整所有权与物理绑定，但不要求 task-local origin 保持不变；仅改变任务工作区的 remote 不撤销原清理责任。删除先保留 Git 注册、标记和 leaf 内精确 `.git` 指针，递归删除其余内容；内容删除失败时保留指针，下一次重新核对后继续原清理。其余内容删除完成后，最后删除 `.git` 并以非递归 rmdir 移除 leaf。确认 leaf 已不存在后才定点移除该条 locked Git 注册，不运行全局 prune。
 
-若在最后删除 `.git` 与 rmdir 之间中断，仍存在的目录已经没有足够归属证明，即使它为空且 device/inode 匹配，也必须拒绝破坏性重试并保留 active/错误，交由操作者检查处理；原目录经核实移除后，下次可完成注册清理。相同拒绝适用于同路径无指针的替换目录。目录和注册均不存在时，可确认删除成功但结果尚未记回 SQLite 的窗口。分支和历史保留，done/release/transfer 使用相同终止规则。
+若在最后删除 `.git` 与 rmdir 之间中断，仍存在的目录已经没有足够归属证明，即使它为空且 device/inode 匹配，也必须拒绝破坏性重试并保留 active/错误，交由操作者检查处理；原目录经核实移除后，下次可完成注册清理。相同拒绝适用于同路径无指针的替换目录。目录和注册均不存在时，可确认删除成功但结果尚未记回 SQLite 的窗口。分支和历史保留，done/release/withdraw 使用相同终止规则。
 
 所有 Git 子进程继承调用者的有界 `Operation`，复用进程组停止和错误链。Worker 的设置操作清除继承的仓库选择器、命令配置与 trace 注入，使用自己空 hooks 目录，clone 使用空 template，并关闭自动 submodule 递归；正常全局认证和传输配置仍继承。共享 runner 的环境与期限覆盖按调用传入，普通仓库发现调用保持原有默认行为。临时目录只属于该管理器，不能改写用户全局 Git/agent 配置。
 
@@ -341,21 +341,23 @@ Agent 按显式 assignment 和技能规则复用已开始执行，不重认领�
 
 Worker 不再核对 PR 合并、解析业务验收或再次 done。它仅按原 claimId 是否还在成功完整自有清单中决定资源收尾；缺席不分类 task 状态，部分/失败清单不用于删除。原生托管验证、完整验收和证据由 agent 负责，不增加报告或验收解释器。
 
-服务端和 typed client 提供受控 claim 管理。`worker retry/release/transfer/resume` 使用同一执行记录和协调函数：前台存在时由它唯一控制 agent；无前台时命令取得相同实例锁，仅处理指定执行。人工通过 `daynight worker attach` 沿既有 descriptor 进入原会话。Retry 只为同一有效 claim 授权一次额外恢复，累计预算、原冻结配置和资源身份保留；并发或重复请求不累加授权。
+服务端和 typed client 提供受控 claim 管理。`worker retry/release/resume` 使用同一执行记录和协调函数：前台存在时由它唯一控制 agent；无前台时命令取得相同实例锁，仅处理指定执行。人工通过 `daynight worker attach` 沿既有 descriptor 进入原会话。Retry 只为同一有效 claim 授权一次额外恢复，累计预算、原冻结配置和资源身份保留；并发或重复请求不累加授权。
 
-Release/transfer 先按当前认证身份读取项目权限及具体 task，验证 source owner/admin 决策；当前管理员与 source 的原 userId 分别保留。配置 origin 必须匹配原记录，不向新服务提交旧记录。随后在同一 source 行记录原 claim、精确版本和具体管理意图，抑制普通输入和恢复，完成全部本地终止清理后再提交远端变更。Transfer 保存明确目标身份及新 claimId/worktreeId，不传输 source SQLite 快照、不预登记未授予的 target，也不运输未提交文件或 native history。
+Release 先按当前认证身份读取项目权限及具体 task，验证 source owner/admin 决策；当前管理员与 source 的原 userId 分别保留。配置 origin 必须匹配原记录，不向新服务提交旧记录。随后在同一 source 行记录原 claim、精确版本和具体管理意图，抑制普通输入和恢复，完成全部本地终止清理后再提交远端变更。
 
-远端提交前持久标记 unknown，清理的原十分钟截止与每次 HTTP 的独立有界范围分开；一次性命令的五分钟总预算不能截断该清理。响应丢失后按具体 task/claim、原 version 和保存的新 targetClaimId 核对，不重放或换 ID，读取旧值也不证明在途写入未发生。已清理 source 保持意图，不重建业务 worktree/agent。同一管理命令可在前台仍运行时只读核对 unknown 结果，不取得第二份资源控制权或重新提交。只有明确拒绝的提交可由新明确决定替换；该决定须携重新读取的 task 观察证明，并核对显式 if-version 与观察的精确版本相同。若拒绝未修改 task，版本数值可以保持原值；未知提交不能重置。显式 if-version 始终保持用户决定值。
+远端提交前持久标记 unknown，清理的原十分钟截止与每次 HTTP 的独立有界范围分开；一次性命令的五分钟总预算不能截断该清理。响应丢失后按具体 task/claim、原 version 和已释放的目标状态核对，不重放或换 ID，读取旧值也不证明在途写入未发生。已清理 source 保持意图，不重建业务 worktree/agent。同一管理命令可在前台仍运行时只读核对 unknown 结果，不取得第二份资源控制权或重新提交。只有明确拒绝的提交可由新明确决定替换；该决定须携重新读取的 task 观察证明，并核对显式 if-version 与观察的精确版本相同。若拒绝未修改 task，版本数值可以保持原值；未知提交不能重置。显式 if-version 始终保持用户决定值。
 
 管理核对可以用完整 task 证明原 source claim 已结束；这是已授权显式操作的结果核对。自动新增终止决定仍只接受原账号范围内成功完整自有清单的缺席证据，不能借管理员的另一账号清单推断 source 缺席。严格未启动且无资源的 pending source 不为管理清理提升 active 或扫描旧规范路径；同 task 的旧执行仍受原资源身份保护。
 
-目标实际获得新 claim 后按正常 pending/active 路径冻结新执行配置并创建新 worktree/native 会话。没有既有执行痕迹的 transfer grant 遵循远端明确的 agent：与接收方配置类型相同时使用当前有效 model/args，类型不同时冻结远端 agent、model:null、args:[] 与当前 recoveryLimit，不继承另一 agent 的参数。已有 pending 快照不被改写。显式 resume 同样是新执行；保留 previousClaimId、owner/admin、ready 和版本检查，不要求旧成果连续。普通 daemon 跳过 released 候选，继续分页而不自动重新认领刚释放的任务。
+显式 resume 实际取得新 claim 后按正常 pending/active 路径冻结本次有效配置并创建新 worktree/native 会话；已有 pending 快照不被改写。Resume 是新执行，保留 previousClaimId、owner/admin、ready 和版本检查，不要求旧成果连续。普通 daemon 跳过 released 候选，继续分页而不自动重新认领刚释放的任务。
 
-[归属架构](daynight-worker-claims.md)拥有终止后新执行的服务端 DTO 与事务规则。历史归属的资源字段不构成活资源证明；continuityConfirmed 为非法输入，新执行不能复用最后 claimId/worktreeId。目标的 agent 类型可明确变更，仍保留成员权限、精确版本、停止确认、目标资格、依赖和旧 claim fencing。
+[归属架构](daynight-worker-claims.md)拥有终止后新执行的服务端 DTO 与事务规则。历史归属的资源字段不构成活资源证明；continuityConfirmed 为非法输入，新执行不能复用最后 claimId/worktreeId。新执行的 agent 类型可明确变更；release 保留成员权限、精确版本和停止确认，resume 保留原归属、依赖和旧 claim fencing。
+
+Web 任务详情复用项目成员资料显示认领用户、机器、agent 和阶段；active/released 的原 owner/admin 可确认“强制撤回”。确认冻结 task/claim/version，提交既有归属资源的 withdraw；任务会话验证完整返回值并刷新图，冲突和未知结果沿用只读核对。该操作先关闭自动执行并撤回服务端归属，不依赖本机控制锁或源 SQLite；原 worker 仍按完整自有清单缺席收尾。它不会预先授予另一个 worker，也不传输文件、SQLite 或 native history。[强制撤回决策](../../.agents/notes/implemented/architecture/2026-10-27-worker-force-withdrawal.md)保存此机制与原移交设计的取舍。
 
 ## 退出、恢复与清理
 
-只要原 claim 仍在自己完整清单且无终止意图，普通崩溃或 worker 正常退出均保留原 worktree/native history/config。原 claim 缺席则不区分 done、release、transfer，统一执行：
+只要原 claim 仍在自己完整清单且无终止意图，普通崩溃或 worker 正常退出均保留原 worktree/native history/config。原 claim 缺席则不区分 done、release、withdraw，统一执行：
 
 ```text
 持久保存原身份、清理提交状态和最多十分钟的固定截止

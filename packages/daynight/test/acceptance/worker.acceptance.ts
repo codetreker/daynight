@@ -256,7 +256,7 @@ it.skipIf(process.platform !== "linux").each(["startup-interrupt", "committed-cl
     const restartRequestOffset = requests.length;
     if (committedDeadline) {
       const deadline = Date.now() + 2_000;
-      seededCleanup = { kind: "terminal", startedAt: deadline - 600_000, deadline, input: "unknown", baseline: null, result: null, error: "Controlled SQL injection of a previously committed terminal intent with an uncertain cleanup input.", agentStopped: false, workspaceClosed: false, worktreeDeleted: false };
+      seededCleanup = { kind: "terminal", claimEnded: true, startedAt: deadline - 600_000, deadline, input: "unknown", baseline: null, result: null, error: "Controlled SQL injection of a previously committed terminal intent with an uncertain cleanup input.", agentStopped: false, workspaceClosed: false, worktreeDeleted: false };
       if (parallelDeadlines) peerCleanup = { ...seededCleanup, startedAt: deadline - 582_000, deadline: deadline + 18_000, input: "not-submitted", error: null };
       const sql = new Database(databaseFile);
       try {

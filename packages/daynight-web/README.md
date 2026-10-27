@@ -688,11 +688,27 @@ Ordinary and successful notices use three-second bubbles; errors and notices
 with actions use eight seconds. Hover or focus pauses expiry. Close and expiry
 change only presentation; unresolved recovery remains accessible from a compact
 floating trigger, without changing write locks or replaying writes. Status does
-not stop a process, transfer worker ownership or
-provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
+not stop a process or provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
 owns server rules, migration and timing. The [component fixture](tests/mockups/browsing.html)
 uses production sessions/styles for frontend behavior; actual service acceptance
 separately proves HTTP, database and persistence behavior.
+
+Task details share claim display and force withdrawal across the dialog,
+standalone page and fullscreen. Active claims show the user, machine, agent and
+phase; released claims are labeled, while completed history is not a current
+claim. Project membership supplies user names/accounts; a former member remains
+identified by its real user ID, and membership-read errors remain visible. Only
+the original owner or a project admin sees **Force withdraw** for active/released
+ownership; the service rechecks membership and authority.
+
+Withdrawal confirmation freezes the task, claim and precise version. It explains
+that the task returns to `todo`, worker ownership and execution timing are cleared,
+and automatic execution is disabled. The remote agent may continue until its
+worker synchronizes and cleans up; immediate stopping is not guaranteed. Cancel
+submits nothing. The shared TaskDetailSession serializes the operation, validates
+the returned reset while preserving other materials and refreshes the graph.
+Conflicts require a fresh review; uncertain outcomes use GET-only reconciliation
+without replay. This action does not require the original worker to be online.
 
 Both lists use newest creation first, with descending IDs breaking equal-time
 ties. Presentation reverses the exact API sequence without reducing timestamp

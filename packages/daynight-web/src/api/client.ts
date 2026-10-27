@@ -252,6 +252,27 @@ export const setTaskStatus = async (
   });
 };
 
+export const withdrawWorkerClaim = async (
+  projectId: string, taskId: string, claimId: string, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
+): Promise<TaskDetail> => {
+  const project = requestId(projectId);
+  const task = requestId(taskId);
+  const claim = requestId(claimId);
+  if (!isTaskVersion(exactVersion)) throw new ApiError("protocol");
+  const response = await request(`/api/v1/projects/${project}/tasks/${task}/worker-claim/withdraw`, signal, {
+    method: "POST", redirect: "error", headers: { Accept: "application/json", "Content-Type": "application/json" },
+    body: stringifyApiJson({ version: exactVersion, claimId: claim }),
+  });
+  assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+  if (response.status === 200) admission.onWriteConfirmed?.();
+  return json(response, signal, (data) => {
+    const result = parseTaskDetail(data, project, task);
+    if (response.status !== 200 || result.version !== exactVersion + 1n || result.properties.worker !== null ||
+      result.status !== "todo" || result.allowAgents || result.startedAt !== null || result.completedAt !== null) throw new ApiError("protocol", response.status);
+    return result;
+  });
+};
+
 export const setTaskAgentPermission = async (
   projectId: string, taskId: string, allowAgents: boolean, exactVersion: bigint, signal: AbortSignal, admission: TaskResponseAdmission,
 ): Promise<TaskDetail> => {
