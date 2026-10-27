@@ -702,7 +702,10 @@ claimed heading has a bounded, focusable scroll region so full names, accounts,
 machine names and member errors remain readable without consuming the tabs and
 reading panels. This applies to dialog and standalone entries in normal and
 fullscreen modes; short claimed views hide the informational footer and reuse
-compact tabs, attachment padding and preview metadata layout. Keyboard
+compact tabs, attachment padding and preview metadata layout. Short claimed
+standalone pages also compact the auxiliary navigation bar spacing so complete
+return links and language controls fit together at 320px in both languages
+without consuming the attachment reading area. Keyboard
 focus can reveal the withdrawal control within that region. Only
 the original owner or a project admin sees **Force withdraw** for active/released
 ownership; the service rechecks membership and authority.

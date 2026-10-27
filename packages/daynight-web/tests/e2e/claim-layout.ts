@@ -3,7 +3,6 @@ import type { Locator, Page, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl } from '../../src/api/client';
 import { attachmentFileButton } from './attachment-tree';
 import type { AuthenticatedAPI } from './authentication';
-import { openChain } from './chain-dialog';
 import { createProject, createTask, expect, type Task } from './fixtures';
 import { selectTaskList } from './project-view';
 
@@ -68,8 +67,9 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
         await page.setViewportSize({ width: 1440, height: 1000 });
         if (mode === 'page') await page.goto(`/projects/${project.id}/tasks/${task.id}`);
         else {
-          await page.goto(`/projects/${project.id}`); await selectTaskList(page); await openChain(page, task.id);
-          await page.locator(`.react-flow__node[data-id="${task.id}"] .task-node-details`).click();
+          await page.goto(`/projects/${project.id}`); await selectTaskList(page);
+          await page.getByRole('tab', { name: /^(独立任务|Standalone tasks)$/, exact: true }).click();
+          await page.locator(`#standalone-task-${task.id}`).click();
         }
         const root = page.locator(mode === 'page' ? '.task-detail-page' : '.task-detail-dialog');
         const heading = root.getByRole('region', { name: /^(任务设置与认领|Task settings and claim)$/, exact: true });
@@ -100,6 +100,15 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
             await (await attachmentFileButton(root, 'docs/guide.md')).click();
             const preview = root.locator('.attachment-preview-body');
             await expect(preview.locator('.attachment-markdown')).toContainText('The attachment remains readable.');
+            await info.attach('claim-reading-allocation', { contentType: 'application/json', body: JSON.stringify({ state, mode, viewport, fullscreen, allocation: await page.evaluate(() => {
+              const selectors = ['.auth-shell', '.task-detail-page-container', '.task-detail-page', '.task-detail-dialog', '.task-detail-page-topbar', '.task-detail-header', '.task-detail-body', '.task-detail-heading', '.task-detail-panels', '.task-detail-tabs', '.task-detail-panel-attachments', '.attachment-split', '.attachment-preview-pane', '.attachment-preview-header', '.attachment-preview-body'];
+              return { locale: document.documentElement.lang, elements: selectors.map((selector) => {
+                const element = document.querySelector<HTMLElement>(selector);
+                if (element === null) return { selector, missing: true };
+                const bounds = element.getBoundingClientRect(), style = getComputedStyle(element);
+                return { selector, height: bounds.height, top: bounds.top, bottom: bounds.bottom, client: element.clientHeight, scroll: element.scrollHeight, overflow: style.overflowY, flex: style.flex, minHeight: style.minHeight, maxHeight: style.maxHeight, display: style.display };
+              }) };
+            }) }, null, 2) });
             await expect.poll(async () => (await preview.boundingBox())!.height).toBeGreaterThanOrEqual(18);
             await preview.evaluate((element) => { element.scrollTop = element.scrollHeight; });
             await expect.poll(() => preview.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
@@ -114,5 +123,10 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
       }
     }
     await info.attach('claim-reading-layouts', { contentType: 'application/json', body: JSON.stringify(layouts, null, 2) });
+  } catch (error) {
+    const screenshot = info.outputPath('claim-reading-failure.png');
+    await page.screenshot({ path: screenshot });
+    await info.attach('claim-reading-failure', { path: screenshot, contentType: 'image/png' });
+    throw error;
   } finally { await page.unroute(membersURL); }
 };

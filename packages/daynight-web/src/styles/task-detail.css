@@ -253,6 +253,7 @@
   .task-detail-fullscreen .task-detail-header { padding: 5px 12px; gap: 5px; flex-wrap: wrap; }
   .task-detail-fullscreen .task-detail-title { max-height: 1.45em; }
   .task-detail-fullscreen .task-detail-header-actions { margin-left: auto; gap: 6px; }
+  .task-detail-has-claim .task-detail-page-topbar { padding: 6px 12px; gap: 6px; }
   .task-detail-fullscreen .task-detail-heading { padding: 5px 12px 0; }
   .task-detail-has-claim .task-claim { margin-top: 8px; padding: 8px 10px 6px; gap: 8px; }
   .task-detail-has-claim .task-claim-withdraw { min-height: 24px; padding: 2px 8px; line-height: 18px; }

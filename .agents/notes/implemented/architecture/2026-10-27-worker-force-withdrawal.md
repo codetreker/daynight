@@ -43,7 +43,10 @@ membership and owner/admin checks. The heading containing claim information is
 a bounded, focusable scroll owner in normal and fullscreen, dialog and standalone
 views. Its size reserves tabs and reading space even for long names, accounts,
 machine descriptions or member errors; short claimed views hide the informational
-footer and reuse compact tabs and attachment chrome. Full identity strings and
+footer and reuse compact tabs and attachment chrome. Short claimed standalone
+pages compact their auxiliary navigation spacing to keep complete return and
+language controls on one row at 320px in either language, preserving reader space.
+Full identity strings and
 withdrawal controls remain reachable by keyboard
 without collapsing Overview or attachment reading.
 
