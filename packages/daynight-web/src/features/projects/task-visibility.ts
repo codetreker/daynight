@@ -12,12 +12,9 @@ export const timestampNanoseconds = (value: string): bigint => BigInt(Date.parse
 
 export const recentTaskWindow = (now: bigint): RecentTaskWindow => {
   const date = new Date(Number(now / 1_000_000n));
-  const start = new Date(date);
-  start.setDate(start.getDate() - 6);
-  start.setHours(0, 0, 0, 0);
-  const nextMidnight = new Date(date);
-  nextMidnight.setDate(nextMidnight.getDate() + 1);
-  nextMidnight.setHours(0, 0, 0, 0);
+  // Carrying the current hour into a DST gap can normalize the intended date into the following day.
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate() - 6);
+  const nextMidnight = new Date(date.getFullYear(), date.getMonth(), date.getDate() + 1);
   return { now, start: BigInt(start.getTime()) * 1_000_000n, nextMidnight: BigInt(nextMidnight.getTime()) * 1_000_000n };
 };
 

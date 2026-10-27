@@ -29,6 +29,18 @@ describe("natural calendar task visibility", () => {
     expect(calendarIn(timezone, now)).toEqual({ start, nextMidnight, hours });
   });
 
+  it("keeps the sixth previous date when the current local hour did not exist on that date", () => {
+    expect(calendarIn("America/Nuuk", "2026-04-04T00:30:00Z")).toEqual({
+      start: "2026-03-28T02:00:00.000Z", nextMidnight: "2026-04-04T01:00:00.000Z", hours: 167,
+    });
+  });
+
+  it("schedules the next midnight before a following evening DST gap", () => {
+    expect(calendarIn("America/Nuuk", "2026-03-28T01:30:00Z")).toEqual({
+      start: "2026-03-21T02:00:00.000Z", nextMidnight: "2026-03-28T02:00:00.000Z", hours: 168,
+    });
+  });
+
   it("keeps exact midnight inclusive while rejecting the preceding nanosecond and unknown or future facts", () => {
     const now = timestampNanoseconds("2026-10-26T12:00:00.123456789Z");
     const window = recentTaskWindow(now);

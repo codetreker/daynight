@@ -19,9 +19,7 @@ const id = (number: number): string => `00000000-0000-4000-8000-${String(number)
 const observedAt = new Date().toISOString();
 const localDay = (offset: number, hour = 12): string => {
   const date = new Date(observedAt);
-  date.setDate(date.getDate() + offset);
-  date.setHours(hour, 0, 0, 0);
-  return date.toISOString();
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate() + offset, hour).toISOString();
 };
 const timestamp = (number: number): string => new Date(Date.parse(localDay(-30)) + number * 1_000).toISOString();
 type Seed = { readonly number: number; readonly title: string; readonly status: TaskStatus;

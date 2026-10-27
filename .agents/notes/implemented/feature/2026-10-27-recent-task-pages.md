@@ -15,11 +15,15 @@ navigation from overview progress into task browsing.
 Overview and both task-list categories share one recent projection of the
 complete project index. Every unfinished item remains visible regardless of age.
 Known completions remain for today and the previous six dates in the browser's
-local time zone, with an inclusive midnight boundary. Calendar arithmetic keeps
-those seven dates stable across daylight-saving changes. Live current time uses
-the server observation plus monotonic elapsed time; local summary previews keep
-their provisional client-time basis until synchronization. A project-owned
-deadline recalculates both sections at local midnight and on visibility recovery.
+local time zone, with an inclusive midnight boundary. Boundaries are constructed
+directly from local year, month and day at midnight, with calendar-day offsets.
+Changing a date while carrying the current hour can encounter a late-evening
+daylight-saving gap and normalize into an adjacent date before its hours are
+reset. Direct midnight construction preserves the intended date without assuming
+fixed day lengths. Live current time uses the server observation plus monotonic
+elapsed time; local summary previews keep their provisional client-time basis
+until synchronization. A project-owned deadline recalculates both sections at
+local midnight and on visibility recovery.
 
 A Goal is complete only when all ordinary-component members are done. Its latest
 member completion determines recency; the representative and external
