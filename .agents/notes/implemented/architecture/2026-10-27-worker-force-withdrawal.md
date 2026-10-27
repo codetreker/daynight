@@ -39,7 +39,13 @@ task, claim and exact version and explains the reset and delayed-stop boundary.
 The existing task session owns submission, returned-resource validation and
 GET-only reconciliation after an uncertain result. Cancel submits nothing, and
 known changes invalidate the review. Button visibility supplements the service's
-membership and owner/admin checks.
+membership and owner/admin checks. The heading containing claim information is
+a bounded, focusable scroll owner in normal and fullscreen, dialog and standalone
+views. Its size reserves tabs and reading space even for long names, accounts,
+machine descriptions or member errors; short claimed views hide the informational
+footer and reuse compact tabs and attachment chrome. Full identity strings and
+withdrawal controls remain reachable by keyboard
+without collapsing Overview or attachment reading.
 
 Transfer's HTTP endpoint, typed operation, CLI command, target descriptors and
 runtime submission paths are removed. This partially supersedes the
@@ -60,7 +66,13 @@ The row pauses ordinary recovery and clears retry authorization. Migration makes
 no remote write and does not replay an unknown transfer. If the source claim
 already ended, normal inventory reconciliation completes source cleanup. If it
 remains current, the operator uses Web force withdrawal. Completed rows only
-lose the obsolete control shape.
+lose the obsolete control shape. Pending source rows with cleanup can still own
+actual Git/Herdr/native resources. After the original worktree is verified, its
+binding and active status commit atomically under the existing one-active index,
+allowing the normal resource association checks to finish cleanup. A conflict
+rolls back both changes. The original identity, deadline, cleanup progress and
+claimEnded proof remain; this path never launches an agent or reserves active
+status for a resource-free pending source.
 
 ## Alternatives
 

@@ -70,9 +70,15 @@ resource discovery rather than authorize creation.
 
 First pending materialization freezes effective agent/model/args/recovery limit.
 A recovered execution missing its original snapshot pauses until that original
-configuration is explicitly restored. Resource bindings follow committed active
-state and retain worktree and native identity. Replacing a Herdr binding
-requires confirmation that the original agent stopped and old workspace closed.
+configuration is explicitly restored. Ordinary resource creation follows committed
+active state. A pending row with committed cleanup may atomically bind a verified
+original worktree and become active so the existing Herdr/native binding rules
+can finish its resource responsibility. The same one-active unique index guards
+that transaction; a conflict rolls back both promotion and binding. Claim identity,
+cleanup deadline/progress and claimEnded remain unchanged, and no agent is
+launched. A resource-free pending cleanup does not reserve active status. Replacing
+a Herdr binding requires confirmation that the original agent stopped and old
+workspace closed.
 
 Concrete cleanup operations retain the first deadline, input uncertainty,
 result/error and ordered stop/close/delete confirmations. Local done requires

@@ -697,7 +697,13 @@ Task details share claim display and force withdrawal across the dialog,
 standalone page and fullscreen. Active claims show the user, machine, agent and
 phase; released claims are labeled, while completed history is not a current
 claim. Project membership supplies user names/accounts; a former member remains
-identified by its real user ID, and membership-read errors remain visible. Only
+identified by its real user ID, and membership-read errors remain visible. The
+claimed heading has a bounded, focusable scroll region so full names, accounts,
+machine names and member errors remain readable without consuming the tabs and
+reading panels. This applies to dialog and standalone entries in normal and
+fullscreen modes; short claimed views hide the informational footer and reuse
+compact tabs, attachment padding and preview metadata layout. Keyboard
+focus can reveal the withdrawal control within that region. Only
 the original owner or a project admin sees **Force withdraw** for active/released
 ownership; the service rechecks membership and authority.
 
@@ -933,8 +939,9 @@ a focusable one-line-height scroll region. The task action-menu trigger and
 attachment popout icons retain their accessible labels. The preview header keeps
 path/metadata context and actions on one row, preserving full strings through
 DOM/title text.
-These fullscreen-only rules leave readable nonzero Overview and preview bodies
-at 320×240. Verification observes body/frame dimensions, actual content paint
+The claimed body heading additionally retains its bounded scroll region in both
+normal and fullscreen modes, including long identity and machine text. The
+combined sizing leaves readable nonzero Overview and preview bodies at 320×240. Verification observes body/frame dimensions, actual content paint
 and scrolling; visible controls alone do not establish reading access. The
 [fullscreen-reading decision](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
 records mode, scroll and keyboard ownership.

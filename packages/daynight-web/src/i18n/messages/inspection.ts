@@ -2,6 +2,7 @@ import type { WorkerPhase } from '../../api/types';
 
 export type InspectionMessages = {
   readonly claim: {
+    readonly controls: string;
     readonly active: string;
     readonly released: string;
     readonly machine: string;

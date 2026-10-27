@@ -19,7 +19,7 @@ const task = (id: string, title: string, status: TaskDetail['status']): TaskDeta
 });
 
 export type ClaimScenario = 'owner' | 'other' | 'admin' | 'released' | 'former' | 'completed';
-export const createTaskDetailFixture = (options: { readonly initialStatus?: TaskDetail['status']; readonly claim?: ClaimScenario } = {}) => {
+export const createTaskDetailFixture = (options: { readonly initialStatus?: TaskDetail['status']; readonly claim?: ClaimScenario; readonly longClaim?: boolean } = {}) => {
   const priorId = '00000000-0000-4000-8000-000000000002';
   const nextId = '00000000-0000-4000-8000-000000000003';
   const otherOwnerId = '00000000-0000-4000-8000-000000000910';
@@ -27,10 +27,10 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
   const viewerRole = options.claim === 'admin' ? 'admin' : 'member';
   const worker: WorkerClaim | null = options.claim === undefined ? null : {
     claimId: '00000000-0000-4000-8000-000000000901', state: options.claim === 'released' ? 'released' : options.claim === 'completed' ? 'completed' : 'active',
-    userId: claimOwner, workerId: '00000000-0000-4000-8000-000000000902', machine: { id: '00000000-0000-4000-8000-000000000903', name: 'macmini.local' },
+    userId: claimOwner, workerId: '00000000-0000-4000-8000-000000000902', machine: { id: '00000000-0000-4000-8000-000000000903', name: options.longClaim ? 'Machine-'.repeat(24) + 'complete' : 'macmini.local' },
     platform: 'macos', agent: 'codex', worktreeId: '00000000-0000-4000-8000-000000000904', phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: timestamp,
   };
-  const member = (userId: string, name: string, role: string) => ({ projectId: detailProjectId, userId, name, email: `${userId === TEST_VIEWER_ID ? 'jianjun' : 'teammate'}@example.com`, avatarUrl: null, role, version: 1, createdAt: timestamp, updatedAt: timestamp });
+  const member = (userId: string, name: string, role: string) => ({ projectId: detailProjectId, userId, name: options.longClaim ? 'Claim owner '.repeat(16) + 'complete' : name, email: `${options.longClaim ? 'account'.repeat(24) : userId === TEST_VIEWER_ID ? 'jianjun' : 'teammate'}@example.com`, avatarUrl: null, role, version: 1, createdAt: timestamp, updatedAt: timestamp });
   const members = [member(TEST_VIEWER_ID, 'Jianjun', viewerRole), ...(claimOwner === otherOwnerId && options.claim !== 'former' ? [member(otherOwnerId, 'Alex Chen', 'member')] : [])];
   const firstBase = task(detailTaskId, 'Markdown 流程图与完整任务详情', options.claim === undefined ? options.initialStatus ?? 'todo' : worker!.state === 'active' ? 'in_progress' : worker!.state === 'completed' ? 'done' : 'todo');
   const first: TaskDetail = { ...firstBase, properties: { ...firstBase.properties, worker }, allowAgents: options.claim !== undefined, startedAt: worker?.state === 'active' ? timestamp : null,

@@ -435,11 +435,11 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       return { ...task, status: "active", recovery: { ...task.recovery, pauseReason: text(reason, "Recovery pause reason") } };
     }),
     bindWorktree: (identity: ClaimIdentity, binding: WorktreeBinding, now: number): LocalTask => change(identity, now, (task) => {
-      if (task.status !== "active") throw new Error("Resource creation requires an active execution.");
+      if (task.status !== "active" && task.cleanup === null) throw new Error("Worktree binding requires an active execution or a committed cleanup.");
       const value = parseWorktree(binding);
       if (value.repositoryPath !== task.repositoryPath) throw new Error("The worktree repository does not match the original project binding.");
       if (task.resources.worktree !== null && !same(task.resources.worktree, value)) throw new Error("The execution already has a different worktree binding.");
-      return { ...task, resources: { ...task.resources, worktree: value } };
+      return { ...task, status: "active", resources: { ...task.resources, worktree: value } };
     }),
     bindHerdr: (identity: ClaimIdentity, binding: WorkerHerdr, now: number): LocalTask => change(identity, now, (task) => {
       if (task.status !== "active" || task.resources.worktree === null) throw new Error("Herdr binding requires an active execution and its original worktree.");

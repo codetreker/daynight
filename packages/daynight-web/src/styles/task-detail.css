@@ -90,6 +90,8 @@
 .task-detail-panel-overview { overflow: auto; overscroll-behavior: contain; }
 .task-detail-panel-attachments { display: flex; overflow: hidden; padding: 24px 30px 30px; }
 .task-detail-heading { padding: 14px 30px 0; flex: 0 1 auto; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; }
+.task-detail-heading-claimed { max-height: min(50%, max(32px, calc(100% - 120px))); }
+.task-detail-heading-claimed:focus-visible { outline: 3px solid #8c8cf0; outline-offset: -3px; }
 .task-detail-title-row { display: flex; align-items: flex-start; gap: 8px; flex: 1; min-width: 0; }
 .task-detail-title-action { flex: none; margin: 0; }
 .task-detail-title { flex: 0 1 auto; min-width: 0; max-height: 4.35em; overflow: auto; overscroll-behavior: contain; color: var(--ink); font-size: 22px; line-height: 1.45; font-weight: 650; letter-spacing: -.4px; margin: 0; overflow-wrap: anywhere; }
@@ -251,15 +253,17 @@
   .task-detail-fullscreen .task-detail-header { padding: 5px 12px; gap: 5px; flex-wrap: wrap; }
   .task-detail-fullscreen .task-detail-title { max-height: 1.45em; }
   .task-detail-fullscreen .task-detail-header-actions { margin-left: auto; gap: 6px; }
-  .task-detail-fullscreen .task-detail-heading { flex: none; padding: 5px 12px 0; }
+  .task-detail-fullscreen .task-detail-heading { padding: 5px 12px 0; }
+  .task-detail-has-claim .task-claim { margin-top: 8px; padding: 8px 10px 6px; gap: 8px; }
+  .task-detail-has-claim .task-claim-withdraw { min-height: 24px; padding: 2px 8px; line-height: 18px; }
   .task-detail-fullscreen .task-detail-status-row { align-items: center; gap: 6px; }
   .task-detail-fullscreen .task-detail-status-row .task-detail-badges { gap: 4px; }
   .task-detail-fullscreen .task-detail-ready, .task-detail-fullscreen .task-detail-blocked { flex: none; white-space: nowrap; }
   .task-detail-fullscreen .task-automation-control { gap: 4px; }
-  .task-detail-fullscreen .task-detail-tabs { margin-top: 0; padding: 0 12px; }
-  .task-detail-fullscreen .task-detail-tab { padding: 5px 2px; }
-  .task-detail-fullscreen .task-detail-panel-attachments { padding: 4px 8px 6px; }
-  .task-detail-fullscreen .task-detail-footer { display: none; }
+  .task-detail-fullscreen .task-detail-tabs, .task-detail-has-claim .task-detail-tabs { margin-top: 0; padding: 0 12px; }
+  .task-detail-fullscreen .task-detail-tab, .task-detail-has-claim .task-detail-tab { padding: 5px 2px; }
+  .task-detail-fullscreen .task-detail-panel-attachments, .task-detail-has-claim .task-detail-panel-attachments { padding: 4px 8px 6px; }
+  .task-detail-fullscreen .task-detail-footer, .task-detail-has-claim .task-detail-footer { display: none; }
 }
 
 .task-detail-dialog.task-detail-fullscreen, .task-detail-page.task-detail-fullscreen {

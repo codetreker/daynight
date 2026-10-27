@@ -158,7 +158,7 @@ Controller 只为已证明 launch never-submitted 的执行调用 Git prepare；
 → 统一终止清理完成 → 本机 done
 ```
 
-`registerPending` 只登记已经取得或从自己清单找回的实际 claim，不为目标预登记。新执行必须有配置；有原执行痕迹却缺快照的恢复记录保留 null 与暂停原因，`activateTask` 拒绝启动，直到明确恢复原配置。重复登记返回已保存的原值，不以当前默认值替换。`bindWorktree`、`bindHerdr`、`bindNativeSession` 保存实际关联；native 引用包含 `herdr` 或 `native-history` 来源。更换失效 Herdr workspace 需要旧 agent 停止和旧 workspace 已关闭的确认，保留 worktree/native/config。
+`registerPending` 只登记已经取得或从自己清单找回的实际 claim，不为目标预登记。新执行必须有配置；有原执行痕迹却缺快照的恢复记录保留 null 与暂停原因，`activateTask` 拒绝启动，直到明确恢复原配置。重复登记返回已保存的原值，不以当前默认值替换。`bindWorktree`、`bindHerdr`、`bindNativeSession` 保存实际关联；native 引用包含 `herdr` 或 `native-history` 来源。已有 cleanup 的 pending 若找回经 Git 原归属核验的 worktree，`bindWorktree` 在同一事务保存 binding 并将其置为 active，让后续原 Herdr/native 关联沿用 active 约束；既有单 active 索引冲突时绑定和状态一起回滚。该路径只承接实际资源的清理责任，不启动执行，也不改变 claim、cleanup 原截止/进度或 claimEnded。没有实际资源的 pending cleanup 保持 pending，不凭清理意图预占 active 名额。更换失效 Herdr workspace 需要旧 agent 停止和旧 workspace 已关闭的确认，保留 worktree/native/config。
 
 恢复记录保存累计 count、pauseReason 和一次 retryAuthorized。`beginRecovery` 原子检查预算并消耗一次恢复；超限或暂停需明确授权，重启不清零。有 cleanup/control 意图时拒绝普通恢复与重试，避免重新启动正在结束的业务。
 
@@ -405,7 +405,7 @@ Ctrl+C 先取消并等待常规收尾发现循环及全部 per-claim job 结束�
 | 远端与持久化 | 既有 /me 的启动身份核验、成功响应含空页的 principal 固定、原 userId 与账号切换、未知范围迁移、候选分页、完整自有 inventory、并发单赢家、claimAttempt fence、grant 后 pending/active 后资源及不确定结果不重放。 |
 | 调度与恢复 | 仓库轮转、active/暂停/清理名额、降低上限、原配置/原 worktree/native 接续、原生与 workspace 未知动作、丢失 receipt/配置/历史及预算耗尽。 |
 | Managed 入口 | 构造并实际递交的绝对安装包路径、显式模式、原 assignment 与冻结配置；存活重连不重发，错误上下文不回落普通任务流程。 |
-| 清理与退出 | 新终止决定的完整清单约束、已提交收尾的 per-claim job 独立于长服务轮询/启动请求/读取失败及其他 task 的 RPC 等待推进、原截止/输入/基线跨重启、不可用/拒绝/未知/超时、实际停止和删除失败、shutdown 后刷新资源/缺原 ID 暂停、未启动 pending 保持与同账号缺席直接完成、各任务初始化失败隔离及单一实例隔离。 |
+| 清理与退出 | 有资源 pending cleanup 的核验后原子绑定/active 与冲突回滚、无资源 pending 不预占名额、原截止/归属结束证明保留、新终止决定的完整清单约束、已提交收尾的 per-claim job 独立于长服务轮询/启动请求/读取失败及其他 task 的 RPC 等待推进、原截止/输入/基线跨重启、不可用/拒绝/未知/超时、实际停止和删除失败、shutdown 后刷新资源/缺原 ID 暂停、未启动 pending 保持与同账号缺席直接完成、各任务初始化失败隔离及单一实例隔离。 |
 
 Herdr/native 的版本、profile 检查、压缩历史、模型实际生效、认证与 shell/profile 环境边界见上文及[适配决策](../../.agents/notes/implemented/architecture/2026-10-26-worker-herdr-adapter.md)。它们要求针对实际环境核验，不能将一个版本/模型或受控替身的结果外推为完整平台保证。
 

@@ -500,6 +500,29 @@ describe("worker foreground coordinator", () => {
     expect(f.store.getTask(source)).toMatchObject({ status: "done", cleanup: { claimEnded: true } });
   });
 
+  it.each(["before-cleanup", "after-cleanup"] as const)("rebinds a recovered pending source's owned resources after retiring transfer with withdrawal %s", async (withdrawal) => {
+    const f = await fixture(); await f.coordinator.tick(); const original = f.store.listTasks()[0]!;
+    await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
+    f.candidates.set(f.projects[0]!.projectId, []);
+    const sql = new Database(path.join(f.root, "state.sqlite"));
+    try {
+      const control = { intent: { kind: "transfer", sourceClaimId: original.claimId, version: "8", targetClaimId: uuid(702), target: { userId: uuid(703), workerId: uuid(704), machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(705) } }, requestedAt: 1000, submission: "not-submitted", submittedAt: null, outcome: null, resultVersion: null, error: null };
+      sql.prepare("UPDATE tasks SET status = 'pending', configuration = NULL, resources = ?, native_execution = NULL, cleanup = NULL, control = ? WHERE claim_id = ?").run(JSON.stringify({ worktree: null, herdr: null, nativeSession: null }), JSON.stringify(control), original.claimId);
+      sql.pragma("user_version = 3");
+    } finally { sql.close(); }
+    const migrated = openWorkerStore(path.join(f.root, "state.sqlite")); migrated.close();
+    expect(f.store.getTask(original)).toMatchObject({ status: "pending", resources: { worktree: null, herdr: null, nativeSession: null }, nativeExecution: null, control: null, cleanup: { claimEnded: false, deadline: 601000 } });
+    if (withdrawal === "before-cleanup") f.granted.clear();
+    const restarted = createWorkerCoordinator(f.options);
+    await restarted.tick();
+    expect(f.store.getTask(original)).toMatchObject({ status: withdrawal === "before-cleanup" ? "done" : "active", resources: original.resources, cleanup: { error: null, claimEnded: withdrawal === "before-cleanup", deadline: 601000, agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+    expect(f.granted.has(original.claimId)).toBe(withdrawal === "after-cleanup"); expect(f.resources.has(original.claimId)).toBe(false); expect(existsSync(original.resources.worktree!.worktreePath)).toBe(false);
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.remote.release).not.toHaveBeenCalled();
+    f.granted.clear(); await createWorkerCoordinator(f.options).tick();
+    expect(f.store.getTask(original)).toMatchObject({ status: "done", cleanup: { claimEnded: true, deadline: 601000 } });
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).toHaveBeenCalledOnce(); expect(f.remote.release).not.toHaveBeenCalled();
+  });
+
   it("retains cleaned responsibility until original ownership ends and persists that proof for offline completion", async () => {
     const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
     f.store.beginCleanup(task, { kind: "terminal", deadline: 601000 }, 1000);

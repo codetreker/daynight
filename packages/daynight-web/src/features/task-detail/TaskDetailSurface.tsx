@@ -222,7 +222,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   };
 
   const content = <>
-      <Surface className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}`} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
+      <Surface className={`${modal ? 'task-detail-dialog' : 'task-detail-page'}${fullscreen.active ? ' task-detail-fullscreen' : ''}${currentClaim === null ? '' : ' task-detail-has-claim'}`} ref={dialogRef} role={modal ? 'dialog' : undefined} aria-modal={modal ? true : undefined} aria-labelledby={headingId} tabIndex={modal ? undefined : -1}>
         <TaskDetailNotifications fallbackFocus={titleRef}>
         {!modal && <div hidden={fullscreen.active}><TaskDetailPageBar projectId={projectId} /></div>}
         <header className="task-detail-header">
@@ -254,7 +254,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
           )}
           {detail !== null && (
             <>
-              <div className="task-detail-heading">
+              <div className={`task-detail-heading${currentClaim === null ? '' : ' task-detail-heading-claimed'}`} {...(currentClaim === null ? {} : { tabIndex: 0, role: 'region', 'aria-label': messages.inspection.claim.controls })}>
                 <div className="task-detail-status-row">
                   <div className="task-detail-badges">
                     <div className="task-detail-state-controls">

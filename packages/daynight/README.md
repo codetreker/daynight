@@ -939,7 +939,12 @@ the original agent stopped, close its workspace, delete its worktree and retain
 local history. The cleanup's durable claimEnded proof must also be true before
 local completion; a successful complete original-account inventory or confirmed
 release supplies it, and restart or offline cleanup preserves it. Failures keep
-responsibility and resume cleanup after restart.
+responsibility and resume cleanup after restart. A pending cleanup that rediscovers
+its verified original worktree binds that resource and becomes active in one
+transaction, preserving the original cleanup deadline, progress and ownership-end
+proof. It can then rebind its original runtime resources for cleanup without
+launching another agent. A competing active record rolls back both changes;
+resource-free pending cleanup does not reserve an active slot.
 A failed, incomplete or differently scoped inventory cannot authorize a new
 terminal-cleanup decision. Already persisted cleanup/control intents continue in
 the same foreground process through a lightweight discovery loop and one

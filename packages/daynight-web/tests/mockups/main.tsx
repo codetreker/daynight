@@ -23,13 +23,15 @@ const readLocation = () => {
 };
 const query = new URLSearchParams(window.location.search);
 const claim = query.get('claim');
-const fixture = createTaskDetailFixture(claim === null ? {} : { claim: claim as ClaimScenario });
+const longClaim = query.get('claimText') === 'long';
+const fixture = createTaskDetailFixture(claim === null ? {} : { claim: claim as ClaimScenario, longClaim });
 await fixture.ready;
 const scenario = (query.get('scenario') ?? 'files') as MockupScenario;
 const pageUrl = (taskId: string, selection: TaskDetailNavigation) => {
   const parameters = new URLSearchParams({ mode: 'page', task: taskId, tab: selection.tab, scenario });
   if (selection.path !== null) parameters.set('file', selection.path);
   if (claim !== null) parameters.set('claim', claim);
+  if (longClaim) parameters.set('claimText', 'long');
   return `${window.location.pathname}?${parameters}`;
 };
 

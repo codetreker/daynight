@@ -2,6 +2,7 @@ import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
   claim: {
+    controls: "任务设置与认领",
     active: "当前认领", released: "已释放的认领", machine: "机器", agent: "Agent",
     phase: { preparing: "准备中", executing: "执行中", verifying: "验证中", completing: "完成中", waiting: "等待中", paused: "已暂停" },
     membersLoading: "正在读取认领用户与操作权限…", membersError: "无法读取认领用户资料与撤回权限。", retryMembers: "重试成员资料", formerMember: "原项目成员",

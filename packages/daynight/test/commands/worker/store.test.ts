@@ -967,6 +967,22 @@ describe("claim history and frozen configuration", () => {
     expect(() => f.store.activateTask(claim, 42)).toThrow("already done");
   });
 
+  it("reserves the active slot atomically when rebinding a pending cleanup's original worktree", () => {
+    const f = fixture(); f.start(); f.bind();
+    const original = f.store.getTask(claim)!;
+    const source = { ...claim, claimId: uuid(30), worktreeId: uuid(31) };
+    f.store.registerPending(source, { kind: "recovered", configuration: null }, 25, userId);
+    const cleanup = { kind: "terminal", claimEnded: false, startedAt: 25, deadline: 600_025, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: false, worktreeDeleted: false };
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET cleanup = ? WHERE claim_id = ?").run(JSON.stringify(cleanup), source.claimId);
+    const pending = f.store.getTask(source)!;
+    expect(() => f.store.bindWorktree(source, original.resources.worktree!, 26)).toThrow("UNIQUE constraint failed");
+    expect(f.store.getTask(source)).toEqual(pending); expect(f.store.getTask(claim)).toEqual(original);
+    f.cleanup(); f.store.completeTask(claim, 40);
+    expect(f.store.bindWorktree(source, original.resources.worktree!, 41)).toMatchObject({ status: "active", resources: { worktree: original.resources.worktree }, cleanup });
+    expect(() => f.store.beginRecovery(source, 42)).toThrow("control or cleanup intent");
+  });
+
   it("rejects rebinding original resources and malformed stored metadata", () => {
     const f = fixture(); f.start(); f.bind();
     const original = f.store.getTask(claim)!;
