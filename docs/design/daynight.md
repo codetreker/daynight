@@ -22,6 +22,7 @@ daynight update
 daynight login [--no-browser]         # 浏览器设备授权
 daynight logout                      # 撤销并清除当前 CLI 凭据
 daynight worker                     # worker 帮助
+daynight worker setup               # 环境检查、agent 与 Project 选择
 daynight worker run
 daynight worker attach
 daynight review                     # review 帮助
@@ -213,7 +214,9 @@ credentials 拥有配置观察值核对，browser 拥有平台打开器。命令
 授权提示和登录/退出结果写 stderr，stdout 只用于帮助。
 该顺序也使自更新进程不加载待替换的 SQLite 原生 addon。
 
-`worker` 的轻量 definition/index 保持命令解析与运行时加载分离；仅 run 加载固定 worker 路径、配置、实例锁、SQLite 与适配器。runtime 组合进程生命周期，coordinator 拥有轮询/名额/任务串行推进，execution 与 cleanup 分别消费原执行事实；不复用 review 的 PR 生命周期或数据库。安装包路径由稳定入口传入，managed prompt 指向同一包的绝对技能入口。具体持久化和未知动作处理由[worker 设计](daynight-worker.md)拥有。
+`worker` 的轻量 definition/index 先完成命令解析与帮助分派，再加载对应业务。setup 与 repo 入口拥有配置路径、读取/保存及 Project 选择；需要远端项目时使用 typed ApiClient，repo list 保持本地只读。setup 复用有界原生前置检查，环境诊断和配置确认不取得执行实例锁、不打开 SQLite 或启动 Herdr/native agent。attach 入口使用已有私有会话的客户端描述，不进入任务控制器。
+
+run 的 runtime 组合固定状态、实例排他、SQLite、Git 与 Herdr 的前台生命周期。人工管理入口要求停止 runner 后取得同一实例锁，同步处理一个指定 claim，不保存跨进程控制意图。coordinator 拥有轮询/名额/任务串行推进，execution 与 cleanup 分别消费原执行事实；这些生命周期使用 worker 自己的状态所有权。安装包路径由稳定入口传入，managed prompt 指向同一包的绝对技能入口。具体持久化和未知动作处理由[worker 设计](daynight-worker.md)拥有。
 
 `config/` 拥有共享配置路径、严格 YAML、已知顶层字段和保留注释的文件保存协议；
 `server.ts` 提供独立 server 字段投影。`api/` 拥有服务 DTO、精确数值 JSON、

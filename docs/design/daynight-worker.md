@@ -47,7 +47,13 @@ Repository entry 需要 remote/path，可提供 projectId、agent/model/args 覆
 
 `worker repo list` 只读本地注册。Add/remove 选择远端现存可访问 Project；显式 --project 支持非交互，否则多选显示名称、完整 UUID 和 repoUrl。新注册使用 worker.repositoryRoot 计算绝对路径，已有注册保留传输 URL、路径和覆盖，remote-only 项只补 projectId。Remove 只改变后续领取范围，不删除 clone、claim、worktree 或原生历史。repositoryRoot 与 review 独立，改变根不移动已有注册。
 
-项目选择使用同一份捕获的服务凭据及 worker 配置，网络与提示不持配置锁。保存时锁内重读，只修改 worker.repositories，拒绝相关服务/根/仓库变化及通过 YAML alias 改动无关有效字段。空配置的交互式 run 先引导选择；非交互给出 repo add --project 指引。选择、取消或远端失败都不能启动部分任务。
+项目选择使用同一份捕获的服务凭据及 worker 配置，网络与提示不持配置锁。Repo 命令保存只拥有 worker.repositories；setup 拥有 agent/model/args/repositories，repositoryRoot 始终不属于这些更新。选择指纹覆盖服务凭据、根的原始存在性与值、仓库列表；setup 另覆盖全局 native 字段的原始存在性与值。保存时锁内重读，拒绝相关变化及通过 YAML alias 改动无关有效字段，保留其余字段、注释和安全 alias。空配置的交互式 run 先引导选择；非交互给出 repo add --project 指引。选择、取消或远端失败都不能启动部分任务。
+
+`worker setup` 拥有交互编排：验证 stdin/stderr 为终端，读取当前同源配置快照，汇总公共环境报告，单选 Copilot/Codex，读取完整可访问 Project 清单并预选已有注册，再校验候选配置及每组实际 native model/args。最终摘要展示保留的传输 URL/路径、删除的注册和不兼容参数重置，确认后通过 repositories 模块一次原子保存。所选 agent 应用于全部选中 Project；切换类型清除不兼容的全局或项目级 model/args，兼容值保留。
+
+Setup 复用 Herdr preflight 的原生版本、目录、运行时、hook asset、有效 SessionStart 及 Codex hooks/隔离能力检查。公共报告检查平台、Node、Git、Herdr 版本、私有端点和随包 managed 技能；候选 integration 状态通过只读 herdr integration status 获取，不启动私有实例。运行时在 task cwd 使用 typed RPC integration 检查，并由原生命令报告恢复错误。Setup 启动目录的检查不证明 provider 登录、未来 task 目录信任、真实 hook 执行或 live 协议能力。
+
+独立环境探测返回通过、缺项或未验证的结构化结果，所有已启动探测用 allSettled 等待收尾。普通缺项可给修复指引并保存配置；命令清理的 AggregateError 及其 cause 链始终优先于普通缺项或取消，未确认进程收尾使 setup 明确失败。Setup 不安装、登录、clone、打开 worker SQLite、取得 claim 或启动 worker/Herdr/native agent。
 
 配置在启动或重启时加载，不热重载。同一 claim 保留 agent 类型和 session_id；需要重新启动时使用当前适用于该 agent 的 model/args。另一工具的配置不会套到原工具。移出配置的项目仍由已有 projects 映射参与对账，使用当前全局适用设置。
 

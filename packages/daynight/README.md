@@ -98,6 +98,7 @@ daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
 daynight worker                     # Show worker help
+daynight worker setup               # Check prerequisites and choose an agent and Projects
 daynight worker run                 # Run until interrupted
 daynight worker attach              # Open the worker Herdr session
 daynight worker repo list [--json]
@@ -787,18 +788,51 @@ across configured repositories, runs Copilot or Codex in private Herdr workspace
 and cleans resources when the original claim leaves its complete inventory. The
 agent owns delivery, acceptance, evidence and final claim-bound completion.
 
+Start with interactive setup:
+
+```bash
+daynight login
+daynight worker setup
+daynight worker run
+```
+
+`setup` requires terminal input and stderr. It reports environment checks and
+repair instructions, asks which native agent should execute tasks, then lists
+existing accessible Projects with names, UUIDs and repository URLs. Select at
+least one Project. Current Projects are preselected on repeat setup. The final
+selection replaces the acquisition list, and the chosen agent applies to every
+selected Project.
+
+Matching registrations keep exact transport URLs and local paths. Compatible
+models and arguments survive; switching agent clears incompatible global and
+per-Project values. Setup previews Projects, paths, removed registrations and
+native-setting resets before confirmation, then atomically saves agent settings
+and the complete selection. Cancellation, invalid choices, inaccessible Project
+inventory, related concurrent changes and write failures leave configuration
+unchanged.
+
+Local diagnostics inspect tools and integration settings without starting Herdr
+or native agents. Missing prerequisites are reported together; selected-agent
+checks use effective retained native arguments in the setup launch directory.
+Missing native dependencies allow saving with a repair-needed result. Versions
+and hook configuration do not prove provider authentication, future task-directory
+trust, hook execution, live Herdr protocol, Git access or completed delivery.
+Setup does not install tools, edit provider configuration, sign in, clone, open
+worker state or acquire tasks. Unconfirmed probe-process cleanup is a failure,
+including during cancellation.
+
 Install Git, Herdr 0.9.5 or newer with protocol 22 capabilities, and the selected
 native agent on PATH. Configure native/provider credentials and the current
 official Herdr SessionStart integration explicitly. Codex needs hooks and
 `--no-daemon`; Unix hooks need bash and python3, while Windows hooks need
-PowerShell. Missing capabilities and native launch failures remain visible;
+PowerShell. Inspect official integration with `herdr integration status`. Missing
+capabilities and native launch failures remain visible;
 the worker does not install or change global native configuration. Git transport
 and task tools, such as authenticated GitHub CLI for PR delivery, must be ready.
 
-Sign in to Daynight and select existing accessible Projects:
+Manage individual Project registrations with:
 
 ```bash
-daynight login
 daynight worker repo add
 daynight worker repo list
 daynight worker repo remove
@@ -838,7 +872,9 @@ user, port and nested-path identities use distinct encoded coordinates.
 
 Network and prompts hold no configuration lock. The atomic writer rereads YAML,
 preserves comments and unrelated edits, and refuses changed worker root,
-repository selection or service credentials. Shared aliases that would alter
+repository selection or service credentials. Setup also protects observed global
+agent/model/args values and saves those fields with the selected Projects. Repo
+commands only own repositories; neither operation changes repositoryRoot. Shared aliases that would alter
 unrelated effective settings are rejected; unaffected aliases remain valid.
 Repository identities, Project IDs and physical paths must remain distinct,
 including the Daynight state directory.

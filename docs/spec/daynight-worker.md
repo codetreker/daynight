@@ -13,11 +13,14 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 ### W-01：前台运行、配置与平台
 
 - `daynight worker run` 在前台运行，支持 Linux、macOS 和 Windows。实际平台为 windows/linux/macos；WSL Linux 计为 linux，未知平台明确拒绝。
+- `daynight worker setup` 要求 stdin/stderr 为交互终端，先汇总环境缺项与修复指引，再单选 Copilot/Codex 并多选一个或多个既有可访问 Project。重复配置预选当前项目；最终确认前展示所选 agent、Project、目录、移除范围及不兼容参数重置。所选 agent 应用于全部选中 Project；匹配注册保留传输 URL/路径，同类型 model/args 保留，切换类型清除不兼容值。
+- Setup 将 agent/model/args 与完整 Project 选择一次原子保存，相关字段或服务/凭据变动时拒绝旧选择；无关配置、原 root 拼写、注释和安全 alias 保留。取消、空选、认证/API/保存失败均无部分保存。已有 claim、worktree 和 native history 保留；重新启动的 native 进程使用当前适用配置。
+- Setup 只做有界只读环境探测，不启动 daemon/native agent/worker，不 clone、打开 SQLite、claim、安装或登录。缺原生依赖允许保存并明确要求修复；只读版本及 hook 检查不证明 provider 登录、未来目录信任、真实 hook 执行、live 协议或完整任务验收。取消等待已启动探测收尾，未确认清理故障保留原错误链并使 setup 明确失败。
 - 独立 worker mapping 支持 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories，默认值为 ~/daynights、1、5000、3、copilot、null、[] 和 []。省略配置文件、worker 或可选字段使用这些默认值；repositories 不从 review 推断。
 - 配置读取不创建或重写文件。只有确实缺失的文件按缺省处理；非 nullable 字段显式 null、未知字段、类型错误、读取故障和取消均明确失败。model:null 保留清除语义。仓库 remote/path 必填，可有 projectId 与 agent/model/args 覆盖；路径相对 config.yml 目录或为绝对路径，不展开 tilde，拒绝 drive-relative Windows 路径和重叠仓库/状态目录。
 - 同 agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，不允许覆盖 worker 拥有的 cwd/session/model/mode 位置。配置在启动/重启读取，不热重载；已认领执行保留 agent 和原生 session ID，重新启动使用当前适用的 model/args，不把另一工具的参数套到原工具。
 - `worker repo list [--json]` 读取本地选择；add/remove 选择远端现存可访问 Project。省略 --project 时多选显示名称、完整 UUID、repoUrl，至少选一项；显式 --project 支持非交互。新增保存 projectId、原 repoUrl、绝对 path；匹配既有注册保留传输 URL、路径和覆盖，remote-only 项只补 projectId。Remove 只改变后续领取范围，保留 clone、claim、worktree 和原生历史。
-- worker.repositoryRoot 独立于 review，只在新增注册时展开，改变根不移动已有路径。保存只修改 worker.repositories，锁内重读并拒绝相关服务/凭据、根和仓库变动；保留无关字段、注释和合法 alias，拒绝通过共享 alias 改动无关有效值。网络与提示不持配置锁。
+- worker.repositoryRoot 独立于 review，只在新增注册时展开，改变根不移动已有路径。Repo 操作保存只修改 worker.repositories，锁内重读并拒绝相关服务/凭据、根和仓库变动；保留无关字段、注释和合法 alias，拒绝通过共享 alias 改动无关有效值。网络与提示不持配置锁。
 - 空配置的交互式 run 先引导选择，非交互给出 repo add --project 指引。选择使用同一份捕获的服务凭据及 worker 设置；取消、失败或不完整选择不能启动任务资源。持久恢复动作从本次成功项目映射及完整清单开始，不承诺离线延续上个进程的计时或操作意图。
 - 首次启动随机生成稳定 workerId，复用配置锁与原子替换保存到 ~/.daynight/config.yml。合法值复用，非法值拒绝，身份持久化后才可 claim。每用户环境只有一个 worker 实例，固定 ~/.daynight/worker/ 保存 SQLite、实例锁、日志、Herdr 和临时资源；第二实例拒绝，端点路径不合法明确失败。
 - 一个状态目录用于当前配置的单一服务、账号和 workerId。切换前先结束旧执行，再重建本机状态；不提供跨服务或跨账号的旧执行自动接续。

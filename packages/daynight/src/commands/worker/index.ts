@@ -10,6 +10,7 @@ import type { WorkerRepositoryCommandRequest } from "./configuration-guide.js";
 import { workerDefinition } from "./definition.js";
 
 export type WorkerCommandDependencies = {
+  setup: (context: CliContext) => Promise<void>;
   attach: (options: { homeDirectory: string }) => Promise<void>;
   prepareRepositories: (context: CliContext, signal?: AbortSignal) => Promise<void>;
   repository: (request: WorkerRepositoryCommandRequest, context: CliContext) => Promise<void>;
@@ -18,6 +19,7 @@ export type WorkerCommandDependencies = {
 };
 
 const defaultDependencies: WorkerCommandDependencies = {
+  setup: async (context) => (await import("./setup.js")).runWorkerSetup(context),
   attach: async (options) => (await import("./attach.js")).attachWorker(options),
   prepareRepositories: async (context, signal) => (await import("./configuration-guide.js")).ensureWorkerRepositories(context, undefined, signal),
   repository: async (request, context) => (await import("./configuration-guide.js")).runWorkerRepositoryCommand(request, context),
@@ -29,6 +31,10 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   const command = parseCommand(workerDefinition, args, ["daynight", "worker"], "daynight worker --help");
   if (command.kind !== "run") {
     context.stdout(renderCommandHelp(command.command, command.path));
+    return;
+  }
+  if (command.command.name === "setup") {
+    await dependencies.setup(context);
     return;
   }
   if (command.command.name === "attach") {

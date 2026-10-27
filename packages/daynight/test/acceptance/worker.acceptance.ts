@@ -350,7 +350,12 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       }
       restartRequestOffset = requests.length; restartLogOffset = logs.length;
       restarted = start();
-      await waitFor("second task restart", async () => (await events()).filter((event) => event.kind === "native-start" && event.taskId === second.id).length === 2 && row(second.id)?.session_id !== undefined && row(second.id)?.session_id !== null);
+      await waitFor("second managed assignment after restart", async () => {
+        const observed = await events();
+        return observed.filter((event) => event.kind === "native-start" && event.taskId === second.id).length === 2
+          && observed.filter((event) => event.kind === "prompt" && event.taskId === second.id && event.text!.includes("Assignment:")).length === 2
+          && row(second.id)?.session_id !== undefined && row(second.id)?.session_id !== null;
+      });
       const restartedSession = row(second.id)!.session_id!;
       expect(row(second.id)).toMatchObject({ status: "active", claim_id: originalClaim, agent: "codex" });
       expect(await readFile(sentinel, "utf8")).toBe("Keep the original uncommitted task result.\n");
@@ -372,6 +377,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(row(second.id)?.status).toBe("active");
       expect(await readFile(sentinel, "utf8")).toBe("Keep the original uncommitted task result.\n");
     }
+    await waitFor("fixture daemon shutdown evidence", async () => (await events()).filter((event) => event.kind === "daemon-stop").length >= (scenario === "inventory-failure" ? 1 : 2));
     const observed = await events();
     expect(observed.filter((event) => event.kind === "fixture-error")).toEqual([]);
     expect(observed.filter((event) => event.kind === "native-start").map((event) => event.taskId)).toEqual(scenario === "inventory-failure" ? tasks.map((task) => task.id) : [first.id, second.id, second.id]);

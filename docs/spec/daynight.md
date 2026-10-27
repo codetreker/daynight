@@ -48,6 +48,7 @@ daynight update
 daynight login [--no-browser]
 daynight logout
 daynight worker
+daynight worker setup
 daynight worker run
 daynight worker attach
 daynight review
@@ -113,7 +114,7 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 工作目录、获取实例锁、读取审查状态或执行 npm 和网络请求。生成的脚本在按 Tab 时
 遵守 C5 的本地执行要求。
 
-`worker run` 在参数分派后才加载前台配置、SQLite、Git、Herdr 与协调循环，读取固定状态根及启动时配置，不触发 review 配置引导。`worker attach` 只加载私有 Herdr 客户端入口，在交互式终端连接已有会话，不读取凭据、SQLite、worker 锁或调用服务端。独立有界请求、客户端连接与常驻命令生命周期分开，worker 取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
+`worker setup` 在参数分派后加载配置和有界只读环境检查，选择 agent 与既有 Project 后确认原子保存；它不启动 worker、Herdr 或 native agent，不创建 SQLite、clone 或 claim。`worker run` 加载前台配置、SQLite、Git、Herdr 与协调循环，读取固定状态根及启动时配置，不触发 review 配置引导。`worker attach` 只加载私有 Herdr 客户端入口，在交互式终端连接已有会话，不读取凭据、SQLite、worker 锁或调用服务端。独立有界请求、客户端连接与常驻命令生命周期分开，worker 取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
 
 `review add-repo` 与 review 首次引导只写配置。按 C6 完成必要的配置引导后，
 `review list` 与 `review ls` 只读取配置及已存数据库，
