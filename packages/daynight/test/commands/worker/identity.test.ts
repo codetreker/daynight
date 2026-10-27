@@ -53,7 +53,7 @@ describe("stable worker identity", () => {
   });
 
   it("preserves other fields, YAML comments and aliases while securing an existing credential", async () => {
-    const paths = await fixture("# Connection\nserverUrl: &service https://service.example\nrepositoryRoot: *service # kept alias\nserverToken: synthetic-token\n");
+    const paths = await fixture("# Connection\nserverUrl: &service https://service.example\nreview:\n  repositoryRoot: *service # kept alias\nserverToken: synthetic-token\n");
     const generated = await ensureWorkerIdentity(paths);
     const saved = await readFile(paths.configFile, "utf8");
     expect(saved).toContain("# Connection");

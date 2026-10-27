@@ -245,7 +245,7 @@ describe("CLI argument handling", () => {
     const deps = dependencies();
     const home = fileURLToPath(new URL("../../../../.tmp/CLI User 用户/", import.meta.url));
     const cwd = path.join(home, "caller");
-    const repository = parseConfiguration("repositories: [{remote: https://github.com/o/r, path: ../review}]", resolveReviewPaths(home)).repositories[0]!;
+    const repository = parseConfiguration("review:\n  repositories: [{remote: https://github.com/o/r, path: ../review}]", resolveReviewPaths(home)).repositories[0]!;
     deps.homeDirectory = () => home;
     deps.workingDirectory = () => cwd;
     deps.addRepository = vi.fn(async () => ({ repository, added }));
@@ -270,7 +270,7 @@ describe("CLI argument handling", () => {
   it("runs the foreground coordinator using the resolved current-user configuration", async () => {
     const deps = dependencies();
     deps.homeDirectory = () => fileURLToPath(new URL("../../../../.tmp/CLI User 用户/", import.meta.url));
-    deps.loadConfiguration = vi.fn(async (paths) => parseConfiguration("repositories: [{remote: https://github.com/o/r, path: ../repo}]", paths));
+    deps.loadConfiguration = vi.fn(async (paths) => parseConfiguration("review:\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]", paths));
     deps.runReview = vi.fn(async () => {});
     expect(await runCli(["review", "run"], deps)).toBe(0);
     expect(deps.loadConfiguration).toHaveBeenCalledOnce();
@@ -291,7 +291,7 @@ describe("CLI argument handling", () => {
   it("reports a foreground runtime failure with its original cause", async () => {
     const deps = dependencies();
     deps.homeDirectory = () => fileURLToPath(new URL("../../../../.tmp/CLI User 用户/", import.meta.url));
-    deps.loadConfiguration = async (paths) => parseConfiguration("repositories: [{remote: https://github.com/o/r, path: ../repo}]", paths);
+    deps.loadConfiguration = async (paths) => parseConfiguration("review:\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]", paths);
     deps.runReview = async () => { throw new Error("Cannot start reviews", { cause: new Error("Instance lock is held") }); };
     expect(await runCli(["review", "run"], deps)).toBe(1);
     expect(deps.errors.join("")).toContain("Cannot start reviews\nCaused by: Instance lock is held");
@@ -409,7 +409,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
 
       await mkdir(paths.stateDirectory);
       await writeFile(path.join(home, "unavailable-clone"), "not a directory");
-      const configuration = "repositories: [{remote: https://github.com/o/r, path: ../unavailable-clone/repo}]\n";
+      const configuration = "review:\n  repositories: [{remote: https://github.com/o/r, path: ../unavailable-clone/repo}]\n";
       await writeFile(paths.configFile, configuration);
       await writeFile(paths.lockFile, "existing review instance\n");
       const list = invoke("list");
@@ -478,7 +478,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       expect(source).toContain("# retained server value");
       const configuration = parseDocument(source).toJS();
       expect(configuration.serverUrl).toEqual(server);
-      expect(configuration.repositories).toEqual([{
+      expect(configuration.review.repositories).toEqual([{
         remote: "https://github.com/owner/repo.git",
         path: path.join(home, "daynights", "github.com", "owner", "repo"),
       }]);
@@ -514,13 +514,13 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       expect(first.stdout).toContain("Repository github.com/owner/repo added.");
       expect(first.stderr).toBe("");
       const initial = parseDocument(await readFile(paths.configFile, "utf8"));
-      expect(initial.get("repositoryRoot")).toBe("~/daynights");
+      expect(initial.getIn(["review", "repositoryRoot"])).toBe("~/daynights");
       const firstPath = path.join(home, "daynights", "github.com", "owner", "repo");
-      expect(initial.toJS().repositories).toEqual([{ remote: "https://github.com/Owner/Repo.git", path: firstPath }]);
+      expect(initial.toJS().review.repositories).toEqual([{ remote: "https://github.com/Owner/Repo.git", path: firstPath }]);
       expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
       expect(await readdir(home)).toEqual([".daynight"]);
 
-      initial.set("repositoryRoot", "../new root 中文");
+      initial.setIn(["review", "repositoryRoot"], "../new root 中文");
       await writeFile(paths.configFile, initial.toString());
       await writeFile(paths.lockFile, "existing review instance\n");
       const second = invoke(["review", "add-repo", "git@github.com:Owner/Other.git"]);
@@ -528,7 +528,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       const third = invoke(["review", "add-repo", "https://github.com/owner/explicit", "--path", "./explicit review 中文"]);
       expect(third.status, third.stderr).toBe(0);
       const after = parseDocument(await readFile(paths.configFile, "utf8")).toJS();
-      expect(after.repositories.map((repository: { path: string }) => repository.path)).toEqual([
+      expect(after.review.repositories.map((repository: { path: string }) => repository.path)).toEqual([
         firstPath,
         path.join(home, "new root 中文", "github.com", "owner", "other"),
         path.join(cwd, "explicit review 中文"),
@@ -563,7 +563,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     const state = path.join(directory, ".daynight");
     const emptyPath = path.join(directory, "empty-path");
     await mkdir(state); await mkdir(emptyPath);
-    await writeFile(path.join(state, "config.yml"), "pollIntervalMs: 50\nrepositories: [{remote: https://github.com/o/r, path: ../repository}]\n");
+    await writeFile(path.join(state, "config.yml"), "review:\n  pollIntervalMs: 50\n  repositories: [{remote: https://github.com/o/r, path: ../repository}]\n");
     const harness = path.join(directory, "shutdown.mjs");
     await writeFile(harness, `import { existsSync } from 'node:fs';
 const timeout = setTimeout(() => { throw new Error('Foreground startup timed out'); }, 10000);

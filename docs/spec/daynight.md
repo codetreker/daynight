@@ -224,7 +224,7 @@ review 配置或数据库，不访问网络。候选和输入必须作为数据�
 登录/退出的配置写入在锁内重查 origin 与凭据，不能覆盖期间完成的另一次登录或服务切换。
 完整身份、安全和失败语义由[鉴权需求](daynight-auth.md)拥有。
 
-`review run`、`review list` 和 `review ls` 只要求 review 配置。配置文件或 `repositories`
+`review run`、`review list` 和 `review ls` 只要求 review 配置。配置文件、`review` 或 `review.repositories`
 字段缺失且 stdin/stderr 均为 TTY 时，询问一个 GitHub 远程地址及可选本地路径，复用仓库登记规则。
 共享 YAML/schema 错误、当前能力的非法值、空仓库列表和读取失败保留原错误；其他能力的业务字段由各自
 投影校验。配置完整时不询问，非交互缺少 review 配置时以状态码 1 失败并给出

@@ -12,15 +12,7 @@ export const supportedConfigurationFields = [
   "worker",
   "serverUrl",
   "serverToken",
-  "repositoryRoot",
-  "repositories",
-  "pollIntervalMs",
-  "maxConcurrentWorker",
-  "agentTimeoutMs",
-  "maxAttempts",
-  "retryDelayMs",
-  "copilotModel",
-  "copilotReasoningEffort",
+  "review",
 ] as const;
 
 const safeYamlFailure = (cause: unknown): Error => {
