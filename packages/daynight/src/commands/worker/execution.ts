@@ -64,12 +64,13 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
   const key = (task: Pick<LocalTask, "projectId" | "taskId" | "claimId">): string => `${task.projectId}/${task.taskId}/${task.claimId}`;
   return {
     forget: (task: LocalTask): void => { pendingInput.delete(key(task)); },
-    advance: async (input: ExecutionInput, resources: readonly HerdrOwnedWorkspace[], signal?: AbortSignal): Promise<HerdrAgentObservation> => {
+    advance: async (input: ExecutionInput, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
       let task = deps.store.getTask(input.task);
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
       const context = executionContext({ ...input, task });
-      const settled = await settleWorkerStops(deps, input.owner, signal);
-      const actual = settled ? undefined : actualTaskPane(input.owner, resources);
+      await settleWorkerStops(deps, input.owner, signal);
+      const resources = await workerOperation((operation) => deps.herdr.tasks.listResources(operation), signal);
+      const actual = actualTaskPane(input.owner, resources);
       const worktree = task.sessionId === null
         ? await workerOperation((operation) => deps.git.prepareWorktree(input.project, input.owner, operation), signal, 180_000)
         : await workerOperation((operation) => deps.git.verifyWorktree(input.project, input.owner, operation), signal);

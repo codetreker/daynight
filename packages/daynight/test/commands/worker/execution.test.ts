@@ -96,7 +96,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
 describe("execution from current Herdr resources", () => {
   it.each(["codex", "copilot"] as const)("replaces a cold inactive %s pane before a NULL-session fresh launch", async (agent) => {
     const f = await fixture(agent, null);
-    const result = await f.driver.advance(f.input, await f.resources());
+    const result = await f.driver.advance(f.input);
     expect(result.binding.workspaceId).not.toBe(f.binding.workspaceId);
     expect(f.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
     expect(f.launches).toHaveLength(1); expect(f.launches[0]!.environment).toEqual(f.nativeEnvironment);
@@ -108,7 +108,7 @@ describe("execution from current Herdr resources", () => {
 
   it.each(["codex", "copilot"] as const)("recreates a cold inactive %s workspace and resumes the saved ID", async (agent) => {
     const f = await fixture(agent, savedId);
-    const result = await f.driver.advance(f.input, await f.resources());
+    const result = await f.driver.advance(f.input);
     expect(result.nativeSession?.sessionId).toBe(savedId); expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
     expect(f.launches[0]!.environment).toEqual(f.nativeEnvironment);
     expect(f.launches[0]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
@@ -118,8 +118,18 @@ describe("execution from current Herdr resources", () => {
   it.each(["codex", "copilot"] as const)("reconnects a live %s agent without replacing its workspace or sending a prompt", async (agent) => {
     const f = await fixture(agent, staleId);
     f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
-    const result = await f.driver.advance(f.input, await f.resources());
+    const result = await f.driver.advance(f.input);
     expect(result.nativeSession?.sessionId).toBe(staleId);
+    expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+  });
+
+  it.each(["codex", "copilot"] as const)("uses current live %s state after scheduling observed an inactive pane", async (agent) => {
+    const f = await fixture(agent, staleId);
+    const scheduled = await f.resources();
+    expect(scheduled[0]!.panes[0]!.kind).toBeNull();
+    f.agents.push({ ...f.panes[0], agent, name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
+    const result = await f.driver.advance(f.input);
+    expect(result.binding).toEqual(f.binding);
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
   });
 
@@ -127,9 +137,9 @@ describe("execution from current Herdr resources", () => {
     const f = await fixture("codex", null);
     const failure = new Error("close response lost"); f.failNextClose(failure); f.executing.add(100);
     const stopping = vi.spyOn(f.manager, "stopAndClose");
-    await expect(f.driver.advance(f.input, await f.resources())).rejects.toMatchObject({ cause: failure });
+    await expect(f.driver.advance(f.input)).rejects.toMatchObject({ cause: failure });
     expect(f.launches).toEqual([]); expect(f.workspaces).toEqual([]); expect(f.manager.pendingStops()).toMatchObject([{ context: f.input.owner, binding: f.binding }]);
-    const retry = f.driver.advance(f.input, await f.resources());
+    const retry = f.driver.advance(f.input);
     await vi.waitFor(() => expect(stopping).toHaveBeenCalledTimes(2));
     expect(f.launches).toEqual([]);
     f.executing.delete(100);
@@ -141,7 +151,7 @@ describe("execution from current Herdr resources", () => {
     const f = await fixture("copilot", null);
     const failure = new Error("close response lost"); f.failNextClose(failure); f.executing.add(100);
     const stopping = vi.spyOn(f.manager, "stopAndClose");
-    await expect(f.driver.advance(f.input, await f.resources())).rejects.toMatchObject({ cause: failure });
+    await expect(f.driver.advance(f.input)).rejects.toMatchObject({ cause: failure });
     f.driver.forget(f.input.task);
     expect(f.manager.pendingStops()).toMatchObject([{ context: f.input.owner, binding: f.binding }]);
     f.executing.delete(100);

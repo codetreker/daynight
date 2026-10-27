@@ -141,12 +141,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       startJob(owner, async (signal) => { await runCleanup(owner, true, signal); ending.delete(identityKey); }, true);
     }
   };
-  const ensure = async (task: LocalTask, remoteTask: Task, resources: readonly HerdrOwnedWorkspace[], signal: AbortSignal): Promise<void> => {
+  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal): Promise<void> => {
     if (ending.has(key(task))) return;
     const owner = remoteOwner(options.serverOrigin, remoteTask);
     if (!sameClaim(task, owner) || remoteTask.properties.worker!.workerId !== options.workerId || remoteTask.properties.worker!.agent !== task.agent) throw new Error("The local execution does not match the observed original worker claim.");
     const input: ExecutionInput = { task, project: projectFor(task), owner, configuration: configurationFor(task) };
-    const observed = await execution.advance(input, resources, signal);
+    const observed = await execution.advance(input, signal);
     const latest = options.store.getTask(task)!;
     await publishSummary(latest, observed, remoteTask, signal);
   };
@@ -156,11 +156,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const blockedByOldClaim = (task: LocalTask, resources: Snapshot): boolean =>
     options.store.listUnfinishedTasks().some((other) => other.projectId === task.projectId && other.taskId === task.taskId && other.claimId !== task.claimId && other.status === "active")
     || [...resources.owners.values()].some((owner) => owner.projectId === task.projectId && owner.taskId === task.taskId && owner.claimId !== task.claimId);
-  const schedule = (task: LocalTask, remoteTask: Task, resources: Snapshot): void => {
+  const schedule = (task: LocalTask, remoteTask: Task): void => {
     if (jobs.has(key(task)) || ending.has(key(task))) return;
     const count = failures.get(key(task)) ?? 0;
     if (count > configurationFor(task).recoveryLimit) return;
-    startJob(task, (signal) => ensure(task, remoteTask, resources.herdr, signal), false);
+    startJob(task, (signal) => ensure(task, remoteTask, signal), false);
   };
   const reconcile = async (): Promise<void> => {
     launchCleanups();
@@ -195,7 +195,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     for (const [identityKey, remoteTask] of inventory) {
       let local = options.store.getTask(remoteOwner(options.serverOrigin, remoteTask))!;
       if (resources.owners.has(identityKey) && local.status === "pending" && !blockedByOldClaim(local, resources)) local = options.store.activateTask(local);
-      if (local.status === "active" && !blockedByOldClaim(local, resources)) schedule(local, remoteTask, resources);
+      if (local.status === "active" && !blockedByOldClaim(local, resources)) schedule(local, remoteTask);
     }
     const projects = options.store.listProjects();
     while (capacity(resources) < options.maxConcurrent && projects.length > 0) {
@@ -206,7 +206,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const pending = options.store.listUnfinishedTasks().filter((task) => task.projectId === project.projectId && task.status === "pending").sort((left, right) => left.taskId.localeCompare(right.taskId));
         const local = pending.find((task) => inventory.has(key(task)) && !blockedByOldClaim(task, resources));
         if (local === undefined) continue;
-        schedule(options.store.activateTask(local), inventory.get(key(local))!, resources);
+        schedule(options.store.activateTask(local), inventory.get(key(local))!);
         started = true;
         break;
       }
@@ -234,7 +234,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, worktreeId: randomUUID() }, normalSignal);
           const owner = remoteOwner(options.serverOrigin, granted);
           const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: granted.properties.worker!.agent });
-          if (!blockedByOldClaim(local, resources) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted, resources);
+          if (!blockedByOldClaim(local, resources) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
         } catch (error) {
           if (isWorkerCancellation(error, normalSignal)) throw error;
           options.emit({ kind: "warning", message: `Claim request for ${candidate.projectId}/${candidate.id}/${claimId} did not confirm a grant; the next complete inventory will reconcile it.`, error });
@@ -264,8 +264,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (task.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
       failures.delete(key(identity));
       await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
-      const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
-      await serialize(identity, () => ensure(task, remoteTask, resources, normalSignal));
+      await serialize(identity, () => ensure(task, remoteTask, normalSignal));
     },
     cleanupSource: async (identity: ClaimIdentity, settings: { deleteWorktree?: boolean } = {}): Promise<ResourceOwner> => {
       const { owner } = await readSource(identity);

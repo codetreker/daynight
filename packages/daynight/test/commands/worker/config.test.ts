@@ -35,6 +35,19 @@ describe("worker configuration", () => {
     expect(parseWorkerConfiguration(stringify({ review: { repositories: "review-owned", copilotModel: null }, worker: { repositories: [] } }), paths).repositories).toEqual([]);
   });
 
+  it("ignores unknown root, worker and repository fields in runtime configuration", () => {
+    expect(parseWorkerConfiguration(stringify({
+      future: { nested: true },
+      worker: { stateDirectory: "/unused", platform: "windows", timeoutMs: 1, repositories: [{ ...repo, platform: "windows", future: { enabled: true } }] },
+    }), paths, path.posix)).toEqual(parse({}));
+    expect(parseWorkerConfiguration("unsupported: true\nworker: {unsupported: true}", paths)).toEqual(defaults);
+  });
+
+  it("validates known worker fields alongside unknown fields", () => {
+    expect(() => parse({ future: true, maxConcurrent: 0 })).toThrow("worker.maxConcurrent");
+    expect(() => parse({ future: true, repositories: [{ ...repo, path: null, future: true }] })).toThrow("worker.repositories[0].path");
+  });
+
   it("merges same-kind overrides field by field and permits explicit reset to native model defaults", () => {
     const configuration = parse({ agent: "codex", model: "global-model", args: ["--search"], recoveryLimit: 0, repositories: [
       { ...repo, agent: "codex", args: [] },
@@ -72,8 +85,6 @@ describe("worker configuration", () => {
     { repositories: null }, { repositories: {} }, { repositories: [null] }, { repositories: [{ ...repo, projectId: "bad" }] },
     { repositories: [{ ...repo, remote: "https://name:secret@git.example/team/r" }] },
     { repositories: [{ ...repo, path: "~/repo" }] }, { repositories: [{ ...repo, path: "" }] },
-    { stateDirectory: "/tmp/state" }, { platform: "windows" }, { timeoutMs: 1 },
-    { repositories: [{ ...repo, platform: "windows" }] },
   ])("rejects invalid settings %j", (worker) => { expect(() => parse(worker)).toThrow(); });
 
   it.each([
@@ -114,7 +125,7 @@ describe("worker configuration", () => {
     expect(() => parseWorkerConfiguration(stringify({ worker }), paths)).toThrow("worker must be a mapping");
   });
 
-  it.each(["", "worker: [", "worker: {}\nworker: {}", "unsupported: true", "worker: {unsupported: true}"])("rejects invalid configuration documents %j", (source) => {
+  it.each(["", "worker: [", "worker: {}\nworker: {}"])("rejects invalid configuration documents %j", (source) => {
     expect(() => parseWorkerConfiguration(source, paths)).toThrow();
   });
 

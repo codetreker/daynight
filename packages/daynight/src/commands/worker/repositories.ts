@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { createApiClient } from "../../api/client.js";
@@ -6,6 +5,7 @@ import { createOperation } from "../../api/operation.js";
 import type { OperationLimits } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import type { Project, WorkerAgent } from "../../api/types.js";
+import { verifyConfigurationUpdate } from "../../config/ownership.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { updateConfigurationFile } from "../../config/files.js";
 import { repositoryIdentity } from "../../repository/identity.js";
@@ -15,7 +15,7 @@ import type { WorkerConfiguration, WorkerConfigurationSnapshot, WorkerRepository
 import type { WorkerPaths } from "./paths.js";
 
 export type WorkerRepositorySnapshot = WorkerConfigurationSnapshot & {
-  readonly fingerprint: string;
+  readonly registrationBaseline: readonly unknown[];
 };
 
 export type ChangeWorkerRepositoriesOptions = {
@@ -45,27 +45,37 @@ export type WorkerSetupPlan = {
   readonly resetGlobalNativeSettings: boolean;
 };
 
-const fingerprint = (mapping: Record<string, unknown>): string => {
+const workerRepositoryOwnership = {
+  section: "worker", fields: ["repositories"],
+  retainedSequence: { field: "repositories", identity: "remote", fields: ["projectId"] },
+} as const;
+
+const workerSetupOwnership = {
+  section: "worker", fields: ["agent", "model", "args", "repositories"],
+  retainedSequence: { field: "repositories", identity: "remote", fields: ["projectId", "agent", "model", "args"] },
+} as const;
+
+const registrationBaseline = (mapping: Record<string, unknown>): readonly unknown[] => {
   const worker = mapping.worker as Record<string, unknown> | undefined;
   const fields = ["serverUrl", "serverToken"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]);
-  return createHash("sha256").update(JSON.stringify([
+  return [
     ...fields, ["worker.repositoryRoot", worker !== undefined && Object.hasOwn(worker, "repositoryRoot"), worker?.repositoryRoot],
     ["worker.repositories", worker !== undefined && Object.hasOwn(worker, "repositories"), worker?.repositories],
-  ])).digest("hex");
+  ];
 };
 
-const setupFingerprint = (source: string | undefined, paths: WorkerPaths): string => {
+const setupBaseline = (source: string | undefined, paths: WorkerPaths): readonly unknown[] => {
   const { mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
   const worker = mapping.worker as Record<string, unknown> | undefined;
-  return createHash("sha256").update(JSON.stringify([
-    fingerprint(mapping),
+  return [
+    registrationBaseline(mapping),
     ...["agent", "model", "args"].map((field) => [field, worker !== undefined && Object.hasOwn(worker, field), worker?.[field]]),
-  ])).digest("hex");
+  ];
 };
 
 const repositorySnapshot = (snapshot: WorkerConfigurationSnapshot, paths: WorkerPaths): WorkerRepositorySnapshot => {
   const { mapping } = parseConfigurationDocument(snapshot.source === undefined ? "{}" : snapshot.source, paths);
-  return { ...snapshot, fingerprint: fingerprint(mapping) };
+  return { ...snapshot, registrationBaseline: registrationBaseline(mapping) };
 };
 
 const snapshotFromSource = async (source: string | undefined, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerRepositorySnapshot> =>
@@ -130,25 +140,6 @@ const registeredProjectIndex = (repositories: readonly WorkerRepositoryConfigura
   return index;
 };
 
-const unownedConfiguration = (mapping: Record<string, unknown>, ownedWorkerFields: readonly string[]): unknown => {
-  const { worker, ...root } = mapping;
-  if (!Object.hasOwn(mapping, "worker")) return { root, worker: {} };
-  if (typeof worker !== "object" || worker === null || Array.isArray(worker)) throw new TypeError("worker must be a mapping.");
-  return { root, worker: Object.fromEntries(Object.entries(worker).filter(([field]) => !ownedWorkerFields.includes(field))) };
-};
-
-const verifyUnownedConfiguration = (
-  before: Record<string, unknown>,
-  updatedSource: string,
-  paths: WorkerPaths,
-  ownedWorkerFields: readonly string[],
-): void => {
-  const { mapping: after } = parseConfigurationDocument(updatedSource, paths);
-  if (!isDeepStrictEqual(unownedConfiguration(before, ownedWorkerFields), unownedConfiguration(after, ownedWorkerFields))) {
-    throw new Error("Worker configuration uses shared YAML aliases that would change unrelated settings. Separate worker settings from those aliases, then run the command again.");
-  }
-};
-
 const prepareSetupSource = async (source: string | undefined, options: WorkerSetupOptions): Promise<WorkerSetupPlan & { source: string }> => {
   const { paths, signal } = options;
   signal?.throwIfAborted();
@@ -198,7 +189,7 @@ const prepareSetupSource = async (source: string | undefined, options: WorkerSet
     projectId: project.id, remote: project.repoUrl, path: repositoryLocation(project.repoUrl, root),
   });
   const updatedSource = document.toString();
-  verifyUnownedConfiguration(mapping, updatedSource, paths, ["agent", "model", "args", "repositories"]);
+  verifyConfigurationUpdate(mapping, parseConfigurationDocument(updatedSource, paths).mapping, workerSetupOwnership);
   const configuration = await validateWorkerConfigurationSource(updatedSource, paths, signal);
   return { source: updatedSource, configuration, removedRepositories, resetRepositories, resetGlobalNativeSettings };
 };
@@ -209,13 +200,13 @@ export const prepareWorkerSetup = async (options: WorkerSetupOptions): Promise<W
 };
 
 export const saveWorkerSetup = async (options: WorkerSetupOptions): Promise<WorkerConfiguration> => {
-  const expected = setupFingerprint(options.snapshot.source, options.paths);
+  const expected = setupBaseline(options.snapshot.source, options.paths);
   return updateConfigurationFile(options.paths, async (source) => {
-    if (setupFingerprint(source, options.paths) !== expected) {
+    if (!isDeepStrictEqual(setupBaseline(source, options.paths), expected)) {
       throw new Error("Worker agent, repository configuration or service credentials changed during setup. Run daynight worker setup again with the current configuration.");
     }
     const prepared = await prepareSetupSource(source, options);
-    return { source: prepared.source, result: prepared.configuration };
+    return { kind: "write", source: prepared.source, result: prepared.configuration, ownership: workerSetupOwnership };
   }, options.signal);
 };
 
@@ -228,7 +219,7 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
   const projects = selectedProjects(adding ? options.addProjectIds! : options.removeProjectIds!, options.projects);
   return updateConfigurationFile(paths, async (source) => {
     const current = await snapshotFromSource(source, paths, signal);
-    if (current.fingerprint !== snapshot.fingerprint) throw new Error("Worker repository configuration or service credentials changed while selecting projects. Run the command again with the current configuration.");
+    if (!isDeepStrictEqual(current.registrationBaseline, snapshot.registrationBaseline)) throw new Error("Worker repository configuration or service credentials changed while selecting projects. Run the command again with the current configuration.");
     const { document, mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
     const repositories = [...current.configuration.repositories];
     let changed = false;
@@ -258,10 +249,10 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
         (repository.projectId === undefined && repositoryIdentity(repository.remote) === repositoryIdentity(project.repoUrl))) ? [index] : []);
       for (const index of removals.toReversed()) { document.deleteIn(["worker", "repositories", index]); changed = true; }
     }
-    if (!changed) return { result: current.configuration.repositories };
+    if (!changed) return { kind: "unchanged", result: current.configuration.repositories };
     const updatedSource = document.toString();
-    verifyUnownedConfiguration(mapping, updatedSource, paths, ["repositories"]);
+    verifyConfigurationUpdate(mapping, parseConfigurationDocument(updatedSource, paths).mapping, workerRepositoryOwnership);
     const configuration = await validateWorkerConfigurationSource(updatedSource, paths, signal);
-    return { source: updatedSource, result: configuration.repositories };
+    return { kind: "write", source: updatedSource, result: configuration.repositories, ownership: workerRepositoryOwnership };
   }, signal);
 };

@@ -332,6 +332,14 @@ not loaded automatically. Repository paths resolve from the configuration
 directory, with the rules in the [worker](#worker-configuration-and-startup) and
 [review](#review-configuration-and-startup) guides.
 
+Unknown fields at the root, in `review` or `worker`, and in their repository
+entries are ignored at runtime and preserved by CLI configuration edits. Known
+fields retain their type and value checks. Invalid YAML, duplicate keys and
+invalid mapping structures remain errors. Every CLI configuration write, including
+first-time `workerId` creation, preserves decoded values outside the fields it owns. If shared YAML aliases would change an unrelated value, the write fails
+and retains the original file; separate those aliases before retrying. Unaffected
+aliases remain valid.
+
 Project and task commands use `https://daynight.cc` when the configuration file or
 `serverUrl` is absent. A production connection needs no server configuration.
 Run `daynight login` to display an authorization code and open the verification
@@ -903,9 +911,11 @@ worker:
 These are the defaults for optional runtime fields. A missing file, omitted
 worker mapping and `worker: {}` use the same defaults; omitted repositories is
 an empty list. Worker never infers repositories from review. Reads do not create
-or rewrite configuration. Explicit null in non-nullable fields, unknown fields,
-wrong types, filesystem failures and cancellation remain errors; model:null
-clears the model setting.
+or rewrite configuration. Unknown root, worker and repository-entry fields are
+ignored at runtime and preserved during configuration edits. Known non-nullable
+fields still reject explicit null, invalid types or values; malformed YAML,
+filesystem failures and cancellation remain errors. model:null clears the model
+setting.
 
 Each repository requires remote/path and may specify projectId or agent/model/args.
 The service Project must already exist and match the repository; use projectId
@@ -1143,14 +1153,14 @@ All review settings belong under the `review` mapping. The same YAML also
 accepts the server client's `serverUrl` and optional `serverToken` fields, the
 `worker` mapping and generated `workerId`. Review validates its own fields
 independently of server business values. The server projection requires a valid HTTP(S) origin and
-validates any configured token and its transport. The shared parser still rejects
-invalid YAML, duplicate keys and unknown root fields. Registration can add the
-first review repository to a server-only file while preserving its server
-settings and comments. Unknown fields inside `review` are rejected by review
-commands. Existing flat review settings must be moved together under `review`,
-including `repositoryRoot`, `repositories`, numeric options and Copilot options;
-remove their old root entries. The old root fields are rejected, with no automatic
-migration.
+validates any configured token and its transport. The shared parser rejects invalid YAML, duplicate keys and a non-mapping root.
+Unknown fields at the root, inside `review` or `worker`, and in their repository
+entries are ignored by runtime projections and preserved by configuration edits.
+Known fields retain their type and value validation. Registration can add the
+first review repository to a server-only file while preserving its settings and
+comments. Flat review settings are ignored; move `repositoryRoot`, `repositories`,
+numeric options and Copilot options under `review` to use them. The CLI does not
+migrate these fields.
 
 A configuration with an explicit addition root is:
 
@@ -1202,7 +1212,7 @@ configuration containing `serverToken` uses POSIX mode `0600`; without a token,
 existing file-mode behavior is preserved.
 
 Numeric options use the documented [configuration defaults](../../docs/design/daynight-review.md#使用方式与配置)
-when omitted. Explicit invalid values, unsupported fields, duplicate YAML keys and
+when omitted. Explicit invalid values for known fields, duplicate YAML keys and
 malformed documents produce nonzero exits with useful errors. Missing configuration
 triggers the [configuration setup](#configuration-setup) rules before review
 startup. Duplicate repository identities,

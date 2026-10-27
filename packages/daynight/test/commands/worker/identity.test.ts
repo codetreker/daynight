@@ -63,6 +63,32 @@ describe("stable worker identity", () => {
     if (process.platform !== "win32") expect((await stat(paths.configFile)).mode & 0o777).toBe(0o600);
   });
 
+  it.each(["future: *config", "future: { nested: *config }"])("refuses identity creation when a root alias would change an unknown value: %s", async (field) => {
+    const source = `&config\n${field}\n`;
+    const paths = await fixture(source);
+    await expect(ensureWorkerIdentity(paths)).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(paths.configFile, "utf8")).toBe(source);
+    expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it("reuses an existing identity when unknown values alias the root", async () => {
+    const source = `&config\nworkerId: ${identity}\nfuture: *config\n`;
+    const paths = await fixture(source);
+    expect(await ensureWorkerIdentity(paths)).toBe(identity.toLowerCase());
+    expect(configurationFiles.updateConfigurationFile).not.toHaveBeenCalled();
+    expect(await readFile(paths.configFile, "utf8")).toBe(source);
+  });
+
+  it("creates an identity while preserving an unrelated unknown cycle", async () => {
+    const paths = await fixture("future: &metadata { loop: *metadata }\n");
+    const generated = await ensureWorkerIdentity(paths);
+    const { mapping } = await readConfiguration(paths);
+    const metadata = mapping.future as Record<string, unknown>;
+    expect(mapping.workerId).toBe(generated);
+    expect(metadata.loop).toBe(metadata);
+    expect(await readFile(paths.configFile, "utf8")).toContain("future: &metadata { loop: *metadata }");
+  });
+
   it.each(["null", "", '""', "123", "true", "[]", "{}", "not-a-uuid", '" e434211d-1116-4c73-a3ac-c1587a2b17cd "'])
   ("retains an invalid configured identity %s and reports it", async (value) => {
     const source = `workerId: ${value}\nserverUrl: https://service.example\n`;

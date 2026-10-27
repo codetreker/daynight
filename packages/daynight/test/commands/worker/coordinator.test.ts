@@ -455,6 +455,28 @@ describe("minimal worker resource reconciliation", () => {
     expect(pending).toHaveLength(0); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   });
 
+
+  it("reobserves the task when a native agent becomes live after round discovery", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).toEqual(expect.any(String)));
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const pane = f.resources.get(row.claimId)!.panes[0]!;
+    pane.kind = null; pane.interactiveReady = false; pane.status = "idle";
+    let entered!: () => void; let release!: () => void;
+    const scanning = new Promise<void>((resolve) => { entered = resolve; });
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+    vi.mocked(f.git.listWorktrees).mockImplementationOnce(async (project, operation) => { entered(); await wait; return list(project, operation); });
+    const ticking = f.coordinator.tick();
+    await scanning;
+    pane.kind = "codex"; pane.interactiveReady = true; pane.status = "working";
+    release(); await ticking;
+    await eventually(() => expect(f.tasks.observe).toHaveBeenCalled());
+    expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.store.getTask(row)?.sessionId).toBe(row.sessionId);
+  });
+
 });
 
 

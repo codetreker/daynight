@@ -20,8 +20,8 @@ describe("YAML configuration", () => {
     expect(() => parseConfiguration(`review: ${value}`, posixPaths, path.posix)).toThrow("review must be a mapping");
   });
 
-  it.each(["repositoryRoot", "repositories", ...Object.keys(configurationDefaults), "copilotModel", "copilotReasoningEffort"])("rejects the former root field %s even with a valid review section", (field) => {
-    expect(() => parseConfiguration(`${field}: null\n${reviewYaml(repositoryYaml())}`, posixPaths, path.posix)).toThrow("unsupported field");
+  it.each(["repositoryRoot", "repositories", ...Object.keys(configurationDefaults), "copilotModel", "copilotReasoningEffort"])("ignores the former root field %s when parsing review settings", (field) => {
+    expect(parseConfiguration(`${field}: null\n${reviewYaml(repositoryYaml())}`, posixPaths, path.posix)).toEqual(parse(repositoryYaml()));
   });
 
   it("uses only review settings when worker and service settings coexist", () => {
@@ -136,13 +136,15 @@ describe("YAML configuration", () => {
     expect(() => parse(source)).toThrow();
   });
 
-  it.each([
-    `maxConcurrentReviews: 2\n${repositoryYaml()}`,
-    `extra: value\n${repositoryYaml()}`,
-    `1: value\n${repositoryYaml()}`,
-    "repositories: [{remote: https://github.com/o/r, path: ../repo, token: secret}]",
-  ])("rejects unsupported fields", (source) => {
-    expect(() => parse(source)).toThrow("unsupported field");
+  it("ignores unknown review and repository fields in runtime configuration", () => {
+    const source = `${repositoryYaml()}    token: secret\n    future: { nested: true }\nmaxConcurrentReviews: 2\nextra: value\n1: value\n`;
+    expect(parse(source)).toEqual(parse(repositoryYaml()));
+  });
+
+  it("validates known review fields alongside unknown fields", () => {
+    expect(() => parse(`extra: value\npollIntervalMs: null\n${repositoryYaml()}`)).toThrow("review.pollIntervalMs");
+    expect(() => parse("extra: value\nrepositories: [{remote: https://github.com/o/r, path: null, future: true}]"))
+      .toThrow("review.repositories[0].path");
   });
 
   it.each([

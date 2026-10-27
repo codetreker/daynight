@@ -35,6 +35,13 @@ resource or current own claim before this worker can clean it. Unproven
 resources are reported and preserved, including in repositories shared with
 another worker.
 
+Herdr snapshots from polling drive scheduling and capacity only. Startup or
+recovery reads Herdr again inside the task's serialized operation before choosing
+reconnection, workspace recreation or native launch. An inactive pane can acquire
+a live agent while an action waits behind another operation; the earlier polling
+snapshot cannot authorize replacing that process. Fresh observation supplies the
+needed fact without another state field or persistent receipt.
+
 A live agent is reconnected without replaying its startup prompt. A native
 process that needs starting resumes the recorded ID when present. A NULL ID
 emits Warning and starts a fresh native conversation in the same task, claim and

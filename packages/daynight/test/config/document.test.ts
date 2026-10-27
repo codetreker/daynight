@@ -42,8 +42,11 @@ describe("shared YAML document boundary", () => {
     }
   });
 
-  it.each(["typo: true\nserverUrl: http://localhost", "1: value", "__proto__: value"])("rejects unknown root fields: %s", (source) => {
-    expect(() => parseConfigurationDocument(source, paths)).toThrow("unsupported field");
+  it.each(["typo: true\nserverUrl: http://localhost", "1: value", "__proto__: value"])("retains unknown root fields in the document: %s", (source) => {
+    const { document, mapping } = parseConfigurationDocument(source, paths);
+    expect(Object.keys(mapping)).toEqual(source.split("\n").map((line) => line.split(":")[0]));
+    expect(parseConfigurationDocument(document.toString(), paths).mapping).toEqual(mapping);
+    expect(Object.getPrototypeOf(mapping)).toBe(Object.prototype);
   });
 
   it("preserves an unresolved alias as a decode failure", () => {
@@ -55,7 +58,6 @@ describe("shared YAML document boundary", () => {
     ["verbatim tag warning", (secret: string) => `serverUrl: https://service.example\nserverToken: !<${secret}> value\n`, "TAG_RESOLVE_FAILED at offsets"],
     ["local tag warning", (secret: string) => `serverUrl: https://service.example\nserverToken: !${secret} value\n`, "TAG_RESOLVE_FAILED at offsets"],
     ["duplicate secret key", (secret: string) => `${secret}: first\n${secret}: second\n`, "DUPLICATE_KEY at offsets"],
-    ["secret root key", (secret: string) => `${secret}: value\n`, "unsupported field"],
     ["malformed scalar", (secret: string) => `serverToken: "${secret}\n`, "MISSING_CHAR at offsets"],
     ["malformed collection", (secret: string) => `serverToken: [${secret}\n`, "BAD_INDENT at offsets"],
   ])("reports %s without retaining secret bytes anywhere in the diagnostic chain", (_name, source, category) => {

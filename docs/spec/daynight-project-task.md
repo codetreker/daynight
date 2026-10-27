@@ -71,9 +71,10 @@ serverUrl: http://127.0.0.1:8787
 核对 origin 与令牌。配置锁、并发比较、POSIX `0600` 和 YAML 诊断的完整要求由[客户端 C6](daynight.md#c6-按需配置引导)拥有。
 
 project/task 不要求 `repositories`、review 路径、SQLite、GitHub CLI 或 Copilot。
-共享层严格读取 YAML 并识别已登记顶层字段，各能力只校验自己的业务投影。
-project/task 不因无关 review 值而失败，review 也不要求服务配置；语法错误、重复键、未知字段和
-读取错误仍须暴露。review 配置、状态格式和路径保持原有语义。
+共享层严格读取 YAML 并要求根节点为 mapping，各能力只校验自己的业务投影。
+未知字段在运行时忽略，配置编辑保留原字段。project/task 不因无关 review 值而失败，
+review 也不要求服务配置；语法错误、重复键、已知字段的非法值和读取错误仍须暴露。
+review 配置、状态格式和路径保持原有语义。
 
 ## PT3. 仓库地址正规化
 

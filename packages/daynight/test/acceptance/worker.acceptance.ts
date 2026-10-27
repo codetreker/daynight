@@ -20,7 +20,7 @@ const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.r
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const time = "2026-10-27T00:00:00Z";
 type Row = { project_id: string; task_id: string; claim_id: string; status: string; agent: string; session_id: string | null };
-type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; argv?: string[]; message?: string; code?: string };
+type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; argv?: string[]; message?: string; code?: string; daemonPid?: number; workspaceId?: string; label?: string; cwd?: string; restored?: boolean };
 type FixtureTask = { -readonly [Key in keyof Task]: Task[Key] };
 
 const daemon = String.raw`#!/usr/bin/env node
@@ -32,7 +32,7 @@ import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 if(process.argv.includes('--version')){process.stdout.write('herdr 0.9.5\n');process.exit(0);}
 const require=createRequire(import.meta.url),Database=require(process.env.FIXTURE_SQLITE),events=process.env.FIXTURE_EVENTS;
-const event=async(value)=>appendFile(events,JSON.stringify({timestamp:Date.now(),...value})+'\n');
+const event=async(value)=>appendFile(events,JSON.stringify({timestamp:Date.now(),daemonPid:process.pid,...value})+'\n');
 const socketError=error=>{if(error.code==='ECONNRESET'||error.code==='EPIPE'){void event({kind:'peer-disconnect',code:error.code});return;}throw error;};
 const record=async(kind,taskId,extra={})=>{const sql=new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});try{await event({kind,taskId,row:sql.prepare('SELECT * FROM tasks WHERE task_id=?').get(taskId),projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,...extra});}finally{sql.close();}};
 const directory=path.join(process.env.XDG_CONFIG_HOME,'herdr','sessions','w');await mkdir(directory,{recursive:true});
@@ -42,24 +42,25 @@ const snapshot=()=>({workspaces:clone(workspaces),panes:clone(panes),agents:clon
 const owner=pane=>JSON.parse(workspaces.find(workspace=>workspace.workspace_id===pane.workspace_id).label.slice('daynight:'.length));
 const processChild=async()=>{const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});return child;};
 const closeChild=async child=>{if(child&&child.exitCode===null&&child.signalCode===null){const closed=new Promise(resolve=>child.once('close',resolve));child.kill('SIGTERM');await closed;}};
-const stop=async pane=>{const identity=owner(pane),native=children.get(pane.pane_id),shell=shells.get(pane.pane_id);await closeChild(native);await closeChild(shell);if(native)await event({kind:'native-stop',taskId:identity.taskId,pid:native.pid});children.delete(pane.pane_id);shells.delete(pane.pane_id);nativeArguments.delete(pane.pane_id);};
+const stop=async pane=>{const identity=owner(pane),native=children.get(pane.pane_id),shell=shells.get(pane.pane_id);await closeChild(native);await closeChild(shell);if(native)await event({kind:'native-stop',taskId:identity.taskId,workspaceId:pane.workspace_id,pid:native.pid});children.delete(pane.pane_id);shells.delete(pane.pane_id);nativeArguments.delete(pane.pane_id);};
+const createWorkspace=async(p,restored=false)=>{const id=String(++next),workspace={workspace_id:'w'+id,label:p.label},tab={workspace_id:workspace.workspace_id,tab_id:'tab'+id},pane={workspace_id:workspace.workspace_id,tab_id:tab.tab_id,pane_id:'p'+id,terminal_id:'t'+id,cwd:p.cwd,agent_status:'idle',launch_pending:false,interactive_ready:false};workspaces.push(workspace);panes.push(pane);tabs.push(tab);const shell=await processChild();shells.set(pane.pane_id,shell);if(restored)pane.agent_session={source:'herdr:codex',agent:'codex',kind:'id',value:p.sessionId};await record('workspace',owner(pane).taskId,{pid:shell.pid,workspaceId:workspace.workspace_id,label:p.label,cwd:p.cwd,restored});return {type:'workspace_created',workspace,root_pane:pane,tab};};
 const sockets=new Set();let shutting=false;
 const api=createServer(socket=>{socket.on('error',socketError);sockets.add(socket);socket.once('close',()=>sockets.delete(socket));let input='';socket.on('data',async chunk=>{input+=chunk.toString();const end=input.indexOf('\n');if(end<0)return;const request=JSON.parse(input.slice(0,end));input='';const p=request.params;let result;
 try{switch(request.method){
 case 'ping':result={type:'pong',version:'0.9.5',protocol:22,capabilities:{detached_server_daemon:true}};break;
 case 'session.snapshot':result={type:'session_snapshot',snapshot:snapshot()};break;
 case 'integration.list':result={type:'integration_list',integrations:[{target:'codex',state:'current'}]};break;
-case 'workspace.create':{const id=String(++next),workspace={workspace_id:'w'+id,label:p.label},tab={workspace_id:workspace.workspace_id,tab_id:'tab'+id},pane={workspace_id:workspace.workspace_id,tab_id:tab.tab_id,pane_id:'p'+id,terminal_id:'t'+id,cwd:p.cwd,agent_status:'idle',launch_pending:false,interactive_ready:false};workspaces.push(workspace);panes.push(pane);tabs.push(tab);const shell=await processChild();shells.set(pane.pane_id,shell);await record('workspace',owner(pane).taskId,{pid:shell.pid});result={type:'workspace_created',workspace,root_pane:pane,tab};break;}
-case 'agent.start':{const pane=panes.find(item=>item.pane_id===p.pane_id),child=await processChild();children.set(p.pane_id,child);const agent={...pane,agent:p.kind,name:p.name,agent_status:'idle',interactive_ready:true,launch_pending:false,state_change_seq:1,completion_seq:0};agents.push(agent);const argv=[p.kind,...p.args];nativeArguments.set(p.pane_id,argv);await record('native-start',owner(pane).taskId,{argv,pid:child.pid});result={type:'agent_started',agent,argv};break;}
+case 'workspace.create':result=await createWorkspace(p);break;
+case 'agent.start':{const pane=panes.find(item=>item.pane_id===p.pane_id),child=await processChild();children.set(p.pane_id,child);const agent={...pane,agent:p.kind,name:p.name,agent_status:'idle',interactive_ready:true,launch_pending:false,state_change_seq:1,completion_seq:0};agents.push(agent);const argv=[p.kind,...p.args];nativeArguments.set(p.pane_id,argv);await record('native-start',owner(pane).taskId,{argv,pid:child.pid,workspaceId:pane.workspace_id});result={type:'agent_started',agent,argv};break;}
 case 'agent.read':{if(p.source!=='visible'||p.format!=='text'||p.strip_ansi!==true)throw new Error('Unexpected input-surface read options');const pane=panes.find(item=>item.pane_id===p.target),agent=agents.find(item=>item.pane_id===p.target),argv=nativeArguments.get(p.target);if(!pane||!agent||!argv)throw new Error('Read requires the original running fixture agent');const modelIndex=argv.indexOf('--model'),model=modelIndex<0?'default':argv[modelIndex+1];const text='  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  '+model+' default · '+pane.cwd+'\n';result={type:'pane_read',read:{pane_id:pane.pane_id,workspace_id:pane.workspace_id,tab_id:pane.tab_id,source:'visible',format:'text',text,revision:0,truncated:false}};break;}
-case 'agent.prompt':{const agent=agents.find(item=>item.pane_id===p.target),pane=panes.find(item=>item.pane_id===p.target),receipt=clone(agent),identity=owner(pane);await event({kind:'prompt',taskId:identity.taskId,text:p.text});if(!agent.agent_session){const argv=nativeArguments.get(p.target),resumeIndex=argv.indexOf('resume'),id=resumeIndex<0?randomUUID():argv[resumeIndex+1];agent.agent_session={source:'herdr:codex',agent:'codex',kind:'id',value:id};const history=path.join(process.env.CODEX_HOME,'sessions');await mkdir(history,{recursive:true});await writeFile(path.join(history,'rollout-'+id+'.jsonl'),JSON.stringify({type:'session_meta',payload:{id,cwd:pane.cwd}})+'\n');}agent.state_change_seq+=2;agent.completion_seq+=1;agent.agent_status='idle';result={type:'agent_prompted',agent:receipt};break;}
+case 'agent.prompt':{const agent=agents.find(item=>item.pane_id===p.target),pane=panes.find(item=>item.pane_id===p.target),receipt=clone(agent),identity=owner(pane);await event({kind:'prompt',taskId:identity.taskId,workspaceId:pane.workspace_id,text:p.text});if(!agent.agent_session){const argv=nativeArguments.get(p.target),resumeIndex=argv.indexOf('resume'),id=resumeIndex<0?randomUUID():argv[resumeIndex+1];agent.agent_session={source:'herdr:codex',agent:'codex',kind:'id',value:id};const history=path.join(process.env.CODEX_HOME,'sessions');await mkdir(history,{recursive:true});await writeFile(path.join(history,'rollout-'+id+'.jsonl'),JSON.stringify({type:'session_meta',payload:{id,cwd:pane.cwd}})+'\n');}agent.state_change_seq+=2;agent.completion_seq+=1;agent.agent_status='idle';result={type:'agent_prompted',agent:receipt};break;}
 case 'pane.process_info':{const pane=panes.find(item=>item.pane_id===p.pane_id),native=children.get(p.pane_id),shell=shells.get(p.pane_id),argv=nativeArguments.get(p.pane_id);if(!shell)throw new Error('Missing fixture task shell');result={type:'pane_process_info',process_info:{pane_id:p.pane_id,shell_pid:shell.pid,foreground_process_group_id:native?native.pid:shell.pid,foreground_processes:native?[{pid:native.pid,name:'codex',argv0:'codex',argv:[...argv],cwd:pane.cwd}]:[]}};break;}
-case 'workspace.close':{const workspace=workspaces.find(item=>item.workspace_id===p.workspace_id),taskId=JSON.parse(workspace.label.slice('daynight:'.length)).taskId;for(const pane of panes.filter(item=>item.workspace_id===p.workspace_id))await stop(pane);for(const items of [workspaces,panes,agents,tabs])for(let i=items.length-1;i>=0;i--)if(items[i].workspace_id===p.workspace_id)items.splice(i,1);await event({kind:'workspace-close',taskId});result={type:'ok'};break;}
+case 'workspace.close':{const workspace=workspaces.find(item=>item.workspace_id===p.workspace_id),taskId=JSON.parse(workspace.label.slice('daynight:'.length)).taskId;for(const pane of panes.filter(item=>item.workspace_id===p.workspace_id))await stop(pane);for(const items of [workspaces,panes,agents,tabs])for(let i=items.length-1;i>=0;i--)if(items[i].workspace_id===p.workspace_id)items.splice(i,1);await event({kind:'workspace-close',taskId,workspaceId:p.workspace_id});result={type:'ok'};break;}
 case 'server.stop':result={type:'ok'};if(!shutting){shutting=true;setTimeout(async()=>{for(const pane of panes)await stop(pane);for(const item of sockets)item.destroy();api.close();client.close();await event({kind:'daemon-stop',pid:process.pid});process.exit(0);},10);}break;
 default:throw new Error('Unexpected fixture method '+request.method);
 }socket.end(JSON.stringify({id:request.id,result})+'\n');}catch(error){await event({kind:'fixture-error',message:error.stack});socket.end(JSON.stringify({id:request.id,error:{code:'fixture_error',message:error.message}})+'\n');}
 });});
-const client=createServer(socket=>{socket.on('error',socketError);socket.end();});await new Promise(resolve=>api.listen(path.join(directory,'herdr.sock'),resolve));await new Promise(resolve=>client.listen(path.join(directory,'herdr-client.sock'),resolve));await event({kind:'daemon-start',pid:process.pid});
+const client=createServer(socket=>{socket.on('error',socketError);socket.end();});if(process.env.FIXTURE_RESTORE_WORKSPACE)await createWorkspace(JSON.parse(process.env.FIXTURE_RESTORE_WORKSPACE),true);await new Promise(resolve=>api.listen(path.join(directory,'herdr.sock'),resolve));await new Promise(resolve=>client.listen(path.join(directory,'herdr-client.sock'),resolve));await event({kind:'daemon-start',pid:process.pid});
 `;
 
 const metadata = String.raw`#!/usr/bin/env node
@@ -69,6 +70,30 @@ else if(args.includes('--help'))process.stdout.write('--no-daemon\n');
 else if(args.includes('features'))process.stdout.write('hooks stable true\n');
 else throw new Error('Only metadata commands are permitted in this fixture');
 `;
+
+const workspaceKey = (event: Event): string => {
+  expect(event.daemonPid).toEqual(expect.any(Number));
+  expect(event.workspaceId).toEqual(expect.any(String));
+  return `${event.daemonPid}/${event.workspaceId}`;
+};
+
+const expectClosedWorkspaceLifecycle = (observed: readonly Event[]): void => {
+  const created = observed.filter((event) => event.kind === "workspace");
+  const closed = observed.filter((event) => event.kind === "workspace-close");
+  const identities = created.map(workspaceKey);
+  expect(new Set(identities).size).toBe(created.length);
+  expect(closed.map(workspaceKey).sort()).toEqual([...identities].sort());
+  for (const event of observed.filter((entry) => ["native-start", "native-stop", "prompt"].includes(entry.kind))) {
+    const identity = workspaceKey(event);
+    const start = created.find((entry) => workspaceKey(entry) === identity)!;
+    const end = closed.find((entry) => workspaceKey(entry) === identity)!;
+    expect(start?.taskId).toBe(event.taskId);
+    expect(end?.taskId).toBe(event.taskId);
+    expect(observed.indexOf(event)).toBeGreaterThan(observed.indexOf(start));
+    expect(observed.indexOf(event)).toBeLessThan(observed.indexOf(end));
+  }
+  expect(observed.filter((event) => event.kind === "native-stop").map((event) => event.pid).sort()).toEqual(observed.filter((event) => event.kind === "native-start").map((event) => event.pid).sort());
+};
 
 const fixtureProcessAlive = async (pid: number): Promise<boolean> => {
   try {
@@ -344,6 +369,10 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       await expectExit(running.closed, 0);
       expect(row(second.id)).toMatchObject({ status: "active", claim_id: originalClaim, session_id: originalSession });
       expect(await readFile(sentinel, "utf8")).toBe("Keep the original uncommitted task result.\n");
+      if (scenario === "resume") {
+        const previousWorkspace = (await events()).find((event) => event.kind === "workspace" && event.taskId === second.id)!;
+        environment.FIXTURE_RESTORE_WORKSPACE = JSON.stringify({ label: previousWorkspace.label, cwd: previousWorkspace.cwd, sessionId: originalSession });
+      }
       const configuration = parseYaml(await readFile(configFile, "utf8")) as { worker: { model: string } };
       configuration.worker.model = "current-model";
       await writeFile(configFile, yaml(configuration));
@@ -403,8 +432,11 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     expect(observed.filter((event) => event.kind === "daemon-start")).toHaveLength(scenario === "inventory-failure" ? 1 : 2);
     expect(observed.filter((event) => event.kind === "daemon-stop")).toHaveLength(scenario === "inventory-failure" ? 1 : 2);
     expect(observed.filter((event) => event.kind === "native-stop")).toHaveLength(scenario === "inventory-failure" ? 2 : 3);
-    expect(observed.filter((event) => event.kind === "workspace-close")).toHaveLength(scenario === "inventory-failure" ? 2 : 3);
-    expect(observed.findIndex((event) => event.kind === "native-start" && event.taskId === second.id)).toBeGreaterThan(observed.findIndex((event) => event.kind === "workspace-close" && event.taskId === first.id));
+    expectClosedWorkspaceLifecycle(observed);
+    const restored = observed.filter((event) => event.kind === "workspace" && event.restored === true);
+    expect(restored).toHaveLength(scenario === "resume" ? 1 : 0);
+    for (const empty of restored) expect(observed.some((event) => event.kind === "native-start" && workspaceKey(event) === workspaceKey(empty))).toBe(false);
+    expect(observed.findIndex((event) => event.kind === "native-start" && event.taskId === second.id)).toBeGreaterThan(observed.findIndex((event) => event.kind === "native-stop" && event.taskId === first.id));
     expect(requests.filter((request) => request.method === "POST").map((request) => request.taskId)).toEqual(tasks.map((task) => task.id));
     await expect(readFile(path.join(repositoryPaths[0]!, ".worktrees/daynight", first.id, "README.md"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(row(second.id)?.session_id).toMatch(/^[0-9a-f-]{36}$/);
