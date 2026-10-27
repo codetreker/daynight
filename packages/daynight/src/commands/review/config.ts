@@ -44,18 +44,6 @@ const asMapping = (value: unknown, field: string): Record<string, unknown> => {
   return value as Record<string, unknown>;
 };
 
-const validateKeys = (
-  value: Record<string, unknown>,
-  accepted: readonly string[],
-  field: string,
-): void => {
-  for (const key of Object.keys(value)) {
-    if (!accepted.includes(key)) {
-      throw new Error(`${field} contains unsupported field ${JSON.stringify(key)}.`);
-    }
-  }
-};
-
 const nonEmptyString = (value: unknown, field: string): string => {
   if (typeof value !== "string" || value.trim() === "" || value.includes("\0")) {
     throw new Error(`${field} must be a nonempty string without NUL characters.`);
@@ -185,7 +173,6 @@ export const reviewConfigurationMapping = (root: Record<string, unknown>): Recor
     return {};
   }
   const review = asMapping(root.review, "review");
-  validateKeys(review, ["repositoryRoot", "repositories", ...Object.keys(configurationDefaults), "copilotModel", "copilotReasoningEffort"], "review");
   return review;
 };
 
@@ -222,7 +209,6 @@ const parseReviewConfiguration = (
   const repositories = mapping.repositories.map((value: unknown, index: number) => {
     const field = `review.repositories[${index}]`;
     const repository = asMapping(value, field);
-    validateKeys(repository, ["remote", "path"], field);
     const remote = nonEmptyString(repository.remote, `${field}.remote`);
     const identity = remoteIdentity(remote, `${field}.remote`);
     if (identities.has(identity.coordinate)) {

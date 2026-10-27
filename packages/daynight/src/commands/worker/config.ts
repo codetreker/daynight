@@ -44,10 +44,6 @@ const mapping = (value: unknown, field: string): Record<string, unknown> => {
   return value as Record<string, unknown>;
 };
 
-const keys = (value: Record<string, unknown>, accepted: readonly string[], field: string): void => {
-  if (Object.keys(value).some((key) => !accepted.includes(key))) throw new TypeError(`${field} contains an unsupported field.`);
-};
-
 const text = (value: unknown, field: string): string => {
   if (typeof value !== "string" || value.trim() === "" || !value.isWellFormed() || /\p{Cc}/u.test(value)) throw new TypeError(`${field} must be nonempty text without control characters.`);
   return value;
@@ -87,7 +83,6 @@ const repositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathA
 export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pathApi: PathApi = path): WorkerConfiguration => {
   const { mapping: root } = parseConfigurationDocument(source, paths);
   const worker = Object.hasOwn(root, "worker") ? mapping(root.worker, "worker") : {};
-  keys(worker, ["repositoryRoot", "maxConcurrent", "pollIntervalMs", "recoveryLimit", "agent", "model", "args", "repositories"], "worker");
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
@@ -102,7 +97,6 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
   const repositories = configuredRepositories.map((entry: unknown, index: number): WorkerRepositoryConfiguration => {
     const field = `worker.repositories[${index}]`;
     const repository = mapping(entry, field);
-    keys(repository, ["remote", "path", "projectId", "agent", "model", "args"], field);
     const remote = text(repository.remote, `${field}.remote`);
     const identity = repositoryIdentity(remote);
     if (identities.has(identity)) throw new TypeError(`${field}.remote duplicates a repository identity.`);

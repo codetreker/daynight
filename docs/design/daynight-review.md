@@ -56,14 +56,14 @@ review:
 ```
 
 数值字段省略时使用上述默认值；显式传入的不合理值报错。使用 YAML 1.2 解析器读取
-数据，共享 `config/document.ts` 拒绝语法问题、重复键和未知顶层字段，根节点仅接受
-`serverUrl`、`serverToken`、`workerId`、`worker` 和 `review`。review 投影再校验
-`review` mapping、其字段清单及字段值；server 和 worker 投影不校验 `review` 内部值。
-旧顶层 review 字段明确拒绝；已有配置须将全部 review 设置移入 `review` 并删除原条目，
-不自动迁移。节点归属的决策见[review 配置分区](../../.agents/notes/implemented/architecture/2026-10-27-review-configuration-section.md)。
+数据，共享 `config/document.ts` 拒绝语法问题、重复键和非 mapping 根节点。
+已知根字段包括 `serverUrl`、`serverToken`、`workerId`、`worker` 和 `review`。
+review 投影校验 `review` mapping 及已知字段值；server 和 worker 投影不校验 `review` 内部值。
+根节点、review 及其仓库条目的未知字段在运行时忽略，配置写入编辑原 YAML 节点并保留未知字段。
+旧顶层 review 字段也被忽略；已有设置须移入 `review` 才生效，不自动迁移。节点归属的决策见[review 配置分区](../../.agents/notes/implemented/architecture/2026-10-27-review-configuration-section.md)。
 同一文件的 `serverUrl` 由独立 server 投影拥有；review 保留它且不校验其值。
 所有 review 数值必须是正的安全整数；毫秒计时字段还必须不超过
-`2147483647`。运行和列表的 `repositories` 必须是非空列表，每项只接受 `remote`
+`2147483647`。运行和列表的 `repositories` 必须是非空列表，每项读取 `remote`
 和 `path`，两者均必填。自动引导仅处理文件、`review` 节点或 `review.repositories`
 字段缺失；显式空列表和非 mapping 的 `review` 节点仍报错。添加命令及交互引导允许
 已有文件缺少 `review` 或 `review.repositories`，校验现有 review 设置后建立首个完整

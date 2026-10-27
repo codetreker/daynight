@@ -116,8 +116,9 @@ execution. A selected Project must remain accessible for registration management
 The runtime protects original deadlines while configuration waits and cannot
 rebind an initialized coordinator to changed credentials. Independent roots and
 preserved existing paths keep configuration edits from relocating original work.
-Unknown or invalid configuration remains visible under the runtime's strict
-omission semantics.
+Invalid known configuration remains visible under the runtime's strict omission
+semantics. The later [unknown-field policy](../bug-fix/2026-10-27-ignore-unknown-configuration-fields.md)
+ignores unknown fields during projection and preserves them during edits.
 
 Shared aliases may require separating worker data before changing acquisition
 scope. The refusal preserves original bytes and unaffected aliases. Configuration

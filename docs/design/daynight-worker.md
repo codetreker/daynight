@@ -81,7 +81,7 @@ worker:
       args: []
 ```
 
-可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 省略时为 []，显式提供时必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。未知字段、错误类型、重复仓库/项目和重叠路径明确拒绝，不接受 stateDirectory 或其他状态根入口。
+可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 省略时为 []，显式提供时必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。根节点、worker 及其仓库条目的未知字段在运行时忽略，配置编辑保留原 YAML 节点。已知字段的错误类型、重复仓库/项目和重叠路径明确拒绝。stateDirectory 等未知字段不改变固定状态根。
 
 `worker.repositoryRoot` 是 worker 自己拥有的原始字符串，默认 ~/daynights；解析校验类型、控制字符、home shortcut 和 Windows drive-relative 形状，不从 WorkerPaths 推断 home，也不读取 review 的 root 或仓库列表。配置中的原拼写保持不变；新增注册才通过调用方传入的实际 home 展开为绝对目录，已有注册不随 root 移动。repository/location 只共享默认字面值、根解析及便携目录组件与通用 remote 位置计算；review 继续拥有自己的读取、写入和诊断字段。
 

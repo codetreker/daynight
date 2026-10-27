@@ -7,14 +7,6 @@ export type ConfigurationDocument = {
   mapping: Record<string, unknown>;
 };
 
-export const supportedConfigurationFields = [
-  "workerId",
-  "worker",
-  "serverUrl",
-  "serverToken",
-  "review",
-] as const;
-
 const safeYamlFailure = (cause: unknown): Error => {
   // Parser messages can include secret scalar, alias, and tag text; retain only diagnostic metadata.
   if (cause instanceof YAMLParseError || cause instanceof YAMLWarning) {
@@ -54,13 +46,7 @@ export const parseConfigurationDocument = (
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("Configuration must be a mapping.");
   }
-  const mapping = parsed as Record<string, unknown>;
-  for (const field of Object.keys(mapping)) {
-    if (!(supportedConfigurationFields as readonly string[]).includes(field)) {
-      throw new Error("Configuration contains an unsupported field.");
-    }
-  }
-  return { document, mapping };
+  return { document, mapping: parsed as Record<string, unknown> };
 };
 
 export const readConfiguration = async (paths: ConfigurationPaths): Promise<ConfigurationDocument> =>

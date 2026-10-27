@@ -41,12 +41,12 @@ describe("repository registration", () => {
     expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
   });
 
-  it("resolves explicit relative paths against cwd and keeps YAML comments and settings", async () => {
-    const { paths, options } = await setup("existing", "# Review settings\nreview:\n  pollIntervalMs: 120000 # keep interval\n  copilotModel: auto # keep model\n  copilotReasoningEffort: high # keep reasoning effort\n  repositories:\n    # Existing repository\n    - remote: https://github.com/o/old\n      path: ../old # keep path\n");
+  it("resolves explicit relative paths against cwd and preserves comments, settings and unknown fields", async () => {
+    const { paths, options } = await setup("existing", "# Review settings\nfuture: { enabled: true }\nreview:\n  future: review-owned\n  pollIntervalMs: 120000 # keep interval\n  copilotModel: auto # keep model\n  copilotReasoningEffort: high # keep reasoning effort\n  repositories:\n    # Existing repository\n    - remote: https://github.com/o/old\n      path: ../old # keep path\n      future: repository-owned\n");
     const result = await addRepository({ remote, path: "../my-clone" }, paths, options);
     expect(result.repository.path).toBe(path.resolve(options.workingDirectory, "../my-clone"));
     const source = await readFile(paths.configFile, "utf8");
-    for (const retained of ["# Review settings", "review:\n  pollIntervalMs: 120000 # keep interval", "copilotModel: auto # keep model", "copilotReasoningEffort: high # keep reasoning effort", "# Existing repository", "path: ../old # keep path", "repositoryRoot: ~/daynights"]) {
+    for (const retained of ["# Review settings", "future: { enabled: true }", "future: review-owned", "future: repository-owned", "pollIntervalMs: 120000 # keep interval", "copilotModel: auto # keep model", "copilotReasoningEffort: high # keep reasoning effort", "# Existing repository", "path: ../old # keep path", "repositoryRoot: ~/daynights"]) {
       expect(source).toContain(retained);
     }
     expect((await loadConfiguration(paths)).pollIntervalMs).toBe(120000);

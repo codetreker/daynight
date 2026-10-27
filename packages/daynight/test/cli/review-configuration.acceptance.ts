@@ -153,7 +153,7 @@ it.skipIf(process.platform === "win32")("first review configuration rejects a co
   expect(await readdir(path.dirname(fixture.configuration))).toEqual(["config.yml"]);
 });
 
-it("reads an automation credential from a controlled configuration file without exposing it", async () => {
+it("uses an automation credential with unknown configuration fields and preserves them on review setup", async () => {
   const fixture = await fresh();
   const secret = "configured-automation-credential";
   const requests: string[] = [];
@@ -166,7 +166,7 @@ it("reads an automation credential from a controlled configuration file without 
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("Missing configured-service listener.");
   await mkdir(path.dirname(fixture.configuration));
-  await writeFile(fixture.configuration, `serverUrl: http://127.0.0.1:${address.port}\nserverToken: ${secret}\n`, { mode: 0o600 });
+  await writeFile(fixture.configuration, `future: { enabled: true }\nserverUrl: http://127.0.0.1:${address.port}\nserverToken: ${secret}\nreview: { future: review-owned }\nworker: { future: worker-owned }\n`, { mode: 0o600 });
   try {
     const result = await pipe(["project", "list", "--json"], fixture.home);
     expect(result.code, result.stderr).toBe(0);
@@ -181,7 +181,7 @@ it("reads an automation credential from a controlled configuration file without 
       expect((await stat(fixture.configuration)).mode & 0o777).toBe(0o600);
       expect(await decoded(fixture.configuration)).toMatchObject(parse(original));
     }
-    for (const source of ["serverUrl: [\n", "serverUrl: http://remote.example\nserverToken: configured-automation-credential\n", "serverToken: invalid token\n"]) {
+    for (const source of ["future: true\nserverUrl: [\n", "future: true\nserverUrl: http://remote.example\nserverToken: configured-automation-credential\n", "future: true\nserverToken: invalid token\n"]) {
       await writeFile(fixture.configuration, source);
       const rejected = await pipe(["project", "list", "--json"], fixture.home);
       expect(rejected.code).toBe(1);

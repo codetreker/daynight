@@ -13,9 +13,11 @@ expressing command ownership consistently.
 
 All review settings belong to a `review` mapping in `config.yml`, including
 repository registration, numeric scheduling options and Copilot overrides.
-The root accepts `serverUrl`, `serverToken`, `workerId`, `worker` and `review`.
-The shared parser validates YAML and root keys; each command validates its own
-section. Review validates its section's keys and reports complete field paths.
+Known root fields are `serverUrl`, `serverToken`, `workerId`, `worker` and `review`.
+The shared parser validates YAML and the root mapping; each command validates its
+own known field values and reports complete field paths. Unknown fields are
+ignored and retained under the later
+[unknown-field policy](../bug-fix/2026-10-27-ignore-unknown-configuration-fields.md).
 Service and worker commands do not validate review-owned values.
 
 Registration and interactive configuration edit nodes within `review`, retaining
@@ -45,8 +47,10 @@ shape; existing files require an explicit manual move of the review settings.
 ## Consequences
 
 Review and worker configuration use separate named sections without changing
-their runtime configuration types. Existing flat review settings are rejected
-and must be moved together under `review`; the CLI does not migrate files.
+their runtime configuration types. The original decision rejected existing flat
+review settings to make the required relocation visible. The later unknown-field
+policy ignores those entries; settings must still be moved together under
+`review` to take effect, and the CLI does not migrate files.
 Repository paths still resolve relative to the configuration directory, and
 changing the YAML section does not alter SQLite data, clone locations, review
 identity or a running reviewer's loaded settings. Examples, fixtures and active

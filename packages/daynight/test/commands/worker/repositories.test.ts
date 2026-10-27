@@ -52,16 +52,16 @@ describe("worker Project registration", () => {
     expect(await readdir(f.paths.stateDirectory)).toEqual(["config.yml"]);
   });
 
-  it("preserves comments, aliases, review settings, credentials and existing execution overrides", async () => {
+  it("preserves comments, aliases, unknown fields, review settings, credentials and execution overrides", async () => {
     const old = project(3, "https://github.com/owner/old.git");
-    const source = `${connection}# Shared defaults\nreview:\n  pollIntervalMs: 120000 # review-owned\nworker:\n  repositoryRoot: &root ../clones # keep root\n  agent: codex # default\n  model: global-model\n  args: [--search]\n  repositories:\n    # Keep this repository\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: &oldPath ../old\n      agent: copilot\n      model: custom-model\n      args: [] # native defaults\n`;
+    const source = `${connection}future: { enabled: true }\n# Shared defaults\nreview:\n  pollIntervalMs: 120000 # review-owned\nworker:\n  future: worker-owned\n  repositoryRoot: &root ../clones # keep root\n  agent: codex # default\n  model: global-model\n  args: [--search]\n  repositories:\n    # Keep this repository\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: &oldPath ../old\n      agent: copilot\n      model: custom-model\n      args: [] # native defaults\n      future: repository-owned\n`;
     const f = await fixture(source);
     if (process.platform !== "win32") await chmod(f.paths.configFile, 0o640);
     const registered = await changeWorkerRepositories({ ...f, projects: [old, project()], addProjectIds: [uuid(1)] });
     expect(registered[0]).toEqual(f.snapshot.configuration.repositories[0]);
     expect(registered[1]).toMatchObject({ agent: "codex", model: "global-model", args: ["--search"], path: path.join(f.homeDirectory, "clones/github.com/owner/repository") });
     const saved = await readFile(f.paths.configFile, "utf8");
-    for (const fragment of ["# Shared defaults", "repositoryRoot: &root ../clones # keep root", "pollIntervalMs: 120000 # review-owned", "# Keep this repository", "path: &oldPath ../old", "args: [] # native defaults", token]) expect(saved).toContain(fragment);
+    for (const fragment of ["future: { enabled: true }", "future: worker-owned", "future: repository-owned", "# Shared defaults", "repositoryRoot: &root ../clones # keep root", "pollIntervalMs: 120000 # review-owned", "# Keep this repository", "path: &oldPath ../old", "args: [] # native defaults", token]) expect(saved).toContain(fragment);
     if (process.platform !== "win32") expect((await stat(f.paths.configFile)).mode & 0o777).toBe(0o600);
   });
 

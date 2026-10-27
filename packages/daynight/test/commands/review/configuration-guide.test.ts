@@ -95,7 +95,7 @@ describe("review configuration guide", () => {
     });
   });
 
-  it.each(["review: null", "review: []", "review: false", "review: { unexpected: true }"])("rejects malformed review configuration without prompting: %s", async (source) => {
+  it.each(["review: null", "review: []", "review: false"])("rejects malformed review configuration without prompting: %s", async (source) => {
     const { context, paths } = await fixture(source);
     const ask = answers(context, []);
     await expect(guideReviewConfiguration(context, () => loadConfiguration(resolveReviewPaths(context.homeDirectory())))).rejects.toThrow();

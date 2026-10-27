@@ -48,8 +48,9 @@ Copilot 作为子进程启动。
 内部值。
 
 同一文件可包含已登记的其他客户端字段，例如 `serverUrl`；review 只校验自己的
-字段值。缺失或无效 server 地址不阻塞 review，YAML 语法、重复键、未知顶层字段和
-未知 `review` 字段仍须报错。`review` 显式为 null、数组或标量也须报错。
+字段值。缺失或无效 server 地址不阻塞 review。根节点、`review` 及其仓库条目的未知字段
+在运行时忽略，在配置编辑时保留；YAML 语法、重复键和已知字段的非法值仍须报错。
+`review` 显式为 null、数组或标量也须报错。
 运行和列表需要已登记 review 仓库；缺少文件、`review` 或 `review.repositories` 时，
 按[客户端 C6](daynight.md#c6-按需配置引导)在 TTY 中引导登记，保存后继续原命令，
 无需设置服务地址。空列表和其他无效 review 值仍须报错。非交互环境缺配置时给出
@@ -362,7 +363,7 @@ skill 的方法不能取代本次审查目标、发布资格、远端结果对�
 | 重复添加同一仓库，或两个添加命令并发执行。 | 同仓库省略路径时复用已保存路径，显式同实际路径保持幂等，显式不同路径报错；并发写入不会丢失另一项修改，锁冲突明确失败。 | R2 |
 | daemon 运行时添加仓库。 | 当前进程保留已有配置，下次启动后按正常启动流程克隆并初始化新增仓库。 | R2, R3, R4 |
 | 两个模型选项均省略、仅配置 `copilotModel`、仅配置 `copilotReasoningEffort` 或同时配置，包括在运行中修改配置。 | 正式 argv 只包含已配置字段对应的独立 flag/value，不为省略项增加覆盖；本次进程使用启动原值，下次启动才读取修改。交互引导和仓库登记保留字段及注释。 | R2, R8 |
-| `copilotModel` 或 `copilotReasoningEffort` 为 null、其他类型、空串、纯空白或含 NUL 的字符串。 | review 配置明确失败且不被引导覆盖；server 命令仅校验自己的配置值，未知顶层字段仍须报错。 | R2 |
+| `copilotModel` 或 `copilotReasoningEffort` 为 null、其他类型、空串、纯空白或含 NUL 的字符串。 | review 配置明确失败且不被引导覆盖；server 命令仅校验自己的配置值，未知顶层字段忽略并在配置编辑时保留。 | R2 |
 | 执行 `daynight review list` 或 `daynight review ls`。 | 两者输出相同的本地一致快照，按配置仓库顺序及 PR 编号排列，包含 Draft 与仍然 Open 的已完成或失败审查。 | R15 |
 | 已初始化仓库没有已跟踪的 Open PR，或仓库尚未初始化。 | 分别显示 `No tracked ongoing PRs.` 或 `Not initialized.`。 | R4, R15 |
 | 较新 head 的待审修订等待旧版本审查结束。 | 最新版本显示待处理，旧版本的保存状态、尝试预算、重试时间及错误单独显示；仅 base tip 变化仍保留已完成状态。 | R6, R14, R15 |
