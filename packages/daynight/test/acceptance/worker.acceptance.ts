@@ -19,7 +19,7 @@ const workspace = path.resolve(import.meta.dirname, "../../../..");
 const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.resolve(workspace, "../..") : workspace;
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const time = "2026-10-26T00:00:00Z";
-type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: { status: string; configuration: string; userId: string | null }; projectCount?: number; binding?: unknown; argv?: string[] };
+type Event = { kind: string; timestamp: number; code?: string; pid?: number; taskId?: string; text?: string; row?: { status: string; configuration: string; userId: string | null }; projectCount?: number; binding?: unknown; argv?: string[] };
 type FixtureTask = { -readonly [Key in keyof Task]: Task[Key] };
 
 const daemon = String.raw`#!/usr/bin/env node
@@ -42,7 +42,10 @@ const snapshot=()=>({workspaces:clone(workspaces),panes:clone(panes),agents:clon
 const owner=(pane)=>JSON.parse(workspaces.find(w=>w.workspace_id===pane.workspace_id).label.slice('daynight:'.length));
 const stop=async(paneId)=>{const child=children.get(paneId);if(!child)return;if(child.exitCode===null&&child.signalCode===null){const closed=new Promise(resolve=>child.once('close',resolve));child.kill('SIGTERM');await closed;}children.delete(paneId);nativeArguments.delete(paneId);};
 const sockets=new Set();let shutting=false;
-const api=createServer(socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));let input='';socket.on('data',async chunk=>{input+=chunk.toString();const end=input.indexOf('\n');if(end<0)return;const request=JSON.parse(input.slice(0,end));input='';const p=request.params;let result;
+const api=createServer(socket=>{sockets.add(socket);
+// Worker cancellation can reset a peer while its response is in flight.
+socket.on('error',async error=>{if(error.code!=='EPIPE'&&error.code!=='ECONNRESET')throw error;await event({kind:'transport-disconnect',code:error.code});});
+socket.once('close',()=>sockets.delete(socket));let input='';socket.on('data',async chunk=>{input+=chunk.toString();const end=input.indexOf('\n');if(end<0)return;const request=JSON.parse(input.slice(0,end));input='';const p=request.params;let result;
 try {
 switch(request.method){
 case 'ping':result={type:'pong',version:'0.9.5',protocol:22,capabilities:{detached_server_daemon:true}};break;
