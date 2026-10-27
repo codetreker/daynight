@@ -1425,6 +1425,9 @@ test('failure-recovery', scenario('failure-recovery'), async ({ page, api: reque
   await selectTaskList(page);
   await expect(root(page, task.id)).toBeVisible();
   await expect(page.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
+  // The recovery scenario jumps the browser clock by a year and reloads offline,
+  // so its graph must stay visible independently of the recent-completion window.
+  await page.getByRole('checkbox', { name: '显示所有' }).check();
   await openChain(page, task.id);
   await expect(root(page, task.id).locator('.root-status')).toHaveText('已完成');
   await expect(inspectTask(page, task.id)).toBeVisible();
