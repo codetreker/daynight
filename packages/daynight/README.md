@@ -98,6 +98,10 @@ daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
 daynight worker                     # Show worker help
+daynight worker setup               # Inspect prerequisites, choose agent and Projects
+daynight worker repo list [--json]
+daynight worker repo add [--project <project-id>]
+daynight worker repo remove [--project <project-id>]
 daynight worker run                 # Run until interrupted
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
@@ -765,16 +769,54 @@ instance. The agent owns task delivery, acceptance, evidence and final
 claim-bound completion. The worker owns concurrency, resources, recovery and
 cleanup based on its current claim inventory.
 
-Install Git, Herdr 0.9.5 or newer with protocol 22 capabilities, and the selected
-native agent on PATH. Native/provider authentication and the current official
-Herdr SessionStart integration must be configured explicitly. Codex needs the
-hooks feature and `--no-daemon`; Unix hook scripts need bash and python3, while
-Windows hooks need PowerShell. The worker reports missing capabilities or
-integration/history instead of installing or changing global native settings.
+Start with interactive setup:
+
+```bash
+daynight login
+daynight worker setup
+daynight worker run
+```
+
+`setup` requires terminal input and stderr. It reports environment checks and
+repair instructions, asks which native agent should execute tasks, then lists
+all existing Daynight Projects accessible to the current account. Project
+choices include their name, UUID and repository URL; select at least one.
+Current Projects are preselected when setup runs again. The final selection
+replaces the worker's acquisition list, and the selected agent applies to every
+selected Project.
+
+Setup preserves a matching project's local path and same-agent model/argument
+settings. Changing an agent clears model and arguments that belong to the old
+agent; incompatible per-project agent overrides are reset so they cannot defeat
+the selection. Before saving, the command shows selected Projects and paths,
+removed registrations and native-setting resets, then asks for confirmation.
+The agent and complete Project selection are saved together. Cancellation,
+invalid selections, inaccessible Project inventory and save failures leave the
+configuration unchanged.
+
+The environment report inspects the OS, Node.js, Git, Herdr version and private
+endpoint, hook runtimes, the bundled managed skill, candidate agents and official
+integrations. It uses `herdr integration status` without starting Herdr or native
+agents. Independent missing prerequisites are reported together with corrective
+steps. Selected-agent checks use the effective settings
+that will be saved, including retained per-project overrides, in the current
+directory; runtime rechecks the actual task worktree. Missing native prerequisites still allow saving the selection, with an explicit repair-needed
+result before `worker run`. Executable versions and hook configuration do not
+prove provider authentication, hook trust or execution, live Herdr protocol
+capabilities, Git transport access or successful task delivery. Setup does not
+install tools, change provider configuration, sign in, clone repositories,
+create worker state or acquire tasks.
+
+Worker execution requires Git, Herdr 0.9.5 or newer with protocol 22 capabilities,
+and the selected native agent on PATH. Native/provider authentication and the
+current official Herdr SessionStart integration must be configured explicitly.
+Codex needs the hooks feature and `--no-daemon`; Unix hook scripts need bash and
+python3, while Windows hooks need PowerShell. Use `herdr integration status` to
+inspect official integration state. Runtime checks report missing capabilities
+or integration/history and keep execution paused until they are repaired.
 Git transport and tools used by the task, such as authenticated GitHub CLI for
 PR delivery, must also be ready.
 
-Run `daynight login` for Daynight authentication, then `daynight worker run`.
 When `worker.repositories` is missing or empty, startup reads all existing
 Projects accessible to the current account and presents a terminal multiselect.
 Each choice includes its name, UUID and repository URL. Select at least one
@@ -863,11 +905,14 @@ files, unknown fields, invalid arguments and unsupported paths fail visibly.
 Reading defaults does not create or rewrite configuration. Repository entry
 paths are absolute or config-directory-relative and do not expand `~`.
 
-Project lookup and prompting run without holding the configuration lock. Saving
-uses the existing lock and atomic YAML replacement, retains comments, unrelated
-settings and credential permissions, and checks that repository selection, root
-and service/authentication context did not change while prompting. A conflicting
-selection must be made again; unrelated concurrent edits are preserved. Projects
+Environment inspection, Project lookup and prompting run without holding the
+configuration lock. Saving uses the existing lock and atomic YAML replacement,
+retains comments, unrelated settings and credential permissions, and checks that
+repository selection, root and service/authentication context did not change
+while prompting. Setup also checks the agent/model/args fields it replaces.
+A conflicting selection must be made again; unrelated concurrent edits are
+preserved. Setup and repository-management changes apply to new acquisition at
+the next worker startup; original claims retain their frozen settings. Projects
 are not rediscovered on every worker tick.
 
 New tasks have automatic execution disabled. Enable it explicitly with the

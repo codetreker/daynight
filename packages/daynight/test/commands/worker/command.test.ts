@@ -24,6 +24,7 @@ const taskId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const claimId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const projectId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
 const dependencies = () => ({
+  setup: vi.fn<WorkerCommandDependencies["setup"]>(async () => {}),
   prepareRepositories: vi.fn<WorkerCommandDependencies["prepareRepositories"]>(async () => {}),
   repository: vi.fn<WorkerCommandDependencies["repository"]>(async () => {}),
   run: vi.fn<WorkerCommandDependencies["run"]>(async () => {}),
@@ -31,7 +32,7 @@ const dependencies = () => ({
 });
 
 describe("worker command", () => {
-  it.each([[], ["--help"], ["-h"], ...["run", "repo", "retry", "release", "transfer", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
+  it.each([[], ["--help"], ["-h"], ...["setup", "run", "repo", "retry", "release", "transfer", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
     ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
     const deps = dependencies();
@@ -40,7 +41,7 @@ describe("worker command", () => {
     for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
-  it.each([["run", "extra"], ["run", "--config", "elsewhere"], ["run", "--platform", "linux"], ["run", "--state-directory", "elsewhere"], ["run", "--version"], ["other"]])("rejects invalid syntax before runtime startup %j", async (...args) => {
+  it.each([["setup", "extra"], ["setup", "--agent", "codex"], ["run", "extra"], ["run", "--config", "elsewhere"], ["run", "--platform", "linux"], ["run", "--state-directory", "elsewhere"], ["run", "--version"], ["other"]])("rejects invalid syntax before runtime startup %j", async (...args) => {
     const { cli } = context();
     const run = vi.fn(async () => {});
     await expect(runWorkerCommand(args, cli, { ...dependencies(), run })).rejects.toThrow();
@@ -66,10 +67,10 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["run", "repo", "retry", "release", "transfer", "resume"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["setup", "run", "repo", "retry", "release", "transfer", "resume"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('run' 'repo' 'retry' 'release' 'transfer' 'resume')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('setup' 'run' 'repo' 'retry' 'release' 'transfer' 'resume')");
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
     expect(renderZshCompletion(commandTree)).toContain("repo:Manage repositories selected from existing Daynight Projects");
     expect(renderZshCompletion(commandTree)).toContain("--target-agent");
@@ -77,6 +78,14 @@ describe("worker command", () => {
     expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('codex' 'copilot')");
     expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('windows' 'linux' 'macos')");
     expect(renderZshCompletion(transfer)).toContain("('\\''codex'\\'' '\\''copilot'\\'')");
+  });
+
+  it("routes setup without inspecting home or loading a worker controller", async () => {
+    const { cli } = context();
+    const deps = dependencies();
+    await runWorkerCommand(["setup"], cli, deps);
+    expect(deps.setup).toHaveBeenCalledExactlyOnceWith(cli);
+    for (const [name, action] of Object.entries(deps)) if (name !== "setup") expect(action).not.toHaveBeenCalled();
   });
 
   it("preserves a repository preparation failure returned through the runtime callback", async () => {

@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 与 retry/release/transfer/resume 人工管理命令已组合这些模块；终止后新执行的服务端协议已接入，完整平台验收仍须独立核验。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
+本文定义 `daynight worker setup`、前台运行与人工管理的目标行为及可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 与 retry/release/transfer/resume 人工管理命令已组合这些模块；终止后新执行的服务端协议已接入，完整平台验收仍须独立核验。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
 
 ## 目标与范围
 
@@ -12,10 +12,13 @@ Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓�
 
 ### W-01：前台运行、配置与平台
 
+- `daynight worker setup` 为交互式配置入口，要求 stdin/stderr 为终端。依次展示环境诊断、单选 Copilot/Codex、多选一个或多个既有可访问 Project；重新运行预选当前项目。选项包含项目名、完整 UUID 和 repoUrl，读取必须覆盖完整分页。选择后检查将保存的有效原生设置，展示 agent、项目、目录、移除的注册及参数重置，确认后一次保存。
+- setup 汇总平台、Node.js、Git、Herdr 版本及固定端点、hook 运行时、随 CLI 分发的 managed 技能、候选 agent 与官方 integration 的可用情况；针对所选 agent 核对原生目录、hook asset、SessionStart 配置及 Codex hooks feature/--no-daemon，并给出缺项修复指引。探测仅使用只读、有界操作，独立缺项可同时显示；取消及时传播。检查在当前目录执行，不能据此宣称 provider 认证、目录信任、实际 task cwd、Git/任务工具或 live Herdr 协议和任务执行已验证；运行时在真实工作区复核原生配置与会话前置，Git 访问和任务工具由实际使用验证。
+- setup 用所选 Project 替换领取范围，并让所选 agent 应用于全部选中项目。保留匹配项目的既有路径和同 agent 模型/参数；切换 agent 清除不兼容的全局及项目级模型/参数，不允许旧 agent 覆盖使选择失效。缺少原生前置仍可保存，但必须说明修复后再运行 worker；缺少 Daynight 登录或可访问 Project 时不能完成选择。setup 不安装、登录、clone、启动 Herdr/agent、创建 worker 状态或领取任务，保存后指引 worker run。
 - `daynight worker run` 与现有 `review run` 一样在前台运行，支持 Linux、macOS 和 Windows。
 - worker run 未配置仓库或仓库列表为空时，从当前服务完整读取当前账号可访问的现存 Project，显示包含项目名、UUID 和 repoUrl 的多选并要求至少选择一项。选择完成并保存配置后才启动新任务；已有非空配置直接启动。首次无持久状态的启动在选择前不创建 workerId、实例锁、SQLite、Git、Herdr 或任务资源；已有状态的重启先建立原控制责任，使已承诺清理的截止在项目读取或选择期间继续推进，不被新增配置阻塞。
 - worker repo list [--json] 读取当前本地注册；worker repo add/remove [--project <UUID>] 管理远端已有 Project。省略 --project 时多选，指定时允许非交互调用；两个变更操作均核验远端项目，不接受任意 Git URL 或创建 Project。删除只修改配置，不删除 clone、SQLite、claim 或 worktree，也不中断已有实例；下次启动改变新任务领取范围。
-- 取消、空选择、无可用 Project、认证/API/保存失败均不启动新任务，不写入部分选择；已有原清理仍继续或进入既有有界退出。非交互启动缺仓库时给出 worker repo add --project 的操作指引后退出。配置变更采用既有锁和原子 YAML 保存，保留注释、无关字段和凭据权限；提示期间仓库列表、repositoryRoot 或服务/认证上下文改变时拒绝旧选择，无关并发编辑保留。
+- 取消、空选择、无可用 Project、认证/API/保存失败均不启动新任务，不写入部分选择；已有原清理仍继续或进入既有有界退出。非交互启动缺仓库时给出 worker repo add --project 的操作指引后退出。配置变更采用既有锁和原子 YAML 保存，保留注释、无关字段和凭据权限；提示期间仓库列表、repositoryRoot 或服务/认证上下文改变时拒绝旧选择；setup 还核对其覆盖的全局 agent/model/args。无关并发编辑保留，agent 与完整 Project 选择必须同一次原子保存。
 - 新增项目保存 projectId、服务端 repoUrl 原值和绝对本地路径。顶层 repositoryRoot 默认 ~/daynights，根目录展开和文件系统安全组件规则与 review 共用；普通地址落于 <root>/<host>/<owner>/<repo>，通用 Git 地址的用户、端口、传输和嵌套路径身份不得混淆。重复添加保留既有路径和执行覆盖，重复/冲突选择整批拒绝。路径不存在时由运行时克隆准备，已存在路径核对身份并保留已有工作；项目选择管理本身不 clone。
 - worker mapping 使用 maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories；字段省略时分别使用 1、5000、3、copilot、null、[] 和空仓库列表。配置文件确实不存在、省略 worker 或使用 worker: {} 时同样使用这些默认值，读取默认值不创建或重写文件；Daynight 认证仍须满足。空仓库集合是初始化引导的输入，公开 run 完成选择前不启动空闲 daemon。显式 repositories 每项的 remote/path 必填，可给 projectId 和 agent/model/args 覆盖。显式 worker/repositories 为 null、非法 YAML、读取错误、未知字段、错误类型、重复/重叠仓库与状态路径拒绝；相对路径以 config.yml 目录解析，不展开 tilde。
 - 配置包含覆盖全部仓库的最大并发，以及全局默认 agent、模型、参数和仓库覆盖值。Worker 在启动或重启时加载配置，不进行热重载。实际取得 claim 后，首次 pending 物化时持久冻结有效执行配置；继续、重试及重启恢复沿用该配置，重新加载的配置作用于后续新 claim。已开始执行却缺原配置时暂停核对，不替换为新默认值。
@@ -138,7 +141,7 @@ AND no active claim
 
 | 范围 | 必须观察到的结果 |
 |---|---|
-| W-01、W-07 | Linux/macOS/Windows 的安装入口可启动前台 worker；分别运行 Copilot/Codex；实际首次/重新启动 prompt 明确环境、技能、managed 模式和原 assignment，普通执行不加载 managed 详细规则；仓库缺失自动准备；原有仓库错误与配置错误可见；领取后的配置修改不影响原执行。 |
+| W-01、W-07 | setup 汇总可用/缺失/失败诊断并给出修复入口，实际终端可选择 agent 与多个 Project，重复执行预选正确，保存前可确认/取消；切换 agent 清除不兼容参数，相关并发变动不覆盖，失败无部分保存，setup 不创建运行资源；Linux/macOS/Windows 的安装入口可启动前台 worker；分别运行 Copilot/Codex；实际首次/重新启动 prompt 明确环境、技能、managed 模式和原 assignment，普通执行不加载 managed 详细规则；仓库缺失自动准备；原有仓库错误与配置错误可见；领取后的配置修改不影响原执行。 |
 | W-02、W-03 | 验证旧任务迁移、新任务默认值、开关双向确认及取消/失败/未知结果、平台清除；覆盖自动执行许可、ready 与全部要求平台/worker 平台组合；不合格任务不会遮住后续合格候选或启动资源。 |
 | W-04 | 多用户/机器/worker 竞争只出现一个有效 claim；覆盖查询后资格变化、旧版本、未知结果及旧 claim 更新；任务属性保留 PR 和实际会话关联。 |
 | W-05 | 多仓库持续有任务时轮流获得机会；空与不兼容仓库被跳过；CI/review、人工等待及超限暂停均计入全局上限。 |

@@ -1,6 +1,6 @@
 # Worker 架构设计
 
-状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 与 retry/release/transfer/resume 人工管理命令已接入这些模块，服务端使用终止后新执行协议；完整平台验收仍须独立核验。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
+状态：自动执行许可、平台要求、唯一 worker claim 的服务端/typed client 基础、Agent 显式完成入口，以及本机身份、实例锁、SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；显式 worker setup、前台 worker run 与 retry/release/transfer/resume 人工管理命令已接入这些模块，服务端使用终止后新执行协议；完整平台验收仍须独立核验。本文拥有机制；[需求](../spec/daynight-worker.md)拥有产品行为，[设计决策](../../.agents/notes/implemented/architecture/2026-10-22-worker-design.md)保留真实备选方案。
 
 ## 目标与当前基础
 
@@ -90,17 +90,33 @@ worker:
 
 ## Project 选择与仓库配置管理
 
-worker 命令入口向 runtime 提供明确的仓库配置准备回调，由 runtime 按启动责任安排阶段。非空配置直接运行；首次无持久状态且空配置时，先核验登录、完整读取远端 Project并释放有界 HTTP operation，再显示多选。提示框沿用 CliPrompt.selectMany 和 CLI 取消机制，不把用户思考时间纳入 HTTP 总期限。保存成功后重读配置，随后才取得实例锁、生成 workerId 或创建 SQLite、Git、Herdr。首次取消或失败不创建这些资源。
+### 显式 setup
+
+`worker/setup.ts` 拥有独立的 `daynight worker setup` 交互流程。入口先要求 stdin/stderr 为终端，读取配置快照，再由 `worker/setup-environment.ts` 汇总只读诊断。随后单选 Codex/Copilot，以既有 typed API 完整读取可访问 Project，结束有界 HTTP operation 后多选项目，默认勾选已有注册。网络、OS 探测与用户思考分别有自己的取消和期限，不在交互期间持配置锁。帮助、补全和非法参数只执行命令解析。
+
+通用诊断检查实际平台、Node.js 版本、Git、Herdr 最低版本与固定私有端点、平台 hook 运行时、随 CLI 分发的 using-daynight managed 资料，以及两种候选 agent 的版本和官方 integration。官方 integration 使用无需 daemon 的 `herdr integration status` 读取；不启动私有实例获取 RPC 状态。每个独立检查返回通过、缺失或未验证及修复指引，取消继续向外传播。
+
+选择 Project 后，`prepareWorkerSetup` 生成完整候选配置并复用严格类型、身份和物理路径校验。该选择替换全部 worker.repositories，保留匹配项目的路径；新增条目使用当前 repositoryRoot 与服务端真实 id/repoUrl。所选全局 agent 应用于所有选中项：同类型保留有效 model/args，类型改变时清除不兼容的全局或项目级 model/args 及相反的 agent 覆盖。每组不同的有效原生设置接受所选 agent 的目录、官方 hook asset、SessionStart 及 Codex hooks feature/--no-daemon 检查。
+
+环境检查与运行时共用 native prerequisite 描述及有界命令执行器。setup 在调用目录检查本地设置，并显示 provider 认证、目录信任、Git/任务工具及 live Herdr 协议/能力未验证；运行时继续在真实 task cwd 检查冻结配置、RPC integration 和恢复历史。配置预检不能替代真实任务验收，也不推断不存在的 checkout 或未来 worktree 配置。
+
+确认前展示最终 agent、项目、目录、移除的注册和不兼容参数重置。Save 后通过既有 updateConfigurationFile 锁内重读并一次写入全局原生设置与完整 Project 清单；比较 repositoryRoot、服务/认证上下文、仓库列表及所覆盖的全局 agent/model/args，拒绝旧快照覆盖相关并发变更。无关 worker、review、凭据字段及 YAML 注释保留，候选配置在原子替换前再次验证。取消、非法选择、认证/清单/保存失败均无部分保存。原生缺项可以在保存后修复，但结果明确要求修复再运行 worker。
+
+setup 只写配置，不取得 worker 实例锁、生成 workerId、打开 SQLite、clone、启动 Herdr/agent 或领取任务。保存成功指引 worker run。注册替换不删除 clone、worktree、claim 或冻结配置，运行中的 worker 保持启动时设置。
+
+### 启动引导与单项管理
+
+worker 命令入口向 runtime 提供明确的仓库配置准备回调，由 runtime 按启动责任安排阶段。非空配置直接运行；首次无持久状态且空配置时，先核验登录、完整读取远端 Project 并释放有界 HTTP operation，再显示多选。提示框沿用 CliPrompt.selectMany 和 CLI 取消机制，不把用户思考时间纳入 HTTP 总期限。保存成功后重读配置，随后才取得实例锁、生成 workerId 或创建 SQLite、Git、Herdr。首次取消或失败不创建这些资源。
 
 已有持久状态时，runtime 先取得原实例/身份/SQLite 控制，并启动已提交管理及清理责任的独立推进，再等待空仓库配置准备。这样原十分钟截止不受远端 Project 请求或交互等待影响。选择结束后重读运行设置；若服务地址或凭据已改变则拒绝在旧 coordinator 上继续，避免把新配置送往旧远端上下文。该阶段不获得新 claim 或创建新任务资源；失败进入既有有界退出，原资源、冻结配置和清理责任保持原身份。配置只在本次启动阶段重读，不进行热重载。
 
 worker repo list [--json] 读取本地配置；add/remove [--project <UUID>] 在显式 UUID 或交互多选后操作现存远端 Project。初始选择和新增以远端 id/name/repoUrl 生成选项，删除只显示当前注册且远端可访问的项目。管理接口不创建、修改或删除远端项目；远端读取失败保持配置不变。非交互 run 缺仓库时退出并指引显式 add；无参 add/remove 也需要交互终端。
 
-新增条目保存明确 projectId、remote=Project.repoUrl 和绝对 path，保留已有同项目的路径与原生执行覆盖。项目/仓库身份或物理路径冲突经完整配置验证后整批拒绝。worker/repositories.ts 拥有快照、Project 查询和持久变更；worker/configuration-guide.ts 拥有选择与启动引导。所有注册变更都只作用于 YAML，原 SQLite project/task 行、claim 和资源不受删除配置影响，运行实例不热重载。
+新增条目保存明确 projectId、remote=Project.repoUrl 和绝对 path，保留已有同项目的路径与原生执行覆盖。项目/仓库身份或物理路径冲突经完整配置验证后整批拒绝。worker/repositories.ts 拥有共享快照、Project 查询和持久变更；worker/configuration-guide.ts 拥有选择与启动引导。所有注册变更都只作用于 YAML，原 SQLite project/task 行、claim 和资源不受删除配置影响，运行实例不热重载。
 
 默认位置由共享 repository/location.ts 决定。repositoryRoot 默认 ~/daynights，沿用 review 的 home/绝对/配置目录相对展开及跨平台组件编码。普通规范身份按 host/路径分段；含自定义用户、端口或非普通路径的身份使用 @remote/传输/authority/路径分段，保留空段和点段含义并转义百分号，避免特殊身份、路径遍历或编码碰撞。@ 不属于普通规范 host，因此该名字空间不能与普通仓库落点重合。服务端 repoUrl 原值继续用于实际 clone；仅新注册使用当前默认根目录，已有项目不因 root 改变而移动。
 
-选择前记录仓库列表、repositoryRoot 和服务/认证上下文。网络及提示期间不持配置锁；保存时通过 updateConfigurationFile 锁内重读，对这些字段做一致性检查，并在最新 YAML Document 上更新所属条目。相关并发变更使旧选择失败，无关编辑保留。认证比较只用于本次内存决策，不输出或持久化令牌/指纹。写入前复用 validateWorkerConfigurationSource 核对整个候选配置及真实路径关系，既有配置锁、原子替换、私有权限和失败链继续适用。
+单项管理的快照覆盖仓库列表、repositoryRoot 和服务/认证上下文；setup 还覆盖其替换的原生字段。网络及提示期间不持配置锁；保存时通过 updateConfigurationFile 锁内重读，对这些字段做一致性检查，并在最新 YAML Document 上更新所属条目。相关并发变更使旧选择失败，无关编辑保留。认证比较只用于本次内存决策，不输出或持久化令牌/指纹。写入前复用 validateWorkerConfigurationSource 核对整个候选配置及真实路径关系，既有配置锁、原子替换、私有权限和失败链继续适用。
 
 ## 服务端模型与资格查询
 

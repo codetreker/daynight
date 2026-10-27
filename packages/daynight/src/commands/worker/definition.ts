@@ -11,6 +11,11 @@ export const workerDefinition: CommandDefinition = {
   name: "worker",
   description: "Run automatically claimed tasks in dedicated worktrees and Herdr",
   commands: [{
+    name: "setup",
+    description: "Check prerequisites and select an agent and existing Daynight Projects",
+    options: [help],
+    details: "Use an interactive terminal to check the environment, choose Copilot or Codex, and select one or more accessible Projects.\nReview the selection before saving agent and repository settings together.\nMissing prerequisites remain visible with repair instructions; setup can save configuration before they are repaired.\nExisting paths and compatible native settings are retained. The selected agent applies to every selected Project.\nChanges apply at the next worker startup. Run daynight worker run after completing setup.",
+  }, {
     name: "run",
     description: "Run the foreground task worker until interrupted",
     options: [help],

@@ -5,7 +5,7 @@ import { createApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
 import type { OperationLimits } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
-import type { Project } from "../../api/types.js";
+import type { Project, WorkerAgent } from "../../api/types.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource, updateConfigurationFile } from "../../config/files.js";
@@ -33,11 +33,37 @@ export type ChangeWorkerRepositoriesOptions = {
   readonly signal?: AbortSignal;
 };
 
+export type WorkerSetupOptions = {
+  readonly paths: WorkerPaths;
+  readonly homeDirectory: string;
+  readonly snapshot: WorkerRepositorySnapshot;
+  readonly projects: readonly Project[];
+  readonly projectIds: readonly string[];
+  readonly agent: WorkerAgent;
+  readonly signal?: AbortSignal;
+};
+
+export type WorkerSetupPlan = {
+  readonly configuration: WorkerConfiguration;
+  readonly removedRepositories: readonly WorkerRepositoryConfiguration[];
+  readonly resetRepositories: readonly WorkerRepositoryConfiguration[];
+  readonly resetGlobalNativeSettings: boolean;
+};
+
 const fingerprint = (mapping: Record<string, unknown>): string => {
   const worker = mapping.worker as Record<string, unknown> | undefined;
   const fields = ["repositoryRoot", "serverUrl", "serverToken"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]);
   return createHash("sha256").update(JSON.stringify([
     ...fields, ["worker.repositories", worker !== undefined && Object.hasOwn(worker, "repositories"), worker?.repositories],
+  ])).digest("hex");
+};
+
+const setupFingerprint = (source: string | undefined, paths: WorkerPaths): string => {
+  const { mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
+  const worker = mapping.worker as Record<string, unknown> | undefined;
+  return createHash("sha256").update(JSON.stringify([
+    fingerprint(mapping),
+    ...["agent", "model", "args"].map((field) => [field, worker !== undefined && Object.hasOwn(worker, field), worker?.[field]]),
   ])).digest("hex");
 };
 
@@ -98,6 +124,90 @@ const selectedProjects = (ids: readonly string[], projects: readonly Project[]):
   });
 };
 
+const registeredProjectIndex = (repositories: readonly WorkerRepositoryConfiguration[], project: Project): number => {
+  const identity = repositoryIdentity(project.repoUrl);
+  const byProject = repositories.findIndex((repository) => repository.projectId === project.id);
+  const byRemote = repositories.findIndex((repository) => repositoryIdentity(repository.remote) === identity);
+  const index = byProject === -1 ? byRemote : byProject;
+  if (index !== -1) {
+    const existing = repositories[index]!;
+    if (repositoryIdentity(existing.remote) !== identity || (existing.projectId !== undefined && existing.projectId !== project.id)) {
+      throw new Error(`Project ${project.id} conflicts with an existing worker repository registration.`);
+    }
+  }
+  return index;
+};
+
+const prepareSetupSource = async (source: string | undefined, options: WorkerSetupOptions): Promise<WorkerSetupPlan & { source: string }> => {
+  const { paths, signal } = options;
+  signal?.throwIfAborted();
+  if (!path.isAbsolute(options.homeDirectory)) throw new Error("The current user's home directory must be an absolute path.");
+  if (options.agent !== "codex" && options.agent !== "copilot") throw new Error("Choose Codex or Copilot as the worker agent.");
+  if (new Set(options.projectIds).size !== options.projectIds.length) throw new Error("Select distinct Projects for worker setup.");
+  const projects = selectedProjects(options.projectIds, options.projects);
+  const current = await snapshotFromSource(source, paths, signal);
+  const { document, mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
+  const root = resolveRepositoryRoot(Object.hasOwn(mapping, "repositoryRoot") ? mapping.repositoryRoot : defaultRepositoryRoot, paths, options.homeDirectory);
+  const retained = new Map<number, Project>();
+  const additions: Project[] = [];
+  for (const project of projects) {
+    const index = registeredProjectIndex(current.configuration.repositories, project);
+    if (index === -1) { additions.push(project); continue; }
+    if (retained.has(index)) throw new Error("Selected Projects share the same repository identity.");
+    retained.set(index, project);
+  }
+  if (!document.has("worker")) document.set("worker", document.createNode({}));
+  if (!document.hasIn(["worker", "repositories"])) document.setIn(["worker", "repositories"], document.createNode([]));
+  const resetGlobalNativeSettings = current.configuration.agent !== options.agent &&
+    (document.hasIn(["worker", "model"]) || document.hasIn(["worker", "args"]));
+  if (current.configuration.agent !== options.agent) {
+    document.deleteIn(["worker", "model"]);
+    document.deleteIn(["worker", "args"]);
+  }
+  document.setIn(["worker", "agent"], options.agent);
+  const removedRepositories: WorkerRepositoryConfiguration[] = [];
+  const resetRepositories: WorkerRepositoryConfiguration[] = [];
+  for (let index = current.configuration.repositories.length - 1; index >= 0; index -= 1) {
+    const repository = current.configuration.repositories[index]!;
+    const project = retained.get(index);
+    if (project === undefined) {
+      document.deleteIn(["worker", "repositories", index]);
+      removedRepositories.unshift(repository);
+      continue;
+    }
+    document.setIn(["worker", "repositories", index, "projectId"], project.id);
+    document.setIn(["worker", "repositories", index, "remote"], project.repoUrl);
+    document.deleteIn(["worker", "repositories", index, "agent"]);
+    if (repository.agent !== options.agent) {
+      document.deleteIn(["worker", "repositories", index, "model"]);
+      document.deleteIn(["worker", "repositories", index, "args"]);
+      resetRepositories.unshift(repository);
+    }
+  }
+  for (const project of additions) document.addIn(["worker", "repositories"], {
+    projectId: project.id, remote: project.repoUrl, path: repositoryLocation(project.repoUrl, root),
+  });
+  const updatedSource = document.toString();
+  const configuration = await validateWorkerConfigurationSource(updatedSource, paths, signal);
+  return { source: updatedSource, configuration, removedRepositories, resetRepositories, resetGlobalNativeSettings };
+};
+
+export const prepareWorkerSetup = async (options: WorkerSetupOptions): Promise<WorkerSetupPlan> => {
+  const { source: _source, ...plan } = await prepareSetupSource(options.snapshot.source, options);
+  return plan;
+};
+
+export const saveWorkerSetup = async (options: WorkerSetupOptions): Promise<WorkerConfiguration> => {
+  const expected = setupFingerprint(options.snapshot.source, options.paths);
+  return updateConfigurationFile(options.paths, async (source) => {
+    if (setupFingerprint(source, options.paths) !== expected) {
+      throw new Error("Worker agent, repository configuration or service credentials changed during setup. Run daynight worker setup again with the current configuration.");
+    }
+    const prepared = await prepareSetupSource(source, options);
+    return { source: prepared.source, result: prepared.configuration };
+  }, options.signal);
+};
+
 export const changeWorkerRepositories = async (options: ChangeWorkerRepositoriesOptions): Promise<readonly WorkerRepositoryConfiguration[]> => {
   const { paths, snapshot, signal } = options;
   signal?.throwIfAborted();
@@ -115,13 +225,9 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
       const { mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
       const root = resolveRepositoryRoot(Object.hasOwn(mapping, "repositoryRoot") ? mapping.repositoryRoot : defaultRepositoryRoot, paths, options.homeDirectory);
       for (const project of projects) {
-        const identity = repositoryIdentity(project.repoUrl);
-        const byProject = repositories.findIndex((repository) => repository.projectId === project.id);
-        const byRemote = repositories.findIndex((repository) => repositoryIdentity(repository.remote) === identity);
-        const index = byProject === -1 ? byRemote : byProject;
+        const index = registeredProjectIndex(repositories, project);
         if (index !== -1) {
           const existing = repositories[index]!;
-          if (repositoryIdentity(existing.remote) !== identity || (existing.projectId !== undefined && existing.projectId !== project.id)) throw new Error(`Project ${project.id} conflicts with an existing worker repository registration.`);
           if (existing.projectId !== project.id || existing.remote !== project.repoUrl) {
             document.setIn(["worker", "repositories", index, "projectId"], project.id);
             document.setIn(["worker", "repositories", index, "remote"], project.repoUrl);

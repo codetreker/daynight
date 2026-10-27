@@ -292,6 +292,8 @@ def scenarios():
         ("root worker", "daynight wor\t", ["worker"]),
         ("short root worker", "dn wor\t", ["worker"]),
         ("worker run", "daynight worker ru\t", ["worker", "run"]),
+        ("worker setup", "daynight worker se\t", ["worker", "setup"]),
+        ("short worker setup", "dn worker se\t", ["worker", "setup"]),
         ("short worker run", "dn worker ru\t", ["worker", "run"]),
         ("worker repository group", "daynight worker rep\t", ["worker", "repo"]),
         ("worker repository list", "daynight worker repo li\t", ["worker", "repo", "list"]),
