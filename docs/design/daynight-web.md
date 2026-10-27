@@ -68,9 +68,13 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 `AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权，`WorkspaceSidebar`
 负责导航呈现。侧栏分为可滚动的 `.sidebar-main` 和不收缩的 `.sidebar-bottom`：
-前者持有品牌和项目主导航，后者持有同一个 `/account` 链接、工作区说明及切换按钮。
+前者持有品牌、“我的项目”主入口及缩进的项目链接列表，后者持有同一个 `/account` 链接、工作区说明及切换按钮。
+项目子项消费与项目列表页面相同的分页目录，直接复用导航 `follow` 的路由和修饰键处理。
+普通列表和链接提供层级语义；完整名称作为链接名称及 title，视觉文字允许省略。
+项目、成员及设置路由将 projectId 传给侧栏选中对应子项，父入口只在 `/projects` 选中。
+桌面折叠和手机竖条以 `display: none` 排除项目子项交互，展开桌面或手机覆盖导航时显示。
 sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部入口。
-链接的 `aria-current="page"` 提供当前路由选中态；图标、可访问名称及悬停提示在竖条中仍然可用。
+链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。
 
 `useSidebarPreference` 独立管理桌面 `collapsed`。origin-local
 `daynight.web.sidebar.collapsed` 只接受 JSON boolean，缺失时为 false 且不写入。
@@ -97,7 +101,8 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 - 页首显示“项目”和刷新按钮。
 - 卡片显示项目名称、仓库地址、创建日期和“查看任务”。长名称、地址允许换行，仓库地址按普通文本展示。
-- 复用 `GET /api/v1/projects?limit=50&cursor=...`，服务端先按成员关系过滤，再以“加载更多”遍历，按 ID 去重。
+- Workspace 的认证身份内只挂载一个项目目录 Provider；侧栏与项目卡片共享目录、刷新及“加载更多”，切换项目保留已加载页。
+- 复用 `GET /api/v1/projects?limit=50&cursor=...`，服务端先按成员关系过滤，再以“加载更多”遍历，按 ID 去重并保留服务端顺序。创建成功及移除自身成员后刷新共享目录。
 - 加载下一页失败时保留已加载卡片，错误和重试定位在列表末尾；首次加载失败使用整页错误。
 - 刷新重置分页，从新列表开始。列表没有跨页一致性承诺，不显示未经完整读取的项目总数。
 
@@ -574,7 +579,7 @@ flowchart LR
 认证身份下的 TaskCacheScope 拥有持久摘要及可发布投影，页面维护图加载与当前资源；不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与状态操作，纯图模型只计算派生内容。TaskCacheProvider 包裹全部认证路由并位于详情 Provider 外，独立任务和附件路径页共享该 scope。
 
 - Workspace 按认证身份保持正文和导航边界；`useSidebarPreference` 只拥有 origin-local 桌面折叠值和保存错误，手机覆盖导航为独立临时状态。二者不参与项目、缓存、详情或图的 key，也不触发业务读取。
-- `useProjects` 拥有当前已加载页、nextCursor 和下一页错误。首次请求、加载更多和刷新有各自状态；刷新使旧游标及旧请求失效。
+- 项目目录 Provider 在 Workspace 的认证身份边界拥有当前已加载页、nextCursor 和下一页错误；`useProjects` 在 Provider 内管理请求，`useProjectList` 向侧栏及项目列表提供同一份状态和操作。首次请求、加载更多和刷新有各自状态；刷新使旧游标及旧请求失效，卸载取消请求，身份变化重建目录。项目切换与侧栏折叠不重建目录或增加轮询。
 - `useTaskGraph(projectId)` 拥有完整派生 TaskGraph、接收时间、独立数据库样本、成功 receipt revision、请求序号、refresh 与可见页面轮询。身份核验后先发布经生命周期与完整性验证的本地摘要，后台同步；本地 snapshot 的 revision=0，成功接收与服务端时钟字段为空，不增加在线授权。没有有效缓存时保持加载态，同步普通失败保留已显示摘要，可信撤权清除内容。严格解析 task-sync 后立即捕获 receivedMonotonic，早于 IDB 应用和索引计算；每次成功同步成对更新 observedAt/receivedMonotonic，receivedAt 仅作本机最近刷新标签。TaskCacheScope 在一个事务内按业务版本合并当前完整持久集合，再提交摘要与最大 updatedAt；相等/旧版行不写入。仅时钟变化复用 graph/index，仅设置变化替换 graph.project 并复用 tasks、summary 与 index，任务变化整体替换相关资源。设置版本保持 bigint。稳定 graph.observedAt 可保留旧样本，当前时钟始终使用独立 snapshot 样本；磁盘或其他标签页不能提供它。
 - `TaskExecutionClockProvider` 按项目拥有稳定 context/store，将最新服务端时间、单调接收时间和已保存阈值在 layout effect 一起发布。useTaskExecution 仅让已知起点的运行任务订阅一个可见页一秒 ticker；完成任务只订阅设置说明，未知任务无活动订阅。隐藏时暂停，恢复可见立即发布单调差值；正常轮询独立刷新锚点，最后运行订阅与 provider 卸载清理 timer/listener。计时局部更新不进入 GraphIndex、投影、布局或边路由；既有身份 guard 继续约束 API，没有新增失焦监听或网络轮询。
 - `ProjectPage` 管理任务选择、当前页签、单成员及多成员普通分量的倒序展示序列、各自完成筛选和浏览位置。`ChainList` 使用可见代表序列，完整 `GraphIndex` 保存全部成员、上下文基础与项目统计。偏好 hook 通过 componentByTask 把原保存任务解析到当前代表，不因代表变化改写仍有效的成员定位值；分量不可见或任务消失时使用最新可见回退，没有可见链时保留定位/null。详情绑定 task ID，分类和完成筛选不关闭仍存在的详情。
@@ -917,7 +922,7 @@ store 的 SQL 直接读取 `left(title, previewCharacters)` 与 `char_length(tit
 
 ## 请求、刷新与故障
 
-项目列表、图、详情和附件请求分别归属其页面或选择。项目任务页在 document 可见时
+项目目录请求归属认证 Workspace 内的 ProjectsProvider，导航与项目列表共享该请求所有者。图、详情和附件请求分别归属其页面或选择。项目任务页在 document 可见时
 每 5 秒读取 task-sync 并原子合并摘要；隐藏后停止定时触发，重新可见时立即读取并重新开始计时。自动
 触发遇到活动同步请求时跳过，返回可见时也沿用活动读取；手动刷新取消活动同步请求并
 立即开始新读取。隐藏不取消已发出的读取。导航和卸载清除定时器并取消所属请求，

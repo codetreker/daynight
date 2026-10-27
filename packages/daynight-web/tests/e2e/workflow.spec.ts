@@ -92,12 +92,12 @@ const holdProjectSync = async (page: Page, projectId: string) => {
   };
 };
 const loadAllProjects = async (page: Page): Promise<void> => {
-  await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
-  await expect(page.getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
-  const more = page.getByRole('button', { name: '加载更多', exact: true });
+  await expect(page.getByRole('main').getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
+  const more = page.getByRole('main').getByRole('button', { name: '加载更多', exact: true });
   for (let count = 0; count < 200; count++) {
     if (!await more.isVisible()) {
-      await expect(page.getByText('已加载全部项目')).toBeVisible();
+      await expect(page.getByRole('main').getByText('已加载全部项目')).toBeVisible();
       return;
     }
     const response = page.waitForResponse((response) => {
@@ -106,7 +106,7 @@ const loadAllProjects = async (page: Page): Promise<void> => {
     });
     await more.click();
     expect((await response).status()).toBe(200);
-    await expect(page.getByRole('button', { name: '正在加载更多…', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('main').getByRole('button', { name: '正在加载更多…', exact: true })).toHaveCount(0);
   }
   throw new Error('Project pagination did not terminate within the acceptance bound.');
 };
@@ -139,7 +139,7 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
   const listRequests: string[] = [];
   page.on('request', (request) => { if (new URL(request.url()).pathname === '/api/v1/projects') listRequests.push(request.url()); });
   await page.goto('/projects');
-  await expect(page.getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
+  await expect(page.getByRole('main').getByRole('status', { name: '正在加载项目' })).toHaveCount(0);
   await expect(page.locator('a.project-card')).toHaveCount(50);
   const firstPage = await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')));
   let failedCursor: string | null = null;
@@ -148,25 +148,25 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
       const url = new URL(response.url());
       return url.pathname === '/api/v1/projects' && url.searchParams.has('cursor');
     });
-    await page.getByRole('button', { name: '加载更多', exact: true }).click();
+    await page.getByRole('main').getByRole('button', { name: '加载更多', exact: true }).click();
     const response = await continuation;
     expect(response.status()).toBe(500);
     failedCursor = new URL(response.url()).searchParams.get('cursor');
     expect(failedCursor).not.toBeNull();
-    await expect(page.getByRole('alert')).toContainText('更多项目加载失败，已加载的项目仍可查看。');
-    await expect(page.getByRole('button', { name: '重试加载更多', exact: true })).toBeVisible();
+    await expect(page.getByRole('main').getByRole('alert')).toContainText('更多项目加载失败，已加载的项目仍可查看。');
+    await expect(page.getByRole('main').getByRole('button', { name: '重试加载更多', exact: true })).toBeVisible();
     expect(await page.locator('a.project-card').evaluateAll((cards) => cards.map((card) => card.getAttribute('href')))).toEqual(firstPage);
-    await expect(page.getByRole('heading', { name: '项目', exact: true })).toBeVisible();
+    await expect(page.getByRole('main').getByRole('heading', { name: '项目', exact: true })).toBeVisible();
   });
   const retried = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return url.pathname === '/api/v1/projects' && url.searchParams.has('cursor');
   });
-  await page.getByRole('button', { name: '重试加载更多', exact: true }).click();
+  await page.getByRole('main').getByRole('button', { name: '重试加载更多', exact: true }).click();
   const successfulContinuation = await retried;
   expect(successfulContinuation.status()).toBe(200);
   expect(new URL(successfulContinuation.url()).searchParams.get('cursor')).toBe(failedCursor);
-  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('main').getByRole('alert')).toHaveCount(0);
   await loadAllProjects(page);
   for (const project of projects) {
     const card = page.locator(`a.project-card[href="/projects/${project.id}"]`);
@@ -180,8 +180,8 @@ test('project-list', scenario('project-list'), async ({ page, api: request }, in
   expect(listRequests.every((value) => new URL(value).searchParams.get('limit') === '50')).toBe(true);
   await screenshot(page, info, 'project-list');
   await page.locator(`a.project-card[href="/projects/${projects[50]!.id}"]`).click();
-  await expect(page.getByRole('heading', { name: projects[50]!.name, exact: true })).toBeVisible();
-  await expect(page.getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('main').getByRole('heading', { name: projects[50]!.name, exact: true })).toBeVisible();
+  await expect(page.getByRole('main').getByRole('tab', { name: '概览', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(stat(page, '任务总数')).toHaveText('0');
 });
 

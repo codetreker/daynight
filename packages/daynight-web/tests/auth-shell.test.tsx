@@ -66,6 +66,67 @@ beforeEach(() => {
 });
 
 describe("sidebar integration with the authenticated workspace", () => {
+  it("loads project navigation once with the project page and keeps the selected project across management routes", async () => {
+    const fetcher = install((url) => url === `/api/v1/projects/${projectId}` ? json(project()) : url.endsWith("/invitations") ? json({ items: [] }) : defaults(url));
+    render(<AuthenticatedApp />);
+    const nav = () => within(screen.getByRole("complementary", { name: "工作空间导航" }));
+    await screen.findByRole("complementary", { name: "工作空间导航" });
+    const link = await nav().findByRole("link", { name: "私有项目" });
+    await screen.findByRole("heading", { name: "私有项目" });
+    expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(1);
+    expect(nav().getByRole("link", { name: "我的项目" })).toHaveAttribute("aria-current", "page");
+    fireEvent.click(link);
+    await screen.findByRole("link", { name: "项目成员" });
+    expect(nav().getByRole("link", { name: "私有项目" })).toHaveAttribute("aria-current", "true");
+    expect(nav().getByRole("link", { name: "我的项目" })).not.toHaveAttribute("aria-current");
+    fireEvent.click(screen.getByRole("link", { name: "项目成员" }));
+    await screen.findByRole("heading", { name: "项目成员" });
+    expect(nav().getByRole("link", { name: "私有项目" })).toHaveAttribute("aria-current", "true");
+    fireEvent.click(screen.getByRole("link", { name: "项目设置" }));
+    await screen.findByRole("heading", { name: "私有项目" });
+    expect(nav().getByRole("link", { name: "私有项目" })).toHaveAttribute("aria-current", "true");
+    expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(1);
+  });
+
+  it("refreshes the shared navigation after creating a project", async () => {
+    let created = false;
+    const fetcher = vi.fn((url: string, options?: RequestInit) => {
+      if (url === "/api/v1/projects" && options?.method === "POST") { created = true; return Promise.resolve(json(project("New project"), 201)); }
+      if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: created ? [project("New project")] : [], nextCursor: null }));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "＋ 创建项目" }));
+    fireEvent.change(screen.getByLabelText(/项目名称/), { target: { value: "New project" } });
+    fireEvent.change(screen.getByLabelText(/仓库地址/), { target: { value: "https://github.com/example/new-project" } });
+    fireEvent.submit(screen.getByRole("button", { name: "创建项目" }).closest("form")!);
+    const nav = within(screen.getByRole("complementary", { name: "工作空间导航" }));
+    expect(await nav.findByRole("link", { name: "New project" })).toHaveAttribute("aria-current", "true");
+    expect(window.location.pathname).toBe(`/projects/${projectId}`);
+    expect(fetcher.mock.calls.filter(([url]) => url.startsWith("/api/v1/projects?"))).toHaveLength(2);
+  });
+
+  it("removes a project from navigation after the current member leaves it", async () => {
+    window.history.replaceState(null, "", `/projects/${projectId}/members`);
+    let removed = false;
+    const fetcher = vi.fn((url: string, options?: RequestInit) => {
+      if (url === `/api/v1/projects/${projectId}/members/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(serverUserId) })); }
+      if (url.endsWith("/members")) return Promise.resolve(json({ items: [member(), { ...member(otherId), name: "Bob" }] }));
+      if (url.endsWith("/invitations")) return Promise.resolve(json({ items: [] }));
+      if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: removed ? [] : [project()], nextCursor: null }));
+      return Promise.resolve(defaults(url));
+    });
+    vi.stubGlobal("fetch", fetcher);
+    render(<AuthenticatedApp />);
+    fireEvent.click(await screen.findByRole("button", { name: "移除 Alice" }));
+    const dialog = screen.getByRole("dialog", { name: "移除 Alice？" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "移除成员" }));
+    await screen.findByRole("heading", { name: "还没有项目" });
+    expect(window.location.pathname).toBe("/projects");
+    expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).queryByRole("link", { name: "私有项目" })).toBeNull();
+  });
+
   it("preserves the mounted project and requests while toggling the origin preference", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
     const fetcher = install();
@@ -831,6 +892,7 @@ describe("authenticated application shell", () => {
     install((url) => {
       if (url === "/api/v1/me") return json(switched ? user(otherId, "Bob") : user());
       if (switched && url.endsWith("/members")) return fail(404, "not_found");
+      if (switched && url.startsWith("/api/v1/projects?")) return json({ items: [], nextCursor: null });
       return defaults(url);
     });
     render(<AuthenticatedApp />);
