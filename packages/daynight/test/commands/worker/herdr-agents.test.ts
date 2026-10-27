@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
@@ -98,23 +98,32 @@ const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
 };
 
 describe("native argument ownership", () => {
-  it("preserves exact configuration tokens and owns model/no-daemon/exact resume selection", () => {
-    expect(buildHerdrAgentArguments(configuration)).toEqual(["--no-daemon", "--model", "model-a", ...configuration.args]);
-    expect(buildHerdrAgentArguments(configuration, nativeId)).toEqual(["--no-daemon", "resume", nativeId, "--model", "model-a", ...configuration.args]);
-    expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, nativeId)).toEqual([`--resume=${nativeId}`, "--allow-tool=shell(git:*)", "--reasoning-effort", "low"]);
+  it.each([undefined, nativeId])("owns full access while preserving model/configuration/exact resume selection (%s)", (resume) => {
+    expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? [] : ["resume", resume]), "--model", "model-a", ...configuration.args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-c", 'projects={"/task"={trust_level="trusted"}}']);
+    expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, "/task", resume)).toEqual([...(resume === undefined ? [] : [`--resume=${resume}`]), "--allow-tool=shell(git:*)", "--reasoning-effort", "low", "--allow-all", "--no-ask-user", "--no-sandbox"]);
   });
-  it.each(["resume", "a positional prompt", "--model=x", "-m", "--cd", "--no-daemon", "--worktree", "--remote=x", "--help"])("refuses Codex-owned/positional argument %s", (value) => {
+  it.each(['/repo/.worktrees/task.name', '/repo/中文/"quoted"', 'C:\\repo\\.worktrees\\中文 "task"'])('encodes the exact trust path in a final inline TOML table: %s', (cwd) => {
+    const args = buildHerdrAgentArguments({ ...configuration, args: ["-c", 'projects={"other"={trust_level="untrusted"}}', "-c", 'approval_policy="on-request"', "--profile", "work"] }, cwd);
+    const trust = args.at(-1)!;
+    expect(args.at(-2)).toBe("-c");
+    expect(trust.startsWith("projects={")).toBe(true);
+    expect(trust.endsWith('={trust_level="trusted"}}')).toBe(true);
+    expect(JSON.parse(trust.slice("projects={".length, -'={trust_level="trusted"}}'.length))).toBe(cwd);
+    expect(args.slice(3, 9)).toEqual(["-c", 'projects={"other"={trust_level="untrusted"}}', "-c", 'approval_policy="on-request"', "--profile", "work"]);
+  });
+  it.each(["resume", "a positional prompt", "--model=x", "-m", "--cd", "--no-daemon", "--worktree", "--remote=x", "--help", "-a", "--ask-for-approval=never", "-s", "--sandbox=read-only", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"])("refuses Codex-owned/positional argument %s", (value) => {
     expect(() => validateHerdrAgentArguments("codex", [value])).toThrow();
   });
-  it.each(["-p", "--prompt=execute", "-i", "--interactive=execute", "--resume=x", "--continue", "--session-id=x", "-C", "--mode=autopilot", "--autopilot", "--fleet", "--plan"])("refuses Copilot-owned argument %s", (value) => {
+  it.each(["-p", "--prompt=execute", "-i", "--interactive=execute", "--resume=x", "--continue", "--session-id=x", "-C", "--mode=autopilot", "--autopilot", "--fleet", "--plan", "--assisted-approval", "--sandbox", "--deny-tool=shell", "--deny-url=*", "--available-tools=shell", "--excluded-tools=shell"])("refuses Copilot-owned argument %s", (value) => {
     expect(() => validateHerdrAgentArguments("copilot", [value])).toThrow();
   });
   it("rejects hidden option values, control characters, unknown flags and ambiguous variadic options", () => {
     expect(() => validateHerdrAgentArguments("codex", ["--config", "--model=x"])).toThrow();
     expect(() => validateHerdrAgentArguments("codex", ["--config", "x=one\ntwo"])).toThrow();
     expect(() => validateHerdrAgentArguments("copilot", ["--allow-tool", "shell(git:*)"])).toThrow("=value");
-    expect(() => buildHerdrAgentArguments({ ...configuration, model: "x\ny" })).toThrow();
-    expect(() => buildHerdrAgentArguments(configuration, "prefix")).toThrow("exact original session UUID");
+    expect(() => buildHerdrAgentArguments({ ...configuration, model: "x\ny" }, "/task")).toThrow();
+    expect(() => buildHerdrAgentArguments(configuration, "/task", "prefix")).toThrow("exact original session UUID");
+    expect(() => buildHerdrAgentArguments(configuration, "relative")).toThrow("absolute path");
   });
 });
 
@@ -130,6 +139,26 @@ describe("direct task resource management", () => {
     expect(herdrExecutionAgentName(f.context)).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
   });
 
+  it("sets Copilot's permission environment on every new task workspace", async () => {
+    const f = await fixture("copilot");
+    await f.manager.prepareWorkspace(f.context, operation());
+    expect(f.calls.find((call) => call.method === "workspace.create")!.params.env).toEqual({ XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", COPILOT_ALLOW_ALL: "true", COPILOT_ASSISTED_APPROVAL: "false" });
+  });
+
+  it("trusts the canonical working directory when the task path traverses a symlink", async () => {
+    const f = await fixture(); const canonicalCwd = await realpath(f.context.cwd);
+    const alias = path.join(f.context.cwd, "linked"); await symlink(canonicalCwd, alias, "junction"); f.context.cwd = alias;
+    await launch(f);
+    expect((f.calls.find((call) => call.method === "agent.start")!.params.args as string[]).at(-1)).toBe(`projects={${JSON.stringify(canonicalCwd)}={trust_level="trusted"}}`);
+  });
+
+  it.each(["codex", "copilot"] as const)("rejects conflicting %s permissions before any native-start RPC", async (agent) => {
+    const f = await fixture(agent); const binding = await f.manager.prepareWorkspace(f.context, operation()); f.calls.splice(0);
+    const args = agent === "codex" ? ["--sandbox", "workspace-write"] : ["--deny-tool=shell"];
+    await expect(f.manager.start(f.context, binding, { configuration: { ...configuration, agent, args }, prompt: "assignment" }, operation())).rejects.toThrow("owned by the worker");
+    expect(f.calls).toEqual([]); expect(f.preflights()).toBe(0);
+  });
+
   it.each(["codex", "copilot"] as const)("starts %s with exact caller configuration and saves no execution receipt", async (kind) => {
     const f = await fixture(kind); const binding = await launch(f);
     expect(f.prompts).toEqual(["initial"]); expect(f.preflights()).toBe(1);
@@ -142,7 +171,7 @@ describe("direct task resource management", () => {
     const config: HerdrAgentConfiguration = { agent: kind, model: "current-model", args: [] };
     const result = await f.manager.start(f.context, binding, { configuration: config, prompt: "continue task", resumeSessionId: nativeId }, operation());
     expect(result.nativeSession?.sessionId).toBe(nativeId);
-    expect(f.calls.find((call) => call.method === "agent.start")!.params.args).toEqual(buildHerdrAgentArguments(config, nativeId));
+    expect(f.calls.find((call) => call.method === "agent.start")!.params.args).toEqual(buildHerdrAgentArguments(config, await realpath(f.context.cwd), nativeId));
     expect(f.prompts).toEqual(["continue task"]);
   });
 

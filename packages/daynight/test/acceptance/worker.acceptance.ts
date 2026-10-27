@@ -3,7 +3,7 @@ import type { ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { Socket } from "node:net";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
 import path from "node:path";
@@ -66,7 +66,7 @@ const client=createServer(socket=>{socket.on('error',socketError);socket.end();}
 const metadata = String.raw`#!/usr/bin/env node
 const args=process.argv.slice(2);
 if(args.includes('--version'))process.stdout.write('codex-cli 0.164.0\n');
-else if(args.includes('--help'))process.stdout.write('--no-daemon\n');
+else if(args.includes('--help'))process.stdout.write('--no-daemon --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust\n');
 else if(args.includes('features'))process.stdout.write('hooks stable true\n');
 else throw new Error('Only metadata commands are permitted in this fixture');
 `;
@@ -397,7 +397,11 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(latestStart.argv).toContain("current-model");
       if (scenario === "resume") {
         expect(restartedSession).toBe(originalSession);
-        expect(latestStart.argv).toEqual(["codex", "--no-daemon", "resume", originalSession, "--model", "current-model", "--search"]);
+        expect(latestStart.argv?.slice(0, 7)).toEqual(["codex", "--no-daemon", "resume", originalSession, "--model", "current-model", "--search"]);
+        expect(latestStart.argv).toContain("--dangerously-bypass-approvals-and-sandbox");
+        expect(latestStart.argv).toContain("--dangerously-bypass-hook-trust");
+        const trust = latestStart.argv!.at(-1)!;
+        expect(trust).toBe(`projects={${JSON.stringify(await realpath(path.dirname(sentinel)))}={trust_level="trusted"}}`);
       } else {
         expect(restartedSession).not.toBe(originalSession);
         expect(latestStart.argv).not.toContain("resume");
@@ -419,6 +423,13 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(event.row).toMatchObject({ status: "active", agent: "codex" });
       expect(Object.keys(event.row!).sort()).toEqual(["agent", "claim_id", "project_id", "session_id", "status", "task_id"]);
       expect(event.projectCount).toBe(2);
+      if (event.kind === "native-start") {
+        expect(event.argv).toContain("--dangerously-bypass-approvals-and-sandbox");
+        expect(event.argv).toContain("--dangerously-bypass-hook-trust");
+        const repository = repositoryPaths[tasks.findIndex((task) => task.id === event.taskId)]!;
+        const expectedCwd = path.join(await realpath(repository), ".worktrees", "daynight", event.taskId!);
+        expect(event.argv?.slice(-2)).toEqual(["-c", `projects={${JSON.stringify(expectedCwd)}={trust_level="trusted"}}`]);
+      }
     }
     for (const task of tasks) {
       const assignments = observed.filter((event) => event.kind === "prompt" && event.taskId === task.id && event.text!.includes("Assignment:"));

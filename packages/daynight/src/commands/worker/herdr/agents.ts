@@ -5,7 +5,7 @@ import type { Operation } from "../../../api/operation.js";
 import { canonicalId } from "../../../api/parse.js";
 import type { WorkerAgent } from "../../../api/types.js";
 import { normalizeServerUrl } from "../../../config/server.js";
-import { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./arguments.js";
+import { buildHerdrAgentArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
 import type { HerdrAgentConfiguration } from "./arguments.js";
 import { codexInputSurface } from "./codex-input.js";
 import { HerdrRpcError } from "./rpc.js";
@@ -287,7 +287,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           if (typeof pane.cwd === "string" && [expectedCwd, path.normalize(path.resolve(context.cwd))].includes(path.normalize(path.resolve(pane.cwd)))) throw new Error("The requested task cwd already belongs to a different Herdr workspace.");
         }
         createPossible = true;
-        const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment } }, "workspace_created", operation);
+        const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment, ...nativeAgentPermissionEnvironment(context.agent) } }, "workspace_created", operation);
         const workspace = object(result.workspace, "Created workspace");
         const pane = object(result.root_pane, "Created task pane");
         const binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };
@@ -301,7 +301,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     observe: observation,
     start: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: { configuration: HerdrAgentConfiguration; prompt: string; resumeSessionId?: string }, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => {
       if (input.configuration.agent !== context.agent) throw new TypeError("The agent configuration differs from the execution identity.");
-      const args = buildHerdrAgentArguments(input.configuration, input.resumeSessionId);
+      const cwd = path.normalize(await realpath(context.cwd));
+      const args = buildHerdrAgentArguments(input.configuration, cwd, input.resumeSessionId);
       if (typeof input.prompt !== "string" || input.prompt.length === 0) throw new TypeError("The startup prompt must be nonempty text.");
       const before = await observation(context, binding, operation);
       if (before.kind !== null || before.launchPending || before.interactiveReady) return before;

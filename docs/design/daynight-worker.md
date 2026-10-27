@@ -43,7 +43,7 @@ flowchart TB
 
 独立的 worker mapping 包含 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories。默认值依次为 `~/daynights`、1、5000、3、copilot、null、[] 和 []。省略配置文件、worker 或可选字段使用这些默认值；显式 null 只对 model 有清除语义。根节点、review、worker 及其仓库条目的未知字段在运行时忽略，CLI 编辑保留其原 YAML 节点；已知字段的类型和值、YAML 结构、重复键、读取故障和取消继续严格校验。stateDirectory 等未知字段不能改变固定状态根。读取配置不重写文件。
 
-Repository entry 需要 remote/path，可提供 projectId、agent/model/args 覆盖。路径相对 config.yml 目录或为绝对路径，不依赖启动 cwd，不展开 tilde；重复项目、重叠仓库和与状态根重叠均拒绝。相同 agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，不能覆盖 worker 拥有的 cwd/session/model/mode 参数。
+Repository entry 需要 remote/path，可提供 projectId、agent/model/args 覆盖。路径相对 config.yml 目录或为绝对路径，不依赖启动 cwd，不展开 tilde；重复项目、重叠仓库和与状态根重叠均拒绝。相同 agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，不能覆盖 worker 拥有的 cwd/session/model/mode 参数或固定 full access 策略。普通 model、reasoning、日志和附加配置参数仍由原生工具解释。
 
 `worker repo list` 只读本地注册。Add/remove 选择远端现存可访问 Project；显式 --project 支持非交互，否则多选显示名称、完整 UUID 和 repoUrl。新注册使用 worker.repositoryRoot 计算绝对路径，已有注册保留传输 URL、路径和覆盖，remote-only 项只补 projectId。Remove 只改变后续领取范围，不删除 clone、claim、worktree 或原生历史。repositoryRoot 与 review 独立，改变根不移动已有注册。
 
@@ -51,7 +51,7 @@ Repository entry 需要 remote/path，可提供 projectId、agent/model/args 覆
 
 `worker setup` 拥有交互编排：验证 stdin/stderr 为终端，读取当前同源配置快照，汇总公共环境报告，单选 Copilot/Codex，读取完整可访问 Project 清单并预选已有注册，再校验候选配置及每组实际 native model/args。最终摘要展示保留的传输 URL/路径、删除的注册和不兼容参数重置，确认后通过 repositories 模块一次原子保存。所选 agent 应用于全部选中 Project；切换类型清除不兼容的全局或项目级 model/args，兼容值保留。
 
-Setup 复用 Herdr preflight 的原生版本、目录、运行时、hook asset、有效 SessionStart 及 Codex hooks/隔离能力检查。公共报告检查平台、Node、Git、Herdr 版本、私有端点和随包 managed 技能；候选 integration 状态通过只读 herdr integration status 获取，不启动私有实例。运行时在 task cwd 使用 typed RPC integration 检查，并由原生命令报告恢复错误。Setup 启动目录的检查不证明 provider 登录、未来 task 目录信任、真实 hook 执行或 live 协议能力。
+Setup 复用 Herdr preflight 的原生版本、目录、运行时、hook asset、有效 SessionStart 及固定启动参数能力检查。Codex 要求至少 0.135，并支持 `--no-daemon`、权限及 hook trust bypass；两个 provider 都通过带固定参数的只读 `--help` 探测验证原生解析能力。公共报告检查平台、Node、Git、Herdr 版本、私有端点和随包 managed 技能；候选 integration 状态通过只读 herdr integration status 获取，不启动私有实例。运行时在 task cwd 使用 typed RPC integration 检查，并由原生命令报告恢复错误。Setup 检查不证明 provider 登录、真实 hook 执行或 live 协议能力。
 
 独立环境探测返回通过、缺项或未验证的结构化结果，所有已启动探测用 allSettled 等待收尾。普通缺项可给修复指引并保存配置；命令清理的 AggregateError 及其 cause 链始终优先于普通缺项或取消，未确认进程收尾使 setup 明确失败。Setup 不安装、登录、clone、打开 worker SQLite、取得 claim 或启动 worker/Herdr/native agent。
 
@@ -146,7 +146,13 @@ NULL 分支覆盖上次已经启动但 ID 尚未保存就中断的窗口，沿�
 
 首次启动和明确恢复使用完整 managed assignment，显式提供 worker-managed 环境、using-daynight、execute-task-in-managed 及 task/claim/worktree 上下文和本次执行配置。连接存活 agent 不重发启动指令。适配层递交调用方给出的不透明 prompt，不选择业务任务或解释验收。
 
-保留当前输入 readiness 与 Codex composer 检查。原生信任/授权不被自动接受；通过 worker attach 在原终端明确处理。启动回执、输入提交状态和停止时读取的进程信息只留本次调用，进程中断后不承诺启动指令恰好递交一次。原生历史可用性由原生命令报告，不额外扫描 provider 数据库或会话 manifest。
+每次 fresh/resume 启动都由同一个参数构造器施加固定 full access 策略，配置中的 model/args 不能降低权限或重新启用确认。Copilot 在配置参数后追加 `--allow-all --no-ask-user --no-sandbox`；创建该任务 workspace 及运行只读原生探测时，最后覆盖 `COPILOT_ALLOW_ALL=true`、`COPILOT_ASSISTED_APPROVAL=false`。精确的字符串 `true` 同时免除 Copilot 的交互式目录信任；关闭 assisted approval 避免继承环境恢复权限确认。
+
+Codex 保留 `--no-daemon [resume <session_id>]` 前缀，在配置参数后追加 `--dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust`，最后通过 `-c` 注入 `projects={"<canonical task cwd>"={trust_level="trusted"}}`。路径先取 realpath，再编码为 TOML 字符串；inline table 将含点号、引号或 Unicode 的路径保留为完整 key，避免 dotted override parser 拆分 `.worktrees`。两个 bypass 开关不免除目录信任，因此 trusted 配置是同一启动策略的一部分。Codex 的有效 features 检查使用相同真实 cwd 和最后的 trusted 覆盖，保证检查实际会被加载的项目配置。参数与版本选择的依据由[full access 决策](../../.agents/notes/implemented/architecture/2026-10-27-worker-full-access.md)拥有。
+
+参数校验在启动 RPC 前拒绝 Copilot 的 assisted approval、sandbox、deny/tool restriction，以及 Codex 的 approval/sandbox 控制和重复的系统 bypass 开关。缺少原生能力明确失败。策略只作用于本次命令和任务 workspace，不写全局 native 配置；认证、业务授权及组织/操作系统策略保留各自归属。
+
+保留当前输入 readiness 与 Codex composer 检查，启动输入只提交到可用的业务 composer。需要业务人工输入时通过 worker attach 在原终端处理。启动回执、输入提交状态和停止时读取的进程信息只留本次调用，进程中断后不承诺启动指令恰好递交一次。原生历史可用性由原生命令报告，不额外扫描 provider 数据库或会话 manifest。
 
 自动恢复计数及超限等待只在当前进程中维护，重启清零。达到 recoveryLimit 后保留 active 与错误，可用人工 retry 或重启重新尝试。
 
@@ -201,6 +207,6 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 ## 验证边界
 
-真实 SQLite 验证精确列数、枚举、nullable ID、历史行及唯一 active。Git 测试验证 dirty state、静态归属、遗留发现、重开与安全删除。受控 HTTP/Herdr 验证空库项目初始化、未知 claim 结果、重连、指定 ID resume、NULL 新建、容量、清理期限、取消和人工锁互斥。真实原生会话恢复与三平台完整 Goal 验收仍需各自来源明确的运行证据。
+真实 SQLite 验证精确列数、枚举、nullable ID、历史行及唯一 active。Git 测试验证 dirty state、静态归属、遗留发现、重开与安全删除。受控 HTTP/Herdr 验证空库项目初始化、未知 claim 结果、重连、指定 ID resume、NULL 新建、容量、清理期限、取消和人工锁互斥。原生启动策略验证两个 provider 的 fresh/resume 完整 argv、Copilot 环境覆盖、Codex 路径编码、冲突参数拒绝及只读能力探测；真实原生会话恢复与三平台完整 Goal 验收仍需各自来源明确的运行证据。
 
 当前模型明确将清理原截止、恢复累计次数、原 model/args 和中断管理意图的跨重启保证收回到进程内。既有详细状态模型的原始理由与替代方案保存在[简化决策](../../.agents/notes/implemented/simplification/2026-10-27-worker-claim-records.md)及其前驱记录中。
