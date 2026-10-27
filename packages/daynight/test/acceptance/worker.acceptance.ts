@@ -1,7 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
+import { Socket } from "node:net";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { ServerResponse } from "node:http";
@@ -19,7 +20,7 @@ const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.r
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const time = "2026-10-27T00:00:00Z";
 type Row = { project_id: string; task_id: string; claim_id: string; status: string; agent: string; session_id: string | null };
-type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; argv?: string[]; message?: string };
+type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; argv?: string[]; message?: string; code?: string };
 type FixtureTask = { -readonly [Key in keyof Task]: Task[Key] };
 
 const daemon = String.raw`#!/usr/bin/env node
@@ -32,6 +33,7 @@ import path from 'node:path';
 if(process.argv.includes('--version')){process.stdout.write('herdr 0.9.5\n');process.exit(0);}
 const require=createRequire(import.meta.url),Database=require(process.env.FIXTURE_SQLITE),events=process.env.FIXTURE_EVENTS;
 const event=async(value)=>appendFile(events,JSON.stringify({timestamp:Date.now(),...value})+'\n');
+const socketError=error=>{if(error.code==='ECONNRESET'||error.code==='EPIPE'){void event({kind:'peer-disconnect',code:error.code});return;}throw error;};
 const record=async(kind,taskId,extra={})=>{const sql=new Database(path.join(process.env.HOME,'.daynight','worker','state.sqlite'),{readonly:true});try{await event({kind,taskId,row:sql.prepare('SELECT * FROM tasks WHERE task_id=?').get(taskId),projectCount:sql.prepare('SELECT count(*) AS count FROM projects').get().count,...extra});}finally{sql.close();}};
 const directory=path.join(process.env.XDG_CONFIG_HOME,'herdr','sessions','w');await mkdir(directory,{recursive:true});
 const workspaces=[],panes=[],agents=[],tabs=[],shells=new Map(),children=new Map(),nativeArguments=new Map();let next=0;
@@ -42,7 +44,7 @@ const processChild=async()=>{const child=spawn(process.execPath,['-e','setInterv
 const closeChild=async child=>{if(child&&child.exitCode===null&&child.signalCode===null){const closed=new Promise(resolve=>child.once('close',resolve));child.kill('SIGTERM');await closed;}};
 const stop=async pane=>{const identity=owner(pane),native=children.get(pane.pane_id),shell=shells.get(pane.pane_id);await closeChild(native);await closeChild(shell);if(native)await event({kind:'native-stop',taskId:identity.taskId,pid:native.pid});children.delete(pane.pane_id);shells.delete(pane.pane_id);nativeArguments.delete(pane.pane_id);};
 const sockets=new Set();let shutting=false;
-const api=createServer(socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));let input='';socket.on('data',async chunk=>{input+=chunk.toString();const end=input.indexOf('\n');if(end<0)return;const request=JSON.parse(input.slice(0,end));input='';const p=request.params;let result;
+const api=createServer(socket=>{socket.on('error',socketError);sockets.add(socket);socket.once('close',()=>sockets.delete(socket));let input='';socket.on('data',async chunk=>{input+=chunk.toString();const end=input.indexOf('\n');if(end<0)return;const request=JSON.parse(input.slice(0,end));input='';const p=request.params;let result;
 try{switch(request.method){
 case 'ping':result={type:'pong',version:'0.9.5',protocol:22,capabilities:{detached_server_daemon:true}};break;
 case 'session.snapshot':result={type:'session_snapshot',snapshot:snapshot()};break;
@@ -57,7 +59,7 @@ case 'server.stop':result={type:'ok'};if(!shutting){shutting=true;setTimeout(asy
 default:throw new Error('Unexpected fixture method '+request.method);
 }socket.end(JSON.stringify({id:request.id,result})+'\n');}catch(error){await event({kind:'fixture-error',message:error.stack});socket.end(JSON.stringify({id:request.id,error:{code:'fixture_error',message:error.message}})+'\n');}
 });});
-const client=createServer(socket=>socket.end());await new Promise(resolve=>api.listen(path.join(directory,'herdr.sock'),resolve));await new Promise(resolve=>client.listen(path.join(directory,'herdr-client.sock'),resolve));await event({kind:'daemon-start',pid:process.pid});
+const client=createServer(socket=>{socket.on('error',socketError);socket.end();});await new Promise(resolve=>api.listen(path.join(directory,'herdr.sock'),resolve));await new Promise(resolve=>client.listen(path.join(directory,'herdr-client.sock'),resolve));await event({kind:'daemon-start',pid:process.pid});
 `;
 
 const metadata = String.raw`#!/usr/bin/env node
@@ -67,6 +69,91 @@ else if(args.includes('--help'))process.stdout.write('--no-daemon\n');
 else if(args.includes('features'))process.stdout.write('hooks stable true\n');
 else throw new Error('Only metadata commands are permitted in this fixture');
 `;
+
+const fixtureProcessAlive = async (pid: number): Promise<boolean> => {
+  try {
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(") ") + 2, stat.lastIndexOf(") ") + 3) !== "Z";
+  } catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return false; throw error; }
+};
+
+const cleanupFixtureProcesses = async (observed: readonly Event[], eventsFile: string): Promise<{ pid: number; outcome: "absent" | "stopped" }[]> => {
+  const pids = new Set(observed.filter((entry) => ["workspace", "native-start", "daemon-start"].includes(entry.kind) && entry.pid !== undefined).map((entry) => entry.pid!));
+  const result: { pid: number; outcome: "absent" | "stopped" }[] = [];
+  for (const pid of pids) {
+    if (!await fixtureProcessAlive(pid)) { result.push({ pid, outcome: "absent" }); continue; }
+    let environment: string;
+    try { environment = await readFile(`/proc/${pid}/environ`, "utf8"); }
+    catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") { result.push({ pid, outcome: "absent" }); continue; } throw error; }
+    if (!environment.split("\0").includes(`FIXTURE_EVENTS=${eventsFile}`)) throw new Error(`The fixture PID ${pid} was reused; the unrelated process was retained.`);
+    try { process.kill(pid, "SIGKILL"); }
+    catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ESRCH")) throw error; }
+    const deadline = Date.now() + 2_000;
+    while (await fixtureProcessAlive(pid)) {
+      if (Date.now() >= deadline) throw new Error(`The owned fixture process ${pid} did not exit.`);
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    result.push({ pid, outcome: "stopped" });
+  }
+  return result;
+};
+
+it.skipIf(process.platform !== "linux")("keeps the fixture daemon alive when an RPC peer cancels its response", async () => {
+  const temporary = path.join(primary, ".tmp");
+  await mkdir(temporary, { recursive: true });
+  const home = await mkdtemp(path.join(temporary, "wreset"));
+  const eventsFile = path.join(home, "events.jsonl");
+  const configHome = path.join(home, "c");
+  const endpoint = path.join(configHome, "herdr/sessions/w/herdr.sock");
+  const source = path.join(home, "herdr.mjs");
+  const database = path.join(home, ".daynight/worker/state.sqlite");
+  await mkdir(path.dirname(database), { recursive: true });
+  const sql = new Database(database);
+  sql.exec("CREATE TABLE projects(project_id TEXT,repo_url TEXT,local_path TEXT);CREATE TABLE tasks(project_id TEXT,task_id TEXT,claim_id TEXT,status TEXT,agent TEXT,session_id TEXT);INSERT INTO projects VALUES('p','r','l');INSERT INTO tasks VALUES('p','t','c','active','codex',NULL)");
+  sql.close();
+  await writeFile(source, daemon);
+  const child = spawn(process.execPath, [source], { detached: true, env: { ...process.env, HOME: home, XDG_CONFIG_HOME: configHome, FIXTURE_EVENTS: eventsFile, FIXTURE_SQLITE: createRequire(import.meta.url).resolve("better-sqlite3") }, stdio: ["ignore", "pipe", "pipe"] });
+  let stderr = "";
+  child.stderr!.on("data", (value: Buffer) => { stderr += value.toString(); });
+  const closed = new Promise<number | null>((resolve, reject) => { child.once("close", resolve); child.once("error", reject); });
+  const call = (method: string, params: Record<string, unknown>, cancel = false): Promise<string> => new Promise((resolve, reject) => {
+    const socket = new Socket(); let response = "";
+    socket.on("error", reject);
+    socket.on("data", (chunk: Buffer) => { response += chunk.toString(); });
+    socket.on("end", () => resolve(response));
+    socket.connect(endpoint, () => { socket.write(`${JSON.stringify({ id: "transport", method, params })}\n`, () => { if (cancel) { socket.destroy(); resolve(""); } }); });
+  });
+  const readEvents = async (): Promise<Event[]> => {
+    try {
+      const source = await readFile(eventsFile, "utf8");
+      return source.slice(0, source.lastIndexOf("\n") + 1).split("\n").filter(Boolean).map((line) => JSON.parse(line) as Event);
+    }
+    catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") return []; throw error; }
+  };
+  try {
+    const deadline = Date.now() + 5_000;
+    while (!existsSync(endpoint)) {
+      if (Date.now() >= deadline || child.exitCode !== null) throw new Error(`Fixture startup failed: ${stderr}`);
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    await call("workspace.create", { label: `daynight:${JSON.stringify({ taskId: "t", padding: "x".repeat(1_000_000) })}`, cwd: home });
+    await call("session.snapshot", {}, true);
+    while (!(await readEvents()).some((event) => event.kind === "peer-disconnect")) {
+      if (Date.now() >= deadline || child.exitCode !== null) throw new Error(`Cancelled RPC terminated the fixture: ${stderr}`);
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    expect(JSON.parse(await call("ping", {}))).toMatchObject({ result: { type: "pong" } });
+    expect((await readEvents()).filter((event) => event.kind === "peer-disconnect").map((event) => event.code)).toEqual([expect.stringMatching(/^(EPIPE|ECONNRESET)$/)]);
+    expect(child.exitCode).toBeNull();
+    expect(stderr).toBe("");
+  } finally {
+    const observed = await readEvents();
+    if (child.pid !== undefined) observed.push({ kind: "daemon-start", pid: child.pid, timestamp: Date.now() });
+    await cleanupFixtureProcesses(observed, eventsFile);
+    await closed;
+    await rm(home, { recursive: true, force: true });
+  }
+});
 
 it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-database", "inventory-failure"] as const)("runs the installed minimal worker through %s", async (scenario) => {
   const scratch = path.join(primary, ".tmp");
@@ -314,27 +401,24 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "failed", scenario, error: error instanceof Error ? error.stack : String(error), requests, events: await events(), logs }, null, 2));
+    const herdrStderr = await readFile(path.join(home, ".daynight/worker/logs/herdr.stderr.log"), "utf8").catch((readError: unknown) => {
+      if (readError instanceof Error && "code" in readError && readError.code === "ENOENT") return null;
+      throw readError;
+    });
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "failed", scenario, error: error instanceof Error ? error.stack : String(error), requests, events: await events(), logs, herdrStderr }, null, 2));
     throw error;
   } finally {
     const cleanupErrors: unknown[] = [];
     for (const [child, closed] of children) try { await terminateInstalledProcess(child, closed); } catch (error) { cleanupErrors.push(error); }
     const observed = await events();
-    for (const event of observed.filter((entry) => entry.kind === "daemon-start" && entry.pid !== undefined)) {
-      try {
-        const absent = (): boolean => { try { process.kill(event.pid!, 0); return false; } catch (error) { if (error instanceof Error && "code" in error && error.code === "ESRCH") return true; throw error; } };
-        if (absent()) continue;
-        const environment = await readFile(`/proc/${event.pid}/environ`, "utf8");
-        if (!environment.split("\0").includes(`FIXTURE_EVENTS=${eventsFile}`)) throw new Error("The fixture daemon PID was reused; its process group was retained.");
-        process.kill(-event.pid!, "SIGKILL");
-        await waitFor("fixture daemon process exit", absent, 2_000);
-      } catch (error) { if (!(error instanceof Error && "code" in error && (error.code === "ESRCH" || error.code === "ENOENT"))) cleanupErrors.push(error); }
-    }
+    let processes: Awaited<ReturnType<typeof cleanupFixtureProcesses>> = [];
+    try { processes = await cleanupFixtureProcesses(observed, eventsFile); }
+    catch (error) { cleanupErrors.push(error); }
     await new Promise<void>((resolve, reject) => { server.close((error) => error === undefined || ("code" in error && error.code === "ERR_SERVER_NOT_RUNNING") ? resolve() : reject(error)); server.closeAllConnections(); }).catch((error: unknown) => { cleanupErrors.push(error); });
     try { await installed?.cleanup(); } catch (error) { cleanupErrors.push(error); }
     try { await rm(home, { recursive: true, force: true }); } catch (error) { cleanupErrors.push(error); }
     await mkdir(path.dirname(cleanupEvidenceFile), { recursive: true });
-    await writeFile(cleanupEvidenceFile, JSON.stringify({ outcome: cleanupErrors.length === 0 ? "passed" : "failed", scenario, homeRemoved: !existsSync(home), installedArtifactRemoved: installed === undefined ? null : !existsSync(installed.receipt.root), errors: cleanupErrors.map((error) => error instanceof Error ? error.message : String(error)) }, null, 2));
+    await writeFile(cleanupEvidenceFile, JSON.stringify({ outcome: cleanupErrors.length === 0 ? "passed" : "failed", scenario, homeRemoved: !existsSync(home), installedArtifactRemoved: installed === undefined ? null : !existsSync(installed.receipt.root), processes, errors: cleanupErrors.map((error) => error instanceof Error ? error.message : String(error)) }, null, 2));
     if (cleanupErrors.length !== 0) throw new AggregateError(failure === undefined ? cleanupErrors : [failure, ...cleanupErrors], "Installed worker fixture or cleanup failed.");
   }
 });
