@@ -280,7 +280,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
       }
       await closeChain(page);
       await page.getByRole('tab', { name: locale === 'en' ? 'Standalone tasks' : '独立任务', exact: true }).click();
-      const showCompleted = page.locator('.completed-chain-control input'); await showCompleted.check();
+      const showAll = page.locator('.completed-chain-control input'); await showAll.check();
       const row = page.locator(`#standalone-task-${standalone.id}`);
       await expect(row.locator('.task-stuck-label')).toHaveText(locale === 'en' ? 'Possibly stuck' : '可能卡住了');
       const manualRow = page.locator(`#standalone-task-${manualStandalone.id}`);

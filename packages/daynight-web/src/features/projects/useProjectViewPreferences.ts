@@ -22,26 +22,9 @@ const readPreference = <Value,>(key: string, decode: (value: unknown) => Value):
   }
 };
 
-const completedChainPreference = (value: unknown): boolean => {
-  if (typeof value !== "boolean") throw new Error("Invalid completed chain visibility preference.");
+const showAllPreference = (value: unknown): boolean => {
+  if (typeof value !== "boolean") throw new Error("Invalid task visibility preference.");
   return value;
-};
-
-export const useCompletedChainVisibility = (projectId: string) => {
-  const key = `daynight:completed-chains:${projectId}`;
-  const [initial] = useState(() => readPreference(key, completedChainPreference));
-  const [showCompleted, setShowCompleted] = useState(initial.value ?? false);
-  const [writeIssue, setWriteIssue] = useState<PreferenceIssue | null>(null);
-  const onShowCompletedChange = useCallback((show: boolean) => {
-    setShowCompleted(show);
-    try {
-      window.localStorage.setItem(key, JSON.stringify(show));
-      setWriteIssue(null);
-    } catch (cause) {
-      setWriteIssue({ kind: "write", cause });
-    }
-  }, [key]);
-  return { showCompleted, onShowCompletedChange, issue: writeIssue ?? initial.issue };
 };
 
 export type ProjectSection = "overview" | "tasks";
@@ -83,9 +66,14 @@ const useNamedPreference = <Value,>(key: string, decode: (value: unknown) => Val
   return { value, save, issue: writeIssue ?? initial.issue };
 };
 
+export const useChainVisibility = (projectId: string) => {
+  const { value, save, issue } = useNamedPreference(`daynight:completed-chains:${projectId}`, showAllPreference, false);
+  return { showAll: value, onShowAllChange: save, issue };
+};
+
 export const useStandaloneVisibility = (projectId: string) => {
-  const { value, save, issue } = useNamedPreference(`daynight:completed-standalone-tasks:${projectId}`, completedChainPreference, false);
-  return { showCompleted: value, onShowCompletedChange: save, issue };
+  const { value, save, issue } = useNamedPreference(`daynight:completed-standalone-tasks:${projectId}`, showAllPreference, false);
+  return { showAll: value, onShowAllChange: save, issue };
 };
 
 export const useProjectSection = (projectId: string) => {

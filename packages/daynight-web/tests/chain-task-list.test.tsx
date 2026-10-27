@@ -40,7 +40,7 @@ const indexOf = (items = seeds): GraphIndex => {
 };
 const noop = () => {};
 const list = (index: GraphIndex, onOpenTask = noop) => <ChainList index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
-  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showCompleted={true} onShowCompletedChange={noop} />;
+  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
@@ -86,7 +86,7 @@ describe('Goal task lists', () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
       return <ChainList index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
         openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)}
-        onOpenTask={onOpenTask} showCompleted={true} onShowCompletedChange={noop} />;
+        onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
     };
     render(<Wrapper />);
     const graph = screen.getByRole('button', { name: 'Goal，查看依赖关系' });

@@ -28,8 +28,10 @@ not browser scenarios or product scope.
 internal `quality` and `browser` modes. Quality runs
 the canonical Node harness and complete Vitest/V8 plus strict statement checker
 serially, with a separate 180-second deadline for each command. Only the coverage
-child receives `VITEST_MAX_WORKERS=2`; its `forks` pool, file isolation and full
-product-source manifest remain unchanged.
+child receives `VITEST_MAX_WORKERS=4`, calibrated for its dedicated public
+standard Linux runner by the [worker capacity
+decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
+isolation and full product-source manifest remain unchanged.
 
 Browser mode installs pinned Chromium with Linux dependencies under the existing
 600-second bound, then invokes ordinary core acceptance. That runner owns native
@@ -57,8 +59,12 @@ This partially supersedes the unified quality/browser orchestration in the
 [acceptance pipeline decision](../../archived/testing/2026-10-21-web-acceptance-pipeline.md). The target,
 permission, resource and recovery rules remain unchanged and are defined in the
 [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance). The original
-[two-worker rationale](../../archived/testing/2026-10-21-ci-validation-efficiency.md) remains applicable
-to the quality command without claiming a universal fastest worker setting.
+[two-worker rationale](../../archived/testing/2026-10-21-ci-validation-efficiency.md)
+compared coverage with concurrent Docker preparation. The isolation decision
+initially retained that worker budget. The [worker capacity
+decision](2026-10-28-web-quality-worker-capacity.md) recalibrates the existing
+coverage setting for its dedicated runner; the archived comparison retains its
+historical contention conditions rather than prescribing the current budget.
 
 ## Alternatives
 

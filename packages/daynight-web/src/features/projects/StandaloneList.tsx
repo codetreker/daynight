@@ -1,3 +1,5 @@
+import { ListPagination } from "./ListPagination";
+import type { PaginationState } from "./usePagination";
 import { memo, useId, useRef } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
 import type { GraphTask } from "../../api/types";
@@ -13,8 +15,9 @@ type StandaloneListProps = {
   readonly taskIds: readonly string[];
   readonly allTaskIds: readonly string[];
   readonly onSelectTask: (id: string, trigger: HTMLElement) => void;
-  readonly showCompleted: boolean;
-  readonly onShowCompletedChange: (show: boolean) => void;
+  readonly pagination?: PaginationState;
+  readonly showAll: boolean;
+  readonly onShowAllChange: (show: boolean) => void;
 };
 
 const StandaloneRow = memo(({ task, onSelectTask }: { readonly task: GraphTask; readonly onSelectTask: StandaloneListProps["onSelectTask"] }) => {
@@ -31,26 +34,27 @@ const StandaloneRow = memo(({ task, onSelectTask }: { readonly task: GraphTask; 
   </button>{execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}</li>;
 });
 
-export const StandaloneList = ({ index, taskIds, allTaskIds, onSelectTask, showCompleted, onShowCompletedChange }: StandaloneListProps) => {
+export const StandaloneList = ({ index, taskIds, allTaskIds, onSelectTask, showAll, onShowAllChange, pagination }: StandaloneListProps) => {
   const { messages: { workspace: { standalone: m } } } = useI18n();
   const checkbox = useRef<HTMLInputElement>(null);
   const completedCount = allTaskIds.filter((id) => index.nodes.get(id)!.status === "done").length;
   return (
-    <section aria-label={m.list}>
+    <section id="project-standalone-list" tabIndex={-1} aria-label={m.list}>
       <div className="task-view-toolbar">
-        {allTaskIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showCompleted} onChange={(event) => { onShowCompletedChange(event.currentTarget.checked); }} />{m.showCompletedCount({ count: completedCount })}</label>}
-        <span className="task-view-summary" aria-label={m.summaryLabel({ visible: taskIds.length, total: allTaskIds.length })}>{m.summary({ visible: taskIds.length, total: allTaskIds.length })}</span>
+        {allTaskIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showAll} onChange={(event) => { onShowAllChange(event.currentTarget.checked); }} />{m.showAll}</label>}
+        <span className="task-view-summary" aria-label={m.summaryLabel({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}>{m.summary({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}</span>
       </div>
       <p className="graph-note">{m.explanation}</p>
       {allTaskIds.length === 0 ? (
         <div className="state-box"><h3>{m.empty}</h3><p>{m.emptyDetail}</p></div>
       ) : taskIds.length === 0 ? (
         <div className="state-box completed-chains-empty"><h3>{m.allCompleted}</h3><p>{m.hiddenCompleted({ count: completedCount })}</p>
-          <button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowCompletedChange(true); }}>{m.showCompleted}</button>
+          <button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowAllChange(true); }}>{m.showAll}</button>
         </div>
       ) : (
         <ul className="standalone-list">{taskIds.map((id) => <StandaloneRow key={id} task={index.nodes.get(id)!} onSelectTask={onSelectTask} />)}</ul>
       )}
+      {pagination !== undefined && <ListPagination label={m.list} {...pagination} />}
     </section>
   );
 };

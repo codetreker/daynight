@@ -36,12 +36,16 @@ Details. Normal `A → C ← B` is one chain with three members. The original ta
 design retained one entry per root, and its original badges counted entries.
 The [unfinished count decision](2026-10-22-unfinished-task-tab-counts.md)
 replaces the badge unit with unfinished tasks. Current components give each
-task one membership; toolbars separately report visible/total entries.
+task one membership; toolbars separately report all filter-matching entries
+against complete category totals, independently of page size.
 
-Each inner category has its own completed-item filter and page scroll position.
-Both lists use the exact newest-first presentation order. Category, standalone
-visibility, completed-chain visibility and scroll positions use independent
-records. Storage failure leaves in-memory interaction available with a visible
+Each inner category has its own Show all choice and scroll position. Both lists
+use exact newest-first presentation order. The [recent browsing and pagination
+decision](2026-10-27-recent-task-pages.md) replaces the unfinished-only default
+with all unfinished work plus recent local-calendar completions, and adds
+independent 20-entry pages without truncating component data. Current page
+numbers remain in memory for the project visit; category, standalone visibility,
+completed-chain visibility and scroll positions keep their independent records. Storage failure leaves in-memory interaction available with a visible
 persistence notice. Page positions do not persist graph geometry, pan, zoom,
 details or fullscreen. The original category design retained the inline member
 witness or explicit collapse across switches; the [graph-dialog
