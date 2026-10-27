@@ -147,9 +147,10 @@ agents through bounded cleanup while retaining unfinished claims, worktrees and
 native history. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
 
-Native startup may require folder trust or another authorization. Use
-`daynight worker attach` to make that decision in the task pane. The local task
-record retains only Project/task/claim, pending/active/done, agent type and native
+Fresh and resumed Copilot/Codex processes use fixed full access and task-folder
+trust settings without native permission prompts. Business input remains
+available through `daynight worker attach`. The local task record retains only
+Project/task/claim, pending/active/done, agent type and native
 session ID. A missing session ID produces Warning and a fresh conversation in the
 same worktree; a known ID uses native resume. Cleanup timers and recovery counts
 are process-local, and restarted agents use current applicable settings.

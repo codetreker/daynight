@@ -90,9 +90,9 @@ export const inspectWorkerEnvironment = async (
       const checks = await inspectProbes(probes.map((probe) => ({ ...probe, agent })), operation);
       operation.check();
       return [...checks, {
-        label: `${agent} provider authentication and trust`, status: "unverified", agent,
-        detail: "Read-only configuration checks do not prove provider authentication, folder trust or execution in a future task worktree.",
-        remedy: `Authenticate the ${agent} CLI explicitly and handle native trust or permission prompts before unattended task execution.`,
+        label: `${agent} provider authentication`, status: "unverified", agent,
+        detail: "Read-only configuration checks do not prove provider authentication or execution in a future task worktree.",
+        remedy: `Authenticate the ${agent} CLI before unattended task execution; the worker supplies full-access and task-directory trust settings for each launch.`,
       }];
     }
 

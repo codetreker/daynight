@@ -5,6 +5,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import { createExecutionDriver, settleWorkerStops } from "../../../src/commands/worker/execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { createHerdrAgentManager, herdrExecutionAgentName, herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
+import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import type { HerdrExecutionContext, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
@@ -33,7 +34,8 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   store.registerPending({ ...owner, agent, sessionId }); const task = store.activateTask(owner);
   const context: HerdrExecutionContext = { ...owner, cwd, agent };
   const nativeEnvironment = { XDG_CONFIG_HOME: "/native/config", XDG_STATE_HOME: "/native/state" };
-  const workerEnvironment = { XDG_CONFIG_HOME: "/worker/private/config", XDG_STATE_HOME: "/worker/private/state" };
+  const workerEnvironment = { XDG_CONFIG_HOME: "/worker/private/config", XDG_STATE_HOME: "/worker/private/state", COPILOT_ALLOW_ALL: "false", COPILOT_ASSISTED_APPROVAL: "true" };
+  const expectedNativeEnvironment = { ...workerEnvironment, ...nativeEnvironment, ...(agent === "copilot" ? { COPILOT_ALLOW_ALL: "true", COPILOT_ASSISTED_APPROVAL: "false" } : {}) };
   const binding = { session: "w", workspaceId: "restored-workspace", paneId: "restored-pane", terminalId: "restored-terminal" };
   const workspaces: Entry[] = [{ workspace_id: binding.workspaceId, label: herdrExecutionLabel(context) }];
   const panes: Entry[] = [{ workspace_id: binding.workspaceId, pane_id: binding.paneId, terminal_id: binding.terminalId, tab_id: "restored-tab", cwd, agent_status: "unknown", agent_session: { source: `herdr:${agent}`, agent, kind: "id", value: staleId } }];
@@ -60,7 +62,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
     if (method === "workspace.create") {
       sequence++; const workspace = { workspace_id: `new-workspace-${sequence}`, label: params.label };
       const pane = { workspace_id: workspace.workspace_id, pane_id: `new-pane-${sequence}`, terminal_id: `new-terminal-${sequence}`, tab_id: `new-tab-${sequence}`, cwd: params.cwd, agent_status: "unknown" };
-      workspaces.push(workspace); panes.push(pane); environments.set(pane.pane_id, structuredClone(params.env as Entry));
+      workspaces.push(workspace); panes.push(pane); environments.set(pane.pane_id, structuredClone({ ...workerEnvironment, ...params.env as Entry }));
       return { type: "workspace_created", workspace, root_pane: pane };
     }
     if (method === "workspace.close") {
@@ -103,7 +105,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, platform: "linux", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
   const input: ExecutionInput = { task, project, owner, configuration };
   const resources = async () => { const operation = createOperation(); try { return await manager.listResources(operation); } finally { operation.dispose(); } };
-  return { root, store, input, context, manager, rpc, resources, events, calls, launches, nativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
+  return { root, store, input, context, manager, rpc, resources, events, calls, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
 };
 
 describe("execution from current Herdr resources", () => {
@@ -112,7 +114,10 @@ describe("execution from current Herdr resources", () => {
     const result = await f.driver.advance(f.input);
     expect(result.binding.workspaceId).not.toBe(f.binding.workspaceId);
     expect(f.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
-    expect(f.launches).toHaveLength(1); expect(f.launches[0]!.environment).toEqual(f.nativeEnvironment);
+    expect(f.launches).toHaveLength(1); expect(f.launches[0]!.environment).toEqual(f.expectedNativeEnvironment);
+    expect(f.workerEnvironment.COPILOT_ALLOW_ALL).toBe("false"); expect(f.workerEnvironment.COPILOT_ASSISTED_APPROVAL).toBe("true");
+    expect(f.launches[0]!.args).toEqual(expect.arrayContaining(agent === "codex" ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"] : ["--allow-all", "--no-ask-user", "--no-sandbox"]));
+    if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(codexProjectTrustArguments(f.context.cwd).at(-1));
     expect(f.launches[0]!.args.some((arg) => arg === "resume" || arg.startsWith("--resume="))).toBe(false);
     expect(f.store.getTask(f.input.task)?.sessionId).toBe(freshId);
     expect(f.events.some((event) => event.kind === "warning")).toBe(true);
@@ -123,7 +128,9 @@ describe("execution from current Herdr resources", () => {
     const f = await fixture(agent, savedId);
     const result = await f.driver.advance(f.input);
     expect(result.nativeSession?.sessionId).toBe(savedId); expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
-    expect(f.launches[0]!.environment).toEqual(f.nativeEnvironment);
+    expect(f.launches[0]!.environment).toEqual(f.expectedNativeEnvironment);
+    expect(f.launches[0]!.args).toEqual(expect.arrayContaining(agent === "codex" ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"] : ["--allow-all", "--no-ask-user", "--no-sandbox"]));
+    if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(codexProjectTrustArguments(f.context.cwd).at(-1));
     expect(f.launches[0]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
   });

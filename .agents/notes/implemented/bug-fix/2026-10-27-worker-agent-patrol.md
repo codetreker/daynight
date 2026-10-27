@@ -20,8 +20,10 @@ continuation and termination as separate phases of the same claim. Startup and
 recovery prompts declare a background assignment, require autonomous decisions
 within its scope and existing authorization, and prohibit questions. Waiting
 for review or CI remains ongoing execution: the agent waits, checks results and
-continues delivery without ending the turn. This does not grant authorization
-for unrelated work or bypass native trust and permission requirements.
+continues delivery without ending the turn. Task scope and business authorization
+remain unchanged. The separate [full-access
+decision](../architecture/2026-10-27-worker-full-access.md) owns fixed native
+permissions and task-folder trust for fresh and resumed processes.
 
 For a still-owned active claim, a patrol reads the current agent inside the
 existing serialized task operation. A live, interactive-ready agent in idle or

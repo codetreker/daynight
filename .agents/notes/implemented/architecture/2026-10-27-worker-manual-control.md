@@ -26,9 +26,13 @@ instance lock, with no persistent management intent, under the
 Release stops and closes before its remote operation and deletes the worktree
 only after confirmed ownership exit. The
 [force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes transfer
-and adds a Web owner/admin reset without a physical-stop guarantee. The following
-preserves the original transfer/concurrent-controller design and its durability
-rationale as history, not current commands or local storage requirements.
+and adds a Web owner/admin reset without a physical-stop guarantee. Fresh and
+resumed agents use the fixed [full-access
+policy](2026-10-27-worker-full-access.md), including task-folder trust; attach
+remains available for business input. The following preserves the original
+transfer/concurrent-controller design, native-consent handling and durability
+rationale as history, not current commands, local storage or permission
+requirements.
 
 ### Original implementation and rationale
 

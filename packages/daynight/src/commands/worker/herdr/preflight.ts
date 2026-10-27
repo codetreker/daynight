@@ -1,7 +1,8 @@
 import path from "node:path";
-import { open } from "node:fs/promises";
+import { open, realpath } from "node:fs/promises";
+import { gte } from "semver";
 import type { Operation } from "../../../api/operation.js";
-import { validateHerdrAgentArguments } from "./arguments.js";
+import { codexProjectTrustArguments, nativeAgentPermissionArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
 import { runHerdrCommand } from "./command.js";
 import type { HerdrCommand, HerdrCommandResult } from "./command.js";
 import type { HerdrRpcClient } from "./rpc.js";
@@ -148,10 +149,10 @@ export const createNativePrerequisiteChecks = (options: {
 }, input: HerdrNativeStart): readonly [NativePrerequisiteCheck, NativePrerequisiteCheck, ...NativePrerequisiteCheck[]] => {
   const home = absolute(options.homeDirectory, "Native user home");
   const platform = options.platform === undefined ? process.platform : options.platform;
-  const environment = { ...options.environment };
   const runCommand = options.runCommand === undefined ? runHerdrCommand : options.runCommand;
   const agent = input.configuration.agent;
   if (agent !== "codex" && agent !== "copilot") throw new Error("The native agent must be codex or copilot.");
+  const environment = { ...options.environment, ...nativeAgentPermissionEnvironment(agent) };
   const cwd = absolute(input.context.cwd, "Native working directory");
   validateHerdrAgentArguments(agent, input.configuration.args);
   const root = (): string => nativeHome(agent, environment, home);
@@ -172,6 +173,9 @@ export const createNativePrerequisiteChecks = (options: {
       const output = (await runCommand({ file: agent, args: ["--version"], environment, cwd }, operation)).stdout;
       const match = agent === "codex" ? /^codex-cli (\d+\.\d+\.\d+)(?:\s|$)/m.exec(output) : /^GitHub Copilot CLI (\d+\.\d+\.\d+)(?:[.\s]|$)/m.exec(output);
       if (match === null) throw new Error(`Cannot identify the installed ${agent} executable version.`);
+      // Earlier releases expose the bypass flag while still showing an interactive startup hook review.
+      // https://github.com/openai/codex/commit/5fb5e47767ac4910f7c208481c23bf4d2fe5cf62
+      if (agent === "codex" && !gte(match[1]!, "0.135.0")) throw new Error("Codex 0.135.0 or newer is required to bypass startup hook trust review.");
       return match[1]!;
     },
   }, ...nativeHookRuntimeChecks({ environment, cwd, platform, runCommand }), {
@@ -179,21 +183,26 @@ export const createNativePrerequisiteChecks = (options: {
     remedy: `Run herdr integration install ${agent}, then inspect herdr integration status.`,
     verify: async (operation) => { const file = asset(); await readMetadata(file, operation); return file; },
   }];
-  if (agent === "codex") checks.push({
-    kind: "configuration", label: "codex isolated execution",
-    remedy: "Update Codex to a version providing --no-daemon for isolated worker execution.",
+  checks.push({
+    kind: "configuration", label: `${agent} unattended full access`,
+    remedy: `Update ${agent} to a version supporting all worker permission flags${agent === "codex" ? " and --no-daemon" : ""}.`,
     verify: async (operation) => {
-      const help = (await runCommand({ file: agent, args: ["--help"], environment, cwd }, operation)).stdout;
-      if (!help.includes("--no-daemon")) throw new Error("This Codex executable lacks --no-daemon; a worker requires isolated native execution without a shared human daemon.");
-      return "--no-daemon is available.";
+      const required = agent === "codex" ? ["--no-daemon", ...nativeAgentPermissionArguments(agent)] : nativeAgentPermissionArguments(agent);
+      const help = (await runCommand({ file: agent, args: [...required, "--help"], environment, cwd }, operation)).stdout;
+      for (const flag of required.filter((value) => value !== "--no-sandbox")) {
+        if (!help.includes(flag)) throw new Error(`This ${agent} executable lacks ${flag}; a worker requires unattended full access and isolated native execution.`);
+      }
+      return "The worker permission flags are supported together.";
     },
-  }, {
+  });
+  if (agent === "codex") checks.push({
     kind: "configuration", label: "codex effective hooks feature",
     remedy: "Enable Codex hooks in the effective configuration used by this worker; inspect codex features list with the same configuration overrides.",
     verify: async (operation) => {
       const config = codexConfigurationArguments(input.configuration.args);
+      const canonicalCwd = path.normalize(await realpath(cwd));
       let features: string;
-      try { features = (await runCommand({ file: agent, args: [...config.arguments, "features", "list"], environment, cwd }, operation)).stdout; }
+      try { features = (await runCommand({ file: agent, args: [...config.arguments, ...codexProjectTrustArguments(canonicalCwd), "features", "list"], environment, cwd: canonicalCwd }, operation)).stdout; }
       catch (cause) {
         if (!hasNativePrerequisiteCleanupFailure(cause)) operation.check();
         // Codex 0.164 rejects profile selection for this read-only command; checking its unrelated default configuration would be incorrect.
@@ -207,12 +216,12 @@ export const createNativePrerequisiteChecks = (options: {
   });
   checks.push({
     kind: "configuration", label: `${agent} effective SessionStart hook`,
-    remedy: `Run herdr integration install ${agent}, then explicitly configure and trust its SessionStart hook.`,
+    remedy: `Run herdr integration install ${agent}, then configure its SessionStart hook.`,
     verify: async (operation) => {
       const expected = hookCommand(asset(), agent, platform);
       if (agent === "codex") {
         const file = json(await readMetadata(path.join(root(), "hooks.json"), operation), "Codex hooks configuration");
-        if (!configuredHook(mapping(file.hooks, "Codex hooks configuration hooks"), expected, agent, platform)) throw new Error("Codex SessionStart does not invoke the installed official Herdr hook; configure and trust that hook explicitly.");
+        if (!configuredHook(mapping(file.hooks, "Codex hooks configuration hooks"), expected, agent, platform)) throw new Error("Codex SessionStart does not invoke the installed official Herdr hook; configure that hook explicitly.");
       } else {
         const effective = json((await runCommand({ file: agent, args: ["config", "hooks"], environment, cwd }, operation)).stdout, "Copilot effective hooks configuration");
         if (!configuredHook(effective, expected, agent, platform)) throw new Error("Copilot SessionStart does not invoke the installed official Herdr hook; configure it explicitly.");
