@@ -1,4 +1,4 @@
-import type { TaskPlatform, WorkerAgent, WorkerHerdr, WorkerMachine, WorkerPhase } from "../../api/types.js";
+import type { WorkerAgent, WorkerHerdr, WorkerPhase } from "../../api/types.js";
 import type { HerdrLaunchEvidence, HerdrStopObservation, HerdrWorkspaceEvidence } from "./herdr/agents.js";
 
 export type ProjectIdentity = { serverOrigin: string; projectId: string };
@@ -29,6 +29,7 @@ export type NativeExecutionState = {
 };
 export type RecoveryState = { count: number; pauseReason: string | null; retryAuthorized: boolean };
 export type CleanupState = {
+  claimEnded: boolean;
   kind: "terminal" | "shutdown";
   startedAt: number;
   deadline: number;
@@ -40,17 +41,7 @@ export type CleanupState = {
   workspaceClosed: boolean;
   worktreeDeleted: boolean;
 };
-export type TransferTarget = {
-  userId: string;
-  workerId: string;
-  machine: WorkerMachine;
-  platform: TaskPlatform;
-  agent: WorkerAgent;
-  worktreeId: string;
-};
-export type ControlIntent =
-  | { kind: "release"; sourceClaimId: string; version: string }
-  | { kind: "transfer"; sourceClaimId: string; version: string; targetClaimId: string; target: TransferTarget };
+export type ControlIntent = { kind: "release"; sourceClaimId: string; version: string };
 export type ControlState = {
   intent: ControlIntent;
   requestedAt: number;

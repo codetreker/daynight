@@ -8,6 +8,7 @@ import type { TaskStatus } from '../../src/api/types';
 import { createProject, createTask, expect, test, updateTask, type Task } from './fixtures';
 import { authenticatedAPI, fulfillAuthenticatedResponse } from './authentication';
 import { attachmentFileButton, attachmentFileActions } from './attachment-tree';
+import { verifyClaimReadingLayouts } from './claim-layout';
 
 const taskPath = (project: string, task: string): string => `/api/v1/projects/${project}/tasks/${task}`;
 const pagePath = (project: string, task: string): string => `/projects/${project}/tasks/${task}`;
@@ -359,6 +360,7 @@ test('task-detail-page', { annotation: { type: 'scenario', description: 'task-de
         layouts.push({ locale, viewport, panes });
       }
     }
+    await verifyClaimReadingLayouts(reader, api, info);
     expect(errors).toEqual([]);
     for (const [key, count] of expectedWrites) expect(writes.filter(write => write === key), `Exact standalone browser writes: ${key}`).toHaveLength(count);
     expect(writes.filter(write => !expectedWrites.has(write))).toEqual([]);

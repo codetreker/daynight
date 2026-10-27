@@ -38,7 +38,7 @@ const fixture = () => {
     store.bindNativeSession(claim, { sessionId: "native-original", source: "herdr" }, 23);
   };
   const cleanup = (): void => {
-    store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
+    store.beginCleanup(claim, { kind: "terminal", deadline: 600_030, ...(store.getTask(claim)!.control === null ? { claimEnded: true as const } : {}) }, 30);
     store.markCleanupInputSubmitting(claim, 31);
     store.recordCleanupInputOutcome(claim, "submitted", 32);
     store.recordCleanupResult(claim, "completed", null, 33);
@@ -63,7 +63,7 @@ describe("worker SQLite schema and project bindings", () => {
     const pragma = vi.spyOn(Database.prototype, "pragma");
     const { file, store } = fixture();
     const sql = connect(file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(4);
     expect(sql.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
     const syncRead = pragma.mock.calls.findIndex(([statement]) => statement === "synchronous");
@@ -83,9 +83,9 @@ describe("worker SQLite schema and project bindings", () => {
     const { file, store } = fixture();
     close(store);
     const sql = connect(file);
-    sql.pragma("user_version = 4");
-    expect(() => open(file)).toThrow("Unsupported worker SQLite schema version 4");
-    expect(sql.pragma("user_version", { simple: true })).toBe(4);
+    sql.pragma("user_version = 5");
+    expect(() => open(file)).toThrow("Unsupported worker SQLite schema version 5");
+    expect(sql.pragma("user_version", { simple: true })).toBe(5);
     sql.exec("DROP TABLE projects; DROP TABLE tasks; CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('retained')");
     sql.pragma("user_version = 0");
     expect(() => open(file)).toThrow("must not contain existing tables");
@@ -111,14 +111,14 @@ describe("worker SQLite schema and project bindings", () => {
   it("migrates schema one transactionally without inventing launch provenance", () => {
     const f = fixture(); f.start(); f.bind();
     f.store.bindUserScope(claim, userId, 24);
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030, claimEnded: true }, 30);
     const original = f.store.getTask(claim)!;
     close(f.store);
     const sql = connect(f.file);
     sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; ALTER TABLE tasks DROP COLUMN user_id; ALTER TABLE projects DROP COLUMN claim_attempt; UPDATE tasks SET cleanup = json_remove(cleanup, '$.baseline'); PRAGMA user_version = 1;");
     const migrated = open(f.file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
-    expect(migrated.getTask(claim)).toEqual({ ...original, userId: null, nativeExecution: null });
+    expect(sql.pragma("user_version", { simple: true })).toBe(4);
+    expect(migrated.getTask(claim)).toEqual({ ...original, userId: null, nativeExecution: null, cleanup: { ...original.cleanup, claimEnded: true } });
     expect(migrated.getProject(project)).toEqual({ ...f.mapping, claimAttempt: null });
     expect(sql.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
   });
@@ -149,12 +149,12 @@ describe("worker SQLite schema and project bindings", () => {
     f.store.beginClaimAttempt(project, { taskId: orphan.taskId, claimId: orphan.claimId, worktreeId: orphan.worktreeId, workerId: orphan.workerId, userId, expectedVersion: "11", configuration });
     f.store.registerPending(orphan, { kind: "recovered", configuration: null }, 40, null);
     f.store.registerPending({ ...claim, taskId: uuid(73), claimId: uuid(74), worktreeId: uuid(75) }, { kind: "new", configuration }, 41, userId);
-    const expectedTasks = f.store.listTasks().map((task) => task.nativeExecution === null || task.nativeExecution.stopObservation === null ? task : { ...task, nativeExecution: { ...task.nativeExecution, stopObservation: { ...task.nativeExecution.stopObservation, nativeProcessIds: null } } });
+    const expectedTasks = f.store.listTasks().map((task) => ({ ...task, cleanup: task.cleanup === null ? null : { ...task.cleanup, claimEnded: task.cleanup.kind === "terminal" && (task.control === null || task.control.submission === "confirmed") }, nativeExecution: task.nativeExecution === null || task.nativeExecution.stopObservation === null ? task.nativeExecution : { ...task.nativeExecution, stopObservation: { ...task.nativeExecution.stopObservation, nativeProcessIds: null } } }));
     const expectedProjects = f.store.listProjects(); close(f.store);
     const sql = connect(f.file);
     sql.exec("UPDATE tasks SET native_execution = json_remove(native_execution, '$.stopObservation.nativeProcessIds') WHERE json_type(native_execution, '$.stopObservation') = 'object'; PRAGMA user_version = 2;");
     const migrated = open(f.file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(4);
     expect(migrated.listTasks()).toEqual(expectedTasks); expect(migrated.listProjects()).toEqual(expectedProjects);
     expect(migrated.getTask(claim)).toMatchObject({ userId, configuration, nativeExecution: { promptSubmission, stopObservation: { processIds: [125, 124], nativeProcessIds: null } }, cleanup: { input: "submitted", deadline: 600_030, baseline: { stateChangeSeq: 10, completionSeq: 2 } }, control: { submission: "unknown" } });
     expect(migrated.getTask(orphan)?.nativeExecution).toBeNull();
@@ -178,7 +178,56 @@ describe("worker SQLite schema and project bindings", () => {
     expect(sql.pragma("user_version", { simple: true })).toBe(2); expect(sql.prepare("SELECT * FROM tasks").all()).toEqual(original);
   });
 
-  it("does not rewrite an existing schema three database", () => {
+  it.each(["not-submitted", "unknown", "rejected", "confirmed"] as const)("retires schema three %s transfer controls while preserving their source cleanup responsibility", (submission) => {
+    const f = fixture(); f.start(); f.bind(); f.store.bindUserScope(claim, userId, 24);
+    if (submission !== "not-submitted") f.cleanup();
+    const original = f.store.getTask(claim)!;
+    close(f.store);
+    const sql = connect(f.file);
+    const control = {
+      intent: { kind: "transfer", sourceClaimId: claim.claimId, version: "8", targetClaimId: uuid(50), target: { userId: uuid(51), workerId: uuid(52), machine: { id: uuid(53), name: "target" }, platform: "linux", agent: "copilot", worktreeId: uuid(54) } },
+      requestedAt: 25, submission, submittedAt: submission === "not-submitted" ? null : 37,
+      outcome: submission === "confirmed" ? "applied" : null, resultVersion: submission === "confirmed" ? "9" : null, error: submission === "rejected" ? "Refused" : null,
+    };
+    sql.prepare("UPDATE tasks SET control = ?, cleanup = json_remove(cleanup, '$.claimEnded'), recovery = json_set(recovery, '$.retryAuthorized', json('true'))").run(JSON.stringify(control));
+    sql.pragma("user_version = 3");
+    const migrated = open(f.file);
+    const task = migrated.getTask(claim)!;
+    expect(sql.pragma("user_version", { simple: true })).toBe(4);
+    expect(task).toMatchObject({ status: "active", userId, control: null, resources: original.resources, configuration, recovery: { retryAuthorized: false, pauseReason: expect.stringContaining("Force withdraw") } });
+    expect(task.cleanup).toEqual(original.cleanup === null
+      ? { kind: "terminal", claimEnded: false, startedAt: 25, deadline: 600_025, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: false, worktreeDeleted: false }
+      : { ...original.cleanup, claimEnded: submission === "confirmed" });
+    expect(() => migrated.beginRecovery(claim, 50)).toThrow("control or cleanup intent");
+    if (submission === "unknown" || submission === "rejected") expect(() => migrated.completeTask(claim, 50)).toThrow("claim must be confirmed ended");
+    close(migrated);
+    expect(open(f.file).getTask(claim)).toEqual(task);
+    expect(sql.prepare("SELECT json_extract(control, '$.intent.kind') AS kind FROM tasks").get()).toEqual({ kind: null });
+  });
+
+  it("preserves completed transfer history resources while removing its retired control shape", () => {
+    const f = fixture(); f.start(); f.bind(); f.cleanup(); f.store.completeTask(claim, 40);
+    const original = f.store.getTask(claim)!;
+    close(f.store);
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET control = ?, cleanup = json_remove(cleanup, '$.claimEnded')").run(JSON.stringify({ intent: { kind: "transfer" }, submission: "confirmed" }));
+    sql.pragma("user_version = 3");
+    expect(open(f.file).getTask(claim)).toEqual(original);
+  });
+
+  it("rolls back retired controls and ownership proof when schema three migration is refused", () => {
+    const f = fixture(); f.start(); f.cleanup(); close(f.store);
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET control = ?, cleanup = json_remove(cleanup, '$.claimEnded')").run(JSON.stringify({ intent: { kind: "transfer" }, requestedAt: 25, submission: "unknown" }));
+    sql.pragma("user_version = 3");
+    const original = sql.prepare("SELECT * FROM tasks").all();
+    sql.exec("CREATE TRIGGER reject_control_migration AFTER UPDATE OF control ON tasks BEGIN SELECT RAISE(ABORT, 'control migration refused'); END;");
+    expect(() => open(f.file)).toThrow("control migration refused");
+    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.prepare("SELECT * FROM tasks").all()).toEqual(original);
+  });
+
+  it("does not rewrite an existing schema four database", () => {
     const f = fixture(); f.start(); f.bind(); f.store.bindUserScope(claim, userId, 24);
     const binding = { session: "w", workspaceId: "workspace-original", paneId: "pane-original", terminalId: "terminal-original" };
     const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;
@@ -188,7 +237,7 @@ describe("worker SQLite schema and project bindings", () => {
     const sql = connect(f.file);
     const originalTasks = sql.prepare("SELECT * FROM tasks").all(); const originalProjects = sql.prepare("SELECT * FROM projects").all();
     close(f.store); const reopened = open(f.file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(4);
     expect(sql.prepare("SELECT * FROM tasks").all()).toEqual(originalTasks); expect(sql.prepare("SELECT * FROM projects").all()).toEqual(originalProjects);
     expect(reopened.getTask(claim)?.userId).toBe(userId);
     expect(reopened.getTask(claim)?.nativeExecution?.stopObservation?.nativeProcessIds).toEqual([124]);
@@ -339,7 +388,7 @@ describe("durable claim acquisition uncertainty", () => {
   it.each(["terminal", "control"] as const)("does not retroactively bind an unknown %s decision while resolving a matching attempt", (kind) => {
     const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
     f.store.registerPending(claim, { kind: "new", configuration }, 10, null);
-    if (kind === "terminal") f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_020 }, 20);
+    if (kind === "terminal") f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_020, claimEnded: true }, 20);
     else f.store.recordControlIntent(claim, release, 20);
     const original = f.store.getTask(claim);
     expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 21, userId)).toThrow("unknown authenticated scope");
@@ -395,7 +444,7 @@ describe("observed workspaces invalidate unattempted provenance", () => {
     f.store.markExecutionSummarySubmitting(claim, { version: "11", herdr: null, nativeSessionId: null, phase: "preparing" }, 22);
     f.store.pauseTask(claim, "Keep the original pause", 23); f.store.authorizeRecoveryRetry(claim, 24);
     f.store.recordControlIntent(claim, release, 25);
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_026 }, 26);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_026, claimEnded: true }, 26);
     const sql = connect(f.file);
     sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession', json(?)), recovery = json_set(recovery, '$.count', 2) WHERE claim_id = ?").run(JSON.stringify({ sessionId: uuid(88), source: "native-history" }), claim.claimId);
     const original = f.store.getTask(claim)!;
@@ -466,13 +515,13 @@ describe("native launch receipts and process provenance", () => {
     expect(f.store.getTask(claim)?.nativeExecution?.stopObservation).toBeNull();
   });
 
-  it("rejects a missing nativeProcessIds field in schema three without repairing it while reading", () => {
+  it("rejects a missing nativeProcessIds field in schema four without repairing it while reading", () => {
     const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25); f.store.recordStopObservation(claim, stopObservation, 26); close(f.store);
     const sql = connect(f.file);
     sql.exec("UPDATE tasks SET native_execution = json_remove(native_execution, '$.stopObservation.nativeProcessIds');");
     const reopened = open(f.file);
     expect(() => reopened.getTask(claim)).toThrow("Herdr stop observation has invalid fields");
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(4);
     expect(sql.prepare("SELECT json_type(native_execution, '$.stopObservation.nativeProcessIds') AS kind FROM tasks").get()).toEqual({ kind: null });
   });
 
@@ -624,7 +673,7 @@ describe("native launch receipts and process provenance", () => {
   it("retains proven never-launched cleanup provenance after a rejected native start", () => {
     const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25);
     f.store.recordNativeLaunchNotSubmitted(claim, { notSubmitted: true }, 26);
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030, claimEnded: true }, 30);
     close(f.store);
     const reopened = open(f.file);
     expect(reopened.getTask(claim)).toMatchObject({ nativeExecution: { launchSubmission: "never-submitted", workspaceEvidence }, cleanup: { kind: "terminal", deadline: 600_030 } });
@@ -641,7 +690,7 @@ describe("native launch receipts and process provenance", () => {
     const f = fixture(); f.store.registerProject(f.mapping);
     f.store.registerPending(claim, { kind: "recovered", configuration: null }, 10);
     expect(f.store.getTask(claim)?.nativeExecution).toBeNull();
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_020 }, 20); f.bind();
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_020, claimEnded: true }, 20); f.bind();
     const adopted = f.store.bindHerdrExecution(claim, binding, null, 24);
     expect(adopted.nativeExecution).toMatchObject({ launchSubmission: "unknown", promptSubmission: "unknown", workspaceEvidence: null });
     expect(() => f.store.markNativeLaunchSubmitting(claim, 25)).toThrow("control or cleanup");
@@ -766,7 +815,7 @@ describe("immutable authenticated claim scope", () => {
     shutdown.store.beginCleanup(claim, { kind: "shutdown", deadline: 600_030 }, 30);
     expect(shutdown.store.bindUserScope(claim, userId, 31).userId).toBe(userId);
     const terminal = fixture(); terminal.start();
-    terminal.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
+    terminal.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030, claimEnded: true }, 30);
     const originalTerminal = terminal.store.getTask(claim)!;
     expect(() => terminal.store.bindUserScope(claim, userId, 31)).toThrow("unknown authenticated scope");
     expect(terminal.store.getTask(claim)).toEqual(originalTerminal);
@@ -780,7 +829,7 @@ describe("immutable authenticated claim scope", () => {
   it("permits already bound terminal/control owners without changing their original authorization", () => {
     const f = fixture(); f.start(); f.store.bindUserScope(claim, userId, 25);
     f.store.recordControlIntent(claim, release, 30);
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_031 }, 31);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_031, claimEnded: true }, 31);
     expect(f.store.bindUserScope(claim, userId, 32).userId).toBe(userId);
     expect(() => f.store.bindUserScope(claim, uuid(91), 33)).toThrow("cannot be replaced");
   });
@@ -827,7 +876,7 @@ describe("claim history and frozen configuration", () => {
     expect(isUnstartedPending({ ...pending, status: "active" })).toBe(false);
     expect(isUnstartedPending({ ...pending, status: "done" })).toBe(false);
     expect(isUnstartedPending({ ...pending, control: { intent: release, requestedAt: 11, submission: "not-submitted", submittedAt: null, outcome: null, resultVersion: null, error: null } })).toBe(false);
-    expect(isUnstartedPending({ ...pending, cleanup: { kind: "shutdown", startedAt: 11, deadline: 12, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: false } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, cleanup: { kind: "shutdown", claimEnded: false, startedAt: 11, deadline: 12, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: false } })).toBe(false);
     expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, worktree: { repositoryPath: f.mapping.localPath, commonDirectory: path.join(f.mapping.localPath, ".git"), worktreePath: path.join(f.mapping.localPath, ".worktrees", "daynight", claim.taskId), branch: `daynight/${claim.taskId}` } } })).toBe(false);
     expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, herdr: { session: "w", workspaceId: "ws", paneId: "pane" } } })).toBe(false);
     expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, nativeSession: { sessionId: uuid(80), source: "herdr" } } })).toBe(false);
@@ -918,6 +967,22 @@ describe("claim history and frozen configuration", () => {
     expect(() => f.store.activateTask(claim, 42)).toThrow("already done");
   });
 
+  it("reserves the active slot atomically when rebinding a pending cleanup's original worktree", () => {
+    const f = fixture(); f.start(); f.bind();
+    const original = f.store.getTask(claim)!;
+    const source = { ...claim, claimId: uuid(30), worktreeId: uuid(31) };
+    f.store.registerPending(source, { kind: "recovered", configuration: null }, 25, userId);
+    const cleanup = { kind: "terminal", claimEnded: false, startedAt: 25, deadline: 600_025, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: false, worktreeDeleted: false };
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET cleanup = ? WHERE claim_id = ?").run(JSON.stringify(cleanup), source.claimId);
+    const pending = f.store.getTask(source)!;
+    expect(() => f.store.bindWorktree(source, original.resources.worktree!, 26)).toThrow("UNIQUE constraint failed");
+    expect(f.store.getTask(source)).toEqual(pending); expect(f.store.getTask(claim)).toEqual(original);
+    f.cleanup(); f.store.completeTask(claim, 40);
+    expect(f.store.bindWorktree(source, original.resources.worktree!, 41)).toMatchObject({ status: "active", resources: { worktree: original.resources.worktree }, cleanup });
+    expect(() => f.store.beginRecovery(source, 42)).toThrow("control or cleanup intent");
+  });
+
   it("rejects rebinding original resources and malformed stored metadata", () => {
     const f = fixture(); f.start(); f.bind();
     const original = f.store.getTask(claim)!;
@@ -994,7 +1059,7 @@ describe("persistent bounded recovery", () => {
     expect(() => f.store.completeTask(claim, 36)).toThrow("Terminal cleanup");
     expect(f.store.resumeAfterShutdown(claim, 40)).toMatchObject({ status: "active", cleanup: null, resources: { ...resources, herdr: null }, recovery: { count: 0 } });
     f.store.bindHerdr(claim, { session: "w", workspaceId: "resumed-workspace", paneId: "resumed-pane" }, 41);
-    const next = f.store.beginCleanup(claim, { kind: "terminal", deadline: 650 }, 50);
+    const next = f.store.beginCleanup(claim, { kind: "terminal", deadline: 650, claimEnded: true }, 50);
     expect(next.cleanup).toMatchObject({ agentStopped: false, workspaceClosed: false, worktreeDeleted: false, startedAt: 50 });
     expect(() => f.store.confirmWorkspaceClosed(claim, { workspaceClosed: true }, 51)).toThrow("confirmed original agent stop");
     expect(() => f.store.resumeAfterShutdown(claim, 52)).toThrow("Shutdown resume requires");
@@ -1114,7 +1179,7 @@ describe("irreversible terminal cleanup and source control", () => {
 
   it("persists an immutable cleanup turn baseline only after its original input was confirmed", () => {
     const f = fixture(); f.start(); f.bind();
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 630 }, 30);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 630, claimEnded: true }, 30);
     const baseline = { stateChangeSeq: 10, completionSeq: 5 };
     expect(() => f.store.recordCleanupInputEvidence(claim, baseline, 31)).toThrow("confirmed input submission");
     f.store.markCleanupInputSubmitting(claim, 32);
@@ -1128,7 +1193,7 @@ describe("irreversible terminal cleanup and source control", () => {
 
   it("retains the original deadline and unknown input and never resubmits after reopen", () => {
     const f = fixture(); f.start(); f.bind();
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 630 }, 30);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 630, claimEnded: true }, 30);
     f.store.markCleanupInputSubmitting(claim, 31);
     close(f.store);
     const reopened = open(f.file);
@@ -1144,9 +1209,9 @@ describe("irreversible terminal cleanup and source control", () => {
 
   it("requires every physical cleanup fact in order and keeps failed removal active", () => {
     const f = fixture(); f.start();
-    expect(() => f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_031 }, 30)).toThrow("within ten minutes");
+    expect(() => f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_031, claimEnded: true }, 30)).toThrow("within ten minutes");
     expect(f.store.getTask(claim)?.cleanup).toBeNull();
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 630 }, 30);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 630, claimEnded: true }, 30);
     expect(() => f.store.confirmWorkspaceClosed(claim, { workspaceClosed: true }, 31)).toThrow("agent stop");
     expect(() => f.store.confirmWorktreeDeleted(claim, { worktreeDeleted: true }, 31)).toThrow("workspace closure");
     expect(() => f.store.completeTask(claim, 31)).toThrow("Terminal cleanup");
@@ -1187,18 +1252,6 @@ describe("irreversible terminal cleanup and source control", () => {
     expect(reopened.completeTask(claim, 47)).toMatchObject({ status: "done", control: { resultVersion: "9223372036854775807", submission: "confirmed" } });
   });
 
-  it("persists only a source transfer intent and rejects reuse of old execution identities", () => {
-    const f = fixture(); f.start();
-    const transfer: ControlIntent = { kind: "transfer", sourceClaimId: claim.claimId, version: "8", targetClaimId: uuid(50), target: { userId: uuid(51), workerId: uuid(52), machine: { id: uuid(53), name: "target" }, platform: "linux", agent: "copilot", worktreeId: uuid(54) } };
-    expect(() => f.store.recordControlIntent(claim, { ...transfer, targetClaimId: claim.claimId }, 21)).toThrow("new claim and worktree");
-    expect(() => f.store.recordControlIntent(claim, { ...transfer, target: { ...transfer.target, worktreeId: claim.worktreeId } }, 21)).toThrow("new claim and worktree");
-    f.store.recordControlIntent(claim, transfer, 22);
-    expect(f.store.listTasks()).toHaveLength(1);
-    expect(f.store.getTask({ ...claim, claimId: transfer.targetClaimId })).toBeNull();
-    f.cleanup();
-    f.store.confirmControlOwnershipEnded(claim, { completeOwnClaimInventory: true, claimAbsent: true }, 40);
-    expect(f.store.completeTask(claim, 41).control).toMatchObject({ intent: transfer, submission: "confirmed", submittedAt: null, outcome: "ownership-ended", resultVersion: null });
-  });
 
   it("resolves an unknown control write by complete own-inventory absence without inventing a remote version", () => {
     const f = fixture(); f.start(); f.store.recordControlIntent(claim, release, 24); f.cleanup();
@@ -1215,7 +1268,7 @@ describe("irreversible terminal cleanup and source control", () => {
 
   it("never submits cleanup input after the original deadline or a recorded result", () => {
     const f = fixture(); f.start();
-    f.store.beginCleanup(claim, { kind: "terminal", deadline: 50 }, 30);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 50, claimEnded: true }, 30);
     expect(() => f.store.markCleanupInputSubmitting(claim, 50)).toThrow("deadline has elapsed");
     expect(f.store.getTask(claim)?.cleanup?.input).toBe("not-submitted");
     f.store.recordCleanupResult(claim, "unavailable", "No original agent is available", 51);
@@ -1244,7 +1297,7 @@ describe("worker transaction durability", () => {
     sql.exec("CREATE TRIGGER reject_activation BEFORE UPDATE ON tasks WHEN NEW.status = 'active' BEGIN SELECT RAISE(ABORT, 'activation rejected'); END");
     expect(() => f.store.activateTask(claim, 20)).toThrow("activation rejected");
     expect(f.store.getTask(claim)).toMatchObject({ status: "pending", configuration, updatedAt: 10, cleanup: null });
-    expect(() => f.store.beginCleanup(claim, { kind: "terminal", deadline: 630 }, 30)).toThrow("activation rejected");
+    expect(() => f.store.beginCleanup(claim, { kind: "terminal", deadline: 630, claimEnded: true }, 30)).toThrow("activation rejected");
     expect(f.store.getTask(claim)).toMatchObject({ status: "pending", configuration, updatedAt: 10, cleanup: null });
     sql.exec("DROP TRIGGER reject_activation");
     f.store.activateTask(claim, 21); f.cleanup();

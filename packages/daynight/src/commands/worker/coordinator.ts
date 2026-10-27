@@ -104,19 +104,20 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const completeTerminal = (task: LocalTask, absent: boolean, authenticatedUserId?: string): LocalTask => {
     if (task.userId === null) return task;
-    if (task.cleanup?.kind !== "terminal" || !task.cleanup.agentStopped || !task.cleanup.workspaceClosed || !task.cleanup.worktreeDeleted || task.cleanup.result === null) return task;
+    if (task.cleanup?.kind !== "terminal" || !task.cleanup.claimEnded || !task.cleanup.agentStopped || !task.cleanup.workspaceClosed || !task.cleanup.worktreeDeleted || task.cleanup.result === null) return task;
     if (task.control !== null && task.control.submission !== "confirmed") {
       if (!absent || authenticatedUserId !== task.userId) return task;
       task = options.store.confirmControlOwnershipEnded(task, { completeOwnClaimInventory: true, claimAbsent: true }, now());
     }
     return options.store.completeTask(task, now());
   };
-  const advanceTerminal = async (input: LocalTask, resources: readonly HerdrOwnedWorkspace[], signal: AbortSignal, continueControl = true): Promise<LocalTask> => {
+  const advanceTerminal = async (input: LocalTask, resources: readonly HerdrOwnedWorkspace[], signal: AbortSignal, continueControl = true, claimEnded = false): Promise<LocalTask> => {
     let task = latest(input);
     if (task.control !== null && isUnstartedPendingSource(task)) {
       if (ownedWorkspace(task, resources) !== undefined) throw new Error("An unstarted controlled source has unexpected Herdr resources; its cleanup cannot be inferred.");
       task = options.store.confirmUnstartedControlCleanup(task, { completeHerdrInventory: true, noOwnedResources: true }, now() + 600_000, now());
-    } else task = await cleanup.advance(task, resources, "terminal", task.cleanup?.deadline ?? now() + 600_000, signal);
+      if (claimEnded) task = options.store.beginCleanup(task, { kind: "terminal", deadline: task.cleanup!.deadline, claimEnded: true }, now());
+    } else task = await cleanup.advance(task, resources, "terminal", task.cleanup?.deadline ?? now() + 600_000, signal, claimEnded);
     if (continueControl && task.control !== null) task = await control.advance(task, signal);
     return task;
   };
@@ -234,7 +235,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (task.status === "done") return;
       if (task.control !== null || task.cleanup?.kind === "terminal") {
         if (task.userId === null) { pauseForScope(task, unscopedCleanup); return; }
-        task = await advanceTerminal(task, resources, normalSignal, remoteTask !== undefined || task.userId !== authenticatedUserId);
+        task = await advanceTerminal(task, resources, normalSignal, remoteTask !== undefined || task.userId !== authenticatedUserId, remoteTask === undefined && task.userId === authenticatedUserId);
         if (task.status !== "done") completeTerminal(task, remoteTask === undefined, authenticatedUserId);
         return;
       }
@@ -249,7 +250,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         return;
       }
       if (remoteTask === undefined) {
-        task = await cleanup.advance(task, resources, "terminal", now() + 600_000, normalSignal);
+        task = await cleanup.advance(task, resources, "terminal", now() + 600_000, normalSignal, true);
         completeTerminal(task, true, authenticatedUserId);
         return;
       }
@@ -368,7 +369,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const remoteTask = await options.remote.readTask(task.projectId, task.taskId, normalSignal);
       const worker = remoteTask.properties.worker;
       if (worker?.state !== "active" || worker.claimId !== task.claimId || worker.userId !== task.userId) throw new Error("Retry requires the exact still-active source claim.");
-      await options.remote.authorizeControl(task.projectId, task.userId, undefined, normalSignal);
+      await options.remote.authorizeControl(task.projectId, task.userId, normalSignal);
       await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
       const resources = await readResources(normalSignal);
       await reconcileTask(task, remoteTask, resources, authenticatedUserId);

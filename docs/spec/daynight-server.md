@@ -44,7 +44,7 @@
 只登记 repo 地址，不触发 clone、GitHub 请求、review 启动或 CLI 配置修改。
 客户端的[需求](daynight.md)与 review 的[需求](daynight-review.md)分别由其自身文档定义。
 
-受保护 worker 属性、原子认领/更新/释放/移交和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。服务端不启动执行进程；前台 Worker 与真实资源恢复仍是独立运行时能力。
+受保护 worker 属性、原子认领/更新/释放/强制撤回和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。服务端不启动执行进程；前台 Worker 与真实资源恢复仍是独立运行时能力。
 
 ## Project
 

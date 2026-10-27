@@ -146,8 +146,8 @@ const parseCleanupBaseline = (value: unknown): NonNullable<CleanupState["baselin
   return { stateChangeSeq: integer(data.stateChangeSeq, "Cleanup state-change sequence"), completionSeq: integer(data.completionSeq, "Cleanup completion sequence") };
 };
 const parseCleanup = (value: unknown): CleanupState => {
-  const data = record(value, ["kind", "startedAt", "deadline", "input", "baseline", "result", "error", "agentStopped", "workspaceClosed", "worktreeDeleted"], "Cleanup state");
-  const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline"),
+  const data = record(value, ["kind", "claimEnded", "startedAt", "deadline", "input", "baseline", "result", "error", "agentStopped", "workspaceClosed", "worktreeDeleted"], "Cleanup state");
+  const result: CleanupState = { claimEnded: bool(data.claimEnded, "Claim ended"), kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline"),
     input: oneOf(data.input, ["not-submitted", "unknown", "submitted", "rejected", "unavailable"], "Cleanup input state"),
     baseline: nullable(data.baseline, parseCleanupBaseline),
     result: nullable(data.result, (entry) => oneOf(entry, ["completed", "timed-out", "failed", "unavailable"], "Cleanup result")), error: nullable(data.error, (entry) => text(entry, "Cleanup error")),
@@ -158,17 +158,8 @@ const parseCleanup = (value: unknown): CleanupState => {
   return result;
 };
 const parseIntent = (value: unknown): ControlIntent => {
-  if (typeof value !== "object" || value === null || !("kind" in value)) throw new Error("Control intent must be an object.");
-  if (value.kind === "release") {
-    const data = record(value, ["kind", "sourceClaimId", "version"], "Release intent");
-    return { kind: "release", sourceClaimId: id(data.sourceClaimId, "Source claim ID"), version: version(data.version) };
-  }
-  const data = record(value, ["kind", "sourceClaimId", "version", "targetClaimId", "target"], "Transfer intent");
-  const target = record(data.target, ["userId", "workerId", "machine", "platform", "agent", "worktreeId"], "Transfer target");
-  const machine = record(target.machine, ["id", "name"], "Transfer machine");
-  return { kind: oneOf(data.kind, ["transfer"], "Control kind"), sourceClaimId: id(data.sourceClaimId, "Source claim ID"), version: version(data.version), targetClaimId: id(data.targetClaimId, "Target claim ID"),
-    target: { userId: id(target.userId, "Target user ID"), workerId: id(target.workerId, "Target worker ID"), machine: { id: id(machine.id, "Machine ID"), name: text(machine.name, "Machine name") },
-      platform: oneOf(target.platform, ["linux", "windows", "macos"], "Target platform"), agent: oneOf(target.agent, ["copilot", "codex"], "Target agent"), worktreeId: id(target.worktreeId, "Target worktree ID") } };
+  const data = record(value, ["kind", "sourceClaimId", "version"], "Release intent");
+  return { kind: oneOf(data.kind, ["release"], "Control kind"), sourceClaimId: id(data.sourceClaimId, "Source claim ID"), version: version(data.version) };
 };
 const parseControl = (value: unknown): ControlState => {
   const data = record(value, ["intent", "requestedAt", "submission", "submittedAt", "outcome", "resultVersion", "error"], "Control state");
@@ -240,7 +231,23 @@ const schema = `
     PRIMARY KEY(server_origin, project_id, task_id, claim_id), UNIQUE(server_origin, claim_id)
   ) STRICT;
   CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(server_origin, project_id, task_id) WHERE status = 'active';
-  PRAGMA user_version = 3;
+  PRAGMA user_version = 4;
+`;
+
+const retireTransferControls = `
+  UPDATE tasks SET cleanup = json_set(cleanup, '$.claimEnded', json(CASE
+    WHEN json_extract(cleanup, '$.kind') = 'terminal' AND (control IS NULL OR json_extract(control, '$.submission') = 'confirmed') THEN 'true'
+    ELSE 'false' END)) WHERE cleanup IS NOT NULL;
+  UPDATE tasks SET
+    cleanup = json_set(COALESCE(cleanup, json_object(
+      'kind', 'terminal', 'claimEnded', json('false'),
+      'startedAt', json_extract(control, '$.requestedAt'), 'deadline', json_extract(control, '$.requestedAt') + 600000,
+      'input', 'not-submitted', 'baseline', NULL, 'result', NULL, 'error', NULL,
+      'agentStopped', json('false'), 'workspaceClosed', json('false'), 'worktreeDeleted', json('false'))), '$.kind', 'terminal'),
+    recovery = json_set(recovery, '$.pauseReason', 'Transfer was removed. Force withdraw this task in Web if the original claim remains active.', '$.retryAuthorized', json('false'))
+    WHERE status <> 'done' AND json_extract(control, '$.intent.kind') = 'transfer';
+  UPDATE tasks SET control = NULL WHERE json_extract(control, '$.intent.kind') = 'transfer';
+  PRAGMA user_version = 4;
 `;
 
 export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?: number } = {}) => {
@@ -255,7 +262,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     if (db.pragma("synchronous", { simple: true }) !== 2) throw new Error("SQLite refused synchronous=FULL.");
     db.transaction(() => {
       const currentVersion = db.pragma("user_version", { simple: true }) as number;
-      if (currentVersion !== 0 && currentVersion !== 1 && currentVersion !== 2 && currentVersion !== 3) throw new Error(`Unsupported worker SQLite schema version ${currentVersion}; supported version is 3.`);
+      if (currentVersion !== 0 && currentVersion !== 1 && currentVersion !== 2 && currentVersion !== 3 && currentVersion !== 4) throw new Error(`Unsupported worker SQLite schema version ${currentVersion}; supported version is 4.`);
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[];
       if (currentVersion === 0) {
         if (tables.length !== 0) throw new Error("An unversioned worker database must not contain existing tables.");
@@ -263,6 +270,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       } else if (!same(tables.map(({ name }) => name), ["projects", "tasks"])) throw new Error("The worker database does not contain its projects/tasks schema.");
       if (currentVersion === 1) db.exec("ALTER TABLE tasks ADD COLUMN native_execution TEXT CHECK(native_execution IS NULL OR json_valid(native_execution)); ALTER TABLE tasks ADD COLUMN user_id TEXT; ALTER TABLE projects ADD COLUMN claim_attempt TEXT CHECK(claim_attempt IS NULL OR json_valid(claim_attempt)); UPDATE tasks SET cleanup = json_set(cleanup, '$.baseline', json('null')) WHERE cleanup IS NOT NULL; PRAGMA user_version = 2;");
       if (currentVersion === 1 || currentVersion === 2) db.exec("UPDATE tasks SET native_execution = json_set(native_execution, '$.stopObservation.nativeProcessIds', json('null')) WHERE native_execution IS NOT NULL AND json_type(native_execution, '$.stopObservation') = 'object'; PRAGMA user_version = 3;");
+      if (currentVersion >= 1 && currentVersion <= 3) db.exec(retireTransferControls);
       db.prepare(`SELECT ${projectColumns} FROM projects LIMIT 0`).all();
       db.prepare(`SELECT ${taskColumns} FROM tasks LIMIT 0`).all();
     }).immediate();
@@ -314,7 +322,6 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
   const controlIntent = (task: LocalTask, input: ControlIntent): ControlIntent => {
     const intent = parseIntent(input);
     if (intent.sourceClaimId !== task.claimId) throw new Error("The control intent must name the original claim.");
-    if (intent.kind === "transfer" && (intent.targetClaimId === task.claimId || intent.target.worktreeId === task.worktreeId)) throw new Error("Transfer requires new claim and worktree identities.");
     return intent;
   };
   const unsubmittedControl = (intent: ControlIntent, requestedAt: number): ControlState => ({ intent, requestedAt, submission: "not-submitted", submittedAt: null, outcome: null, resultVersion: null, error: null });
@@ -428,11 +435,11 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       return { ...task, status: "active", recovery: { ...task.recovery, pauseReason: text(reason, "Recovery pause reason") } };
     }),
     bindWorktree: (identity: ClaimIdentity, binding: WorktreeBinding, now: number): LocalTask => change(identity, now, (task) => {
-      if (task.status !== "active") throw new Error("Resource creation requires an active execution.");
+      if (task.status !== "active" && task.cleanup === null) throw new Error("Worktree binding requires an active execution or a committed cleanup.");
       const value = parseWorktree(binding);
       if (value.repositoryPath !== task.repositoryPath) throw new Error("The worktree repository does not match the original project binding.");
       if (task.resources.worktree !== null && !same(task.resources.worktree, value)) throw new Error("The execution already has a different worktree binding.");
-      return { ...task, resources: { ...task.resources, worktree: value } };
+      return { ...task, status: "active", resources: { ...task.resources, worktree: value } };
     }),
     bindHerdr: (identity: ClaimIdentity, binding: WorkerHerdr, now: number): LocalTask => change(identity, now, (task) => {
       if (task.status !== "active" || task.resources.worktree === null) throw new Error("Herdr binding requires an active execution and its original worktree.");
@@ -576,12 +583,12 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if (recovery.count >= task.configuration.recoveryLimit && !recovery.retryAuthorized) throw new Error("The execution recovery budget is exhausted.");
       return { ...task, recovery: { count: integer(recovery.count + 1, "Recovery count"), pauseReason: null, retryAuthorized: false } };
     }),
-    beginCleanup: (identity: ClaimIdentity, input: { kind: CleanupState["kind"]; deadline: number }, now: number): LocalTask => change(identity, now, (task) => {
+    beginCleanup: (identity: ClaimIdentity, input: { kind: CleanupState["kind"]; deadline: number; claimEnded?: true }, now: number): LocalTask => change(identity, now, (task) => {
       oneOf(input.kind, ["terminal", "shutdown"], "Cleanup kind");
       const existing = task.cleanup;
-      if (existing !== null) return { ...task, cleanup: { ...existing, kind: existing.kind === "terminal" ? "terminal" : input.kind } };
+      if (existing !== null) return { ...task, cleanup: { ...existing, kind: existing.kind === "terminal" ? "terminal" : input.kind, claimEnded: existing.claimEnded || input.claimEnded === true } };
       if (task.control !== null && input.kind !== "terminal") throw new Error("A source control intent requires terminal cleanup.");
-      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: false, worktreeDeleted: false }) };
+      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, claimEnded: input.claimEnded === true, startedAt: now, deadline: input.deadline, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: false, worktreeDeleted: false }) };
     }),
     markCleanupInputSubmitting: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, (task) => {
       const cleanup = needCleanup(task);
@@ -648,7 +655,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     confirmUnstartedControlCleanup: (identity: ClaimIdentity, proof: { completeHerdrInventory: true; noOwnedResources: true }, deadline: number, now: number): LocalTask => change(identity, now, (task) => {
       if (proof.completeHerdrInventory !== true || proof.noOwnedResources !== true) throw new Error("An unstarted source cleanup requires a complete Herdr inventory proving no original resources.");
       if (task.userId === null || task.control === null || !isUnstartedPendingSource(task)) throw new Error("Only a scoped unstarted pending source with a saved control intent can finish without activation.");
-      return { ...task, cleanup: parseCleanup({ kind: "terminal", startedAt: now, deadline, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: true }) };
+      return { ...task, cleanup: parseCleanup({ kind: "terminal", claimEnded: false, startedAt: now, deadline, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: true }) };
     }),
     markControlSubmitting: (identity: ClaimIdentity, expectedVersion: bigint, now: number): LocalTask => change(identity, now, (task) => {
       fullyCleaned(task);
@@ -663,7 +670,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       const resolvedVersion = exactVersion(resultVersion);
       if (control.submission !== "unknown" && control.submission !== "confirmed") throw new Error("An applied control outcome requires an original submission.");
       if (control.submission === "confirmed" && (control.outcome !== "applied" || control.resultVersion !== resolvedVersion)) throw new Error("The confirmed control result cannot be replaced.");
-      return { ...task, control: { ...control, submission: "confirmed", outcome: "applied", resultVersion: resolvedVersion, error: null } };
+      return { ...task, cleanup: { ...task.cleanup!, claimEnded: true }, control: { ...control, submission: "confirmed", outcome: "applied", resultVersion: resolvedVersion, error: null } };
     }),
     confirmControlOwnershipEnded: (identity: ClaimIdentity, proof: { completeOwnClaimInventory: true; claimAbsent: true }, now: number): LocalTask => change(identity, now, (task) => {
       fullyCleaned(task);
@@ -671,7 +678,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if (control === null) throw new Error("A source control intent is required.");
       if (proof.completeOwnClaimInventory !== true || proof.claimAbsent !== true) throw new Error("Ownership exit requires the original claim to be absent from a successful complete own-claim inventory.");
       if (control.submission === "confirmed") return task;
-      return { ...task, control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null } };
+      return { ...task, cleanup: { ...task.cleanup!, claimEnded: true }, control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null } };
     }),
     confirmControlOwnershipEndedByTask: (identity: ClaimIdentity, proof: { observedClaimId: string | null; observedState: "active" | "released" | "completed" | null }, now: number): LocalTask => change(identity, now, (task) => {
       fullyCleaned(task);
@@ -682,7 +689,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if ((observedClaimId === null) !== (observedState === null)) throw new Error("The targeted task observation must include both claim identity and state, or neither.");
       if (observedClaimId === task.claimId && observedState === "active") throw new Error("The targeted task observation still contains the original active claim.");
       if (control.submission === "confirmed") return task;
-      return { ...task, control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null } };
+      return { ...task, cleanup: { ...task.cleanup!, claimEnded: true }, control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null } };
     }),
     completeAppliedControl: (identity: ClaimIdentity, expectedIntent: ControlIntent, resultVersion: bigint, now: number): LocalTask => atomic(() => {
       const task = needTask(identity);
@@ -694,7 +701,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
         return task;
       }
       if (control.submission !== "unknown" && control.submission !== "confirmed") throw new Error("An applied control result requires the original submitted decision.");
-      return writeTask({ ...task, status: "done", control: { ...control, submission: "confirmed", outcome: "applied", resultVersion: exactVersion(resultVersion), error: null }, updatedAt: integer(now, "Task update time") });
+      return writeTask({ ...task, status: "done", cleanup: { ...task.cleanup!, claimEnded: true }, control: { ...control, submission: "confirmed", outcome: "applied", resultVersion: exactVersion(resultVersion), error: null }, updatedAt: integer(now, "Task update time") });
     }),
     completeEndedControl: (identity: ClaimIdentity, expectedIntent: ControlIntent, proof: { observedClaimId: string | null; observedState: "active" | "released" | "completed" | null }, now: number): LocalTask => atomic(() => {
       const task = needTask(identity);
@@ -708,7 +715,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       const observedClaimId = nullable(proof.observedClaimId, (value) => id(value, "Observed claim ID"));
       const observedState = nullable(proof.observedState, (value) => oneOf(value, ["active", "released", "completed"], "Observed claim state"));
       if ((observedClaimId === null) !== (observedState === null) || (observedClaimId === task.claimId && observedState === "active")) throw new Error("The targeted task observation does not prove the original active claim ended.");
-      return writeTask({ ...task, status: "done", control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null }, updatedAt: integer(now, "Task update time") });
+      return writeTask({ ...task, status: "done", cleanup: { ...task.cleanup!, claimEnded: true }, control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null }, updatedAt: integer(now, "Task update time") });
     }),
     rejectControlSubmission: (identity: ClaimIdentity, error: string, now: number): LocalTask => change(identity, now, (task) => {
       if (task.control === null || task.control.submission !== "unknown") throw new Error("A definite control rejection requires an original unknown submission.");
@@ -717,13 +724,14 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     completeTask: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, (task) => {
       fullyCleaned(task);
       if (task.control !== null && task.control.submission !== "confirmed") throw new Error("The source control outcome must be reconciled before local completion.");
+      if (!task.cleanup!.claimEnded) throw new Error("The original claim must be confirmed ended before local completion.");
       return { ...task, status: "done" };
     }),
     completeUnstartedPending: (identity: ClaimIdentity, proof: { completeOwnClaimInventory: true; claimAbsent: true; authenticatedUserId: string }, now: number): LocalTask => change(identity, now, (task) => {
       if (proof.completeOwnClaimInventory !== true || proof.claimAbsent !== true) throw new Error("Completing an unstarted pending claim requires its absence from a successful complete own-claim inventory.");
       if (!isUnstartedPending(task)) throw new Error("Only a proven unstarted pending execution with no resources or outstanding actions can complete directly.");
       if (task.userId === null || task.userId !== id(proof.authenticatedUserId, "Authenticated user ID")) throw new Error("The complete own-claim inventory must belong to the original authenticated claim owner.");
-      const completed: LocalTask = { ...task, status: "done", cleanup: { kind: "terminal", startedAt: now, deadline: now, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: true } };
+      const completed: LocalTask = { ...task, status: "done", cleanup: { kind: "terminal", claimEnded: true, startedAt: now, deadline: now, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: true } };
       fullyCleaned(completed);
       return completed;
     }),

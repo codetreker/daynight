@@ -107,7 +107,6 @@ daynight worker repo remove [--project <project-id>]
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
 daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
-daynight worker transfer <task-id> --claim-id <claim-id> --if-version <version> [target options] [--project <project-id>]
 daynight review                     # Show review help
 daynight review run
 daynight review list                 # Also review ls
@@ -1029,10 +1028,18 @@ this screen check into a native consumption receipt.
 
 For started executions, a successful complete own-claim inventory from the
 original account makes the original claim's absence cause
-the same terminal cleanup for done, release and transfer: request attributable
+the same terminal cleanup for done, release and force withdrawal: request attributable
 outside-worktree cleanup for at most the original ten-minute deadline, confirm
 the original agent stopped, close its workspace, delete its worktree and retain
-local history. Failures keep responsibility and resume cleanup after restart.
+local history. The cleanup's durable claimEnded proof must also be true before
+local completion; a successful complete original-account inventory or confirmed
+release supplies it, and restart or offline cleanup preserves it. Failures keep
+responsibility and resume cleanup after restart. A pending cleanup that rediscovers
+its verified original worktree binds that resource and becomes active in one
+transaction, preserving the original cleanup deadline, progress and ownership-end
+proof. It can then rebind its original runtime resources for cleanup without
+launching another agent. A competing active record rolls back both changes;
+resource-free pending cleanup does not reserve an active slot.
 A failed, incomplete or differently scoped inventory cannot authorize a new
 terminal-cleanup decision. Already persisted cleanup/control intents continue in
 the same foreground process through a lightweight discovery loop and one
@@ -1087,7 +1094,7 @@ process remains the sole agent controller and consumes the persisted decision;
 without one, the command acquires the same lock and advances the same coordinator
 for that execution. There is no separate control service. Current configuration
 and Daynight authentication are required, and the original service origin must
-match. Release, transfer and retry require the unfinished original local record;
+match. Release and retry require the unfinished original local record;
 resume can use an explicit project with its configured repository.
 
 Read the current task before deciding a versioned operation:
@@ -1097,7 +1104,7 @@ daynight task show <task-id> --json
 daynight worker release <task-id> --claim-id <source-claim-id> --if-version <version>
 ```
 
-Release and transfer first verify project access and source owner/admin
+Release first verifies project access and source owner/admin
 permission, then persist the concrete source decision before cleanup. The
 controller requests the original agent's attributable temporary-resource cleanup,
 waits for its original deadline of at most 10 minutes, confirms that agent stopped,
@@ -1126,32 +1133,16 @@ then performs ordinary capacity checks and prepares a fresh native conversation.
 The deleted source worktree and native history are not required. Run
 `daynight worker run` if the foreground worker is stopped.
 
-Transfer explicitly identifies the target's current user, stable worker and
-machine descriptor, actual platform and selected agent:
-
-```bash
-daynight worker transfer <task-id> --claim-id <source-claim-id> --if-version <version> \
-  --target-user-id <user-id> --target-worker-id <worker-id> \
-  --target-machine-id <machine-id> --target-machine-name "target-machine" \
-  --target-platform linux --target-agent codex
-```
-
-Use the intended receiver's actual descriptor and the explicitly selected new
-agent type. A trace-free new transfer grant honors that agent even when the
-receiver's current repository defaults select the other type. It freezes
-`model: null` and `args: []` for that type, with the current recovery limit; a
-matching type uses the current effective model/args. Existing pending snapshots
-are retained. The source operator's owner/admin permission is checked separately
-from the target's
-current membership. Transfer still requires automatic execution permission,
-platform compatibility and completed dependencies. It preserves `in_progress`
-and the task's execution interval, installing a fresh target claim/worktree ID
-with empty runtime associations. The receiver discovers its actual grant through
-normal claim inventory and starts a new execution; an old task path still in use
-blocks preparation. No source files, SQLite snapshots or native history are
-transported. Target and source agents may differ. Public commands provide no
-claim/worktree-ID override or continuity confirmation option; the service and
-typed client reject deprecated `continuityConfirmed` input.
+Web task details show the current claiming user, machine, agent and phase. The
+original owner or a project admin can confirm **Force withdraw** for active or
+released ownership. This submits the reviewed claim ID and exact version,
+atomically clears worker ownership, returns the task to `todo`, clears both
+execution timestamps and sets `allowAgents=false`. Other task materials remain.
+It requires no stopped confirmation and does not guarantee that the remote agent
+stops immediately. On its next successful complete own-claim inventory, the
+original worker discovers its claim is absent and starts terminal cleanup.
+Automatic selection stays disabled until explicitly enabled again. There is no
+CLI withdrawal command or target-execution handoff.
 
 For a paused execution that still belongs to the original owner, authorize one
 extra recovery attempt:
@@ -1195,8 +1186,8 @@ screen is not accepted with Enter merely to finish shutdown.
 Management diagnostics identify the original claim and report persisted waiting,
 completion, rejection or unknown results. Interrupting the command retains its
 intent so the foreground controller or a later management invocation can
-continue. An unknown release/transfer write is reconciled by reading the actual
-task and saved target claim; it is never resent or assigned replacement IDs,
+continue. An unknown release write is reconciled by reading the actual
+task and original claim; it is never resent or assigned replacement IDs,
 even when a read still shows the old value. Reinvoking that same decision can
 reconcile its result by targeted reads, including beside a running foreground
 worker, without taking over resource control or resubmitting. An already-cleaned

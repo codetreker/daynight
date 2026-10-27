@@ -22,8 +22,8 @@ export const createCleanupDriver = (deps: ExecutionDependencies) => {
       : workerOperation((operation) => deps.herdr.tasks.confirmRestoredStop(context, original, actual, evidence, operation), signal);
   };
   return {
-    advance: async (input: LocalTask, resources: readonly HerdrOwnedWorkspace[], kind: CleanupState["kind"], deadline: number, signal?: AbortSignal): Promise<LocalTask> => {
-      let task = deps.store.beginCleanup(input, { kind, deadline }, deps.now());
+    advance: async (input: LocalTask, resources: readonly HerdrOwnedWorkspace[], kind: CleanupState["kind"], deadline: number, signal?: AbortSignal, claimEnded = false): Promise<LocalTask> => {
+      let task = deps.store.beginCleanup(input, { kind, deadline, ...(claimEnded ? { claimEnded: true } : {}) }, deps.now());
       try {
         let pane = actualTaskPane(task, resources);
         const workspace = ownedWorkspace(task, resources);

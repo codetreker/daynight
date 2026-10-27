@@ -217,7 +217,7 @@ describe("worker repository preparation lifecycle", () => {
     f.store!.activateTask(task, 2);
     const startedAt = Date.now();
     const deadline = startedAt + 50;
-    f.store!.beginCleanup(task, { kind, deadline }, startedAt);
+    f.store!.beginCleanup(task, { kind, deadline, ...(kind === "terminal" ? { claimEnded: true as const } : {}) }, startedAt);
     let reportSelecting!: () => void;
     const selecting = new Promise<void>((resolve) => { reportSelecting = resolve; });
     let reportCleaned!: () => void;

@@ -34,7 +34,7 @@ const fixture = (operation = createOperation()) => {
     updateWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     completeWorkerTask: vi.fn<ApiClient["completeWorkerTask"]>().mockResolvedValue(task),
     releaseWorkerClaim: async () => { throw new Error("Unused worker API method"); },
-    transferWorkerClaim: async () => { throw new Error("Unused worker API method"); },
+    withdrawWorkerClaim: async () => { throw new Error("Unused worker API method"); },
     resumeWorkerTask: async () => { throw new Error("Unused worker API method"); },
     getTaskGraph: vi.fn<ApiClient["getTaskGraph"]>().mockResolvedValue(graph),
     putTaskAttachment: vi.fn<ApiClient["putTaskAttachment"]>(), listTaskAttachments: vi.fn<ApiClient["listTaskAttachments"]>(),
