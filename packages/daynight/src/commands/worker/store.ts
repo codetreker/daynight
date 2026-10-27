@@ -124,12 +124,13 @@ const withUserScope = (task: LocalTask, userId: string): LocalTask => {
   if (task.userId === null && (task.cleanup?.kind === "terminal" || task.control !== null)) throw new Error("An existing terminal or control intent with unknown authenticated scope cannot acquire an inferred owner.");
   return { ...task, userId: owner };
 };
-export const isUnstartedPending = (task: LocalTask): boolean => {
+export const isUnstartedPendingSource = (task: LocalTask): boolean => {
   const native = task.nativeExecution;
-  return task.status === "pending" && task.cleanup === null && task.control === null && task.resources.worktree === null && task.resources.herdr === null && task.resources.nativeSession === null
+  return task.status === "pending" && task.cleanup === null && task.resources.worktree === null && task.resources.herdr === null && task.resources.nativeSession === null
     && native !== null && native.terminalId === null && native.workspaceSubmission === "not-submitted" && native.workspaceEvidence === null
     && native.launchSubmission === "never-submitted" && native.launchEvidence === null && native.promptSubmission === "not-submitted" && native.stopObservation === null && native.summary === null;
 };
+export const isUnstartedPending = (task: LocalTask): boolean => task.control === null && isUnstartedPendingSource(task);
 const parseRecovery = (value: unknown): RecoveryState => {
   const data = record(value, ["count", "pauseReason", "retryAuthorized"], "Recovery state");
   return { count: integer(data.count, "Recovery count"), pauseReason: nullable(data.pauseReason, (entry) => text(entry, "Pause reason")), retryAuthorized: bool(data.retryAuthorized, "Recovery retry authorization") };
@@ -302,6 +303,19 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
   const fullyCleaned = (task: LocalTask): void => {
     const cleanup = needCleanup(task);
     if (cleanup.kind !== "terminal" || cleanup.result === null || !cleanup.agentStopped || !cleanup.workspaceClosed || !cleanup.worktreeDeleted) throw new Error("Terminal cleanup must record its result and confirm agent stopped, workspace closed and worktree deleted.");
+  };
+  const controlIntent = (task: LocalTask, input: ControlIntent): ControlIntent => {
+    const intent = parseIntent(input);
+    if (intent.sourceClaimId !== task.claimId) throw new Error("The control intent must name the original claim.");
+    if (intent.kind === "transfer" && (intent.targetClaimId === task.claimId || intent.target.worktreeId === task.worktreeId)) throw new Error("Transfer requires new claim and worktree identities.");
+    return intent;
+  };
+  const unsubmittedControl = (intent: ControlIntent, requestedAt: number): ControlState => ({ intent, requestedAt, submission: "not-submitted", submittedAt: null, outcome: null, resultVersion: null, error: null });
+  const authorizeRecoveryRetry = (task: LocalTask, expectedCount?: number): LocalTask => {
+    requireOrdinary(task);
+    if (expectedCount !== undefined && task.recovery.count !== integer(expectedCount, "Expected recovery count")) throw new Error("The recovery count changed after the explicit retry decision.");
+    if (task.status !== "active" || task.recovery.pauseReason === null) throw new Error("An extra recovery requires a paused active execution.");
+    return { ...task, recovery: { ...task.recovery, retryAuthorized: true } };
   };
   return {
     close: (): void => { db.close(); },
@@ -543,10 +557,9 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       return { ...task, recovery: { ...task.recovery, pauseReason: null } };
     }),
     authorizeRecoveryRetry: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, (task) => {
-      requireOrdinary(task);
-      if (task.status !== "active" || task.recovery.pauseReason === null) throw new Error("An extra recovery requires a paused active execution.");
-      return { ...task, recovery: { ...task.recovery, retryAuthorized: true } };
+      return authorizeRecoveryRetry(task);
     }),
+    authorizeRecoveryRetryAtCount: (identity: ClaimIdentity, expectedCount: number, now: number): LocalTask => change(identity, now, (task) => authorizeRecoveryRetry(task, expectedCount)),
     beginRecovery: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, (task) => {
       requireOrdinary(task);
       if (task.status !== "active") throw new Error("Only an active execution can recover.");
@@ -612,14 +625,23 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       return { ...task, cleanup: null, resources: { ...task.resources, herdr: null }, nativeExecution: { ...freshNativeExecution(), summary: task.nativeExecution === null ? null : task.nativeExecution.summary } };
     }),
     recordControlIntent: (identity: ClaimIdentity, input: ControlIntent, now: number): LocalTask => change(identity, now, (task) => {
-      const intent = parseIntent(input);
-      if (intent.sourceClaimId !== task.claimId) throw new Error("The control intent must name the original claim.");
-      if (intent.kind === "transfer" && (intent.targetClaimId === task.claimId || intent.target.worktreeId === task.worktreeId)) throw new Error("Transfer requires new claim and worktree identities.");
+      const intent = controlIntent(task, input);
       if (task.control !== null) {
         if (!same(task.control.intent, intent)) throw new Error("A different source control intent is already recorded.");
         return task;
       }
-      return { ...task, cleanup: task.cleanup === null ? null : { ...task.cleanup, kind: "terminal" }, control: { intent, requestedAt: now, submission: "not-submitted", submittedAt: null, outcome: null, resultVersion: null, error: null } };
+      return { ...task, cleanup: task.cleanup === null ? null : { ...task.cleanup, kind: "terminal" }, control: unsubmittedControl(intent, now) };
+    }),
+    replaceRejectedControlIntent: (identity: ClaimIdentity, input: ControlIntent, proof: { observedVersion: bigint }, now: number): LocalTask => change(identity, now, (task) => {
+      const intent = controlIntent(task, input);
+      if (task.control?.submission !== "rejected") throw new Error("A new explicit control decision can replace only a definitely rejected submission; unknown writes remain fenced.");
+      if (exactVersion(proof.observedVersion) !== intent.version) throw new Error("The replacement decision must use its newly observed explicit version.");
+      return { ...task, control: unsubmittedControl(intent, now) };
+    }),
+    confirmUnstartedControlCleanup: (identity: ClaimIdentity, proof: { completeHerdrInventory: true; noOwnedResources: true }, deadline: number, now: number): LocalTask => change(identity, now, (task) => {
+      if (proof.completeHerdrInventory !== true || proof.noOwnedResources !== true) throw new Error("An unstarted source cleanup requires a complete Herdr inventory proving no original resources.");
+      if (task.userId === null || task.control === null || !isUnstartedPendingSource(task)) throw new Error("Only a scoped unstarted pending source with a saved control intent can finish without activation.");
+      return { ...task, cleanup: parseCleanup({ kind: "terminal", startedAt: now, deadline, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: true }) };
     }),
     markControlSubmitting: (identity: ClaimIdentity, expectedVersion: bigint, now: number): LocalTask => change(identity, now, (task) => {
       fullyCleaned(task);
@@ -643,6 +665,43 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if (proof.completeOwnClaimInventory !== true || proof.claimAbsent !== true) throw new Error("Ownership exit requires the original claim to be absent from a successful complete own-claim inventory.");
       if (control.submission === "confirmed") return task;
       return { ...task, control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null } };
+    }),
+    confirmControlOwnershipEndedByTask: (identity: ClaimIdentity, proof: { observedClaimId: string | null; observedState: "active" | "released" | "completed" | null }, now: number): LocalTask => change(identity, now, (task) => {
+      fullyCleaned(task);
+      const control = task.control;
+      if (control === null) throw new Error("A source control intent is required for targeted management reconciliation.");
+      const observedClaimId = nullable(proof.observedClaimId, (value) => id(value, "Observed claim ID"));
+      const observedState = nullable(proof.observedState, (value) => oneOf(value, ["active", "released", "completed"], "Observed claim state"));
+      if ((observedClaimId === null) !== (observedState === null)) throw new Error("The targeted task observation must include both claim identity and state, or neither.");
+      if (observedClaimId === task.claimId && observedState === "active") throw new Error("The targeted task observation still contains the original active claim.");
+      if (control.submission === "confirmed") return task;
+      return { ...task, control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null } };
+    }),
+    completeAppliedControl: (identity: ClaimIdentity, expectedIntent: ControlIntent, resultVersion: bigint, now: number): LocalTask => atomic(() => {
+      const task = needTask(identity);
+      fullyCleaned(task);
+      const control = task.control;
+      if (control === null || !same(control.intent, parseIntent(expectedIntent))) throw new Error("The observed remote result does not belong to the current concrete management decision.");
+      if (task.status === "done") {
+        if (control.submission !== "confirmed") throw new Error("A completed source must have a confirmed management result.");
+        return task;
+      }
+      if (control.submission !== "unknown" && control.submission !== "confirmed") throw new Error("An applied control result requires the original submitted decision.");
+      return writeTask({ ...task, status: "done", control: { ...control, submission: "confirmed", outcome: "applied", resultVersion: exactVersion(resultVersion), error: null }, updatedAt: integer(now, "Task update time") });
+    }),
+    completeEndedControl: (identity: ClaimIdentity, expectedIntent: ControlIntent, proof: { observedClaimId: string | null; observedState: "active" | "released" | "completed" | null }, now: number): LocalTask => atomic(() => {
+      const task = needTask(identity);
+      fullyCleaned(task);
+      const control = task.control;
+      if (control === null || !same(control.intent, parseIntent(expectedIntent))) throw new Error("The observed ownership exit does not belong to the current concrete management decision.");
+      if (task.status === "done") {
+        if (control.submission !== "confirmed") throw new Error("A completed source must have a confirmed management result.");
+        return task;
+      }
+      const observedClaimId = nullable(proof.observedClaimId, (value) => id(value, "Observed claim ID"));
+      const observedState = nullable(proof.observedState, (value) => oneOf(value, ["active", "released", "completed"], "Observed claim state"));
+      if ((observedClaimId === null) !== (observedState === null) || (observedClaimId === task.claimId && observedState === "active")) throw new Error("The targeted task observation does not prove the original active claim ended.");
+      return writeTask({ ...task, status: "done", control: { ...control, submission: "confirmed", outcome: "ownership-ended", resultVersion: null, error: null }, updatedAt: integer(now, "Task update time") });
     }),
     rejectControlSubmission: (identity: ClaimIdentity, error: string, now: number): LocalTask => change(identity, now, (task) => {
       if (task.control === null || task.control.submission !== "unknown") throw new Error("A definite control rejection requires an original unknown submission.");

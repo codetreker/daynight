@@ -3,6 +3,13 @@ import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, w
 import Database from "better-sqlite3";
 
 type InstanceOwner = { owner: string; pid: number; startedAt: string };
+
+export class InstanceLockHeldError extends Error {
+  constructor(readonly pid: number) {
+    super(`CLI process ${pid} is still running; its instance lock was retained.`);
+    this.name = "InstanceLockHeldError";
+  }
+}
 const isMissing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 
 const withOwnershipGate = <T>(databaseFile: string, operation: () => T): T => {
@@ -66,7 +73,7 @@ export const acquireInstanceLock = async (lockFile: string, ownershipGateFile: s
           replaceOwner(lockFile, content);
           return false;
         }
-        throw new Error(`CLI process ${record.pid} is still running; its instance lock was retained.`);
+        throw new InstanceLockHeldError(record.pid);
       }
       replaceOwner(lockFile, content);
       return true;

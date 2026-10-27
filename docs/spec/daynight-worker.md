@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 已组合这些模块；人工管理命令、相应服务端协议调整和完整平台验收仍待交付。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
+本文定义 `daynight worker run` 的目标行为与可观察验收条件。自动执行许可和平台的服务端/CLI/Web 控制、候选筛选、唯一认领的服务端/typed client 基础、Agent 显式完成入口，以及本机身份/实例锁/SQLite 记录、Git 工作区管理和 Herdr 适配操作已实现；前台 worker run 与 retry/release/transfer/resume 人工管理命令已组合这些模块；终止后新执行的服务端协议已接入，完整平台验收仍须独立核验。[整体架构](../design/daynight-worker.md)说明职责，[认领架构](../design/daynight-worker-claims.md)拥有已交付的归属协议。
 
 ## 目标与范围
 
@@ -55,7 +55,7 @@ AND no active claim
 - 同一 task 跨用户、机器和 worker 只有一个有效 agent claim。竞争失败方不得启动执行。自动初次认领生成新的 claimId；稳定 workerId、origin/project/repo/path 及该项目的具体 claimAttempt 先持久保存，记录原 task/claim/worktree 标识、版本和决定配置。实际 claim 确认后才登记 pending，不预建 task 行或新增表。未知请求不重放，也不以暂时缺席清除；成功完整的自己 claim 清单找到同一归属后登记并解除未决请求。Transfer 的新 targetClaimId 在 source 管理意图中先持久保存。所有新 claimId 均不复用，服务端保存最后归属并拒绝其 ID 再次使用。
 - 任务使用受保护的 properties 保存当前执行用户、稳定机器 ID 与名称、实际平台、worker/claim 标识、agent 类型、Herdr session/workspace/pane 及原生 agent session ID。尚未取得的会话信息与已取得信息区分，取得后补全。
 - 初始认领/人工接续用户以服务端认证身份为准，移交目标由服务端验证为当前项目成员。完整 properties 必须包含 worker:null 或 active/released/completed 的归属记录；普通 create/PATCH 即使原样或以 null 提供 worker 也拒绝，PR 等其他属性更新保留 worker。
-- 会话补全、执行更新、移交与完成均核验当前 claim 与精确任务版本，旧执行方不能覆盖新归属或完成新执行方的任务。普通状态修改不能释放 active claim，或开始/完成 released 的未完成成果；显式人工 resume 保留原 owner/admin、previousClaimId 与版本核对，人工执行不受自动许可/平台过滤。现有服务的连续性约束及目标修订见 W-08。
+- 会话补全、执行更新、移交与完成均核验当前 claim 与精确任务版本，旧执行方不能覆盖新归属或完成新执行方的任务。普通状态修改不能释放 active claim，或开始/完成 released 的未完成成果；显式人工 resume 保留原 owner/admin、previousClaimId 与版本核对，人工执行不受自动许可/平台过滤。终止后的 resume/transfer 使用新执行身份，具体管理规则见 W-08。
 - Worker 的任务查询、认领、归属更新、完成及管理操作直接调用 CLI 进程内 typed ApiClient，不启动 daynight 子进程；每次 HTTP 操作独立有界，未知结果读取核对而不自动重发。
 
 ### W-05：调度与全局并发
@@ -91,10 +91,13 @@ AND no active claim
 
 - 需要人工输入或授权时保留自动执行许可、平台、claim、worktree、原会话和并发名额，前台显示等待原因及原会话入口；人工通过 Herdr 处理后继续。
 - 原执行用户或项目管理员可显式 release/transfer，并受项目访问权限约束。授权提交者与目标分别校验，目标必须是当前项目成员；接收者身份不自动授予替换原归属的权限。
-- 主动管理先持久保存具体意图，抑制普通恢复，完成原 agent 停止、workspace 关闭和 worktree 删除后，才绑定用户决定的精确版本提交远端变更。停止或删除失败保留原责任；未知远端结果先核对，不重放、不重建旧业务资源。
+- `daynight worker retry/release/transfer/resume` 提供显式人工入口。Release/transfer 在任何破坏性清理前核验当前项目访问及原 owner/admin 权限；原执行账号与当前管理员分别处理，不以当前登录身份推断管理权限。
+- 主动管理先在 source 行持久保存具体意图，抑制普通恢复，由前台唯一 coordinator 串行完成原 agent 临时资源清理、真实停止、workspace 关闭和 worktree 删除后，才绑定用户决定的精确版本提交远端变更。没有前台时先取得相同实例锁并执行同一处理函数。单任务管理不停止共享 Herdr 或其他 task。停止或删除失败保留原责任；未知远端结果先核对，不重放、不重建旧业务资源。
 - Transfer 保持唯一有效 claim，使旧 claim 失去更新能力；保留任务 in_progress 与执行计时，重新记录目标认领时间。Release 返回 todo 并清空执行时间。两者的本地退出与 done 使用相同终止清理。
-- Transfer target 与 released task 的显式 resume 都使用新 claimId/worktreeId、自己的冻结配置和新原生会话，不依赖源 worktree/native history 连续，不使用 SQLite 快照传输或未授予的目标 pending。普通 daemon 不立即重领 released task，由显式 resume 再启动。
-- 既有服务端 continuityConfirmed、同 worktreeId/agent 的原成果接续约束仍由[归属架构](../design/daynight-worker-claims.md)描述；人工管理协议交付须修订这些约束，保留权限、精确版本、停止确认与 fencing。本机存储交付不代表这些服务修订已完成。
+- Transfer target 与 released task 的显式 resume 都使用新 claimId/worktreeId、该次冻结配置和新原生会话，不依赖源 worktree/native history 连续，不使用 SQLite 快照传输或未授予的目标 pending。没有既有执行痕迹的 transfer grant 尊重明确目标 agent：接收方配置类型不同时，以该 agent、model:null、args:[] 与当前 recoveryLimit 冻结；相同类型用当前有效配置，已有 pending 快照保持。普通 daemon 不立即重领 released task，由显式 resume 再启动。
+- 服务端与 typed client 严格拒绝已废弃的 `continuityConfirmed` 输入。新执行要求新的 claimId/worktreeId，允许明确更换 agent；旧归属保存的资源字段仅是历史，不要求已删除 source worktree 或原生会话存在。权限、精确版本、stoppedConfirmed、目标自动资格、依赖与旧 claim fencing 保持。
+- 用户显式 `--if-version` 不替换。只有提交被明确拒绝后，才可重新读取 task 并作新的明确管理决定，所给精确版本须匹配本次观察；拒绝未改变 task 时，版本数值可以与原决定相同。未知提交即使读到旧值也不解除 fence。核对管理写入可按 taskId 读取实际 task/claim 和原先保存的目标 claimId，这不改变自动缺席清理的完整自有清单规则。
+- Retry 只授权同一有效 claim 的一次额外恢复尝试，不清零累计预算、不更换原资源或冻结配置；并发和重复请求不累积授权或双启动。终止后的执行使用 resume，不能借 retry 重建源工作区。
 
 ### W-09：SQLite、退出与恢复
 

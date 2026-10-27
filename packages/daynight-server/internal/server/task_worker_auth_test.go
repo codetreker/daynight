@@ -64,27 +64,27 @@ func TestWorkerHTTPAuthenticatedOwnerAndTransfer(t *testing.T) {
 	}{
 		{http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}},
 		{http.MethodPost, path + "/release", map[string]any{"version": task.Version, "claimId": claim.ClaimID, "stoppedConfirmed": true}},
-		{http.MethodPost, path + "/transfer", map[string]any{"version": task.Version, "claimId": claim.ClaimID, "newClaimId": uuid.NewString(), "target": map[string]any{"userId": adminUser.ID, "workerId": uuid.NewString(), "machine": body["machine"], "platform": "linux", "agent": "codex"}, "worktreeId": claim.WorktreeID, "stoppedConfirmed": true, "continuityConfirmed": true}},
+		{http.MethodPost, path + "/transfer", map[string]any{"version": task.Version, "claimId": claim.ClaimID, "newClaimId": uuid.NewString(), "target": map[string]any{"userId": adminUser.ID, "workerId": uuid.NewString(), "machine": body["machine"], "platform": "linux", "agent": "codex"}, "worktreeId": uuid.NewString(), "stoppedConfirmed": true}},
 	} {
 		request(anonymous, action.method, action.path, action.body, nil, http.StatusUnauthorized, "unauthenticated")
 		request(outsider, action.method, action.path, action.body, origin, http.StatusNotFound, "not_found")
 		request(member, action.method, action.path, action.body, map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden, "forbidden")
 	}
 	request(admin, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}, origin, http.StatusForbidden, "forbidden")
-	target := map[string]any{"userId": adminUser.ID, "workerId": uuid.NewString(), "machine": body["machine"], "platform": "linux", "agent": "codex"}
-	transfer := map[string]any{"version": task.Version, "claimId": claim.ClaimID, "newClaimId": uuid.NewString(), "target": target, "worktreeId": claim.WorktreeID, "stoppedConfirmed": true, "continuityConfirmed": true}
+	target := map[string]any{"userId": adminUser.ID, "workerId": uuid.NewString(), "machine": body["machine"], "platform": "linux", "agent": "copilot"}
+	transfer := map[string]any{"version": task.Version, "claimId": claim.ClaimID, "newClaimId": uuid.NewString(), "target": target, "worktreeId": uuid.NewString(), "stoppedConfirmed": true}
 	target["userId"] = outsiderUser.ID
 	request(member, http.MethodPost, path+"/transfer", transfer, origin, http.StatusBadRequest, "invalid_input")
 	target["userId"], target["platform"] = adminUser.ID, "windows"
 	request(member, http.MethodPost, path+"/transfer", transfer, origin, http.StatusConflict, "invalid_transition")
 	target["platform"] = "linux"
-	transfer["continuityConfirmed"] = false
+	transfer["stoppedConfirmed"] = false
 	request(member, http.MethodPost, path+"/transfer", transfer, origin, http.StatusBadRequest, "invalid_input")
-	transfer["continuityConfirmed"] = true
+	transfer["stoppedConfirmed"] = true
 	data = request(anonymous, http.MethodPost, path+"/transfer", transfer, bearer, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
-	if task.Properties.Worker.UserID != adminUser.ID || task.Properties.Worker.ClaimID != transfer["newClaimId"] || task.Properties.Worker.WorktreeID != claim.WorktreeID || !reflect.DeepEqual(task.StartedAt, before.StartedAt) || task.Status != "in_progress" {
-		t.Fatal("transfer confused the source authority, target identity, continuity or task timing")
+	if task.Properties.Worker.UserID != adminUser.ID || task.Properties.Worker.ClaimID != transfer["newClaimId"] || task.Properties.Worker.WorktreeID != transfer["worktreeId"] || task.Properties.Worker.Agent != "copilot" || !reflect.DeepEqual(task.StartedAt, before.StartedAt) || task.Status != "in_progress" {
+		t.Fatal("transfer confused the source authority, target identity, new resources or task timing")
 	}
 	request(member, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}, origin, http.StatusConflict, "claim_conflict")
 	request(member, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "phase": "executing"}, origin, http.StatusForbidden, "forbidden")
@@ -93,7 +93,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndTransfer(t *testing.T) {
 	data = request(admin, http.MethodPost, path+"/release", map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "stoppedConfirmed": true}, origin, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
 	resume := workerClaimBody(task.Version)
-	resume["previousClaimId"], resume["worktreeId"], resume["continuityConfirmed"] = task.Properties.Worker.ClaimID, task.Properties.Worker.WorktreeID, true
+	resume["previousClaimId"] = task.Properties.Worker.ClaimID
 	request(member, http.MethodPost, path+"/resume", resume, origin, http.StatusForbidden, "forbidden")
 	request(outsider, http.MethodPost, path+"/resume", resume, origin, http.StatusNotFound, "not_found")
 	request(anonymous, http.MethodPost, path+"/resume", resume, nil, http.StatusUnauthorized, "unauthenticated")

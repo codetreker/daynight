@@ -66,7 +66,7 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "worktreeId", "continuityConfirmed"}, claimWorkerInput, h.tasks.ClaimWorker)
+	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "worktreeId"}, claimWorkerInput, h.tasks.ClaimWorker)
 }
 
 func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -78,11 +78,11 @@ func (h *taskHandler) releaseWorker(w http.ResponseWriter, request *http.Request
 }
 
 func (h *taskHandler) transferWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "transfer", []string{"version", "claimId", "newClaimId", "target", "worktreeId", "stoppedConfirmed", "continuityConfirmed"}, transferWorkerInput, h.tasks.TransferWorker)
+	workerMutation(h, w, request, principal, "transfer", []string{"version", "claimId", "newClaimId", "target", "worktreeId", "stoppedConfirmed"}, transferWorkerInput, h.tasks.TransferWorker)
 }
 
 func (h *taskHandler) resumeWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "resume", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "worktreeId", "previousClaimId", "continuityConfirmed"}, resumeWorkerInput, h.tasks.ResumeWorker)
+	workerMutation(h, w, request, principal, "resume", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "worktreeId", "previousClaimId"}, resumeWorkerInput, h.tasks.ResumeWorker)
 }
 
 func workerMachineInput(raw json.RawMessage) (core.WorkerMachine, error) {
@@ -135,13 +135,6 @@ func claimWorkerInput(fields map[string]json.RawMessage) (service.ClaimWorker, e
 	input.WorkerDescriptor, err = workerDescriptorInput(fields)
 	if err != nil {
 		return service.ClaimWorker{}, err
-	}
-	confirmation, err := optionalBool(fields, "continuityConfirmed")
-	if err != nil {
-		return service.ClaimWorker{}, err
-	}
-	if confirmation != nil {
-		input.ContinuityConfirmed = *confirmation
 	}
 	return input, nil
 }
@@ -275,10 +268,6 @@ func transferWorkerInput(fields map[string]json.RawMessage) (service.TransferWor
 	}
 	input.Target.Agent = core.WorkerAgent(agent)
 	input.StoppedConfirmed, err = requiredWorkerConfirmation(fields, "stoppedConfirmed")
-	if err != nil {
-		return service.TransferWorker{}, err
-	}
-	input.ContinuityConfirmed, err = requiredWorkerConfirmation(fields, "continuityConfirmed")
 	return input, err
 }
 

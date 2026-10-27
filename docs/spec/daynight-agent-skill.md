@@ -390,7 +390,7 @@ Agent、不读取账号、不调用模型、不启动 Daynight 服务或数据�
 | 已为 true 的 todo 或 in_progress | 只读复审，不重复写入同值；失败时保留实际许可并明确报告仍可能被调度或正在执行。撤销许可或停止执行需要另外明确授权及既有控制流程。 |
 | in_progress、false | 报告运行中许可锁，不新启用，也不改状态绕过。 |
 | done | 按 handoff 策略报告已完成、无需移交，不重开或更新许可；这是模式策略，不是 API 禁止。 |
-| active 或 released worker | 保留所有权和原执行约束。released 即使为 todo，恢复仍需原 worktree/Agent 连续性确认，不能因启用许可而任意新建执行。 |
+| active 或 released worker | 保留所有权和执行历史。Active 保留原资源；released 只在有权管理者明确安排后以新 claim/worktree/native session 开始执行，启用许可本身不恢复任务或已删除的源资源。 |
 
 flag 更新不包含附件的原子保护。可变引用按实际内容核验，发生实质变化时重新审查
 受影响部分；task version、附件清单与时间戳不能充当内容冻结。执行开始前仍须重新

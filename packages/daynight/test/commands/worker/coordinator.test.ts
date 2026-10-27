@@ -86,6 +86,22 @@ const fixture = async (maxConcurrent = 1, repoCount = 1) => {
   const herdr = { tasks, ensureInstance: vi.fn(async () => { order.push("ensure-herdr"); }), stopInstance: vi.fn() } as unknown as WorkerHerdrAdapter;
   const remote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => uuid(2)), resolveProject: vi.fn(),
+    readTask: vi.fn(async (_projectId: string, taskId: string) => {
+      const task = [...granted.values()].find((task) => task.id === taskId);
+      if (task === undefined) throw new Error("Task not found in control fixture.");
+      return task;
+    }),
+    authorizeControl: vi.fn(async () => {}),
+    release: vi.fn(async (projectId: string, taskId: string, input: { claimId: string; version: bigint }) => {
+      order.push("release");
+      const source = store.listTasks().find((task) => task.claimId === input.claimId)!;
+      expect(source.cleanup).toMatchObject({ agentStopped: true, workspaceClosed: true, worktreeDeleted: true });
+      expect(source.control?.submission).toBe("unknown");
+      const prior = granted.get(input.claimId)!;
+      const next: Task = { ...prior, version: prior.version + 1n, status: "todo", ready: true, startedAt: null, completedAt: null, properties: { ...prior.properties, worker: { ...prior.properties.worker!, state: "released" } } };
+      granted.delete(input.claimId);
+      return next;
+    }),
     ownInventory: vi.fn(async () => { order.push("inventory"); return [...granted.values()]; }),
     candidates: vi.fn(async function* (projectId: string) { for (const candidate of candidates.get(projectId)!) if (![...granted.values()].some((task) => task.id === candidate.id)) yield candidate; }),
     claim: vi.fn(async (candidate: Task, descriptor: Omit<WorkerClaim, "state" | "userId" | "phase" | "herdr" | "nativeSessionId" | "claimedAt">) => { order.push(`claim:${candidate.projectId}`); expect(store.getClaimAttempt({ serverOrigin: origin, projectId: candidate.projectId })?.claimId).toBe(descriptor.claimId); expect(store.listTasks()).not.toContainEqual(expect.objectContaining({ claimId: descriptor.claimId })); const task: Task = { ...candidate, version: candidate.version + 1n, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { ...descriptor, userId: uuid(2), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } }; granted.set(descriptor.claimId, task); return task; }),
@@ -467,6 +483,7 @@ describe("worker foreground coordinator", () => {
     const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
     f.store.recordControlIntent(task, { kind: "release", sourceClaimId: task.claimId, version: f.granted.get(task.claimId)!.version.toString() }, 1000);
     const inventoryCalls = vi.mocked(f.remote.ownInventory).mock.calls.length;
+    vi.mocked(f.remote.readTask).mockRejectedValue(new Error("service unavailable"));
     await f.coordinator.advanceCommittedCleanups();
     expect(f.store.getTask(task)).toMatchObject({ status: "active", control: { submission: "not-submitted" }, cleanup: { kind: "terminal", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
     expect(f.remote.ownInventory).toHaveBeenCalledTimes(inventoryCalls); expect(f.tasks.start).toHaveBeenCalledOnce();
@@ -600,7 +617,7 @@ describe("worker foreground coordinator", () => {
   it("never confirms user A's management result from user B's empty claim inventory", async () => {
     const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
     f.store.recordControlIntent(task, { kind: "release", sourceClaimId: task.claimId, version: f.granted.get(task.claimId)!.version.toString() }, 1000);
-    const foreignRemote = { ...f.remote, currentUserId: vi.fn(async () => uuid(999)), ownInventory: vi.fn(async () => []) };
+    const foreignRemote = { ...f.remote, currentUserId: vi.fn(async () => uuid(999)), ownInventory: vi.fn(async () => []), authorizeControl: vi.fn(async () => { throw new Error("Current user is not the original owner or an administrator."); }) };
     await createWorkerCoordinator({ ...f.options, remote: foreignRemote, repositories: [] }).tick();
     expect(f.store.getTask(task)).toMatchObject({ status: "active", userId: uuid(2), control: { submission: "not-submitted", outcome: null }, cleanup: { kind: "terminal", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
     expect(f.granted.get(task.claimId)?.properties.worker?.state).toBe("active"); expect(f.remote.claim).toHaveBeenCalledOnce();
@@ -1117,6 +1134,86 @@ describe("worker foreground coordinator", () => {
     if (attributable) { expect(f.tasks.forceStop).toHaveBeenCalledOnce(); expect(f.tasks.closeWorkspace).toHaveBeenCalledOnce(); expect(f.store.getTask(identity)?.resources.nativeSession?.sessionId).toBe(uuid(1193)); }
     else { expect(f.tasks.forceStop).not.toHaveBeenCalled(); expect(f.tasks.closeWorkspace).not.toHaveBeenCalled(); }
     expect(f.tasks.confirmEmptyPane).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+  });
+
+  it("persists source management before recovery and releases only after the complete original cleanup", async () => {
+    const f = await fixture(2); await f.coordinator.tick();
+    const [source, sibling] = f.store.listTasks();
+    const remote = f.granted.get(source!.claimId)!;
+    f.store.recordControlIntent(source!, { kind: "release", sourceClaimId: source!.claimId, version: remote.version.toString() }, 1100);
+    f.candidates.set(f.projects[0]!.projectId, []);
+    await f.coordinator.advanceCommittedCleanups(source!);
+    expect(f.store.getTask(source!)?.status).toBe("done");
+    expect(f.order.indexOf("release")).toBeGreaterThan(f.order.indexOf("delete-worktree"));
+    expect(f.store.getTask(sibling!)?.cleanup).toBeNull();
+    expect(f.tasks.start).toHaveBeenCalledTimes(2);
+    expect(f.herdr.stopInstance).not.toHaveBeenCalled();
+  });
+
+  it("cleans a controlled unstarted pending successor without touching the old active task path", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    const source = f.store.listTasks()[0]!;
+    const successor = { ...source, claimId: uuid(940), worktreeId: uuid(941) };
+    f.store.registerPending(successor, { kind: "new", configuration }, 1100, uuid(2));
+    f.store.recordControlIntent(successor, { kind: "release", sourceClaimId: successor.claimId, version: "8" }, 1101);
+    const prior = f.granted.get(source.claimId)!;
+    f.granted.delete(source.claimId);
+    f.granted.set(successor.claimId, { ...prior, version: 8n, properties: { ...prior.properties, worker: { ...prior.properties.worker!, claimId: successor.claimId, worktreeId: successor.worktreeId, phase: "preparing", herdr: null, nativeSessionId: null } } });
+    vi.mocked(f.git.findWorktree).mockClear(); vi.mocked(f.git.removeWorktree).mockClear();
+    await f.coordinator.advanceCommittedCleanups(successor);
+    expect(f.store.getTask(successor)?.status).toBe("done");
+    expect(f.store.getTask(source)?.status).toBe("active");
+    expect(f.git.findWorktree).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    expect(f.tasks.forceStop).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it("freezes an explicitly granted new agent without inheriting another native kind's model or arguments", async () => {
+    const f = await fixture();
+    const candidate = f.candidates.get(f.projects[0]!.projectId)![0]!;
+    const claimId = uuid(950);
+    f.granted.set(claimId, { ...candidate, version: 5n, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId, state: "active", userId: uuid(2), workerId, machine: { id: uuid(3), name: "fixture" }, platform: "linux", agent: "copilot", worktreeId: uuid(951), phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    f.candidates.set(f.projects[0]!.projectId, []);
+    await f.coordinator.tick();
+    const task = f.store.listTasks()[0]!;
+    expect(task.configuration).toEqual({ agent: "copilot", model: null, args: [], recoveryLimit: configuration.recoveryLimit });
+    expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.tasks.start.mock.calls[0]![0].agent).toBe("copilot");
+    expect(task.resources.nativeSession?.sessionId).toBe(uuid(1001));
+  });
+
+  it("blocks later native launch when a control intent arrives while worktree preparation is in flight", async () => {
+    const f = await fixture();
+    const prepare = vi.mocked(f.git.prepareWorktree).getMockImplementation()!;
+    vi.mocked(f.git.prepareWorktree).mockImplementationOnce(async (...args) => {
+      const binding = await prepare(...args);
+      const task = f.store.listTasks()[0]!;
+      f.store.recordControlIntent(task, { kind: "release", sourceClaimId: task.claimId, version: f.granted.get(task.claimId)!.version.toString() }, 1100);
+      return binding;
+    });
+    await f.coordinator.tick();
+    expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.tasks.prepareWorkspace).not.toHaveBeenCalled();
+    expect(f.store.listTasks()[0]?.control?.intent.kind).toBe("release");
+    await f.coordinator.advanceCommittedCleanups(f.store.listTasks()[0]!);
+    expect(f.store.listTasks()[0]?.status).toBe("done");
+  });
+
+  it("completes a saved control from original-user full inventory absence without a targeted task request", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
+    f.store.recordControlIntent(task, { kind: "release", sourceClaimId: task.claimId, version: f.granted.get(task.claimId)!.version.toString() }, 1100);
+    f.granted.clear(); f.candidates.set(task.projectId, []);
+    vi.mocked(f.remote.readTask).mockRejectedValue(new Error("Task GET unavailable"));
+    await f.coordinator.tick();
+    expect(f.store.getTask(task)).toMatchObject({ status: "done", control: { submission: "confirmed", outcome: "ownership-ended" }, cleanup: { worktreeDeleted: true } });
+    expect(f.remote.readTask).not.toHaveBeenCalled(); expect(f.remote.release).not.toHaveBeenCalled();
+  });
+
+  it("confirms shutdown native stop while a saved control still needs unavailable remote resolution", async () => {
+    const f = await fixture(); await f.coordinator.tick(); const task = f.store.listTasks()[0]!;
+    f.store.recordControlIntent(task, { kind: "release", sourceClaimId: task.claimId, version: f.granted.get(task.claimId)!.version.toString() }, 1100);
+    vi.mocked(f.remote.readTask).mockRejectedValue(new Error("Task GET unavailable"));
+    expect(await f.coordinator.shutdown()).toBe(true);
+    expect(f.store.getTask(task)).toMatchObject({ status: "active", control: { submission: "not-submitted" }, cleanup: { agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+    expect(f.remote.readTask).not.toHaveBeenCalled(); expect(f.remote.release).not.toHaveBeenCalled();
   });
 
 });

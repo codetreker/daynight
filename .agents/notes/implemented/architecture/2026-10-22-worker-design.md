@@ -27,8 +27,8 @@ separates the ordinary and managed skill instructions. The worker constructs
 startup and same-claim relaunch prompts with an explicit worker-managed
 environment, using-daynight skill, execute-task-in-managed mode and original
 assignment; the Herdr adapter transports that prompt to the selected native
-agent. This note records the delivered design decision. The worker runtime
-remains implementation work. The [claim foundation
+agent. The [foreground runtime](2026-10-27-foreground-worker-runtime.md)
+implements that composition; this note owns the responsibility decision. The [claim foundation
 decision](2026-10-24-worker-claim-foundation.md) owns implemented service/client
 ownership, status fencing and protected-property operations; it does not
 establish resource startup or recovery. Automatic-execution permission and
@@ -66,9 +66,11 @@ primitives. The [private Herdr adapter](2026-10-26-worker-herdr-adapter.md) owns
 instance isolation, native preflight, input uncertainty and concrete stop/rebind
 operations. The [foreground runtime](2026-10-27-foreground-worker-runtime.md)
 composes these modules with strict configuration, capacity, reconciliation and
-durable unknown mutation fences. Management commands and their service-protocol
-revision remain separate work; the command and targeted observations do not
-establish whole-Goal or three-platform acceptance.
+durable unknown mutation fences. The
+[manual-control decision](2026-10-27-worker-manual-control.md) owns explicit
+management commands and the terminal new-execution protocol. Command
+availability and targeted observations do not establish whole-Goal or
+three-platform acceptance.
 
 The worker reads the latest Herdr status for execution observations. The agent
 validates delivery against task requirements, PR facts and acceptance evidence,
@@ -132,8 +134,10 @@ second agent reporting protocol. Lost external responses cannot justify another
 agent or repeated input. Worker death does not expire ownership automatically.
 The original transfer design required access to source results; the
 local-records decision replaces that continuity assumption with terminal source
-cleanup and a fresh target execution. Existing service continuity constraints
-remain distinct until their management-protocol implementation changes them.
+cleanup and a fresh target execution. The
+[manual-control decision](2026-10-27-worker-manual-control.md) replaces the
+service continuity checks with fresh claim/worktree identities and strict
+rejection of the obsolete confirmation input.
 
 Herdr idle/done is only an execution observation. The agent performs task
 acceptance, records evidence and submits final claim-bound done. Conflicting or

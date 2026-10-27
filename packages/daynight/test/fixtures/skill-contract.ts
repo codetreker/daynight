@@ -337,11 +337,11 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     ],
   },
   {
-    id: "handoff-state-and-worker-continuity",
+    id: "handoff-state-and-worker-ownership",
     input: "Handoff encounters a running task, a completed task, or active/released worker ownership.",
-    obligation: "Respect running permission locks, completed-task mode policy, and the original execution's controlled ownership and continuity.",
+    obligation: "Respect running permission locks, completed-task mode policy, active resource ownership and separately authorized fresh execution after release.",
     propositions: [
-      { resource: "references/handoff.md", section: "## State and ownership rules", requires: [/`in_progress`, permission false/, /Report the permission lock; do not newly enable or reset status to evade it/, /Review does not pause, stop, release, or transfer execution/, /Report completion and no handoff needed; do not reopen or update permission/, /This is mode policy, not an API prohibition/, /Preserve ownership and execution history/, /confirmed original worktree\/Agent continuity/, /enabling permission does not authorize a fresh execution elsewhere/] },
+      { resource: "references/handoff.md", section: "## State and ownership rules", requires: [/`in_progress`, permission false/, /Report the permission lock; do not newly enable or reset status to evade it/, /Review does not pause, stop, release, or transfer execution/, /Report completion and no handoff needed; do not reopen or update permission/, /This is mode policy, not an API prohibition/, /Preserve ownership and execution history/, /An active execution keeps its original resources/, /A released task starts a fresh claim\/worktree\/native session only through an authorized management decision/, /enabling permission neither resumes it nor restores deleted source resources/] },
     ],
   },
   {

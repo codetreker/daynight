@@ -21,8 +21,7 @@ type WorkerDescriptor struct {
 
 type ClaimWorker struct {
 	WorkerDescriptor
-	Version             int64
-	ContinuityConfirmed bool
+	Version int64
 }
 
 type UpdateWorker struct {
@@ -48,13 +47,12 @@ type WorkerTarget struct {
 }
 
 type TransferWorker struct {
-	Version             int64
-	ClaimID             string
-	NewClaimID          string
-	Target              WorkerTarget
-	WorktreeID          string
-	StoppedConfirmed    bool
-	ContinuityConfirmed bool
+	Version          int64
+	ClaimID          string
+	NewClaimID       string
+	Target           WorkerTarget
+	WorktreeID       string
+	StoppedConfirmed bool
 }
 
 type ResumeWorker struct {
@@ -74,7 +72,7 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal core.Principal, proje
 		if !current.AllowAgents || !core.PlatformCompatible(current.RequiredPlatform, descriptor.Platform) {
 			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task does not permit automatic execution on this platform."}
 		}
-		if err := workerContinuity(current.Properties.Worker, descriptor, input.ContinuityConfirmed); err != nil {
+		if err := freshWorkerExecution(current.Properties.Worker, descriptor); err != nil {
 			return taskMutation{}, err
 		}
 		return acquireWorker(ctx, tx, current, principal.UserID, descriptor)
@@ -101,7 +99,7 @@ func (s *Tasks) ResumeWorker(ctx context.Context, principal core.Principal, proj
 		if err := requireWorkerOperator(ctx, tx, principal, worker); err != nil {
 			return taskMutation{}, err
 		}
-		if err := workerContinuity(worker, descriptor, input.ContinuityConfirmed); err != nil {
+		if err := freshWorkerExecution(worker, descriptor); err != nil {
 			return taskMutation{}, err
 		}
 		return acquireWorker(ctx, tx, current, principal.UserID, descriptor)
@@ -192,8 +190,8 @@ func (s *Tasks) TransferWorker(ctx context.Context, principal core.Principal, pr
 	if err != nil {
 		return core.Task{}, err
 	}
-	if !input.StoppedConfirmed || !input.ContinuityConfirmed {
-		return core.Task{}, invalidInput("Stopped execution and original-work continuity must be explicitly confirmed.")
+	if !input.StoppedConfirmed {
+		return core.Task{}, invalidInput("Stopped execution must be explicitly confirmed.")
 	}
 	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
 		worker, err := activeWorker(current, claimID)
@@ -211,8 +209,8 @@ func (s *Tasks) TransferWorker(ctx context.Context, principal core.Principal, pr
 		if !current.AllowAgents || !core.PlatformCompatible(current.RequiredPlatform, descriptor.Platform) {
 			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task does not permit automatic execution on the target platform."}
 		}
-		if worker.WorktreeID != descriptor.WorktreeID || worker.Agent != descriptor.Agent || worker.ClaimID == descriptor.ClaimID {
-			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Transfer requires the original worktree and agent with a fresh claim ID."}
+		if err := freshWorkerExecution(worker, descriptor); err != nil {
+			return taskMutation{}, err
 		}
 		if len(current.BlockedBy) > 0 {
 			return taskMutation{}, &Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
@@ -252,15 +250,15 @@ func workerReady(current core.Task) error {
 	return nil
 }
 
-func workerContinuity(worker *core.WorkerClaim, descriptor WorkerDescriptor, confirmed bool) error {
+func freshWorkerExecution(worker *core.WorkerClaim, descriptor WorkerDescriptor) error {
 	if worker == nil {
 		return nil
 	}
 	if worker.ClaimID == descriptor.ClaimID {
 		return &Fault{Code: "claim_conflict", Message: "A fresh claim ID is required for a new execution."}
 	}
-	if worker.State == core.WorkerReleased && (!confirmed || worker.WorktreeID != descriptor.WorktreeID || worker.Agent != descriptor.Agent) {
-		return &Fault{Code: "invalid_transition", Message: "Released execution requires confirmed continuity of its original worktree and agent."}
+	if worker.WorktreeID == descriptor.WorktreeID {
+		return &Fault{Code: "invalid_transition", Message: "A fresh worktree ID is required for a new execution."}
 	}
 	return nil
 }

@@ -22,6 +22,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Task deletion](#task-deletion)
 - [Task attachments](#task-attachments)
 - [Worker configuration and startup](#worker-configuration-and-startup)
+- [Worker manual management](#worker-manual-management)
 - [Review configuration and startup](#review-configuration-and-startup)
 - [Review status listing](#review-status-listing)
 - [Durable review state](#durable-review-state)
@@ -98,6 +99,10 @@ daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
 daynight worker                     # Show worker help
 daynight worker run                 # Run until interrupted
+daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
+daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
+daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
+daynight worker transfer <task-id> --claim-id <claim-id> --if-version <version> [target options] [--project <project-id>]
 daynight review                     # Show review help
 daynight review run
 daynight review list                 # Also review ls
@@ -915,12 +920,116 @@ shutdown initialization is isolated so one bad record does not prevent known
 agents stopping. Untracked resources or unknown scope keep the private instance
 when its stop cannot be confirmed.
 
-Public worker release/transfer/resume/retry commands and the service's terminal
-management-protocol revision remain pending. Linux, Windows and macOS complete
-Goal acceptance is separate from the installed runtime and its component
-checks. The [worker requirements](../../docs/spec/daynight-worker.md) and
+Linux, Windows and macOS complete Goal acceptance is separate from the installed
+runtime and its component checks. The
+[worker requirements](../../docs/spec/daynight-worker.md) and
 [worker design](../../docs/design/daynight-worker.md) own the behavior and
 mechanisms, including native capability limits.
+
+## Worker manual management
+
+Manual commands select one task and its exact original claim. They use the same
+fixed SQLite and singleton lock as `worker run`. With a foreground worker, that
+process remains the sole agent controller and consumes the persisted decision;
+without one, the command acquires the same lock and advances the same coordinator
+for that execution. There is no separate control service. Current configuration
+and Daynight authentication are required, and the original service origin must
+match. Release, transfer and retry require the unfinished original local record;
+resume can use an explicit project with its configured repository.
+
+Read the current task before deciding a versioned operation:
+
+```bash
+daynight task show <task-id> --json
+daynight worker release <task-id> --claim-id <source-claim-id> --if-version <version>
+```
+
+Release and transfer first verify project access and source owner/admin
+permission, then persist the concrete source decision before cleanup. The
+controller requests the original agent's attributable temporary-resource cleanup,
+waits for its original deadline of at most 10 minutes, confirms that agent stopped,
+closes its task workspace and deletes its worktree. Only then can it submit the
+remote write at the exact supplied version. Other tasks keep their shared Herdr
+instance. Failed stopping or deletion retains the source responsibility and a
+visible error. Cleanup keeps its original deadline after restart; each HTTP
+request has an independent bounded scope, without a five-minute total command
+limit.
+
+Release returns the task to `todo` and clears its execution interval. The daemon
+skips released tasks until explicitly resumed. Resume starts a fresh execution
+on this worker:
+
+```bash
+daynight worker resume <task-id> --claim-id <released-claim-id> --if-version <version> \
+  --project <project-id>
+```
+
+The previous claim must still be released and the task ready. The original owner
+or a current project admin may resume it, retaining the explicit manual exception
+to automatic permission and platform filters. The new claim and worktree IDs are
+generated and persisted before submission. Its actual grant commits local
+`pending` with this repository's current effective agent/model/args; `worker run`
+then performs ordinary capacity checks and prepares a fresh native conversation.
+The deleted source worktree and native history are not required. Run
+`daynight worker run` if the foreground worker is stopped.
+
+Transfer explicitly identifies the target's current user, stable worker and
+machine descriptor, actual platform and selected agent:
+
+```bash
+daynight worker transfer <task-id> --claim-id <source-claim-id> --if-version <version> \
+  --target-user-id <user-id> --target-worker-id <worker-id> \
+  --target-machine-id <machine-id> --target-machine-name "target-machine" \
+  --target-platform linux --target-agent codex
+```
+
+Use the intended receiver's actual descriptor and the explicitly selected new
+agent type. A trace-free new transfer grant honors that agent even when the
+receiver's current repository defaults select the other type. It freezes
+`model: null` and `args: []` for that type, with the current recovery limit; a
+matching type uses the current effective model/args. Existing pending snapshots
+are retained. The source operator's owner/admin permission is checked separately
+from the target's
+current membership. Transfer still requires automatic execution permission,
+platform compatibility and completed dependencies. It preserves `in_progress`
+and the task's execution interval, installing a fresh target claim/worktree ID
+with empty runtime associations. The receiver discovers its actual grant through
+normal claim inventory and starts a new execution; an old task path still in use
+blocks preparation. No source files, SQLite snapshots or native history are
+transported. Target and source agents may differ. Public commands provide no
+claim/worktree-ID override or continuity confirmation option; the service and
+typed client reject deprecated `continuityConfirmed` input.
+
+For a paused execution that still belongs to the original owner, authorize one
+extra recovery attempt:
+
+```bash
+daynight worker retry <task-id> --claim-id <claim-id>
+```
+
+Retry preserves the original claim, worktree/native identity, frozen settings
+and cumulative recovery count. Concurrent or repeated requests do not accumulate
+extra authorization or launch a second agent. The controller consumes the single
+permit when it performs recovery; a further failure remains visible. Retry
+cannot replace terminal cleanup or recreate an execution that has ended.
+
+Management diagnostics identify the original claim and report persisted waiting,
+completion, rejection or unknown results. Interrupting the command retains its
+intent so the foreground controller or a later management invocation can
+continue. An unknown release/transfer write is reconciled by reading the actual
+task and saved target claim; it is never resent or assigned replacement IDs,
+even when a read still shows the old value. Reinvoking that same decision can
+reconcile its result by targeted reads, including beside a running foreground
+worker, without taking over resource control or resubmitting. An already-cleaned
+source is not restarted. Only a definitely rejected submission can be replaced by a new explicit
+decision, with the supplied `--if-version` matching a fresh task observation. The
+numeric version may remain the same when the refusal did not change the task,
+including a definite pre-dispatch failure or permission refusal. An unknown
+submission cannot be reset or replayed; `--if-version` is never silently replaced.
+Unknown resume requests likewise retain their original claim/worktree/config
+until the actual grant can be confirmed. These targeted reads reconcile manual
+writes; automatic cleanup still relies only on a complete successful inventory
+for the original authenticated user and worker.
 
 ## Review configuration and startup
 

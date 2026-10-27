@@ -44,7 +44,7 @@ that assumption. Follow the state rules below before any permission change.
 | `in_progress`, permission false | Report the permission lock; do not newly enable or reset status to evade it. |
 | `in_progress`, permission true | Read-only re-audit and report actual execution state. Review does not pause, stop, release, or transfer execution. |
 | `done` | Report completion and no handoff needed; do not reopen or update permission. This is mode policy, not an API prohibition on completed-task updates. |
-| Active or released worker record | Preserve ownership and execution history. A released execution can be `todo` but still needs confirmed original worktree/Agent continuity; enabling permission does not authorize a fresh execution elsewhere. |
+| Active or released worker record | Preserve ownership and execution history. An active execution keeps its original resources. A released task starts a fresh claim/worktree/native session only through an authorized management decision; enabling permission neither resumes it nor restores deleted source resources. |
 
 If an already-enabled task fails re-audit, report the failed review, actual flag,
 and continued scheduling exposure. Keep its permission unchanged. Revocation or
@@ -92,8 +92,8 @@ Reassess changed review-relevant metadata or sources; a newly observed worker
 claim is reported under the state rules rather than treated as proof of failure.
 Report each task's content-review result, changes or concrete gaps, observed
 version, permission and status, remaining dependency blockers, and applicable
-worker-continuity constraints. Distinguish a confirmed permission update from an
-uncertain write and a read-only re-audit. Permission true alone proves neither
+worker ownership and management constraints. Distinguish a confirmed permission
+update from an uncertain write and a read-only re-audit. Permission true alone proves neither
 execution started nor completion; report either only from actual evidence.
 
 For a fixed set, review and report each task separately; one pass does not cover
