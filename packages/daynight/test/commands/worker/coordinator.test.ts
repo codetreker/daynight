@@ -61,8 +61,10 @@ const fixture = async (maxConcurrent = 1) => {
       return observe(context, binding);
     }),
     submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => {
-      order.push("notify"); const before = observe(context, binding); const pane = resources.get(context.claimId)!.panes[0]!;
-      pane.status = "idle"; pane.stateChangeSeq! += 2; pane.completionSeq! += 1;
+      order.push("notify"); const pane = resources.get(context.claimId)!.panes[0]!;
+      pane.status = "idle"; pane.interactiveReady = true; pane.stateChangeSeq! += 1; pane.completionSeq! += 1;
+      const before = observe(context, binding);
+      pane.stateChangeSeq! += 2; pane.completionSeq! += 1;
       return { submission: "submitted" as const, observation: before };
     }),
     stopAndClose: vi.fn(async (owner: ResourceOwner) => { order.push("stop-close"); resources.delete(owner.claimId); }),
@@ -456,25 +458,67 @@ describe("minimal worker resource reconciliation", () => {
   });
 
 
-  it("reobserves the task when a native agent becomes live after round discovery", async () => {
+  it("reobserves the task when round snapshots contain an obsolete inactive pane", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.store.listTasks()[0]?.sessionId).toEqual(expect.any(String)));
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    const row = f.store.listTasks()[0]!;
+    const pane = f.resources.get(row.claimId)!.panes[0]!;
+    pane.kind = null; pane.interactiveReady = false; pane.status = "idle";
+    const obsolete = structuredClone([...f.resources.values()]);
+    pane.kind = "codex"; pane.interactiveReady = true; pane.status = "working";
+    f.tasks.listResources.mockResolvedValueOnce(obsolete).mockResolvedValueOnce(obsolete);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.observe).toHaveBeenCalled());
+    expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.store.getTask(row)?.sessionId).toBe(row.sessionId);
+  });
+
+
+  it("keeps an ended rowless orphan's slot while its closed workspace still has pending native PIDs", async () => {
+    const f = await fixture();
+    const owner = { serverOrigin: origin, projectId: f.project.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    const binding = { session: "w", workspaceId: "orphan", paneId: "orphan-pane", terminalId: "orphan-terminal" };
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    f.resources.set(owner.claimId, { owner, workspaceId: binding.workspaceId, panes: [{ binding, cwd: f.bind(owner).worktreePath, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(903) }, stateChangeSeq: 1, completionSeq: 0 }] });
+    const pending: { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] = [];
+    f.tasks.pendingStops.mockImplementation(() => [...pending]);
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    f.tasks.stopAndClose.mockImplementationOnce(async () => {
+      pending.push({ context: { ...owner, cwd: f.bind(owner).worktreePath }, binding });
+      f.resources.delete(owner.claimId); throw new Error("orphan native process still alive");
+    });
+    f.tasks.stopAndClose.mockImplementation(async () => { await wait; pending.splice(0); });
+    try {
+      await f.coordinator.tick();
+      await eventually(() => expect(f.events.some((event) => event.kind === "cleanup-error")).toBe(true));
+      await f.coordinator.tick();
+      expect(f.store.getTask(owner)).toBeNull();
+      expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
+    } finally { release(); await eventually(() => expect(f.worktrees.has(owner.claimId)).toBe(false)); }
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+  });
+
+  it.each(["same project", "another project"])("recovers an already active own task despite corrupt Git discovery in %s", async (scope) => {
     const f = await fixture(); await f.coordinator.tick();
     await eventually(() => expect(f.store.listTasks()[0]?.sessionId).toEqual(expect.any(String)));
     await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
     const row = f.store.listTasks()[0]!;
-    const pane = f.resources.get(row.claimId)!.panes[0]!;
-    pane.kind = null; pane.interactiveReady = false; pane.status = "idle";
-    let entered!: () => void; let release!: () => void;
-    const scanning = new Promise<void>((resolve) => { entered = resolve; });
-    const wait = new Promise<void>((resolve) => { release = resolve; });
+    f.resources.clear(); f.candidates.splice(0);
+    const corruptProject = scope === "same project" ? f.project : { projectId: uuid(950), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
+    if (scope === "another project") f.store.registerProject(corruptProject);
     const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
-    vi.mocked(f.git.listWorktrees).mockImplementationOnce(async (project, operation) => { entered(); await wait; return list(project, operation); });
-    const ticking = f.coordinator.tick();
-    await scanning;
-    pane.kind = "codex"; pane.interactiveReady = true; pane.status = "working";
-    release(); await ticking;
-    await eventually(() => expect(f.tasks.observe).toHaveBeenCalled());
-    expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
-    expect(f.store.getTask(row)?.sessionId).toBe(row.sessionId);
+    vi.mocked(f.git.listWorktrees).mockImplementation(async (project, operation) => {
+      if (project.projectId === corruptProject.projectId) throw new Error("unregistered sibling reservation");
+      return list(project, operation);
+    });
+    await expect(f.coordinator.tick()).rejects.toThrow("unregistered sibling reservation");
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: row.sessionId });
+    expect(f.remote.claim).toHaveBeenCalledOnce(); expect(f.store.getTask(row)?.status).toBe("active");
   });
 
 });

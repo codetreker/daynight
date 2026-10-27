@@ -57,6 +57,18 @@ saved SQLite ID chooses resume or fresh execution. Static task/claim/worktree
 identity stays unchanged. Live agents reconnect without recreation, and inactive
 references are not promoted into the row's session_id.
 
+Capacity is the claim-deduplicated union of local active rows, actual attributed
+resources, already selected terminal cleanup and pending adapter stop
+confirmations. A rowless orphan keeps its reservation and same-task barrier
+until cleanup finishes, even when its pane is already closed and the remaining
+responsibility is Git deletion or stop confirmation.
+
+Still-owned local active tasks are queued for fresh target recovery before
+global Git discovery. Their reservation already exists, so an unrelated
+checkout's filesystem error must not suppress their progress. Pending startup
+and new acquisition still require successful full discovery to account for
+unknown managed resources before reserving another slot.
+
 Each successful slot allocation advances Project rotation, for both pending
 startup and new acquisition. Project-local pending order is stable, and new
 candidates retain server ready order. This keeps spare capacity from being
@@ -67,6 +79,12 @@ validate only the target Git worktree when deleting. Sibling or unrelated Git
 registration problems remain diagnostics, without preventing healthy agents
 from stopping. Resource discovery still reports those problems separately.
 
+Cleanup completion counters use only the successful submitPrompt receipt's
+idle, interactive-ready observation with both counters present. Later observations
+must advance both counters. A pre-notification polling snapshot cannot attribute
+the end of an old business turn to this cleanup request; busy, unknown, rejected
+or otherwise unattributable results retain the current deadline's bounded wait.
+The baseline remains process-local.
 
 Configuration and recovery/cleanup state are process-local. A restarted process
 uses the current applicable model/args for the recorded agent type. Cleanup has
@@ -76,7 +94,7 @@ with the process. Logs diagnose operations and never supply a recovery ledger.
 
 Manual commands require a stopped runner and acquire its same instance lock.
 They synchronously operate on one claim. Release stops the agent and
-close its workspace, submit the version-bound remote change, then delete the
+closes its workspace, submits the version-bound remote change, then deletes the
 worktree after ownership is confirmed ended. A refusal retains the checkout for
 source recovery. Unknown/interrupted management must be reconciled by the
 operator before restarting run; there is no durable control intent.
@@ -88,7 +106,6 @@ and sets allowAgents=false without asserting that the source process stopped.
 The original worker discovers absence through complete inventory and cleans its
 resources. Release and fresh resume retain their controlled local paths; there
 is no target handoff or local old-schema retirement protocol.
-
 
 This decision supersedes the persistent recovery details in the
 [local records](../architecture/2026-10-26-worker-local-records.md),

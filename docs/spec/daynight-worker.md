@@ -57,9 +57,10 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 ### W-05：调度与全局并发
 
 - 配置仓库轮流获得领取机会；新候选保持服务端 ready 顺序。已有 pending 优先，项目内按稳定 task_id 顺序选择。Pending 和新领取都在每成功分配一个名额后轮转到下一个项目，持续繁忙的项目不能一次占满所有空闲名额。
-- Active 从启动前资源预留到收尾完成占用名额。等待 CI/review、人工输入、恢复超限及清理仍占用。发现的运行或收尾资源按 claim 去重计数，即使行缺失或曾为 done，也占容量并阻止同 task 新 claim 启动。
+- Active 从启动前资源预留到收尾完成占用名额。等待 CI/review、人工输入、恢复超限及清理仍占用。容量是 active 行、实际归属资源、已确认收尾责任及适配器待确认停止责任按 claim 去重的并集；没有本机行的孤立执行也须在全部清理完成后才释放名额和同 task 启动屏障。
 - Pending 在没有实际运行资源时不占名额；同 task 旧执行停止、关闭 workspace 并删除 worktree 后，新 claim 才能 active。降低上限不抢占已有任务。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
 - 空或不兼容仓库不占名额。同仓库不同 task 可以并发；各 task 的操作串行，不同任务的有界等待和清理互不阻塞。
+- 本机已有 active 且仍归属的任务先排队恢复，在任务串行操作内读取当前 Herdr；其他工作区的全局 Git 发现错误不阻塞已有名额。新的 pending 启动和新 claim 分配继续要求完整全局资源发现成功。
 
 ### W-06：稳定的 task worktree
 
@@ -105,6 +106,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 - Agent 完成全部要求、验收和证据后，最后使用原 claimId 与观察版本通过 task set-status done 提交已有完成操作。必要 PR、授权合并和人工验收未完成时保持任务未完成；worker 不重复解释或提交业务 done。
 - 原 claim 不在成功完整清单时通知 agent 清理可归属的工作区外临时资源，最多等待本次尝试的 10 分钟，再停止进程、关闭 workspace、删除 worktree，最后本机 done。Done/release/强制撤回后的本地结束规则一致，分支与历史保留。
+- 清理完成基线只使用本次成功 submitPrompt 回执中的 idle、interactiveReady 且 stateChangeSeq/completionSeq 非空的 observation，后续两项计数均递增才证明该 turn 完成。旧轮 pane 状态不构成基线；busy、未知、拒绝或不可归属的结果继续按本次既定期限有界等待。
 - 同进程内的清理 job 保留自己的期限，轮询不重置。重启后按剩余实际资源重新进入清理并重新计时，通知可重复；不为清理新建 agent。已确认归属结束的内存 job 可在后续服务轮询失败时继续；各任务独立有界。
 - 失败保留错误与收尾责任，已不存在的资源可完成对应步骤。读取失败或无法确认停止时不能删除工作区或标 done，清理不影响其他任务与人工 Herdr。
 - 已知目标的清理或退出按对应 Herdr 执行推进，删除仅验证该目标的 Git 工作区。其他仓库或同项目其他 worktree 的注册错误单独报告，不阻塞健康 agent 停止或正常退出。

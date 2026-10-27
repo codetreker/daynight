@@ -32,9 +32,13 @@ export const createCleanupDriver = (deps: ExecutionDependencies) => {
           const context = executionContext({ ...input, task: { agent } });
           if (liveAgent(pane) && !attempt.notified && deps.now() < attempt.deadline) {
             attempt.notified = true;
-            if (pane.stateChangeSeq !== null && pane.completionSeq !== null) attempt.baseline = { stateChangeSeq: pane.stateChangeSeq, completionSeq: pane.completionSeq };
             try {
-              await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, pane.binding, workerCleanupPrompt(input.owner, attempt!.deadline), operation), signal, Math.max(1, Math.min(30_000, attempt.deadline - deps.now())));
+              const { observation } = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, pane.binding, workerCleanupPrompt(input.owner, attempt!.deadline), operation), signal, Math.max(1, Math.min(30_000, attempt.deadline - deps.now())));
+              if (observation.status === "idle" && observation.interactiveReady
+                && observation.stateChangeSeq !== null
+                && observation.completionSeq !== null) {
+                attempt.baseline = { stateChangeSeq: observation.stateChangeSeq, completionSeq: observation.completionSeq };
+              }
             } catch (error) {
               deps.emit({ kind: "cleanup-notification-error", ...(input.task === undefined ? {} : { task: input.task }), message: "Cleanup notification failed; the current bounded cleanup attempt continues.", error });
             }

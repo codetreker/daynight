@@ -975,11 +975,17 @@ remove its old SQLite database yourself, and let the next run create the new
 schema. The CLI never deletes it automatically. Keep workerId and native history.
 
 Each reconciliation obtains the complete own-claim inventory for configured and
-saved Projects, then observes actual Herdr and Git resources. Failed or partial
-reads are errors, not an empty inventory. Resources from unqueried or unmapped
-Projects are preserved with a diagnostic. Discovered running/cleanup resources
-count against capacity even when their local row is missing or historical; old
-claim resources block a new claim of the same task until cleanup finishes. Git
+saved Projects. Still-owned local active tasks are queued for fresh target
+observation and recovery before global Git discovery, so a sibling checkout's
+filesystem error does not block an already-reserved task. New pending startup
+and new claims still require complete global resource discovery. Failed or
+partial reads are errors, not an empty inventory. Resources from unqueried or
+unmapped Projects are preserved with a diagnostic.
+
+Capacity is the claim-deduplicated union of active rows, actual owned resources,
+already selected cleanup responsibilities and adapter stop confirmations still
+pending. An orphan keeps its slot and same-task barrier until all cleanup has
+finished, even without a local row or after its pane has closed. Git
 markers identify a claim rather than a worker. A Git-only resource must be tied
 to a local row, the private Herdr instance or a current own claim before this
 worker can clean it; otherwise it is reported and preserved.
@@ -1045,6 +1051,12 @@ Known-target cleanup and shutdown observe that Herdr execution directly;
 worktree deletion validates only its target Git registration and directory.
 Unrelated repository or sibling-worktree registration errors are reported
 separately and do not prevent a healthy agent from stopping.
+
+Early cleanup completion uses only the successful cleanup-prompt receipt's
+idle, interactive-ready observation with both sequence counters present; later
+observations must advance both counters. A prior polling snapshot cannot supply
+that baseline. Busy, unknown, rejected or unattributable notification results
+retain the current bounded wait instead of counting an old task turn as cleanup.
 
 Cleanup timing and progress are in memory. Polls do not extend the current
 attempt's deadline; after a crash, the next successful reconciliation observes
