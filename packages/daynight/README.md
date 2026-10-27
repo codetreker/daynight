@@ -99,6 +99,7 @@ daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
 daynight worker                     # Show worker help
 daynight worker run                 # Run until interrupted
+daynight worker attach              # Open the worker Herdr session
 daynight worker retry <task-id> --claim-id <claim-id> [--project <project-id>]
 daynight worker release <task-id> --claim-id <claim-id> --if-version <version> [--project <project-id>]
 daynight worker resume <task-id> --claim-id <previous-claim-id> --if-version <version> [--project <project-id>]
@@ -883,15 +884,25 @@ it is not replayed. A pause still reserves capacity. Recovering missing original
 configuration, history or stop evidence requires inspection, without creating a
 replacement conversation to conceal the loss.
 
-For human input, copy the safe `attach` descriptor printed after the running
-worker has completed inventory and private managed-instance readiness.
-Invoke its `executable` with its `arguments` (`herdr --session w` for the default
-executable), apply exactly its `environment` overrides and remove the names in
-`unsetEnvironment` **only for that attach client process**. The descriptor's
-private XDG values select the worker's exact Herdr instance; the existing task
-pane keeps its original native XDG and private HISTFILE. The descriptor contains
-routing and native-home paths, not a dump of authentication values. Continue in
-the original task pane so the worker can observe the same execution.
+For human input, run this in another interactive terminal:
+
+```bash
+daynight worker attach
+```
+
+The command opens the existing private Herdr session with the correct directory
+and environment. Continue in the original task pane so the worker can observe
+the same execution. Detaching closes only the client connection; the worker,
+original agent and task keep running. This command needs no Daynight login or
+server request and does not take the worker lock. It connects only to an
+existing session; if it is unavailable, start `daynight worker run` first.
+Client startup and nonzero-exit errors remain visible.
+
+The worker prints the attach command after inventory and private
+managed-instance readiness. Its attachment descriptor remains the internal
+source of routing, native-home and history settings. Only the client process
+receives those settings and removal of inherited session identities; the
+existing task pane retains its original native XDG and private HISTFILE.
 
 Native startup can be waiting at a folder-trust or authorization screen even
 when Herdr reports idle/interactiveReady. The worker checks the current Codex
