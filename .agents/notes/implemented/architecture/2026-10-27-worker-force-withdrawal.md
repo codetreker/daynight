@@ -80,6 +80,15 @@ state guard rejects ordinary status reset, and separate permission/status writes
 cannot atomically remove ownership. One versioned ownership operation preserves
 the reset across concurrent changes.
 
+**Replace retired transfer intent with a local-only stop or withdrawal control.**
+A new control variant would retain another runtime management protocol solely to
+prevent retired source execution from restarting or completing before its claim
+ends. Persisting `cleanup.claimEnded` keeps this ownership-end fact with the
+cleanup lifecycle: an unconfirmed source remains fenced, while confirmed
+ownership end survives restart and allows cleanup to finish offline. Migration
+can therefore remove the transfer intent without retaining a substitute control
+operation or losing its source responsibility.
+
 ## Consequences
 
 Operators can see who holds a task and restore manual control from Web. The
