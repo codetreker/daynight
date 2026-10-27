@@ -167,16 +167,19 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     launchCleanups();
     await options.remote.currentUserId(normalSignal);
     const inventory = await ownInventory(normalSignal);
+    // Ownership loss is authoritative even when the following resource observations fail.
+    for (const local of options.store.listUnfinishedTasks()) {
+      if (inventory.has(key(local))) continue;
+      const running = controllers.get(key(local));
+      if (running !== undefined && !running.terminal) running.controller.abort(new Error("The original claim no longer belongs to this worker."));
+      execution.forget(local);
+    }
     await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
     const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
     const knownOwners = [...observed.map((workspace) => workspace.owner), ...options.herdr.tasks.pendingStops().map((stop) => stop.context)];
     for (const owner of knownOwners) {
       if (owner.serverOrigin !== options.serverOrigin || options.store.getProject(owner) === null || inventory.has(key(owner))) continue;
       ending.set(key(owner), owner);
-      const running = controllers.get(key(owner));
-      if (running !== undefined && !running.terminal) running.controller.abort(new Error("The original claim no longer belongs to this worker."));
-      const local = options.store.getTask(owner);
-      if (local !== null) execution.forget(local);
     }
     launchCleanups();
     for (const remoteTask of inventory.values()) {
@@ -189,9 +192,6 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     for (const local of options.store.listUnfinishedTasks()) {
       if (inventory.has(key(local))) continue;
-      const running = controllers.get(key(local));
-      if (running !== undefined && !running.terminal) running.controller.abort(new Error("The original claim no longer belongs to this worker."));
-      execution.forget(local);
       const owner = resources.owners.get(key(local));
       if (owner !== undefined) ending.set(key(local), owner);
       else if (!jobs.has(key(local))) options.store.completeTask(local);

@@ -521,6 +521,31 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.remote.claim).toHaveBeenCalledOnce(); expect(f.store.getTask(row)?.status).toBe("active");
   });
 
+
+  it.each(["Herdr", "Git"])("cancels a no-workspace startup immediately after ownership ends even when %s discovery fails", async (discovery) => {
+    const f = await fixture();
+    let entered!: () => void; let release!: () => void; let preparing: AbortSignal | undefined;
+    const enteredPreparation = new Promise<void>((resolve) => { entered = resolve; });
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const prepare = vi.mocked(f.git.prepareWorktree).getMockImplementation()!;
+    vi.mocked(f.git.prepareWorktree).mockImplementation(async (project, owner, operation) => {
+      preparing = operation.signal; entered(); await wait; operation.check(); return prepare(project, owner, operation);
+    });
+    await f.coordinator.tick(); await enteredPreparation;
+    const row = f.store.listTasks()[0]!;
+    f.grants.clear(); f.candidates.splice(0);
+    if (discovery === "Herdr") f.tasks.listResources.mockRejectedValueOnce(new Error("Herdr discovery failed"));
+    else vi.mocked(f.git.listWorktrees).mockRejectedValueOnce(new Error("Git discovery failed"));
+    let cancelledBeforeRelease = false;
+    try {
+      await expect(f.coordinator.tick()).rejects.toThrow(`${discovery} discovery failed`);
+      cancelledBeforeRelease = preparing!.aborted;
+    } finally { release(); }
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect({ cancelledBeforeRelease, workspaces: f.tasks.prepareWorkspace.mock.calls.length, launches: f.tasks.start.mock.calls.length }).toEqual({ cancelledBeforeRelease: true, workspaces: 0, launches: 0 });
+    expect(f.store.getTask(row)?.status).toBe("active");
+  });
+
 });
 
 
