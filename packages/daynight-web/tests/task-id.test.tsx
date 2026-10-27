@@ -16,7 +16,8 @@ describe('overview task ID copy', () => {
     expect(await screen.findByRole('status')).toHaveTextContent('Copied');
     expect(writeText).toHaveBeenCalledExactlyOnceWith(id);
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'zh-CN' } });
-    expect(screen.getByRole('button', { name: '复制任务 ID' })).toHaveTextContent('复制');
+    expect(screen.getByRole('button', { name: '复制任务 ID' })).toHaveAttribute('title', '复制任务 ID');
+    expect(screen.getByRole('button', { name: '复制任务 ID' })).toHaveTextContent('');
     expect(screen.getByRole('status')).toHaveTextContent('已复制');
     expect(writeText).toHaveBeenCalledOnce();
   });

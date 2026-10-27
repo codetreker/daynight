@@ -78,9 +78,9 @@
 .task-detail-panel-overview { overflow: auto; overscroll-behavior: contain; }
 .task-detail-panel-attachments { display: flex; overflow: hidden; padding: 24px 30px 30px; }
 .task-detail-heading { padding: 14px 30px 0; flex: 0 1 auto; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; }
-.task-detail-title-row { display: flex; flex: 1; min-width: 0; }
+.task-detail-title-row { display: flex; align-items: flex-start; gap: 8px; flex: 1; min-width: 0; }
 .task-detail-title-action { flex: none; margin: 0; }
-.task-detail-title { flex: 1; min-width: 0; max-height: 4.35em; overflow: auto; overscroll-behavior: contain; color: var(--ink); font-size: 22px; line-height: 1.45; font-weight: 650; letter-spacing: -.4px; margin: 0; overflow-wrap: anywhere; }
+.task-detail-title { flex: 0 1 auto; min-width: 0; max-height: 4.35em; overflow: auto; overscroll-behavior: contain; color: var(--ink); font-size: 22px; line-height: 1.45; font-weight: 650; letter-spacing: -.4px; margin: 0; overflow-wrap: anywhere; }
 .task-confirmation .dialog-header { grid-template-columns: minmax(0, 1fr) auto; }
 .task-confirmation .dialog-body > p + p { margin-top: 14px; }
 .task-confirmation-task { color: var(--ink); font-weight: 600; }
@@ -164,7 +164,9 @@
 .task-detail-metadata dt { flex: none; }
 .task-detail-metadata dd { font-weight: 400; color: #68758b; text-align: right; margin: 0; min-width: 0; }
 .task-detail-full-id { overflow-wrap: anywhere; }
-.task-detail-copy { padding: 3px 7px; font-size: 10px; margin-left: 7px; }
+.task-detail-copy { width: 26px; height: 26px; padding: 0; flex: none; vertical-align: middle; }
+.task-detail-copy:focus-visible { outline: 3px solid #8c8cf0; outline-offset: 2px; }
+.task-detail-full-id .task-detail-copy { margin-left: 7px; }
 .task-detail-footer { border-top: 1px solid var(--line); padding: 12px 26px; color: #737d8e; font-size: 10px; flex: none; line-height: 1.7; }
 .task-detail-state { min-height: 0; flex: 1; overflow: auto; padding: 30px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; gap: 13px; color: #637087; font-size: 12px; overflow-wrap: anywhere; }
 .task-detail-state h3 { color: #45516a; font-size: 16px; margin: 0; }
@@ -207,7 +209,7 @@
   .task-detail-fullscreen-toggle, .task-detail-more, .task-detail-close { min-width: 36px; min-height: 36px; }
   .task-detail-heading { padding: 12px 19px 0; }
   .task-detail-read-error { padding: 15px 19px 0; }
-  .task-detail-title { font-size: 19px; flex-basis: 0; }
+  .task-detail-title { font-size: 19px; }
   .task-detail-status-row { gap: 8px; }
   .task-detail-badges, .task-detail-state-controls { gap: 4px; }
   .task-automation-control { gap: 7px; }
@@ -235,7 +237,7 @@
   .task-detail-footer { padding: 4px 16px; font-size: 9px; }
 
   .task-detail-fullscreen .task-detail-header { padding: 5px 12px; gap: 5px; flex-wrap: wrap; }
-  .task-detail-fullscreen .task-detail-title { flex-basis: 0; max-height: 1.45em; }
+  .task-detail-fullscreen .task-detail-title { max-height: 1.45em; }
   .task-detail-fullscreen .task-detail-header-actions { margin-left: auto; gap: 6px; }
   .task-detail-fullscreen .task-detail-heading { flex: none; padding: 5px 12px 0; }
   .task-detail-fullscreen .task-detail-status-row { align-items: center; gap: 6px; }

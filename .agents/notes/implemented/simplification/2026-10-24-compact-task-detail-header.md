@@ -18,8 +18,8 @@ accessible name. Loading and initial failure use their corresponding state
 titles. The complete task title owns bounded native scrolling and keyboard focus;
 status, fullscreen, action-menu and close controls stay accessible across supported
 viewport sizes. Task details consume the current application locale through the
-shared `LocaleProvider`; the modal header contains the title, fullscreen toggle,
-More task actions menu and close control. The `…` trigger sits
+shared `LocaleProvider`; the modal header contains the title and its adjacent copy
+icon, fullscreen toggle, More task actions menu and close control. The `…` trigger sits
 immediately left of Close and groups Open in new tab and Delete task, leaving more
 width for task reading. The standalone page uses the same menu for Delete task.
 The menu retains keyboard navigation, outside dismissal and its own Escape layer.
@@ -32,9 +32,14 @@ with readiness after both and automatic execution at the right. Status and
 platform use the same compact control height, and the left group can wrap at
 narrow widths. The
 [notification decision](../bug-fix/2026-10-24-task-detail-notifications.md) owns
-actionable floating notices and lock tooltips. Overview metadata retains the full selectable ID and a localized Copy
-button that directly writes its exact value with the browser Clipboard API. Copy success and failure belong to the displayed task and use timed bubbles;
-failure keeps both the ID and a retry available.
+actionable floating notices and lock tooltips. Overview metadata retains the full
+selectable ID and a copy icon matching the overlapping squares immediately after
+the loaded title. Both controls use `TaskCopyButton`, localized accessible names
+and hover titles, and write their complete original value with the browser
+Clipboard API. Pending copies disable their button; success and failure use timed
+bubbles, with the original text and retry retained after failure. The title
+control is scoped to project/task and title value, and the ID control to its full
+ID, so unmount invalidates late results.
 
 A successful automatic-execution setting submission observed by the open detail
 produces a floating status bubble for three seconds. The bubble does not consume
@@ -76,9 +81,10 @@ without allocating permanent layout space or changing mutation state.
 
 ## Consequences
 
-The common header carries task identity with fewer repeated rows, and the ID
-has an explicit transfer action in its metadata owner. Browser clipboard denial
-remains visible and recoverable through retry or manual selection. Very long
+The common header carries task identity with fewer repeated rows and an explicit
+title transfer action, while the ID has its transfer action in its metadata owner.
+One copy component keeps both icons, pending behavior and feedback consistent.
+Browser clipboard denial remains visible and recoverable through retry or manual selection. Very long
 titles require scrolling within their bounded title region while the rest of
 the controls and reading panels remain available.
 

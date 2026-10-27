@@ -574,6 +574,8 @@ test('task-attachments', { annotation: { type: 'scenario', description: 'task-at
     await page.keyboard.press('Tab');
     await expect(dialog.locator('.task-detail-title')).toBeFocused();
     await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: '复制任务标题', exact: true })).toBeFocused();
+    await page.keyboard.press('Tab');
     await expect(dialog.locator('.task-detail-fullscreen-toggle')).toBeFocused();
     await page.keyboard.press('Tab');
     await expect(dialog.getByRole('button', { name: '更多任务操作', exact: true })).toBeFocused();

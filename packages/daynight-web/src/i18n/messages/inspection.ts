@@ -107,8 +107,9 @@ export type InspectionMessages = {
     readonly created: string;
     readonly updated: string;
     readonly taskId: string;
-    readonly copy: string;
     readonly copyTaskId: string;
+    readonly copyTaskTitle: string;
+    readonly copyTitleFailed: string;
     readonly copied: string;
     readonly copyFailed: string;
     readonly footer: string;
