@@ -11,6 +11,8 @@ export type {
   HerdrPendingStop,
   HerdrAgentConfiguration,
   HerdrAgentObservation,
+  HerdrAgentStartInput,
+  HerdrPromptReceipt,
   HerdrNativeReference,
 } from "./herdr/agents.js";
 export { HerdrAgentActionError, validateHerdrAgentArguments } from "./herdr/agents.js";

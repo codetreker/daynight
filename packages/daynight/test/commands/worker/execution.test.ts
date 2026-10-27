@@ -45,6 +45,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   let closeFailure: Error | undefined;
   let launchReference: string | undefined;
   let blockedLaunch = false;
+  let firstTurnCompletion: "idle" | "done" | undefined;
   let hook: { paneId: string; sessionId: string; remaining: number } | undefined;
   const rpc: HerdrRpcClient = { request: async (method, params, operation): Promise<HerdrRpcResult> => {
     operation.check(); calls.push({ method, params: structuredClone(params) });
@@ -81,6 +82,10 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
     }
     if (method === "agent.prompt") {
       const current = agents.find((entry) => entry.pane_id === params.target)!;
+      if (firstTurnCompletion !== undefined) {
+        current.agent_status = firstTurnCompletion; current.state_change_seq = 3; current.completion_seq = 1;
+        firstTurnCompletion = undefined;
+      }
       const launch = launches.find((entry) => entry.paneId === params.target);
       if (launch !== undefined) {
         const { args } = launch;
@@ -97,7 +102,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, platform: "linux", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
   const input: ExecutionInput = { task, project, owner, configuration };
   const resources = async () => { const operation = createOperation(); try { return await manager.listResources(operation); } finally { operation.dispose(); } };
-  return { root, store, input, context, manager, resources, events, calls, launches, nativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, driver: createExecutionDriver(dependencies) };
+  return { root, store, input, context, manager, rpc, resources, events, calls, launches, nativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
 };
 
 describe("execution from current Herdr resources", () => {
@@ -264,6 +269,71 @@ describe("execution from current Herdr resources", () => {
     expect(f.events.map((event) => event.kind)).toEqual(["started"]);
     expect(f.launches).toHaveLength(1);
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it.each(["codex", "copilot"] as const)("pings a fast %s startup or resumed turn completed before native session discovery", async (agent) => {
+    for (const sessionId of [null, savedId]) for (const status of ["idle", "done"] as const) {
+      const f = await fixture(agent, sessionId);
+      f.finishFirstTurnBeforeDiscovery(status);
+      const first = await f.driver.advance(f.input);
+      expect(first.status).toBe(status); expect(first.completionSeq).toBe(1);
+      expect(first.nativeSession?.sessionId).toBe(sessionId === null ? freshId : savedId);
+      expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+      await f.driver.advance(f.input);
+      await f.driver.advance(f.input);
+      const prompts = f.calls.filter((call) => call.method === "agent.prompt");
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]!.params.text).toBe("managed assignment");
+      expect(prompts[1]!.params.text).toContain("worker's periodic check");
+      expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+    }
+  });
+
+  it("pings the idle agent that appeared before serialized startup without submitting an assignment", async () => {
+    const f = await fixture("copilot", savedId);
+    const start = f.manager.start;
+    vi.spyOn(f.manager, "start").mockImplementationOnce(async (context, binding, input, operation) => {
+      const pane = f.panes.find((candidate) => candidate.pane_id === binding.paneId)!;
+      f.agents.push({ ...pane, agent: "copilot", name: herdrExecutionAgentName(context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3, agent_session: { source: "herdr:copilot", agent: "copilot", kind: "id", value: savedId } });
+      return start(context, binding, input, operation);
+    });
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => ["agent.start", "agent.prompt"].includes(call.method))).toEqual([]);
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    const prompts = f.calls.filter((call) => call.method === "agent.prompt");
+    expect(prompts).toHaveLength(1); expect(prompts[0]!.params.text).toContain("worker's periodic check");
+    expect(f.calls.filter((call) => call.method === "agent.start")).toEqual([]);
+  });
+
+  it.each(["startup", "ping", "deferred startup"])("keeps the %s submission baseline when its following observation fails", async (inputKind) => {
+    const f = await fixture("copilot", inputKind === "ping" ? staleId : savedId);
+    const failure = new Error("post-input snapshot failed");
+    if (inputKind === "deferred startup") {
+      f.blockOnLaunch(); await f.driver.advance(f.input);
+      f.agents[0]!.agent_status = "idle";
+    } else if (inputKind === "ping") {
+      f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0 });
+    }
+    const request = f.rpc.request;
+    let failSnapshot = false;
+    let firstPrompt = true;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+      if (method === "session.snapshot" && failSnapshot) { failSnapshot = false; throw failure; }
+      const result = await request(method, params, operation);
+      if (method === "agent.prompt" && firstPrompt) {
+        firstPrompt = false; failSnapshot = true;
+        const current = f.agents[0]!;
+        current.agent_status = "idle"; current.state_change_seq = 3; current.completion_seq = 1;
+      }
+      return result;
+    });
+    await expect(f.driver.advance(f.input)).rejects.toBe(failure);
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    const prompts = f.calls.filter((call) => call.method === "agent.prompt");
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]!.params.text).toContain("worker's periodic check");
   });
 
   it.each(["codex", "copilot"] as const)("reports deferred first %s input once and submits it once after operator intervention", async (agent) => {

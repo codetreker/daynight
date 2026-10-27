@@ -8,7 +8,7 @@ import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
+import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
@@ -54,10 +54,12 @@ const fixture = async (maxConcurrent = 1) => {
       return binding;
     }),
     observe: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => observe(context, binding)),
-    start: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: { configuration: ExecutionConfiguration; prompt: string; resumeSessionId?: string }) => {
+    start: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput) => {
       order.push("start"); const pane = resources.get(context.claimId)!.panes[0]!;
-      pane.kind = context.agent; pane.status = "working"; pane.interactiveReady = true; pane.stateChangeSeq = 1;
+      pane.kind = context.agent; pane.status = "idle"; pane.interactiveReady = true; pane.stateChangeSeq = 1;
       pane.nativeSession = { source: "herdr", agent: context.agent, sessionId: input.resumeSessionId ?? uuid(1000 + sequence) };
+      input.onPromptSubmitted?.({ submission: "submitted", observation: observe(context, binding) });
+      pane.status = "working"; pane.stateChangeSeq = 2;
       return observe(context, binding);
     }),
     submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string) => {

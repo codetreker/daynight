@@ -75,15 +75,13 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
   const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
     const identity = key(task);
     lastInput.set(identity, inputState(observed));
-    try {
-      const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation), signal);
-      lastInput.set(identity, inputState(receipt.observation));
-      return await workerOperation((operation) => deps.herdr.tasks.observe(context, observed.binding, operation), signal);
-    } catch (error) {
+    const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation), signal).catch((error: unknown) => {
       if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") lastInput.delete(identity);
       else lastInput.set(identity, null);
       throw error;
-    }
+    });
+    lastInput.set(identity, inputState(receipt.observation));
+    return workerOperation((operation) => deps.herdr.tasks.observe(context, observed.binding, operation), signal);
   };
   const reportObservation = (task: LocalTask, observation: HerdrAgentObservation, started = false): void => {
     const identity = key(task);
@@ -108,6 +106,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
     advance: async (input: ExecutionInput, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
       let task = deps.store.getTask(input.task);
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
+      const identity = key(task);
       const context = executionContext({ ...input, task });
       await settleWorkerStops(deps, input.owner, signal);
       const resources = await workerOperation((operation) => deps.herdr.tasks.listResources(operation), signal);
@@ -118,7 +117,6 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       if (actual !== undefined && liveAgent(actual)) {
         let observed = await workerOperation((operation) => deps.herdr.tasks.observe(context, actual.binding, operation), signal);
         assertNativeSession(task, observed);
-        const identity = key(task);
         // A prompt ACK precedes native input consumption. Retain its observed turn
         // until native progress makes another continuation a new decision.
         if (lastInput.has(identity) && lastInput.get(identity) === null) lastInput.set(identity, inputState(observed));
@@ -155,10 +153,13 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
       lastInput.set(key(task), null);
       let observation: HerdrAgentObservation;
       try {
+        let submitted = false;
         observation = await workerOperation((operation) => deps.herdr.tasks.start(context, binding, {
           configuration: input.configuration, prompt,
           ...(assignment.sessionId === null ? {} : { resumeSessionId: assignment.sessionId }),
+          onPromptSubmitted: (receipt) => { lastInput.set(identity, inputState(receipt.observation)); submitted = true; },
         }, operation), signal);
+        if (!submitted) lastInput.delete(identity);
       } catch (error) {
         if (!(error instanceof HerdrAgentActionError) || error.action !== "agent.prompt" || error.promptSubmission !== "not-submitted") throw error;
         observation = await workerOperation((operation) => deps.herdr.tasks.observe(context, binding, operation), signal);
@@ -167,7 +168,6 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         lastInput.delete(key(task));
       }
       assertNativeSession(task, observation);
-      if (!pendingInput.has(key(task))) lastInput.set(key(task), inputState(observation));
       if (observation.nativeSession !== null) task = deps.store.setSessionId(task, observation.nativeSession.sessionId);
       reportObservation(task, observation, true);
       return observation;

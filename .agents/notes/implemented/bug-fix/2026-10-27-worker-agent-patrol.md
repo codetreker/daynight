@@ -31,7 +31,17 @@ observation. The ping preserves task, claim, worktree and authorization, and
 reminds the agent to wait for review and CI. The agent's state cannot complete
 the business task; only its original claim-bound completion does that.
 
-The driver retains the observation associated with the last input in memory.
+The driver retains the last input's submission baseline in memory. A successful
+submission supplies the actual observation read immediately before sending
+that input. Startup reports this receipt immediately through onPromptSubmitted,
+before native session discovery, and returns the later observation. Later
+observations cannot overwrite the baseline: a turn that finishes before startup
+returns still constitutes progress and permits the next patrol ping. A later
+observation failure preserves the known receipt and propagates the original
+error; ordinary pings also record successful submission before observing again.
+A startup return that sends no input does not invoke the callback and supplies
+no submission baseline.
+
 An unchanged observation suppresses another ping, including after an unknown
 submission result. Later current observations drive the next decision; there
 is no persistent input ledger or automatic replay of an uncertain write.
@@ -66,6 +76,11 @@ turn when the native integration provides them, but missing or unchanged
 counters make an already idle cleanup wait until the deadline. The shutdown
 phase uses the requested fresh idle observation and retains actual stopping
 confirmation before resource deletion.
+
+**Return startup receipts only with the final observation.** Session discovery
+can fail after acknowledged input, preventing the caller from receiving that
+receipt. Reporting it immediately preserves the submission baseline while
+allowing the original discovery error to propagate.
 
 ## Consequences
 
