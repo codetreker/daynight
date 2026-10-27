@@ -310,6 +310,24 @@ records startup-file ownership and installation limits.
 
 ## Configuration setup
 
+The shared configuration file is `~/.daynight/config.yml`. The complete
+[`config.example.yml`](config.example.yml) covers service access, review and worker
+settings with their defaults and optional overrides. It is included at the root
+of the npm package. For an npm global installation, locate it with:
+
+```bash
+npm root --global
+```
+
+Open `@codetreker/daynight/config.example.yml` beneath that directory. Select the
+sections needed for your commands and replace the example repositories and local
+paths. For a new configuration, save the selected settings to
+`~/.daynight/config.yml`; for an existing file, merge them while preserving its
+credential, generated `workerId` and unrelated settings. The example itself is
+not loaded automatically. Repository paths resolve from the configuration
+directory, with the rules in the [worker](#worker-configuration-and-startup) and
+[review](#review-configuration-and-startup) guides.
+
 Project and task commands use `https://daynight.cc` when the configuration file or
 `serverUrl` is absent. A production connection needs no server configuration.
 Run `daynight login` to display an authorization code and open the verification

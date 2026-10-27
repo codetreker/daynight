@@ -93,7 +93,11 @@ explains task creation, handoff, execution and Goal workflows.
 
 `dn` is an alias for `daynight`. Use `daynight --help` and each command's
 `--help` for syntax, `daynight update` to update an npm global installation,
-and the [CLI manual](packages/daynight/README.md) for detailed usage.
+and the [CLI manual](packages/daynight/README.md) for detailed usage. The complete
+[configuration example](packages/daynight/config.example.yml) covers service,
+review and worker settings; the
+[configuration guide](packages/daynight/README.md#configuration-setup) explains
+customizing it and locating the copy included in the npm package.
 
 ### Shell completion
 
