@@ -2,6 +2,7 @@ import path from "node:path";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { readConfigurationSource } from "../../config/files.js";
 import { MissingConfigurationFieldError } from "../../config/errors.js";
+import { validateRepositoryRoot } from "../../repository/location.js";
 import { ancestorIdentities, missingPathsReferToSameDirectory, pathsEqual, pathsOverlap, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ReviewPaths } from "./paths.js";
 import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
@@ -25,8 +26,6 @@ export type ReviewConfiguration = {
   copilotReasoningEffort?: string;
   repositories: RepositoryConfiguration[];
 };
-
-export const defaultRepositoryRoot = "~/daynights";
 
 export const configurationDefaults = {
   pollIntervalMs: 60_000,
@@ -170,32 +169,6 @@ const validateRepositoryPaths = (
       );
     }
   }
-};
-
-export const resolveRepositoryRoot = (
-  configuredRoot: unknown,
-  runtimePaths: ReviewPaths,
-  homeDirectory: string,
-  pathApi: PathApi = path,
-): string => {
-  const root = validateRepositoryRoot(configuredRoot, pathApi);
-  if (!pathApi.isAbsolute(homeDirectory)) {
-    throw new Error("The current user's home directory must be an absolute path.");
-  }
-  return root === "~" || root.startsWith("~/") || (pathApi.sep === "\\" && root.startsWith("~\\"))
-    ? pathApi.resolve(pathApi.join(homeDirectory, root.slice(2)))
-    : pathApi.resolve(pathApi.dirname(runtimePaths.configFile), root);
-};
-
-const validateRepositoryRoot = (value: unknown, pathApi: PathApi): string => {
-  const root = nonEmptyString(value, "repositoryRoot");
-  if (root.startsWith("~") && root !== "~" && !root.startsWith("~/") && !(pathApi.sep === "\\" && root.startsWith("~\\"))) {
-    throw new Error("repositoryRoot supports only the current user's home directory (~ or ~/), absolute paths, or config-directory-relative paths.");
-  }
-  if (pathApi.sep === "\\" && /^[a-z]:(?![\\/])/i.test(root)) {
-    throw new Error("repositoryRoot must not use a drive-relative Windows path.");
-  }
-  return root;
 };
 
 const parseReviewConfiguration = (

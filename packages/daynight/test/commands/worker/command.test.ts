@@ -23,15 +23,21 @@ const context = () => {
 const taskId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const claimId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const projectId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-const dependencies = () => ({ run: vi.fn<WorkerCommandDependencies["run"]>(async () => {}), manage: vi.fn<WorkerCommandDependencies["manage"]>(async () => {}) });
+const dependencies = () => ({
+  prepareRepositories: vi.fn<WorkerCommandDependencies["prepareRepositories"]>(async () => {}),
+  repository: vi.fn<WorkerCommandDependencies["repository"]>(async () => {}),
+  run: vi.fn<WorkerCommandDependencies["run"]>(async () => {}),
+  manage: vi.fn<WorkerCommandDependencies["manage"]>(async () => {}),
+});
 
 describe("worker command", () => {
-  it.each([[], ["--help"], ["-h"], ...["run", "retry", "release", "transfer", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
+  it.each([[], ["--help"], ["-h"], ...["run", "repo", "retry", "release", "transfer", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
+    ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
-    const run = vi.fn(async () => { throw new Error("Help must not run a worker."); });
-    await runWorkerCommand(args, cli, { ...dependencies(), run });
+    const deps = dependencies();
+    await runWorkerCommand(args, cli, deps);
     expect(output.join("")).toContain("Usage: daynight worker");
-    expect(run).not.toHaveBeenCalled();
+    for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
   it.each([["run", "extra"], ["run", "--config", "elsewhere"], ["run", "--platform", "linux"], ["run", "--state-directory", "elsewhere"], ["run", "--version"], ["other"]])("rejects invalid syntax before runtime startup %j", async (...args) => {
@@ -45,7 +51,10 @@ describe("worker command", () => {
     const { cli, errors } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
     const run = vi.fn<WorkerCommandDependencies["run"]>(async (options) => { options.log?.("worker started\n"); });
-    await runWorkerCommand(["run"], cli, { ...dependencies(), run });
+    const deps = { ...dependencies(), run };
+    await runWorkerCommand(["run"], cli, deps);
+    expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli);
+    expect(deps.prepareRepositories.mock.invocationCallOrder[0]).toBeLessThan(run.mock.invocationCallOrder[0]!);
     expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function) });
     expect(errors).toEqual(["worker started\n"]);
   });
@@ -55,15 +64,58 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["run", "retry", "release", "transfer", "resume"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["run", "repo", "retry", "release", "transfer", "resume"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('run' 'retry' 'release' 'transfer' 'resume')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('run' 'repo' 'retry' 'release' 'transfer' 'resume')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
+    expect(renderZshCompletion(commandTree)).toContain("repo:Manage repositories selected from existing Daynight Projects");
     expect(renderZshCompletion(commandTree)).toContain("--target-agent");
     const transfer = definition.commands!.find(({ name }) => name === "transfer")!;
     expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('codex' 'copilot')");
     expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('windows' 'linux' 'macos')");
     expect(renderZshCompletion(transfer)).toContain("('\\''codex'\\'' '\\''copilot'\\'')");
+  });
+
+  it("does not start a runtime when repository preparation fails", async () => {
+    const { cli } = context();
+    const deps = dependencies();
+    const failure = new Error("Project selection cancelled.");
+    deps.prepareRepositories.mockRejectedValueOnce(failure);
+    await expect(runWorkerCommand(["run"], cli, deps)).rejects.toBe(failure);
+    expect(deps.run).not.toHaveBeenCalled();
+    expect(deps.manage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { args: ["repo", "list"], request: { kind: "list", json: false } },
+    { args: ["repo", "list", "--json"], request: { kind: "list", json: true } },
+    { args: ["repo", "add"], request: { kind: "add" } },
+    { args: ["repo", "remove"], request: { kind: "remove" } },
+    { args: ["repo", "add", "--project", projectId.toUpperCase()], request: { kind: "add", projectId } },
+    { args: ["repo", "remove", `--project=${projectId.toUpperCase()}`], request: { kind: "remove", projectId } },
+  ])("routes worker repository commands without loading execution: $args", async ({ args, request }) => {
+    const { cli } = context();
+    const deps = dependencies();
+    await runWorkerCommand(args, cli, deps);
+    expect(deps.repository).toHaveBeenCalledExactlyOnceWith(request, cli);
+    expect(deps.prepareRepositories).not.toHaveBeenCalled();
+    expect(deps.run).not.toHaveBeenCalled();
+    expect(deps.manage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["repo", "add", "https://github.com/example/repo"],
+    ["repo", "remove", "https://github.com/example/repo"],
+    ["repo", "add", "--project", "invalid"],
+    ["repo", "remove", "--project", "invalid"],
+    ["repo", "list", "--project", projectId],
+    ["repo", "add", "--project", projectId, "--path", "/arbitrary"],
+  ])("rejects unsafe repository command syntax before accessing configuration %j", async (...args) => {
+    const { cli } = context();
+    const deps = dependencies();
+    await expect(runWorkerCommand(args, cli, deps)).rejects.toThrow();
+    for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
   it.each(["retry", "release", "resume"] as const)("passes canonical %s identity and exact int64 version to the shared controller", async (kind) => {

@@ -2,7 +2,8 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { configurationDefaults, loadConfiguration, parseConfiguration, resolveRepositoryRoot } from "../../../src/commands/review/config.js";
+import { configurationDefaults, loadConfiguration, parseConfiguration } from "../../../src/commands/review/config.js";
+import { resolveRepositoryRoot } from "../../../src/repository/location.js";
 import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 import * as filesystemPaths from "../../../src/platform/filesystem.js";
 import { formatError } from "../../../src/platform/diagnostics.js";

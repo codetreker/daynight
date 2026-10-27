@@ -118,6 +118,11 @@ export const readWorkerConfiguration = async (paths: WorkerPaths, signal?: Abort
     if (!(cause instanceof MissingConfigurationFileError)) throw cause;
     source = "{}";
   }
+  return validateWorkerConfigurationSource(source, paths, signal);
+};
+
+export const validateWorkerConfigurationSource = async (source: string, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
+  signal?.throwIfAborted();
   const configuration = parseWorkerConfiguration(source, paths);
   const physicalPaths: PhysicalDirectory[] = [];
   const physicalState = await resolvePhysicalDirectory(paths.stateDirectory);

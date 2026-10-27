@@ -104,38 +104,43 @@ selection, startup files and activation.
 ## Worker configuration and startup
 
 Install Git, Herdr 0.9.5 or newer with the supported API, and your selected
-Copilot or Codex CLI. Authenticate Daynight with `daynight login`, configure
-native/provider credentials and the official Herdr integration explicitly, then
-optionally configure `worker` in `~/.daynight/config.yml`. Omitted settings use
-the documented defaults. To select repositories for new claims, add:
-
-```yaml
-worker:
-  repositories:
-    - remote: https://github.com/OWNER/REPO.git
-      path: ../code/repo
-```
-
-A missing configuration file or omitted `worker` section uses one execution
-slot, a five-second poll interval, three recovery attempts, Copilot with its
-default model and no extra arguments, and an empty repository list. The worker
-still requires Daynight authentication. An empty list reconciles retained claims
-without selecting repositories for new claims.
-
-The path is relative to the configuration directory. Matching Daynight projects
-must already exist; use an explicit `projectId` when repository discovery is
-ambiguous. Choose tasks with automatic execution enabled, then start:
+Copilot or Codex CLI. Configure native/provider credentials and the official
+Herdr integration explicitly, then authenticate and start:
 
 ```bash
+daynight login
 daynight worker run
 ```
 
-The worker runs in the foreground with one execution slot by default. It uses
-fixed state under `~/.daynight/worker/` and prints the private Herdr attachment
-descriptor for human input. Ctrl+C stops original agents through bounded cleanup
-while retaining unfinished claims, worktrees and native history. The
+When no worker repositories are configured, an interactive terminal lists the
+existing Daynight projects you can access. Select one or more projects; their
+project IDs, repository URLs and local paths are saved before the worker starts.
+The shared `repositoryRoot` defaults to `~/daynights`; ordinary repositories
+use `<root>/<host>/<owner>/<repo>`.
+
+Manage this selection with:
+
+```bash
+daynight worker repo list
+daynight worker repo add
+daynight worker repo remove
+daynight worker repo add --project PROJECT_UUID
+daynight worker repo remove --project PROJECT_UUID
+```
+
+Add and remove operate on existing remote Projects. Without `--project` they
+show a multiselect; the explicit ID form also works without a terminal. Removing
+a registration keeps its clone and existing task resources. Changes take effect
+on the next worker startup. Noninteractive startup with no repositories directs
+you to the explicit add command.
+
+Runtime settings are optional: one execution slot, a five-second poll interval,
+three recovery attempts, Copilot with its default model and no extra arguments.
+The worker runs in the foreground with fixed state under `~/.daynight/worker/`.
+Ctrl+C stops original agents through bounded cleanup while retaining unfinished
+claims, worktrees and native history. The
 [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
-covers defaults, repository overrides, recovery, attachment and manual management.
+covers selection, configuration, recovery and manual management.
 
 ## Review configuration and startup
 

@@ -80,13 +80,25 @@ worker:
       args: []
 ```
 
-可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 省略时为空数组，显式提供时必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。空仓库集合保留 SQLite 中项目和原 claim 的对账，不为新任务提供仓库候选。默认配置不绕过认证，缺少凭据仍返回现有登录提示。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。未知字段、错误类型、重复仓库/项目和重叠路径明确拒绝，不接受 stateDirectory 或其他状态根入口。
+可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 省略时为空数组，显式提供时必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。空仓库集合由公开命令入口先完成 Project 选择引导，配置解析本身保持无写入和无远端调用。默认配置不绕过认证，缺少凭据仍返回现有登录提示。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。未知字段、错误类型、重复仓库/项目和重叠路径明确拒绝，不接受 stateDirectory 或其他状态根入口。
 
 仓库路径相对 config.yml 所在目录解析，也接受绝对路径；不依赖启动 cwd，不展开 tilde，不接受 Windows drive-relative 路径。配置与实际物理路径均核对仓库之间、仓库与 Daynight 状态根的重叠。服务项目必须已存在且 repo 身份匹配；同 repo 匹配多个项目时要求显式 projectId。缺失本地仓库自动 clone，已有根目录核对原 remote/Git 身份并保留原成果。
 
 相同 agent 类型时仓库逐字段覆盖全局值，显式 null model 和空 args 清除该字段；切换类型后未指定的 model/args 分别变为 null/[]。Args 整体替换，不拼接；恢复上限是 worker 级设置。Worker 拥有 cwd/session/model/mode 的参数位置，普通 args 须通过原生参数校验。
 
 配置只在启动/重启加载。新 claim 首次 pending 物化冻结 agent/model/args/recoveryLimit；未决 claim 请求保留其原决定配置以便确认同一请求，不能套用重启后的新默认。已开始执行缺失原快照时暂停，继续与恢复始终使用原快照。凭据仍由服务/原生工具的原认证配置拥有，不进入 assignment、日志或执行快照。
+
+## Project 选择与仓库配置管理
+
+worker 命令入口在调用前台 runtime 前检查仓库注册。非空配置直接运行；空配置先核验登录，通过现有 typed ApiClient 完整读取远端 Project，释放有界 HTTP operation 后再显示多选。提示框沿用 CliPrompt.selectMany 和 CLI 取消机制，不把用户思考时间纳入 HTTP 总期限。保存成功后 runtime 重新读取完整配置，随后才取得实例锁、生成 workerId 或创建 SQLite、Git、Herdr。取消或失败不启动这些资源。
+
+worker repo list [--json] 读取本地配置；add/remove [--project <UUID>] 在显式 UUID 或交互多选后操作现存远端 Project。初始选择和新增以远端 id/name/repoUrl 生成选项，删除只显示当前注册且远端可访问的项目。管理接口不创建、修改或删除远端项目；远端读取失败保持配置不变。非交互 run 缺仓库时退出并指引显式 add；无参 add/remove 也需要交互终端。
+
+新增条目保存明确 projectId、remote=Project.repoUrl 和绝对 path，保留已有同项目的路径与原生执行覆盖。项目/仓库身份或物理路径冲突经完整配置验证后整批拒绝。worker/repositories.ts 拥有快照、Project 查询和持久变更；worker/configuration-guide.ts 拥有选择与启动引导。所有注册变更都只作用于 YAML，原 SQLite project/task 行、claim 和资源不受删除配置影响，运行实例不热重载。
+
+默认位置由共享 repository/location.ts 决定。repositoryRoot 默认 ~/daynights，沿用 review 的 home/绝对/配置目录相对展开及跨平台组件编码。普通规范身份按 host/路径分段；含自定义用户、端口或非普通路径的身份使用 @remote/传输/authority/路径分段，保留空段和点段含义并转义百分号，避免特殊身份、路径遍历或编码碰撞。@ 不属于普通规范 host，因此该名字空间不能与普通仓库落点重合。服务端 repoUrl 原值继续用于实际 clone；仅新注册使用当前默认根目录，已有项目不因 root 改变而移动。
+
+选择前记录仓库列表、repositoryRoot 和服务/认证上下文。网络及提示期间不持配置锁；保存时通过 updateConfigurationFile 锁内重读，对这些字段做一致性检查，并在最新 YAML Document 上更新所属条目。相关并发变更使旧选择失败，无关编辑保留。认证比较只用于本次内存决策，不输出或持久化令牌/指纹。写入前复用 validateWorkerConfigurationSource 核对整个候选配置及真实路径关系，既有配置锁、原子替换、私有权限和失败链继续适用。
 
 ## 服务端模型与资格查询
 

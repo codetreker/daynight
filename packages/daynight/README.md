@@ -774,17 +774,64 @@ integration/history instead of installing or changing global native settings.
 Git transport and tools used by the task, such as authenticated GitHub CLI for
 PR delivery, must also be ready.
 
-Run `daynight login` for Daynight authentication. Worker settings are optional:
-a missing configuration file, an omitted `worker` section or `worker: {}` uses
-the defaults below, including `repositories: []`. An empty repository list
-allows reconciliation of retained claims without selecting repositories for
-new claims. Authentication remains required.
+Run `daynight login` for Daynight authentication, then `daynight worker run`.
+When `worker.repositories` is missing or empty, startup reads all existing
+Projects accessible to the current account and presents a terminal multiselect.
+Each choice includes its name, UUID and repository URL. Select at least one
+project; the selection is saved before worker identity, SQLite, Git or Herdr
+resources are created. Existing nonempty configuration starts directly.
 
-To override defaults or select repositories, add the following mapping to the
-shared `~/.daynight/config.yml`, preserving existing connection and review
-settings:
+Cancel, unreadable project inventory, an empty project inventory or a failed
+save leaves configuration unchanged and does not start the runtime. In a
+noninteractive process, configure a project explicitly before startup:
+
+```bash
+daynight worker repo add --project PROJECT_UUID
+daynight worker run
+```
+
+The repository manager operates on existing remote Projects, not arbitrary Git
+URLs or new project creation:
+
+```bash
+daynight worker repo list
+daynight worker repo list --json
+daynight worker repo add
+daynight worker repo add --project PROJECT_UUID
+daynight worker repo remove
+daynight worker repo remove --project PROJECT_UUID
+```
+
+`list` reads the current local worker registrations. `add` and `remove` without
+`--project` select one or more accessible remote Projects; the explicit UUID
+form supports noninteractive use. Both operations verify the target against
+remote Projects. Each added registration saves its exact project ID and server
+repository URL with an absolute clone path. Re-adding a project preserves its
+registered path and execution overrides. Conflicting project/repository or
+physical path registrations are rejected before saving the whole selection.
+
+`remove` changes only worker configuration: it does not delete repositories,
+SQLite records, claims or worktrees, and it does not interrupt an existing
+worker. Configuration is loaded at startup, so additions and removals affect
+new acquisition after restarting. Original claims retain their stored mappings,
+resources and frozen execution settings.
+
+The shared `repositoryRoot` defaults to `~/daynights`. It supports the current
+user's home prefix, absolute paths and config-directory-relative paths, using
+the same root and portable component rules as review registration. Ordinary
+Git URLs produce `<root>/<host>/<owner>/<repo>`, including nested repository
+paths. Other supported Git identities retain protocol, user, port and path
+distinctions under `<root>/@remote/`; the original URL remains the clone input.
+A changed root applies only to new registrations.
+
+Worker settings remain optional. A genuinely missing file, omitted `worker`
+mapping or `worker: {}` uses the parser defaults, with an empty repository list
+that triggers the public startup guide. To override runtime settings or inspect
+the saved registrations, use shared `~/.daynight/config.yml`, preserving
+connection and review settings:
 
 ```yaml
+repositoryRoot: ~/daynights
 worker:
   maxConcurrent: 1
   pollIntervalMs: 5000
@@ -793,42 +840,31 @@ worker:
   model: null
   args: []
   repositories:
-    - remote: https://github.com/OWNER/REPO.git
-      path: ../code/repo
-    - remote: https://github.com/OWNER/OTHER.git
-      path: ../code/other
-      agent: codex
-      model: null
-      args: []
+    - projectId: 11111111-1111-4111-8111-111111111111
+      remote: https://github.com/OWNER/REPO.git
+      path: /path/to/daynights/github.com/owner/repo
 ```
 
-The scalar values shown are the defaults; `repositories` defaults to an empty
-list when omitted. Each explicit repository entry requires `remote` and `path`,
-with optional `projectId`,
-`agent`, `model` and `args`. The service project must already exist and match the
-repository. Add `projectId` when more than one project matches. Missing local
-repositories are cloned; existing roots and origins are verified without
-resetting their files or branches. Use the native authentication configuration
-for credentials, keeping credentials out of repository URLs and argument lists.
+The example project UUID and path are illustrative; selection writes actual
+server identities and absolute destinations. Repository entries retain optional
+`agent`, `model` and `args` overrides. Same-type overrides inherit independently;
+null model or an empty args list clears that field. Changing agent type clears
+inherited model/args unless explicitly set. Args replace rather than append.
+The recovery limit remains worker-wide.
 
-Paths are absolute or relative to the configuration file's directory, never
-the launch directory. Tilde expansion and drive-relative Windows paths are
-rejected. Repository identities, project IDs and paths cannot duplicate or
-overlap, including the fixed Daynight state directory. Defaults apply only to
-omitted fields and a genuinely missing file. Explicit null mappings or repository
-lists, invalid YAML, unreadable files, unknown worker fields, wrong types, invalid
-arguments and unsupported path shapes fail visibly. Reading defaults does not
-create or rewrite configuration.
-`maxConcurrent` is a positive integer, `recoveryLimit` is nonnegative and
-`pollIntervalMs` is a positive safe integer within the timer range.
+Numeric settings have the defaults shown. `maxConcurrent` is positive,
+`recoveryLimit` is nonnegative, and `pollIntervalMs` is a positive safe integer
+within the timer range. Explicit null mappings/lists, invalid YAML, unreadable
+files, unknown fields, invalid arguments and unsupported paths fail visibly.
+Reading defaults does not create or rewrite configuration. Repository entry
+paths are absolute or config-directory-relative and do not expand `~`.
 
-Repository agent settings override fields independently when the type stays
-the same; explicit null model or an empty args list clears that field. Switching
-agent type clears inherited model and arguments unless the repository explicitly
-sets them. Args replace the list rather than append. The recovery limit is
-worker-wide. Configuration loads at startup, without hot reload; existing claims
-keep their original frozen configuration after a restart, while later claims
-use the newly loaded settings.
+Project lookup and prompting run without holding the configuration lock. Saving
+uses the existing lock and atomic YAML replacement, retains comments, unrelated
+settings and credential permissions, and checks that repository selection, root
+and service/authentication context did not change while prompting. A conflicting
+selection must be made again; unrelated concurrent edits are preserved. Projects
+are not rediscovered on every worker tick.
 
 New tasks have automatic execution disabled. Enable it explicitly with the
 normal task update workflow after reading the current task/version. The worker
@@ -1090,9 +1126,10 @@ and repository registration preserve both fields and YAML comments. The server
 configuration projection recognizes these shared keys without validating their
 review-owned values.
 
-`repositoryRoot` defaults to `~/daynights`. It is used only when `add-repo` has no
-`--path`: the command derives filesystem-safe components from the normalized
-host/owner/name and saves the resulting absolute repository path. A configured
+`repositoryRoot` defaults to `~/daynights` and is shared with worker Project
+registration. Review uses it when `add-repo` has no `--path`: the command derives
+filesystem-safe components from the normalized host/owner/name and saves the
+resulting absolute repository path. A configured
 root may be absolute, config-directory-relative, or begin with `~` for the current
 OS user's home. Other users' tilde forms are rejected. Changing the root affects
 future additions only. An explicit `--path` resolves against the command's working

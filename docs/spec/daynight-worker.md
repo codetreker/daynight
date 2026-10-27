@@ -13,8 +13,11 @@ Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓�
 ### W-01：前台运行、配置与平台
 
 - `daynight worker run` 与现有 `review run` 一样在前台运行，支持 Linux、macOS 和 Windows。
-- 配置支持多个仓库的地址与本地路径；路径不存在时由系统克隆准备，已存在路径须核对仓库身份并保留已有工作。冲突或身份不明确时显示错误。
-- worker mapping 使用 maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories；字段省略时分别使用 1、5000、3、copilot、null、[] 和空仓库列表。配置文件确实不存在、省略 worker 或使用 worker: {} 时同样使用这些默认值，读取默认值不创建或重写文件；Daynight 认证仍须满足。空仓库集合继续对账已持久化 claim，不提供新仓库候选。显式 repositories 每项的 remote/path 必填，可给 projectId 和 agent/model/args 覆盖。显式 worker/repositories 为 null、非法 YAML、读取错误、未知字段、错误类型、重复/重叠仓库与状态路径拒绝；相对路径以 config.yml 目录解析，不展开 tilde。
+- worker run 未配置仓库或仓库列表为空时，从当前服务完整读取当前账号可访问的现存 Project，显示包含项目名、UUID 和 repoUrl 的多选并要求至少选择一项。选择完成并保存配置后才启动 worker；已有非空配置直接启动。项目配置完成前不得创建 workerId、实例锁、SQLite、Git、Herdr 或任务资源。
+- worker repo list [--json] 读取当前本地注册；worker repo add/remove [--project <UUID>] 管理远端已有 Project。省略 --project 时多选，指定时允许非交互调用；两个变更操作均核验远端项目，不接受任意 Git URL 或创建 Project。删除只修改配置，不删除 clone、SQLite、claim 或 worktree，也不中断已有实例；下次启动改变新任务领取范围。
+- 取消、空选择、无可用 Project、认证/API/保存失败均不进入运行时，不写入部分选择。非交互启动缺仓库时给出 worker repo add --project 的操作指引后退出。配置变更采用既有锁和原子 YAML 保存，保留注释、无关字段和凭据权限；提示期间仓库列表、repositoryRoot 或服务/认证上下文改变时拒绝旧选择，无关并发编辑保留。
+- 新增项目保存 projectId、服务端 repoUrl 原值和绝对本地路径。顶层 repositoryRoot 默认 ~/daynights，根目录展开和文件系统安全组件规则与 review 共用；普通地址落于 <root>/<host>/<owner>/<repo>，通用 Git 地址的用户、端口、传输和嵌套路径身份不得混淆。重复添加保留既有路径和执行覆盖，重复/冲突选择整批拒绝。路径不存在时由运行时克隆准备，已存在路径核对身份并保留已有工作；项目选择管理本身不 clone。
+- worker mapping 使用 maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories；字段省略时分别使用 1、5000、3、copilot、null、[] 和空仓库列表。配置文件确实不存在、省略 worker 或使用 worker: {} 时同样使用这些默认值，读取默认值不创建或重写文件；Daynight 认证仍须满足。空仓库集合是初始化引导的输入，公开 run 完成选择前不启动空闲 daemon。显式 repositories 每项的 remote/path 必填，可给 projectId 和 agent/model/args 覆盖。显式 worker/repositories 为 null、非法 YAML、读取错误、未知字段、错误类型、重复/重叠仓库与状态路径拒绝；相对路径以 config.yml 目录解析，不展开 tilde。
 - 配置包含覆盖全部仓库的最大并发，以及全局默认 agent、模型、参数和仓库覆盖值。Worker 在启动或重启时加载配置，不进行热重载。实际取得 claim 后，首次 pending 物化时持久冻结有效执行配置；继续、重试及重启恢复沿用该配置，重新加载的配置作用于后续新 claim。已开始执行却缺原配置时暂停核对，不替换为新默认值。
 - 首次启动随机生成稳定 `workerId`，使用共享配置锁与原子替换保存至 `~/.daynight/config.yml`；已有合法身份重启复用，非法值明确拒绝。身份持久化后才允许 claim。
 - 每个用户环境一个 worker，固定 `~/.daynight/worker/` 保存独立 SQLite、实例锁、日志、Herdr 数据和临时资源，不提供状态根覆盖入口。存活的第二实例明确拒绝；失效 worker 锁不证明原生 agent 已停。启动前校验实际 Herdr 端点，路径等条件不满足时明确报告。
