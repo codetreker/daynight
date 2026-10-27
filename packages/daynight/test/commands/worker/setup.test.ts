@@ -105,6 +105,24 @@ describe("worker setup configuration transaction", () => {
     expect(parse(await readFile(f.paths.configFile, "utf8")).worker.repositories.every((repository: Record<string, unknown>) => !Object.hasOwn(repository, "agent"))).toBe(true);
   });
 
+  it.each(["prepare", "save"] as const)("refuses to %s setup when repository edits would alter an aliased review list", async (operation) => {
+    const f = await fixture(`${connection}worker:\n  repositories: &sharedRepositories\n    - remote: ${projects[0]!.repoUrl}\n      path: ../shared-checkout\nrepositories: *sharedRepositories\n`);
+    await expect((operation === "prepare" ? prepareWorkerSetup : saveWorkerSetup)(f.options)).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+    expect(await readdir(f.paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it("preserves unrelated aliases and compatible native model aliases during setup", async () => {
+    const f = await fixture(`${connection}copilotReasoningEffort: &effort high\ncopilotModel: &sharedModel retained-model\nworker:\n  agent: codex\n  model: *sharedModel\n  args: &sharedArgs [--search]\n  repositories:\n    - projectId: ${uuid(1)}\n      remote: ${projects[0]!.repoUrl}\n      path: ../first\n      args: *sharedArgs\n`);
+    await saveWorkerSetup(f.options);
+    const saved = await readFile(f.paths.configFile, "utf8");
+    expect(saved).toContain("copilotReasoningEffort: &effort high");
+    expect(saved).toContain("copilotModel: &sharedModel retained-model");
+    expect(saved).toContain("model: *sharedModel");
+    expect(saved).toContain("args: *sharedArgs");
+    expect(parse(saved)).toMatchObject({ copilotReasoningEffort: "high", copilotModel: "retained-model", worker: { model: "retained-model" } });
+  });
+
   it.each([
     "worker:\n  agent: codex\n", "worker:\n  model: changed\n", "worker:\n  args: [--allow-all-tools]\n",
     "repositoryRoot: ../changed\n", "serverUrl: https://changed.example\n", "serverToken: changed-credential\n",

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { Document } from "yaml";
+import { isDeepStrictEqual } from "node:util";
 import { createApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
 import type { OperationLimits } from "../../api/operation.js";
@@ -138,6 +138,25 @@ const registeredProjectIndex = (repositories: readonly WorkerRepositoryConfigura
   return index;
 };
 
+const unownedConfiguration = (mapping: Record<string, unknown>, ownedWorkerFields: readonly string[]): unknown => {
+  const { worker, ...root } = mapping;
+  if (!Object.hasOwn(mapping, "worker")) return { root, worker: {} };
+  if (typeof worker !== "object" || worker === null || Array.isArray(worker)) throw new TypeError("worker must be a mapping.");
+  return { root, worker: Object.fromEntries(Object.entries(worker).filter(([field]) => !ownedWorkerFields.includes(field))) };
+};
+
+const verifyUnownedConfiguration = (
+  before: Record<string, unknown>,
+  updatedSource: string,
+  paths: WorkerPaths,
+  ownedWorkerFields: readonly string[],
+): void => {
+  const { mapping: after } = parseConfigurationDocument(updatedSource, paths);
+  if (!isDeepStrictEqual(unownedConfiguration(before, ownedWorkerFields), unownedConfiguration(after, ownedWorkerFields))) {
+    throw new Error("Worker configuration uses shared YAML aliases that would change unrelated settings. Separate worker settings from those aliases, then run the command again.");
+  }
+};
+
 const prepareSetupSource = async (source: string | undefined, options: WorkerSetupOptions): Promise<WorkerSetupPlan & { source: string }> => {
   const { paths, signal } = options;
   signal?.throwIfAborted();
@@ -188,6 +207,7 @@ const prepareSetupSource = async (source: string | undefined, options: WorkerSet
     projectId: project.id, remote: project.repoUrl, path: repositoryLocation(project.repoUrl, root),
   });
   const updatedSource = document.toString();
+  verifyUnownedConfiguration(mapping, updatedSource, paths, ["agent", "model", "args", "repositories"]);
   const configuration = await validateWorkerConfigurationSource(updatedSource, paths, signal);
   return { source: updatedSource, configuration, removedRepositories, resetRepositories, resetGlobalNativeSettings };
 };
@@ -218,11 +238,10 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
   return updateConfigurationFile(paths, async (source) => {
     const current = await snapshotFromSource(source, paths, signal);
     if (current.fingerprint !== snapshot.fingerprint) throw new Error("Worker repository configuration or service credentials changed while selecting projects. Run the command again with the current configuration.");
-    const document = source === undefined ? new Document({}) : parseConfigurationDocument(source, paths).document;
+    const { document, mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
     const repositories = [...current.configuration.repositories];
     let changed = false;
     if (adding) {
-      const { mapping } = parseConfigurationDocument(source === undefined ? "{}" : source, paths);
       const root = resolveRepositoryRoot(Object.hasOwn(mapping, "repositoryRoot") ? mapping.repositoryRoot : defaultRepositoryRoot, paths, options.homeDirectory);
       for (const project of projects) {
         const index = registeredProjectIndex(repositories, project);
@@ -250,6 +269,7 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
     }
     if (!changed) return { result: current.configuration.repositories };
     const updatedSource = document.toString();
+    verifyUnownedConfiguration(mapping, updatedSource, paths, ["repositories"]);
     const configuration = await validateWorkerConfigurationSource(updatedSource, paths, signal);
     return { source: updatedSource, result: configuration.repositories };
   }, signal);

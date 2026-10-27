@@ -116,7 +116,7 @@ worker repo list [--json] 读取本地配置；add/remove [--project <UUID>] 在
 
 默认位置由共享 repository/location.ts 决定。repositoryRoot 默认 ~/daynights，沿用 review 的 home/绝对/配置目录相对展开及跨平台组件编码。普通规范身份按 host/路径分段；含自定义用户、端口或非普通路径的身份使用 @remote/传输/authority/路径分段，保留空段和点段含义并转义百分号，避免特殊身份、路径遍历或编码碰撞。@ 不属于普通规范 host，因此该名字空间不能与普通仓库落点重合。服务端 repoUrl 原值继续用于实际 clone；仅新注册使用当前默认根目录，已有项目不因 root 改变而移动。
 
-单项管理的快照覆盖仓库列表、repositoryRoot 和服务/认证上下文；setup 还覆盖其替换的原生字段。网络及提示期间不持配置锁；保存时通过 updateConfigurationFile 锁内重读，对这些字段做一致性检查，并在最新 YAML Document 上更新所属条目。相关并发变更使旧选择失败，无关编辑保留。认证比较只用于本次内存决策，不输出或持久化令牌/指纹。写入前复用 validateWorkerConfigurationSource 核对整个候选配置及真实路径关系，既有配置锁、原子替换、私有权限和失败链继续适用。
+单项管理的快照覆盖仓库列表、repositoryRoot 和服务/认证上下文；setup 还覆盖其替换的原生字段。网络及提示期间不持配置锁；保存时通过 updateConfigurationFile 锁内重读，对这些字段做一致性检查，并在最新 YAML Document 上更新所属条目。相关并发变更使旧选择失败，无关编辑保留。认证比较只用于本次内存决策，不输出或持久化令牌/指纹。写入前严格解码修改前后的 YAML，比较全部非所属值，阻止共享 alias 将 worker 修改传播到 review 或其他配置。repo add/remove 仅拥有 worker.repositories；setup 拥有 worker.agent/model/args/repositories，其余根字段和 worker 字段均须语义不变。相关 alias 会连带改变非所属值或删除 anchor 后使 YAML 无效时，在原子替换前拒绝并指引分离 worker 数据后重试；普通且无连带语义变化的 alias 保留。随后复用 validateWorkerConfigurationSource 核对整个候选配置及真实路径关系，既有配置锁、原子替换、私有权限和失败链继续适用。
 
 ## 服务端模型与资格查询
 

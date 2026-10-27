@@ -911,9 +911,14 @@ retains comments, unrelated settings and credential permissions, and checks that
 repository selection, root and service/authentication context did not change
 while prompting. Setup also checks the agent/model/args fields it replaces.
 A conflicting selection must be made again; unrelated concurrent edits are
-preserved. Setup and repository-management changes apply to new acquisition at
-the next worker startup; original claims retain their frozen settings. Projects
-are not rediscovered on every worker tick.
+preserved. Saving also refuses a worker edit whose shared YAML aliases would
+change unrelated settings, such as the review repository list. Separate the
+worker data from those aliases, then run the command again. Aliases whose
+unrelated values remain unchanged are accepted.
+
+Setup and repository-management changes apply to new acquisition at the next
+worker startup; original claims retain their frozen settings. Projects are not
+rediscovered on every worker tick.
 
 New tasks have automatic execution disabled. Enable it explicitly with the
 normal task update workflow after reading the current task/version. The worker

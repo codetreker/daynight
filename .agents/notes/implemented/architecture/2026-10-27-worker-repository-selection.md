@@ -78,6 +78,15 @@ A repository-management selection snapshot covers the repository list, clone
 root and service/auth context; setup also protects its replaced native fields. Network and prompts hold no configuration lock; the writer rereads
 under the existing lock, refuses conflicting relevant changes and applies the
 selection to the current YAML document. Unrelated edits and comments survive.
+The writer also decodes the YAML before and after the edit and compares values
+outside the operation's ownership. Repo add/remove owns worker.repositories;
+setup owns worker.agent/model/args/repositories. Every other root and worker
+value must remain semantically unchanged. Shared aliases can otherwise make a
+worker sequence edit change the review repository list through the same YAML
+node. Such edits are refused before replacement, with instructions to separate
+worker data from the shared aliases. Ordinary aliases with unchanged unrelated
+values remain accepted; invalidated anchors fail strict YAML parsing.
+
 The candidate configuration receives the same type, identity and physical path
 validation before atomic replacement. Neither registration nor removal starts
 Git, SQLite, native agents or a claim.
@@ -148,5 +157,7 @@ defaults leaves configuration unchanged. Scripts use the Project-ID form before
 starting; cancellation or missing terminal input cannot leave a half-selection
 or start an idle runtime. Remote lookup, prompt races and saving have distinct
 failure boundaries, and a selected project must remain accessible for
-registration management. Removing configuration does not release claims or
-erase their recoverable work.
+registration management. A configuration that shares worker data with unrelated
+settings through aliases may need those nodes separated before a mutation can
+be saved. Removing configuration does not release claims or erase their
+recoverable work.

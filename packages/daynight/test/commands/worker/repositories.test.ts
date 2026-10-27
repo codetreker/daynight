@@ -64,6 +64,53 @@ describe("worker Project registration", () => {
     if (process.platform !== "win32") expect((await stat(f.paths.configFile)).mode & 0o777).toBe(0o600);
   });
 
+  it.each(["associate", "append", "remove"] as const)("refuses %s when a worker repository anchor is shared with the review list", async (kind) => {
+    const source = `${connection}worker:\n  repositories: &sharedRepositories\n    - remote: ${project().repoUrl}\n      path: ../shared-checkout\nrepositories: *sharedRepositories\n`;
+    const f = await fixture(source);
+    const selected = kind === "append" ? project(2, "https://github.com/owner/second.git") : project();
+    const options = kind === "remove" ? { removeProjectIds: [selected.id] } : { addProjectIds: [selected.id] };
+    await expect(changeWorkerRepositories({ ...f, projects: [selected], ...options })).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+    expect(await readdir(f.paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it("refuses an alias mutation that changes worker native arguments outside repository-command ownership", async () => {
+    const source = `${connection}worker:\n  repositories: &shared []\n  args: *shared\n`;
+    const f = await fixture(source);
+    await expect(changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] })).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+  });
+
+  it("keeps native arguments intact when repositories refers to their sequence anchor", async () => {
+    const source = `${connection}worker:\n  args: &shared []\n  repositories: *shared\n`;
+    const f = await fixture(source);
+    await expect(changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] })).rejects.toThrow();
+    expect(await readFile(f.paths.configFile, "utf8")).toBe(source);
+  });
+
+  it("retains aliases whose values stay outside the repository mutation", async () => {
+    const source = `${connection}worker:\n  model: &sharedModel shared-model\n  repositories: []\ncopilotModel: *sharedModel\n`;
+    const f = await fixture(source);
+    await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
+    const saved = await readFile(f.paths.configFile, "utf8");
+    expect(saved).toContain("model: &sharedModel shared-model");
+    expect(saved).toContain("copilotModel: *sharedModel");
+    const { mapping } = parseConfigurationDocument(saved, f.paths);
+    expect(mapping.copilotModel).toBe("shared-model");
+    expect((mapping.worker as Record<string, unknown>).model).toBe("shared-model");
+  });
+
+  it("retains native argument sequence aliases while adding a different Project", async () => {
+    const old = project(3, "https://github.com/owner/old.git");
+    const source = `${connection}worker:\n  args: &sharedArgs [--allow-all-tools]\n  repositories:\n    - projectId: ${old.id}\n      remote: ${old.repoUrl}\n      path: ../old\n      args: *sharedArgs\n`;
+    const f = await fixture(source);
+    await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
+    const saved = await readFile(f.paths.configFile, "utf8");
+    expect(saved).toMatch(/args: &sharedArgs \[\s*--allow-all-tools\s*\]/);
+    expect(saved).toContain("args: *sharedArgs");
+    expect((await readWorkerConfiguration(f.paths)).repositories.every(({ args }) => args.length === 1 && args[0] === "--allow-all-tools")).toBe(true);
+  });
+
   it("keeps an existing destination and writes nothing when the same Project is added after a root change", async () => {
     const f = await fixture();
     await changeWorkerRepositories({ ...f, projects: [project()], addProjectIds: [uuid(1)] });
