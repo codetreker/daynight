@@ -10,7 +10,7 @@ import type { WorkerEvent } from "../../../src/commands/worker/execution.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
-import type { ExecutionConfiguration } from "../../../src/commands/worker/types.js";
+import type { ExecutionConfiguration, ResourceOwner } from "../../../src/commands/worker/types.js";
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
@@ -30,14 +30,15 @@ const fixture = (local = true) => {
   resources.push({ directory, store });
   const project = store.registerProject({ projectId, repoUrl: "https://github.com/example/repo.git", localPath: path.join(directory, "repository") });
   const identity = { projectId, taskId, claimId };
+  const resourceOwner: ResourceOwner = { ...identity, serverOrigin: origin, worktreeId };
   if (local) store.activateTask(store.registerPending({ ...identity, agent: "copilot" }));
   let observed = remoteTask();
   const order: string[] = [];
   const events: WorkerEvent[] = [];
   const coordinator = {
     advanceRetry: vi.fn(async () => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
-    cleanupSource: vi.fn(async (_identity: typeof identity, settings: { deleteWorktree?: boolean }) => { expect(settings.deleteWorktree).toBe(false); order.push("stop-close"); }),
-    completeSource: vi.fn(async () => { order.push("delete-done"); expect(observed.properties.worker?.claimId !== claimId || observed.properties.worker.state !== "active").toBe(true); store.completeTask(identity); }),
+    cleanupSource: vi.fn(async (_identity: typeof identity, settings: { deleteWorktree?: boolean }) => { expect(settings.deleteWorktree).toBe(false); order.push("stop-close"); return resourceOwner; }),
+    completeSource: vi.fn(async (actualOwner: ResourceOwner) => { expect(actualOwner).toBe(resourceOwner); order.push("delete-done"); expect(observed.properties.worker?.claimId !== claimId || observed.properties.worker.state !== "active").toBe(true); store.completeTask(identity); }),
   };
   const remote: WorkerRemote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => owner), readTask: vi.fn(async () => observed), authorizeControl: vi.fn(async () => {}),
@@ -48,7 +49,7 @@ const fixture = (local = true) => {
   };
   const options = { store, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine, repositories: [{ project, configuration }], signal: new AbortController().signal, coordinator, emit: (event: WorkerEvent) => { events.push(event); order.push(event.kind); } };
   const submit = (request: WorkerControlRequest) => submitWorkerControl({ ...options, request });
-  return { store, project, identity, remote, options, submit, coordinator, events, order, observe: (task: Task) => { observed = task; }, current: () => store.getTask(identity)! };
+  return { store, project, identity, resourceOwner, remote, options, submit, coordinator, events, order, observe: (task: Task) => { observed = task; }, current: () => store.getTask(identity)! };
 };
 const release = { kind: "release", taskId, claimId, version: 8n } as const;
 const transfer = { kind: "transfer", taskId, claimId, version: 8n, target } as const;
@@ -63,6 +64,7 @@ describe("synchronous worker source management", () => {
     const result = await f.submit(request);
     expect(f.order.filter((entry) => entry !== "management-request")).toEqual(["stop-close", request.kind, "delete-done"]);
     expect(f.coordinator.cleanupSource).toHaveBeenCalledWith(f.identity, { deleteWorktree: false });
+    expect(f.coordinator.completeSource).toHaveBeenCalledExactlyOnceWith(f.resourceOwner);
     expect(result.task).toMatchObject({ status: "done", claimId, agent: "copilot", sessionId: null });
     const input = request.kind === "release" ? vi.mocked(f.remote.release).mock.calls[0]![2] : vi.mocked(f.remote.transfer).mock.calls[0]![2];
     expect(input).toMatchObject({ claimId, version: 8n, stoppedConfirmed: true });
@@ -198,7 +200,7 @@ describe("synchronous worker source management", () => {
 
   it("does not submit a cancelled management decision", async () => {
     const f = fixture(); const cancelled = new Error("Cancelled"), controller = new AbortController();
-    f.coordinator.cleanupSource.mockImplementationOnce(async () => { controller.abort(cancelled); });
+    f.coordinator.cleanupSource.mockImplementationOnce(async () => { controller.abort(cancelled); return f.resourceOwner; });
     await expect(submitWorkerControl({ ...f.options, request: release, signal: controller.signal })).rejects.toBe(cancelled);
     expect(f.coordinator.cleanupSource).toHaveBeenCalledOnce(); expect(f.remote.release).not.toHaveBeenCalled();
     await expect(submitWorkerControl({ ...f.options, request: release, signal: AbortSignal.abort(cancelled) })).rejects.toBe(cancelled);

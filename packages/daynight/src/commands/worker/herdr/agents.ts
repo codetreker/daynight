@@ -16,6 +16,7 @@ export { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./argumen
 export type HerdrExecutionContext = { serverOrigin: string; projectId: string; taskId: string; claimId: string; worktreeId: string; cwd: string; agent: WorkerAgent };
 export type HerdrExecutionOwner = Pick<HerdrExecutionContext, "serverOrigin" | "projectId" | "taskId" | "claimId" | "worktreeId">;
 export type HerdrTaskBinding = { session: string; workspaceId: string; paneId: string; terminalId: string };
+export type HerdrPendingStop = { context: HerdrExecutionOwner & { cwd: string }; binding: HerdrTaskBinding };
 export type HerdrNativeReference = { source: string; agent: WorkerAgent; sessionId: string };
 export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | null; name: string | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null };
 export type HerdrOwnedWorkspace = { owner: HerdrExecutionOwner; workspaceId: string; panes: { binding: HerdrTaskBinding; cwd: string | null; kind: WorkerAgent | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null }[] };
@@ -87,7 +88,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const pollInterval = options.pollIntervalMs === undefined ? 100 : options.pollIntervalMs;
   if (!Number.isSafeInteger(pollInterval) || pollInterval <= 0 || pollInterval > 1000) throw new TypeError("The Herdr observation interval must be between 1 and 1000 milliseconds.");
   const inputTails = new Map<string, Promise<void>>();
-  const stoppingProcesses = new Map<string, Set<number>>();
+  const stoppingProcesses = new Map<string, HerdrPendingStop & { processIds: Set<number> }>();
   const serialized = async <T>(key: string, operation: Operation, action: () => Promise<T>): Promise<T> => {
     operation.check();
     const previous = inputTails.get(key);
@@ -116,11 +117,11 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     if (operation.signal.aborted) abort();
   });
   const finishStop = async (key: string, operation: Operation): Promise<void> => {
-    const processIds = stoppingProcesses.get(key);
-    if (processIds === undefined) return;
+    const pending = stoppingProcesses.get(key);
+    if (pending === undefined) return;
     while (true) {
       let running = false;
-      for (const processId of processIds) { operation.check(); if (await isExecuting(processId)) running = true; }
+      for (const processId of pending.processIds) { operation.check(); if (await isExecuting(processId)) running = true; }
       if (!running) { stoppingProcesses.delete(key); return; }
       await wait(operation);
     }
@@ -219,6 +220,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     return { submission: "submitted", observation: before };
   };
   return {
+    pendingStops: (): readonly HerdrPendingStop[] => [...stoppingProcesses.values()].map(({ context, binding }) => ({ context: { ...context }, binding: { ...binding } })),
     listResources: async (operation: Operation): Promise<HerdrOwnedWorkspace[]> => {
       const data = await snapshot(operation);
       const result: HerdrOwnedWorkspace[] = [];
@@ -351,8 +353,11 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       const currentPanes = before.panes.filter((pane) => pane.workspace_id === binding.workspaceId);
       // Closing removes discovery evidence before all processes necessarily exit.
       // Retain this process-local responsibility across failed close/wait calls.
-      let processIds = stoppingProcesses.get(key);
-      if (processIds === undefined) { processIds = new Set<number>(); stoppingProcesses.set(key, processIds); }
+      let pending = stoppingProcesses.get(key);
+      if (pending === undefined) {
+        pending = { context: { ...context }, binding: { ...binding }, processIds: new Set<number>() };
+        stoppingProcesses.set(key, pending);
+      }
       for (const pane of currentPanes) {
         const paneId = text(pane.pane_id, "Stop pane ID");
         if (paneId === binding.paneId && pane.terminal_id !== binding.terminalId) throw new Error("The task terminal identity changed before stopping.");
@@ -360,9 +365,9 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: paneId }, operation), "pane_process_info");
         const info = object(result.process_info, "Current stop process observation");
         if (info.pane_id !== paneId) throw new Error("The stop process observation belongs to another pane.");
-        processIds.add(pid(info.shell_pid));
+        pending.processIds.add(pid(info.shell_pid));
         const foreground = info.foreground_processes === undefined ? [] : array(info.foreground_processes, "Current foreground processes");
-        for (const entry of foreground) processIds.add(pid(object(entry, "Current foreground process").pid));
+        for (const entry of foreground) pending.processIds.add(pid(object(entry, "Current foreground process").pid));
       }
       await mutation("workspace.close", { workspace_id: binding.workspaceId, close_group: false }, "ok", operation);
       const after = await snapshot(operation);

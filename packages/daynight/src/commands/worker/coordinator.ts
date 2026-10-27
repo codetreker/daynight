@@ -39,6 +39,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const ending = new Map<string, ResourceOwner>();
   const failures = new Map<string, number>();
   let nextRepository = 0;
+  let nextPendingProject = 0;
   let shuttingDown = false;
   let ticking = false;
   const serialize = async <T>(identity: ClaimIdentity, action: () => Promise<T>): Promise<T> => {
@@ -124,9 +125,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const runCleanup = async (owner: ResourceOwner, deleteWorktree: boolean, signal?: AbortSignal): Promise<void> => {
     while (true) {
-      const current = await snapshot(signal, projectFor(owner));
+      const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
       const task = options.store.getTask(owner);
-      const completed = await cleanup.advance({ owner, project: projectFor(owner), ...(task === null ? {} : { task }) }, current.herdr, deleteWorktree, signal);
+      const completed = await cleanup.advance({ owner, project: projectFor(owner), ...(task === null ? {} : { task }) }, resources, deleteWorktree, signal);
       if (completed) {
         if (deleteWorktree && task !== null && task.status !== "done") options.store.completeTask(owner);
         return;
@@ -166,6 +167,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     await options.remote.currentUserId(normalSignal);
     const inventory = await ownInventory(normalSignal);
     await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
+    const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
+    for (const workspace of observed) {
+      const owner = workspace.owner;
+      if (owner.serverOrigin !== options.serverOrigin || options.store.getProject(owner) === null || inventory.has(key(owner))) continue;
+      ending.set(key(owner), owner);
+      const running = controllers.get(key(owner));
+      if (running !== undefined && !running.terminal) running.controller.abort(new Error("The original claim no longer belongs to this worker."));
+      const local = options.store.getTask(owner);
+      if (local !== null) execution.forget(local);
+    }
+    launchCleanups();
     const resources = await snapshot(normalSignal, undefined, [...inventory.values()].map((task) => remoteOwner(options.serverOrigin, task)));
     for (const [identityKey, owner] of resources.owners) {
       if (resources.proven.has(identityKey) && !inventory.has(identityKey)) ending.set(identityKey, owner);
@@ -186,31 +198,51 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (local.status === "active" && !blockedByOldClaim(local, resources)) schedule(local, remoteTask, resources);
     }
     const projects = options.store.listProjects();
-    for (let offset = 0; offset < projects.length; offset++) {
-      const project = projects[(nextRepository + offset) % projects.length]!;
-      const pending = options.store.listUnfinishedTasks().filter((task) => task.projectId === project.projectId && task.status === "pending").sort((left, right) => left.taskId.localeCompare(right.taskId));
-      for (const local of pending) {
-        const remoteTask = inventory.get(key(local));
-        if (remoteTask === undefined || blockedByOldClaim(local, resources) || capacity(resources) >= options.maxConcurrent) continue;
-        schedule(options.store.activateTask(local), remoteTask, resources);
-      }
-    }
-    if (capacity(resources) >= options.maxConcurrent || options.repositories.length === 0) return;
-    const repository = options.repositories[nextRepository % options.repositories.length]!;
-    nextRepository = (nextRepository + 1) % options.repositories.length;
-    for await (const candidate of options.remote.candidates(repository.project.projectId, options.platform, normalSignal)) {
-      if (capacity(resources) >= options.maxConcurrent) break;
-      const claimId = randomUUID();
-      try {
-        const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, worktreeId: randomUUID() }, normalSignal);
-        const owner = remoteOwner(options.serverOrigin, granted);
-        const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: granted.properties.worker!.agent });
-        if (!blockedByOldClaim(local, resources) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted, resources);
-      } catch (error) {
-        if (isWorkerCancellation(error, normalSignal)) throw error;
-        options.emit({ kind: "warning", message: `Claim request for ${candidate.projectId}/${candidate.id}/${claimId} did not confirm a grant; the next complete inventory will reconcile it.`, error });
+    while (capacity(resources) < options.maxConcurrent && projects.length > 0) {
+      let started = false;
+      for (let turn = 0; turn < projects.length; turn++) {
+        const project = projects[nextPendingProject % projects.length]!;
+        nextPendingProject = (nextPendingProject + 1) % projects.length;
+        const pending = options.store.listUnfinishedTasks().filter((task) => task.projectId === project.projectId && task.status === "pending").sort((left, right) => left.taskId.localeCompare(right.taskId));
+        const local = pending.find((task) => inventory.has(key(task)) && !blockedByOldClaim(task, resources));
+        if (local === undefined) continue;
+        schedule(options.store.activateTask(local), inventory.get(key(local))!, resources);
+        started = true;
         break;
       }
+      if (!started) break;
+    }
+    if (capacity(resources) >= options.maxConcurrent || options.repositories.length === 0) return;
+    const candidates = new Map<number, AsyncGenerator<Task>>();
+    const exhausted = new Set<number>();
+    try {
+      while (capacity(resources) < options.maxConcurrent && exhausted.size < options.repositories.length) {
+        const index = nextRepository % options.repositories.length;
+        nextRepository = (nextRepository + 1) % options.repositories.length;
+        if (exhausted.has(index)) continue;
+        const repository = options.repositories[index]!;
+        let page = candidates.get(index);
+        if (page === undefined) {
+          page = options.remote.candidates(repository.project.projectId, options.platform, normalSignal);
+          candidates.set(index, page);
+        }
+        const next = await page.next();
+        if (next.done) { exhausted.add(index); continue; }
+        const candidate = next.value;
+        const claimId = randomUUID();
+        try {
+          const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, worktreeId: randomUUID() }, normalSignal);
+          const owner = remoteOwner(options.serverOrigin, granted);
+          const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: granted.properties.worker!.agent });
+          if (!blockedByOldClaim(local, resources) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted, resources);
+        } catch (error) {
+          if (isWorkerCancellation(error, normalSignal)) throw error;
+          options.emit({ kind: "warning", message: `Claim request for ${candidate.projectId}/${candidate.id}/${claimId} did not confirm a grant; the next complete inventory will reconcile it.`, error });
+          return;
+        }
+      }
+    } finally {
+      await Promise.all([...candidates.values()].map((page) => page.return(undefined)));
     }
   };
   const readSource = async (identity: ClaimIdentity): Promise<{ task: LocalTask; owner: ResourceOwner; remoteTask: Task }> => {
@@ -232,20 +264,18 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (task.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
       failures.delete(key(identity));
       await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
-      const resources = await snapshot(normalSignal, projectFor(identity));
-      await serialize(identity, () => ensure(task, remoteTask, resources.herdr, normalSignal));
+      const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
+      await serialize(identity, () => ensure(task, remoteTask, resources, normalSignal));
     },
-    cleanupSource: async (identity: ClaimIdentity, settings: { deleteWorktree?: boolean } = {}): Promise<void> => {
+    cleanupSource: async (identity: ClaimIdentity, settings: { deleteWorktree?: boolean } = {}): Promise<ResourceOwner> => {
       const { owner } = await readSource(identity);
       await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
       await serialize(identity, () => runCleanup(owner, settings.deleteWorktree === true, normalSignal));
+      return owner;
     },
-    completeSource: async (identity: ClaimIdentity): Promise<void> => {
+    completeSource: async (owner: ResourceOwner): Promise<void> => {
       await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
-      const resources = await snapshot(normalSignal, projectFor(identity));
-      const owner = resources.owners.get(key(identity));
-      if (owner !== undefined) await serialize(identity, () => runCleanup(owner, true, normalSignal));
-      else if (options.store.getTask(identity)?.status !== "done") options.store.completeTask(identity);
+      await serialize(owner, () => runCleanup(owner, true, normalSignal));
     },
     shutdown: async (): Promise<boolean> => {
       shuttingDown = true;
@@ -253,6 +283,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await Promise.all(jobs.values());
       let complete = true;
       const owners = new Map(ending);
+      for (const { context } of options.herdr.tasks.pendingStops()) {
+        if (context.serverOrigin !== options.serverOrigin || options.store.getProject(context) === null) {
+          complete = false;
+          options.emit({ kind: "shutdown-error", message: `Retained an unhandled stop operation for ${context.projectId}/${context.taskId}/${context.claimId}.` });
+        } else owners.set(key(context), context);
+      }
       try {
         const workspaces = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
         for (const workspace of workspaces) {

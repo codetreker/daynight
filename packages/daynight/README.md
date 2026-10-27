@@ -979,6 +979,11 @@ An unknown claim response emits Warning and creates no resources. The worker
 finds the actual grant in a later complete inventory instead of replaying the
 request. A late grant can remain pending while local active slots are full.
 
+Pending startup and new acquisition both rotate Projects after each successful
+slot allocation. Pending rows have priority, with stable task-ID order inside
+each Project; new candidates retain server ready order. A busy Project does not
+fill every free slot before another Project gets its turn.
+
 Native recovery uses current resources and the recorded session ID:
 
 | State | Action |
@@ -986,6 +991,14 @@ Native recovery uses current resources and the recorded session ID:
 | Matching agent is alive | Reconnect and observe without resending the startup prompt. |
 | Agent needs starting, session_id is present | Resume that native session using the recorded agent type. |
 | Agent needs starting, session_id is NULL | Emit Warning, start a fresh native conversation, and save its ID in the same row. |
+
+When a native process must restart, the worker stops/closes an existing
+inactive workspace and creates a new one with the current native environment
+and an empty pane-level session reference. Herdr restore can retain the old
+native reference while restoring the shell without its extra launch environment.
+The saved SQLite session_id still selects resume or fresh startup; an inactive
+pane's retained reference is not saved as a newly observed session ID. A live
+agent keeps its current connection.
 
 The NULL rule also covers interruption before a newly started native ID was saved.
 It retains the task, claim and worktree and requires no history scan or approval
@@ -1018,6 +1031,11 @@ processes outside the worktree. It waits at most ten minutes for this cleanup
 attempt, stops the agent, closes its workspace, removes the matching worktree
 and marks the local row done. Done, release and transfer have the same terminal
 resource rule. Failed stop or deletion retains responsibility and the error.
+
+Known-target cleanup and shutdown observe that Herdr execution directly;
+worktree deletion validates only its target Git registration and directory.
+Unrelated repository or sibling-worktree registration errors are reported
+separately and do not prevent a healthy agent from stopping.
 
 Cleanup timing and progress are in memory. Polls do not extend the current
 attempt's deadline; after a crash, the next successful reconciliation observes

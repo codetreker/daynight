@@ -1,13 +1,13 @@
 import path from "node:path";
 import type { WorkerAgent } from "../../api/types.js";
-import type { HerdrOwnedWorkspace, HerdrTaskBinding } from "./herdr.js";
-import { actualTaskPane, executionContext, liveAgent, workerOperation } from "./execution.js";
+import type { HerdrOwnedWorkspace } from "./herdr.js";
+import { actualTaskPane, executionContext, liveAgent, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies } from "./execution.js";
 import { workerCleanupPrompt } from "./prompts.js";
 import type { LocalTask, ResourceOwner, WorkerProject } from "./types.js";
 
 export type CleanupInput = { owner: ResourceOwner; project: WorkerProject; task?: LocalTask };
-type CleanupAttempt = { deadline: number; notified: boolean; baseline: { stateChangeSeq: number; completionSeq: number } | null; stopping: HerdrTaskBinding | null };
+type CleanupAttempt = { deadline: number; notified: boolean; baseline: { stateChangeSeq: number; completionSeq: number } | null };
 const key = (owner: ResourceOwner): string => `${owner.projectId}/${owner.taskId}/${owner.claimId}`;
 
 export const createCleanupDriver = (deps: ExecutionDependencies) => {
@@ -17,25 +17,17 @@ export const createCleanupDriver = (deps: ExecutionDependencies) => {
       const identity = key(input.owner);
       let attempt = attempts.get(identity);
       if (attempt === undefined) {
-        attempt = { deadline: deps.now() + 600_000, notified: false, baseline: null, stopping: null };
+        attempt = { deadline: deps.now() + 600_000, notified: false, baseline: null };
         attempts.set(identity, attempt);
         deps.emit({ kind: "cleanup-started", ...(input.task === undefined ? {} : { task: input.task }), message: `Cleaning claim ${input.owner.claimId}; this attempt has a ten-minute deadline.` });
       }
       const stopContext = { ...input.owner, cwd: path.join(input.project.localPath, ".worktrees", "daynight", input.owner.taskId) };
-      let stopped = false;
-      if (attempt.stopping !== null) {
-        const binding = attempt.stopping;
-        await workerOperation((operation) => deps.herdr.tasks.stopAndClose(stopContext, binding, operation), signal);
-        attempt.stopping = null;
-        stopped = true;
-      }
+      const stopped = await settleWorkerStops(deps, input.owner, signal);
       const pane = stopped ? undefined : actualTaskPane(input.owner, resources);
       if (pane !== undefined) {
         const agent: WorkerAgent | undefined = input.task?.agent ?? pane.kind ?? pane.nativeSession?.agent;
         if (agent === undefined) {
-          attempt.stopping = pane.binding;
           await workerOperation((operation) => deps.herdr.tasks.stopAndClose(stopContext, pane.binding, operation), signal);
-          attempt.stopping = null;
         } else {
           const context = executionContext({ ...input, task: { agent } });
           if (liveAgent(pane) && !attempt.notified && deps.now() < attempt.deadline) {
@@ -51,9 +43,7 @@ export const createCleanupDriver = (deps: ExecutionDependencies) => {
             && pane.stateChangeSeq !== null && pane.stateChangeSeq > attempt.baseline.stateChangeSeq
             && pane.completionSeq !== null && pane.completionSeq > attempt.baseline.completionSeq;
           if (liveAgent(pane) && !completed && deps.now() < attempt.deadline) return false;
-          attempt.stopping = pane.binding;
           await workerOperation((operation) => deps.herdr.tasks.stopAndClose(context, pane.binding, operation), signal);
-          attempt.stopping = null;
         }
       }
       if (deleteWorktree) await workerOperation((operation) => deps.git.removeWorktree(input.project, input.owner, operation), signal, 180_000);

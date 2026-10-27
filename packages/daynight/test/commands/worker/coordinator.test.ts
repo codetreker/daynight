@@ -32,17 +32,21 @@ const fixture = async (maxConcurrent = 1) => {
   const worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
   const resources = new Map<string, HerdrOwnedWorkspace>();
   const events: WorkerEvent[] = []; const order: string[] = []; let clock = 1000; let sequence = 0;
-  const bind = (owner: ResourceOwner): WorktreeBinding => ({ repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", owner.taskId), branch: `daynight/${owner.taskId}` });
+  const bind = (owner: ResourceOwner): WorktreeBinding => {
+    const source = store.getProject(owner)!;
+    return { repositoryPath: source.localPath, commonDirectory: path.join(source.localPath, ".git"), worktreePath: path.join(source.localPath, ".worktrees", "daynight", owner.taskId), branch: `daynight/${owner.taskId}` };
+  };
   const observe = (context: ResourceOwner, binding: HerdrTaskBinding): HerdrAgentObservation => ({ ...resources.get(context.claimId)!.panes[0]!, name: "managed", binding });
   const git = {
     prepareRepository: vi.fn(), dispose: vi.fn(),
     prepareWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(store.getTask(owner)?.status).toBe("active"); order.push("prepare-worktree"); const binding = bind(owner); worktrees.set(owner.claimId, { owner, binding }); return binding; }),
     verifyWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { const found = worktrees.get(owner.claimId); if (found === undefined) throw new Error("Original worktree missing"); return found.binding; }),
     findWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => worktrees.get(owner.claimId)?.binding ?? null),
-    listWorktrees: vi.fn(async () => [...worktrees.values()]),
+    listWorktrees: vi.fn(async (source: WorkerProject) => [...worktrees.values()].filter(({ owner }) => owner.projectId === source.projectId)),
     removeWorktree: vi.fn(async (_project: WorkerProject, owner: ResourceOwner) => { expect(resources.has(owner.claimId)).toBe(false); order.push("remove-worktree"); worktrees.delete(owner.claimId); }),
   } as unknown as WorkerGitManager;
   const tasks = {
+    pendingStops: vi.fn((): { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] => []),
     listResources: vi.fn(async () => structuredClone([...resources.values()])),
     prepareWorkspace: vi.fn(async (context: HerdrExecutionContext) => {
       sequence++; const binding = { session: "w", workspaceId: `w${sequence}`, paneId: `p${sequence}`, terminalId: `t${sequence}` };
@@ -71,7 +75,7 @@ const fixture = async (maxConcurrent = 1) => {
   const remote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => uuid(2)),
     ownInventory: vi.fn(async () => [...grants.values()]),
-    candidates: vi.fn(async function* () { for (const candidate of candidates) if (![...grants.values()].some((value) => value.id === candidate.id)) yield candidate; }),
+    candidates: vi.fn(async function* (projectId: string) { for (const candidate of candidates) if (candidate.projectId === projectId && ![...grants.values()].some((value) => value.id === candidate.id)) yield candidate; }),
     claim: vi.fn(async (candidate: Task, descriptor: WorkerClaimDescriptor) => grant(candidate, descriptor)),
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find((value) => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
     update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker!, ...update } } }; grants.set(current.properties.worker!.claimId, result); return result; }),
@@ -250,23 +254,29 @@ describe("minimal worker resource reconciliation", () => {
     f.store.registerProject({ projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") });
     const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
     vi.mocked(f.git.listWorktrees).mockImplementation(async (project, operation) => { if (project.projectId === uuid(800)) throw new Error("other repository unreadable"); return list(project, operation); });
-    await expect(f.coordinator.cleanupSource(row)).resolves.toBeUndefined();
+    await expect(f.coordinator.cleanupSource(row)).resolves.toEqual(f.worktrees.get(row.claimId)!.owner);
     expect(f.resources.has(row.claimId)).toBe(false); expect(f.worktrees.has(row.claimId)).toBe(true);
   });
 
-  it("keeps the original stop binding until a failed stop retry confirms exit", async () => {
+  it("settles the adapter stop responsibility before deleting an absent workspace", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const owner = f.worktrees.get(row.claimId)!.owner;
     f.tasks.submitPrompt.mockImplementation(async (context, binding) => ({ submission: "submitted", observation: { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding } }));
     const driver = createCleanupDriver({ store: f.store, git: f.git, herdr: f.herdr, platform: "linux", workerId, buildPrompt: f.options.buildPrompt, emit: f.options.emit, now: f.options.now });
     const input = { task: row, project: f.project, owner };
     expect(await driver.advance(input, await f.tasks.listResources(), true)).toBe(false); f.clock(602_000);
-    f.tasks.stopAndClose.mockImplementationOnce(async () => { f.resources.clear(); throw new Error("process still live"); });
+    const pending: { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] = [];
+    f.tasks.pendingStops.mockImplementation(() => [...pending]);
+    f.tasks.stopAndClose.mockImplementationOnce(async (context) => {
+      pending.push({ context: { ...context, cwd: path.join(f.project.localPath, ".worktrees", "daynight", row.taskId) }, binding: [...f.resources.values()][0]!.panes[0]!.binding });
+      f.resources.clear(); throw new Error("process still live");
+    });
     await expect(driver.advance(input, await f.tasks.listResources(), true)).rejects.toThrow("process still live");
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
     f.tasks.stopAndClose.mockRejectedValueOnce(new Error("process still live"));
     await expect(driver.advance(input, [], true)).rejects.toThrow("process still live");
     expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    f.tasks.stopAndClose.mockImplementationOnce(async () => { pending.splice(0); });
     expect(await driver.advance(input, [], true)).toBe(true);
     expect(f.tasks.stopAndClose).toHaveBeenCalledTimes(3); expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   });
@@ -321,6 +331,87 @@ describe("minimal worker resource reconciliation", () => {
     vi.mocked(f.remote.readTask).mockResolvedValue({ ...original, properties: { ...original.properties, worker } });
     await expect(f.coordinator.advanceRetry(row)).rejects.toThrow("no longer active on this worker");
     expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+
+  it("stops and deletes one source without scanning a corrupt sibling in the same project", async () => {
+    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const row = f.store.listTasks()[0]!;
+    vi.mocked(f.git.listWorktrees).mockRejectedValue(new Error("unregistered sibling reservation"));
+    const owner = await f.coordinator.cleanupSource(row);
+    expect(f.resources.has(row.claimId)).toBe(false); expect(f.worktrees.has(row.claimId)).toBe(true);
+    await f.coordinator.completeSource(owner);
+    expect(f.worktrees.has(row.claimId)).toBe(false); expect(f.store.getTask(row)?.status).toBe("done");
+  });
+
+  it("continues a known Herdr claim's terminal cleanup despite a corrupt sibling scan", async () => {
+    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const row = f.store.listTasks()[0]!; f.grants.clear(); f.candidates.splice(0);
+    vi.mocked(f.git.listWorktrees).mockRejectedValue(new Error("unregistered sibling reservation"));
+    await expect(f.coordinator.tick()).rejects.toThrow("unregistered sibling reservation");
+    await eventually(() => expect(f.store.getTask(row)?.status).toBe("done"));
+    expect(f.resources.has(row.claimId)).toBe(false); expect(f.worktrees.has(row.claimId)).toBe(false);
+  });
+
+  it("stops a healthy agent at shutdown when sibling Git discovery fails", async () => {
+    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const row = f.store.listTasks()[0]!;
+    vi.mocked(f.git.listWorktrees).mockRejectedValue(new Error("unregistered sibling reservation"));
+    await expect(f.coordinator.shutdown()).resolves.toBe(false);
+    expect(f.resources.has(row.claimId)).toBe(false); expect(f.worktrees.has(row.claimId)).toBe(true);
+    expect(f.store.getTask(row)?.status).toBe("active");
+  });
+
+  it("claims one task per repository turn while preserving each ready order", async () => {
+    const f = await fixture(3);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration });
+    f.candidates.push(task(second.projectId, uuid(200)), task(second.projectId, uuid(201)));
+    await f.coordinator.tick();
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.id)).toEqual([uuid(100), uuid(200), uuid(101)]);
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(3));
+  });
+
+  it("round-robins pending work per free slot instead of draining the first project", async () => {
+    const f = await fixture(2);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration }); f.candidates.splice(0);
+    for (const [projectId, taskId, claimId] of [[f.project.projectId, uuid(100), uuid(300)], [f.project.projectId, uuid(101), uuid(301)], [second.projectId, uuid(200), uuid(302)]]) {
+      f.grant(task(projectId!, taskId!), { claimId: claimId!, workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(Number(claimId!.slice(-3)) + 100) });
+    }
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    expect(f.store.listTasks().filter((row) => row.status === "active").map((row) => row.taskId).sort()).toEqual([uuid(100), uuid(200)]);
+    expect(f.store.listTasks().find((row) => row.taskId === uuid(101))?.status).toBe("pending");
+  });
+
+  it("starts another repository while the first repository's native launch waits", async () => {
+    const f = await fixture(2);
+    const second: WorkerProject = { projectId: uuid(20), repoUrl: "https://example.test/owner/second.git", localPath: path.join(f.root, "second") };
+    f.store.registerProject(second); f.options.repositories.push({ project: second, configuration }); f.candidates.push(task(second.projectId, uuid(200)));
+    let release!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const start = f.tasks.start.getMockImplementation()!;
+    f.tasks.start.mockImplementation(async (context, binding, input) => { if (context.projectId === f.project.projectId) await wait; return start(context, binding, input); });
+    await f.coordinator.tick();
+    await eventually(() => expect([...f.resources.values()].find((resource) => resource.owner.projectId === second.projectId)?.panes[0]?.nativeSession).toMatchObject({ agent: "codex" }));
+    expect(vi.mocked(f.remote.claim).mock.calls.map(([candidate]) => candidate.projectId)).toEqual([f.project.projectId, second.projectId]);
+    release(); await eventually(() => expect(f.store.listTasks().every((row) => row.sessionId !== null)).toBe(true));
+  });
+
+
+  it("settles an adapter stop during shutdown even after workspace loss and sibling discovery failure", async () => {
+    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    const row = f.store.listTasks()[0]!; const owner = f.worktrees.get(row.claimId)!.owner;
+    const binding = f.resources.get(row.claimId)!.panes[0]!.binding;
+    const pending = [{ context: { ...owner, cwd: f.bind(owner).worktreePath }, binding }];
+    f.tasks.pendingStops.mockImplementation(() => [...pending]);
+    f.resources.clear();
+    f.tasks.stopAndClose.mockImplementation(async () => { pending.splice(0); });
+    vi.mocked(f.git.listWorktrees).mockRejectedValue(new Error("unregistered sibling reservation"));
+    await expect(f.coordinator.shutdown()).resolves.toBe(false);
+    expect(f.tasks.stopAndClose).toHaveBeenCalledOnce(); expect(pending).toHaveLength(0);
+    expect(f.worktrees.has(row.claimId)).toBe(true); expect(f.store.getTask(row)?.status).toBe("active");
   });
 
 });

@@ -110,7 +110,7 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 
 自有清单只使用 workerId 归属条件，不混入 ready、allowAgents 或候选平台筛选。分页、认证或项目读取失败不产生可用于缺席清理的集合。完整性只对成功查询的项目成立；Herdr 中未映射的项目资源报告错误并保留，恢复项目配置后再纳入对账。Herdr/Git 读取失败保持错误，不解释为空资源。
 
-每个 task 的操作在进程内串行，不同任务的有界 RPC、恢复和清理可并行。实际运行或收尾资源按 claim 去重计入容量，即使记录缺失或曾为 done，也会阻止同 task 新 claim 启动；可关联 active 行的资源只计算一次。降低 maxConcurrent 不抢占已有任务。已有 pending 优先，按项目轮转、项目内稳定 task_id 顺序选择；新候选保持服务端 ready 顺序。
+每个 task 的操作在进程内串行，不同任务的有界 RPC、恢复和清理可并行。实际运行或收尾资源按 claim 去重计入容量，即使记录缺失或曾为 done，也会阻止同 task 新 claim 启动；可关联 active 行的资源只计算一次。降低 maxConcurrent 不抢占已有任务。已有 pending 优先，项目内按稳定 task_id 顺序选择；新候选保持服务端 ready 顺序。Pending 启动和新领取均以一次成功的名额分配为轮转单位，每分配一个名额就从下一个项目继续选择；一个项目持续有候选时也不会一次占满所有空闲名额。
 
 新领取直接调用进程内 typed ApiClient：原子 claim 成功后登记 pending，确认名额和旧执行收尾后提交 active，再准备资源。请求结果未知时记录 Warning，不创建资源、不重发原请求；后续完整清单找回实际授予。服务端精确版本与唯一 active claim 控制竞争。并发上限约束本机 active 资源数，迟到授予可以留下等待名额的 pending。
 
@@ -129,6 +129,8 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 ## Herdr 与原生会话
 
 专用 Herdr 保持 `resume_agents_on_restore=false`，由 worker 唯一决定 agent 启动或恢复。复用私有端点、XDG 隔离、原 native 认证环境、shell history 与 attach；原 task pane 环境不会因客户端连接被改写。
+
+存活的原 agent 直接重连。需要重新启动时，先停止并关闭已存在的 inactive workspace，再以当前 native 环境创建新的 workspace/pane；该操作保留 task/claim/worktree 身份和 SQLite 中的 session_id。Herdr 0.9.5 还原的 shell 使用空附加环境，terminal 仍可保留旧原生会话引用，因此 inactive pane 的旧引用不作为新会话 ID 保存。重建后的 pane 具有正确 native 环境和空会话引用，再按已保存 session_id 选择 fresh 或 resume。
 
 | 当前情况 | 动作 |
 |---|---|
@@ -157,7 +159,7 @@ NULL 分支覆盖上次已经启动但 ID 尚未保存就中断的窗口，沿�
 → 本机 done
 ```
 
-每个清理 job 的期限与进度只存在内存中，同进程轮询不重置期限。重启后按清单和剩余资源重新进入清理并重新计时，通知可以重复；已不存在的资源可完成对应步骤，失败保留责任。当前进程已确认归属结束的 job 可以在后续服务轮询失败时继续。不同任务分别有界，一个 RPC 不延误其他清理；具体收尾只观察其目标项目，其他仓库的读取失败不阻塞已确认的清理。
+每个清理 job 的期限与进度只存在内存中，同进程轮询不重置期限。重启后按清单和剩余资源重新进入清理并重新计时，通知可以重复；已不存在的资源可完成对应步骤，失败保留责任。当前进程已确认归属结束的 job 可以在后续服务轮询失败时继续。不同任务分别有界，一个 RPC 不延误其他清理。已知目标的收尾与退出先观察对应的 Herdr 执行并推进停止；删除时只核对该目标的 Git 注册和目录。同项目其他 worktree 或其他仓库的注册问题分别报告，不阻塞可正常观察的 agent 停止或退出。
 
 Ctrl+C 停止新认领，取消普通调度并等待同 task 操作结束。有效任务有界清理外部临时资源、停止 agent、关闭 workspace，保留 claim/worktree/session_id 和 active/pending 行，最后停止私有 Herdr。已结束归属的任务继续终止清理。退出失败返回错误并保留实际资源，不把未完成行写 done。
 

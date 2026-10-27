@@ -50,17 +50,26 @@ export const liveAgent = (pane: { kind: string | null; launchPending: boolean; i
 export const executionContext = (input: Pick<ExecutionInput, "owner" | "project"> & { task: Pick<LocalTask, "agent"> }): HerdrExecutionContext => ({
   ...input.owner, cwd: path.join(input.project.localPath, ".worktrees", "daynight", input.owner.taskId), agent: input.task.agent,
 });
+export const settleWorkerStops = async (deps: Pick<ExecutionDependencies, "herdr">, owner: ResourceOwner, signal?: AbortSignal): Promise<boolean> => {
+  const pending = deps.herdr.tasks.pendingStops().filter((stop) => sameClaim(stop.context, owner) && stop.context.serverOrigin === owner.serverOrigin);
+  for (const stop of pending) {
+    if (stop.context.worktreeId !== owner.worktreeId) throw new Error("The claim has conflicting pending Herdr stop identities.");
+    await workerOperation((operation) => deps.herdr.tasks.stopAndClose(stop.context, stop.binding, operation), signal);
+  }
+  return pending.length > 0;
+};
 
 export const createExecutionDriver = (deps: ExecutionDependencies) => {
   const pendingInput = new Map<string, { binding: HerdrTaskBinding; prompt: string }>();
-  const key = (task: LocalTask): string => `${task.projectId}/${task.taskId}/${task.claimId}`;
+  const key = (task: Pick<LocalTask, "projectId" | "taskId" | "claimId">): string => `${task.projectId}/${task.taskId}/${task.claimId}`;
   return {
     forget: (task: LocalTask): void => { pendingInput.delete(key(task)); },
     advance: async (input: ExecutionInput, resources: readonly HerdrOwnedWorkspace[], signal?: AbortSignal): Promise<HerdrAgentObservation> => {
       let task = deps.store.getTask(input.task);
       if (task === null || task.status !== "active") throw new Error("Resource startup requires an active local claim.");
       const context = executionContext({ ...input, task });
-      const actual = actualTaskPane(input.owner, resources);
+      const settled = await settleWorkerStops(deps, input.owner, signal);
+      const actual = settled ? undefined : actualTaskPane(input.owner, resources);
       const worktree = task.sessionId === null
         ? await workerOperation((operation) => deps.git.prepareWorktree(input.project, input.owner, operation), signal, 180_000)
         : await workerOperation((operation) => deps.git.verifyWorktree(input.project, input.owner, operation), signal);
@@ -81,9 +90,14 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         deps.emit({ kind: observed.status === "blocked" ? "waiting" : "reconnected", task, message: "Connected to the existing agent without repeating its managed assignment." });
         return observed;
       }
-      const binding = actual === undefined
-        ? await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, operation), signal)
-        : actual.binding;
+      if (actual !== undefined) {
+        // Cold restore drops workspace environment overrides and retains the old native reference.
+        // A fresh workspace restores native XDG settings and observes only the new launch's SessionStart.
+        // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/persist/restore.rs#L568-L580
+        // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/persist/restore.rs#L687-L713
+        await workerOperation((operation) => deps.herdr.tasks.stopAndClose(context, actual.binding, operation), signal);
+      }
+      const binding = await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, operation), signal);
       if (task.sessionId === null) deps.emit({ kind: "warning", task, message: "The native session ID is missing; starting a new conversation in the existing task worktree." });
       const assignment: ManagedAssignment = { ...task, serverOrigin: input.owner.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree, configuration: input.configuration };
       const prompt = deps.buildPrompt(assignment, deps.platform);

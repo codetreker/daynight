@@ -41,6 +41,26 @@ emits Warning and starts a fresh native conversation in the same task, claim and
 worktree, then saves its ID. It has no history-search, pause or approval gate.
 Known-ID native resume errors remain visible.
 
+An existing inactive workspace is stopped/closed and recreated with the native
+launch environment before starting a fresh or resumed process. Herdr 0.9.5
+[restores a shell with no extra launch environment](https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/persist/restore.rs#L568-L580)
+while [retaining the persisted native-session reference](https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/persist/restore.rs#L687-L713).
+The new pane has the current native environment and an empty reference; the
+saved SQLite ID chooses resume or fresh execution. Static task/claim/worktree
+identity stays unchanged. Live agents reconnect without recreation, and inactive
+references are not promoted into the row's session_id.
+
+Each successful slot allocation advances Project rotation, for both pending
+startup and new acquisition. Project-local pending order is stable, and new
+candidates retain server ready order. This keeps spare capacity from being
+consumed by one busy Project's entire batch.
+
+Known-target cleanup and shutdown observe the target's Herdr execution and
+validate only the target Git worktree when deleting. Sibling or unrelated Git
+registration problems remain diagnostics, without preventing healthy agents
+from stopping. Resource discovery still reports those problems separately.
+
+
 Configuration and recovery/cleanup state are process-local. A restarted process
 uses the current applicable model/args for the recorded agent type. Cleanup has
 a ten-minute deadline within its current attempt; after interruption, a new
@@ -77,6 +97,16 @@ retain stronger cross-restart timing, configuration and uncertainty guarantees.
 They also require numerous parsers and transition conditions at every caller.
 The worker now rebuilds actions from current facts and accepts the narrower
 restart semantics instead.
+
+**Reuse a restored inactive pane directly.** Its retained native reference does
+not establish that the restored shell has the task's native environment. Fresh
+current-resource recreation restores that environment and clears the stale
+reference without bringing back durable workspace or launch receipts.
+
+**Gate a known stop on a repository-wide worktree scan.** It exposes sibling
+registration failures, but couples an unrelated checkout to the target agent's
+termination. Direct target observation and deletion validation retain safety
+while keeping failures local to their actual resource.
 
 **Move the removed state into another file or remote ledger.** That keeps the
 same synchronization and recovery protocol while hiding it from the table

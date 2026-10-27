@@ -5,7 +5,7 @@ import type { WorkerRepositoryAssignment } from "./coordinator.js";
 import type { WorkerEvent } from "./execution.js";
 import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
-import type { ClaimIdentity, LocalTask } from "./types.js";
+import type { ClaimIdentity, LocalTask, ResourceOwner } from "./types.js";
 
 export type WorkerControlRequest =
   | { kind: "retry"; taskId: string; projectId?: string; claimId: string }
@@ -15,8 +15,8 @@ export type WorkerControlRequest =
 
 type ControlCoordinator = {
   advanceRetry(identity: ClaimIdentity): Promise<void>;
-  cleanupSource(identity: ClaimIdentity, settings: { deleteWorktree?: boolean }): Promise<void>;
-  completeSource(identity: ClaimIdentity): Promise<void>;
+  cleanupSource(identity: ClaimIdentity, settings: { deleteWorktree?: boolean }): Promise<ResourceOwner>;
+  completeSource(owner: ResourceOwner): Promise<void>;
 };
 const matchesTask = (task: Task, identity: { projectId: string; taskId: string }): boolean => task.projectId === identity.projectId && task.id === identity.taskId;
 const matchesGrant = (task: Task, identity: { projectId: string; taskId: string }, descriptor: WorkerClaimDescriptor, userId: string): boolean => {
@@ -93,7 +93,7 @@ export const submitWorkerControl = async (options: {
   exactVersion();
   if (request.kind === "transfer") await remote.authorizeControl(projectId, worker.userId, request.target.userId, signal);
   signal.throwIfAborted();
-  await coordinator.cleanupSource(identity, { deleteWorktree: false });
+  const owner = await coordinator.cleanupSource(identity, { deleteWorktree: false });
   if (request.kind === "release") {
     await confirmMutation(
       () => remote.release(projectId, request.taskId, { claimId: request.claimId, version: request.version, stoppedConfirmed: true }, signal),
@@ -107,6 +107,6 @@ export const submitWorkerControl = async (options: {
       (task) => matchesGrant(task, identity, descriptor, request.target.userId), "transfer",
     );
   }
-  await coordinator.completeSource(identity);
+  await coordinator.completeSource(owner);
   return { task: store.getTask(identity), message: `${request.kind} completed for claim ${request.claimId}; its local resources were removed.` };
 };
