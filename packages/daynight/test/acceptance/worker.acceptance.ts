@@ -13,6 +13,7 @@ import { parse as parseYaml, stringify as yaml } from "yaml";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Project, Task, UpdateWorkerClaimInput, WorkerClaimDescriptor } from "../../src/api/types.js";
+import { codexProjectTrustArguments } from "../../src/commands/worker/herdr/arguments.js";
 import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
 const workspace = path.resolve(import.meta.dirname, "../../../..");
@@ -401,7 +402,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         expect(latestStart.argv).toContain("--dangerously-bypass-approvals-and-sandbox");
         expect(latestStart.argv).toContain("--dangerously-bypass-hook-trust");
         const trust = latestStart.argv!.at(-1)!;
-        expect(trust).toBe(`projects={${JSON.stringify(await realpath(path.dirname(sentinel)))}={trust_level="trusted"}}`);
+        expect(trust).toBe(codexProjectTrustArguments(await realpath(path.dirname(sentinel))).at(-1));
       } else {
         expect(restartedSession).not.toBe(originalSession);
         expect(latestStart.argv).not.toContain("resume");
@@ -428,7 +429,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         expect(event.argv).toContain("--dangerously-bypass-hook-trust");
         const repository = repositoryPaths[tasks.findIndex((task) => task.id === event.taskId)]!;
         const expectedCwd = path.join(await realpath(repository), ".worktrees", "daynight", event.taskId!);
-        expect(event.argv?.slice(-2)).toEqual(["-c", `projects={${JSON.stringify(expectedCwd)}={trust_level="trusted"}}`]);
+        expect(event.argv?.slice(-2)).toEqual(codexProjectTrustArguments(expectedCwd));
       }
     }
     for (const task of tasks) {

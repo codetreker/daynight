@@ -1049,7 +1049,8 @@ trust. Copilot receives `--allow-all --no-ask-user --no-sandbox` and per-workspa
 values. Codex receives `--no-daemon`,
 `--dangerously-bypass-approvals-and-sandbox`,
 `--dangerously-bypass-hook-trust` and a final `-c` trusted-project override for
-the task's canonical path. These invocation settings require no native tool,
+the task's canonical path, using Codex's normalized Windows trust keys. These
+invocation settings require no native tool,
 folder or hook permission confirmation and are not optional configuration.
 
 Copilot arguments that enable assisted approval or sandboxing, deny tools/URLs,

@@ -12,11 +12,21 @@ export const nativeAgentPermissionEnvironment = (agent: WorkerAgent): Record<str
   ? { COPILOT_ALLOW_ALL: "true", COPILOT_ASSISTED_APPROVAL: "false" }
   : {};
 
-export const codexProjectTrustArguments = (cwd: string): string[] => {
+export const codexProjectTrustArguments = (cwd: string, platform: NodeJS.Platform = process.platform): string[] => {
   if (typeof cwd !== "string" || (!path.posix.isAbsolute(cwd) && !path.win32.isAbsolute(cwd)) || /\p{Cc}/u.test(cwd)) throw new TypeError("The native working directory must be an absolute path without control characters.");
+  let keys = [cwd];
+  if (platform === "win32") {
+    const lowercase = (value: string): string => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+    const loweredCwd = lowercase(cwd);
+    const regularCwd = loweredCwd.startsWith("\\\\?\\unc\\") ? `\\\\${loweredCwd.slice(8)}` : /^\\\\\?\\[a-z]:\\/u.test(loweredCwd) ? loweredCwd.slice(4) : loweredCwd;
+    // Codex prefers exact ASCII-lowercase keys. Node removes namespace prefixes; Codex may retain them for UNC or long paths.
+    // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/config/src/loader/mod.rs#L1576-L1614
+    // https://github.com/nodejs/node/blob/cdc1b38d40cb567b7ad0b39c86addf830a0af0ae/deps/uv/src/win/fs.c#L3044-L3055
+    keys = [...new Set([regularCwd, lowercase(path.win32.toNamespacedPath(regularCwd))])];
+  }
   // Override keys are split at every dot, including dots inside quoted paths. The inline table keeps the path in a TOML value.
   // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/config/src/overrides.rs#L17-L25
-  return ["-c", `projects={${JSON.stringify(cwd)}={trust_level="trusted"}}`];
+  return ["-c", `projects={${keys.map((key) => `${JSON.stringify(key)}={trust_level="trusted"}`).join(",")}}`];
 };
 
 const optionSets = {

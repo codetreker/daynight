@@ -5,6 +5,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
+import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 
@@ -99,17 +100,32 @@ const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
 
 describe("native argument ownership", () => {
   it.each([undefined, nativeId])("owns full access while preserving model/configuration/exact resume selection (%s)", (resume) => {
-    expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? [] : ["resume", resume]), "--model", "model-a", ...configuration.args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-c", 'projects={"/task"={trust_level="trusted"}}']);
+    expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? [] : ["resume", resume]), "--model", "model-a", ...configuration.args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", ...codexProjectTrustArguments("/task")]);
     expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, "/task", resume)).toEqual([...(resume === undefined ? [] : [`--resume=${resume}`]), "--allow-tool=shell(git:*)", "--reasoning-effort", "low", "--allow-all", "--no-ask-user", "--no-sandbox"]);
   });
   it.each(['/repo/.worktrees/task.name', '/repo/中文/"quoted"', 'C:\\repo\\.worktrees\\中文 "task"'])('encodes the exact trust path in a final inline TOML table: %s', (cwd) => {
     const args = buildHerdrAgentArguments({ ...configuration, args: ["-c", 'projects={"other"={trust_level="untrusted"}}', "-c", 'approval_policy="on-request"', "--profile", "work"] }, cwd);
-    const trust = args.at(-1)!;
+    const trust = codexProjectTrustArguments(cwd, "linux").at(-1)!;
     expect(args.at(-2)).toBe("-c");
     expect(trust.startsWith("projects={")).toBe(true);
     expect(trust.endsWith('={trust_level="trusted"}}')).toBe(true);
     expect(JSON.parse(trust.slice("projects={".length, -'={trust_level="trusted"}}'.length))).toBe(cwd);
     expect(args.slice(3, 9)).toEqual(["-c", 'projects={"other"={trust_level="untrusted"}}', "-c", 'approval_policy="on-request"', "--profile", "work"]);
+  });
+  it.each([
+    [String.raw`C:\Repo\.Worktrees\ÄΩ中`, String.raw`c:\repo\.worktrees\ÄΩ中`, String.raw`\\?\c:\repo\.worktrees\ÄΩ中`],
+    [String.raw`\\?\C:\Repo\.Worktrees\ÄΩ中`, String.raw`c:\repo\.worktrees\ÄΩ中`, String.raw`\\?\c:\repo\.worktrees\ÄΩ中`],
+    [String.raw`\\Server\Share\Repo`, String.raw`\\server\share\repo`, String.raw`\\?\unc\server\share\repo`],
+    [String.raw`\\?\UNC\Server\Share\Repo`, String.raw`\\server\share\repo`, String.raw`\\?\unc\server\share\repo`],
+    [String.raw`C:\Repo\${"LongPath".repeat(40)}`, String.raw`c:\repo\${"longpath".repeat(40)}`, String.raw`\\?\c:\repo\${"longpath".repeat(40)}`],
+  ])("targets Codex's exact Windows trust keys for %s", (cwd, regularKey, namespacedKey) => {
+    expect(codexProjectTrustArguments(cwd, "win32")).toEqual(["-c", `projects={${JSON.stringify(regularKey)}={trust_level="trusted"},${JSON.stringify(namespacedKey)}={trust_level="trusted"}}`]);
+  });
+  it.each(["linux", "darwin"] as const)("preserves case-sensitive trust keys on %s", (platform) => {
+    expect(codexProjectTrustArguments("/Repo/ÄΩ中/.Worktrees/Task", platform)).toEqual(["-c", 'projects={"/Repo/ÄΩ中/.Worktrees/Task"={trust_level="trusted"}}']);
+  });
+  it("deduplicates unchanged Windows device spellings", () => {
+    expect(codexProjectTrustArguments(String.raw`\\.\Device\Volume`, "win32")).toEqual(["-c", `projects={${JSON.stringify(String.raw`\\.\device\volume`)}={trust_level="trusted"}}`]);
   });
   it.each(["resume", "a positional prompt", "--model=x", "-m", "--cd", "--no-daemon", "--worktree", "--remote=x", "--help", "-a", "--ask-for-approval=never", "-s", "--sandbox=read-only", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"])("refuses Codex-owned/positional argument %s", (value) => {
     expect(() => validateHerdrAgentArguments("codex", [value])).toThrow();
@@ -149,7 +165,7 @@ describe("direct task resource management", () => {
     const f = await fixture(); const canonicalCwd = await realpath(f.context.cwd);
     const alias = path.join(f.context.cwd, "linked"); await symlink(canonicalCwd, alias, "junction"); f.context.cwd = alias;
     await launch(f);
-    expect((f.calls.find((call) => call.method === "agent.start")!.params.args as string[]).at(-1)).toBe(`projects={${JSON.stringify(canonicalCwd)}={trust_level="trusted"}}`);
+    expect((f.calls.find((call) => call.method === "agent.start")!.params.args as string[]).at(-1)).toBe(codexProjectTrustArguments(canonicalCwd).at(-1));
   });
 
   it.each(["codex", "copilot"] as const)("rejects conflicting %s permissions before any native-start RPC", async (agent) => {

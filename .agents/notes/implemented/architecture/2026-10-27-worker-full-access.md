@@ -35,9 +35,22 @@ documents the full-access environment setting.
 
 Codex retains the worker-owned `--no-daemon [resume <session_id>]` prefix and
 appends `--dangerously-bypass-approvals-and-sandbox` and
-`--dangerously-bypass-hook-trust`. The last `-c` override supplies
-`projects={"<canonical task cwd>"={trust_level="trusted"}}`. The task path is
-resolved with realpath and encoded as a TOML string key in an inline table.
+`--dangerously-bypass-hook-trust`. The last `-c` override supplies a `projects`
+inline table whose path entries set `trust_level="trusted"`. The task path is
+resolved with realpath and normalized to Codex's native trust-lookup keys before
+being encoded as TOML string keys. On Windows, ASCII uppercase characters
+become lowercase and the table contains deduplicated regular and
+extended/namespaced path spellings. Non-ASCII characters keep their case;
+Linux/macOS use one original case-preserving key. Codex's [project-trust
+lookup](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/config/src/loader/mod.rs#L1576-L1614)
+prefers an exact normalized key before matching other spellings. Writing the
+same normalized keys overrides existing lowercase untrusted entries for the
+task path.
+Node's [Windows
+realpath](https://github.com/nodejs/node/blob/v24.19.0/deps/uv/src/win/fs.c#L3044-L3055)
+strips drive and UNC namespace prefixes, while Codex's canonical trust lookup
+can retain them. Supplying both spellings in the same invocation table makes
+either lookup select the trusted entry.
 Codex's [typed startup
 policy](https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/tui/src/startup_orchestration.rs#L52-L60)
 sets full access independently of [directory
@@ -89,6 +102,13 @@ complete provider-specific settings remove those separate startup decisions.
 human invocations and requires editing native-owned configuration. Invocation
 overrides and workspace environment provide the required task execution policy
 without changing global state.
+
+**Use only the canonical path's original spelling as the trust key.** On Windows
+an existing lowercase untrusted entry receives exact-match priority over a
+mixed-case trusted override, and Node/Codex can use different namespace-prefix
+spellings for the same path. Native key normalization and both Windows spellings
+make the final invocation override address the entry Codex actually reads while
+preserving case-sensitive POSIX paths.
 
 **Pass Copilot `--trust-folder` for every launch.** Native Copilot limits that
 flag to a new prompt-mode session and rejects it with resume/session selectors.

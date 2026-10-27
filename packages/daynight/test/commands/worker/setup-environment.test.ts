@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Operation } from "../../../src/api/operation.js";
 import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { inspectWorkerEnvironment } from "../../../src/commands/worker/setup-environment.js";
 
@@ -122,7 +123,7 @@ describe("worker setup environment inspection", () => {
     expect(checks.filter(({ status }) => status === "missing").map(({ label }) => label)).toEqual([
       "codex official hook asset", "codex unattended full access", "codex effective hooks feature", "codex effective SessionStart hook",
     ]);
-    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0]).toMatchObject({ cwd: await realpath(f.cwd), args: ["--config", "features.hooks=false", "--profile=work", "-c", `projects={${JSON.stringify(await realpath(f.cwd))}={trust_level="trusted"}}`, "features", "list"] });
+    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0]).toMatchObject({ cwd: await realpath(f.cwd), args: ["--config", "features.hooks=false", "--profile=work", ...codexProjectTrustArguments(await realpath(f.cwd)), "features", "list"] });
     expect(f.runCommand.mock.calls.some(([command]) => command.file !== "codex")).toBe(false);
     expect(checks.at(-1)).toMatchObject({ label: "codex provider authentication", status: "unverified", agent: "codex" });
   });

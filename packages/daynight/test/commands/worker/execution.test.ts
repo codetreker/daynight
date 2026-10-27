@@ -5,6 +5,7 @@ import { createOperation } from "../../../src/api/operation.js";
 import { createExecutionDriver, settleWorkerStops } from "../../../src/commands/worker/execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { createHerdrAgentManager, herdrExecutionAgentName, herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
+import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import type { HerdrExecutionContext, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
@@ -106,7 +107,7 @@ describe("execution from current Herdr resources", () => {
     expect(f.launches).toHaveLength(1); expect(f.launches[0]!.environment).toEqual(f.expectedNativeEnvironment);
     expect(f.workerEnvironment.COPILOT_ALLOW_ALL).toBe("false"); expect(f.workerEnvironment.COPILOT_ASSISTED_APPROVAL).toBe("true");
     expect(f.launches[0]!.args).toEqual(expect.arrayContaining(agent === "codex" ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"] : ["--allow-all", "--no-ask-user", "--no-sandbox"]));
-    if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(`projects={${JSON.stringify(f.context.cwd)}={trust_level="trusted"}}`);
+    if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(codexProjectTrustArguments(f.context.cwd).at(-1));
     expect(f.launches[0]!.args.some((arg) => arg === "resume" || arg.startsWith("--resume="))).toBe(false);
     expect(f.store.getTask(f.input.task)?.sessionId).toBe(freshId);
     expect(f.events.some((event) => event.kind === "warning")).toBe(true);
@@ -119,7 +120,7 @@ describe("execution from current Herdr resources", () => {
     expect(result.nativeSession?.sessionId).toBe(savedId); expect(f.store.getTask(f.input.task)?.sessionId).toBe(savedId);
     expect(f.launches[0]!.environment).toEqual(f.expectedNativeEnvironment);
     expect(f.launches[0]!.args).toEqual(expect.arrayContaining(agent === "codex" ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"] : ["--allow-all", "--no-ask-user", "--no-sandbox"]));
-    if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(`projects={${JSON.stringify(f.context.cwd)}={trust_level="trusted"}}`);
+    if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(codexProjectTrustArguments(f.context.cwd).at(-1));
     expect(f.launches[0]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
   });
