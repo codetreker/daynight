@@ -293,6 +293,8 @@ def scenarios():
         ("short root worker", "dn wor\t", ["worker"]),
         ("worker run", "daynight worker ru\t", ["worker", "run"]),
         ("short worker run", "dn worker ru\t", ["worker", "run"]),
+        ("worker attach", "daynight worker at\t", ["worker", "attach"]),
+        ("short worker attach", "dn worker at\t", ["worker", "attach"]),
         ("worker retry", "daynight worker ret\t", ["worker", "retry"]),
         ("worker release", "daynight worker rel\t", ["worker", "release"]),
         ("worker resume", "daynight worker res\t", ["worker", "resume"]),

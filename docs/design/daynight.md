@@ -23,6 +23,7 @@ daynight login [--no-browser]         # 浏览器设备授权
 daynight logout                      # 撤销并清除当前 CLI 凭据
 daynight worker                     # worker 帮助
 daynight worker run
+daynight worker attach
 daynight review                     # review 帮助
 daynight review run
 daynight review list                 # 同 review ls

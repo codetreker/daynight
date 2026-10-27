@@ -117,6 +117,31 @@ describe("private Herdr instance", () => {
     expect(await f.instance.stop(operation())).toEqual({ apiClosed: true, clientClosed: true, ownedChildClosed: true });
   });
 
+  it("inspects an existing managed daemon without configuration writes or starting another process", async () => {
+    const f = await fixture(); await f.instance.ensure(operation());
+    const original = await readFile(f.instance.paths.configurationFile, "utf8");
+    const other = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: () => { throw new Error("Read-only attachment must not start a daemon"); } });
+    expect(await other.connect(operation())).toMatchObject({ reconnected: true, version: "0.9.5", protocol: 22 });
+    expect(await readFile(f.instance.paths.configurationFile, "utf8")).toBe(original);
+    await f.instance.stop(operation());
+  });
+
+  it("refuses attachment when no managed daemon exists without creating configuration or logs", async () => {
+    const f = await fixture();
+    await expect(f.instance.connect(operation())).rejects.toThrow("daynight worker run");
+    expect(await present(f.instance.paths.configurationFile)).toBe(false);
+    expect(await present(f.instance.paths.stdoutLogFile)).toBe(false);
+    expect(await present(f.events)).toBe(false);
+  });
+
+  it("refuses a modified managed configuration without rewriting it for attachment", async () => {
+    const f = await fixture();
+    await writeFile(f.instance.paths.configurationFile, "[session]\nresume_agents_on_restore=true\n");
+    await expect(f.instance.connect(operation())).rejects.toThrow("differs from the managed");
+    expect(await readFile(f.instance.paths.configurationFile, "utf8")).toContain("true");
+    expect(await present(f.events)).toBe(false);
+  });
+
   it("does not attach a completed startup operation to the persistent daemon lifetime", async () => {
     const f = await fixture(); const startup = operation(); await f.instance.ensure(startup); startup.dispose();
     expect(await f.instance.ensure(operation())).toMatchObject({ reconnected: true });
