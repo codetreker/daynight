@@ -1,10 +1,8 @@
 import { isDeepStrictEqual } from "node:util";
-import { parseConfigurationDocument } from "./document.js";
-import type { ConfigurationPaths } from "./paths.js";
 
 type RetainedSequenceOwnership = { field: string; identity: string; fields: readonly string[] };
 
-type ConfigurationOwnership = {
+export type ConfigurationOwnership = {
   section?: string;
   fields: readonly string[];
   retainedSequence?: RetainedSequenceOwnership;
@@ -43,11 +41,9 @@ const retainedEntries = (
 
 export const verifyConfigurationUpdate = (
   before: Record<string, unknown>,
-  updatedSource: string,
-  paths: ConfigurationPaths,
+  after: Record<string, unknown>,
   ownership: ConfigurationOwnership,
 ): void => {
-  const { mapping: after } = parseConfigurationDocument(updatedSource, paths);
   const fail = (): never => {
     throw new Error("Configuration uses shared YAML aliases that would change unrelated settings. Separate the edited settings from those aliases, then run the command again.");
   };

@@ -14,6 +14,11 @@ export type AddRepositoryInput = { remote: string; path?: string };
 export type AddRepositoryOptions = { workingDirectory: string; homeDirectory: string };
 export type AddRepositoryResult = { repository: RepositoryConfiguration; added: boolean };
 
+const reviewRepositoryOwnership = {
+  section: "review", fields: ["repositoryRoot", "repositories"],
+  retainedSequence: { field: "repositories", identity: "remote", fields: [] },
+} as const;
+
 const sameDirectory = async (first: string, second: string): Promise<boolean> => {
   const [left, right] = await Promise.all([resolvePhysicalDirectory(first), resolvePhysicalDirectory(second)]);
   if (left.ancestorIdentity !== right.ancestorIdentity || left.missingComponents.length !== right.missingComponents.length) {
@@ -37,7 +42,7 @@ export const updateRepositoryConfiguration = async (
   const identity = remoteIdentity(input.remote, "remote");
   const previous = existing?.repositories.find((repository) => repository.coordinate === identity.coordinate);
   if (previous !== undefined && input.path === undefined) {
-    return { result: { repository: previous, added: false } };
+    return { kind: "unchanged", result: { repository: previous, added: false } };
   }
   let repositoryPath: string;
   if (input.path === undefined) {
@@ -53,7 +58,7 @@ export const updateRepositoryConfiguration = async (
   }
   if (previous !== undefined) {
     if (await sameDirectory(previous.path, repositoryPath)) {
-      return { result: { repository: previous, added: false } };
+      return { kind: "unchanged", result: { repository: previous, added: false } };
     }
     throw new Error(`Repository ${identity.coordinate} is already configured at ${previous.path}; the requested path ${repositoryPath} differs.`);
   }
@@ -65,13 +70,10 @@ export const updateRepositoryConfiguration = async (
   }
   document.addIn(["review", "repositories"], { remote: input.remote, path: repositoryPath });
   const updatedSource = document.toString();
-  verifyConfigurationUpdate(mapping, updatedSource, runtimePaths, {
-    section: "review", fields: ["repositoryRoot", "repositories"],
-    retainedSequence: { field: "repositories", identity: "remote", fields: [] },
-  });
+  verifyConfigurationUpdate(mapping, parseConfigurationDocument(updatedSource, runtimePaths).mapping, reviewRepositoryOwnership);
   const configuration = await validateConfigurationSource(updatedSource, runtimePaths);
   const repository = configuration.repositories.at(-1)!;
-  return { result: { repository, added: true }, source: updatedSource };
+  return { kind: "write", result: { repository, added: true }, source: updatedSource, ownership: reviewRepositoryOwnership };
 };
 
 export const addRepository = async (

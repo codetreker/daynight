@@ -14,11 +14,13 @@ Configuration readers ignore unknown fields at the root, in `review` and
 `worker`, and in their repository entries. Each projection constructs its runtime
 configuration from known fields. The original YAML document retains unknown
 nodes, so targeted configuration writes preserve their values and comments.
-Review and worker repository edits, worker setup and credential updates compare decoded values
-outside their owned fields before saving. Shared aliases that would mutate
-unrelated values cause refusal before replacement, preserving the original file.
-Unaffected aliases remain valid. The comparison mechanism is shared by these
-writers; each writer declares the fields it owns. Repository operations also
+Every configuration mutation returns an explicit unchanged result or a write
+descriptor with mandatory field ownership. The shared file writer compares
+decoded values outside that ownership under its lock before atomic replacement.
+This covers repository edits, setup, credentials and first-time worker identity
+creation. Shared aliases that would mutate unrelated values cause refusal while
+preserving the original file. Unaffected aliases remain valid. Preview validation
+reuses the same pure comparison and ownership constants. Repository operations also
 protect unknown data in retained entries. Removing a selected registration owns
 that entire entry; changes to unknown data in remaining entries are refused.
 Concurrency comparisons handle cyclic alias graphs without JSON serialization.
@@ -51,12 +53,18 @@ values is required to leave another consumer's settings intact. Refusing the
 affected write reuses the worker ownership rule without introducing anchor
 rewriting or losing comments.
 
+**Rely on optional checks in individual writers.** A new or overlooked writer
+can persist alias side effects despite other writers using the shared helper.
+Requiring ownership in every write descriptor makes omission a type error and
+keeps final enforcement at the physical save boundary.
+
 ## Consequences
 
 Commands can share a configuration with unrecognized extensions. Configuration
 edits preserve unrelated data and retain the existing lock and atomic
-replacement safeguards. A shared alias can require manual separation before a
-repository edit or credential update; refusal keeps the original bytes intact. Invalid YAML remains a document failure even when it
+replacement safeguards. A shared alias can require manual separation before
+any configuration write, including identity creation; refusal keeps the original
+bytes intact. Every new writer must declare its ownership to compile. Invalid YAML remains a document failure even when it
 appears within an unknown field.
 
 Misspelled optional keys are ignored and the corresponding omitted known field

@@ -23,7 +23,7 @@ Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓�
 - `worker.repositoryRoot` 默认 ~/daynights，独立于 review 的仓库根设置。原字符串通过严格路径校验，只在新增注册时用实际用户 home 和配置目录展开；根设置改变不移动已有注册。repo 命令写入只修改 worker.repositories，锁内重读并拒绝相关根、仓库或服务/凭据变动，保留无关字段、注释和合法 alias。共享 YAML alias 会改变本次操作不拥有的有效值时拒绝保存，保持原文件。
 - 空仓库的交互式 `worker run` 在启动新任务前引导选择远端 Project。首次无持久状态时，保存选择先于身份、SQLite、Git 和 Herdr；已有状态时先建立原清理控制器，在项目读取或选择等待期间继续原截止。网络和交互不持配置锁；失败或取消不产生部分选择或新任务资源。非交互空配置给出 repo add --project 指引。选择结束后从同一份配置核对服务/认证上下文并载入 worker 设置，不得将原服务凭据与另一份来源的仓库或 agent 参数组合；新设置作用于本次后续启动。
 - 配置包含覆盖全部仓库的最大并发，以及全局默认 agent、模型、参数和仓库覆盖值。Worker 在启动或重启时加载配置，不进行热重载。实际取得 claim 后，首次 pending 物化时持久冻结有效执行配置；继续、重试及重启恢复沿用该配置，重新加载的配置作用于后续新 claim。已开始执行却缺原配置时暂停核对，不替换为新默认值。
-- 首次启动随机生成稳定 `workerId`，使用共享配置锁与原子替换保存至 `~/.daynight/config.yml`；已有合法身份重启复用，非法值明确拒绝。身份持久化后才允许 claim。
+- 首次启动随机生成稳定 `workerId`，使用共享配置锁与原子替换保存至 `~/.daynight/config.yml`；已有合法身份重启复用，非法值明确拒绝。身份创建只拥有根字段 workerId；根循环 alias 等导致未知或其他非归属解码值变化时拒绝保存并保留原文件。身份持久化后才允许 claim。
 - 每个用户环境一个 worker，固定 `~/.daynight/worker/` 保存独立 SQLite、实例锁、日志、Herdr 数据和临时资源，不提供状态根覆盖入口。存活的第二实例明确拒绝；失效 worker 锁不证明原生 agent 已停。启动前校验实际 Herdr 端点，路径等条件不满足时明确报告。
 - 实际平台使用 `windows`、`linux`、`macos`。WSL 中的 Linux worker、Herdr 和 agent 属于 `linux`，不允许通过配置冒充其他平台。
 

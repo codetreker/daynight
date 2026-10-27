@@ -336,9 +336,8 @@ directory, with the rules in the [worker](#worker-configuration-and-startup) and
 Unknown fields at the root, in `review` or `worker`, and in their repository
 entries are ignored at runtime and preserved by CLI configuration edits. Known
 fields retain their type and value checks. Invalid YAML, duplicate keys and
-invalid mapping structures remain errors. Review and worker repository edits,
-worker setup and credential updates compare decoded values outside the fields they own before
-saving. If shared YAML aliases would change an unrelated value, the write fails
+invalid mapping structures remain errors. Every CLI configuration write, including
+first-time `workerId` creation, preserves decoded values outside the fields it owns. If shared YAML aliases would change an unrelated value, the write fails
 and retains the original file; separate those aliases before retrying. Unaffected
 aliases remain valid.
 

@@ -218,8 +218,9 @@ credentials 拥有配置观察值核对，browser 拥有平台打开器。命令
 
 run 的 runtime 组合固定状态、实例排他、SQLite、Git 与 Herdr 的前台生命周期。人工管理入口保存具体控制意图，需要独立推进时复用既有排他与资源控制。coordinator 拥有轮询/名额/任务串行推进，execution 与 cleanup 分别消费原执行事实；这些生命周期使用 worker 自己的状态所有权。安装包路径由稳定入口传入，managed prompt 指向同一包的绝对技能入口。具体持久化和未知动作处理由[worker 设计](daynight-worker.md)拥有。
 
-`config/` 拥有共享配置路径、严格 YAML、已知顶层字段和保留注释的文件保存协议；
-`server.ts` 提供独立 server 字段投影。`api/` 拥有服务 DTO、精确数值 JSON、
+`config/` 拥有共享配置路径、严格 YAML 和保留注释的文件保存协议；未知字段在运行投影中
+忽略并在文档中保留。`files.ts` 的写入描述必须声明字段归属，锁内保存入口统一比较非归属
+解码值，`ownership.ts` 提供同一纯比较规则供保存和预览复用。`server.ts` 提供独立 server 字段投影。`api/` 拥有服务 DTO、精确数值 JSON、
 命令级期限和字节预算、HTTP 错误、完整分页及有界 ready 查询，供业务命令组合。共享层不导入
 worker、review 或 update；服务器客户端也不依赖 YAML、SQLite 或 Git。`repository/` 将有效 origin、通用
 仓库身份、远端 project 校验与本地关联组合；原子文件替换由 `platform/files.ts`
@@ -361,10 +362,12 @@ conversation 后续轮次，保留旧边界、预算、会话、进程证据及 
 [review 设计](daynight-review.md#本地数据与-sqlite)统一定义。
 
 [project/task 配置设计](daynight-project-task.md)定义同一 YAML 中可省略的 `serverUrl` 和
-`serverToken`。共享解析器识别全部已知顶层字段并保留 YAML 文档，业务投影分别校验值。
+`serverToken`。共享解析器保留完整 YAML 文档，业务投影分别读取并校验已知值，忽略未知字段。
 服务 origin 缺省使用生产地址，凭据由 login 保存或由外部受控配置文件提供；review 不校验服务业务值，添加
 首个 review 仓库时保留它们。含令牌文档的 `0600` 规则属于共享写入者，不能由某个
-能力绕过。YAML 语法错误只携带安全类别、代码和位置，禁止原始标量及原始 parser
+能力绕过。所有配置变更通过带归属声明的 write 描述或明确的 unchanged 描述返回共享保存入口；
+write 在锁内比较原配置与候选配置，拒绝改变非归属值的 alias 写入。workerId 创建也遵守该规则。
+YAML 语法错误只携带安全类别、代码和位置，禁止原始标量及原始 parser
 cause 进入错误对象；通用诊断格式化器与其他错误链保持原职责。
 
 Git worktree 根目录 `.daynight/project.yml` 保存 server、仓库身份和 project ID 的

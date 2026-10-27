@@ -45,6 +45,16 @@ export type WorkerSetupPlan = {
   readonly resetGlobalNativeSettings: boolean;
 };
 
+const workerRepositoryOwnership = {
+  section: "worker", fields: ["repositories"],
+  retainedSequence: { field: "repositories", identity: "remote", fields: ["projectId"] },
+} as const;
+
+const workerSetupOwnership = {
+  section: "worker", fields: ["agent", "model", "args", "repositories"],
+  retainedSequence: { field: "repositories", identity: "remote", fields: ["projectId", "agent", "model", "args"] },
+} as const;
+
 const registrationBaseline = (mapping: Record<string, unknown>): readonly unknown[] => {
   const worker = mapping.worker as Record<string, unknown> | undefined;
   const fields = ["serverUrl", "serverToken"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]);
@@ -179,10 +189,7 @@ const prepareSetupSource = async (source: string | undefined, options: WorkerSet
     projectId: project.id, remote: project.repoUrl, path: repositoryLocation(project.repoUrl, root),
   });
   const updatedSource = document.toString();
-  verifyConfigurationUpdate(mapping, updatedSource, paths, {
-    section: "worker", fields: ["agent", "model", "args", "repositories"],
-    retainedSequence: { field: "repositories", identity: "remote", fields: ["projectId", "agent", "model", "args"] },
-  });
+  verifyConfigurationUpdate(mapping, parseConfigurationDocument(updatedSource, paths).mapping, workerSetupOwnership);
   const configuration = await validateWorkerConfigurationSource(updatedSource, paths, signal);
   return { source: updatedSource, configuration, removedRepositories, resetRepositories, resetGlobalNativeSettings };
 };
@@ -199,7 +206,7 @@ export const saveWorkerSetup = async (options: WorkerSetupOptions): Promise<Work
       throw new Error("Worker agent, repository configuration or service credentials changed during setup. Run daynight worker setup again with the current configuration.");
     }
     const prepared = await prepareSetupSource(source, options);
-    return { source: prepared.source, result: prepared.configuration };
+    return { kind: "write", source: prepared.source, result: prepared.configuration, ownership: workerSetupOwnership };
   }, options.signal);
 };
 
@@ -242,13 +249,10 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
         (repository.projectId === undefined && repositoryIdentity(repository.remote) === repositoryIdentity(project.repoUrl))) ? [index] : []);
       for (const index of removals.toReversed()) { document.deleteIn(["worker", "repositories", index]); changed = true; }
     }
-    if (!changed) return { result: current.configuration.repositories };
+    if (!changed) return { kind: "unchanged", result: current.configuration.repositories };
     const updatedSource = document.toString();
-    verifyConfigurationUpdate(mapping, updatedSource, paths, {
-      section: "worker", fields: ["repositories"],
-      retainedSequence: { field: "repositories", identity: "remote", fields: ["projectId"] },
-    });
+    verifyConfigurationUpdate(mapping, parseConfigurationDocument(updatedSource, paths).mapping, workerRepositoryOwnership);
     const configuration = await validateWorkerConfigurationSource(updatedSource, paths, signal);
-    return { source: updatedSource, result: configuration.repositories };
+    return { kind: "write", source: updatedSource, result: configuration.repositories, ownership: workerRepositoryOwnership };
   }, signal);
 };
