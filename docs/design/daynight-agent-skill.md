@@ -110,7 +110,7 @@ controller。Skill、task、附件和完成规则均不授予合并等额外交�
 | `handbook.md` | 命令用途索引与项目定位、查询范围、精确版本、替换和附件独立性等背景 |
 | `create-task.md` | 明确创建许可、具体成果边界、已有任务匹配、资料准备与登记完整性 |
 | `run-task.md` | 普通指定任务的开始、恢复、重开、普通 done 与返回；普通 Goal 的明确讨论转场 |
-| `execute-task-in-managed.md` | 显式 assignment 核验、原 active claim、指定工作区和冻结配置、等待、claim-bound done 与交还 controller |
+| `execute-task-in-managed.md` | 显式 assignment 核验、原 active claim、指定工作区和本次调用配置、等待、claim-bound done 与交还 controller |
 | `task-execution.md` | 两种执行入口共用的真实任务输入、阶段资料、范围、交付、验收准备、证据与等待检查点；不拥有开始或最终状态写入 |
 | `goal.md` | Goal 判断、顺序讨论与用户确认、阶段开始授权、确认后实际拆分、恢复和整体验收 |
 | `task-content.md` | 六项内容标准、唯一内容所有者、引用读取、阶段适用性与任务证据位置 |
@@ -247,7 +247,7 @@ in_progress 是合法观察。结果报告实际 flag、状态、worker、依赖
 任务的范围来源，skill 不以此恢复连续调度或自动选择。
 
 Worker-managed 入口先核对 worker 启动 prompt 的显式环境、技能、模式，以及
-projectId/taskId/claimId/worktreeId、worktree 路径/branch 和冻结配置。它使用给定项目
+projectId/taskId/claimId/worktreeId、worktree 路径/branch 和本次启动或恢复配置。它使用给定项目
 读取最新任务，核对 in_progress、active claim 和实际工作区。缺失或不匹配则等待，
 不能从任务属性或环境猜模式，也不降级普通开始。原 claim 已 completed 且 task done
 则报告已有结果，不重新执行；恢复和任务写入前继续刷新原 claim，归属改变立即停止

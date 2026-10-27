@@ -12,6 +12,10 @@ sharing a global execution limit across repositories.
 
 ## Decision
 
+The foreground worker now uses current service/Git/Herdr facts and process-local jobs under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). The following records the original durable execution controller, including the uncertainty guarantees that motivated its checkpoints. Those persistent mechanisms are historical, not requirements on the current six-column store.
+
+### Original implementation and rationale
+
 The installed `worker run` command lazily loads its own runtime, strict worker
 configuration and fixed user state. The [worker
 design](../../../../docs/design/daynight-worker.md) owns the mechanisms; the
@@ -335,6 +339,10 @@ claim's files. Keeping strict unstarted pending state and isolating other
 initialization failures preserves both responsibilities.
 
 ## Consequences
+
+The [current simplification](../simplification/2026-10-27-worker-claim-records.md) owns the delivered storage and restart trade-offs. The original consequences below belong to the detailed model retained here as decision history.
+
+### Original consequences
 
 The command, discovery loop and transient cleanup jobs remain one foreground
 process rather than another server or OS background service. Configuration

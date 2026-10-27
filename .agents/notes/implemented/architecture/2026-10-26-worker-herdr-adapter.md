@@ -14,6 +14,10 @@ execution.
 
 ## Decision
 
+The Herdr adapter now uses direct current-resource operations and call-local stop/input observations under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Private instance isolation, explicit native integration and input readiness remain. The original receipts, history prerequisites and persisted PID provenance below explain the earlier recovery design; they are not current storage prerequisites.
+
+### Original implementation and rationale
+
 The [adapter entry](../../../../packages/daynight/src/commands/worker/herdr.ts)
 composes private-instance lifecycle, bounded IPC, native preflight and concrete
 task operations. One worker uses one private named session `w`, with independent
@@ -333,6 +337,10 @@ exposes that capability boundary. A diagnostic preserves the request and cause
 without a second configuration interpretation engine.
 
 ## Consequences
+
+The [current simplification](../simplification/2026-10-27-worker-claim-records.md) owns the delivered storage and restart trade-offs. The original consequences below belong to the detailed model retained here as decision history.
+
+### Original consequences
 
 The adapter exposes concrete submission and resource facts without a reporting
 protocol, callback service, prompt DSL or another local ledger. A known missing

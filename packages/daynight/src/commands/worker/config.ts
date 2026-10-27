@@ -11,15 +11,15 @@ import { repositoryIdentity } from "../../repository/identity.js";
 import { defaultRepositoryRoot, validateRepositoryRoot } from "../../repository/location.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { WorkerPaths } from "./paths.js";
-import type { FrozenExecutionConfiguration } from "./types.js";
+import type { ExecutionConfiguration } from "./types.js";
 
-export type WorkerRepositoryConfiguration = FrozenExecutionConfiguration & {
+export type WorkerRepositoryConfiguration = ExecutionConfiguration & {
   remote: string;
   path: string;
   projectId?: string;
 };
 
-export type WorkerConfiguration = FrozenExecutionConfiguration & {
+export type WorkerConfiguration = ExecutionConfiguration & {
   repositoryRoot: string;
   maxConcurrent: number;
   pollIntervalMs: number;
@@ -59,7 +59,7 @@ const number = (value: Record<string, unknown>, field: keyof Pick<WorkerConfigur
   return result;
 };
 
-const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: FrozenExecutionConfiguration): FrozenExecutionConfiguration => {
+const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration): ExecutionConfiguration => {
   const agent = Object.hasOwn(value, "agent") ? value.agent : inherited.agent;
   if (agent !== "codex" && agent !== "copilot") throw new TypeError(`${field}.agent must be codex or copilot.`);
   const sameKind = agent === inherited.agent;

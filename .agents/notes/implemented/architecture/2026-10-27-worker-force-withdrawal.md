@@ -58,6 +58,14 @@ confirms source stopping before returning a retained released record; resume
 still creates fresh claim/worktree identities and native execution. Claim IDs
 continue to distinguish execution generations.
 
+The current [six-column record model](../simplification/2026-10-27-worker-claim-records.md)
+retains claim/native-session identity and derives cleanup from complete inventory
+and actual resources. It has no transfer controls or old-schema migration. The
+following records the local retirement handling originally delivered with force
+withdrawal, before the detailed local store was replaced.
+
+### Original detailed-store retirement
+
 Schema 4 migrates old transfer controls out of the
 [local records](2026-10-26-worker-local-records.md). An unfinished source retains
 its terminal cleanup responsibility and original deadline; a missing terminal
@@ -96,13 +104,13 @@ cannot atomically remove ownership. One versioned ownership operation preserves
 the reset across concurrent changes.
 
 **Replace retired transfer intent with a local-only stop or withdrawal control.**
-A new control variant would retain another runtime management protocol solely to
-prevent retired source execution from restarting or completing before its claim
-ends. Persisting `cleanup.claimEnded` keeps this ownership-end fact with the
-cleanup lifecycle: an unconfirmed source remains fenced, while confirmed
-ownership end survives restart and allows cleanup to finish offline. Migration
-can therefore remove the transfer intent without retaining a substitute control
-operation or losing its source responsibility.
+The original detailed-store implementation kept ownership-end proof in
+cleanup.claimEnded rather than adding another control variant. That preserved
+its stronger cross-restart cleanup guarantee while removing transfer intent.
+The six-column simplification subsequently removes both stored forms and the
+migration: each process obtains its own complete inventory before selecting
+terminal cleanup. It retains the force-withdrawal protocol and delayed-stop
+boundary without an alternate local management journal.
 
 ## Consequences
 
@@ -115,7 +123,6 @@ control protocol.
 A withdrawn agent may still have a live process and external credentials until
 its worker observes the change and stops it. The confirmation makes that limit
 part of the deliberate operation. Removing transfer is a protocol change;
-callers using its route or command must update. Old pending transfer source
-resources remain local cleanup responsibilities, and an unavailable worker can
-leave them until it resumes. Complete native and cross-platform qualification
+callers using its route or command must update. Attributed local resources remain cleanup responsibilities, and an unavailable
+worker can leave them until it resumes. Complete native and cross-platform qualification
 remains separate from service, frontend and controlled runtime tests.

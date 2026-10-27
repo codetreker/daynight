@@ -13,6 +13,10 @@ would make these decisions depend on conflicting persistent facts.
 
 ## Decision
 
+The local store now follows the six-column claim and native-session index in the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Identity, instance exclusion and static resource ownership retain their original owners. The following records the original detailed storage decision and why its stronger restart guarantees were adopted.
+
+### Original implementation and rationale
+
 The [worker design](../../../../docs/design/daynight-worker.md#配置与目录) fixes
 worker resources under `~/.daynight/worker/` and stores a random stable root
 `workerId` in shared `~/.daynight/config.yml`. Identity creation uses the
@@ -137,6 +141,10 @@ force-withdrawal decision removes transfer; the same stop/close/delete lifecycle
 continues for done, release and withdrawal.
 
 ## Consequences
+
+The [current simplification](../simplification/2026-10-27-worker-claim-records.md) owns the delivered storage and restart trade-offs. The original consequences below belong to the detailed model retained here as decision history.
+
+### Original consequences
 
 Real SQLite transactions preserve committed responsibility, immutable snapshots,
 fixed cleanup deadlines and exact control decisions across process interruption.

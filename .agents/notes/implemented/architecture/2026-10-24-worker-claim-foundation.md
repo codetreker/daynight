@@ -26,27 +26,26 @@ Claim-bound done uses the existing status resource; ordinary status changes
 cannot release active execution or start/finish released unfinished work.
 The foundation originally required release/resume/transfer to continue the source
 worktree and agent, protecting unpublished results when ownership moved. The
-[manual-control decision](2026-10-27-worker-manual-control.md) supersedes that
-continuity requirement: ended claims complete source cleanup, and resumed
-executions use fresh claim/worktree identities and may select a different agent.
-The [force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) subsequently
-removes transfer and adds an owner/admin reset that clears ownership and closes
-automatic permission atomically. The manual execution exception to automatic
-eligibility remains on resume.
+[manual-control decision](2026-10-27-worker-manual-control.md) superseded that
+continuity requirement: ended claims complete source cleanup, while resume uses
+fresh claim/worktree identity and may select a different agent. The later
+[force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes transfer
+and adds an owner/admin reset that clears ownership and closes automatic
+permission atomically. The manual execution exception remains on resume.
 
-Callers generate a fresh claim UUID for each acquisition and never
-reuse it. The service rejects the latest ID's reuse and requires the current
-claim plus an exact task version for subsequent writes. The foundation
-originally required persisting that ID before either operation; the
-[local-records decision](2026-10-26-worker-local-records.md) separated actual
-task registration from acquisition intent and initially kept request identity in
-memory. The [foreground runtime](2026-10-27-foreground-worker-runtime.md) now
-persists one concrete unresolved claimAttempt in the project before HTTP while
-still creating no preclaim task or extra table. Complete own-claim inventory
-recovers actual ownership without replay. Claim IDs are public
-correlation and fencing identifiers, not secret machine credentials. There is no
-historical claim registry or additional generation counter. Released/completed
-records retain the last execution information.
+Callers generate a fresh claim UUID for each acquisition and never reuse it.
+While a worker record is retained, the service rejects its claim ID's reuse and
+requires the current claim plus an exact task version for subsequent writes.
+Force withdrawal clears that last server-side record without adding a
+historical ID registry. The foundation
+originally required persisting that ID before acquisition; local records
+then separated actual grants from in-memory acquisition, and the first
+foreground runtime introduced durable claimAttempt and control intent. The
+[six-column simplification](../simplification/2026-10-27-worker-claim-records.md)
+returns request identity to the current process: unknown results are observed
+through complete inventory or explicit task GET without replay. No preclaim task
+or historical registry is added. Claim IDs are public fencing/correlation
+identifiers, not credentials. Released/completed records retain the last execution.
 
 The typed in-process API client owns HTTP operations and response parsing. The
 foundation originally used known task IDs persisted locally or explicitly

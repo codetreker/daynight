@@ -9,8 +9,9 @@ addresses and clone locations duplicates Project identity already held by the
 service, while automatically selecting every accessible Project makes service
 membership determine which repositories can receive new task executions.
 Operators also need to identify missing local prerequisites and understand which
-native settings apply to the selected scope. Configuration interaction must
-preserve cleanup deadlines already accepted by an earlier execution.
+native settings apply to the selected scope. Configuration interaction preserves
+explicit selection, credentials and existing repository bindings without
+creating partial task resources.
 
 ## Decision
 
@@ -21,18 +22,21 @@ compatible native settings and clears incompatible global or per-Project values
 when switching agent. The summary shows the complete selection, removals and
 native resets before a final confirmation. Agent defaults and the complete
 Project scope are saved in one atomic update; the selected agent applies to all
-selected Projects. Running assignments keep their original frozen settings.
+selected Projects. Running processes retain their startup settings; native
+processes restarted by a later runner use current applicable configuration under
+the [six-column record decision](../simplification/2026-10-27-worker-claim-records.md).
 
-The repo list/add/remove commands inspect or change the saved acquisition scope; add and remove offer
+The repo list/add/remove commands inspect or change the saved acquisition
+scope; add and remove offer
 multiselection, or an explicit --project UUID for noninteractive use. Choices show
 the name, complete UUID and repository URL. New registrations save the server's
 original repoUrl, explicit projectId and an absolute local path. Matching existing
 registrations retain their exact transport URL, path and native-agent overrides;
 remote-only association adds only projectId. An equivalent HTTPS Project address
-does not replace an existing SSH transport: unfinished local records and unresolved
-claim attempts retain their literal repository binding. Remove changes configuration
-only, retaining clones, claims, worktrees, native history and frozen execution
-settings. The running process continues to use startup settings.
+does not replace an existing SSH transport: unfinished local records retain
+their literal repository binding. Remove changes configuration only, retaining
+clones, claims, worktrees and native history. The running process continues to
+use startup settings.
 
 Worker owns worker.repositoryRoot, a validated raw string defaulting to
 ~/daynights. It is independent of review's clone-root setting. Registration
@@ -45,16 +49,20 @@ collapse those identities. Review retains its own configuration parser, YAML
 writes and lifecycle.
 
 The [foreground runtime](2026-10-27-foreground-worker-runtime.md) owns omission
-defaults and retained execution resources. Its public command passes an explicit
-preparation callback into the runtime. Cold startup prepares an empty selection
-before identity, locks, SQLite, Git or Herdr. A restart with retained state first
-establishes committed-cleanup discovery so persisted deadlines continue while
-Project lookup or prompting waits. New task resources wait for successful
-selection. After preparation, service credentials and worker settings are
-validated from one captured configuration source. The service context must still
-match, and maxConcurrent observes that snapshot's prepared settings. An atomic
-file replacement after capture cannot supply different worker parameters under
-the original service context. Existing assignments keep their original snapshots.
+defaults and resource execution. Its public command passes an explicit
+preparation callback into the runtime. An empty selection is resolved before
+new task resources are created; configured Projects are registered locally
+before the first complete claim inventory, including with an empty database.
+The [simplification decision](../simplification/2026-10-27-worker-claim-records.md)
+removes the original promise that persisted cleanup deadlines continue while a
+restarted process waits for Project selection. Current-process cleanup jobs
+remain separate from normal reconciliation.
+
+After preparation, service credentials and worker settings are validated from
+one captured configuration source. The service context must still match, and
+maxConcurrent uses that snapshot's prepared settings. An atomic file replacement
+after capture cannot supply different worker parameters under the original
+service context. Restarted native processes use current applicable agent settings.
 
 A selection snapshot covers raw worker.repositoryRoot presence and value,
 worker.repositories and service credentials. Setup adds raw global native-field
@@ -78,10 +86,11 @@ Setup shares native prerequisite checks with the runtime's [Herdr
 adapter](2026-10-26-worker-herdr-adapter.md). Local version, directory, runtime,
 hook and effective-settings checks use bounded read-only commands; official
 integration state is inspected through offline herdr integration status. The
-runtime retains its typed RPC and original-history gates. Independent reports
-are collected together, and missing selected prerequisites allow saving with a
-repair instruction. Provider authentication, future task-directory trust, hook
-execution and live daemon capabilities remain unverified.
+runtime uses typed RPC integration checks in task cwd and reports native resume
+errors directly. Independent reports are collected together, and missing
+selected prerequisites allow saving with a repair instruction. Provider
+authentication, future task-directory trust, hook execution and live daemon
+capabilities remain unverified.
 
 Every launched probe settles before inspection returns. Cleanup failures,
 including wrapped AggregateError causes, remain failures even during cancellation.
@@ -111,17 +120,18 @@ matching an operator responsibility without adding information.
 **Replace retained transports with the current Project URL.** A canonical
 repository identity can have distinct HTTPS and SSH transport settings. Rewriting
 the stored URL changes authentication behavior and conflicts with literal local
-bindings retained by unfinished tasks or claim attempts. Matching identity
+bindings retained by unfinished tasks. Matching identity
 validates the association while retaining its original transport.
 
 **Borrow review's clone root.** Review configuration can change independently or
 be absent on a task worker. Reading it couples two capabilities' destinations.
 An independent worker root shares path calculations while preserving ownership.
 
-**Prepare before entering any retained runtime.** This makes cold-start side
-effects easy to avoid, but held Project requests can postpone existing cleanup
-deadlines. Runtime ownership of the callback gives fresh startup and retained
-responsibility their respective ordering guarantees.
+**Prepare before entering any retained runtime.** The original detailed model
+started durable cleanup discovery before waiting for Project selection, so old
+deadlines could advance. The six-column model has no cross-process cleanup
+intent or deadline to continue; fresh project mappings and complete inventory
+establish the next process's resource decisions.
 
 **Read service and worker settings separately after preparation.** An atomic
 configuration replacement between reads can pass the original service check
@@ -151,8 +161,8 @@ scripts and constrained by current service access. Missing terminal input, cance
 inventory and failed writes cannot produce a partial selection or new task
 execution. A selected Project must remain accessible for registration management.
 
-The runtime protects original deadlines while configuration waits and cannot
-rebind an initialized coordinator to changed credentials. Independent roots and
+The runtime does not rebind an initialized coordinator to changed credentials.
+Restarted reconciliation first resolves its selected and saved Project scope. Independent roots and
 preserved existing paths keep configuration edits from relocating original work.
 Invalid known configuration remains visible under the runtime's strict omission
 semantics. The later [unknown-field policy](../bug-fix/2026-10-27-ignore-unknown-configuration-fields.md)

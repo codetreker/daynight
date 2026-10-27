@@ -22,7 +22,7 @@ The canonical using-daynight skill has a separate execute-task-in-managed
 reference under the [managed execution decision](2026-10-26-managed-task-skill.md).
 A worker startup prompt explicitly specifies the worker-managed environment,
 using-daynight skill and managed mode, with project/task/claim/worktree identity,
-actual worktree/branch and frozen configuration. The agent verifies the latest
+actual worktree/branch and the configuration for that invocation. The agent verifies the latest
 active in-progress claim and actual workspace before business work. A worker
 record, cwd or environment variable alone is not an assignment or mode selector.
 Missing or mismatched context waits without falling back to ordinary execution.

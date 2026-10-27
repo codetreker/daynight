@@ -42,7 +42,7 @@ Task creation and general editing use the CLI. The Web app provides browsing,
 status and execution-setting controls, task deletion and attachment management.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
-retry/release/transfer/resume controls. Complete platform acceptance remains
+retry/release/resume controls. Complete platform acceptance remains
 separate from command availability; the
 [requirements](docs/spec/daynight-worker.md) and
 [design](docs/design/daynight-worker.md) define those boundaries.
@@ -131,8 +131,8 @@ provider login or task delivery.
 PROJECT_UUID` for an explicit noninteractive registration; `worker repo list`
 and `worker repo remove` inspect or change the selection. With an empty
 repository list, interactive `worker run` also guides Project selection before
-starting new tasks. A restarted worker continues committed cleanup while that
-selection waits.
+starting new tasks. Startup saves configured Project mappings before reading
+its complete current claim inventory, including after a local database reset.
 
 New registrations use `worker.repositoryRoot`, defaulting to `~/daynights`, and
 keep existing paths when the root changes. Review's clone-root setting is
@@ -147,14 +147,16 @@ agents through bounded cleanup while retaining unfinished claims, worktrees and
 native history. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
 
-If native startup asks for folder trust or another authorization, the worker
-waits without accepting it. Use `daynight worker attach` to make that decision
-in the original native session. For an acknowledged original process whose first
-prompt is known unsent and identity is verified, resolve the blocking screen and
-authorize continuation with `daynight worker retry <task-id> --claim-id
-<original-claim-id>`; the worker keeps the original conversation and settings.
-The [worker guide](packages/daynight/README.md#worker-manual-management)
-explains the required original-claim context and uncertain-input limits.
+Native startup may require folder trust or another authorization. Use
+`daynight worker attach` to make that decision in the task pane. The local task
+record retains only Project/task/claim, pending/active/done, agent type and native
+session ID. A missing session ID produces Warning and a fresh conversation in the
+same worktree; a known ID uses native resume. Cleanup timers and recovery counts
+are process-local, and restarted agents use current applicable settings.
+
+Stop the runner before `worker retry/release/resume`; the commands use
+its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)
+explains version checks, remote-result handling and resource cleanup.
 
 ## Review configuration and startup
 

@@ -35,9 +35,8 @@ export const createWorkerDiagnostics = async (options: {
       timestamp: new Date().toISOString(), workerId: options.workerId, platform: options.platform,
       kind: event.kind, message: redact(event.message),
       ...(task === undefined ? {} : {
-        serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
-        status: task.status, repositoryPath: task.repositoryPath, agent: task.configuration?.agent,
-        recovery: task.recovery, cleanup: task.cleanup,
+        projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
+        status: task.status, agent: task.agent, sessionId: task.sessionId,
       }),
       ...(event.error === undefined ? {} : { error: describeError(event.error) }),
     };

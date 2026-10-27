@@ -13,6 +13,15 @@ recovery dependent on unrelated execution behavior.
 
 ## Decision
 
+The worker retains the responsibility split defined here: service ownership,
+worker scheduling and resources, Herdr terminal control, and agent business
+delivery. Current local records and restart behavior are owned by the
+[six-column simplification](../simplification/2026-10-27-worker-claim-records.md).
+The following preserves the original state-root and checkpoint design, including
+why those stronger persistence guarantees were initially selected.
+
+### Original implementation and rationale
+
 The adopted [requirements](../../../../docs/spec/daynight-worker.md) and
 [architecture](../../../../docs/design/daynight-worker.md) define a foreground
 worker with four responsibilities: the service owns eligibility and exclusive
@@ -128,6 +137,13 @@ keeps common mechanisms available without imposing one coordinator or SQLite
 schema on these different lifecycles.
 
 ## Consequences
+
+The original consequences below apply to the initial worker_state/executions
+checkpoint model. The current simplification replaces those storage details;
+the service, native integration and independent platform-verification boundaries
+remain in force.
+
+### Original consequences
 
 The design keeps exclusive ownership and crash recovery explicit without a
 second agent reporting protocol. Lost external responses cannot justify another

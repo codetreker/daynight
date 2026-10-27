@@ -8,8 +8,8 @@ Read [the handbook](handbook.md) for CLI operations and failure semantics.
 ## Establish the assignment
 
 The startup prompt supplies `projectId`, `taskId`, the original `claimId`,
-`worktreeId`, the actual worktree path and branch, and the execution's frozen
-configuration. Use that explicit assignment throughout execution and recovery.
+`worktreeId`, the actual worktree path and branch, and the configuration selected
+for this invocation. Use that explicit assignment throughout execution and recovery.
 Task properties, the working directory, environment variables, and an ordinary
 conversation request do not establish this managed context.
 
@@ -34,9 +34,10 @@ daynight task show <task-id> --project <project-id> --json
 Verify its `projectId` and `id`, `status=in_progress`, and
 `properties.worker.state=active` with the supplied `claimId` and `worktreeId`.
 Verify the actual working directory and Git branch match the supplied worktree.
-Use the supplied frozen execution configuration without replacing it from
-current defaults. If the same claim is already `completed` and the task is
-`done`, report the existing completion and return without reexecuting it. Any
+Use the configuration supplied for this invocation. The controller selects the
+current settings appropriate to the recorded agent when it launches or resumes
+a native process; an executor does not independently replace that assignment.
+If the same claim is already `completed` and the task is `done`, report the existing completion and return without reexecuting it. Any
 other state or identity mismatch leaves execution waiting; an observed claim
 change stops business writes immediately.
 

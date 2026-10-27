@@ -216,7 +216,7 @@ credentials 拥有配置观察值核对，browser 拥有平台打开器。命令
 
 `worker` 的轻量 definition/index 先完成命令解析与帮助分派，再加载对应业务。setup 与 repo 入口拥有配置路径、读取/保存及 Project 选择；需要远端项目时使用 typed ApiClient，repo list 保持本地只读。setup 复用有界原生前置检查，环境诊断和配置确认不取得执行实例锁、不打开 SQLite 或启动 Herdr/native agent。attach 入口使用已有私有会话的客户端描述，不进入任务控制器。
 
-run 的 runtime 组合固定状态、实例排他、SQLite、Git 与 Herdr 的前台生命周期。人工管理入口保存具体控制意图，需要独立推进时复用既有排他与资源控制。coordinator 拥有轮询/名额/任务串行推进，execution 与 cleanup 分别消费原执行事实；这些生命周期使用 worker 自己的状态所有权。安装包路径由稳定入口传入，managed prompt 指向同一包的绝对技能入口。具体持久化和未知动作处理由[worker 设计](daynight-worker.md)拥有。
+run 的 runtime 组合固定状态、实例排他、SQLite、Git 与 Herdr 的前台生命周期。人工管理入口要求停止 runner 后取得同一实例锁，同步处理一个指定 claim，不保存跨进程控制意图。coordinator 拥有轮询/名额/任务串行推进，execution 与 cleanup 分别消费原执行事实；这些生命周期使用 worker 自己的状态所有权。安装包路径由稳定入口传入，managed prompt 指向同一包的绝对技能入口。具体持久化和未知动作处理由[worker 设计](daynight-worker.md)拥有。
 
 `config/` 拥有共享配置路径、严格 YAML 和保留注释的文件保存协议；未知字段在运行投影中
 忽略并在文档中保留。`files.ts` 的写入描述必须声明字段归属，锁内保存入口统一比较非归属

@@ -15,8 +15,8 @@ A path or task ID alone cannot authorize reuse or deletion.
 
 The [worker Git manager](../../../../packages/daynight/src/commands/worker/worktrees.ts)
 provides repository preparation, task worktree creation/verification and terminal
-removal. It consumes the original project/task/claim/worktree identity and returns
-actual bindings to the existing [local store](2026-10-26-worker-local-records.md).
+removal. It consumes the project mapping and static task/claim/worktree owner and returns
+actual bindings to its caller. The [six-column record decision](../simplification/2026-10-27-worker-claim-records.md) removes saved resource bindings from the local task row.
 It does not add a second database, registry or recovery coordinator.
 
 Repository preparation clones only missing paths. Existing non-bare repositories
@@ -44,7 +44,7 @@ leaf must retain its exact regular `.git` pointer to the validated administrativ
 registration, including during terminal cleanup. Inspection also checks the
 marker and administrative backpointer; a foreign marker, symlink, ambiguous
 registration or missing/mismatched pointer blocks destructive operations.
-Matching Git creation can be recovered before SQLite binding is saved; an
+Matching Git creation can be discovered directly from static registration; an
 unmarked pre-add reservation remains a visible conflict.
 
 Branch validation invokes Git's `symbolic-ref --quiet HEAD` with the validated
@@ -132,7 +132,7 @@ explicit management action.
 
 Git operations return resource facts, not ownership eligibility. The coordinator
 still obtains complete current claim inventory, supplies stop/closure proof,
-serializes each execution and saves successful bindings/cleanup. Failed deletion
+serializes each execution and retains call-local stop and cleanup observations. Failed deletion
 must retain local responsibility. These primitives do not establish the foreground
 scheduler, native Herdr execution, service management-protocol revisions or
 cross-platform whole-Goal acceptance.

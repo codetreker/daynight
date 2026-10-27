@@ -16,12 +16,9 @@ export { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./argumen
 export type HerdrExecutionContext = { serverOrigin: string; projectId: string; taskId: string; claimId: string; worktreeId: string; cwd: string; agent: WorkerAgent };
 export type HerdrExecutionOwner = Pick<HerdrExecutionContext, "serverOrigin" | "projectId" | "taskId" | "claimId" | "worktreeId">;
 export type HerdrTaskBinding = { session: string; workspaceId: string; paneId: string; terminalId: string };
-export type HerdrWorkspaceEvidence = { binding: HerdrTaskBinding; ownerLabel: string; environment: HerdrWorkspaceEnvironment };
-export type HerdrPreparedWorkspace = { binding: HerdrTaskBinding; workspaceEvidence: HerdrWorkspaceEvidence | null };
-export type HerdrLaunchEvidence = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; argv: readonly string[]; referenceBaseline: "empty"; workspaceEvidence: HerdrWorkspaceEvidence };
+export type HerdrPendingStop = { context: HerdrExecutionOwner & { cwd: string }; binding: HerdrTaskBinding };
 export type HerdrNativeReference = { source: string; agent: WorkerAgent; sessionId: string };
 export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | null; name: string | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null };
-export type HerdrStopObservation = { binding: HerdrTaskBinding; ownerLabel: string; agent: WorkerAgent; nativeSessionId: string | null; shellPid: number; processIds: readonly number[]; nativeProcessIds: readonly number[] | null; observedAt: number };
 export type HerdrOwnedWorkspace = { owner: HerdrExecutionOwner; workspaceId: string; panes: { binding: HerdrTaskBinding; cwd: string | null; kind: WorkerAgent | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null }[] };
 export type HerdrAgentPreflight = { verifyStart(input: { context: HerdrExecutionContext; configuration: HerdrAgentConfiguration; resumeSessionId?: string }, operation: Operation): Promise<unknown> };
 export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string }>;
@@ -40,48 +37,13 @@ const optionalText = (value: unknown, name: string): string | null => value === 
 const optionalBoolean = (value: unknown, name: string): boolean => { if (value === undefined) return false; if (typeof value !== "boolean") throw new TypeError(`${name} must be boolean.`); return value; };
 const pid = (value: unknown): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new TypeError("Herdr process ID must be a positive process identifier."); return value; };
 const counter = (value: unknown, name: string): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a nonnegative safe integer.`); return value; };
-const nativeProcessEvidence = (value: RecordValue, agent: WorkerAgent): boolean => {
-  const executable = (candidate: unknown): boolean => {
-    if (typeof candidate !== "string") return false;
-    const leaf = candidate.split(/[\\/]/).at(-1)?.toLowerCase();
-    return leaf === agent || leaf === `${agent}.exe` || leaf === `${agent}.js`;
-  };
-  if (value.argv !== undefined) {
-    const argv = array(value.argv, "Native process arguments");
-    if (argv.some((argument) => typeof argument !== "string")) throw new TypeError("Native process arguments must be strings.");
-    if (executable(argv[0])) return true;
-    const interpreter = typeof argv[0] === "string" ? argv[0].split(/[\\/]/).at(-1)?.toLowerCase() : undefined;
-    if ((interpreter === "node" || interpreter === "node.exe") && executable(argv[1])) return true;
-  }
-  return executable(value.argv0) || executable(value.name);
-};
-const nativeInteractiveProcessEvidence = (value: RecordValue, agent: WorkerAgent): boolean => {
-  if (!Array.isArray(value.argv) || !value.argv.every((argument) => typeof argument === "string")) return false;
-  const argv = value.argv as string[];
-  const leaf = (argument: string | undefined) => argument?.split(/[\\/]/).at(-1)?.toLowerCase();
-  const native = (argument: string | undefined) => [agent, `${agent}.exe`, `${agent}.js`].includes(leaf(argument) as string);
-  const offset = native(argv[0]) ? 1 : ["node", "node.exe"].includes(leaf(argv[0]) as string) && native(argv[1]) ? 2 : 0;
-  if (offset === 0) return false;
-  const args = argv.slice(offset);
-  // Only an interactive invocation can fence deferred input. Subcommands such
-  // as `codex exec` and their descendants are not the original UI process.
-  if (agent === "codex" && args[0] === "--no-daemon") args.shift();
-  if (agent === "codex" && args[0] === "resume" && typeof args[1] === "string" && canonicalId(args[1]) !== null) args.splice(0, 2);
-  if (agent === "copilot" && args[0]?.startsWith("--resume=") && canonicalId(args[0].slice("--resume=".length)) !== null) args.shift();
-  if (args[0] === "--model" && typeof args[1] === "string" && args[1] !== "") args.splice(0, 2);
-  try { validateHerdrAgentArguments(agent, args); return true; }
-  catch { return false; }
-};
 const expectedResult = (value: HerdrRpcResult, type: string): HerdrRpcResult => { if (value.type !== type) throw new TypeError(`Expected Herdr ${type} result; received ${value.type}.`); return value; };
-const sameBinding = (left: HerdrTaskBinding, right: HerdrTaskBinding): boolean => left.session === right.session && left.workspaceId === right.workspaceId && left.paneId === right.paneId && left.terminalId === right.terminalId;
-const contextIdentity = (context: HerdrExecutionContext) => {
-  if (context.agent !== "codex" && context.agent !== "copilot") throw new TypeError("Execution agent must be codex or copilot.");
-  if (!path.isAbsolute(context.cwd) || /[\r\n\0]/.test(context.cwd)) throw new TypeError("The task cwd must be an absolute path without line breaks or NUL.");
+const contextIdentity = (context: HerdrExecutionOwner) => {
   const identifier = (value: string, label: string): string => { const result = canonicalId(value); if (result === null) throw new TypeError(`${label} must be a UUID.`); return result; };
   return { serverOrigin: normalizeServerUrl(context.serverOrigin), projectId: identifier(context.projectId, "Project ID"), taskId: identifier(context.taskId, "Task ID"), claimId: identifier(context.claimId, "Claim ID"), worktreeId: identifier(context.worktreeId, "Worktree ID") };
 };
-export const herdrExecutionLabel = (context: HerdrExecutionContext): string => `daynight:${JSON.stringify(contextIdentity(context))}`;
-export const herdrExecutionAgentName = (context: HerdrExecutionContext): string => `dn_${createHash("sha256").update(herdrExecutionLabel(context)).digest("hex").slice(0, 24)}`;
+export const herdrExecutionLabel = (context: HerdrExecutionOwner): string => `daynight:${JSON.stringify(contextIdentity(context))}`;
+export const herdrExecutionAgentName = (context: HerdrExecutionOwner): string => `dn_${createHash("sha256").update(herdrExecutionLabel(context)).digest("hex").slice(0, 24)}`;
 export const parseHerdrExecutionLabel = (label: string): HerdrExecutionOwner | null => {
   if (!label.startsWith("daynight:")) return null;
   const data = object(JSON.parse(label.slice("daynight:".length)) as unknown, "Herdr execution label");
@@ -95,11 +57,9 @@ export const parseHerdrExecutionLabel = (label: string): HerdrExecutionOwner | n
 
 export class HerdrAgentActionError extends Error {
   readonly promptSubmission: "not-submitted" | "submitted" | "unknown" | null;
-  readonly launchEvidence: HerdrLaunchEvidence | null;
-  constructor(message: string, readonly action: string, readonly submission: "not-submitted" | "rejected" | "unknown", options?: ErrorOptions & { promptSubmission?: "not-submitted" | "submitted" | "unknown"; launchEvidence?: HerdrLaunchEvidence }) {
+  constructor(message: string, readonly action: string, readonly submission: "not-submitted" | "rejected" | "unknown", options?: ErrorOptions & { promptSubmission?: "not-submitted" | "submitted" | "unknown" }) {
     super(message, options); this.name = "HerdrAgentActionError";
     this.promptSubmission = options?.promptSubmission === undefined ? null : options.promptSubmission;
-    this.launchEvidence = options?.launchEvidence === undefined ? null : options.launchEvidence;
   }
 }
 const rejectionCodes: Readonly<Record<string, ReadonlySet<string>>> = {
@@ -124,17 +84,11 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const xdgFields = ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const;
   if (Object.keys(suppliedEnvironment).length !== xdgFields.length || xdgFields.some((field) => !Object.hasOwn(suppliedEnvironment, field) || typeof suppliedEnvironment[field] !== "string" || suppliedEnvironment[field].includes("\0"))) throw new TypeError("Task workspace environment must contain only XDG_CONFIG_HOME and XDG_STATE_HOME string values without NUL.");
   const workspaceEnvironment = { XDG_CONFIG_HOME: suppliedEnvironment.XDG_CONFIG_HOME as string, XDG_STATE_HOME: suppliedEnvironment.XDG_STATE_HOME as string };
-  const validWorkspaceEvidence = (context: HerdrExecutionContext, binding: HerdrTaskBinding, evidence: HerdrWorkspaceEvidence | null | undefined): evidence is HerdrWorkspaceEvidence => {
-    if (evidence === undefined || evidence === null || typeof evidence.binding !== "object" || evidence.binding === null || !sameBinding(evidence.binding, binding) || evidence.ownerLabel !== herdrExecutionLabel(context)) return false;
-    const environment: unknown = evidence.environment;
-    if (typeof environment !== "object" || environment === null || Array.isArray(environment)) return false;
-    const values = environment as Record<string, unknown>;
-    return Object.keys(values).length === xdgFields.length && xdgFields.every((field) => Object.hasOwn(values, field) && values[field] === workspaceEnvironment[field]);
-  };
   const isExecuting = options.processExecuting === undefined ? processExecuting : options.processExecuting;
   const pollInterval = options.pollIntervalMs === undefined ? 100 : options.pollIntervalMs;
   if (!Number.isSafeInteger(pollInterval) || pollInterval <= 0 || pollInterval > 1000) throw new TypeError("The Herdr observation interval must be between 1 and 1000 milliseconds.");
   const inputTails = new Map<string, Promise<void>>();
+  const stoppingProcesses = new Map<string, HerdrPendingStop & { processIds: Set<number> }>();
   const serialized = async <T>(key: string, operation: Operation, action: () => Promise<T>): Promise<T> => {
     operation.check();
     const previous = inputTails.get(key);
@@ -162,12 +116,22 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     operation.signal.addEventListener("abort", abort, { once: true });
     if (operation.signal.aborted) abort();
   });
+  const finishStop = async (key: string, operation: Operation): Promise<void> => {
+    const pending = stoppingProcesses.get(key);
+    if (pending === undefined) return;
+    while (true) {
+      let running = false;
+      for (const processId of pending.processIds) { operation.check(); if (await isExecuting(processId)) running = true; }
+      if (!running) { stoppingProcesses.delete(key); return; }
+      await wait(operation);
+    }
+  };
   const snapshot = async (operation: Operation) => {
     const result = expectedResult(await options.rpc.request("session.snapshot", {}, operation), "session_snapshot");
     const data = object(result.snapshot, "Herdr snapshot");
     return { workspaces: array(data.workspaces, "Herdr workspaces").map((value) => object(value, "Herdr workspace")), panes: array(data.panes, "Herdr panes").map((value) => object(value, "Herdr pane")), agents: array(data.agents, "Herdr agents").map((value) => object(value, "Herdr agent")), tabs: array(data.tabs, "Herdr tabs").map((value) => object(value, "Herdr tab")) };
   };
-  const verifyCwd = async (actual: unknown, context: HerdrExecutionContext): Promise<void> => {
+  const verifyCwd = async (actual: unknown, context: { cwd: string }): Promise<void> => {
     const actualPath = text(actual, "Herdr pane cwd");
     if (!path.isAbsolute(actualPath) || path.normalize(await realpath(actualPath)) !== path.normalize(await realpath(context.cwd))) throw new Error("The Herdr pane cwd differs from the original task worktree.");
   };
@@ -232,7 +196,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     let before: HerdrAgentObservation;
     const verifyInputAgent = (current: HerdrAgentObservation): void => {
       const knownAgent = current.kind === context.agent || current.nativeSession?.agent === context.agent || (initialPrompt && current.name === herdrExecutionAgentName(context));
-      if (!knownAgent || current.launchPending || (!initialPrompt && current.nativeSession === null) || (initialPrompt && !current.interactiveReady) || current.status === "blocked") throw new Error("The original native agent is not ready for input.");
+      if (!knownAgent || current.launchPending || ((initialPrompt || current.nativeSession === null) && !current.interactiveReady) || current.status === "blocked") throw new Error("The original native agent is not ready for input.");
     };
     try {
       while (true) {
@@ -255,51 +219,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     } catch (cause) { throw new HerdrAgentActionError("The prompt receipt could not identify the original task agent.", "agent.prompt", "unknown", { cause, promptSubmission: "unknown" }); }
     return { submission: "submitted", observation: before };
   };
-  const verifyStopObservation = (context: HerdrExecutionContext, binding: HerdrTaskBinding, evidence: HerdrStopObservation): void => {
-    if (!sameBinding(binding, evidence.binding) || evidence.ownerLabel !== herdrExecutionLabel(context) || evidence.agent !== context.agent) throw new Error("The saved process observation belongs to another execution.");
-    pid(evidence.shellPid);
-    if (evidence.nativeSessionId !== null && canonicalId(evidence.nativeSessionId) === null) throw new Error("The saved native session identity is invalid.");
-    if (!Array.isArray(evidence.processIds) || evidence.processIds.length === 0 || new Set(evidence.processIds).size !== evidence.processIds.length || evidence.processIds.some((value) => pid(value) === evidence.shellPid)) throw new Error("The original native process observation is invalid.");
-    if (evidence.nativeProcessIds !== null && (!Array.isArray(evidence.nativeProcessIds) || evidence.nativeProcessIds.length === 0 || new Set(evidence.nativeProcessIds).size !== evidence.nativeProcessIds.length || evidence.nativeProcessIds.some((value) => pid(value) === evidence.shellPid || !evidence.processIds.includes(value)))) throw new Error("The original interactive native process observation is invalid.");
-    if (!Number.isSafeInteger(evidence.observedAt) || evidence.observedAt < 0) throw new Error("The original process observation time is invalid.");
-  };
-  const absentProcesses = async (evidence: HerdrStopObservation, operation: Operation): Promise<void> => {
-    for (const processId of evidence.processIds) { operation.check(); if (await isExecuting(processId)) throw new Error("The original native process is still executing or its absence is unconfirmed."); }
-  };
-  const verifyOriginalStopScope = (context: HerdrExecutionContext, binding: HerdrTaskBinding, evidence: HerdrStopObservation): void => {
-    verifyStopObservation(context, binding, evidence);
-    if (binding.session !== session) throw new Error("The original stop observation belongs to another Herdr session.");
-    for (const field of ["session", "workspaceId", "paneId", "terminalId"] as const) text(binding[field], `Original Herdr ${field}`);
-  };
-  const originalProcessesAbsent = async (evidence: HerdrStopObservation, operation: Operation): Promise<void> => {
-    await absentProcesses(evidence, operation); operation.check();
-    if (await isExecuting(evidence.shellPid)) throw new Error("The original task shell is still executing or its absence is unconfirmed.");
-  };
-  const requireOriginalResourceAbsent = (data: Awaited<ReturnType<typeof snapshot>>, binding: HerdrTaskBinding): void => {
-    const workspaceIds = new Set<string>();
-    for (const workspace of data.workspaces) {
-      const id = text(workspace.workspace_id, "Observed workspace ID");
-      if (typeof workspace.label !== "string" || workspaceIds.has(id)) throw new Error("The Herdr workspace snapshot is malformed or ambiguous.");
-      workspaceIds.add(id);
-      if (id === binding.workspaceId) throw new Error("The original task workspace is still present.");
-    }
-    if ([...data.panes, ...data.agents].some((resource) => resource.workspace_id === binding.workspaceId || resource.pane_id === binding.paneId || resource.terminal_id === binding.terminalId)) throw new Error("The original task pane, terminal or agent is still present in the Herdr snapshot.");
-  };
-  const emptyOwnedPane = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, mode: "unlaunched" | "restored") => {
-    const current = await observation(context, binding, operation);
-    if (current.kind !== null || current.launchPending || current.interactiveReady || (mode === "unlaunched" && (current.name !== null || current.nativeSession !== null))) throw new Error(mode === "unlaunched" ? "The task pane is not an unlaunched plain shell." : "The restored task pane is not an inactive shell.");
-    const owned = await readOwned(context, binding, operation);
-    if (mode === "unlaunched" && owned.data.panes.filter((pane) => pane.workspace_id === binding.workspaceId).length !== 1) throw new Error("The task workspace does not contain a single unlaunched shell.");
-    const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info");
-    const info = object(result.process_info, "Empty task pane process observation");
-    if (info.pane_id !== binding.paneId) throw new Error("The empty-shell process observation belongs to another pane.");
-    const shellPid = pid(info.shell_pid);
-    if (info.foreground_process_group_id !== undefined && pid(info.foreground_process_group_id) !== shellPid) throw new Error("The task shell has a different foreground process group.");
-    const processes = info.foreground_processes === undefined ? [] : array(info.foreground_processes, "Empty task foreground processes");
-    if (processes.some((value) => pid(object(value, "Empty task foreground process").pid) !== shellPid)) throw new Error("The task shell still hosts foreground work.");
-    return { current, data: owned.data };
-  };
   return {
+    pendingStops: (): readonly HerdrPendingStop[] => [...stoppingProcesses.values()].map(({ context, binding }) => ({ context: { ...context }, binding: { ...binding } })),
     listResources: async (operation: Operation): Promise<HerdrOwnedWorkspace[]> => {
       const data = await snapshot(operation);
       const result: HerdrOwnedWorkspace[] = [];
@@ -345,11 +266,11 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
       return result;
     },
-    prepareWorkspace: async (context: HerdrExecutionContext, operation: Operation): Promise<HerdrPreparedWorkspace> => {
+    prepareWorkspace: async (context: HerdrExecutionContext, operation: Operation): Promise<HerdrTaskBinding> => {
       let createPossible = false;
       try {
         const label = herdrExecutionLabel(context);
-        await realpath(context.cwd);
+        const expectedCwd = path.normalize(await realpath(context.cwd));
         const data = await snapshot(operation);
         const matching = data.workspaces.filter((workspace) => workspace.label === label);
         if (matching.length > 1) throw new Error("The task workspace label is duplicated.");
@@ -360,213 +281,99 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           const pane = panes[0]!;
           const binding = { session, workspaceId, paneId: text(pane.pane_id, "Task pane ID"), terminalId: text(pane.terminal_id, "Task terminal ID") };
           await readOwned(context, binding, operation);
-          return { binding, workspaceEvidence: null };
+          return binding;
         }
-        const expectedCwd = path.normalize(await realpath(context.cwd));
         for (const pane of data.panes) {
-          if (typeof pane.cwd !== "string") continue;
-          const reportedCwd = path.normalize(path.resolve(pane.cwd));
-          if (reportedCwd === expectedCwd || reportedCwd === path.normalize(path.resolve(context.cwd))) throw new Error("The requested task cwd already belongs to a different Herdr workspace.");
+          if (typeof pane.cwd === "string" && [expectedCwd, path.normalize(path.resolve(context.cwd))].includes(path.normalize(path.resolve(pane.cwd)))) throw new Error("The requested task cwd already belongs to a different Herdr workspace.");
         }
         createPossible = true;
         const result = await mutation("workspace.create", { cwd: context.cwd, focus: false, label, env: { ...workspaceEnvironment } }, "workspace_created", operation);
-        try {
-          const workspace = object(result.workspace, "Created workspace");
-          const pane = object(result.root_pane, "Created task pane");
-          const binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };
-          await readOwned(context, binding, operation);
-          return { binding, workspaceEvidence: { binding: { ...binding }, ownerLabel: label, environment: { ...workspaceEnvironment } } };
-        } catch (cause) { throw new HerdrAgentActionError("The created task workspace could not be verified.", "workspace.create", "unknown", { cause }); }
+        const workspace = object(result.workspace, "Created workspace");
+        const pane = object(result.root_pane, "Created task pane");
+        const binding = { session, workspaceId: text(workspace.workspace_id, "Created workspace ID"), paneId: text(pane.pane_id, "Created pane ID"), terminalId: text(pane.terminal_id, "Created terminal ID") };
+        await readOwned(context, binding, operation);
+        return binding;
       } catch (cause) {
-        if (createPossible && cause instanceof HerdrAgentActionError) throw cause;
+        if (cause instanceof HerdrAgentActionError) throw cause;
         throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The task workspace could not be prepared.", "workspace.create", createPossible ? "unknown" : "not-submitted", { cause });
       }
     },
     observe: observation,
-    start: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: { configuration: HerdrAgentConfiguration; prompt: string; resumeSessionId?: string; initialPromptNotSubmitted?: true; launchEvidence?: HerdrLaunchEvidence; workspaceEvidence?: HerdrWorkspaceEvidence | null }, operation: Operation) => {
-      let launchEvidence: HerdrLaunchEvidence | null = null;
-      let promptSubmission: "not-submitted" | "submitted" = "not-submitted";
-      let nativeStartPossible = false;
+    start: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: { configuration: HerdrAgentConfiguration; prompt: string; resumeSessionId?: string }, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => {
+      if (input.configuration.agent !== context.agent) throw new TypeError("The agent configuration differs from the execution identity.");
+      const args = buildHerdrAgentArguments(input.configuration, input.resumeSessionId);
+      if (typeof input.prompt !== "string" || input.prompt.length === 0) throw new TypeError("The startup prompt must be nonempty text.");
+      const before = await observation(context, binding, operation);
+      if (before.kind !== null || before.launchPending || before.interactiveReady) return before;
+      await options.preflight.verifyStart({ context, configuration: input.configuration, ...(input.resumeSessionId === undefined ? {} : { resumeSessionId: input.resumeSessionId }) }, operation);
+      const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
+      if (timeout <= 3000) throw new HerdrAgentActionError("The remaining operation budget cannot start a native agent.", "agent.start", "not-submitted");
+      const started = await mutation("agent.start", { name: herdrExecutionAgentName(context), kind: context.agent, pane_id: binding.paneId, args, timeout_ms: timeout }, "agent_started", operation);
+      const acknowledged = object(started.agent, "Started native agent");
+      const argv = array(started.argv, "Native launch arguments");
+      const expectedArgv = [context.agent, ...args];
+      if (acknowledged.pane_id !== binding.paneId || acknowledged.terminal_id !== binding.terminalId || acknowledged.workspace_id !== binding.workspaceId || argv.length !== expectedArgv.length || argv.some((value, index) => value !== expectedArgv[index])) throw new HerdrAgentActionError("The native start result differs from the requested target or arguments.", "agent.start", "unknown");
       try {
-        const prior = input.launchEvidence;
-        if (prior !== undefined && prior.referenceBaseline === "empty" && prior.agent === context.agent && prior.ownerLabel === herdrExecutionLabel(context) && sameBinding(prior.binding, binding) && Array.isArray(prior.argv) && prior.argv[0] === context.agent && prior.argv.every((value) => typeof value === "string")) launchEvidence = prior;
-        return await serialized(binding.paneId, operation, async () => {
-          if (input.configuration.agent !== context.agent) throw new TypeError("The frozen agent configuration differs from the execution identity.");
-          const args = buildHerdrAgentArguments(input.configuration, input.resumeSessionId);
-          if (typeof input.prompt !== "string" || input.prompt.length === 0) throw new TypeError("The caller startup prompt must be nonempty text.");
-          const before = await observation(context, binding, operation);
-          const existing = before.kind !== null || before.name !== null || before.launchPending || before.interactiveReady;
-          if (input.resumeSessionId !== undefined && before.nativeSession !== null && before.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new Error("The retained native session differs from the original recovery session.");
-          const rebind = (reason: "retained-native-reference" | "unverified-launch" | "unverified-workspace-environment") => ({ kind: "rebind-required" as const, reason, observation: before, promptSubmission: "not-submitted" as const, launchEvidence: null });
-          if (!before.launchPending && !before.interactiveReady && before.kind === null && before.nativeSession !== null) return rebind("retained-native-reference");
-          let workspaceEvidence: HerdrWorkspaceEvidence;
-          if (existing) {
-            // A reconnect observes the existing input history. Only the caller's persisted
-            // never-submitted fact and verified empty-reference launch can authorize deferred first input.
-            if (input.initialPromptNotSubmitted !== true) return { kind: "reconnected" as const, observation: before, promptSubmission: "not-submitted" as const, launchEvidence: null };
-            const evidence = input.launchEvidence;
-            const expectedArgv = [context.agent, ...args];
-            if (evidence === undefined || evidence.referenceBaseline !== "empty" || evidence.ownerLabel !== herdrExecutionLabel(context) || evidence.agent !== context.agent || !sameBinding(evidence.binding, binding) || !Array.isArray(evidence.argv) || evidence.argv.length !== expectedArgv.length || evidence.argv.some((value, index) => value !== expectedArgv[index])) return rebind("unverified-launch");
-            if (!validWorkspaceEvidence(context, binding, evidence.workspaceEvidence) || (input.workspaceEvidence !== undefined && input.workspaceEvidence !== null && !validWorkspaceEvidence(context, binding, input.workspaceEvidence))) return rebind("unverified-workspace-environment");
-            workspaceEvidence = evidence.workspaceEvidence;
-            launchEvidence = evidence;
-          } else if (input.initialPromptNotSubmitted === true) {
-            return rebind("unverified-launch");
-          } else if (before.nativeSession !== null) {
-            return rebind("retained-native-reference");
-          } else {
-            if (!validWorkspaceEvidence(context, binding, input.workspaceEvidence)) return rebind("unverified-workspace-environment");
-            if (input.launchEvidence !== undefined && !validWorkspaceEvidence(context, binding, input.launchEvidence.workspaceEvidence)) return rebind("unverified-workspace-environment");
-            workspaceEvidence = input.workspaceEvidence;
-          }
-          await options.preflight.verifyStart({ context, configuration: input.configuration, ...(input.resumeSessionId === undefined ? {} : { resumeSessionId: input.resumeSessionId }) }, operation);
-          if (!existing) {
-            const timeout = Math.floor(Math.min(30_000, operation.remainingMs()));
-            if (timeout <= 3000) throw new HerdrAgentActionError("The remaining operation budget cannot start a native agent.", "agent.start", "not-submitted", { promptSubmission: "not-submitted" });
-            nativeStartPossible = true;
-            const started = await mutation("agent.start", { name: herdrExecutionAgentName(context), kind: context.agent, pane_id: binding.paneId, args, timeout_ms: timeout }, "agent_started", operation);
-            const acknowledged = object(started.agent, "Native launch receipt");
-            const argv = array(started.argv, "Native launch arguments");
-            const expectedArgv = [context.agent, ...args];
-            if (acknowledged.pane_id !== binding.paneId || acknowledged.terminal_id !== binding.terminalId || acknowledged.workspace_id !== binding.workspaceId || argv.length !== expectedArgv.length || argv.some((value, index) => value !== expectedArgv[index])) throw new Error("The native launch receipt does not preserve its original target and frozen arguments.");
-            launchEvidence = { binding: { ...binding }, ownerLabel: herdrExecutionLabel(context), agent: context.agent, argv: [...expectedArgv], referenceBaseline: "empty", workspaceEvidence };
-          }
-          while (true) {
-            const current = await observation(context, binding, operation);
-            if (current.status === "blocked") return { kind: "waiting" as const, observation: current, promptSubmission: "not-submitted" as const, launchEvidence };
-            const ready = !current.launchPending && current.interactiveReady && (current.kind === context.agent || current.nativeSession?.agent === context.agent || current.name === herdrExecutionAgentName(context));
-            const originalSessionReady = input.resumeSessionId === undefined || current.nativeSession === null || current.nativeSession.sessionId === canonicalId(input.resumeSessionId);
-            if (input.resumeSessionId !== undefined && current.nativeSession !== null && !originalSessionReady) throw new Error("The resumed agent reported a different native session.");
-            if (ready && originalSessionReady) {
-              // Native SessionStart can run on the first user turn, including resume.
-              // The verified explicit launch authorizes one input; its reported identity is checked afterward.
-              // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/session/turn.rs#L340-L342
-              await submit(context, binding, input.prompt, operation, true);
-              promptSubmission = "submitted";
-              while (true) {
-                const reported = await observation(context, binding, operation);
-                if (reported.nativeSession !== null) {
-                  if (input.resumeSessionId !== undefined && reported.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new Error("The resumed native identity changed after prompt submission.");
-                  return { kind: "started" as const, observation: reported, promptSubmission: "submitted" as const, launchEvidence };
-                }
-                if (reported.status === "blocked") return { kind: "waiting" as const, observation: reported, promptSubmission: "submitted" as const, launchEvidence };
-                await wait(operation);
-              }
-            }
-            await wait(operation);
-          }
-        });
-      } catch (cause) {
-        const evidence = launchEvidence === null ? {} : { launchEvidence };
-        if (cause instanceof HerdrAgentActionError) throw new HerdrAgentActionError(cause.message, cause.action, cause.submission, { cause, promptSubmission: cause.promptSubmission === null ? promptSubmission : cause.promptSubmission, ...evidence });
-        throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The native launch or initial prompt could not be confirmed; observe the original pane before any further action.", "agent.start", nativeStartPossible ? "unknown" : "not-submitted", { cause, promptSubmission, ...evidence });
-      }
-    },
-    submitPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation) => serialized(binding.paneId, operation, () => submit(context, binding, prompt, operation)),
-    captureStop: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation): Promise<HerdrStopObservation> => {
-      const current = await observation(context, binding, operation);
-      const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info");
-      const info = object(result.process_info, "Pane process observation");
-      if (info.pane_id !== binding.paneId) throw new Error("The process observation belongs to another pane.");
-      const shellPid = pid(info.shell_pid);
-      const processes = info.foreground_processes === undefined ? [] : array(info.foreground_processes, "Foreground processes");
-      const records = processes.map((value) => object(value, "Foreground process"));
-      const processIds = [...new Set(records.map((value) => pid(value.pid)).filter((value) => value !== shellPid))];
-      const keys = [...new Set(records.filter((value) => pid(value.pid) !== shellPid && nativeInteractiveProcessEvidence(value, context.agent)).map((value) => pid(value.pid)))];
-      if (processIds.length === 0) throw new Error("The original native process identities are unavailable; pane absence or an empty process list cannot establish stopped confirmation.");
-      if (current.launchPending && (current.name !== herdrExecutionAgentName(context) || !records.some((value) => pid(value.pid) !== shellPid && nativeProcessEvidence(value, context.agent)))) throw new Error("The pending task launch has no concrete original native process evidence.");
-      return { binding, ownerLabel: herdrExecutionLabel(context), agent: context.agent, nativeSessionId: current.nativeSession?.sessionId ?? null, shellPid, processIds, nativeProcessIds: keys.length === 0 ? null : keys, observedAt: Date.now() };
-    },
-    requestGracefulStop: (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation) => serialized(binding.paneId, operation, () => submit(context, binding, "/exit", operation)),
-    // This observes only the current shell. Historical never-submitted launch state
-    // remains a separate durable caller precondition for deriving agentStopped.
-    confirmEmptyPane: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation): Promise<{ noNativeProcess: true }> => {
-      await emptyOwnedPane(context, binding, operation, "unlaunched");
-      return { noNativeProcess: true };
-    },
-    confirmStopped: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, evidence: HerdrStopObservation, operation: Operation): Promise<{ agentStopped: true }> => {
-      verifyStopObservation(context, binding, evidence);
-      const current = await readOwned(context, binding, operation, true);
-      await absentProcesses(evidence, operation);
-      if (current.pane !== null) {
-        const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info");
-        const info = object(result.process_info, "Current pane process observation");
-        if (info.pane_id !== binding.paneId) throw new Error("The current process observation belongs to another pane.");
-        const currentShellPid = pid(info.shell_pid);
-        if (currentShellPid !== evidence.shellPid && await isExecuting(evidence.shellPid)) throw new Error("The original task shell is still executing or its absence is unconfirmed.");
-        const currentProcesses = info.foreground_processes === undefined ? [] : array(info.foreground_processes, "Current foreground processes");
-        if (currentProcesses.some((value) => pid(object(value, "Current foreground process").pid) !== currentShellPid)) throw new Error("The original pane still hosts foreground work.");
-      }
-      return { agentStopped: true };
-    },
-    confirmMissingWorkspaceStopped: async (context: HerdrExecutionContext, originalBinding: HerdrTaskBinding, evidence: HerdrStopObservation, operation: Operation): Promise<{ agentStopped: true }> => {
-      verifyOriginalStopScope(context, originalBinding, evidence);
-      const data = await snapshot(operation);
-      requireOriginalResourceAbsent(data, originalBinding);
-      if (data.workspaces.some((workspace) => workspace.label === herdrExecutionLabel(context))) throw new Error("The original task label identifies another resource.");
-      await originalProcessesAbsent(evidence, operation);
-      return { agentStopped: true };
-    },
-    confirmRestoredStop: async (context: HerdrExecutionContext, originalBinding: HerdrTaskBinding, restoredBinding: HerdrTaskBinding, evidence: HerdrStopObservation, operation: Operation): Promise<{ agentStopped: true; binding: HerdrTaskBinding }> => {
-      verifyOriginalStopScope(context, originalBinding, evidence);
-      if (originalBinding.session !== restoredBinding.session || originalBinding.workspaceId !== restoredBinding.workspaceId || originalBinding.paneId !== restoredBinding.paneId) throw new Error("The restored shell does not have the original task workspace and pane association.");
-      const { current } = await emptyOwnedPane(context, restoredBinding, operation, "restored");
-      if (evidence.nativeSessionId !== null && current.nativeSession !== null && evidence.nativeSessionId !== current.nativeSession.sessionId) throw new Error("The restored shell retains a different original native session.");
-      await originalProcessesAbsent(evidence, operation);
-      return { agentStopped: true, binding: { ...restoredBinding } };
-    },
-    confirmReplacedStop: async (context: HerdrExecutionContext, originalBinding: HerdrTaskBinding, replacementBinding: HerdrTaskBinding, evidence: HerdrStopObservation, operation: Operation): Promise<{ agentStopped: true; binding: HerdrTaskBinding }> => {
-      verifyOriginalStopScope(context, originalBinding, evidence);
-      if (replacementBinding.session !== originalBinding.session) throw new Error("The replacement belongs to another Herdr session.");
-      const { data } = await emptyOwnedPane(context, replacementBinding, operation, "unlaunched");
-      requireOriginalResourceAbsent(data, originalBinding);
-      await originalProcessesAbsent(evidence, operation);
-      return { agentStopped: true, binding: { ...replacementBinding } };
-    },
-    forceStop: (context: HerdrExecutionContext, binding: HerdrTaskBinding, evidence: HerdrStopObservation, operation: Operation) => serialized(binding.paneId, operation, async () => {
-      verifyStopObservation(context, binding, evidence);
-      const { data, pane } = await readOwned(context, binding, operation, true);
-      if (pane !== null) {
-        const current = await observation(context, binding, operation);
-        if (evidence.nativeSessionId !== null && current.nativeSession !== null && current.nativeSession.sessionId !== evidence.nativeSessionId) throw new Error("The task pane now identifies another native session; the original stop observation was retained.");
-        const processResult = expectedResult(await options.rpc.request("pane.process_info", { pane_id: binding.paneId }, operation), "pane_process_info");
-        const processInfo = object(processResult.process_info, "Current stop process observation");
-        if (processInfo.pane_id !== binding.paneId || pid(processInfo.shell_pid) !== evidence.shellPid) throw new Error("The original task shell identity has changed.");
-        const foreground = processInfo.foreground_processes === undefined ? [] : array(processInfo.foreground_processes, "Current stop processes");
-        const currentPids = foreground.map((value) => pid(object(value, "Current stop process").pid)).filter((value) => value !== evidence.shellPid);
-        if (currentPids.length !== 0 && !currentPids.some((value) => evidence.processIds.includes(value))) throw new Error("The task pane now hosts processes outside the original stop observation.");
-        const guardLabel = `daynight-stop:${binding.terminalId}`;
-        const guards = data.tabs.filter((tab) => tab.workspace_id === binding.workspaceId && tab.label === guardLabel);
-        if (guards.length > 1) throw new Error("The task stop anchor is duplicated.");
-        if (guards.length === 0) {
-          const result = await mutation("tab.create", { workspace_id: binding.workspaceId, cwd: context.cwd, focus: false, label: guardLabel, env: { ...workspaceEnvironment } }, "tab_created", operation);
-          const tab = object(result.tab, "Created stop anchor tab");
-          const root = object(result.root_pane, "Created stop anchor pane");
-          if (tab.workspace_id !== binding.workspaceId || tab.label !== guardLabel || root.workspace_id !== binding.workspaceId || root.pane_id === binding.paneId || root.agent !== undefined) throw new HerdrAgentActionError("The stop anchor does not identify an empty task-owned pane.", "tab.create", "unknown");
+        while (true) {
+          const current = await observation(context, binding, operation);
+          if (current.status === "blocked") throw new HerdrAgentActionError("The native agent requires operator action before its first input.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+          if (input.resumeSessionId !== undefined && current.nativeSession !== null && current.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new HerdrAgentActionError("The resumed agent reported a different native session.", "agent.start", "unknown");
+          if (!current.launchPending && current.interactiveReady && (current.kind === context.agent || current.nativeSession?.agent === context.agent || current.name === herdrExecutionAgentName(context))) break;
+          await wait(operation);
         }
-        const anchored = await readOwned(context, binding, operation);
-        const ownedPanes = anchored.data.panes.filter((candidate) => candidate.workspace_id === binding.workspaceId);
-        if (ownedPanes.length < 2 || !anchored.data.tabs.some((tab) => tab.workspace_id === binding.workspaceId && tab.label === guardLabel)) throw new Error("The task workspace has no verified stop anchor.");
-        await mutation("pane.close", { pane_id: binding.paneId }, "ok", operation);
+      } catch (cause) {
+        if (cause instanceof HerdrAgentActionError) throw cause;
+        throw new HerdrAgentActionError("The native process could not become ready before its first input.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
       }
-      await readOwned(context, binding, operation, true);
-      await absentProcesses(evidence, operation);
-      return { agentStopped: true as const, originalPaneClosed: true as const };
+      await submit(context, binding, input.prompt, operation, true);
+      // SessionStart may be emitted on the first input rather than process launch.
+      // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/session/turn.rs#L340-L342
+      while (true) {
+        const current = await observation(context, binding, operation);
+        if (current.nativeSession !== null) {
+          if (input.resumeSessionId !== undefined && current.nativeSession.sessionId !== canonicalId(input.resumeSessionId)) throw new Error("The resumed native identity differs from the requested session.");
+          return current;
+        }
+        if (current.status === "blocked") return current;
+        await wait(operation);
+      }
     }),
-    closeWorkspace: async (context: HerdrExecutionContext, binding: HerdrTaskBinding, proof: { agentStopped: true }, operation: Operation): Promise<{ workspaceClosed: true }> => {
-      if (proof.agentStopped !== true) throw new Error("Task workspace closure requires confirmed original agent stop.");
+    submitPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation) => serialized(binding.workspaceId, operation, () => submit(context, binding, prompt, operation)),
+    stopAndClose: (context: HerdrExecutionOwner & { cwd: string }, binding: HerdrTaskBinding, operation: Operation): Promise<void> => serialized(binding.workspaceId, operation, async () => {
+      if (binding.session !== session) throw new Error("The task binding belongs to another Herdr session.");
       const before = await snapshot(operation);
-      const original = before.workspaces.find((workspace) => workspace.workspace_id === binding.workspaceId);
-      if (original === undefined) {
-        if (before.workspaces.some((workspace) => workspace.label === herdrExecutionLabel(context))) throw new Error("The task label now identifies another workspace; the original binding was retained.");
-        return { workspaceClosed: true };
+      const label = herdrExecutionLabel(context);
+      const key = JSON.stringify([binding.session, binding.workspaceId, label]);
+      const matching = before.workspaces.filter((workspace) => workspace.workspace_id === binding.workspaceId || workspace.label === label);
+      if (matching.length === 0) {
+        if ([...before.panes, ...before.agents].some((resource) => resource.workspace_id === binding.workspaceId || resource.pane_id === binding.paneId || resource.terminal_id === binding.terminalId)) throw new Error("The missing task workspace still has associated resources.");
+        return finishStop(key, operation);
       }
-      await readOwned(context, binding, operation, true);
+      if (matching.length !== 1 || matching[0]!.workspace_id !== binding.workspaceId || matching[0]!.label !== label) throw new Error("The task workspace identity changed before stopping.");
+      const currentPanes = before.panes.filter((pane) => pane.workspace_id === binding.workspaceId);
+      // Closing removes discovery evidence before all processes necessarily exit.
+      // Retain this process-local responsibility across failed close/wait calls.
+      let pending = stoppingProcesses.get(key);
+      if (pending === undefined) {
+        pending = { context: { ...context }, binding: { ...binding }, processIds: new Set<number>() };
+        stoppingProcesses.set(key, pending);
+      }
+      for (const pane of currentPanes) {
+        const paneId = text(pane.pane_id, "Stop pane ID");
+        if (paneId === binding.paneId && pane.terminal_id !== binding.terminalId) throw new Error("The task terminal identity changed before stopping.");
+        await verifyCwd(pane.cwd, context);
+        const result = expectedResult(await options.rpc.request("pane.process_info", { pane_id: paneId }, operation), "pane_process_info");
+        const info = object(result.process_info, "Current stop process observation");
+        if (info.pane_id !== paneId) throw new Error("The stop process observation belongs to another pane.");
+        pending.processIds.add(pid(info.shell_pid));
+        const foreground = info.foreground_processes === undefined ? [] : array(info.foreground_processes, "Current foreground processes");
+        for (const entry of foreground) pending.processIds.add(pid(object(entry, "Current foreground process").pid));
+      }
       await mutation("workspace.close", { workspace_id: binding.workspaceId, close_group: false }, "ok", operation);
       const after = await snapshot(operation);
-      if (after.workspaces.some((workspace) => workspace.workspace_id === binding.workspaceId || workspace.label === herdrExecutionLabel(context))) throw new HerdrAgentActionError("The original workspace still exists after closure.", "workspace.close", "unknown");
-      return { workspaceClosed: true };
-    },
+      if (after.workspaces.some((workspace) => workspace.workspace_id === binding.workspaceId || workspace.label === label) || [...after.panes, ...after.agents].some((resource) => resource.workspace_id === binding.workspaceId)) throw new HerdrAgentActionError("The task workspace still exists after closure.", "workspace.close", "unknown");
+      await finishStop(key, operation);
+    }),
   };
 };
 export type HerdrAgentManager = ReturnType<typeof createHerdrAgentManager>;
