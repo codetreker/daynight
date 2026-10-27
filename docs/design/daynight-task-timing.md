@@ -103,7 +103,7 @@ Project、items[] 和 graph.project.settings.version 均保持 bigint，覆盖�
 它与任务起止时间共享时钟来源；不使用 Go HTTP Date 的秒精度时间或客户端墙钟推算执行耗时。
 
 Web 在 task-sync 响应解析完成后立即捕获 `performance.now()`，在 IDB 原子应用和索引计算之前保存 `GraphSnapshot.receivedMonotonic`。
-同一 snapshot 保存该响应最新 `observedAt` 和仅用于本机最近刷新标签的 `receivedAt`；服务端样本和单调接收时间必须成对更新。
+同一 snapshot 保存该响应最新 `observedAt` 和仅用于本机最近刷新标签的 `receivedAt`；服务端样本和单调接收时间必须成对更新。仅本地摘要的 snapshot 将 `observedAt`、`receivedAt` 置为 null，revision 为 0，不产生服务器时钟；它的本机时间与单调锚点只服务概览近期分类。
 摘要按任务 ID 和精确业务版本合并，Project 设置独立按版本合并；仅时钟变化时复用整个 graph/index，仅设置变化时替换 Project 元数据并复用任务索引。持久与跨页数据不能恢复本页的单调时钟锚点。
 因此缓存图自身的 `graph.observedAt` 可能仍是旧样本。
 页面时钟消费最新 `snapshot.observedAt` 与 `snapshot.receivedMonotonic`，使用如下独立锚点：
@@ -125,7 +125,7 @@ const currentServerTime = (anchor: ClockAnchor) =>
 时钟与阈值不得进入投影、节点位置或边路由的 memo 依赖。
 
 `TaskExecutionClockProvider` 按 projectId 组织稳定 store/context，`useTaskExecution` 用 useSyncExternalStore 订阅。
-仅已挂载的已知起点进行中任务订阅时钟；存在这类订阅且页面可见时才有一个一秒定时器。
+仅已挂载的已知起点进行中任务订阅时钟；存在这类订阅、实际服务端样本且页面可见时才有一个一秒定时器。没有服务端样本时不显示运行中耗时或可能卡住提醒；已完成任务仍按持久起止端点计算耗时。
 完成任务只订阅设置变化以更新说明，不订阅时钟；未知计时无活动订阅。隐藏页暂停 ticker，恢复可见时立即发布单调差值结果，
 既有项目摘要同步随后重建锚点。无运行订阅或卸载时清理 timer/visibility listener；项目和身份切换释放旧页面的 store。
 API 读取沿既有前台身份 guard、AbortController 和 generation，旧响应不能更新新项目时钟或阈值。

@@ -63,7 +63,9 @@ automatically. Role or resource loss clears private project state.
 Each successful task-sync records observedAt and a monotonic receipt captured
 before IDB application and index work. The project-owned clock advances that sample
 through render commit delay with one visible-page ticker only while mounted
-known-start running tasks subscribe. Completed durations use persisted endpoints
+known-start running tasks subscribe and an actual server sample is available.
+Local-only summaries have no server sample, so running durations and warnings
+remain absent until synchronization; completed durations use persisted endpoints
 and subscribe only to settings metadata; unknown timing has no active subscription.
 Hiding, the final running unsubscribe and unmount release timer/listener work.
 Visibility return publishes the elapsed monotonic difference immediately, while

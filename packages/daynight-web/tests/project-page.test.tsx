@@ -151,6 +151,33 @@ describe("project dashboard", () => {
     expect(screen.getByTestId(`chain-${C}`)).toBeTruthy();
   });
 
+  it("reopens durable task data before background sync and admits details only after its live receipt", async () => {
+    const pending = deferred<TaskGraph>();
+    graphRequest.mockResolvedValueOnce(graph()).mockReturnValueOnce(pending.promise);
+    const first = render(<ProjectPage projectId={projectId} />);
+    await screen.findByRole("heading", { name: "核心项目" });
+    first.unmount();
+
+    render(<ProjectPage projectId={projectId} />); selectTasks();
+    await screen.findByRole("heading", { name: "核心项目" });
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(2));
+    expect(number("任务总数")).toBe("4");
+    expect(screen.queryByRole("status", { name: "正在加载任务图" })).toBeNull();
+    expect(screen.queryByText(/最近成功刷新/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "已完成根" }));
+    fireEvent.click(await screen.findByRole("button", { name: "节点 后续任务" }));
+    expect(screen.getByTestId("detail-state")).toHaveTextContent("loading");
+    expect(detailRequest).not.toHaveBeenCalled();
+
+    await act(async () => { pending.resolve(graph(seeds.map((task) => task.id === B ? { ...task, status: "done" } : task))); });
+    await waitFor(() => expect(number("已完成")).toBe("2"));
+    await waitFor(() => expect(screen.getByTestId("detail-state")).toHaveTextContent("ready"));
+    expect(screen.getByTestId("detail-business-status")).toHaveTextContent("done");
+    expect(screen.getByTestId(`chain-${A}`)).toBeTruthy();
+    expect(screen.getByText(/最近成功刷新/)).toBeTruthy();
+    expect(detailRequest).toHaveBeenCalledOnce();
+  });
+
   it("closes a removed chain and vanished detail without opening a replacement", async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([seeds[2]!, seeds[3]!])));
     render(<ProjectPage projectId={projectId} />); selectTasks();

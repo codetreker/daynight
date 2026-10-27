@@ -10,12 +10,12 @@ export type TaskExecution = {
   readonly completedAt: string | null;
 };
 export type ClockInput = {
-  readonly observedAt: string;
+  readonly observedAt: string | null;
   readonly receivedMonotonic: number;
   readonly warningMinutes: number;
 };
 export type ClockSnapshot = {
-  readonly serverMilliseconds: number;
+  readonly serverMilliseconds: number | null;
   readonly warningMinutes: number;
 };
 export type WarningSnapshot = { readonly warningMinutes: number };
@@ -27,10 +27,11 @@ export const executionKind = (task: ExecutionTask): TaskExecution["kind"] | null
 export const taskExecution = (task: ExecutionTask, snapshot: ClockSnapshot): TaskExecution | null => {
   const kind = executionKind(task);
   if (kind === null) return null;
+  if (kind === "running" && snapshot.serverMilliseconds === null) return null;
   const startedAt = task.startedAt!;
   // A new start can render before its matching clock anchor is committed by the layout effect.
   const elapsedMilliseconds = kind === "running"
-    ? Math.max(0, snapshot.serverMilliseconds - Date.parse(startedAt))
+    ? Math.max(0, snapshot.serverMilliseconds! - Date.parse(startedAt))
     : Date.parse(task.completedAt!) - Date.parse(startedAt);
   return {
     kind, elapsedMilliseconds, overdue: task.allowAgents && kind === "running" && elapsedMilliseconds > snapshot.warningMinutes * 60_000,
@@ -59,8 +60,9 @@ const browserEnvironment: ClockEnvironment = {
 
 export const createTaskExecutionClock = (initial: ClockInput, environment: ClockEnvironment = browserEnvironment) => {
   let anchor = initial;
+  const serverTime = () => anchor.observedAt === null ? null : Date.parse(anchor.observedAt) + environment.now() - anchor.receivedMonotonic;
   let clock: ClockSnapshot = {
-    serverMilliseconds: Date.parse(initial.observedAt) + environment.now() - initial.receivedMonotonic,
+    serverMilliseconds: serverTime(),
     warningMinutes: initial.warningMinutes,
   };
   let warning: WarningSnapshot = { warningMinutes: initial.warningMinutes };
@@ -71,14 +73,14 @@ export const createTaskExecutionClock = (initial: ClockInput, environment: Clock
   let releaseVisibility: (() => void) | null = null;
 
   const publishClock = () => {
-    const serverMilliseconds = Date.parse(anchor.observedAt) + environment.now() - anchor.receivedMonotonic;
+    const serverMilliseconds = serverTime();
     if (serverMilliseconds === clock.serverMilliseconds && anchor.warningMinutes === clock.warningMinutes) return;
     clock = { serverMilliseconds, warningMinutes: anchor.warningMinutes };
     for (const listener of [...runningListeners]) listener();
   };
   const onVisibility = () => { if (environment.visible()) publishClock(); synchronizeActivity(); };
   const synchronizeActivity = () => {
-    const active = mounted && runningListeners.size > 0;
+    const active = mounted && runningListeners.size > 0 && anchor.observedAt !== null;
     if (active && releaseVisibility === null) releaseVisibility = environment.listen(onVisibility);
     if (!active && releaseVisibility !== null) { releaseVisibility(); releaseVisibility = null; }
     if (!active || !environment.visible()) {
@@ -101,6 +103,7 @@ export const createTaskExecutionClock = (initial: ClockInput, environment: Clock
     const changed = input.warningMinutes !== warning.warningMinutes;
     if (changed) warning = { warningMinutes: input.warningMinutes };
     publishClock();
+    synchronizeActivity();
     if (changed) for (const listener of [...settingsListeners]) listener();
   };
   const mount = () => {

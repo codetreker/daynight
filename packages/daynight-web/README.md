@@ -335,8 +335,15 @@ business versions remain bigint. The default ten-second server overlap can
 repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
 invalidate detail records, replace published indexes or broadcast.
 
-The current mount requires its own successful online project sync before private
-cache publication. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
+After identity verification, a project publishes its validated local summary
+snapshot while task-sync runs in the background. Valid empty snapshots render
+normally; missing or invalid baselines retain loading until synchronization.
+Recoverable sync failures retain visible summaries and expose Retry. Summary
+publication does not authorize detail bodies or task writes: those still require
+this mount's successful online project sync. A local-only detail mount keeps its
+visibility gate local and leaves shared session observation unchanged, so an
+already accepted operation can finish preparation in its original authorized
+history; this mount's first live receipt still requires its own opening GET. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
 mutation responses. A verified different principal synchronously releases old content
 and starts identity verification. Headerless or malformed-principal errors retain
 valid cached content. Project-sync not_found, a trusted not_found for a task known
@@ -429,6 +436,13 @@ unknown, reconciling and exact-version gates remain. The
 owns the complete admission, race, budget and failure rules.
 
 ## Task execution time and possible stalls
+
+A local-only snapshot has revision zero and no server clock or successful receipt.
+It displays neither a refreshed timestamp nor running durations or stall warnings;
+completed durations still use their persisted endpoints. Overview uses client wall
+time for provisional recent-completion classification, then switches to the live
+server sample. This provisional time never establishes execution time or sync
+coverage.
 
 `useTaskGraph` captures `receivedMonotonic` immediately after decoding task-sync,
 before IDB application or index work, and pairs it with that response's database
@@ -819,8 +833,8 @@ response updates the mount's clock receipt, including duplicate-only responses.
 Detail content follows its own summary business version and project generation;
 unchanged receipts do not cause GETs or detail writes. Receipt-driven recovery
 still retries failed reads and raw graph disagreements. `GraphSnapshot.revision`
-is the successful mount-local receipt and online-admission signal, not a task
-version or durable commit counter. Equivalent
+is zero for local-only summaries; positive values are the successful mount-local
+receipt and online-admission signal, not a task version or durable commit counter. Equivalent
 task data retains its index and layout; settings-only changes update Project
 metadata without rebuilding task projections, and changed intrinsic data replaces
 statistics and both task-category lists together. The
