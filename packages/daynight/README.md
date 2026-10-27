@@ -807,8 +807,10 @@ daynight worker repo remove
 ```
 
 Add and remove list remote Projects for multiselection. Each choice includes its
-name, UUID and repository URL. Add saves the selected Project ID, original
-server repository URL and an absolute local path. Remove changes configuration
+name, UUID and repository URL. A new registration saves the selected Project ID,
+original server repository URL and an absolute local path. Matching existing
+registrations retain their configured transport URL, path and native settings;
+a remote-only registration gains only its Project ID. Remove changes configuration
 only: clones, claims, worktrees, native history and frozen execution settings
 remain. A running worker reads its next selection at startup, without hot reload.
 For scripts, identify one accessible existing Project explicitly:

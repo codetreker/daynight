@@ -16,9 +16,12 @@ by an earlier execution.
 The worker selects existing accessible Daynight Projects. The repo list/add/remove
 commands inspect or change the saved acquisition scope; add and remove offer
 multiselection, or an explicit --project UUID for noninteractive use. Choices show
-the name, complete UUID and repository URL. Registration saves the server's
-original repoUrl, explicit projectId and an absolute local path. Repeated add
-keeps the existing path and native-agent overrides. Remove changes configuration
+the name, complete UUID and repository URL. New registrations save the server's
+original repoUrl, explicit projectId and an absolute local path. Matching existing
+registrations retain their exact transport URL, path and native-agent overrides;
+remote-only association adds only projectId. An equivalent HTTPS Project address
+does not replace an existing SSH transport: unfinished local records and unresolved
+claim attempts retain their literal repository binding. Remove changes configuration
 only, retaining clones, claims, worktrees, native history and frozen execution
 settings. The running process continues to use startup settings.
 
@@ -67,6 +70,12 @@ selection gives add and remove an operator-owned meaning.
 **Require raw Git remotes and local paths.** The service already supplies Project
 identity and repoUrl. Repeating them makes duplicate or ambiguous Project
 matching an operator responsibility without adding information.
+
+**Replace retained transports with the current Project URL.** A canonical
+repository identity can have distinct HTTPS and SSH transport settings. Rewriting
+the stored URL changes authentication behavior and conflicts with literal local
+bindings retained by unfinished tasks or claim attempts. Matching identity
+validates the association while retaining its original transport.
 
 **Borrow review's clone root.** Review configuration can change independently or
 be absent on a task worker. Reading it couples two capabilities' destinations.

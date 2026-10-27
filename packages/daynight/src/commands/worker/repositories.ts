@@ -142,10 +142,10 @@ export const changeWorkerRepositories = async (options: ChangeWorkerRepositories
         const index = registeredProjectIndex(repositories, project);
         if (index !== -1) {
           const existing = repositories[index]!;
-          if (existing.projectId !== project.id || existing.remote !== project.repoUrl) {
+          // Retained SQLite bindings keep this exact transport URL, even when the Project address has an equivalent identity.
+          if (existing.projectId !== project.id) {
             document.setIn(["worker", "repositories", index, "projectId"], project.id);
-            document.setIn(["worker", "repositories", index, "remote"], project.repoUrl);
-            repositories[index] = { ...existing, projectId: project.id, remote: project.repoUrl };
+            repositories[index] = { ...existing, projectId: project.id };
             changed = true;
           }
           continue;

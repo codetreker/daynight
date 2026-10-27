@@ -6,6 +6,7 @@ import * as configurationFiles from "../../../src/config/files.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { changeWorkerRepositories, readWorkerRepositorySnapshot } from "../../../src/commands/worker/repositories.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 import type { CleanupState } from "../../../src/commands/worker/types.js";
@@ -89,6 +90,38 @@ describe("worker repository preparation lifecycle", () => {
     expect(prepareRepositories).not.toHaveBeenCalled();
     expect(mocks.git.mock.results[0]!.value.prepareRepository).toHaveBeenCalledOnce();
     expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
+  });
+
+  it.each(["task", "claimAttempt"] as const)("restarts a retained %s after Project association without replacing its SSH binding", async (retained) => {
+    const f = await fixture(true, true);
+    const remote = "git@git.example:team/repo.git";
+    const { projectId: _projectId, ...withoutProjectId } = f.repository;
+    const repository = retained === "claimAttempt" ? { ...withoutProjectId, remote } : { ...f.repository, remote };
+    const source = stringify({ ...f.document, worker: { repositories: [repository], maxConcurrent: 1, agent: "codex", model: "original-model" } });
+    await writeFile(f.paths.configFile, source);
+    const binding = { serverOrigin: origin, projectId: uuid(1), repoUrl: remote, localPath: f.repository.path };
+    const claim = { serverOrigin: origin, projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), workerId, worktreeId: uuid(5) };
+    const configuration = { agent: "codex" as const, model: "original-model", args: [], recoveryLimit: 3 };
+    const attempt = { taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId, workerId, userId: uuid(6), expectedVersion: "1", configuration };
+    f.store!.registerProject(binding);
+    if (retained === "task") f.store!.registerPending(claim, { kind: "new", configuration }, 10, uuid(6));
+    else f.store!.beginClaimAttempt(binding, attempt);
+    const originalTask = f.store!.getTask(claim);
+    const snapshot = await readWorkerRepositorySnapshot(f.paths);
+    await changeWorkerRepositories({ paths: f.paths, homeDirectory: f.homeDirectory, snapshot,
+      projects: [{ id: uuid(1), name: "Existing Project", repoUrl: f.repository.remote,
+        settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z" }],
+      addProjectIds: [uuid(1)],
+    });
+    const controller = new AbortController();
+    const tick = vi.fn(async () => { controller.abort(new Error("Original binding restarted.")); });
+    mocks.coordinator.mockReturnValue({ tick, advanceCommittedCleanups: vi.fn(async () => {}), shutdown: vi.fn(async () => true) });
+    await runWorker({ ...f, signal: controller.signal });
+    expect(tick).toHaveBeenCalledOnce();
+    expect(mocks.git.mock.results[0]!.value.prepareRepository.mock.calls[0]![0]).toEqual(binding);
+    expect(f.store!.getProject(binding)).toEqual({ ...binding, claimAttempt: retained === "claimAttempt" ? attempt : null });
+    expect(f.store!.getTask(claim)).toEqual(originalTask);
+    expect(f.store!.getClaimAttempt(binding)).toEqual(retained === "claimAttempt" ? attempt : null);
   });
 
   it("reloads selected startup settings once without hot reload or replacing the coordinator", async () => {
