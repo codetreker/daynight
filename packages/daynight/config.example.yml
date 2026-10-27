@@ -32,9 +32,11 @@ review:
       # directory, and do not expand ~. Keep review clones outside ~/.daynight/.
       path: ../daynights/github.com/owner/repo
 
-# Worker configuration. Omitted values use these defaults; an empty selection
-# makes interactive worker run guide Project registration. The selected native
-# agent and Herdr must already be configured.
+# Worker configuration. Run daynight worker setup to inspect prerequisites,
+# choose a native agent and select existing Projects before worker run.
+# Omitted values use these defaults; an empty selection also makes interactive
+# worker run guide Project registration. Native credentials and the official
+# Herdr integration must be configured explicitly.
 worker:
   # Used only for new worker repo registrations; independent of review's root.
   repositoryRoot: ~/daynights

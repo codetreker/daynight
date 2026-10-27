@@ -291,6 +291,8 @@ def scenarios():
         ("root update", "daynight upd\t", ["update"]),
         ("root worker", "daynight wor\t", ["worker"]),
         ("short root worker", "dn wor\t", ["worker"]),
+        ("worker setup", "daynight worker se\t", ["worker", "setup"]),
+        ("short worker setup", "dn worker se\t", ["worker", "setup"]),
         ("worker run", "daynight worker ru\t", ["worker", "run"]),
         ("short worker run", "dn worker ru\t", ["worker", "run"]),
         ("worker attach", "daynight worker at\t", ["worker", "attach"]),
