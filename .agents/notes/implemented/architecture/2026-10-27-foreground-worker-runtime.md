@@ -21,6 +21,14 @@ owns configuration and operation. Review keeps its own database, coordinator and
 lifecycle. Worker composes existing typed HTTP, identity/lock, Git, Herdr and
 managed-skill modules instead of introducing another delivery engine.
 
+Configuration presence does not determine whether runtime defaults apply. A
+missing file, an omitted worker mapping and omitted optional fields use the
+existing defaults, with an empty acquisition list when repositories are omitted.
+Only MissingConfigurationFileError means a missing file; malformed explicit
+values, filesystem faults and cancellation remain errors. The configuration
+reader does not create state or infer worker repositories from review settings.
+Explicit repository entries still determine where new tasks may be acquired.
+
 A single coordinator owns repository rotation, capacity and per-task serial
 advancement. Every inventory/acquisition round reads complete current own-claim
 inventory before reconciling records and Herdr resources, then acquires new
@@ -254,6 +262,17 @@ neither diagnostics nor terminal idle/done authorize task completion.
 
 ## Alternatives
 
+**Require an explicit worker mapping and repositories field.** The original
+runtime required those declarations to make acquisition scope explicit. Omitted
+runtime parameters already have defined defaults, and an empty acquisition list
+has no implicit repository selection. Requiring an otherwise empty mapping adds
+no scope guarantee; strict validation continues to distinguish omission from
+invalid input.
+
+**Treat every configuration read failure as omission.** That would let malformed
+settings, access failures or cancellation select defaults. Only the dedicated
+missing-file error has omission semantics, so other failures remain visible.
+
 **Keep request identity only in memory.** Complete inventory recovers a
 successful claim, but a restart cannot remember a still-uncertain outbound
 request and may acquire again before that request settles. A project-scoped
@@ -311,7 +330,9 @@ initialization failures preserves both responsibilities.
 
 The command, discovery loop and transient cleanup jobs remain one foreground
 process rather than another server or OS background service. Configuration
-defaults and repository overrides have one strict owner; startup reload affects
+defaults and repository overrides have one strict owner. Omission reaches normal
+authentication and runtime checks without creating an empty configuration file;
+new acquisition remains limited to explicit repositories. Startup reload affects
 new assignments while existing ones keep their snapshots. Fixed paths and a
 stable worker identity give restarts the same record/resource scope.
 
