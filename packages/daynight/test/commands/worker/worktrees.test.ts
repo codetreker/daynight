@@ -31,7 +31,7 @@ const fixture = async (refFormat: "files" | "reftable" = "files") => {
   await writeFile(path.join(repository, "tracked.txt"), "original\n"); git(repository, ["add", ".gitattributes", "tracked.txt"]); git(repository, ["commit", "-m", "fixture"]);
   git(repository, ["remote", "add", "origin", remote]);
   const project: WorkerProject = { serverOrigin: "https://daynight.example", projectId: ids.projectId, repoUrl: remote, localPath: repository };
-  const task: LocalTask = { ...ids, serverOrigin: project.serverOrigin, status: "active", repoUrl: remote, repositoryPath: repository, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 3 }, resources: { worktree: null, herdr: null, nativeSession: null }, recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null, createdAt: 1, updatedAt: 1 };
+  const task: LocalTask = { ...ids, serverOrigin: project.serverOrigin, status: "active", userId: null, repoUrl: remote, repositoryPath: repository, configuration: { agent: "codex", model: null, args: [], recoveryLimit: 3 }, resources: { worktree: null, herdr: null, nativeSession: null }, nativeExecution: null, recovery: { count: 0, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null, createdAt: 1, updatedAt: 1 };
   return { root, repository, project, task };
 };
 const proof = { terminal: true, agentStopped: true, workspaceClosed: true } as const;
@@ -46,6 +46,25 @@ afterEach(async () => {
 });
 
 describe("worker repositories and task worktrees", () => {
+  it("finds an owned worktree after a lost binding without creating or resetting one", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    expect(await adapter.findWorktree(f.task, operation())).toBeNull();
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId);
+    await expect(lstat(target)).rejects.toMatchObject({ code: "ENOENT" });
+    const binding = await adapter.prepareWorktree(f.task, operation());
+    await writeFile(path.join(binding.worktreePath, "tracked.txt"), "retained dirty work\n");
+    expect(await adapter.findWorktree(f.task, operation())).toEqual(binding);
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("retained dirty work\n");
+    await expect(adapter.findWorktree(changedClaim(f.task), operation())).rejects.toThrow("ownership marker");
+  });
+
+  it("finds cleanup worktrees read-only and rejects an unattributed present path", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const target = path.join(f.repository, ".worktrees", "daynight", ids.taskId); await mkdir(target, { recursive: true }); await writeFile(path.join(target, "unrelated"), "keep");
+    await expect(adapter.findWorktree(f.task, operation())).rejects.toThrow("no matching ownership registration");
+    expect(await readFile(path.join(target, "unrelated"), "utf8")).toBe("keep");
+  });
+
   it("validates an existing root and keeps dirty repository work", async () => {
     const f = await fixture(); const adapter = manager(f.root);
     await writeFile(path.join(f.repository, "tracked.txt"), "uncommitted\n"); await writeFile(path.join(f.repository, "untracked.txt"), "retained\n");

@@ -2,8 +2,9 @@
 
 The `@codetreker/daynight` package provides the `daynight` command and its `dn`
 alias. Use it to manage server-backed projects, tasks and attachments, install
-the `using-daynight` skill for coding agents, and run a local GitHub PR reviewer
-through Copilot CLI. Both command names share configuration and behavior.
+the `using-daynight` skill for coding agents, run foreground task workers through
+Herdr, and run a local GitHub PR reviewer through Copilot CLI. Both command names
+share configuration and behavior.
 
 See the [project overview](../../README.md) for the browser workspace and service,
 and the [development guide](../../docs/development.md) for source builds,
@@ -20,6 +21,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Task management](#task-management)
 - [Task deletion](#task-deletion)
 - [Task attachments](#task-attachments)
+- [Worker configuration and startup](#worker-configuration-and-startup)
 - [Review configuration and startup](#review-configuration-and-startup)
 - [Review status listing](#review-status-listing)
 - [Durable review state](#durable-review-state)
@@ -78,9 +80,9 @@ its agents, scope, path and package version. A skill failure exits nonzero and
 reports the package outcome separately; a successfully installed npm package is
 retained, and rerunning `update` retries the skill refresh. All phases must
 succeed before the command reports success. It requires no review configuration and does
-not open SQLite, modify sessions or restart a running reviewer. The next CLI
-invocation uses the installed version. Restart any running reviewer to use it;
-on Windows, a reviewer holding a native addon open can prevent npm from replacing
+not open SQLite, modify sessions or restart a running reviewer or worker. The next CLI
+invocation uses the installed version. Restart any running reviewer or worker to use it;
+on Windows, a reviewer or worker holding a native addon open can prevent npm from replacing
 that file and cause the update to fail. The
 [self-update decision](../../.agents/notes/archived/feature/2026-10-20-cli-self-update.md)
 records installation ownership and verification requirements.
@@ -94,6 +96,8 @@ daynight --version                   # Also -v
 daynight update
 daynight login [--no-browser]         # Authorize CLI access through the browser
 daynight logout                      # Revoke and remove the current CLI credential
+daynight worker                     # Show worker help
+daynight worker run                 # Run until interrupted
 daynight review                     # Show review help
 daynight review run
 daynight review list                 # Also review ls
@@ -144,7 +148,8 @@ prompt explicitly names the `worker-managed` environment, the `using-daynight`
 skill and that mode, together with their assignment. `SKILL.md` routes to the
 selected instructions; ordinary execution does not load managed task rules.
 Shared task inputs, delivery and acceptance rules retain one owner in the bundle.
-The worker runtime remains under development.
+The [foreground worker](#worker-configuration-and-startup) constructs that
+explicit assignment and loads the installed managed entry before launch.
 
 Install the skill through an interactive terminal:
 
@@ -746,6 +751,176 @@ authentication and project-membership checks for attachment requests. Trusted
 executable HTML retains the application origin. The
 [CLI delivery decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-cli.md)
 records binary transport and output ownership.
+
+## Worker configuration and startup
+
+`daynight worker run` is a foreground process that claims eligible ready tasks
+across configured repositories and runs Copilot or Codex in a dedicated Herdr
+instance. The agent owns task delivery, acceptance, evidence and final
+claim-bound completion. The worker owns concurrency, resources, recovery and
+cleanup based on its current claim inventory.
+
+Install Git, Herdr 0.9.5 or newer with protocol 22 capabilities, and the selected
+native agent on PATH. Native/provider authentication and the current official
+Herdr SessionStart integration must be configured explicitly. Codex needs the
+hooks feature and `--no-daemon`; Unix hook scripts need bash and python3, while
+Windows hooks need PowerShell. The worker reports missing capabilities or
+integration/history instead of installing or changing global native settings.
+Git transport and tools used by the task, such as authenticated GitHub CLI for
+PR delivery, must also be ready.
+
+Run `daynight login` for Daynight authentication. Add the following mapping to
+the shared `~/.daynight/config.yml`, preserving existing connection and review
+settings:
+
+```yaml
+worker:
+  maxConcurrent: 1
+  pollIntervalMs: 5000
+  recoveryLimit: 3
+  agent: copilot
+  model: null
+  args: []
+  repositories:
+    - remote: https://github.com/OWNER/REPO.git
+      path: ../code/repo
+    - remote: https://github.com/OWNER/OTHER.git
+      path: ../code/other
+      agent: codex
+      model: null
+      args: []
+```
+
+These are the defaults for all optional worker fields; `repositories` is
+required. Each entry requires `remote` and `path`, with optional `projectId`,
+`agent`, `model` and `args`. The service project must already exist and match the
+repository. Add `projectId` when more than one project matches. Missing local
+repositories are cloned; existing roots and origins are verified without
+resetting their files or branches. Use the native authentication configuration
+for credentials, keeping credentials out of repository URLs and argument lists.
+
+Paths are absolute or relative to the configuration file's directory, never
+the launch directory. Tilde expansion and drive-relative Windows paths are
+rejected. Repository identities, project IDs and paths cannot duplicate or
+overlap, including the fixed Daynight state directory. Unknown worker fields,
+wrong types, invalid arguments and unsupported path shapes fail visibly.
+`maxConcurrent` is a positive integer, `recoveryLimit` is nonnegative and
+`pollIntervalMs` is a positive safe integer within the timer range.
+
+Repository agent settings override fields independently when the type stays
+the same; explicit null model or an empty args list clears that field. Switching
+agent type clears inherited model and arguments unless the repository explicitly
+sets them. Args replace the list rather than append. The recovery limit is
+worker-wide. Configuration loads at startup, without hot reload; existing claims
+keep their original frozen configuration after a restart, while later claims
+use the newly loaded settings.
+
+New tasks have automatic execution disabled. Enable it explicitly with the
+normal task update workflow after reading the current task/version. The worker
+selects only ready, permitted tasks compatible with its actual platform; WSL
+counts as Linux. It never enables that permission itself. Released tasks wait
+for explicit management and do not immediately re-enter ordinary automatic
+acquisition. Run the worker with:
+
+```bash
+daynight worker run
+```
+
+The command generates and atomically saves a stable root `workerId` on first
+use. One foreground instance owns fixed `~/.daynight/worker/` state: its SQLite,
+instance lock, logs, temporary resources and private Herdr data. There is no
+state-path override. Each task uses `daynight/<task-id>` and
+`<repository>/.worktrees/daynight/<task-id>`. The same valid claim retains dirty
+work, native history and configuration; a new claim has a fresh execution
+identity and conversation.
+
+The worker verifies the startup credential through the existing current-user
+API and pins successful response identity, including empty pages. Each local
+claim retains its original Daynight user ID. If another account is logged in on
+the same OS account, the stable workerId stays the same, but that account's empty
+inventory cannot terminate or resume the previous account's work. Scope-paused
+records need the original account/identity inspected; do not remove local state
+or regenerate workerId to make the mismatch disappear. The running process
+keeps its startup credential; restart after an intended account change.
+
+Changing serverUrl also separates local responsibility from remote work. The
+worker queries and acquires only on its current service. Previously committed
+cleanup deadlines and normal shutdown cover that worker's local records across
+all original services, without calling an old API or asking the new service
+about old records. A newly granted current-service claim freezes its new
+configuration and waits pending behind any active predecessor with the same task UUID for that
+worker, including another origin. Read-only Git ownership attributes
+an occupied canonical path; it does not adopt the old conversation or config.
+
+The foreground stderr output and JSONL logs identify project/task/claim, platform,
+waiting, pause and cleanup errors. The log path is printed at startup. An
+unconfirmed claim request, native launch or input is retained for observation;
+it is not replayed. A pause still reserves capacity. Recovering missing original
+configuration, history or stop evidence requires inspection, without creating a
+replacement conversation to conceal the loss.
+
+For human input, copy the safe `attach` descriptor printed after the running
+worker has completed inventory and private managed-instance readiness.
+Invoke its `executable` with its `arguments` (`herdr --session w` for the default
+executable), apply exactly its `environment` overrides and remove the names in
+`unsetEnvironment` **only for that attach client process**. The descriptor's
+private XDG values select the worker's exact Herdr instance; the existing task
+pane keeps its original native XDG and private HISTFILE. The descriptor contains
+routing and native-home paths, not a dump of authentication values. Continue in
+the original task pane so the worker can observe the same execution.
+
+For started executions, a successful complete own-claim inventory from the
+original account makes the original claim's absence cause
+the same terminal cleanup for done, release and transfer: request attributable
+outside-worktree cleanup for at most the original ten-minute deadline, confirm
+the original agent stopped, close its workspace, delete its worktree and retain
+local history. Failures keep responsibility and resume cleanup after restart.
+A failed, incomplete or differently scoped inventory cannot authorize a new
+terminal-cleanup decision. Already persisted cleanup/control intents continue in
+the same foreground process through a lightweight discovery loop and one
+transient asynchronous job per full claim, before current-user/project network
+requests and even during server read failures. Only already authorized intents
+with known original account scope advance; unknown-scope terminal/control
+intents remain preserved. Each job waits at most one second or its nearer
+original deadline, independently of pollIntervalMs. One task's held RPC does not
+postpone another task's next cleanup advance; per-task serialization still
+prevents overlapping operations on the same execution. There is no persisted job
+queue.
+
+Ctrl+C stops acquisition and ordinary input, cancels and joins the ordinary
+cleanup discovery loop and all per-claim jobs, then runs original-task shutdown
+with a separate bounded cancellation scope and a shared exit deadline.
+Unfinished claims, worktrees and native history remain; the private instance
+stops only after original agents are confirmed stopped. Stop uncertainty is
+reported and retains the instance/resources for inspection. Restart the command
+to reconcile with the same worker identity and original state. After consuming
+interrupted shutdown, the worker refreshes Herdr resources before ordinary
+execution. If a native launch may have occurred but its exact original session
+ID is missing, shutdown preserves its old binding, launch and PID evidence and
+pauses; it does not turn that execution into a first launch. Proven
+never-started work and executions with a known original native ID retain their
+normal recovery path.
+
+A causal worker cancellation propagates into shutdown without adding a fault
+pause. Existing real pauses, recovery budget and unknown-action records keep
+their meaning; an unrelated error is not normal cancellation merely because the
+signal is already aborted. Read-only interruption followed by successful
+shutdown can resume the original session through the normal recovery path.
+
+Pending successors whose resources, workspace and native launch are proven
+never started stay pending on normal exit. A successful complete inventory from
+the same original account can complete an absent unstarted claim directly,
+without activating it or touching an older claim's fixed Git path. Other tasks'
+shutdown initialization is isolated so one bad record does not prevent known
+agents stopping. Untracked resources or unknown scope keep the private instance
+when its stop cannot be confirmed.
+
+Public worker release/transfer/resume/retry commands and the service's terminal
+management-protocol revision remain pending. Linux, Windows and macOS complete
+Goal acceptance is separate from the installed runtime and its component
+checks. The [worker requirements](../../docs/spec/daynight-worker.md) and
+[worker design](../../docs/design/daynight-worker.md) own the behavior and
+mechanisms, including native capability limits.
 
 ## Review configuration and startup
 

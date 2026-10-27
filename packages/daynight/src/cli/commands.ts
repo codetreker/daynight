@@ -2,6 +2,7 @@ import type { CliCommand } from "./context.js";
 import type { CommandDefinition } from "./schema.js";
 import { completionDefinition } from "../commands/completion/definition.js";
 import { reviewDefinition } from "../commands/review/definition.js";
+import { workerDefinition } from "../commands/worker/definition.js";
 import { projectDefinition } from "../commands/project/definition.js";
 import { taskDefinition } from "../commands/task/definition.js";
 import { updateDefinition } from "../commands/update/definition.js";
@@ -13,6 +14,7 @@ export type CommandRegistration = CommandDefinition & {
 };
 
 export const commands: readonly CommandRegistration[] = [
+  { ...workerDefinition, load: async () => ({ run: (await import("../commands/worker/index.js")).runWorkerCommand }) },
   { ...loginDefinition, load: async () => ({ run: (await import("../commands/auth/command.js")).runLoginCommand }) },
   { ...logoutDefinition, load: async () => ({ run: (await import("../commands/auth/command.js")).runLogoutCommand }) },
   { ...skillDefinition, load: async () => ({ run: (await import("../commands/skill/command.js")).runSkillCommand }) },

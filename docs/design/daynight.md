@@ -1,12 +1,12 @@
 # Daynight 客户端架构设计
 
 状态：`packages/daynight/` 是通过 `@codetreker/daynight` 分发的 TypeScript 客户端
-命令工具包，支持 Linux、macOS 和 Windows。`review` 提供 GitHub PR 审查，`update`
+命令工具包，支持 Linux、macOS 和 Windows。`review` 提供 GitHub PR 审查，`worker` 提供前台任务认领与资源对账，`update`
 管理当前 npm 全局安装，`login/logout` 管理 CLI 凭据，review 拥有仓库配置和首次引导，`completion` 生成 Bash 和 zsh
 的原生补全脚本并安装启动配置；`skill` 提供公开 `using-daynight` skill 的交互安装。project/task
 CLI 的共享配置、HTTP、仓库关联基础及 project/task 命令已完成，安装产物、真实服务
 与默认预算验收已通过托管验证；集成状态见[PR #55](https://github.com/codetreker/daynight/pull/55)。
-[专属设计](daynight-project-task.md)拥有机制。行为归属见[客户端需求](../spec/daynight.md)及
+[专属设计](daynight-project-task.md)拥有项目任务机制，[worker 设计](daynight-worker.md)拥有持续执行机制。行为归属见[客户端需求](../spec/daynight.md)及
 [review 需求](../spec/daynight-review.md)，结构选择见
 [命令组合决策](../../.agents/notes/archived/architecture/2026-10-20-client-command-composition.md)。
 [补全设计](daynight-completion.md)拥有共享语法描述、脚本生成和 shell 加载机制，
@@ -21,6 +21,8 @@ daynight --version                   # 同 -v
 daynight update
 daynight login [--no-browser]         # 浏览器设备授权
 daynight logout                      # 撤销并清除当前 CLI 凭据
+daynight worker                     # worker 帮助
+daynight worker run
 daynight review                     # review 帮助
 daynight review run
 daynight review list                 # 同 review ls
@@ -126,6 +128,25 @@ src/
       rendering.ts
     server/
       runtime.ts
+    worker/
+      definition.ts
+      index.ts
+      config.ts
+      runtime.ts
+      coordinator.ts
+      execution.ts
+      cleanup.ts
+      remote.ts
+      prompts.ts
+      diagnostics.ts
+      identity.ts
+      instance-lock.ts
+      paths.ts
+      types.ts
+      store.ts
+      herdr.ts
+      herdr/
+      worktrees.ts
     review/
       definition.ts
       command.ts
@@ -191,10 +212,12 @@ credentials 拥有配置观察值核对，browser 拥有平台打开器。命令
 授权提示和登录/退出结果写 stderr，stdout 只用于帮助。
 该顺序也使自更新进程不加载待替换的 SQLite 原生 addon。
 
+`worker` 的轻量 definition/index 保持命令解析与运行时加载分离；仅 run 加载固定 worker 路径、配置、实例锁、SQLite 与适配器。runtime 组合进程生命周期，coordinator 拥有轮询/名额/任务串行推进，execution 与 cleanup 分别消费原执行事实；不复用 review 的 PR 生命周期或数据库。安装包路径由稳定入口传入，managed prompt 指向同一包的绝对技能入口。具体持久化和未知动作处理由[worker 设计](daynight-worker.md)拥有。
+
 `config/` 拥有共享配置路径、严格 YAML、已知顶层字段和保留注释的文件保存协议；
 `server.ts` 提供独立 server 字段投影。`api/` 拥有服务 DTO、精确数值 JSON、
 命令级期限和字节预算、HTTP 错误、完整分页及有界 ready 查询，供业务命令组合。共享层不导入
-review 或 update；服务器客户端也不依赖 YAML、SQLite 或 Git。`repository/` 将有效 origin、通用
+worker、review 或 update；服务器客户端也不依赖 YAML、SQLite 或 Git。`repository/` 将有效 origin、通用
 仓库身份、远端 project 校验与本地关联组合；原子文件替换由 `platform/files.ts`
 复用，配置保存和仓库元数据各自拥有锁、路径校验及调用顺序。
 
@@ -389,7 +412,7 @@ Node.js 和新安装 CLI 的绝对路径执行 `--version`。该新进程报告�
 并非零退出；skill 失败明确说明 npm 包实际状态，不回滚已成功的包更新。
 
 npm 管理替换、安装恢复和并发安装行为，模块不引入另一套包替换或回滚机制。更新失败
-不承诺原安装文件完整保留；需要按 npm 的错误处理安装。命令不控制已运行的 reviewer，
+不承诺原安装文件完整保留；需要按 npm 的错误处理安装。命令不控制已运行的 reviewer 或 worker，
 其内存和已加载模块保持原版本，操作者须重启后使用新版本。Windows 上被占用的原生
 addon 可能阻止替换，npm 失败直接可见。
 [自更新决策](../../.agents/notes/archived/feature/2026-10-20-cli-self-update.md)

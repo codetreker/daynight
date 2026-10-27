@@ -3,8 +3,9 @@
 Daynight is a project and task workspace for people and coding agents. It keeps
 work, dependencies, design documents and delivery evidence together, with a
 browser dashboard for understanding progress and a command-line client for
-managing tasks. The CLI also provides automated GitHub pull request review
-through Copilot CLI.
+managing tasks. A foreground worker runs automatically claimed tasks through
+Copilot or Codex in private Herdr workspaces. The CLI also provides automated
+GitHub pull request review through Copilot CLI.
 
 Explore Daynight and its interactive example at **[daynight.cc](https://daynight.cc)**.
 Open the **[workspace](https://daynight.cc/projects)** to continue your projects,
@@ -31,14 +32,19 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Control access and execution settings.** Use private projects, memberships,
   invitations and revocable CLI credentials. Set task platform requirements and
   agent permission, and view elapsed time and possible-stall warnings.
+- **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
+  tasks across configured repositories, preserve ongoing work through restarts
+  and clean resources when the original claim leaves the worker's inventory.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
 Task creation and general editing use the CLI. The Web app provides browsing,
 status and execution-setting controls, task deletion and attachment management.
-The planned autonomous worker runtime is still under development; its
+The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+explains its configuration and native prerequisites. Manual worker-management
+commands and complete platform acceptance remain separate delivery work; the
 [requirements](docs/spec/daynight-worker.md) and
-[design](docs/design/daynight-worker.md) describe that work.
+[design](docs/design/daynight-worker.md) define those boundaries.
 
 ## Get started
 
@@ -93,6 +99,35 @@ and the [CLI manual](packages/daynight/README.md) for detailed usage.
 Run `daynight completion setup` to install Bash or zsh completion. The
 [completion guide](packages/daynight/README.md#shell-completion) covers shell
 selection, startup files and activation.
+
+## Worker configuration and startup
+
+Install Git, Herdr 0.9.5 or newer with the supported API, and your selected
+Copilot or Codex CLI. Authenticate Daynight with `daynight login`, configure
+native/provider credentials and the official Herdr integration explicitly, then
+add repositories under `worker` in `~/.daynight/config.yml`:
+
+```yaml
+worker:
+  repositories:
+    - remote: https://github.com/OWNER/REPO.git
+      path: ../code/repo
+```
+
+The path is relative to the configuration directory. Matching Daynight projects
+must already exist; use an explicit `projectId` when repository discovery is
+ambiguous. Choose tasks with automatic execution enabled, then start:
+
+```bash
+daynight worker run
+```
+
+The worker runs in the foreground with one execution slot by default. It uses
+fixed state under `~/.daynight/worker/` and prints the private Herdr attachment
+descriptor for human input. Ctrl+C stops original agents through bounded cleanup
+while retaining unfinished claims, worktrees and native history. The
+[worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+covers defaults, repository overrides, recovery and attachment.
 
 ## Review configuration and startup
 

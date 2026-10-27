@@ -5,9 +5,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { isUnstartedPending, openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { ControlIntent, FrozenExecutionConfiguration, PendingClaim } from "../../../src/commands/worker/types.js";
+import type { HerdrLaunchEvidence, HerdrStopObservation, HerdrTaskBinding, HerdrWorkspaceEvidence } from "../../../src/commands/worker/herdr/agents.js";
 
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-store-tests/", import.meta.url));
 const directories: string[] = [];
@@ -16,6 +17,7 @@ const connections = new Set<Database.Database>();
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const project = { serverOrigin: "https://daynight.example", projectId: uuid(1) };
 const claim: PendingClaim = { ...project, taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5) };
+const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const configuration: FrozenExecutionConfiguration = { agent: "codex", model: null, args: ["--search"], recoveryLimit: 2 };
 const release: ControlIntent = { kind: "release", sourceClaimId: claim.claimId, version: "9223372036854775806" };
 const open = (file: string): WorkerStore => { const store = openWorkerStore(file); stores.add(store); return store; };
@@ -61,7 +63,7 @@ describe("worker SQLite schema and project bindings", () => {
     const pragma = vi.spyOn(Database.prototype, "pragma");
     const { file, store } = fixture();
     const sql = connect(file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(1);
+    expect(sql.pragma("user_version", { simple: true })).toBe(2);
     expect(sql.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
     const syncRead = pragma.mock.calls.findIndex(([statement]) => statement === "synchronous");
@@ -81,9 +83,9 @@ describe("worker SQLite schema and project bindings", () => {
     const { file, store } = fixture();
     close(store);
     const sql = connect(file);
-    sql.pragma("user_version = 2");
-    expect(() => open(file)).toThrow("Unsupported worker SQLite schema version 2");
-    expect(sql.pragma("user_version", { simple: true })).toBe(2);
+    sql.pragma("user_version = 3");
+    expect(() => open(file)).toThrow("Unsupported worker SQLite schema version 3");
+    expect(sql.pragma("user_version", { simple: true })).toBe(3);
     sql.exec("DROP TABLE projects; DROP TABLE tasks; CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('retained')");
     sql.pragma("user_version = 0");
     expect(() => open(file)).toThrow("must not contain existing tables");
@@ -103,24 +105,690 @@ describe("worker SQLite schema and project bindings", () => {
     expect(f.store.getTask({ ...claim, serverOrigin: "https://another.example" })).toBeNull();
     expect(f.store.getTask({ ...claim, claimId: uuid(99) })).toBeNull();
     expect(f.store.getTask({ ...claim, serverOrigin: "HTTPS://DAYNIGHT.EXAMPLE/", taskId: claim.taskId.toUpperCase() })?.claimId).toBe(claim.claimId);
-    expect(f.store.listProjects()).toEqual([f.mapping]);
+    expect(f.store.listProjects()).toEqual([{ ...f.mapping, claimAttempt: null }]);
+  });
+
+  it("migrates schema one transactionally without inventing launch provenance", () => {
+    const f = fixture(); f.start(); f.bind();
+    f.store.bindUserScope(claim, userId, 24);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
+    const original = f.store.getTask(claim)!;
+    close(f.store);
+    const sql = connect(f.file);
+    sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; ALTER TABLE tasks DROP COLUMN user_id; ALTER TABLE projects DROP COLUMN claim_attempt; UPDATE tasks SET cleanup = json_remove(cleanup, '$.baseline'); PRAGMA user_version = 1;");
+    const migrated = open(f.file);
+    expect(sql.pragma("user_version", { simple: true })).toBe(2);
+    expect(migrated.getTask(claim)).toEqual({ ...original, userId: null, nativeExecution: null });
+    expect(migrated.getProject(project)).toEqual({ ...f.mapping, claimAttempt: null });
+    expect(sql.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
+  });
+
+  it("rolls back both schema one migrations and their version on invalid existing structure", () => {
+    const f = fixture(); f.register(); close(f.store);
+    const sql = connect(f.file);
+    sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; ALTER TABLE tasks DROP COLUMN user_id; PRAGMA user_version = 1;");
+    expect(() => open(f.file)).toThrow("duplicate column name");
+    expect(sql.pragma("user_version", { simple: true })).toBe(1);
+    expect(sql.prepare("SELECT name FROM pragma_table_info('tasks') WHERE name = 'native_execution'").get()).toBeUndefined();
+    expect(sql.prepare("SELECT name FROM pragma_table_info('tasks') WHERE name = 'user_id'").get()).toBeUndefined();
+    expect(sql.prepare("SELECT claim_id FROM tasks").get()).toEqual({ claim_id: claim.claimId });
   });
 
   it.each(["pending", "active"] as const)("keeps repository bindings stable while an execution is %s", (status) => {
     const f = fixture(); f.register();
     if (status === "active") f.store.activateTask(claim, 20);
-    expect(f.store.registerProject({ ...f.mapping })).toEqual(f.mapping);
+    expect(f.store.registerProject({ ...f.mapping })).toEqual({ ...f.mapping, claimAttempt: null });
     expect(() => f.store.registerProject({ ...f.mapping, repoUrl: "https://github.com/other/repo.git" })).toThrow("unfinished execution");
     expect(() => f.store.registerProject({ ...f.mapping, localPath: path.join(f.directory, "other") })).toThrow("unfinished execution");
-    expect(f.store.getProject(project)).toEqual(f.mapping);
+    expect(f.store.getProject(project)).toEqual({ ...f.mapping, claimAttempt: null });
     f.cleanup(); f.store.completeTask(claim, 40);
     const changed = { ...f.mapping, repoUrl: "https://github.com/other/repo.git", localPath: path.join(f.directory, "other") };
-    expect(f.store.registerProject(changed)).toEqual(changed);
+    expect(f.store.registerProject(changed)).toEqual({ ...changed, claimAttempt: null });
     expect(f.store.getTask(claim)).toMatchObject({ repositoryPath: f.mapping.localPath, repoUrl: f.mapping.repoUrl });
   });
 });
 
+describe("durable claim acquisition uncertainty", () => {
+  const attempt = { taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId, workerId: claim.workerId, userId, expectedVersion: "9223372036854775806", configuration };
+
+  it("persists the original attempted assignment without registering a preclaim task", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    expect(f.store.beginClaimAttempt(project, attempt)).toEqual(attempt);
+    expect(() => f.store.beginClaimAttempt(project, attempt)).toThrow("cannot be replayed");
+    expect(f.store.listTasks()).toEqual([]);
+    expect(() => f.store.beginClaimAttempt(project, { ...attempt, claimId: uuid(50) })).toThrow("unresolved claim attempt");
+    expect(() => f.store.registerProject({ ...f.mapping, localPath: path.join(f.directory, "other") })).toThrow("unresolved claim attempt");
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getClaimAttempt(project)).toEqual(attempt);
+    expect(reopened.listClaimAttempts()).toEqual([{ ...project, attempt }]);
+    expect(reopened.listUnfinishedTasks()).toEqual([]);
+  });
+
+  it("requires and preserves the original authenticated user of an unresolved claim attempt", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    const { userId: _userId, ...missingUser } = attempt;
+    expect(() => f.store.beginClaimAttempt(project, missingUser as never)).toThrow("Claim attempt has invalid fields");
+    expect(() => f.store.beginClaimAttempt(project, { ...attempt, userId: "not-a-user-id" })).toThrow("Attempt user ID must be a UUID");
+    f.store.beginClaimAttempt(project, attempt);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getClaimAttempt(project)?.userId).toBe(userId);
+    expect(() => reopened.beginClaimAttempt(project, { ...attempt, userId: uuid(91) })).toThrow("cannot be replayed or replaced");
+    expect(reopened.getClaimAttempt(project)).toEqual(attempt);
+  });
+
+  it("clears only the exact confirmed grant atomically with its original frozen pending row", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration: { ...configuration, model: "changed-after-crash" } }, 10, userId)).toThrow("original claim attempt");
+    expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    expect(f.store.getTask(claim)).toBeNull();
+    const sql = connect(f.file);
+    sql.exec("CREATE TRIGGER reject_pending BEFORE INSERT ON tasks BEGIN SELECT RAISE(ABORT, 'pending refused'); END;");
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 10, userId)).toThrow("pending refused");
+    expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    sql.exec("DROP TRIGGER reject_pending");
+    expect(f.store.registerPending(claim, { kind: "new", configuration }, 10, userId)).toMatchObject({ status: "pending", userId, configuration, nativeExecution: { launchSubmission: "never-submitted" } });
+    expect(f.store.getClaimAttempt(project)).toBeNull();
+    expect(f.store.listClaimAttempts()).toEqual([]);
+  });
+
+  it.each(["new", "recovered"] as const)("persists a verified %s grant's original owner and configuration before clearing its attempt", (kind) => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    const sql = connect(f.file);
+    sql.exec("CREATE TRIGGER require_pending_owner BEFORE INSERT ON tasks WHEN NEW.user_id IS NULL BEGIN SELECT RAISE(ABORT, 'owner must be present at insertion'); END;");
+    const pending = f.store.registerPending(claim, { kind, configuration }, 10, userId);
+    expect(pending).toMatchObject({ status: "pending", userId, configuration, resources: { worktree: null, herdr: null, nativeSession: null } });
+    expect(pending.nativeExecution === null).toBe(kind === "recovered");
+    expect(f.store.getClaimAttempt(project)).toBeNull();
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)).toEqual(pending);
+    expect(reopened.getClaimAttempt(project)).toBeNull();
+    if (kind === "new") expect(reopened.completeUnstartedPending(claim, { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId }, 11).status).toBe("done");
+    else expect(isUnstartedPending(pending)).toBe(false);
+  });
+
+  it("keeps an unverified registration unknown and rolls back an existing-row owner bind with its attempt clear", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    const unknown = f.store.registerPending(claim, { kind: "new", configuration }, 10, null);
+    expect(unknown.userId).toBeNull(); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    close(f.store);
+    const reopened = open(f.file);
+    const sql = connect(f.file);
+    sql.exec("CREATE TRIGGER reject_owner_binding BEFORE UPDATE OF user_id ON tasks WHEN NEW.user_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'owner binding refused'); END;");
+    expect(() => reopened.registerPending(claim, { kind: "new", configuration }, 11, userId)).toThrow("owner binding refused");
+    expect(reopened.getTask(claim)).toEqual(unknown); expect(reopened.getClaimAttempt(project)).toEqual(attempt);
+    sql.exec("DROP TRIGGER reject_owner_binding");
+    const known = reopened.registerPending(claim, { kind: "new", configuration }, 12, userId);
+    expect(known).toMatchObject({ userId, configuration, createdAt: 10, updatedAt: 12 });
+    expect(reopened.getClaimAttempt(project)).toBeNull();
+    close(reopened);
+    expect(open(f.file).getTask(claim)).toEqual(known);
+  });
+
+  it("restores only the positively verified attempt snapshot and owner while preserving existing execution provenance", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    f.store.registerPending(claim, { kind: "recovered", configuration: null }, 10, null);
+    f.store.activatePausedRecovery(claim, "Keep the original manual pause", 11); f.bind();
+    const binding = { session: "w", workspaceId: "workspace-original", paneId: "pane-original", terminalId: "original-terminal" };
+    f.store.bindHerdrExecution(claim, binding, null, 24);
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET recovery = ? WHERE claim_id = ?").run(JSON.stringify({ count: 2, pauseReason: "Keep the original manual pause", retryAuthorized: true }), claim.claimId);
+    const original = f.store.getTask(claim)!;
+    expect(original).toMatchObject({ userId: null, configuration: null, nativeExecution: { launchSubmission: "unknown", promptSubmission: "unknown" } });
+    expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    sql.exec("CREATE TRIGGER reject_snapshot_restore BEFORE UPDATE OF configuration ON tasks WHEN NEW.configuration IS NOT NULL BEGIN SELECT RAISE(ABORT, 'snapshot restore refused'); END;");
+    expect(() => f.store.registerPending(claim, { kind: "recovered", configuration }, 25, userId)).toThrow("snapshot restore refused");
+    expect(f.store.getTask(claim)).toEqual(original); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    sql.exec("DROP TRIGGER reject_snapshot_restore");
+    const restored = f.store.registerPending(claim, { kind: "recovered", configuration }, 26, userId);
+    expect(restored).toEqual({ ...original, userId, configuration, updatedAt: 26 });
+    expect(isUnstartedPending(restored)).toBe(false); expect(f.store.getClaimAttempt(project)).toBeNull();
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)).toEqual(restored); expect(reopened.getClaimAttempt(project)).toBeNull();
+  });
+
+  it("never replaces a stored nonnull snapshot with an attempt or uses current defaults for an orphan", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    const original = f.store.registerPending(claim, { kind: "new", configuration: { ...configuration, model: "different-original" } }, 10, null);
+    f.store.beginClaimAttempt(project, attempt);
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 11, userId)).toThrow("original claim attempt and frozen configuration");
+    expect(f.store.getTask(claim)).toEqual(original); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    const orphan = fixture(); orphan.store.registerProject(orphan.mapping);
+    const unknown = orphan.store.registerPending(claim, { kind: "recovered", configuration: null }, 10, null);
+    const scoped = orphan.store.registerPending(claim, { kind: "new", configuration }, 11, userId);
+    expect(scoped).toEqual({ ...unknown, userId, updatedAt: 11 });
+    expect(scoped.configuration).toBeNull(); expect(scoped.nativeExecution).toBeNull();
+  });
+
+  it("does not consume an attempt for mismatched identity or authenticated owner", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    for (const changed of [{ ...claim, taskId: uuid(70) }, { ...claim, workerId: uuid(71) }, { ...claim, worktreeId: uuid(72) }]) {
+      expect(() => f.store.registerPending(changed, { kind: "new", configuration }, 10, userId)).toThrow("original claim attempt");
+      expect(f.store.listTasks()).toEqual([]); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    }
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 10, uuid(73))).toThrow("original authenticated claim attempt owner");
+    expect(f.store.listTasks()).toEqual([]); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    const known = f.store.registerPending(claim, { kind: "new", configuration }, 11, userId);
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 12, uuid(73))).toThrow("original authenticated claim owner cannot be replaced");
+    expect(f.store.getTask(claim)).toEqual(known);
+  });
+
+  it.each(["terminal", "control"] as const)("does not retroactively bind an unknown %s decision while resolving a matching attempt", (kind) => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    f.store.registerPending(claim, { kind: "new", configuration }, 10, null);
+    if (kind === "terminal") f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_020 }, 20);
+    else f.store.recordControlIntent(claim, release, 20);
+    const original = f.store.getTask(claim);
+    expect(() => f.store.registerPending(claim, { kind: "new", configuration }, 21, userId)).toThrow("unknown authenticated scope");
+    expect(f.store.getTask(claim)).toEqual(original); expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+  });
+
+  it("requires definite rejection of the original attempt and keeps unrelated actual grants separate", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    f.store.registerPending({ ...claim, taskId: uuid(40), claimId: uuid(41), worktreeId: uuid(42) }, { kind: "new", configuration }, 10);
+    expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    expect(() => f.store.rejectClaimAttempt(project, uuid(90), { definiteRejection: true })).toThrow("does not match");
+    expect(() => f.store.rejectClaimAttempt(project, claim.claimId, { definiteRejection: false } as never)).toThrow("definite rejection");
+    expect(f.store.getClaimAttempt(project)).toEqual(attempt);
+    f.store.rejectClaimAttempt(project, claim.claimId, { definiteRejection: true });
+    expect(f.store.getClaimAttempt(project)).toBeNull();
+    expect(() => f.store.beginClaimAttempt(project, { ...attempt, expectedVersion: "1e3" })).toThrow("positive int64");
+  });
+
+  it("clears a proven pre-dispatch failure after restart while retaining uncertain submissions", () => {
+    const f = fixture(); f.store.registerProject(f.mapping); f.store.beginClaimAttempt(project, attempt);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getClaimAttempt(project)).toEqual(attempt);
+    expect(() => reopened.rejectClaimAttempt(project, claim.claimId, { notSubmitted: false } as never)).toThrow("proven non-submission");
+    expect(() => reopened.beginClaimAttempt(project, attempt)).toThrow("cannot be replayed");
+    reopened.rejectClaimAttempt(project, claim.claimId, { notSubmitted: true });
+    expect(reopened.getClaimAttempt(project)).toBeNull();
+    const next = { ...attempt, claimId: uuid(51), worktreeId: uuid(52), expectedVersion: "9223372036854775807" };
+    expect(reopened.beginClaimAttempt(project, next)).toEqual(next);
+    expect(reopened.listTasks()).toEqual([]);
+  });
+});
+
+describe("observed workspaces invalidate unattempted provenance", () => {
+  it("records a real workspace observation before Git binding and remains unknown across restart", () => {
+    const f = fixture(); f.register();
+    const original = f.store.getTask(claim)!;
+    expect(isUnstartedPending(original)).toBe(true);
+    const observed = f.store.recordObservedUnattemptedWorkspace(claim, 20)!;
+    expect(observed).toEqual({ ...original, nativeExecution: { ...original.nativeExecution, workspaceSubmission: "unknown", launchSubmission: "unknown", promptSubmission: "unknown" }, updatedAt: 20 });
+    expect(isUnstartedPending(observed)).toBe(false);
+    expect(f.store.recordObservedUnattemptedWorkspace(claim, 21)).toEqual(observed);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)).toEqual(observed);
+    const paused = reopened.activatePausedRecovery(claim, "Observed original workspace needs inspection", 22);
+    expect(paused).toMatchObject({ status: "active", resources: { worktree: null, herdr: null, nativeSession: null }, recovery: { count: 0, pauseReason: "Observed original workspace needs inspection" } });
+    expect(() => reopened.markNativeLaunchSubmitting(claim, 23)).toThrow("proven unlaunched");
+  });
+
+  it("preserves unknown summary fences, original history, resources and management facts", () => {
+    const f = fixture(); f.start(); f.store.bindUserScope(claim, userId, 21);
+    f.store.markExecutionSummarySubmitting(claim, { version: "11", herdr: null, nativeSessionId: null, phase: "preparing" }, 22);
+    f.store.pauseTask(claim, "Keep the original pause", 23); f.store.authorizeRecoveryRetry(claim, 24);
+    f.store.recordControlIntent(claim, release, 25);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_026 }, 26);
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession', json(?)), recovery = json_set(recovery, '$.count', 2) WHERE claim_id = ?").run(JSON.stringify({ sessionId: uuid(88), source: "native-history" }), claim.claimId);
+    const original = f.store.getTask(claim)!;
+    const observed = f.store.recordObservedUnattemptedWorkspace(claim, 27)!;
+    expect(observed).toEqual({ ...original, nativeExecution: { ...original.nativeExecution, workspaceSubmission: "unknown", launchSubmission: "unknown", promptSubmission: "unknown" }, updatedAt: 27 });
+    expect(observed.nativeExecution?.summary?.submission).toBe("unknown");
+    expect(observed.resources.nativeSession?.sessionId).toBe(uuid(88));
+    expect(observed.control).toEqual(original.control); expect(observed.cleanup).toEqual(original.cleanup); expect(observed.recovery).toEqual(original.recovery);
+    close(f.store);
+    expect(open(f.file).getTask(claim)).toEqual(observed);
+  });
+
+  it("requires exact observed origin, project, task, claim, worker and worktree scope", () => {
+    const f = fixture(); f.register(); const original = f.store.getTask(claim)!;
+    for (const owner of [{ ...claim, serverOrigin: "https://different.example" }, { ...claim, projectId: uuid(40) }, { ...claim, taskId: uuid(41) }, { ...claim, claimId: uuid(42) }]) expect(f.store.recordObservedUnattemptedWorkspace(owner, 20)).toBeNull();
+    expect(() => f.store.recordObservedUnattemptedWorkspace({ ...claim, workerId: uuid(43) }, 20)).toThrow("worker and worktree identity");
+    expect(() => f.store.recordObservedUnattemptedWorkspace({ ...claim, worktreeId: uuid(44) }, 20)).toThrow("worker and worktree identity");
+    expect(f.store.getTask(claim)).toEqual(original);
+  });
+
+  it("leaves a legitimate in-flight workspace creation and a completed record unchanged", () => {
+    const f = fixture(); f.start();
+    f.store.bindWorktree(claim, { repositoryPath: f.mapping.localPath, commonDirectory: path.join(f.mapping.localPath, ".git"), worktreePath: path.join(f.mapping.localPath, ".worktrees", "daynight", claim.taskId), branch: `daynight/${claim.taskId}` }, 21);
+    const inFlight = f.store.markWorkspaceSubmitting(claim, 22);
+    expect(f.store.recordObservedUnattemptedWorkspace(claim, 23)).toEqual(inFlight);
+    expect(f.store.getTask(claim)?.nativeExecution).toMatchObject({ workspaceSubmission: "unknown", launchSubmission: "never-submitted", promptSubmission: "not-submitted" });
+    const completed = fixture(); completed.register(); completed.store.bindUserScope(claim, userId, 11);
+    const done = completed.store.completeUnstartedPending(claim, { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId }, 12);
+    expect(completed.store.recordObservedUnattemptedWorkspace(claim, 13)).toEqual(done);
+    expect(completed.store.getTask(claim)).toEqual(done);
+  });
+});
+
+describe("native launch receipts and process provenance", () => {
+  const binding: HerdrTaskBinding = { session: "w", workspaceId: "workspace-original", paneId: "pane-original", terminalId: "terminal-original" };
+  const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;
+  const workspaceEvidence: HerdrWorkspaceEvidence = { binding, ownerLabel, environment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } };
+  const launchEvidence: HerdrLaunchEvidence = { binding, ownerLabel, agent: "codex", argv: ["codex", "--search", "--no-daemon"], referenceBaseline: "empty", workspaceEvidence };
+  const stopObservation: HerdrStopObservation = { binding, ownerLabel, agent: "codex", nativeSessionId: null, shellPid: 123, processIds: [124, 125], observedAt: 25 };
+  const prepared = () => {
+    const f = fixture(); f.start(); f.bind();
+    f.store.bindHerdrExecution(claim, binding, workspaceEvidence, 24);
+    return f;
+  };
+  const shutdown = (store: WorkerStore): void => {
+    store.beginCleanup(claim, { kind: "shutdown", deadline: 600_030 }, 30);
+    store.recordCleanupInputOutcome(claim, "unavailable", 31);
+    store.recordCleanupResult(claim, "unavailable", null, 32);
+    store.confirmAgentStopped(claim, { agentStopped: true }, 33);
+    store.confirmWorkspaceClosed(claim, { workspaceClosed: true }, 34);
+  };
+
+  it("preserves submitted startup provenance and pauses a completed shutdown when its original native ID is missing", () => {
+    const f = prepared();
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession', json('null')) WHERE claim_id = ?").run(claim.claimId);
+    f.store.markNativeLaunchSubmitting(claim, 25);
+    f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "submitted" }, 26);
+    f.store.recordStopObservation(claim, stopObservation, 27);
+    f.store.markExecutionSummarySubmitting(claim, { version: "11", herdr: f.store.getTask(claim)!.resources.herdr, nativeSessionId: null, phase: "waiting" }, 28);
+    const original = f.store.getTask(claim)!;
+    shutdown(f.store); close(f.store);
+    const reopened = open(f.file);
+    const resumed = reopened.resumeAfterShutdown(claim, 40);
+    expect(resumed).toMatchObject({ cleanup: null, resources: original.resources, nativeExecution: original.nativeExecution, recovery: { count: 0, pauseReason: expect.stringContaining("original native session ID is missing") } });
+    expect(() => reopened.markWorkspaceSubmitting(claim, 41)).toThrow("original native session ID is missing");
+    reopened.authorizeRecoveryRetry(claim, 42);
+    reopened.beginRecovery(claim, 43);
+    expect(() => reopened.markWorkspaceSubmitting(claim, 44)).toThrow("original native session ID is missing");
+    expect(() => reopened.markNativeLaunchSubmitting(claim, 44)).toThrow("proven unlaunched");
+    expect(reopened.getTask(claim)?.nativeExecution).toEqual(original.nativeExecution);
+    close(reopened);
+    expect(open(f.file).getTask(claim)?.nativeExecution).toEqual(original.nativeExecution);
+  });
+
+  it("keeps unknown legacy launch provenance after shutdown without inventing an original native ID", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    f.store.registerPending(claim, { kind: "recovered", configuration }, 10);
+    f.store.activateTask(claim, 20);
+    shutdown(f.store);
+    const resumed = f.store.resumeAfterShutdown(claim, 40);
+    expect(resumed).toMatchObject({ cleanup: null, nativeExecution: null, resources: { nativeSession: null }, recovery: { pauseReason: expect.stringContaining("original native session ID is missing") } });
+    expect(() => f.store.markWorkspaceSubmitting(claim, 41)).toThrow("persisted provenance");
+  });
+
+  it("prepares fresh Herdr resources for a known original native ID after shutdown", () => {
+    const f = prepared();
+    f.store.markNativeLaunchSubmitting(claim, 25);
+    f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "submitted" }, 26);
+    shutdown(f.store);
+    const original = f.store.getTask(claim)!;
+    const resumed = f.store.resumeAfterShutdown(claim, 40);
+    expect(resumed.resources).toEqual({ ...original.resources, herdr: null });
+    expect(resumed.nativeExecution).toMatchObject({ launchSubmission: "never-submitted", promptSubmission: "not-submitted", terminalId: null });
+    expect(resumed.recovery.pauseReason).toBeNull();
+    expect(f.store.markWorkspaceSubmitting(claim, 41).nativeExecution?.workspaceSubmission).toBe("unknown");
+  });
+
+  it("preserves the genuine first-launch path for a proven never-launched shutdown without a native ID", () => {
+    const f = prepared();
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession', json('null')) WHERE claim_id = ?").run(claim.claimId);
+    shutdown(f.store);
+    const resumed = f.store.resumeAfterShutdown(claim, 40);
+    expect(resumed.resources.nativeSession).toBeNull();
+    expect(resumed.resources.herdr).toBeNull();
+    expect(resumed.recovery.pauseReason).toBeNull();
+    expect(resumed.nativeExecution?.launchSubmission).toBe("never-submitted");
+    expect(f.store.markWorkspaceSubmitting(claim, 41).nativeExecution?.workspaceSubmission).toBe("unknown");
+  });
+
+  it("fences an unknown initial workspace create across restart and adopts its actual binding without inventing environment evidence", () => {
+    const f = fixture(); f.start();
+    f.store.bindWorktree(claim, { repositoryPath: f.mapping.localPath, commonDirectory: path.join(f.mapping.localPath, ".git"), worktreePath: path.join(f.mapping.localPath, ".worktrees", "daynight", claim.taskId), branch: `daynight/${claim.taskId}` }, 21);
+    expect(f.store.markWorkspaceSubmitting(claim, 22).nativeExecution?.workspaceSubmission).toBe("unknown");
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)).toMatchObject({ resources: { herdr: null }, nativeExecution: { workspaceSubmission: "unknown", launchSubmission: "never-submitted" } });
+    expect(() => reopened.markWorkspaceSubmitting(claim, 23)).toThrow("cannot be replayed");
+    expect(() => reopened.recordWorkspaceNotSubmitted(claim, { notSubmitted: false } as never, 23)).toThrow("proven non-submission");
+    expect(reopened.bindHerdrExecution(claim, binding, null, 24).nativeExecution).toMatchObject({ workspaceSubmission: "acknowledged", workspaceEvidence: null });
+    expect(() => reopened.markNativeLaunchSubmitting(claim, 25)).toThrow("verified workspace");
+  });
+
+  it.each([{ notSubmitted: true } as const, { definiteRejection: true } as const])("permits a fresh workspace decision only after proven no dispatch: %j", (proof) => {
+    const f = prepared(); f.store.markWorkspaceSubmitting(claim, 25);
+    close(f.store);
+    const reopened = open(f.file);
+    const before = reopened.getTask(claim)!;
+    reopened.recordWorkspaceNotSubmitted(claim, proof, 26);
+    expect(reopened.getTask(claim)?.nativeExecution).toEqual({ ...before.nativeExecution, workspaceSubmission: "not-submitted" });
+    expect(reopened.markWorkspaceSubmitting(claim, 27).nativeExecution?.workspaceSubmission).toBe("unknown");
+  });
+
+  it("preserves original stop provenance while replacement creation is unknown after a crash", () => {
+    const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25);
+    f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "not-submitted" }, 26);
+    expect(() => f.store.markWorkspaceSubmitting(claim, 27)).toThrow("durable original native stop");
+    f.store.recordStopObservation(claim, stopObservation, 28);
+    f.store.markWorkspaceSubmitting(claim, 29);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)?.nativeExecution).toMatchObject({ workspaceSubmission: "unknown", terminalId: binding.terminalId, stopObservation, launchEvidence });
+    expect(() => reopened.markWorkspaceSubmitting(claim, 30)).toThrow("cannot be replayed");
+    expect(() => reopened.markNativePromptSubmitting(claim, 30)).toThrow("original acknowledged launch");
+    expect(() => reopened.bindHerdrExecution(claim, binding, workspaceEvidence, 30)).toThrow("previous binding");
+    const next = { ...binding, workspaceId: "observed-workspace", paneId: "observed-pane", terminalId: "observed-terminal" };
+    const adopted = reopened.rebindHerdrExecution(claim, binding, next, null, { originalAgentStopped: true, oldWorkspaceClosed: true }, 31);
+    expect(adopted.nativeExecution).toMatchObject({ workspaceSubmission: "acknowledged", workspaceEvidence: null, stopObservation: null, launchSubmission: "never-submitted" });
+    expect(adopted.resources.nativeSession).toEqual({ sessionId: "native-original", source: "herdr" });
+  });
+
+  it("durably fences launch and input before either can be submitted", () => {
+    const f = prepared();
+    expect(f.store.getTask(claim)?.nativeExecution).toMatchObject({ terminalId: binding.terminalId, launchSubmission: "never-submitted", promptSubmission: "not-submitted", workspaceEvidence });
+    f.store.markNativeLaunchSubmitting(claim, 25);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)?.nativeExecution).toMatchObject({ launchSubmission: "unknown", promptSubmission: "unknown", launchEvidence: null });
+    expect(() => reopened.markNativeLaunchSubmitting(claim, 26)).toThrow("proven unlaunched");
+    expect(() => reopened.markNativePromptSubmitting(claim, 26)).toThrow("proven unsubmitted");
+    reopened.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "not-submitted" }, 27);
+    expect(reopened.markNativePromptSubmitting(claim, 28).nativeExecution).toMatchObject({ launchSubmission: "acknowledged", promptSubmission: "unknown" });
+    reopened.recordNativeStartOutcome(claim, { promptSubmission: "submitted" }, 29);
+    expect(() => reopened.recordNativeStartOutcome(claim, { promptSubmission: "not-submitted" }, 30)).toThrow("cannot become unsubmitted");
+    expect(reopened.getTask(claim)?.resources.herdr).toEqual({ session: "w", workspaceId: binding.workspaceId, paneId: binding.paneId });
+  });
+
+  it.each([{ notSubmitted: true } as const, { definiteRejection: true } as const])("restores a proven pre-dispatch launch failure for retry after restart: %j", (proof) => {
+    const f = prepared();
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession.sessionId', ?) WHERE claim_id = ?").run(uuid(88), claim.claimId);
+    f.store.markExecutionSummarySubmitting(claim, { version: "11", herdr: f.store.getTask(claim)!.resources.herdr, nativeSessionId: uuid(88), phase: "preparing" }, 24);
+    f.store.markNativeLaunchSubmitting(claim, 25);
+    close(f.store);
+    const reopened = open(f.file);
+    const before = reopened.getTask(claim)!;
+    expect(() => reopened.recordNativeLaunchNotSubmitted(claim, { notSubmitted: false } as never, 26)).toThrow("proven non-submission");
+    const restored = reopened.recordNativeLaunchNotSubmitted(claim, proof, 27);
+    expect(restored.nativeExecution).toEqual({ ...before.nativeExecution, launchSubmission: "never-submitted", promptSubmission: "not-submitted" });
+    expect(restored.resources).toEqual(before.resources);
+    expect(restored.configuration).toEqual(before.configuration);
+    expect(reopened.markNativeLaunchSubmitting(claim, 28).nativeExecution).toMatchObject({ launchSubmission: "unknown", promptSubmission: "unknown" });
+  });
+
+  it("never resets acknowledged native launch for rejected deferred input or observed native processes", () => {
+    const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25);
+    f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "not-submitted" }, 26);
+    f.store.markNativePromptSubmitting(claim, 27);
+    f.store.recordNativeStartOutcome(claim, { promptSubmission: "not-submitted" }, 28);
+    expect(() => f.store.recordNativeLaunchNotSubmitted(claim, { definiteRejection: true }, 29)).toThrow("only before acknowledged launch");
+    expect(f.store.getTask(claim)?.nativeExecution).toMatchObject({ launchSubmission: "acknowledged", promptSubmission: "not-submitted", launchEvidence });
+    const g = prepared(); g.store.markNativeLaunchSubmitting(claim, 25);
+    g.store.recordStopObservation(claim, stopObservation, 26);
+    expect(() => g.store.recordNativeLaunchNotSubmitted(claim, { notSubmitted: true }, 27)).toThrow("native process evidence");
+  });
+
+  it("retains proven never-launched cleanup provenance after a rejected native start", () => {
+    const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25);
+    f.store.recordNativeLaunchNotSubmitted(claim, { notSubmitted: true }, 26);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)).toMatchObject({ nativeExecution: { launchSubmission: "never-submitted", workspaceEvidence }, cleanup: { kind: "terminal", deadline: 600_030 } });
+    expect(() => reopened.markNativeLaunchSubmitting(claim, 31)).toThrow("control or cleanup");
+    reopened.recordCleanupInputOutcome(claim, "unavailable", 32);
+    reopened.recordCleanupResult(claim, "unavailable", null, 33);
+    reopened.confirmAgentStopped(claim, { agentStopped: true }, 34);
+    reopened.confirmWorkspaceClosed(claim, { workspaceClosed: true }, 35);
+    reopened.confirmWorktreeDeleted(claim, { worktreeDeleted: true }, 36);
+    expect(reopened.completeTask(claim, 37).status).toBe("done");
+  });
+
+  it("adopts unknown existing resources without inventing workspace or never-launched proof", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    f.store.registerPending(claim, { kind: "recovered", configuration: null }, 10);
+    expect(f.store.getTask(claim)?.nativeExecution).toBeNull();
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_020 }, 20); f.bind();
+    const adopted = f.store.bindHerdrExecution(claim, binding, null, 24);
+    expect(adopted.nativeExecution).toMatchObject({ launchSubmission: "unknown", promptSubmission: "unknown", workspaceEvidence: null });
+    expect(() => f.store.markNativeLaunchSubmitting(claim, 25)).toThrow("control or cleanup");
+    expect(f.store.recordStopObservation(claim, stopObservation, 25).nativeExecution?.stopObservation).toEqual(stopObservation);
+  });
+
+  it("rejects wrong claim, terminal, provider and conflicting evidence without changing stored facts", () => {
+    const f = prepared();
+    expect(() => f.store.bindHerdrExecution(claim, { ...binding, terminalId: "replacement" }, null, 25)).toThrow("original terminal");
+    expect(() => f.store.bindHerdrExecution(claim, binding, { ...workspaceEvidence, ownerLabel: ownerLabel.replace(claim.claimId, uuid(90)) }, 25)).toThrow("cannot be replaced");
+    f.store.markNativeLaunchSubmitting(claim, 25);
+    expect(() => f.store.recordNativeStartOutcome(claim, { launchEvidence: { ...launchEvidence, binding: { ...binding, terminalId: "wrong" } }, promptSubmission: "submitted" }, 26)).toThrow("original Herdr binding");
+    expect(() => f.store.recordNativeStartOutcome(claim, { launchEvidence: { ...launchEvidence, ownerLabel: ownerLabel.replace(claim.claimId, uuid(90)) }, promptSubmission: "submitted" }, 26)).toThrow("another claim or worktree");
+    expect(() => f.store.recordNativeStartOutcome(claim, { launchEvidence: { ...launchEvidence, agent: "copilot" }, promptSubmission: "submitted" }, 26)).toThrow("frozen configuration");
+    expect(f.store.getTask(claim)?.nativeExecution).toMatchObject({ launchSubmission: "unknown", promptSubmission: "unknown", launchEvidence: null });
+    f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "submitted" }, 27);
+    f.store.recordStopObservation(claim, stopObservation, 28);
+    expect(f.store.recordStopObservation(claim, stopObservation, 29).nativeExecution?.stopObservation).toEqual(stopObservation);
+    expect(() => f.store.recordStopObservation(claim, { ...stopObservation, processIds: [126] }, 30)).toThrow("cannot be replaced");
+    close(f.store);
+    expect(open(f.file).getTask(claim)?.nativeExecution?.stopObservation).toEqual(stopObservation);
+  });
+
+  it("resets launch facts only with exact previous binding and durable original stop provenance", () => {
+    const f = prepared(); f.store.markNativeLaunchSubmitting(claim, 25);
+    f.store.recordNativeStartOutcome(claim, { launchEvidence, promptSubmission: "submitted" }, 26);
+    const next = { ...binding, workspaceId: "workspace-new", paneId: "pane-new", terminalId: "terminal-new" };
+    const nextEvidence = { ...workspaceEvidence, binding: next };
+    const proof = { originalAgentStopped: true, oldWorkspaceClosed: true } as const;
+    expect(() => f.store.rebindHerdrExecution(claim, binding, next, nextEvidence, proof, 27)).toThrow("durable original stop");
+    f.store.recordStopObservation(claim, stopObservation, 28);
+    f.store.markWorkspaceSubmitting(claim, 29);
+    expect(() => f.store.rebindHerdrExecution(claim, { ...binding, terminalId: "wrong" }, next, nextEvidence, proof, 29)).toThrow("previous full Herdr binding");
+    const rebound = f.store.rebindHerdrExecution(claim, binding, next, nextEvidence, proof, 30);
+    expect(rebound.nativeExecution).toEqual({ terminalId: next.terminalId, workspaceSubmission: "acknowledged", workspaceEvidence: nextEvidence, launchEvidence: null, launchSubmission: "never-submitted", promptSubmission: "not-submitted", stopObservation: null, summary: null });
+    expect(rebound.resources.nativeSession).toEqual({ sessionId: "native-original", source: "herdr" });
+    expect(rebound.configuration).toEqual(configuration);
+  });
+
+  it("rejects malformed stored provenance rather than silently treating it as a fresh execution", () => {
+    const f = prepared();
+    const sql = connect(f.file);
+    const original = f.store.getTask(claim)!.nativeExecution!;
+    sql.prepare("UPDATE tasks SET native_execution = ? WHERE claim_id = ?").run(JSON.stringify({ ...original, launchSubmission: "acknowledged" }), claim.claimId);
+    expect(() => f.store.listUnfinishedTasks()).toThrow("requires its original launch evidence");
+  });
+
+  it("retains unknown summary writes through restart and resolves only an advanced inventory version", () => {
+    const f = prepared();
+    const summary = { version: "9223372036854775805", herdr: f.store.getTask(claim)!.resources.herdr, nativeSessionId: "native-original", phase: "executing" as const };
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession.sessionId', ?) WHERE claim_id = ?").run(uuid(80), claim.claimId);
+    const target = { ...summary, nativeSessionId: uuid(80) };
+    f.store.markExecutionSummarySubmitting(claim, target, 26);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)?.nativeExecution?.summary).toEqual({ ...target, submission: "unknown" });
+    expect(() => reopened.markExecutionSummarySubmitting(claim, target, 27)).toThrow("unresolved");
+    expect(reopened.reconcileExecutionSummary(claim, target, 27).nativeExecution?.summary?.submission).toBe("unknown");
+    expect(reopened.reconcileExecutionSummary(claim, { ...target, version: "9223372036854775806" }, 28).nativeExecution?.summary?.submission).toBe("confirmed");
+    const next = { ...target, version: "9223372036854775806", phase: "waiting" as const };
+    reopened.markExecutionSummarySubmitting(claim, next, 29);
+    expect(reopened.reconcileExecutionSummary(claim, { ...target, version: "9223372036854775807" }, 30).nativeExecution?.summary).toBeNull();
+    expect(reopened.markExecutionSummarySubmitting(claim, { ...target, version: "9223372036854775807" }, 31).nativeExecution?.summary?.submission).toBe("unknown");
+    expect(() => reopened.recordExecutionSummaryOutcome(claim, target.version, "rejected", 32)).toThrow("does not match");
+    expect(reopened.recordExecutionSummaryOutcome(claim, "9223372036854775807", "rejected", 33).nativeExecution?.summary?.submission).toBe("rejected");
+  });
+
+  it("carries an unresolved summary across verified shutdown resource replacement", () => {
+    const f = prepared();
+    const target = { version: "11", herdr: f.store.getTask(claim)!.resources.herdr, nativeSessionId: uuid(81), phase: "executing" as const };
+    const sql = connect(f.file);
+    sql.prepare("UPDATE tasks SET resources = json_set(resources, '$.nativeSession.sessionId', ?) WHERE claim_id = ?").run(uuid(81), claim.claimId);
+    f.store.markExecutionSummarySubmitting(claim, target, 25);
+    f.store.beginCleanup(claim, { kind: "shutdown", deadline: 630 }, 30);
+    f.store.recordCleanupInputOutcome(claim, "unavailable", 31);
+    f.store.recordCleanupResult(claim, "unavailable", null, 32);
+    f.store.confirmAgentStopped(claim, { agentStopped: true }, 33);
+    f.store.confirmWorkspaceClosed(claim, { workspaceClosed: true }, 34);
+    const resumed = f.store.resumeAfterShutdown(claim, 35);
+    expect(resumed.nativeExecution).toMatchObject({ launchSubmission: "never-submitted", terminalId: null, summary: { ...target, submission: "unknown" } });
+    expect(() => f.store.markExecutionSummarySubmitting(claim, { ...target, herdr: null }, 36)).toThrow("unresolved");
+  });
+
+  it("clears only proven undispatched summary mutations and permits a fresh versioned decision", () => {
+    const f = fixture(); f.start();
+    const target = { version: "11", herdr: null, nativeSessionId: null, phase: "preparing" as const };
+    f.store.markExecutionSummarySubmitting(claim, target, 25);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(() => reopened.recordExecutionSummaryNotSubmitted(claim, "12", { notSubmitted: true }, 26)).toThrow("does not match");
+    expect(() => reopened.recordExecutionSummaryNotSubmitted(claim, "11", { notSubmitted: false } as never, 26)).toThrow("proven non-submission");
+    expect(reopened.getTask(claim)?.nativeExecution?.summary?.submission).toBe("unknown");
+    reopened.recordExecutionSummaryNotSubmitted(claim, "11", { notSubmitted: true }, 27);
+    expect(reopened.getTask(claim)?.nativeExecution?.summary).toBeNull();
+    reopened.markExecutionSummarySubmitting(claim, target, 28);
+    reopened.recordExecutionSummaryOutcome(claim, "11", "rejected", 29);
+    expect(() => reopened.recordExecutionSummaryNotSubmitted(claim, "11", { notSubmitted: true }, 30)).toThrow("unresolved execution summary");
+    expect(reopened.getTask(claim)?.nativeExecution?.summary?.submission).toBe("rejected");
+  });
+});
+
+describe("immutable authenticated claim scope", () => {
+  it("keeps newly registered scope unknown until an actual matching claim establishes its immutable owner", () => {
+    const f = fixture(); f.register();
+    expect(f.store.getTask(claim)?.userId).toBeNull();
+    expect(isUnstartedPending(f.store.getTask(claim)!)).toBe(true);
+    const owned = f.store.bindUserScope(claim, userId.toUpperCase(), 11);
+    expect(owned.userId).toBe(userId);
+    expect(f.store.bindUserScope(claim, userId, 12).userId).toBe(userId);
+    const before = f.store.getTask(claim)!;
+    expect(() => f.store.bindUserScope(claim, uuid(91), 13)).toThrow("original authenticated claim owner cannot be replaced");
+    expect(f.store.getTask(claim)).toEqual(before);
+    close(f.store);
+    expect(open(f.file).getTask(claim)?.userId).toBe(userId);
+  });
+
+  it("learns unknown scope for ordinary/shutdown claims while fencing terminal and source-control decisions", () => {
+    const ordinary = fixture(); ordinary.start();
+    expect(ordinary.store.bindUserScope(claim, userId, 25).userId).toBe(userId);
+    const shutdown = fixture(); shutdown.start();
+    shutdown.store.beginCleanup(claim, { kind: "shutdown", deadline: 600_030 }, 30);
+    expect(shutdown.store.bindUserScope(claim, userId, 31).userId).toBe(userId);
+    const terminal = fixture(); terminal.start();
+    terminal.store.beginCleanup(claim, { kind: "terminal", deadline: 600_030 }, 30);
+    const originalTerminal = terminal.store.getTask(claim)!;
+    expect(() => terminal.store.bindUserScope(claim, userId, 31)).toThrow("unknown authenticated scope");
+    expect(terminal.store.getTask(claim)).toEqual(originalTerminal);
+    const controlled = fixture(); controlled.start();
+    controlled.store.recordControlIntent(claim, release, 30);
+    const originalControl = controlled.store.getTask(claim)!;
+    expect(() => controlled.store.bindUserScope(claim, userId, 31)).toThrow("unknown authenticated scope");
+    expect(controlled.store.getTask(claim)).toEqual(originalControl);
+  });
+
+  it("permits already bound terminal/control owners without changing their original authorization", () => {
+    const f = fixture(); f.start(); f.store.bindUserScope(claim, userId, 25);
+    f.store.recordControlIntent(claim, release, 30);
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 600_031 }, 31);
+    expect(f.store.bindUserScope(claim, userId, 32).userId).toBe(userId);
+    expect(() => f.store.bindUserScope(claim, uuid(91), 33)).toThrow("cannot be replaced");
+  });
+
+  it("requires original authenticated scope for direct pending completion while shutdown classification remains owner agnostic", () => {
+    const f = fixture(); f.register();
+    const proof = { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId } as const;
+    const pending = f.store.getTask(claim)!;
+    expect(isUnstartedPending(pending)).toBe(true);
+    expect(() => f.store.completeUnstartedPending(claim, proof, 11)).toThrow("original authenticated claim owner");
+    expect(f.store.getTask(claim)).toEqual(pending);
+    f.store.bindUserScope(claim, userId, 12);
+    const owned = f.store.getTask(claim)!;
+    expect(() => f.store.completeUnstartedPending(claim, { ...proof, authenticatedUserId: uuid(91) }, 13)).toThrow("original authenticated claim owner");
+    expect(f.store.getTask(claim)).toEqual(owned);
+    expect(f.store.completeUnstartedPending(claim, proof, 14)).toMatchObject({ status: "done", userId });
+  });
+});
+
 describe("claim history and frozen configuration", () => {
+  it("completes a proven unstarted successor directly without disturbing the old active execution", () => {
+    const f = fixture(); f.start();
+    const original = f.store.getTask(claim)!;
+    const successor = { ...claim, claimId: uuid(30), worktreeId: uuid(31) };
+    f.store.registerPending(successor, { kind: "new", configuration }, 25);
+    const pending = f.store.bindUserScope(successor, userId, 25);
+    expect(isUnstartedPending(pending)).toBe(true);
+    expect(() => f.store.completeUnstartedPending(successor, { completeOwnClaimInventory: false, claimAbsent: true } as never, 26)).toThrow("successful complete own-claim inventory");
+    expect(() => f.store.completeUnstartedPending(successor, { completeOwnClaimInventory: true, claimAbsent: false } as never, 26)).toThrow("successful complete own-claim inventory");
+    expect(f.store.getTask(successor)).toEqual(pending);
+    const completed = f.store.completeUnstartedPending(successor, { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId }, 27);
+    expect(completed).toMatchObject({ status: "done", resources: { worktree: null, herdr: null, nativeSession: null }, cleanup: { kind: "terminal", startedAt: 27, deadline: 27, input: "unavailable", result: "completed", agentStopped: true, workspaceClosed: true, worktreeDeleted: true } });
+    expect(f.store.getTask(claim)).toEqual(original);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(successor)).toEqual(completed);
+    expect(reopened.listUnfinishedTasks()).toEqual([original]);
+  });
+
+  it("requires every unstarted pending fact before treating a record as resource-free", () => {
+    const f = fixture(); f.register();
+    const pending = f.store.getTask(claim)!;
+    expect(isUnstartedPending(pending)).toBe(true);
+    expect(isUnstartedPending({ ...pending, status: "active" })).toBe(false);
+    expect(isUnstartedPending({ ...pending, status: "done" })).toBe(false);
+    expect(isUnstartedPending({ ...pending, control: { intent: release, requestedAt: 11, submission: "not-submitted", submittedAt: null, outcome: null, resultVersion: null, error: null } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, cleanup: { kind: "shutdown", startedAt: 11, deadline: 12, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: false } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, worktree: { repositoryPath: f.mapping.localPath, commonDirectory: path.join(f.mapping.localPath, ".git"), worktreePath: path.join(f.mapping.localPath, ".worktrees", "daynight", claim.taskId), branch: `daynight/${claim.taskId}` } } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, herdr: { session: "w", workspaceId: "ws", paneId: "pane" } } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, resources: { ...pending.resources, nativeSession: { sessionId: uuid(80), source: "herdr" } } })).toBe(false);
+    expect(isUnstartedPending({ ...pending, nativeExecution: null })).toBe(false);
+    const binding = { session: "w", workspaceId: "ws", paneId: "pane", terminalId: "terminal" };
+    const ownerLabel = `daynight:${JSON.stringify({ ...project, taskId: claim.taskId, claimId: claim.claimId, worktreeId: claim.worktreeId })}`;
+    const workspaceEvidence = { binding, ownerLabel, environment: { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" } };
+    const native = pending.nativeExecution!;
+    const mutations = [
+      { terminalId: binding.terminalId }, { workspaceSubmission: "unknown" as const }, { workspaceSubmission: "acknowledged" as const }, { workspaceEvidence },
+      { launchSubmission: "unknown" as const }, { launchSubmission: "acknowledged" as const },
+      { launchEvidence: { binding, ownerLabel, agent: "codex" as const, argv: ["codex"], referenceBaseline: "empty" as const, workspaceEvidence } },
+      { promptSubmission: "unknown" as const }, { promptSubmission: "submitted" as const },
+      { stopObservation: { binding, ownerLabel, agent: "codex" as const, nativeSessionId: null, shellPid: 100, processIds: [101], observedAt: 10 } },
+      { summary: { version: "11", herdr: null, nativeSessionId: null, phase: "preparing" as const, submission: "unknown" as const } },
+    ];
+    for (const mutation of mutations) expect(isUnstartedPending({ ...pending, nativeExecution: { ...native, ...mutation } })).toBe(false);
+  });
+
+  it("rejects direct completion for recovered, active or management-owned executions", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    f.store.registerPending(claim, { kind: "recovered", configuration }, 10);
+    const proof = { completeOwnClaimInventory: true, claimAbsent: true, authenticatedUserId: userId } as const;
+    expect(() => f.store.completeUnstartedPending(claim, proof, 11)).toThrow("proven unstarted pending");
+    f.store.activateTask(claim, 12);
+    expect(() => f.store.completeUnstartedPending(claim, proof, 13)).toThrow("proven unstarted pending");
+    const successor = { ...claim, claimId: uuid(30), worktreeId: uuid(31) };
+    f.store.registerPending(successor, { kind: "new", configuration }, 14);
+    f.store.recordControlIntent(successor, { kind: "release", sourceClaimId: successor.claimId, version: "11" }, 15);
+    expect(() => f.store.completeUnstartedPending(successor, proof, 16)).toThrow("proven unstarted pending");
+    expect(f.store.listTasks().map(({ status }) => status)).toEqual(["active", "pending"]);
+  });
+
+  it("counts recovered configless responsibility as active without authorizing execution or spending recovery budget", () => {
+    const f = fixture(); f.store.registerProject(f.mapping);
+    f.store.registerPending(claim, { kind: "recovered", configuration: null }, 10);
+    const paused = f.store.activatePausedRecovery(claim, "Original configuration needs review", 11);
+    expect(paused).toMatchObject({ status: "active", configuration: null, nativeExecution: null, recovery: { count: 0, pauseReason: "Original configuration needs review" } });
+    expect(() => f.store.activateTask(claim, 12)).toThrow("original frozen");
+    expect(() => f.store.markNativeLaunchSubmitting(claim, 12)).toThrow("original frozen");
+    const successor = { ...claim, claimId: uuid(30), worktreeId: uuid(31) };
+    f.store.registerPending(successor, { kind: "recovered", configuration: null }, 13);
+    expect(() => f.store.activatePausedRecovery(successor, "Existing execution is unresolved", 14)).toThrow("UNIQUE constraint failed");
+    expect(f.store.getTask(successor)?.status).toBe("pending");
+    const fresh = { ...claim, taskId: uuid(40), claimId: uuid(41), worktreeId: uuid(42) };
+    f.store.registerPending(fresh, { kind: "new", configuration }, 15);
+    expect(() => f.store.activatePausedRecovery(fresh, "No prior execution", 16)).toThrow("unknown original provenance or existing");
+  });
+
   it("freezes the first pending snapshot and each claim's original identities", () => {
     const f = fixture(); f.register();
     const changed: FrozenExecutionConfiguration = { agent: "copilot", model: "new-model", args: [], recoveryLimit: 7 };
@@ -271,6 +939,20 @@ describe("persistent bounded recovery", () => {
 });
 
 describe("irreversible terminal cleanup and source control", () => {
+  it("persists an immutable cleanup turn baseline only after its original input was confirmed", () => {
+    const f = fixture(); f.start(); f.bind();
+    f.store.beginCleanup(claim, { kind: "terminal", deadline: 630 }, 30);
+    const baseline = { stateChangeSeq: 10, completionSeq: 5 };
+    expect(() => f.store.recordCleanupInputEvidence(claim, baseline, 31)).toThrow("confirmed input submission");
+    f.store.markCleanupInputSubmitting(claim, 32);
+    expect(() => f.store.recordCleanupInputEvidence(claim, baseline, 33)).toThrow("confirmed input submission");
+    f.store.recordCleanupInputOutcome(claim, "submitted", 34);
+    f.store.recordCleanupInputEvidence(claim, baseline, 35);
+    expect(() => f.store.recordCleanupInputEvidence(claim, { ...baseline, completionSeq: 6 }, 36)).toThrow("cannot be replaced");
+    close(f.store);
+    expect(open(f.file).getTask(claim)?.cleanup).toMatchObject({ input: "submitted", deadline: 630, baseline });
+  });
+
   it("retains the original deadline and unknown input and never resubmits after reopen", () => {
     const f = fixture(); f.start(); f.bind();
     f.store.beginCleanup(claim, { kind: "terminal", deadline: 630 }, 30);

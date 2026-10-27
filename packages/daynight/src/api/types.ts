@@ -1,6 +1,14 @@
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
 
+export type User = {
+  readonly id: string;
+  readonly email: string | null;
+  readonly emailVerified: boolean | null;
+  readonly name: string | null;
+  readonly avatarUrl: string | null;
+};
+
 export type TaskAttachment = {
   readonly path: string;
   readonly contentType: string;
