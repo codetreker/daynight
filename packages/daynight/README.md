@@ -792,9 +792,9 @@ integration/history instead of installing or changing global native settings.
 Git transport and tools used by the task, such as authenticated GitHub CLI for
 PR delivery, must also be ready.
 
-Run `daynight login` for Daynight authentication. Add the following mapping to
-the shared `~/.daynight/config.yml`, preserving existing connection and review
-settings:
+Run `daynight login` for Daynight authentication. To select repositories for new
+task acquisition, add entries under the optional `worker` mapping in the shared
+`~/.daynight/config.yml`, preserving existing connection and review settings:
 
 ```yaml
 worker:
@@ -814,13 +814,21 @@ worker:
       args: []
 ```
 
-These are the defaults for all optional worker fields; `repositories` is
-required. Each entry requires `remote` and `path`, with optional `projectId`,
-`agent`, `model` and `args`. The service project must already exist and match the
-repository. Add `projectId` when more than one project matches. Missing local
-repositories are cloned; existing roots and origins are verified without
-resetting their files or branches. Use the native authentication configuration
-for credentials, keeping credentials out of repository URLs and argument lists.
+These are the defaults for the optional runtime fields. A missing configuration
+file, an omitted `worker` mapping, and `worker: {}` use the same defaults.
+Omitting `repositories` selects an empty acquisition list; worker repositories
+are never inferred from review settings. Configuration reads do not create or
+rewrite configuration files. Explicit `null` in non-nullable fields, malformed
+settings, filesystem errors and cancellation remain errors; `model: null` keeps
+its documented clearing semantics.
+
+Each repository entry requires `remote` and `path`, with optional `projectId`,
+`agent`, `model` and `args`. Configure entries before acquiring new tasks. The
+service project must already exist and match the repository. Add `projectId`
+when more than one project matches. Missing local repositories are cloned;
+existing roots and origins are verified without resetting their files or
+branches. Use the native authentication configuration for credentials, keeping
+credentials out of repository URLs and argument lists.
 
 Paths are absolute or relative to the configuration file's directory, never
 the launch directory. Tilde expansion and drive-relative Windows paths are
