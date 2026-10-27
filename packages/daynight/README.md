@@ -774,8 +774,14 @@ integration/history instead of installing or changing global native settings.
 Git transport and tools used by the task, such as authenticated GitHub CLI for
 PR delivery, must also be ready.
 
-Run `daynight login` for Daynight authentication. Add the following mapping to
-the shared `~/.daynight/config.yml`, preserving existing connection and review
+Run `daynight login` for Daynight authentication. Worker settings are optional:
+a missing configuration file, an omitted `worker` section or `worker: {}` uses
+the defaults below, including `repositories: []`. An empty repository list
+allows reconciliation of retained claims without selecting repositories for
+new claims. Authentication remains required.
+
+To override defaults or select repositories, add the following mapping to the
+shared `~/.daynight/config.yml`, preserving existing connection and review
 settings:
 
 ```yaml
@@ -796,8 +802,9 @@ worker:
       args: []
 ```
 
-These are the defaults for all optional worker fields; `repositories` is
-required. Each entry requires `remote` and `path`, with optional `projectId`,
+The scalar values shown are the defaults; `repositories` defaults to an empty
+list when omitted. Each explicit repository entry requires `remote` and `path`,
+with optional `projectId`,
 `agent`, `model` and `args`. The service project must already exist and match the
 repository. Add `projectId` when more than one project matches. Missing local
 repositories are cloned; existing roots and origins are verified without
@@ -807,8 +814,11 @@ for credentials, keeping credentials out of repository URLs and argument lists.
 Paths are absolute or relative to the configuration file's directory, never
 the launch directory. Tilde expansion and drive-relative Windows paths are
 rejected. Repository identities, project IDs and paths cannot duplicate or
-overlap, including the fixed Daynight state directory. Unknown worker fields,
-wrong types, invalid arguments and unsupported path shapes fail visibly.
+overlap, including the fixed Daynight state directory. Defaults apply only to
+omitted fields and a genuinely missing file. Explicit null mappings or repository
+lists, invalid YAML, unreadable files, unknown worker fields, wrong types, invalid
+arguments and unsupported path shapes fail visibly. Reading defaults does not
+create or rewrite configuration.
 `maxConcurrent` is a positive integer, `recoveryLimit` is nonnegative and
 `pollIntervalMs` is a positive safe integer within the timer range.
 

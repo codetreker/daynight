@@ -59,7 +59,7 @@ Worker 固定使用 `~/.daynight/worker/`，不提供状态路径覆盖。`resol
 
 每个用户环境一个 worker 实例。`acquireWorkerInstanceLock` 复用平台实例排他原语，以同一 `state.sqlite` 为取得/释放文件锁时的 SQLite gate，不创建第二数据库或锁表。存活进程或未知进程状态不能被夺锁。失效 PID 的锁可重新取得，但这只排除了原 worker 进程，不能证明它启动的原生 agent 已停止；调用者仍须核对真实资源。
 
-`daynight worker run` 读取共享配置中的独立 `worker` mapping。命令懒加载 worker 模块，帮助与补全不启动配置、SQLite、Git 或 Herdr。配置示例：
+`daynight worker run` 读取共享配置中的独立、可选 `worker` mapping。配置文件确实不存在、省略 worker 或使用 worker: {} 时采用默认运行配置；读取仅处理 MissingConfigurationFileError 为文件缺省，其他读取错误和取消继续传递。解析仅对省略的字段赋默认值，显式 null 或错误类型仍交给严格校验；读取不创建或重写配置。命令懒加载 worker 模块，帮助与补全不启动配置、SQLite、Git 或 Herdr。配置示例：
 
 ```yaml
 worker:
@@ -80,7 +80,7 @@ worker:
       args: []
 ```
 
-可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。未知字段、错误类型、重复仓库/项目和重叠路径明确拒绝，不接受 stateDirectory 或其他状态根入口。
+可选 worker 字段的默认值即示例中的 maxConcurrent=1、pollIntervalMs=5000、recoveryLimit=3、agent=copilot、model=null、args=[]；repositories 省略时为空数组，显式提供时必须是数组。每仓库必须提供 remote/path，可覆盖 projectId、agent、model、args。空仓库集合保留 SQLite 中项目和原 claim 的对账，不为新任务提供仓库候选。默认配置不绕过认证，缺少凭据仍返回现有登录提示。并发为正整数，恢复上限为非负整数，轮询间隔为计时器范围内的正安全整数。未知字段、错误类型、重复仓库/项目和重叠路径明确拒绝，不接受 stateDirectory 或其他状态根入口。
 
 仓库路径相对 config.yml 所在目录解析，也接受绝对路径；不依赖启动 cwd，不展开 tilde，不接受 Windows drive-relative 路径。配置与实际物理路径均核对仓库之间、仓库与 Daynight 状态根的重叠。服务项目必须已存在且 repo 身份匹配；同 repo 匹配多个项目时要求显式 projectId。缺失本地仓库自动 clone，已有根目录核对原 remote/Git 身份并保留原成果。
 

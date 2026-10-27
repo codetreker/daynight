@@ -1,6 +1,7 @@
 import path from "node:path";
 import { canonicalId } from "../../api/parse.js";
 import { parseConfigurationDocument } from "../../config/document.js";
+import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource } from "../../config/files.js";
 import { ancestorIdentities, missingPathsReferToSameDirectory, pathsOverlap, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
@@ -75,17 +76,17 @@ const repositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathA
 
 export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pathApi: PathApi = path): WorkerConfiguration => {
   const { mapping: root } = parseConfigurationDocument(source, paths);
-  if (!Object.hasOwn(root, "worker")) throw new Error("Worker configuration is missing; configure worker.repositories in ~/.daynight/config.yml.");
-  const worker = mapping(root.worker, "worker");
+  const worker = Object.hasOwn(root, "worker") ? mapping(root.worker, "worker") : {};
   keys(worker, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "agent", "model", "args", "repositories"], "worker");
   const effective = agentConfiguration(worker, "worker", {
     agent: workerConfigurationDefaults.agent, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
   });
-  if (!Array.isArray(worker.repositories)) throw new TypeError("worker.repositories must be a sequence.");
+  const configuredRepositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
+  if (!Array.isArray(configuredRepositories)) throw new TypeError("worker.repositories must be a sequence.");
   const identities = new Set<string>();
   const projects = new Set<string>();
   const locations: string[] = [];
-  const repositories = worker.repositories.map((entry: unknown, index: number): WorkerRepositoryConfiguration => {
+  const repositories = configuredRepositories.map((entry: unknown, index: number): WorkerRepositoryConfiguration => {
     const field = `worker.repositories[${index}]`;
     const repository = mapping(entry, field);
     keys(repository, ["remote", "path", "projectId", "agent", "model", "args"], field);
@@ -110,7 +111,14 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
 };
 
 export const readWorkerConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
-  const configuration = parseWorkerConfiguration(await readConfigurationSource(paths, signal), paths);
+  signal?.throwIfAborted();
+  let source: string;
+  try { source = await readConfigurationSource(paths, signal); }
+  catch (cause) {
+    if (!(cause instanceof MissingConfigurationFileError)) throw cause;
+    source = "{}";
+  }
+  const configuration = parseWorkerConfiguration(source, paths);
   const physicalPaths: PhysicalDirectory[] = [];
   const physicalState = await resolvePhysicalDirectory(paths.stateDirectory);
   const ancestors = new Map<string, Promise<Set<string>>>();

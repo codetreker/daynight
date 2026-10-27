@@ -19,7 +19,11 @@ design](../../../../docs/design/daynight-worker.md) owns the mechanisms; the
 guide](../../../../packages/daynight/README.md#worker-configuration-and-startup)
 owns configuration and operation. Review keeps its own database, coordinator and
 lifecycle. Worker composes existing typed HTTP, identity/lock, Git, Herdr and
-managed-skill modules instead of introducing another delivery engine.
+managed-skill modules instead of introducing another delivery engine. The
+[configuration-defaults decision](2026-10-27-worker-configuration-defaults.md)
+replaces the requirement to provide the worker section and repository list:
+omission selects existing runtime defaults and no new acquisition repositories,
+while explicit invalid values and non-missing file failures remain errors.
 
 A single coordinator owns repository rotation, capacity and per-task serial
 advancement. Every inventory/acquisition round reads complete current own-claim

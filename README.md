@@ -106,7 +106,8 @@ selection, startup files and activation.
 Install Git, Herdr 0.9.5 or newer with the supported API, and your selected
 Copilot or Codex CLI. Authenticate Daynight with `daynight login`, configure
 native/provider credentials and the official Herdr integration explicitly, then
-add repositories under `worker` in `~/.daynight/config.yml`:
+optionally configure `worker` in `~/.daynight/config.yml`. Omitted settings use
+the documented defaults. To select repositories for new claims, add:
 
 ```yaml
 worker:
@@ -114,6 +115,12 @@ worker:
     - remote: https://github.com/OWNER/REPO.git
       path: ../code/repo
 ```
+
+A missing configuration file or omitted `worker` section uses one execution
+slot, a five-second poll interval, three recovery attempts, Copilot with its
+default model and no extra arguments, and an empty repository list. The worker
+still requires Daynight authentication. An empty list reconciles retained claims
+without selecting repositories for new claims.
 
 The path is relative to the configuration directory. Matching Daynight projects
 must already exist; use an explicit `projectId` when repository discovery is
