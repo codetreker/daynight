@@ -33,7 +33,7 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 				continue
 			}
 			found = true
-			if summary.Status != full.Status || summary.Version != strconv.FormatInt(full.Version, 10) || !summary.UpdatedAt.Equal(full.UpdatedAt) || !reflect.DeepEqual(summary.StartedAt, full.StartedAt) || !reflect.DeepEqual(summary.CompletedAt, full.CompletedAt) {
+			if summary.AllowAgents != full.AllowAgents || summary.Status != full.Status || summary.Version != strconv.FormatInt(full.Version, 10) || !summary.UpdatedAt.Equal(full.UpdatedAt) || !reflect.DeepEqual(summary.StartedAt, full.StartedAt) || !reflect.DeepEqual(summary.CompletedAt, full.CompletedAt) {
 				t.Fatalf("worker change summary disagrees with the full task: summary=%+v task=%+v", summary, full)
 			}
 		}
@@ -67,4 +67,10 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	if current := readHTTPTask(t, handler, task); !reflect.DeepEqual(current, task) || current.Properties.Worker.NativeSessionID == nil || *current.Properties.Worker.NativeSessionID != "private-native-session" {
 		t.Fatal("summary projection unexpectedly changed the full execution resource")
 	}
+	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/withdraw", jsonBody(t, map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID})), http.StatusOK)
+	assertSummary(task)
+	if task.Properties.Worker != nil || task.AllowAgents || task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
+		t.Fatal("withdrawal did not clear the released record and automatic permission")
+	}
+
 }

@@ -9,7 +9,7 @@ import type { WorkerControlRequest } from "../../../src/commands/worker/control.
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
-import type { FrozenExecutionConfiguration, LocalTask, TransferTarget } from "../../../src/commands/worker/types.js";
+import type { FrozenExecutionConfiguration, LocalTask } from "../../../src/commands/worker/types.js";
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
@@ -17,7 +17,6 @@ const owner = uuid(1), projectId = uuid(2), taskId = uuid(3), claimId = uuid(4),
 const time = "2026-10-27T00:00:00Z";
 const machine = { id: uuid(7), name: "source" };
 const configuration: FrozenExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 0 };
-const target: Omit<TransferTarget, "worktreeId"> = { userId: uuid(10), workerId: uuid(11), machine: { id: uuid(12), name: "target" }, platform: "macos", agent: "copilot" };
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-control-tests/", import.meta.url));
 const resources: { directory: string; store: WorkerStore }[] = [];
 const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
@@ -35,7 +34,6 @@ const fixture = (local = true) => {
     serverOrigin: origin, currentUserId: vi.fn(async () => owner), readTask: vi.fn(async () => observed),
     authorizeControl: vi.fn(async () => {}),
     release: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.control?.submission).toBe("unknown"); observed = remoteTask({ ...claim, state: "released" }, input.version + 1n); return observed; }),
-    transfer: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.control?.submission).toBe("unknown"); observed = remoteTask({ ...claim, ...input.target, claimId: input.newClaimId, worktreeId: input.worktreeId, phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
     resume: vi.fn(async (_projectId, _taskId, input) => { expect(store.getClaimAttempt(project)).toMatchObject({ claimId: input.claimId, worktreeId: input.worktreeId, expectedVersion: input.version.toString(), configuration }); observed = remoteTask({ ...claim, ...input, userId: owner, state: "active", phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
     resolveProject: vi.fn(), ownInventory: vi.fn(), candidates: vi.fn(), claim: vi.fn(), update: vi.fn(),
   };
@@ -43,8 +41,8 @@ const fixture = (local = true) => {
   const submit = (request: WorkerControlRequest) => submitWorkerControl({ ...options, request });
   const driver = createWorkerControlDriver(options);
   const current = (): LocalTask => store.getTask(identity)!;
-  const clean = (): void => {
-    store.beginCleanup(identity, { kind: "terminal", deadline: 601100 }, 1100);
+  const clean = (claimEnded = false): void => {
+    store.beginCleanup(identity, { kind: "terminal", deadline: 601100, ...(claimEnded ? { claimEnded: true as const } : {}) }, 1100);
     store.recordCleanupInputOutcome(identity, "unavailable", 1100);
     store.recordCleanupResult(identity, "unavailable", null, 1100);
     store.confirmAgentStopped(identity, { agentStopped: true }, 1100);
@@ -54,32 +52,20 @@ const fixture = (local = true) => {
   return { store, project, identity, remote, options, submit, driver, current, clean, observe: (task: Task) => { observed = task; }, observed: () => observed };
 };
 const release = { kind: "release", taskId, claimId, version: 8n } as const;
-const transfer = { kind: "transfer", taskId, claimId, version: 8n, target } as const;
 afterEach(() => {
   vi.restoreAllMocks();
   for (const { store, directory } of resources.splice(0)) { store.close(); rmSync(directory, { recursive: true, force: true }); }
 });
 
 describe("worker source management decisions", () => {
-  it.each([release, transfer])("requires source permission before persisting $kind", async (request) => {
+  it.each([release])("requires source permission before persisting $kind", async (request) => {
     const f = fixture();
     vi.mocked(f.remote.authorizeControl).mockImplementation(async () => { expect(f.current().control).toBeNull(); throw new Error("Source membership denied"); });
     await expect(f.submit(request)).rejects.toThrow("Source membership denied");
     expect(f.current()).toMatchObject({ control: null, cleanup: null, status: "active" });
-    expect(f.remote.release).not.toHaveBeenCalled(); expect(f.remote.transfer).not.toHaveBeenCalled();
+    expect(f.remote.release).not.toHaveBeenCalled();
   });
 
-  it("checks target membership separately before saving a transfer decision", async () => {
-    const f = fixture();
-    vi.mocked(f.remote.authorizeControl).mockImplementation(async (_projectId, original, targetUserId) => {
-      expect(original).toBe(owner); expect(f.current().control).toBeNull();
-      if (targetUserId !== undefined) throw new Error("Target is not a member");
-    });
-    await expect(f.submit(transfer)).rejects.toThrow("Target is not a member");
-    expect(f.remote.authorizeControl).toHaveBeenNthCalledWith(1, projectId, owner, undefined, f.options.signal);
-    expect(f.remote.authorizeControl).toHaveBeenNthCalledWith(2, projectId, owner, target.userId, f.options.signal);
-    expect(f.current().control).toBeNull();
-  });
 
   it("preserves an explicit stale version without substituting a freshly read version", async () => {
     const f = fixture(); f.observe(remoteTask(claim, 9n));
@@ -87,21 +73,21 @@ describe("worker source management decisions", () => {
     expect(f.current().control).toBeNull(); expect(f.remote.release).not.toHaveBeenCalled();
   });
 
-  it.each([release, transfer])("persists $kind before cleanup and never posts an incompletely cleaned source", async (request) => {
+  it.each([release])("persists $kind before cleanup and never posts an incompletely cleaned source", async (request) => {
     const f = fixture(); const result = await f.submit(request);
     expect(result.task?.control).toMatchObject({ submission: "not-submitted", intent: { kind: request.kind, sourceClaimId: claimId, version: "8" } });
     expect(() => f.store.beginRecovery(f.identity, 1100)).toThrow("control or cleanup intent");
     expect((await f.driver.advance(f.current(), f.options.signal)).cleanup).toBeNull();
-    expect(f.remote.release).not.toHaveBeenCalled(); expect(f.remote.transfer).not.toHaveBeenCalled();
+    expect(f.remote.release).not.toHaveBeenCalled();
     f.store.beginCleanup(f.identity, { kind: "terminal", deadline: 601100 }, 1100);
     f.store.recordCleanupResult(f.identity, "unavailable", null, 1100); f.store.confirmAgentStopped(f.identity, { agentStopped: true }, 1100);
     await f.driver.advance(f.current(), f.options.signal);
-    expect(f.remote.release).not.toHaveBeenCalled(); expect(f.remote.transfer).not.toHaveBeenCalled();
+    expect(f.remote.release).not.toHaveBeenCalled();
   });
 
-  it.each([release, transfer])("marks $kind unknown before POST and recovers its desired lost response without replay", async (request) => {
+  it.each([release])("marks $kind unknown before POST and recovers its desired lost response without replay", async (request) => {
     const f = fixture(); await f.submit(request); f.clean();
-    const mutation = request.kind === "release" ? vi.mocked(f.remote.release) : vi.mocked(f.remote.transfer);
+    const mutation = vi.mocked(f.remote.release);
     const original = mutation.getMockImplementation()!;
     mutation.mockImplementationOnce(async (...args) => { await (original as (...values: typeof args) => Promise<Task>)(...args); throw new Error("Response lost"); });
     await expect(f.driver.advance(f.current(), f.options.signal)).rejects.toThrow("Response lost");
@@ -141,10 +127,10 @@ describe("worker source management decisions", () => {
   });
 
   it("keeps the observing helper read-only for a fully cleaned unsubmitted source", async () => {
-    const f = fixture(); await f.submit(transfer); f.clean();
+    const f = fixture(); await f.submit(release); f.clean();
     const task = await f.driver.advance(f.current(), f.options.signal, { submit: false });
     expect(task.control?.submission).toBe("not-submitted");
-    expect(f.remote.release).not.toHaveBeenCalled(); expect(f.remote.transfer).not.toHaveBeenCalled();
+    expect(f.remote.release).not.toHaveBeenCalled();
   });
 
   it("allows a new explicit version after definite rejection while retaining completed cleanup", async () => {
@@ -204,7 +190,7 @@ describe("worker source management decisions", () => {
 
 describe("worker explicit resume grants", () => {
   it("starts from a cleaned source history without inheriting its native session or agent type", async () => {
-    const f = fixture(); f.clean(); f.store.completeTask(f.identity, 1100);
+    const f = fixture(); f.clean(true); f.store.completeTask(f.identity, 1100);
     f.observe(remoteTask({ ...claim, state: "released", nativeSessionId: uuid(50), herdr: { session: "old-session", workspaceId: "old-workspace", paneId: "old-pane" } }));
     const result = await f.submit({ kind: "resume", taskId, claimId, version: 8n });
     expect(f.current().status).toBe("done");

@@ -71,7 +71,7 @@ describe("worker managed prompt production", () => {
   it("keeps a cleanup request bound to the persisted original deadline and resources", async () => {
     const { task } = await fixture();
     expect(() => workerCleanupPrompt(task)).toThrow("persisted original deadline");
-    task.cleanup = { kind: "terminal", startedAt: 1_000, deadline: 601_000, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: false, worktreeDeleted: false };
+    task.cleanup = { kind: "terminal", claimEnded: true, startedAt: 1_000, deadline: 601_000, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: false, worktreeDeleted: false };
     const prompt = workerCleanupPrompt(task);
     expect(prompt).toContain(task.claimId);
     expect(prompt).toContain(new Date(task.cleanup.deadline).toISOString());

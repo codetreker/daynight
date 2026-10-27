@@ -4,20 +4,17 @@ import type { Task, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import type { WorkerRepositoryAssignment } from "./coordinator.js";
 import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
-import type { ClaimIdentity, ControlIntent, LocalTask, TransferTarget } from "./types.js";
+import type { ClaimIdentity, ControlIntent, LocalTask } from "./types.js";
 
 export type WorkerControlRequest =
   | { kind: "retry"; taskId: string; projectId?: string; claimId: string }
   | { kind: "release"; taskId: string; projectId?: string; claimId: string; version: bigint }
-  | { kind: "resume"; taskId: string; projectId?: string; claimId: string; version: bigint }
-  | { kind: "transfer"; taskId: string; projectId?: string; claimId: string; version: bigint; target: Omit<TransferTarget, "worktreeId"> };
+  | { kind: "resume"; taskId: string; projectId?: string; claimId: string; version: bigint };
 
 const cleaned = (task: LocalTask): boolean => task.cleanup?.kind === "terminal" && task.cleanup.result !== null && task.cleanup.agentStopped && task.cleanup.workspaceClosed && task.cleanup.worktreeDeleted;
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const sourceActive = (task: Task, claimId: string): boolean => task.properties.worker?.claimId === claimId && task.properties.worker.state === "active";
-const applied = (task: Task, intent: ControlIntent): boolean => intent.kind === "release"
-  ? task.properties.worker?.claimId === intent.sourceClaimId && task.properties.worker.state === "released"
-  : task.properties.worker?.claimId === intent.targetClaimId && task.properties.worker.state === "active" && task.properties.worker.userId === intent.target.userId && task.properties.worker.workerId === intent.target.workerId && task.properties.worker.worktreeId === intent.target.worktreeId && task.properties.worker.agent === intent.target.agent;
+const applied = (task: Task, intent: ControlIntent): boolean => task.properties.worker?.claimId === intent.sourceClaimId && task.properties.worker.state === "released";
 
 export const createWorkerControlDriver = (options: { store: WorkerStore; remote: WorkerRemote; serverOrigin: string; now: () => number }) => ({
   advance: async (input: LocalTask, signal: AbortSignal, mode: { submit: boolean } = { submit: true }): Promise<LocalTask> => {
@@ -31,7 +28,7 @@ export const createWorkerControlDriver = (options: { store: WorkerStore; remote:
       : options.store.completeEndedControl(task, task.control.intent, { observedClaimId: null, observedState: null }, options.now());
     const intent = task.control.intent;
     const observed = await options.remote.readTask(task.projectId, task.taskId, signal);
-    await options.remote.authorizeControl(task.projectId, task.userId, undefined, signal);
+    await options.remote.authorizeControl(task.projectId, task.userId, signal);
     const latest = options.store.getTask(task);
     if (latest === null) throw new Error("The source control execution disappeared.");
     if (latest.status === "done") return latest;
@@ -49,9 +46,7 @@ export const createWorkerControlDriver = (options: { store: WorkerStore; remote:
       throw error;
     }
     try {
-      const result = intent.kind === "release"
-        ? await options.remote.release(task.projectId, task.taskId, { claimId: task.claimId, version: BigInt(intent.version), stoppedConfirmed: true }, signal)
-        : await options.remote.transfer(task.projectId, task.taskId, { claimId: task.claimId, version: BigInt(intent.version), newClaimId: intent.targetClaimId, target: { userId: intent.target.userId, workerId: intent.target.workerId, machine: intent.target.machine, platform: intent.target.platform, agent: intent.target.agent }, worktreeId: intent.target.worktreeId, stoppedConfirmed: true }, signal);
+      const result = await options.remote.release(task.projectId, task.taskId, { claimId: task.claimId, version: BigInt(intent.version), stoppedConfirmed: true }, signal);
       return options.store.completeAppliedControl(task, intent, result.version, options.now());
     } catch (error) {
       const current = options.store.getTask(task);
@@ -94,7 +89,7 @@ export const submitWorkerControl = async (options: {
     }
     if (observed.version !== request.version) throw new Error("The explicit task version no longer matches; make a new decision with the observed version.");
     if (worker?.state !== "released" || worker.claimId !== request.claimId) throw new Error("Resume requires the exact released previous claim.");
-    await options.remote.authorizeControl(projectId, worker.userId, undefined, options.signal);
+    await options.remote.authorizeControl(projectId, worker.userId, options.signal);
     const descriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent };
     options.store.beginClaimAttempt(project, { taskId: request.taskId, claimId: descriptor.claimId, worktreeId: descriptor.worktreeId, workerId: options.workerId, userId: principal, expectedVersion: request.version.toString(), configuration: repository.configuration });
     let grant: Task;
@@ -108,11 +103,11 @@ export const submitWorkerControl = async (options: {
     return { task, message: `New resume claim ${task.claimId} committed as pending; worker run will prepare its new execution.` };
   }
   if (source === undefined || source.userId === null) throw new Error("Management requires the original local execution and its authenticated owner.");
-  await options.remote.authorizeControl(projectId, source.userId, undefined, options.signal);
+  await options.remote.authorizeControl(projectId, source.userId, options.signal);
   const existing = source.control;
   if (request.kind !== "retry" && existing !== null && existing.submission !== "rejected") {
     const intent = existing.intent;
-    const sameDecision = intent.kind === request.kind && intent.version === request.version.toString() && (request.kind !== "transfer" || (intent.kind === "transfer" && intent.target.userId === request.target.userId && intent.target.workerId === request.target.workerId && intent.target.agent === request.target.agent && intent.target.platform === request.target.platform && JSON.stringify(intent.target.machine) === JSON.stringify(request.target.machine)));
+    const sameDecision = intent.version === request.version.toString();
     if (!sameDecision) throw new Error("A different source management decision is already persisted; an unknown write cannot be replaced.");
     return { task: source, message: `Existing ${intent.kind} intent retained for claim ${source.claimId}; submission=${existing.submission}.` };
   }
@@ -124,9 +119,7 @@ export const submitWorkerControl = async (options: {
     return { task, message: `One additional recovery attempt authorized for claim ${task.claimId}; persisted count=${task.recovery.count}.` };
   }
   if (observed.version !== request.version) throw new Error("The explicit task version no longer matches; make a new decision with the observed version.");
-  if (request.kind === "transfer") await options.remote.authorizeControl(projectId, source.userId, request.target.userId, options.signal);
-  const intent: ControlIntent = request.kind === "release" ? { kind: "release", sourceClaimId: source.claimId, version: request.version.toString() }
-    : { kind: "transfer", sourceClaimId: source.claimId, version: request.version.toString(), targetClaimId: randomUUID(), target: { ...request.target, worktreeId: randomUUID() } };
+  const intent: ControlIntent = { kind: "release", sourceClaimId: source.claimId, version: request.version.toString() };
   source = existing?.submission === "rejected" ? options.store.replaceRejectedControlIntent(source, intent, { observedVersion: observed.version }, now()) : options.store.recordControlIntent(source, intent, now());
   return { task: source, message: `${intent.kind} intent persisted for claim ${source.claimId}; source cleanup must finish before the remote write.` };
 };

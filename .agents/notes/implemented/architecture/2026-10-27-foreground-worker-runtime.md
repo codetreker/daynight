@@ -352,7 +352,10 @@ checks, real service behavior and native-agent lifecycle evidence remain
 distinct.
 
 The [manual-control decision](2026-10-27-worker-manual-control.md) adds explicit
-release/transfer/resume/retry consumers and fresh terminal-execution identities
+release/resume/retry consumers and fresh terminal-execution identities
 to these same persistence, serialization and cleanup boundaries. Complete Linux,
 Windows and macOS Goal acceptance is separate from this runtime composition;
-shipping the command does not assert those final results.
+shipping the command does not assert those final results. The
+[force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes transfer
+while preserving this runtime's complete-inventory absence and original-resource
+cleanup boundaries.

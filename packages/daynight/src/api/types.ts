@@ -158,12 +158,7 @@ export type UpdateWorkerClaimInput = {
 };
 export type CompleteWorkerTaskInput = { readonly version: bigint; readonly claimId: string };
 export type ReleaseWorkerClaimInput = CompleteWorkerTaskInput & { readonly stoppedConfirmed: true };
-export type TransferWorkerClaimInput = CompleteWorkerTaskInput & {
-  readonly newClaimId: string;
-  readonly target: Omit<WorkerClaimDescriptor, "claimId" | "worktreeId"> & { readonly userId: string };
-  readonly worktreeId: string;
-  readonly stoppedConfirmed: true;
-};
+export type WithdrawWorkerClaimInput = CompleteWorkerTaskInput;
 export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
   readonly version: bigint;
   readonly previousClaimId: string;
