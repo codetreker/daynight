@@ -17,6 +17,7 @@ import { TaskDetailSessionProvider } from "../features/task-detail/TaskDetailSes
 import { ProjectPage } from "../features/projects/ProjectPage";
 import { ProjectMembersProvider, useProjectMembers } from "../features/projects/ProjectMembers";
 import { ProjectsPage } from "../features/projects/ProjectsPage";
+import { ProjectsProvider, useProjectList } from "../features/projects/ProjectsProvider";
 import { TaskDetailPage } from "../features/task-detail/TaskDetailPage";
 import { invitationLocation, isLoginReturnPath, loginUrl, navigate, parseAuthRoute, replaceRoute, type AuthRoute } from "./router";
 import { useI18n } from "../i18n/LocaleProvider";
@@ -67,7 +68,7 @@ const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking
   useLayoutEffect(() => { content.current?.focus(); }, [route.kind, "projectId" in route ? route.projectId : null]);
   return (
     <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}`} aria-hidden={blocked} inert={blocked}>
-      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + ("projectId" in route ? `:${route.projectId}` : "")} projectsActive={route.kind === "projects" || route.kind === "project" || route.kind === "members" || route.kind === "settings"} accountActive={route.kind === "account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
+      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + ("projectId" in route ? `:${route.projectId}` : "")} projectsActive={route.kind === "projects"} activeProjectId={"projectId" in route ? route.projectId : null} accountActive={route.kind === "account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
@@ -86,6 +87,17 @@ const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking
       </div>
     </div>
   );
+};
+
+const WorkspaceRoutes = ({ user, route, onSignOut, onIdentityMismatch, blocked, identityChecking, children }: { readonly user: CurrentUser; readonly route: AuthRoute; readonly onSignOut: () => void; readonly onIdentityMismatch: () => void; readonly blocked: boolean; readonly identityChecking: boolean; readonly children: ReactNode }) => {
+  const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
+  const projects = useProjectList();
+  const [creating, setCreating] = useState(false);
+  const [projectName, setProjectName] = useState<string | null>(null);
+  return <Workspace user={user} route={route} onSignOut={onSignOut} blocked={blocked} identityChecking={identityChecking}>
+    {children}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <ProjectMembersProvider key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /></ProjectMembersProvider> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={user} onRemoved={() => { projects.refresh(); navigate("/projects"); }} onUnavailable={projects.refresh} /></> : route.kind === "account" ? <AccountPage user={user} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
+    {creating && <CreateProjectDialog onClose={() => setCreating(false)} onCreated={(project) => { setCreating(false); projects.refresh(); navigate(`/projects/${project.id}`); }} />}
+  </Workspace>;
 };
 
 const RevalidationOverlay = ({ failed, onRetry }: { readonly failed: boolean; readonly onRetry: () => void }) => {
@@ -119,12 +131,10 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const [revalidation, setRevalidation] = useState<Revalidation>("idle");
   const sessionRef = useRef(session);
   sessionRef.current = session;
-  const [creating, setCreating] = useState(false);
   const [logoutFailed, setLogoutFailed] = useState(false);
   const [logoutPending, setLogoutPending] = useState(false);
   const logoutContinuation = useRef<string | null>(null);
   const [cleanupFailed, setCleanupFailed] = useState(() => !invitationLocation(window.location.pathname, window.location.search) && !clearInvitation());
-  const [projectName, setProjectName] = useState<string | null>(null);
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
   const resumeAuthRequests = useRef<(() => void) | null>(null);
@@ -153,7 +163,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   const clearSession = useCallback((notice?: SessionNotice) => {
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests(); ++generation.current; active.current?.abort(); active.current = null;
-    setCreating(false); setProjectName(null); setRevalidation("idle"); setSession({ status: "anonymous", ...(notice === undefined ? {} : { notice }) });
+    setRevalidation("idle"); setSession({ status: "anonymous", ...(notice === undefined ? {} : { notice }) });
   }, []);
   useEffect(() => subscribeUnauthorized(() => clearSession(sessionRef.current.status === "authenticated" ? "expired" : undefined)), [clearSession]);
   useEffect(() => {
@@ -187,7 +197,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       } else {
         void cacheScope.current?.invalidateScope();
         cacheScope.current = createTaskCacheScope({ userId: user.id, onIdentityMismatch: () => identityRecheck.current() });
-        invalidateAuthRequests(); setCreating(false); setProjectName(null);
+        invalidateAuthRequests();
         setSession({ status: "authenticated", user, generation: current });
       }
       setRevalidation("idle");
@@ -243,7 +253,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     pauseIdentity();
     // A proven principal change revokes the rendered identity before another private response can publish.
     flushSync(() => {
-      setCreating(false); setProjectName(null); setRevalidation("idle"); setSession({ status: "loading" });
+      setRevalidation("idle"); setSession({ status: "loading" });
     });
     setAttempt((value) => value + 1);
   }, [pauseIdentity]);
@@ -303,8 +313,5 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   </div></TaskDetailSessionProvider></TaskCacheProvider>;
   if (route.kind === "invitations") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><InvitationPage key={`${identity}:${invitationRevision}`} lifetime={invitationLifetime.current.signal} invitation={invitation} user={session.user} onComplete={completeInvitation} onCancel={cancelInvitation} onSwitchAccount={() => signOut(returnPath)} onUnavailable={unavailableInvitation} /></div></>;
   if (route.kind === "device") return <>{revalidationOverlay}{cleanupWarning}<div aria-hidden={blocked} inert={blocked}><DeviceAuthorizationPage key={`${identity}:${route.userCode}`} user={session.user} initialCode={route.userCode} onSwitchAccount={() => signOut(returnPath)} onIdentityMismatch={invalidateIdentity} /></div></>;
-  return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}<Workspace key={identity} user={session.user} route={route} onSignOut={() => signOut()} blocked={blocked} identityChecking={revalidation !== "idle"}>
-    {cleanupWarning}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <ProjectMembersProvider key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={session.user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /></ProjectMembersProvider> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={session.user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={session.user} onRemoved={() => navigate("/projects")} /></> : route.kind === "account" ? <AccountPage user={session.user} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
-    {creating && <CreateProjectDialog onClose={() => setCreating(false)} onCreated={(project) => { setCreating(false); navigate(`/projects/${project.id}`); }} />}
-  </Workspace></TaskDetailSessionProvider></TaskCacheProvider>;
+  return <TaskCacheProvider key={identity} scope={cacheScope.current!}><TaskDetailSessionProvider>{revalidationOverlay}<ProjectsProvider key={identity}><WorkspaceRoutes user={session.user} route={route} onSignOut={() => signOut()} onIdentityMismatch={invalidateIdentity} blocked={blocked} identityChecking={revalidation !== "idle"}>{cleanupWarning}</WorkspaceRoutes></ProjectsProvider></TaskDetailSessionProvider></TaskCacheProvider>;
 };

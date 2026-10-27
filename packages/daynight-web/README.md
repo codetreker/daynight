@@ -112,8 +112,20 @@ It composes the existing project list, graph and shared task-detail surfaces wit
 private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` keeps project links in a scrollable upper region and the
-existing `/account` entry and sidebar toggle in its footer. Desktop widths are
+`WorkspaceSidebar` lists accessible projects as indented links below My projects
+in its scrollable upper region. The index selects My projects; project, member
+and settings routes select the corresponding project. Links preserve native
+modified clicks, expose full names through accessible text and titles, and
+truncate long visible names. Project children appear in expanded desktop and
+mobile navigation and are hidden in the folded rail. Initial loading, empty and
+failed reads have localized feedback and retry; Load more traverses subsequent
+pages without removing earlier links on failure.
+
+Run `pnpm web:dev` and open [the project navigation preview](tests/mockups/sidebar-projects.html)
+for production components with in-page project fixtures: switching, long names,
+multiple pages, loading, empty and retry scenarios. It requires no backend.
+
+The existing `/account` entry and sidebar toggle stay in the footer. Desktop widths are
 190px expanded and 68px collapsed. The footer stays reachable on long pages and
 short viewports; icon entries retain accessible names, hover titles and selected
 route styling. The topbar account link keeps its name and behavior.
@@ -575,9 +587,14 @@ backend authentication settings and explicit HTTP test policy follow the
 [deployment guide](../../deployment/localhost/README.md); changing the browser
 origin does not relax callback or Cookie-write Origin checks.
 
-The project list requests 50 items per page, preserves
+An identity-scoped projects provider supplies both the sidebar directory and
+project cards from one request owner. It requests 50 items per page, preserves
 server order, and follows `nextCursor` through Load more. Repeated IDs count once.
-Refresh discards old pages and cursors; late responses cannot repopulate them.
+Project navigation retains loaded pages. Refresh discards old pages and cursors;
+late responses cannot repopulate them. Creating a project or removing one's own
+membership refreshes the shared directory; a new authenticated identity starts
+with a new directory. The [project navigation decision](../../.agents/notes/implemented/feature/2026-10-27-sidebar-project-navigation.md)
+records ownership and pagination choices.
 
 The application implements public `/`, explicit `/login`, the `/projects` index,
 `/projects/{projectId}`, `/account`,

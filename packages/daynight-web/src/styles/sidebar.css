@@ -7,6 +7,21 @@
 .auth-shell .sidebar .brand-name { overflow: hidden; }
 .auth-shell .sidebar .nav-button { width: 100%; font-size: 12px; gap: 10px; }
 .auth-shell .sidebar .nav-icon { flex: none; width: 18px; text-align: center; font-size: 18px; line-height: 1; }
+.auth-shell .sidebar-projects { margin: 4px 0 0 22px; border-left: 1px solid #ffffff1a; padding-left: 8px; }
+.auth-shell .sidebar-projects[hidden] { display: none; }
+.auth-shell .sidebar-project-list { list-style: none; margin: 0; padding: 0; }
+.auth-shell .sidebar-project-link { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 9px 8px; border-radius: 6px; color: #b1bdd0; font-size: 12px; text-decoration: none; }
+.auth-shell .sidebar-project-link:hover { color: #fff; background: #ffffff0a; }
+.auth-shell .sidebar-project-link[aria-current] { color: #f0f1ff; background: #ffffff12; }
+.auth-shell .sidebar-project-link:focus-visible, .auth-shell .sidebar-project-action:focus-visible { outline: 2px solid #a3a3ff; outline-offset: -2px; }
+.auth-shell .sidebar-project-marker { flex: none; width: 5px; height: 5px; border-radius: 50%; background: #78869d; }
+.auth-shell .sidebar-project-link[aria-current] .sidebar-project-marker { background: #a3a3ff; }
+.auth-shell .sidebar-project-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.auth-shell .sidebar-project-state { margin: 0; padding: 8px; color: #b1bdd0; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.auth-shell .sidebar-project-state p { margin: 0 0 5px; }
+.auth-shell .sidebar-project-action { padding: 3px 0; border: 0; background: transparent; color: #c8c8ff; font: inherit; text-align: left; cursor: pointer; }
+.auth-shell .sidebar-project-action:hover { color: #fff; }
+.auth-shell .sidebar-project-action:disabled { opacity: .6; cursor: wait; }
 .auth-shell .sidebar-bottom { display: block; flex: none; padding: 14px 0 0; overflow-wrap: anywhere; }
 .auth-shell .sidebar-bottom .account-nav { margin: 0; }
 .auth-shell .sidebar-workspace { padding: 14px 12px 0; }
