@@ -44,8 +44,11 @@ a task witness. This decision replaces its rolling-duration window and
 unfinished-only row policy.
 
 All three lists page their filtered sequence in groups of 20 top-level entries.
-A Goal counts once and keeps its complete child list; the final standalone
-aggregate counts once across the entire Overview sequence. Independent page
+A Goal counts once and keeps its complete child list; the standalone
+aggregate counts once across the entire Overview sequence. The
+[status ordering decision](../bug-fix/2026-10-28-project-status-order.md)
+orders the complete display sequence before slicing pages, including the
+standalone aggregate among its matching-status Overview rows. Independent page
 state survives ordinary view switches within a project visit, resets to page one
 when its filter changes, and clamps when results shrink. `usePagination` owns
 this lifecycle and the valid ranges used by list renderers to slice their
