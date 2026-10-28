@@ -8,11 +8,13 @@ Copilot tasks need the same browser timeline and basic session interactions as
 other Web tasks. Adding a provider name to the protocol does not establish a
 native writer, recoverable session identity, trustworthy input receipts or
 stopping evidence. A native process hidden behind a client library can escape
-the worker's existing lifecycle accounting.
+the worker's existing lifecycle accounting. Runtime launch flags also do not
+establish the SDK session's path and URL permission state: a tool-only approval
+switch can still leave an unattended task waiting to read its assigned skills.
 
 ## Decision
 
-Copilot Web uses SDK 1.0.11 with bundled CLI 1.0.83. The Controller starts the
+Copilot Web uses SDK 1.0.11 with the pinned `@github/copilot` 1.0.83 package. The Controller starts the
 platform executable directly in headless mode, records the actual child through
 `onSpawn`, and connects using `RuntimeConnection.forUri` over loopback TCP with a
 random private connection token. The child remains within the Controller's
@@ -38,6 +40,14 @@ Permissions, questions, forms and plan responses await matching native completio
 rather than treating a callback return as confirmation. Plan approval uses the
 generic form with exit-only, interactive, rejection and optional feedback;
 autopilot and URL elicitation are outside the supported control path.
+
+New unattended Worker sessions call native `permissions.configure` with tool and
+read approval enabled and unrestricted paths and URLs, requiring a successful
+native acknowledgement before readiness. Independent Test creation and every
+resume leave that full policy unchanged. The chatbox retains tool-only approval
+controls and does not claim global permission readback. Permission callbacks
+continue to await native interactions rather than automatically approving each
+request to compensate for incorrect startup policy.
 
 The SDK regards a `forUri` connection as externally owned. Controller shutdown
 therefore requests native runtime shutdown explicitly before bounded transport
@@ -73,6 +83,16 @@ launcher's synchronous wrapper, and keeps shutdown responsibility explicit.
 model with writer handoff and transcript limitations. The existing frozen-mode
 decision deliberately selects one backend before launch. The Copilot extension
 reuses that choice rather than introducing a third lifecycle.
+
+**Rely on runtime flags or tool-only approval.** The SDK session can still ask
+for paths outside the worktree, including the skill it was instructed to read.
+Native policy configuration and its acknowledgement establish the requested
+unattended permission state.
+
+**Use the SDK full-mode getter and setter.** Their declared methods were rejected
+by the bundled runtime. A type declaration alone cannot enable a control or
+confirm policy readback; the supported native configure operation supplies the
+required Worker initialization without expanding the browser control matrix.
 
 ## Consequences
 

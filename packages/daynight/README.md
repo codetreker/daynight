@@ -1238,7 +1238,7 @@ Session URL. Open the task's Session tab for messages, tools, model and permissi
 settings, supported slash commands, native steer, interrupt and current approvals.
 Unsupported native controls remain unavailable.
 
-Copilot Web bundles SDK 1.0.11 and CLI 1.0.83, with token-authenticated loopback
+Copilot Web bundles SDK 1.0.11 and the `@github/copilot` 1.0.83 package, with token-authenticated loopback
 transport to its private runtime. `COPILOT_HOME` chooses the native profile;
 `model: null` and `args: []` preserve native defaults. Web arguments accept
 `--effort low|medium|high|xhigh`. Plan approval supports exit-only, interactive

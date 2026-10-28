@@ -77,7 +77,9 @@ Codex 和 Copilot 仅在活动 turn 匹配且原生能力允许时执行 steer�
 
 ### Copilot SDK 与私有 runtime
 
-Copilot adapter 固定使用 `@github/copilot-sdk` 1.0.11 与随包安装的 CLI 1.0.83。Controller 直接 spawn CLI 对应平台 binary 的 `--headless --no-auto-update`，避免 npm launcher 的同步包装进程遮蔽真实 PID。随机连接 token 通过私有子进程环境传入，SDK 以 `RuntimeConnection.forUri` 连接该进程的 loopback TCP endpoint；这条连接既不共享其他 runtime，也不承载 TUI。真实 child 经 `onSpawn` 登记进程身份，继承 Controller 的 POSIX 进程组或 Windows Job 约束，沿用统一停止证明。
+Copilot adapter 固定使用 `@github/copilot-sdk` 1.0.11 与随包安装的 `@github/copilot` 1.0.83。Controller 直接 spawn CLI 对应平台 binary 的 `--headless --no-auto-update`，避免 npm launcher 的同步包装进程遮蔽真实 PID。随机连接 token 通过私有子进程环境传入，SDK 以 `RuntimeConnection.forUri` 连接该进程的 loopback TCP endpoint；这条连接既不共享其他 runtime，也不承载 TUI。真实 child 经 `onSpawn` 登记进程身份，继承 Controller 的 POSIX 进程组或 Windows Job 约束，沿用统一停止证明。
+
+Copilot runtime 的 `--allow-all` 与 Session 的工具审批开关不能证明 SDK Session 已获得完整路径和 URL 权限。新建无人值守 Worker 会话调用原生 `permissions.configure`，明确设置 `approveAllToolPermissionRequests`、`approveAllReadPermissionRequests`、`paths.unrestricted`、`urls.unrestricted` 为 true，并要求成功确认后才能就绪；失败保持显式错误。独立 Test 新建与所有 resume 不调用该完整策略配置。当前 Chatbox 的工具审批设置不代表路径或 URL 权限，也不声称能读取完整全局授权模式；SDK 类型中存在的方法不能替代运行时能力验证。权限 callback 继续走原生交互，不逐项自动批准来弥补初始化错误。
 
 `COPILOT_HOME` 在 launch ticket 中冻结并传给原生进程。未指定 model/effort 时不传对应 SDK 字段；显式 effort 仅接受 `low|medium|high|xhigh`。创建会话后核对 snapshot 的 session ID、working directory、remote 与占用状态；恢复还先核对 metadata 的精确 ID/cwd 和 `checkInUse`，拒绝来源不匹配或已有 writer 的会话。历史与实时事件复用稳定原生条目身份投影，初始化期间缓冲实时事件，避免历史覆盖新内容。
 

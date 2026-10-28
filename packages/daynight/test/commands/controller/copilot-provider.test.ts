@@ -19,7 +19,7 @@ function setup() {
   let captured: { sessionId: string; onEvent: (e: unknown) => void; [key: string]: unknown };
   const native = { sessionId: "", send: vi.fn(async () => "native-message-id"), getEvents: vi.fn(async () => [] as unknown[]), disconnect: vi.fn(async () => {}), rpc: {
     metadata: { snapshot: vi.fn(async () => ({ sessionId: native.sessionId, workingDirectory: process.cwd(), alreadyInUse: false, isRemote: false })), isProcessing: vi.fn(async () => ({ processing: false })) },
-    plan: { readSqlTodos: vi.fn(async () => ({ rows: [] as { id?: string; title?: string; description?: string; status?: string }[] })) }, interruptMainTurn: vi.fn(async () => ({ interrupted: true })), permissions: { handlePendingPermissionRequest: vi.fn(async () => ({ success: true })) },
+    plan: { readSqlTodos: vi.fn(async () => ({ rows: [] as { id?: string; title?: string; description?: string; status?: string }[] })) }, interruptMainTurn: vi.fn(async () => ({ interrupted: true })), permissions: { configure: vi.fn(async () => ({ success: true })), handlePendingPermissionRequest: vi.fn(async () => ({ success: true })) },
   } };
   const capture = async (config: typeof captured) => { captured = config; native.sessionId = config.sessionId; return native; };
   const client = { start: vi.fn(async () => {}), stop: vi.fn(async () => []), forceStop: vi.fn(async () => {}), ping: vi.fn(async () => ({})), createSession: vi.fn(capture), resumeSession: vi.fn(async (id, config) => capture({ ...config, sessionId: id })), getSessionMetadata: vi.fn(async (id: string) => ({ sessionId: id, isRemote: false, context: { workingDirectory: process.cwd() } })), rpc: { skills: { getDiscoveryPaths: vi.fn(async () => ({ paths: [{ path: "/native/project/skills" }] })) }, runtime: { shutdown: vi.fn(async () => ({})) }, sessions: { checkInUse: vi.fn(async () => ({ inUse: [] as string[] })) } } };
@@ -233,13 +233,21 @@ test.each([false, true])("Copilot Worker permissions are native-confirmed and is
     expect(args.includes("--allow-all")).toBe(unattended);
     expect(args.includes("--no-ask-user")).toBe(unattended);
     expect(args.includes("--no-sandbox")).toBe(unattended);
-    expect(setApproveAll).toHaveBeenCalledWith({ enabled: unattended });
+    if (unattended) {
+      expect(fixture.native.rpc.permissions.configure).toHaveBeenCalledWith({ approveAllToolPermissionRequests: true, approveAllReadPermissionRequests: true, paths: { unrestricted: true }, urls: { unrestricted: true } });
+      expect(setApproveAll).not.toHaveBeenCalled();
+    } else {
+      expect(setApproveAll).toHaveBeenCalledWith({ enabled: false });
+      expect(fixture.native.rpc.permissions.configure).not.toHaveBeenCalled();
+    }
+    expect((fixture.config().onPermissionRequest as () => unknown)()).toEqual({ kind: "no-result" });
   } finally { await provider.close(); }
 });
 
 test("Copilot fails Worker initialization when native full access cannot be confirmed", async () => {
-  Object.assign(fixture.native.rpc.permissions, { setApproveAll: vi.fn(async () => ({ success: false })) });
-  await expect(openCopilotProvider({ ...fixture.options, unattended: true })).rejects.toThrow("permissions");
+  fixture.native.rpc.permissions.configure.mockResolvedValue({ success: false });
+  await expect(openCopilotProvider({ ...fixture.options, unattended: true })).rejects.toThrow("full access");
+  expect(fixture.native.send).not.toHaveBeenCalled();
 });
 
 test("Copilot Worker resume does not overwrite persisted permissions", async () => {
@@ -248,6 +256,13 @@ test("Copilot Worker resume does not overwrite persisted permissions", async () 
   const provider = await openCopilotProvider({ ...fixture.options, unattended: true, resumeNativeSessionId: randomUUID() });
   try {
     expect(setApproveAll).not.toHaveBeenCalled();
+    expect(fixture.native.rpc.permissions.configure).not.toHaveBeenCalled();
     expect(processMock.spawn.mock.calls[0]![1]).not.toContain("--allow-all");
   } finally { await provider.close(); }
+});
+
+test("Copilot Worker does not submit input when native full access configuration is unavailable", async () => {
+  fixture.native.rpc.permissions.configure.mockRejectedValue(new Error("Unhandled method session.permissions.configure"));
+  await expect(openCopilotProvider({ ...fixture.options, unattended: true })).rejects.toThrow("Unhandled method");
+  expect(fixture.native.send).not.toHaveBeenCalled();
 });

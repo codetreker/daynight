@@ -41,7 +41,7 @@ Copilot 的 model 或 effort 未指定时保留原生默认值，不补造模型
 
 Chatbox 按 Provider 发现的真实能力提供模型、reasoning effort 和权限选择。默认值保留原生语义；没有可读实际值时显示未知，不猜测默认模型或权限。选择后区分待确认目标与已生效值，只有原生确认或回读才能更新实际状态。显示生效范围；不支持运行中生效的设置不能伪装改变当前推理。失败和未知结果可见，不能自动重复设置操作。
 
-权限设置保留 Provider 的独立含义。Codex 的 approval policy 与 sandbox 分开并遵守配置约束；Claude 保留原生 permissionMode；Copilot 的工具审批不代表路径或网络授权。只有用户明确选择才改变权限，不因恢复或打开设置面板提高权限。
+权限设置保留 Provider 的独立含义。Codex 的 approval policy 与 sandbox 分开并遵守配置约束；Claude 保留原生 permissionMode；Copilot 的工具审批不代表路径或网络授权。新建无人值守 Worker 会话按其已配置的执行策略初始化权限；其余权限变更须由用户明确选择，不因恢复或打开设置面板提高权限。
 
 斜杠菜单提供目录、前缀过滤、键盘导航和参数输入。model/permissions 入口打开设置，原生命令必须来自当前可执行目录；未知或歧义命令不能静默退化为普通 prompt。目录加载失败保留错误和重试入口。命令受理只清除对应草稿版本，不覆盖期间的新编辑或无关草稿。
 

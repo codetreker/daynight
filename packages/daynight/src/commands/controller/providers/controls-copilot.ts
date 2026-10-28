@@ -9,9 +9,16 @@ export class CopilotControls {
   constructor(private readonly native: CopilotSession, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly skillDiscoveryError: string | null = null) { this.store = new ProviderControls(changed, revisionFloor); }
   private permissions(): SessionSetting { return { id: "tool_approval", category: "permission", label: "Tool approvals", value: this.toolApproval, mutable: typeof this.native.rpc.permissions.setApproveAll === "function", scope: "session", description: "Native tool approval policy. Existing grants, path and network permissions are independent.", options: [{ value: "ask", label: "Ask for approval" }, { value: "allow", label: "Allow tools" }] }; }
   async initialize(resume: boolean, unattended = false) {
-    if (!resume && typeof this.native.rpc.permissions.setApproveAll === "function") {
-      try { const result = await controlDeadline(this.native.rpc.permissions.setApproveAll({ enabled: unattended }), "Copilot permission initialization"); if (!result.success) throw new Error("Copilot did not confirm default tool permissions."); this.toolApproval = unattended ? "allow" : "ask"; }
-      catch (error) { this.store.update({ settingsError: controlError(error) }); if (unattended) throw error; }
+    if (!resume && unattended) {
+      if (typeof this.native.rpc.permissions.configure !== "function") throw new Error("Native Copilot cannot configure unattended full access.");
+      // SDK sessions have independent path and URL managers; runtime flags and
+      // setApproveAll alone do not authorize access outside the task worktree.
+      const result = await controlDeadline(this.native.rpc.permissions.configure({ approveAllToolPermissionRequests: true, approveAllReadPermissionRequests: true, paths: { unrestricted: true }, urls: { unrestricted: true } }), "Copilot full access initialization");
+      if (!result.success) throw new Error("Copilot did not confirm unattended full access.");
+      this.toolApproval = "allow";
+    } else if (!resume && typeof this.native.rpc.permissions.setApproveAll === "function") {
+      try { const result = await controlDeadline(this.native.rpc.permissions.setApproveAll({ enabled: false }), "Copilot permission initialization"); if (!result.success) throw new Error("Copilot did not confirm default tool permissions."); this.toolApproval = "ask"; }
+      catch (error) { this.store.update({ settingsError: controlError(error) }); }
     }
     if (!resume && unattended && this.toolApproval !== "allow") throw new Error("Native Copilot cannot confirm unattended tool permissions.");
     await this.refresh();
