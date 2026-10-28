@@ -172,12 +172,68 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.store.listTasks()[0]!.status).toBe("active"); expect(f.git.removeWorktree).not.toHaveBeenCalled();
   });
 
-  it("stops native resources on shutdown without reading an unavailable service", async () => {
+  it.each(["working", "blocked", "idle"] as const)("directly stops a %s agent on shutdown and preserves its claim for native resume", async (status) => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
     const old = f.store.listTasks()[0]!; vi.mocked(f.remote.ownInventory).mockRejectedValue(new Error("service offline"));
+    f.resources.get(old.claimId)!.panes[0]!.status = status;
+    const inventoryReads = vi.mocked(f.remote.ownInventory).mock.calls.length;
+    const originalClaim = structuredClone(f.grants.get(old.claimId));
     await expect(f.coordinator.shutdown()).resolves.toBe(true);
     expect(f.store.getTask(old)).toEqual(old); expect(f.worktrees.has(old.claimId)).toBe(true); expect(f.resources.size).toBe(0);
-    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    expect(f.tasks.stopAndClose).toHaveBeenCalledOnce(); expect(f.tasks.submitPrompt).not.toHaveBeenCalled();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.grants.get(old.claimId)).toEqual(originalClaim);
+    expect(f.remote.ownInventory).toHaveBeenCalledTimes(inventoryReads);
+    vi.mocked(f.remote.ownInventory).mockResolvedValue([...f.grants.values()]);
+    await createWorkerCoordinator(f.options).tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId });
+    expect(f.store.getTask(old)).toEqual(old);
+  });
+
+  it("interrupts an already waiting terminal cleanup without another prompt or worktree deletion", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    f.tasks.submitPrompt.mockImplementation(async (context, binding) => {
+      const observation = { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding };
+      return { submission: "submitted", observation };
+    });
+    f.grants.clear(); f.candidates.splice(0);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.submitPrompt).toHaveBeenCalledOnce());
+    expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.store.getTask(row)).toEqual(row);
+    let settled = false;
+    const shutdown = f.coordinator.shutdown().then((complete) => { settled = true; return complete; });
+    try { await eventually(() => expect(settled).toBe(true)); }
+    finally { if (!settled) f.clock(601_001); await shutdown; }
+    await expect(shutdown).resolves.toBe(true);
+    expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); expect(f.tasks.stopAndClose).toHaveBeenCalledOnce();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.worktrees.has(row.claimId)).toBe(true);
+    expect(f.store.getTask(row)).toEqual(row); expect(f.resources.size).toBe(0);
+    expect(f.events.some((event) => event.kind === "cleanup-error")).toBe(false);
+  });
+
+  it.each(["workspace", "pending stop"])("reports a failed %s stop and still stops a healthy sibling", async (kind) => {
+    const f = await fixture(2); await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledTimes(2));
+    const rows = f.store.listTasks(); const failed = rows[0]!; const healthy = rows[1]!;
+    const workspace = f.resources.get(failed.claimId)!;
+    if (kind === "pending stop") {
+      f.resources.delete(failed.claimId);
+      f.tasks.pendingStops.mockReturnValue([{ context: { ...workspace.owner, cwd: f.bind(workspace.owner).worktreePath }, binding: workspace.panes[0]!.binding }]);
+    }
+    const failure = new Error("native process still alive");
+    const stop = f.tasks.stopAndClose.getMockImplementation()!;
+    f.tasks.stopAndClose.mockImplementation(async (owner) => {
+      if (owner.claimId === failed.claimId) throw failure;
+      await stop(owner);
+    });
+    await expect(f.coordinator.shutdown()).resolves.toBe(false);
+    expect(f.resources.has(healthy.claimId)).toBe(false); expect(f.store.listTasks()).toEqual(rows);
+    expect(f.worktrees.size).toBe(2); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    expect(f.tasks.submitPrompt).not.toHaveBeenCalled();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "shutdown-error", task: failed, error: failure }));
   });
 
   it("reports an unknown project resource without treating it as ended", async () => {
@@ -419,7 +475,8 @@ describe("minimal worker resource reconciliation", () => {
     vi.mocked(f.git.listWorktrees).mockRejectedValue(new Error("unregistered sibling reservation"));
     await expect(f.coordinator.shutdown()).resolves.toBe(false);
     expect(f.resources.has(row.claimId)).toBe(false); expect(f.worktrees.has(row.claimId)).toBe(true);
-    expect(f.store.getTask(row)?.status).toBe("active");
+    expect(f.store.getTask(row)).toEqual(row); expect(f.tasks.submitPrompt).not.toHaveBeenCalled();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "shutdown-error", error: expect.objectContaining({ message: "unregistered sibling reservation" }) }));
   });
 
   it("claims one task per repository turn while preserving each ready order", async () => {

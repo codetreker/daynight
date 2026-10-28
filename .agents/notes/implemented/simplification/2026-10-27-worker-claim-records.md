@@ -91,7 +91,14 @@ counting an old business turn as the requested cleanup. The
 that criterion: successful notification followed by a fresh idle observation
 allows stopping, without requiring counters or interactive readiness. Notification
 failures and unknown results retain the bounded deadline and visible error.
-Input observations and cleanup progress remain process-local.
+Input observations and cleanup progress remain process-local. This criterion
+applies to normal terminal cleanup. The
+[direct shutdown decision](../bug-fix/2026-10-28-worker-direct-shutdown.md)
+owns worker process exit: cancel and join all jobs, including terminal cleanup,
+then directly stop agents and close workspaces without a cleanup prompt or turn.
+Claims, worktrees, native session IDs and unfinished rows remain even for ended
+owners; the next normal inventory re-enters their terminal cleanup. Stop errors
+remain visible and uncertain stopping retains the private daemon.
 
 Configuration and recovery/cleanup state are process-local. A restarted process
 uses the current applicable model/args for the recorded agent type. Cleanup has

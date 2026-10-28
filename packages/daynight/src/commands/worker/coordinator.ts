@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import type { Task, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { createCleanupDriver } from "./cleanup.js";
-import { createExecutionDriver, isWorkerCancellation, sameClaim, workerOperation } from "./execution.js";
+import { actualTaskPane, createExecutionDriver, isWorkerCancellation, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
 import type { ManagedAssignment } from "./prompts.js";
@@ -297,7 +298,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     },
     shutdown: async (): Promise<boolean> => {
       shuttingDown = true;
-      for (const running of controllers.values()) if (!running.terminal) running.controller.abort(new Error("Worker shutdown requested."));
+      for (const running of controllers.values()) running.controller.abort(new Error("Worker shutdown requested."));
       await Promise.all(jobs.values());
       let complete = true;
       const owners = new Map(ending);
@@ -329,7 +330,16 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         }
       }));
       await Promise.all([...owners.values()].map(async (owner) => {
-        try { await serialize(owner, () => runCleanup(owner, ending.has(key(owner)))); }
+        try {
+          await serialize(owner, async () => {
+            await settleWorkerStops(deps, owner);
+            const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
+            const pane = actualTaskPane(owner, resources);
+            if (pane === undefined) return;
+            const context = { ...owner, cwd: path.join(projectFor(owner).localPath, ".worktrees", "daynight", owner.taskId) };
+            await workerOperation((operation) => options.herdr.tasks.stopAndClose(context, pane.binding, operation));
+          });
+        }
         catch (error) { complete = false; options.emit({ kind: "shutdown-error", ...(options.store.getTask(owner) === null ? {} : { task: options.store.getTask(owner)! }), message: "Could not stop the original task resources.", error }); }
       }));
       return complete;

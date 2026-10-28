@@ -1085,10 +1085,10 @@ integration failures and launch errors stay visible. Use attach for business
 input. Reconnecting an already alive agent does not promise to resend an input
 lost across a process interruption.
 
-When the original claim is absent from a successful complete inventory, the
-worker asks its agent to release attributable temporary files, services and
-processes outside the worktree. It waits at most ten minutes for this cleanup
-attempt, stops the agent, closes its workspace, removes the matching worktree
+During normal reconciliation, when the original claim is absent from a
+successful complete inventory, the worker asks its agent to release attributable
+temporary files, services and processes outside the worktree. It waits at most
+ten minutes for this cleanup attempt, stops the agent, closes its workspace, removes the matching worktree
 and marks the local row done. Done, release and force withdrawal have the same terminal
 resource rule. Failed stop or deletion retains responsibility and the error.
 
@@ -1103,8 +1103,8 @@ close its workspace. Sequence counters and interactive readiness are not
 required. A pre-notification observation or the submission receipt itself
 cannot finish cleanup. Failed or unknown notification results retain their error
 and the current bounded wait, without automatic replay. Reaching the deadline
-still proceeds through actual stop confirmation. Idle in this exit phase does
-not complete the business task.
+still proceeds through actual stop confirmation. Idle in this terminal cleanup
+phase does not complete the business task.
 
 Cleanup timing and progress are in memory. Polls do not extend the current
 attempt's deadline; after a crash, the next successful reconciliation observes
@@ -1113,10 +1113,17 @@ may repeat. Separate tasks have independent bounded jobs, so one held RPC does
 not postpone another task's cleanup. A cleanup already selected in the current
 process can continue during later service-read failures.
 
-Ctrl+C stops acquisition and ordinary scheduling, then gives agents bounded
-outside-worktree cleanup, stops them and closes their workspaces. Valid claims,
-worktrees, session IDs and active/pending rows remain for the next run. The
-private instance stops last; exit failures remain visible.
+Ctrl+C stops acquisition and scheduling, cancels all running jobs including
+terminal cleanup, and joins them before directly stopping agents and closing
+their workspaces. Process exit sends no cleanup prompt and does not wait for a
+cleanup turn. It preserves claims, worktrees, native session IDs and all
+unfinished active/pending rows, including those whose ownership has ended. The
+next run uses normal inventory reconciliation to re-enter terminal cleanup for
+ended claims. External temporary resources may remain after direct interruption.
+Normal completion, release, withdrawal and manual-control cleanup retain their
+existing behavior. Pending stop confirmations must settle before the private
+Herdr instance stops; stop errors remain visible, and uncertain stopping retains
+that instance and the affected resources.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
 known session ID. Startup prints the log location and attach guidance. Routine
