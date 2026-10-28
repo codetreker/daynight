@@ -58,26 +58,22 @@ func (s *Service) ListTest(ctx context.Context, p core.Principal, token string, 
 			return page, err
 		}
 	}
-	err = transact(ctx, s.DB, func(tx pgx.Tx) error {
+	err = s.transact(ctx, func(tx pgx.Tx) error {
 		now := s.now()
 		if err := credential(ctx, tx, p, now); err != nil {
 			return err
 		}
-		// Latest durable event time gives existing sessions an activity timestamp
-		// without introducing a second clock or treating heartbeats as new work.
+		// Activity list metadata comes from the bounded connection lease, never from
+		// a persisted conversation event stream.
 		query := `SELECT ts.snapshot,ts.created_at,recent.updated_at,ts.last_seen,ts.draining_until
-   FROM task_sessions ts
-   CROSS JOIN LATERAL (SELECT GREATEST(ts.created_at,COALESCE((SELECT e.created_at FROM session_events e WHERE e.session_id=ts.id ORDER BY e.event_seq DESC LIMIT 1),ts.created_at)) AS updated_at) recent
-   WHERE ts.scope='test' AND ts.owner_user_id=$1
-   AND (ts.parent_credential_id IS NULL OR EXISTS (SELECT 1 FROM personal_access_tokens pat WHERE pat.id=ts.parent_credential_id AND pat.user_id=$1 AND (pat.expires_at IS NULL OR pat.expires_at>$2) FOR SHARE))
-   AND (NOT $4::boolean OR (
-     ts.snapshot->>'lifecycle'='active'
-     AND ts.snapshot->>'connectionState' IN ('connected','synchronizing')
-     AND ts.last_seen >= $5::timestamptz
-     AND ts.connection_expires_at > $2
-     AND (ts.draining_until IS NULL OR ts.draining_until > $2)
-     AND EXISTS (SELECT 1 FROM personal_access_tokens pat WHERE pat.id=ts.connection_parent_credential_id AND pat.user_id=$1 AND (pat.expires_at IS NULL OR pat.expires_at>$2) FOR SHARE)
-   ))`
+ FROM task_sessions ts
+ CROSS JOIN LATERAL (SELECT GREATEST(ts.created_at,COALESCE(ts.last_seen,ts.created_at)) AS updated_at) recent
+ WHERE ts.scope='test' AND ts.owner_user_id=$1
+ AND (ts.parent_credential_id IS NULL OR EXISTS (SELECT 1 FROM personal_access_tokens pat WHERE pat.id=ts.parent_credential_id AND pat.user_id=$1 AND (pat.expires_at IS NULL OR pat.expires_at>$2) FOR SHARE))
+ AND (NOT $4::boolean OR (
+ ts.snapshot->>'lifecycle'='active' AND ts.last_seen >= $5::timestamptz AND ts.connection_expires_at>$2
+ AND (ts.draining_until IS NULL OR ts.draining_until>$2)
+ AND EXISTS (SELECT 1 FROM personal_access_tokens pat WHERE pat.id=ts.connection_parent_credential_id AND pat.user_id=$1 AND (pat.expires_at IS NULL OR pat.expires_at>$2) FOR SHARE)))`
 		// Connection leases belong to the credential captured at Connect. A fresh
 		// grant may be unconsumed while the previous connection remains valid.
 		args := []any{p.UserID, now, limit + 1, online, now.Add(-HeartbeatTimeout)}
@@ -100,6 +96,10 @@ func (s *Service) ListTest(ctx context.Context, p core.Principal, token string, 
 			}
 			if err = json.Unmarshal(raw, &r.Snapshot); err != nil {
 				return err
+			}
+			r.Snapshot = durableSnapshot(r.Snapshot)
+			if online {
+				r.Snapshot.ConnectionState = "connected"
 			}
 			v := permissions(&r, false, now)
 			item.SessionID = v.SessionID

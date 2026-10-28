@@ -40,7 +40,8 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		writeError(w, request, logger, "task", "set_status", err)
 		return
 	}
-	task, err := h.tasks.SetStatus(request.Context(), principal, projectID, id, service.SetTaskStatus{Version: input.Version, Status: core.TaskStatus(input.Status), ClaimID: input.ClaimID})
+
+	task, err := h.tasks.SetStatus(workerProtocolContext(request), principal, projectID, id, service.SetTaskStatus{Version: input.Version, Status: core.TaskStatus(input.Status), ClaimID: input.ClaimID})
 	if err != nil {
 		writeError(w, request, logger, "task", "set_status", err)
 		return
@@ -50,5 +51,5 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		outcome = "changed"
 	}
 	logger.InfoContext(request.Context(), "task status set", "type", "resource", "component", "task", "phase", "set_status", "outcome", outcome, "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task))
+	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
 }

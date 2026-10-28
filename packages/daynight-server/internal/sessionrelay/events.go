@@ -3,8 +3,8 @@ package sessionrelay
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
-	"errors"
 	"slices"
 
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
@@ -25,6 +25,30 @@ func (s *Service) Handle(ctx context.Context, m sp.ControllerMessage) (map[strin
 	err := s.controller(ctx, m.ControllerFence, func(tx pgx.Tx, r *record, t task) error {
 		var err error
 		switch m.Type {
+		case "sync_state":
+			if r.Live == nil || m.State == nil {
+				return conflict()
+			}
+			r.Live.PendingInteractions = map[string]sp.TimelineEntry{}
+			for _, entry := range m.PendingInteractions {
+				if err := rememberInteraction(r, entry); err != nil {
+					return err
+				}
+			}
+			var unresolved int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM session_operations WHERE session_id=$1 AND dispatch_epoch IS DISTINCT FROM $2 AND receipt->>'state' IN ('offered','dispatching')`, r.Snapshot.SessionID, number(r.Snapshot.ConnectionEpoch)).Scan(&unresolved); err != nil {
+				return err
+			}
+			if unresolved > 0 {
+				return fault("reconcile_required", "Reconcile prior operations before live synchronization.")
+			}
+			r.Live.Synced = true
+			if err := s.applyState(ctx, tx, r, *m.State); err != nil {
+				return err
+			}
+			out = envelope(r, "sync_ack")
+		case "content_response":
+			out, err = s.acceptContent(tx, r, m)
 		case "events":
 			out, err = s.events(ctx, tx, r, m)
 		case "source_reset":
@@ -36,6 +60,9 @@ func (s *Service) Handle(ctx context.Context, m sp.ControllerMessage) (map[strin
 					return conflict()
 				}
 				r.SourceEpoch = &m.NewSourceEpoch
+				if len(r.SourceEpochs) >= 64 {
+					return fault("rate_limited", "Source epoch limit reached.")
+				}
 				r.SourceEpochs = append(r.SourceEpochs, m.NewSourceEpoch)
 				r.SourceSeq = 0
 				err = s.emit(ctx, tx, r, "gap", map[string]any{"reason": m.Reason, "cursor": nil}, nil)
@@ -66,48 +93,83 @@ func (s *Service) Handle(ctx context.Context, m sp.ControllerMessage) (map[strin
 	})
 	return out, err
 }
-func (s *Service) events(ctx context.Context, tx pgx.Tx, r *record, m sp.ControllerMessage) (map[string]any, error) {
-	if r.SourceEpoch == nil || *r.SourceEpoch != m.SourceEpoch {
-		return nil, conflict()
+func (s *Service) applyState(ctx context.Context, tx pgx.Tx, r *record, state sp.State) error {
+	v := &r.Snapshot
+	if (state.InitialInputState == "not_required") != (v.InitialInputState == "not_required") || v.Identity.NativeSessionID != nil && (state.NativeSessionID == nil || *state.NativeSessionID != *v.Identity.NativeSessionID) {
+		return conflict()
 	}
-	// A batch identity cannot be reused for a different list of source events.
-	rows, err := tx.Query(ctx, `SELECT source_body FROM session_events WHERE session_id=$1 AND batch_id=$2 ORDER BY source_seq`, r.Snapshot.SessionID, m.BatchID)
-	if err != nil {
-		return nil, err
+	if (v.InitialInputState == "provider_accepted" || v.InitialInputState == "confirmed") && (state.InitialInputState == "not_submitted" || state.InitialInputState == "dispatching") {
+		return conflict()
 	}
-	var previous [][]byte
-	for rows.Next() {
-		var b []byte
-		if err = rows.Scan(&b); err != nil {
-			rows.Close()
-			return nil, err
+	if v.Controls != nil && state.Controls != nil {
+		a, b := number(v.Controls.Revision), number(state.Controls.Revision)
+		if b < a || b == a && !jsonEqual(encode(v.Controls), encode(state.Controls)) {
+			return conflict()
 		}
-		previous = append(previous, b)
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	if len(previous) > 0 {
-		if len(previous) != len(m.Events) {
-			return nil, conflict()
+	v.Identity.NativeSessionID = state.NativeSessionID
+	v.InitialInputState = state.InitialInputState
+	v.Activity = state.Activity
+	v.CurrentTurnID = state.CurrentTurnID
+	v.Capabilities = state.Capabilities
+	v.Controls = state.Controls
+	v.TurnStartedAt = state.TurnStartedAt
+	v.CleanupInteractionIDs = state.CleanupInteractionIDs
+	for _, id := range state.CleanupInteractionIDs {
+		if v.Lifecycle != "draining" || r.DrainTimelineSeq == nil {
+			return conflict()
 		}
-		for i, e := range m.Events {
-			if !jsonEqual(previous[i], encode(e)) {
-				return nil, conflict()
+		for _, entry := range r.Live.PendingInteractions {
+			var i struct {
+				ID string `json:"interactionId"`
+			}
+			_ = json.Unmarshal(entry.Data["interaction"], &i)
+			if i.ID == id && number(entry.EntrySeq) <= *r.DrainTimelineSeq {
+				return conflict()
 			}
 		}
+	}
+	v.Synchronized = state.Synchronized && r.Live.Synced
+	if v.Synchronized {
+		v.ConnectionState = "connected"
+	} else {
+		v.ConnectionState = "synchronizing"
+	}
+	return s.emit(ctx, tx, r, "snapshot", *v, nil)
+}
+func rememberInteraction(r *record, entry sp.TimelineEntry) error {
+	if entry.Kind != "interaction" {
+		return nil
+	}
+	var value struct {
+		State string `json:"state"`
+	}
+	_ = json.Unmarshal(entry.Data["interaction"], &value)
+	if prior, ok := r.Live.PendingInteractions[entry.EntryID]; ok {
+		if number(prior.Revision) > number(entry.Revision) || prior.Revision == entry.Revision && !jsonEqual(encode(prior), encode(entry)) {
+			return conflict()
+		}
+	}
+	if value.State == "pending" {
+		r.Live.PendingInteractions[entry.EntryID] = entry
+	} else {
+		delete(r.Live.PendingInteractions, entry.EntryID)
+	}
+	return r.Live.checkCapacity()
+}
+func (s *Service) events(ctx context.Context, tx pgx.Tx, r *record, m sp.ControllerMessage) (map[string]any, error) {
+	if r.Live == nil || r.SourceEpoch == nil || *r.SourceEpoch != m.SourceEpoch {
+		return nil, conflict()
+	}
+	batchHash := sha256.Sum256(encode(m.Events))
+	if prior, ok := r.Live.BatchHashes[m.BatchID]; ok && prior != batchHash {
+		return nil, conflict()
 	}
 	for _, e := range m.Events {
 		n := number(e.SourceSeq)
+		hash := sha256.Sum256(encode(e))
 		if n <= r.SourceSeq {
-			var raw []byte
-			err = tx.QueryRow(ctx, `SELECT source_body FROM session_events WHERE session_id=$1 AND source_epoch=$2 AND source_seq=$3`, r.Snapshot.SessionID, m.SourceEpoch, n).Scan(&raw)
-			if err != nil {
-				return nil, err
-			}
-			if !jsonEqual(raw, encode(e)) {
+			if previous, ok := r.Live.SourceHashes[n]; ok && previous != hash {
 				return nil, conflict()
 			}
 			continue
@@ -121,59 +183,7 @@ func (s *Service) events(ctx context.Context, tx pgx.Tx, r *record, m sp.Control
 			if err != nil {
 				return nil, err
 			}
-			v := &r.Snapshot
-			if (state.InitialInputState == "not_required") != (v.InitialInputState == "not_required") {
-				return nil, conflict()
-			}
-			if v.Identity.NativeSessionID != nil && (state.NativeSessionID == nil || *v.Identity.NativeSessionID != *state.NativeSessionID) {
-				return nil, conflict()
-			}
-			if (v.InitialInputState == "provider_accepted" || v.InitialInputState == "confirmed") && (state.InitialInputState == "not_submitted" || state.InitialInputState == "dispatching") {
-				return nil, conflict()
-			}
-			if state.Synchronized {
-				var unresolved int
-				if err = tx.QueryRow(ctx, `SELECT count(*) FROM session_operations WHERE session_id=$1 AND dispatch_epoch IS DISTINCT FROM $2 AND receipt->>'state' IN ('offered','dispatching')`, v.SessionID, number(v.ConnectionEpoch)).Scan(&unresolved); err != nil {
-					return nil, err
-				}
-				if unresolved != 0 {
-					return nil, fault("reconcile_required", "Reconcile previously offered operations before synchronization.")
-				}
-			}
-			v.Identity.NativeSessionID = state.NativeSessionID
-			v.InitialInputState = state.InitialInputState
-			v.Synchronized = state.Synchronized
-			v.Activity = state.Activity
-			v.CurrentTurnID = state.CurrentTurnID
-			v.Capabilities = state.Capabilities
-			if v.Controls != nil && state.Controls != nil {
-				previous, next := number(v.Controls.Revision), number(state.Controls.Revision)
-				if next < previous || next == previous && !jsonEqual(encode(v.Controls), encode(state.Controls)) {
-					return nil, conflict()
-				}
-			}
-			v.Controls = state.Controls
-			v.TurnStartedAt = state.TurnStartedAt
-			if len(state.CleanupInteractionIDs) > 0 {
-				if v.Lifecycle != "draining" || r.DrainTimelineSeq == nil {
-					return nil, conflict()
-				}
-				var old bool
-				err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_timeline WHERE session_id=$1 AND entry_seq<=$2 AND entry->>'kind'='interaction' AND entry->'interaction'->>'interactionId'=ANY($3::text[]))`, v.SessionID, *r.DrainTimelineSeq, state.CleanupInteractionIDs).Scan(&old)
-				if err != nil {
-					return nil, err
-				}
-				if old {
-					return nil, conflict()
-				}
-			}
-			v.CleanupInteractionIDs = state.CleanupInteractionIDs
-			if state.Synchronized {
-				v.ConnectionState = "connected"
-			} else {
-				v.ConnectionState = "synchronizing"
-			}
-			if err = s.emit(ctx, tx, r, "snapshot", *v, &e); err != nil {
+			if err = s.applyState(ctx, tx, r, state); err != nil {
 				return nil, err
 			}
 		case "timeline_upsert":
@@ -181,20 +191,30 @@ func (s *Service) events(ctx context.Context, tx pgx.Tx, r *record, m sp.Control
 			if err != nil {
 				return nil, err
 			}
-			var old []byte
-			var seq, revision int64
-			err = tx.QueryRow(ctx, `SELECT entry,entry_seq,revision FROM session_timeline WHERE session_id=$1 AND entry_id=$2`, r.Snapshot.SessionID, entry.EntryID).Scan(&old, &seq, &revision)
-			if errors.Is(err, pgx.ErrNoRows) {
-				r.Snapshot.LastTimelineSeq = next(r.Snapshot.LastTimelineSeq)
-				seq = number(r.Snapshot.LastTimelineSeq)
-			} else if err != nil {
-				return nil, err
+			prior, exists := r.Live.TimelineVersions[entry.EntryID]
+			if entry.EntrySeq == "" {
+				if exists {
+					entry.EntrySeq = prior.Sequence
+				} else {
+					entry.EntrySeq = e.SourceSeq
+				}
 			}
-			entry.EntrySeq = decimal(seq)
-			if revision > number(entry.Revision) || revision == number(entry.Revision) && !jsonEqual(old, encode(entry)) {
+			contentHash := sha256.Sum256(encode(entry))
+			if exists && (entry.EntrySeq != prior.Sequence || number(entry.Revision) < number(prior.Revision) || entry.Revision == prior.Revision && contentHash != prior.Hash) {
 				return nil, conflict()
 			}
-			if _, err = tx.Exec(ctx, `INSERT INTO session_timeline(session_id,entry_id,entry_seq,revision,entry) VALUES($1,$2,$3,$4,$5) ON CONFLICT(session_id,entry_id) DO UPDATE SET revision=excluded.revision,entry=excluded.entry`, r.Snapshot.SessionID, entry.EntryID, seq, number(entry.Revision), encode(entry)); err != nil {
+			r.Live.TimelineVersions[entry.EntryID] = timelineVersion{Sequence: entry.EntrySeq, Revision: entry.Revision, Hash: contentHash}
+			if !exists {
+				r.Live.TimelineOrder = append(r.Live.TimelineOrder, entry.EntryID)
+				if len(r.Live.TimelineOrder) > 1000 {
+					delete(r.Live.TimelineVersions, r.Live.TimelineOrder[0])
+					r.Live.TimelineOrder = r.Live.TimelineOrder[1:]
+				}
+			}
+			if number(entry.EntrySeq) > number(r.Snapshot.LastTimelineSeq) {
+				r.Snapshot.LastTimelineSeq = entry.EntrySeq
+			}
+			if err = rememberInteraction(r, entry); err != nil {
 				return nil, err
 			}
 			if err = s.emit(ctx, tx, r, "timeline_upsert", entry, &e); err != nil {
@@ -205,51 +225,39 @@ func (s *Service) events(ctx context.Context, tx pgx.Tx, r *record, m sp.Control
 			if err != nil {
 				return nil, err
 			}
-			if resource.Status == "available" {
-				return nil, fault("invalid_input", "Resource availability requires a verified upload.")
-			}
-			var old []byte
-			err = tx.QueryRow(ctx, `SELECT descriptor FROM session_resources WHERE session_id=$1 AND resource_id=$2`, r.Snapshot.SessionID, resource.ResourceID).Scan(&old)
-			if err == nil {
-				prior, _ := sp.DecodeResource(old)
-				if prior.Status == "available" || prior.SHA256 != nil && (resource.SHA256 == nil || *prior.SHA256 != *resource.SHA256) {
-					return nil, conflict()
-				}
-			} else if !errors.Is(err, pgx.ErrNoRows) {
-				return nil, err
-			}
 			if resource.ByteLength != nil && number(*resource.ByteLength) > sp.MaxResourceBytes {
 				return nil, fault("payload_too_large", "Resource exceeds 8 MiB.")
-			}
-			var count int
-			if err = tx.QueryRow(ctx, `SELECT count(*) FROM session_resources WHERE session_id=$1`, r.Snapshot.SessionID).Scan(&count); err != nil {
-				return nil, err
-			}
-			if count >= 1000 && old == nil {
-				return nil, fault("payload_too_large", "Session resource limit reached.")
-			}
-			if _, err = tx.Exec(ctx, `INSERT INTO session_resources(session_id,resource_id,descriptor) VALUES($1,$2,$3) ON CONFLICT(session_id,resource_id) DO UPDATE SET descriptor=excluded.descriptor`, r.Snapshot.SessionID, resource.ResourceID, encode(resource)); err != nil {
-				return nil, err
 			}
 			if err = s.emit(ctx, tx, r, "resource", resource, &e); err != nil {
 				return nil, err
 			}
 		case "gap":
 			var payload map[string]any
-			if err = json.Unmarshal(e.Payload, &payload); err != nil {
+			if err := json.Unmarshal(e.Payload, &payload); err != nil {
 				return nil, err
 			}
 			payload["cursor"] = nil
-			if err = s.emit(ctx, tx, r, "gap", payload, &e); err != nil {
+			if err := s.emit(ctx, tx, r, "gap", payload, &e); err != nil {
 				return nil, err
 			}
 		default:
 			return nil, fault("invalid_input", "Unsupported source event.")
 		}
-		if _, err = tx.Exec(ctx, `UPDATE session_events SET batch_id=$2 WHERE session_id=$1 AND event_seq=$3`, r.Snapshot.SessionID, m.BatchID, number(r.Snapshot.LastEventSeq)); err != nil {
-			return nil, err
-		}
 		r.SourceSeq = n
+		r.Live.SourceHashes[n] = hash
+		r.Live.SourceOrder = append(r.Live.SourceOrder, n)
+		if len(r.Live.SourceOrder) > 256 {
+			delete(r.Live.SourceHashes, r.Live.SourceOrder[0])
+			r.Live.SourceOrder = r.Live.SourceOrder[1:]
+		}
+	}
+	if _, exists := r.Live.BatchHashes[m.BatchID]; !exists {
+		r.Live.BatchHashes[m.BatchID] = batchHash
+		r.Live.BatchOrder = append(r.Live.BatchOrder, m.BatchID)
+		if len(r.Live.BatchOrder) > 128 {
+			delete(r.Live.BatchHashes, r.Live.BatchOrder[0])
+			r.Live.BatchOrder = r.Live.BatchOrder[1:]
+		}
 	}
 	out := envelope(r, "events_ack")
 	out["batchId"] = m.BatchID
@@ -269,6 +277,10 @@ func (s *Service) Disconnect(ctx context.Context, f sp.ControllerFence) error {
 	return s.controller(ctx, f, func(tx pgx.Tx, r *record, _ task) error {
 		r.Snapshot.ConnectionState = "disconnected"
 		r.Snapshot.Synchronized = false
+		r.ConnectionExpiry = nil
+		if _, err := tx.Exec(ctx, `UPDATE task_sessions SET connection_expires_at=NULL WHERE id=$1`, r.Snapshot.SessionID); err != nil {
+			return err
+		}
 		if err := s.emit(ctx, tx, r, "snapshot", r.Snapshot, nil); err != nil {
 			return err
 		}

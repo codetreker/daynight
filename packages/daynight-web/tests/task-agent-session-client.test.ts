@@ -251,3 +251,19 @@ it('reconciles a saved draft submission even if its separate receipt storage was
   await vi.waitFor(() => expect(restored.client.snapshot().draft.text).toBe(''));
   expect(restored.api.command).not.toHaveBeenCalled();
 });
+
+it('retains the loaded offline view until the same execution can load its new local history', async () => {
+  const f = fixture(); await ready(f);
+  const entry = { kind: 'reasoning' as const, entryId: 'local-entry', entrySeq: '1', revision: '1', text: 'Visible before relay restart' };
+  f.receive({ protocol: f.s.protocol, type: 'event', cursor: 'one', event: { protocol: f.s.protocol, ...sessionBinding(f.s), sessionId: f.s.sessionId, executionGeneration: '1', connectionEpoch: '1', historyEpoch: f.s.historyEpoch, eventSeq: '1', kind: 'timeline_upsert', payload: entry } });
+  const reconnected = { ...f.s, historyEpoch: 'new-local-view', connectionEpoch: '2', connectionState: 'disconnected' as const, synchronized: false };
+  vi.mocked(f.api.current).mockResolvedValue({ status: 'registered', session: reconnected });
+  vi.mocked(f.api.timeline).mockRejectedValue(new ApiError('server', 503, 'controller_offline'));
+  await f.client.start();
+  f.receive({ protocol: f.s.protocol, type: 'snapshot', userId, snapshot: reconnected, cursor: 'new-zero' });
+  await vi.waitFor(() => expect(f.client.snapshot().status).toBe('error'));
+  expect(f.client.snapshot().connected).toBe(false);
+  expect(f.client.snapshot().state.entries).toEqual([entry]);
+  await expect(f.client.send('cannot send offline')).rejects.toThrow();
+  expect(f.api.command).not.toHaveBeenCalled();
+});

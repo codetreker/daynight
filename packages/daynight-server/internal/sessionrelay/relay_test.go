@@ -44,6 +44,7 @@ func connectFixture(t *testing.T) (fixture, sp.Snapshot) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	synchronizeFixture(t, f, v)
 	return f, v
 }
 func TestDurableEventsDeduplicationAndOperationDispatch(t *testing.T) {
@@ -100,6 +101,7 @@ func TestDurableEventsDeduplicationAndOperationDispatch(t *testing.T) {
 func TestHistoryResourceReadsRemainBoundToTheCurrentClaim(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
+	syncContent(t, f, v)
 	var epoch string
 	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT source_epoch::text FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&epoch); err != nil {
 		t.Fatal(err)
@@ -108,13 +110,14 @@ func TestHistoryResourceReadsRemainBoundToTheCurrentClaim(t *testing.T) {
 	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "events", ControllerFence: v.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "timeline_upsert", Payload: encode(entry)}}}); err != nil {
 		t.Fatal(err)
 	}
-	page, err := f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, "tail", "", 10)
-	if err != nil {
-		t.Fatal(err)
+	read := readPage(ctx, f, v, "tail", "", 10)
+	request := nextContent(t, f, v)
+	replyContent(t, f, v, request, pageResult(request["historyEpoch"].(string), localEntry(t, "1")), nil)
+	got := <-read
+	if got.err != nil || len(got.page["items"].([]sp.TimelineEntry)) != 1 {
+		t.Fatalf("local history %#v %v", got.page, got.err)
 	}
-	if len(page["items"].([]sp.TimelineEntry)) != 1 {
-		t.Fatal("durable history missing")
-	}
+
 	snapshot, events, cursor, err := f.s.BrowserPoll(ctx, f.p, f.project, f.task, v.SessionID, "")
 	if err != nil || len(events) != 0 || cursor == "" {
 		t.Fatalf("initial stream %v", err)
@@ -290,7 +293,7 @@ func reconnect(t *testing.T, f fixture, v sp.Snapshot) sp.Snapshot {
 	if err = f.s.DB.Pool.QueryRow(ctx, `SELECT source_epoch::text FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&epoch); err != nil {
 		t.Fatal(err)
 	}
-	out, err := New(f.s.DB).Connect(ctx, g.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, Provider: "codex", SourceEpoch: epoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
+	out, err := f.s.Connect(ctx, g.Token, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, Provider: "codex", SourceEpoch: epoch, LastAckedSourceSeq: "0", SchemaVersion: 1, ProjectionVersion: 1}, uuid.NewString())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +326,7 @@ func TestReconnectNeverReplaysAnOfferWithoutJournalEvidence(t *testing.T) {
 			}
 			want := "unknown"
 			if journal {
-				want = "accepted"
+				want = "rejected"
 			}
 			if receipt.State != want {
 				t.Fatalf("reconciled %s, expected %s", receipt.State, want)
@@ -333,7 +336,7 @@ func TestReconnectNeverReplaysAnOfferWithoutJournalEvidence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(offers) != map[bool]int{false: 0, true: 1}[journal] {
+			if len(offers) != 0 {
 				t.Fatal("unsafe replay or lost proven unsubmitted operation")
 			}
 		})
@@ -353,7 +356,8 @@ func TestForcedWorkerWithdrawalFreezesWebSessionWithoutStopClaim(t *testing.T) {
 	if err = f.s.DB.Pool.QueryRow(ctx, `SELECT snapshot FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := sp.DecodeSnapshot(raw)
+	var snapshot sp.Snapshot
+	err = json.Unmarshal(raw, &snapshot)
 	if err != nil || snapshot.Lifecycle != "draining" || snapshot.Activity == "stopped" {
 		t.Fatal("withdrawal did not fence without claiming stop", snapshot, err)
 	}
@@ -366,5 +370,13 @@ func TestForcedWorkerWithdrawalFreezesWebSessionWithoutStopClaim(t *testing.T) {
 	}
 	if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}); err != nil {
 		t.Fatal("withdrawal discarded final observation window", err)
+	}
+}
+
+func synchronizeFixture(t *testing.T, f fixture, v sp.Snapshot) {
+	t.Helper()
+	state := sp.State{NativeSessionID: v.Identity.NativeSessionID, InitialInputState: v.InitialInputState, Synchronized: true, Activity: "initializing"}
+	if _, err := f.s.Handle(context.Background(), sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
+		t.Fatal(err)
 	}
 }

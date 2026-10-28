@@ -35,7 +35,11 @@ func TestTestSessionHTTPAndChannelRequireOwnerCredential(t *testing.T) {
 		}
 	}
 	for _, route := range []string{"/api/v1/test-session-capabilities", path, path + "/timeline"} {
-		if response := projectRequest(f.handler, http.MethodGet, route, ""); response.Code != http.StatusOK {
+		expected := http.StatusOK
+		if route == path+"/timeline" {
+			expected = http.StatusServiceUnavailable
+		}
+		if response := projectRequest(f.handler, http.MethodGet, route, ""); response.Code != expected {
 			t.Fatal("owner route", route, response.Code, response.Body.String())
 		}
 	}
@@ -58,6 +62,8 @@ func TestTestSessionHTTPAndChannelRequireOwnerCredential(t *testing.T) {
 	browser := sessionDial(t, f.server.URL, path+"/channel", f.handler.token, nil)
 	sessionWSKind(t, browser, "snapshot")
 	state := sp.State{InitialInputState: "not_required", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true}}
+	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}})
+	sessionWSKind(t, controller, "sync_ack")
 	raw, _ := json.Marshal(state)
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: v.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: raw}}})
 	sessionWSKind(t, controller, "events_ack")

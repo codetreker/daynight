@@ -108,3 +108,14 @@ describe("relay transport", () => {
     }
   });
 });
+
+it("validates online content messages, bounded resource chunks and live synchronization", () => {
+  const fence = { protocol: "daynight.session.v1", sessionId: id, claimId: id, executionGeneration: "1", connectionEpoch: "1" };
+  const request = { ...fence, type: "content_request", requestId: id, kind: "timeline", historyEpoch: id, direction: "tail", cursor: null, limit: 100 };
+  expect(parseRelayMessage(request)).toEqual(request);
+  expect(() => parseRelayMessage({ ...request, limit: 201 })).toThrow();
+  const response = { ...fence, type: "content_response", requestId: id, sourceThrough: "0", result: { kind: "timeline", historyEpoch: id, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false }, error: null };
+  expect(parseControllerMessage(response)).toEqual(response);
+  expect(() => parseControllerMessage({ ...response, error: { code: "offline", message: "Offline" } })).toThrow();
+  expect(parseRelayMessage({ ...fence, type: "sync_ack" })).toEqual({ ...fence, type: "sync_ack" });
+});

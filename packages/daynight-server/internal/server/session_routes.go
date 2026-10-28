@@ -446,7 +446,7 @@ func (h *sessionRoutes) controllerChannel(w http.ResponseWriter, r *http.Request
 		h.channelFailure(ctx, conn, fence, err)
 		return
 	}
-	if err = relayWrite(ctx, conn, map[string]any{"type": "welcome", "protocol": sp.Protocol, "connectionEpoch": fence.ConnectionEpoch, "session": snapshot, "lastAckedSourceSeq": strconv.FormatInt(seq, 10), "limits": map[string]any{"maxFrameBytes": sp.MaxFrameBytes, "maxBatchEvents": sp.MaxBatchEvents, "maxResourceBytes": sp.MaxResourceBytes, "pollIntervalMs": 250}}); err != nil {
+	if err = relayWrite(ctx, conn, map[string]any{"type": "welcome", "requiresLiveSync": true, "protocol": sp.Protocol, "connectionEpoch": fence.ConnectionEpoch, "session": snapshot, "lastAckedSourceSeq": strconv.FormatInt(seq, 10), "limits": map[string]any{"maxFrameBytes": sp.MaxFrameBytes, "maxBatchEvents": sp.MaxBatchEvents, "maxResourceBytes": sp.MaxResourceBytes, "pollIntervalMs": 250}}); err != nil {
 		return
 	}
 	type incoming struct {
@@ -490,8 +490,10 @@ func (h *sessionRoutes) controllerChannel(w http.ResponseWriter, r *http.Request
 				h.channelFailure(ctx, conn, fence, err)
 				return
 			}
-			if err = relayWrite(ctx, conn, response); err != nil {
-				return
+			if response != nil {
+				if err = relayWrite(ctx, conn, response); err != nil {
+					return
+				}
 			}
 		case <-ticker.C:
 			offers, err := h.service.Poll(ctx, fence)

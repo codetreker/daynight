@@ -17,13 +17,14 @@ import (
 )
 
 type operationRecord struct {
-	Command  sp.Command
-	Receipt  sp.Operation
-	Actor    core.Principal
-	Hash     []byte
-	Epoch    *int64
-	Seq      int64
-	Deadline time.Time
+	Available bool
+	Command   sp.Command
+	Receipt   sp.Operation
+	Actor     core.Principal
+	Hash      []byte
+	Epoch     *int64
+	Seq       int64
+	Deadline  time.Time
 }
 
 func loadOperation(ctx context.Context, tx pgx.Tx, session, id string) (operationRecord, error) {
@@ -39,6 +40,16 @@ func loadOperation(ctx context.Context, tx pgx.Tx, session, id string) (operatio
 		return o, err
 	}
 	err = json.Unmarshal(receipt, &o.Receipt)
+	if rt, ok := tx.(*relayTx); ok {
+		if live, e := rt.content(session, false); e != nil {
+			return o, e
+		} else if live != nil {
+			if command, ok := live.Commands[id]; ok {
+				o.Command = command
+				o.Available = true
+			}
+		}
+	}
 	return o, err
 }
 func commandHash(c sp.Command) []byte {
@@ -133,18 +144,28 @@ func (s *Service) authorizeCommand(ctx context.Context, tx pgx.Tx, r *record, t 
 			return conflict()
 		}
 		var raw []byte
-		err := tx.QueryRow(ctx, `SELECT entry->'interaction' FROM session_timeline WHERE session_id=$1 AND entry->>'kind'='interaction' AND entry->'interaction'->>'interactionId'=$2 AND entry->'interaction'->>'revision'=$3 AND entry->'interaction'->>'state'='pending' AND ($4::bigint IS NULL OR entry_seq>$4)`, v.SessionID, p.InteractionID, p.InteractionRevision, r.DrainTimelineSeq).Scan(&raw)
-		if errors.Is(err, pgx.ErrNoRows) {
+		if r.Live == nil {
 			return conflict()
 		}
-		if err != nil {
-			return err
+		for _, entry := range r.Live.PendingInteractions {
+			var interaction struct {
+				ID       string `json:"interactionId"`
+				Revision string `json:"revision"`
+				State    string `json:"state"`
+			}
+			if json.Unmarshal(entry.Data["interaction"], &interaction) == nil && interaction.ID == p.InteractionID && interaction.Revision == p.InteractionRevision && interaction.State == "pending" && (r.DrainTimelineSeq == nil || number(entry.EntrySeq) > *r.DrainTimelineSeq) {
+				raw = entry.Data["interaction"]
+				break
+			}
+		}
+		if raw == nil {
+			return conflict()
 		}
 		if !responseMatches(raw, p.Response) {
 			return conflict()
 		}
 		var duplicate bool
-		err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_operations WHERE session_id=$1 AND operation_id<>$2 AND command->>'kind'='interaction_response' AND command->'payload'->>'interactionId'=$3 AND receipt->>'state' NOT IN ('rejected','expired','failed'))`, v.SessionID, c.OperationID, p.InteractionID).Scan(&duplicate)
+		err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM session_operations WHERE session_id=$1 AND operation_id<>$2 AND command->>'kind'='interaction_response' AND command->'payload'->>'interactionId'=$3 AND receipt->>'state' NOT IN ('rejected','expired','failed'))`, v.SessionID, c.OperationID, p.InteractionID).Scan(&duplicate)
 		if err != nil {
 			return err
 		}
@@ -340,6 +361,12 @@ func (s *Service) Submit(ctx context.Context, p core.Principal, project, taskID,
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		if r.Live == nil || !r.Live.Synced {
+			return fault("controller_offline", "Controller is not synchronized.")
+		}
+		if r.OperationSeq >= maxSessionOperations {
+			return fault("rate_limited", "Session control ledger limit reached.")
+		}
 		if err = s.authorizeCommand(ctx, tx, r, t, c); err != nil {
 			return err
 		}
@@ -352,7 +379,8 @@ func (s *Service) Submit(ctx context.Context, p core.Principal, project, taskID,
 		}
 		result = sp.Operation{Fence: c.Fence, Protocol: sp.Protocol, OperationID: c.OperationID, Kind: c.Kind, State: "accepted"}
 		r.OperationSeq++
-		if _, err = tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, c.OperationID, r.OperationSeq, hash, encode(c), p.UserID, p.CredentialID, string(p.Kind), encode(result)); err != nil {
+		r.Live.Commands[c.OperationID] = c
+		if _, err = tx.Exec(ctx, `INSERT INTO session_operations(session_id,operation_id,operation_seq,body_hash,command,actor_user_id,credential_id,credential_kind,receipt) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`, id, c.OperationID, r.OperationSeq, hash, encode(commandSummary(c)), p.UserID, p.CredentialID, string(p.Kind), encode(result)); err != nil {
 			return err
 		}
 		if err = s.emit(ctx, tx, r, "operation", result, nil); err != nil {
@@ -379,11 +407,17 @@ func (s *Service) operationAuthorized(ctx context.Context, tx pgx.Tx, r *record,
 	if !admin && o.Actor.UserID != r.Owner {
 		return denied()
 	}
+	if !o.Available {
+		return fault("controller_offline", "Operation body must be resent by its original caller.")
+	}
 	return s.authorizeCommand(ctx, tx, r, t, o.Command)
 }
 func (s *Service) updateReceipt(ctx context.Context, tx pgx.Tx, r *record, o sp.Operation) error {
-	if _, err := tx.Exec(ctx, `UPDATE session_operations SET receipt=$3 WHERE session_id=$1 AND operation_id=$2`, o.SessionID, o.OperationID, encode(o)); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE session_operations SET receipt=$3 WHERE session_id=$1 AND operation_id=$2`, o.SessionID, o.OperationID, encode(durableOperation(o))); err != nil {
 		return err
+	}
+	if r.Live != nil && (terminal(o.State) || o.State == "unknown" || o.State == "provider_accepted") {
+		delete(r.Live.Commands, o.OperationID)
 	}
 	return s.emit(ctx, tx, r, "operation", o, nil)
 }
@@ -393,6 +427,7 @@ func (s *Service) Poll(ctx context.Context, f sp.ControllerFence) ([]map[string]
 		if r.LastSeen == nil || s.now().Sub(*r.LastSeen) > HeartbeatTimeout {
 			return conflict()
 		}
+		out = append(out, s.contentRequests(tx, r)...)
 		if (!active(t, r) && r.Snapshot.Lifecycle != "draining") || !r.Snapshot.Synchronized {
 			return nil
 		}
@@ -433,6 +468,9 @@ func (s *Service) Poll(ctx context.Context, f sp.ControllerFence) ([]map[string]
 			if err = s.updateReceipt(ctx, tx, r, o.Receipt); err != nil {
 				return err
 			}
+		}
+		if len(ids) == 0 {
+			return nil
 		}
 		return save(ctx, tx, r)
 	})
@@ -483,7 +521,7 @@ func (s *Service) receipt(ctx context.Context, tx pgx.Tx, r *record, receipt sp.
 	if receipt.Fence != r.Snapshot.Fence || receipt.Kind != o.Receipt.Kind || o.Epoch == nil || *o.Epoch != number(r.Snapshot.ConnectionEpoch) {
 		return nil, conflict()
 	}
-	if !jsonEqual(encode(o.Receipt), encode(receipt)) {
+	if !jsonEqual(encode(durableOperation(o.Receipt)), encode(durableOperation(receipt))) {
 		if terminal(o.Receipt.State) || o.Receipt.State == "accepted" || (o.Receipt.State == "offered" && receipt.State != "rejected" && receipt.State != "expired") || receipt.State != "provider_accepted" && receipt.State != "confirmed" && receipt.State != "failed" && receipt.State != "unknown" && receipt.State != "rejected" && receipt.State != "expired" {
 			return nil, conflict()
 		}
@@ -518,8 +556,10 @@ func (s *Service) reconcile(ctx context.Context, tx pgx.Tx, r *record, t task, i
 						return nil, authorization
 					}
 				}
-				if o.Receipt.State == "offered" && o.Command.ExecutionGeneration == r.Snapshot.ExecutionGeneration && active(t, r) && authorization == nil && (admin || o.Actor.UserID == r.Owner) {
+				if o.Receipt.State == "offered" && o.Available && o.Command.ExecutionGeneration == r.Snapshot.ExecutionGeneration && active(t, r) && authorization == nil && (admin || o.Actor.UserID == r.Owner) {
 					o.Receipt.State = "accepted"
+				} else if o.Receipt.State == "offered" {
+					o.Receipt.State = "rejected"
 				} else if o.Receipt.State != "accepted" && o.Receipt.State != "provider_accepted" {
 					o.Receipt.State = "unknown"
 				}
@@ -564,4 +604,18 @@ func (s *Service) reconcile(ctx context.Context, tx pgx.Tx, r *record, t task, i
 	out := envelope(r, "reconcile_result")
 	out["operations"] = results
 	return out, nil
+}
+
+// Only bounded targeting identifiers accompany the intent hash. User text,
+// command arguments, approval answers and provider diagnostics stay on the host.
+func commandSummary(c sp.Command) sp.Command {
+	summary := c
+	summary.RequestID = ""
+	summary.Payload = json.RawMessage(`{}`)
+	if c.Kind == "interaction_response" {
+		var p sp.InteractionResponse
+		_ = json.Unmarshal(c.Payload, &p)
+		summary.Payload = encode(map[string]any{"interactionId": p.InteractionID})
+	}
+	return summary
 }

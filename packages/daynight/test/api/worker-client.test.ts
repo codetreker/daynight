@@ -53,6 +53,22 @@ afterEach(async () => {
   vi.restoreAllMocks();
 });
 
+describe("worker protocol negotiation", () => {
+  it("advertises the extended schema while accepting legacy Herdr read and claim responses", async () => {
+    const headers: (string | string[] | undefined)[] = [];
+    const legacyWorker = { ...claim() };
+    delete (legacyWorker as { agentControlMode?: string }).agentControlMode;
+    const origin = await listen((request, response) => {
+      headers.push(request.headers["daynight-worker-protocol"]);
+      respond(response, task(legacyWorker));
+    });
+    const client = api(origin);
+    await expect(client.getTask(projectId, taskId)).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
+    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
+    expect(headers).toEqual(["2", "2"]);
+  });
+});
+
 describe("in-process worker task API", () => {
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];

@@ -59,7 +59,7 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 		writeError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
-	task, err := apply(request.Context(), principal, projectID, id, input)
+	task, err := apply(workerProtocolContext(request), principal, projectID, id, input)
 	if err != nil {
 		writeError(w, request, logger, "worker_claim", phase, err)
 		return
@@ -70,7 +70,7 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 	}
 	logger.InfoContext(request.Context(), "worker claim operation applied", "type", "resource", "component", "worker_claim", "phase", phase,
 		"request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task))
+	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {

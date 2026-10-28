@@ -71,12 +71,21 @@ func DecodeController(data []byte) (ControllerMessage, error) {
 			"operation_receipt": {"operation": func(data json.RawMessage) bool { _, err := DecodeOperation(data); return err == nil }},
 			"reconcile":         {"operations": many(nested(reconciliationSchema), 0, MaxBatchEvents, ""), "final": boolean},
 			"heartbeat":         {},
+			"content_response":  {"requestId": identifier, "sourceThrough": zeroSequence, "result": optional(contentResult), "error": optional(nested(errorSchema))},
+			"sync_state":        {"state": nested(stateSchema), "pendingInteractions": many(pendingTimeline, 0, 100, "entryId")},
 		}
 		extra, found := extras[kind.Type]
 		if !found {
 			return ControllerMessage{}, errInvalid
 		}
 		fields = extend(extend(fenceSchema, schema{"type": enum(kind.Type), "protocol": enum(Protocol), "connectionEpoch": sequence}), extra)
+	}
+	if kind.Type == "hello" {
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(data, &raw)
+		if raw["sourceFloor"] != nil {
+			fields["sourceFloor"] = zeroSequence
+		}
 	}
 	var value ControllerMessage
 	var err error
@@ -87,6 +96,34 @@ func DecodeController(data []byte) (ControllerMessage, error) {
 	}
 	if err != nil {
 		return ControllerMessage{}, err
+	}
+	if kind.Type == "content_response" {
+		var raw map[string]json.RawMessage
+		_ = json.Unmarshal(data, &raw)
+		if (value.ContentError == nil) == null(raw["result"]) {
+			return ControllerMessage{}, errInvalid
+		}
+		if !null(raw["result"]) {
+			result, e := DecodeContentResult(raw["result"])
+			if e != nil {
+				return ControllerMessage{}, e
+			}
+			value.ContentResult = &result
+		}
+	}
+	if kind.Type == "sync_state" {
+		var raw struct {
+			Pending []json.RawMessage `json:"pendingInteractions"`
+		}
+		_ = json.Unmarshal(data, &raw)
+		value.PendingInteractions = make([]TimelineEntry, 0, len(raw.Pending))
+		for _, item := range raw.Pending {
+			entry, e := DecodeTimeline(item)
+			if e != nil {
+				return ControllerMessage{}, e
+			}
+			value.PendingInteractions = append(value.PendingInteractions, entry)
+		}
 	}
 	value.Raw = append(json.RawMessage(nil), data...)
 	return value, nil

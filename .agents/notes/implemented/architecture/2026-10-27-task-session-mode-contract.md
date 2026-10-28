@@ -62,17 +62,22 @@ The [independent Controller testing decision](2026-10-28-controller-test-session
 extends the shared session implementation with explicit Test ownership. It does
 not add a task mode or relax this decision's claim-bound execution rules.
 
-Old data can be migrated without changing task versions or interpretation, but
-old strict clients may reject new response fields. Client-first upgrade ordering
-is required. Unsupported executable backends fail before acquiring new work or
-performing Herdr operations; schema availability must not be advertised as native
-execution support.
+The initial response contract required client-first upgrades because old strict
+parsers rejected new WorkerClaim fields even for Herdr. The
+[worker protocol negotiation decision](2026-10-28-worker-protocol-negotiation.md)
+replaces that rollout requirement with explicit response negotiation and locked
+mutation guards, while preserving this decision's stored mode and claim ownership.
+Unsupported executable backends fail before acquiring new work or performing
+Herdr operations; schema availability must not be advertised as native execution
+support.
 
 Text input is the initial command shape. Typed content and session-bound resource
 descriptors allow attachment input to be added without replacing message identity
 or weakening resource authorization. The Controller owns one private native writer and a durable journal; the
-Daynight service owns authenticated relay, operation fencing and stored history.
-The Task Session UI consumes these records and provider-specific capabilities.
+Daynight service owns authenticated relay and operation fencing. The
+[local content decision](2026-10-28-local-session-content.md) replaces its original
+stored-history responsibility with Controller-owned content and online reads.
+The Task Session UI consumes that local projection and provider-specific capabilities.
 Native user-message identity can resolve uncertain input receipt when it carries
 the original operation identity. Copilot cannot correlate lost input ACKs from
 historical message text; only an exact late result from the same live call can

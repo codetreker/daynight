@@ -1,5 +1,6 @@
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
+import { createLocalSessionContent } from "./local-content.js";
 import { chmodSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
 import { controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
@@ -23,7 +24,7 @@ export type ControllerOperation = {
 export type ControllerOutboxEvent = { sequence: string; payload: unknown };
 const json = <T>(value: unknown): T => JSON.parse(String(value)) as T;
 const validSequence = (value: string): bigint => { if (!/^(0|[1-9][0-9]{0,18})$/.test(value) || BigInt(value) > 9_223_372_036_854_775_807n) throw new Error("Invalid controller outbox sequence."); return BigInt(value); };
-export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number } = {}) => {
+export const openControllerLifecycleStore = (file: string, ticket: ControllerLaunchTicket, options: { maxOutboxBytes?: number; contentOwnedLocally?: boolean } = {}) => {
   const maxOutboxBytes = options.maxOutboxBytes ?? 64 * 1024 * 1024;
   if (!Number.isSafeInteger(maxOutboxBytes) || maxOutboxBytes < 256) throw new Error("Invalid controller outbox capacity.");
   parseLaunchTicket(ticket);
@@ -31,11 +32,12 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null };
   const atomic = <T>(action: () => T): T => db.transaction(action).immediate();
   try { atomic(() => {
-    const version = db.pragma("user_version", { simple: true }); if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4) throw new Error("Unsupported controller journal version.");
+    const version = db.pragma("user_version", { simple: true }); if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) throw new Error("Unsupported controller journal version.");
     if (version === 0) db.exec("CREATE TABLE execution (id INTEGER PRIMARY KEY CHECK(id=1), ticket_hash TEXT NOT NULL, owner_pid INTEGER, snapshot TEXT NOT NULL, last_sequence INTEGER NOT NULL DEFAULT 0); CREATE TABLE operations (id TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox (sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=1;");
     if (version < 2) db.exec("ALTER TABLE execution ADD COLUMN last_acknowledged INTEGER NOT NULL DEFAULT 0; CREATE TABLE projection (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, revision INTEGER NOT NULL, value TEXT NOT NULL); PRAGMA user_version=2;");
     if (version < 3) db.exec("ALTER TABLE operations ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=3;");
     if (version < 4) db.exec("ALTER TABLE execution ADD COLUMN projection_gap TEXT; PRAGMA user_version=4;");
+    if (version < 5) db.exec("ALTER TABLE execution ADD COLUMN source_floor INTEGER NOT NULL DEFAULT 0; CREATE TABLE resources (id TEXT PRIMARY KEY, descriptor TEXT NOT NULL, content BLOB); PRAGMA user_version=5;");
     const existing = db.prepare("SELECT ticket_hash, owner_pid, snapshot FROM execution WHERE id=1").get() as { ticket_hash: string; owner_pid: number | null; snapshot: string } | undefined;
     if (existing === undefined) db.prepare("INSERT INTO execution(id,ticket_hash,owner_pid,snapshot) VALUES(1,?,?,?)").run(controllerPayloadHash(ticket), process.pid, JSON.stringify(initial));
     else {
@@ -71,16 +73,33 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     const value = { ...current, ...patch }; db.prepare("UPDATE execution SET snapshot=? WHERE id=1").run(JSON.stringify(value)); return value;
   });
   const outboxBytes = (): number => (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes;
-  const assertInputCapacity = (): void => { if (outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
+  const assertInputCapacity = (): void => { if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
+  const localContent = createLocalSessionContent(db, ticket.sessionId);
   const appendEvent = (payload: unknown): ControllerOutboxEvent => atomic(() => {
+    if (options.contentOwnedLocally && payload && typeof payload === "object" && "kind" in payload && payload.kind === "resource" && "payload" in payload) {
+      const event = parseSourceEvent({ sourceSeq: "1", ...payload });
+      if (event.kind === "resource") localContent.saveResource(event.payload);
+    }
     const encoded = JSON.stringify(payload);
-    if (encoded === undefined || outboxBytes() + Buffer.byteLength(encoded) > maxOutboxBytes) throw new Error("Controller outbox capacity exceeded; event was not discarded.");
+    if (encoded === undefined) throw new Error("Controller event must be serializable.");
+    if (outboxBytes() + Buffer.byteLength(encoded) > maxOutboxBytes) {
+      if (!options.contentOwnedLocally) throw new Error("Controller outbox capacity exceeded; event was not discarded.");
+      // Content is already committed in the local projection. Only transport
+      // replay is discarded; the next connection must hydrate from local data.
+      db.prepare("DELETE FROM outbox").run();
+      db.prepare("UPDATE execution SET source_floor=last_sequence WHERE id=1").run();
+    }
     const row = db.prepare("UPDATE execution SET last_sequence=last_sequence+1 WHERE id=1 RETURNING CAST(last_sequence AS TEXT) AS sequence").get() as { sequence: string };
-    db.prepare("INSERT INTO outbox(sequence,value) VALUES(?,?)").run(BigInt(row.sequence), encoded); return { sequence: row.sequence, payload };
+    if (options.contentOwnedLocally && Buffer.byteLength(encoded) > maxOutboxBytes) db.prepare("UPDATE execution SET source_floor=last_sequence WHERE id=1").run();
+    else db.prepare("INSERT INTO outbox(sequence,value) VALUES(?,?)").run(BigInt(row.sequence), encoded);
+    return { sequence: row.sequence, payload };
   });
   let closed = false;
   return {
     getSnapshot, patchSnapshot, getOperation, assertInputCapacity,
+    ...localContent,
+    getSourceFloor: (): string => (db.prepare("SELECT CAST(source_floor AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence,
+    getLastSourceSequence: (): string => (db.prepare("SELECT CAST(last_sequence AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence,
     markProjectionGap: (reason: string): void => {
       if (typeof reason !== "string" || reason.trim() === "") throw new Error("Projection gap requires a reason.");
       // A single bounded marker survives outbox exhaustion and controller generations.
@@ -109,16 +128,17 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
     markOperationAcknowledged: (id: string): void => { const operation = getOperation(id); if (operation === null) throw new Error("Cannot acknowledge an unknown operation."); if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) db.prepare("UPDATE operations SET acknowledged=1 WHERE id=?").run(id); },
     getLastAcknowledgedSequence: (): string => (db.prepare("SELECT CAST(last_acknowledged AS TEXT) AS sequence FROM execution WHERE id=1").get() as { sequence: string }).sequence,
     projectTimeline: (entry: SourceTimelineEntry): ControllerOutboxEvent | null => atomic(() => {
-      const { revision: ignored, ...content } = entry;
+      const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
+      void ignored; void ignoredSequence;
       const contentHash = controllerPayloadHash(content);
-      const previous = db.prepare("SELECT content_hash, CAST(revision AS TEXT) AS revision FROM projection WHERE id=?").get(entry.entryId) as { content_hash: string; revision: string } | undefined;
+      const previous = db.prepare("SELECT content_hash, CAST(revision AS TEXT) AS revision, CAST(rowid AS TEXT) AS entrySeq FROM projection WHERE id=?").get(entry.entryId) as { content_hash: string; revision: string; entrySeq: string } | undefined;
       if (previous?.content_hash === contentHash) return null;
       const revision = String(previous === undefined ? 1n : BigInt(previous.revision) + 1n);
-      const payload = { ...content, revision } as SourceTimelineEntry;
+      const entrySeq = previous?.entrySeq ?? (db.prepare("SELECT CAST(COALESCE(MAX(rowid),0)+1 AS TEXT) AS value FROM projection").get() as { value: string }).value;
+      const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
       parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
-      const event = appendEvent({ kind: "timeline_upsert", payload });
       db.prepare("INSERT INTO projection(id,content_hash,revision,value) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_hash=excluded.content_hash,revision=excluded.revision,value=excluded.value").run(entry.entryId, contentHash, BigInt(revision), JSON.stringify(payload));
-      return event;
+      return appendEvent({ kind: "timeline_upsert", payload });
     }),
     prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload">): ControllerOperation => atomic(() => {
       if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("Controller operation ID must be a UUID.");

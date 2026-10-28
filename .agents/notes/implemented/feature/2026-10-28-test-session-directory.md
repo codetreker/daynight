@@ -16,12 +16,14 @@ the same owner and parent-credential admission rules as a direct Test read.
 Task sessions and other users' records are excluded before pagination.
 
 Rows show provider, lifecycle and connection status, creation time and latest
-persisted activity time. Stable identity remains the full session ID in the link;
+connection observation time. Stable identity remains the full session ID in the link;
 the visible short identifier is only a reading aid. Refresh starts a new traversal,
 and the browser deduplicates pages by session ID when activity changes ordering.
 The initial directory included archived and disconnected sessions to make saved
 URLs discoverable. The [online-directory decision](2026-10-28-online-test-session-directory.md)
-changes the default page to focus on live debugging while retaining direct history access.
+changes the default page to focus on live debugging while retaining direct
+identity access. The [local content decision](../architecture/2026-10-28-local-session-content.md)
+requires an online Controller for session history.
 
 The page and API namespaces are reserved from OAuth callback configuration so
 route registration cannot collide with an otherwise valid login callback.
@@ -44,7 +46,7 @@ The registered Test Session directory solves navigation using existing identitie
 
 Directory metadata is protected on the server, not merely hidden in the UI.
 Credential revocation can remove a row from a later read without deleting its
-stored history. A list page is an observation, not a durable authorization grant;
+identity or local history. A list page is an observation, not a durable authorization grant;
 following a link rechecks access.
 
 Sorting by recent activity can move records between page requests. Explicit

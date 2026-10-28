@@ -36,7 +36,7 @@ describe('worker claim withdrawal transport', () => {
     await expect(withdrawWorkerClaim(projectId.toUpperCase(), taskId.toUpperCase(), claimId.toUpperCase(), version, abortSignal, receipt)).resolves.toEqual(result);
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${projectId}/tasks/${taskId}/worker-claim/withdraw`, {
       method: 'POST', redirect: 'error', signal: abortSignal, cache: 'no-store', credentials: 'same-origin',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Protocol': '2' },
       body: `{"version":9007199254740993,"claimId":"${claimId}"}`,
     });
     expect(receipt.onWriteConfirmed).toHaveBeenCalledOnce();

@@ -40,7 +40,7 @@ func (s *Service) RegisterTest(ctx context.Context, p core.Principal, input sp.T
 	if p.Kind != core.PATCredential {
 		return out, denied()
 	}
-	err := transact(ctx, s.DB, func(tx pgx.Tx) error {
+	err := s.transact(ctx, func(tx pgx.Tx) error {
 		if err := credential(ctx, tx, p, s.now()); err != nil {
 			return err
 		}
@@ -72,7 +72,7 @@ func (s *Service) RegisterTest(ctx context.Context, p core.Principal, input sp.T
 			initial = "not_required"
 		}
 		out = sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), TestExecutionID: input.TestExecutionID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"}, Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, Identity: sp.Identity{OwnerUserID: p.UserID, ControllerID: input.ControllerID, ControllerInstanceID: input.ControllerInstanceID, AgentControlMode: "web", Provider: input.Provider}, SessionRevision: "1", HistoryEpoch: uuid.NewString(), LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: initial, Lifecycle: "active", ConnectionState: "disconnected", Activity: "initializing"}
-		_, err = tx.Exec(ctx, `INSERT INTO task_sessions(id,scope,test_execution_id,owner_user_id,registration_id,registration,snapshot,parent_credential_id) VALUES($1,'test',$2,$3,$4,$5,$6,$7)`, out.SessionID, input.TestExecutionID, p.UserID, input.RegistrationID, encode(input), encode(out), p.CredentialID)
+		_, err = tx.Exec(ctx, `INSERT INTO task_sessions(id,scope,test_execution_id,owner_user_id,registration_id,registration,snapshot,parent_credential_id) VALUES($1,'test',$2,$3,$4,$5,$6,$7)`, out.SessionID, input.TestExecutionID, p.UserID, input.RegistrationID, encode(input), encode(durableSnapshot(out)), p.CredentialID)
 		return err
 	})
 	return out, err

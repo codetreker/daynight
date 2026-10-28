@@ -196,6 +196,10 @@ func writeError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusBadRequest
 		case "payload_too_large":
 			status = http.StatusRequestEntityTooLarge
+		case "controller_offline", "relay_instance_unavailable":
+			status = http.StatusServiceUnavailable
+		case "content_unavailable":
+			status = http.StatusBadGateway
 		case "rate_limited":
 			status = http.StatusTooManyRequests
 			w.Header().Set("Retry-After", "60")

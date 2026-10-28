@@ -168,6 +168,13 @@ type ControllerMessage struct {
 	ControllerInstanceID string           `json:"controllerInstanceId"`
 	Provider             string           `json:"provider"`
 	SourceEpoch          string           `json:"sourceEpoch"`
+	SourceFloor          *string          `json:"sourceFloor,omitempty"`
+	State                *State           `json:"state,omitempty"`
+	PendingInteractions  []TimelineEntry  `json:"pendingInteractions,omitempty"`
+	RequestID            string           `json:"requestId,omitempty"`
+	SourceThrough        string           `json:"sourceThrough,omitempty"`
+	ContentResult        *ContentResult   `json:"result,omitempty"`
+	ContentError         *OperationError  `json:"error,omitempty"`
 	LastAckedSourceSeq   string           `json:"lastAckedSourceSeq"`
 	BatchID              string           `json:"batchId"`
 	Events               []SourceEvent    `json:"events"`
@@ -191,6 +198,9 @@ func (m ControllerMessage) MarshalJSON() ([]byte, error) {
 		fields["schemaVersion"], fields["projectionVersion"] = m.SchemaVersion, m.ProjectionVersion
 		fields["controllerId"], fields["controllerInstanceId"], fields["provider"] = m.ControllerID, m.ControllerInstanceID, m.Provider
 		fields["sourceEpoch"], fields["lastAckedSourceSeq"] = m.SourceEpoch, m.LastAckedSourceSeq
+		if m.SourceFloor != nil {
+			fields["sourceFloor"] = *m.SourceFloor
+		}
 	} else {
 		fields["connectionEpoch"] = m.ConnectionEpoch
 		switch m.Type {
@@ -205,6 +215,10 @@ func (m ControllerMessage) MarshalJSON() ([]byte, error) {
 		case "reconcile":
 			fields["operations"] = m.Operations
 			fields["final"] = m.Final
+		case "content_response":
+			fields["requestId"], fields["sourceThrough"], fields["result"], fields["error"] = m.RequestID, m.SourceThrough, m.ContentResult, m.ContentError
+		case "sync_state":
+			fields["state"], fields["pendingInteractions"] = m.State, m.PendingInteractions
 		case "heartbeat":
 		default:
 			return nil, errInvalid

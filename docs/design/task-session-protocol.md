@@ -6,7 +6,7 @@
 
 worker 根据冻结模式选择 backend。Herdr backend 负责 Codex、Claude、Copilot 的原生终端执行；Web backend 支持 Codex、Claude、Copilot，并启动独立的 `daynight controller <provider> --launch-id <id>`。服务端 Session relay 与 Task Session 页面承载 Web 模式的历史和控制，纯 Web 启动不初始化或探测 Herdr。非法组合在认领前拒绝；已有执行的恢复与清理仍由其原 backend 负责。
 
-公开的 `daynight controller <provider> [options] [prompt]` 在当前目录创建独立 Test Session，前台 launcher 承担注册、凭据续签与停止证明；它不运行 worker 调度或创建 Task。其[用户需求](../spec/controller-test-sessions.md)与 Task 生命周期分开，底层 Provider、持久 relay 与 Session View 共用。
+公开的 `daynight controller <provider> [options] [prompt]` 在当前目录创建独立 Test Session，前台 launcher 承担注册、凭据续签与停止证明；它不运行 worker 调度或创建 Task。其[用户需求](../spec/controller-test-sessions.md)与 Task 生命周期分开，底层 Provider、在线 relay 与 Session View 共用。
 
 ## 配置与持久身份
 
@@ -53,9 +53,9 @@ Web 目录固定请求 `GET /api/v1/test-sessions?online=true`。服务在排序
 
 Test 使用独立 `/api/v1/test-session-capabilities` 预检及 `/api/v1/test-sessions` 注册入口，避免改变旧 Task 客户端的严格能力响应。创建者来自已验证的 PAT principal；客户端提供持久 registrationId 与 testExecutionId，对账不能改换 ID。Controller grant 与 Task 共用格式和连接入口，但绑定 Test 身份及父凭据，续签不改变原执行。
 
-Test 快照、历史、操作、资源和浏览器 channel 位于 `/api/v1/test-sessions/{sessionId}` 下。访问时检查当前凭据与创建者，而 Task 路径继续检查项目权限及当前 claim。两类授权策略进入同一持久事件、去重与投递实现，不以空 task 参数代表跳过校验。历史表名 task_sessions 保留，scope 与 test_execution_id 的数据库约束区分归属；Task 外键不变，Test 不制造占位 Task。
+Test 快照、历史、操作、资源和浏览器 channel 位于 `/api/v1/test-sessions/{sessionId}` 下。访问时检查当前凭据与创建者，而 Task 路径继续检查项目权限及当前 claim。两类授权策略进入同一在线内容转发、操作去重与投递实现，不以空 task 参数代表跳过校验。会话身份表名 task_sessions 保留，scope 与 test_execution_id 的数据库约束区分归属；Task 外键不变，Test 不制造占位 Task。
 
-`GET /api/v1/test-sessions` 提供账号范围内的列表读取，与同路径的 `POST` 注册分开。返回 `{ items, nextCursor }`，每项包含 `sessionId`、`provider`、`lifecycle`、`connectionState`、`createdAt`、`updatedAt`。`updatedAt` 使用会话创建时间与最新持久事件时间的较大值，表示服务已记录的活动，不推断本机文件或 Agent 的实际工作时间。列表按该时间和 Session ID 降序分页；`limit` 默认 50、最大 100，cursor 绑定当前用户。数据库在分页前过滤 Test scope、创建者和原父凭据有效性；状态读取沿用现有连接时效规则。
+`GET /api/v1/test-sessions` 提供账号范围内的列表读取，与同路径的 `POST` 注册分开。返回 `{ items, nextCursor }`，每项包含 `sessionId`、`provider`、`lifecycle`、`connectionState`、`createdAt`、`updatedAt`。`updatedAt` 使用会话创建时间与最新连接心跳时间的较大值，表示服务最近观察到该连接，不推断本机文件或 Agent 的实际工作时间。列表按该时间和 Session ID 降序分页；`limit` 默认 50、最大 100，cursor 绑定当前用户。数据库在分页前过滤 Test scope、创建者和原父凭据有效性；状态读取沿用现有连接时效规则。
 
 前端 `/test-sessions` 与 `/test-sessions/{sessionId}` 均受现有登录机制保护，登录 return path 仅接受合法站内路径。列表复用账号范围和请求身份校验，刷新从第一页开始，追加页按完整 Session ID 合并。列表不维持跨请求快照，因此会话活动可能改变后续分页位置；刷新用于重新发现移到前面的记录。列表链接进入原 Session View，由单会话接口再次授权，不把列表中出现过视为持续访问许可。Test 容器提供身份与 API 适配，复用 Task 的 SessionView/client。URL 不含 token；账号失效、变更或退出触发客户端清理，服务端对读写及持续订阅独立校验。
 
@@ -95,7 +95,7 @@ Copilot runtime 的 `--allow-all` 与 Session 的工具审批开关不能证明 
 
 ### 会话设置与原生命令
 
-可选 controls 随 Controller state 进入持久快照，包含 revision、setting descriptors、命令目录和目录错误。setting 的 value 是原生确认值，category 区分 model/reasoning/permission，scope 区分 session/next_turn。描述内容变化递增 revision；同版本不同内容和倒退版本被服务端拒绝。执行换代清除旧 controls 与 turnStartedAt；新 Controller 从持久 snapshot 与未发送 outbox 的最大版本延续 controls revision，避免旧状态重放后将新目录误判为倒退。
+可选 controls 随 Controller state 进入本机持久快照和服务端有界内存状态，包含 revision、setting descriptors、命令目录和目录错误。setting 的 value 是原生确认值，category 区分 model/reasoning/permission，scope 区分 session/next_turn。描述内容变化递增 revision；同版本不同内容和倒退版本被服务端拒绝。执行换代清除旧 controls 与 turnStartedAt；新 Controller 从本机持久 snapshot 与未发送 outbox 的最大版本延续 controls revision，避免旧状态重放后将新目录误判为倒退。
 
 update_setting、execute_command、refresh_controls 复用现有操作持久化、Submit/Poll/begin 授权与回执。前两者绑定 expectedControlsRevision；命令还绑定 expectedTurnId。Controller 在实际 native 调用前再次重验目录、参数和状态，并串行处理设置/命令/发送；中断和交互响应绕过该队列。等待原生 ACK、设置事件或回读期间保留原值，超时 unknown 不重放；明确关联 operationId 的迟到确认可补记原回执。
 
@@ -113,11 +113,31 @@ Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限�
 
 Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web 执行，在凭据剩余不超过 120 秒时续签，不受 claim 发现的 pollIntervalMs 影响。维护过程验证 launch ticket 与原 claim、Controller、execution generation 一致；prepare、launch 和续签按执行串行，读取最新执行记录后才写入凭据。退出先取消并等待维护结束，再关闭执行存储，避免后台续签访问已关闭的数据库。续签失败保留原执行和凭据事实，并通过 worker diagnostic 暴露。
 
-原生调用前，Controller 先持久记录操作，再请求服务端 operation_begin 授权，获准后写 dispatching 并调用原生。数据库保存服务端命令和 receipt，Controller 保存本地调用证据。已 offered 但尚未 dispatch 的操作如果因状态或权限变化失去授权，服务端持久化 rejected 并返回 receipt_ack，只拒绝该操作，保留当前连接。Controller 记录拒绝并拒绝对应 authorization 等待，不调用原生；迟到回执与重连对账仍按同 operation 身份收敛。已 dispatching 的不确定结果、内部错误或失效 Controller fence 不走这个拒绝捷径。重连以最多 100 条一批对账，最后一批带 final；只有整个对账完成才启用新命令。重复 operationId 必须保持相同内容，断线或超时不能触发自动重发原生输入。
+原生调用前，Controller 先持久记录操作，再请求服务端 operation_begin 授权，获准后写 dispatching 并调用原生。数据库仅保存 operation 身份、类型、正文哈希、操作者、执行约束和无正文的回执摘要；完整命令、原生结果和错误详情由 Controller 本地保存。服务端只在当前在线连接的有界内存中暂存命令。accepted 表示 relay 暂收，不保证持久排队；网页保留草稿，直到原生明确受理或确认。尚未送达 Controller 的正文在服务重启后不可从哈希重建，原操作按实际证据拒绝、过期或保持 unknown。已 offered 但尚未 dispatch 的操作如果因状态或权限变化失去授权，服务端持久化 rejected 并返回 receipt_ack，只拒绝该操作，保留当前连接。Controller 记录拒绝并拒绝对应 authorization 等待，不调用原生；迟到回执与重连对账仍按同 operation 身份收敛。已 dispatching 的不确定结果、内部错误或失效 Controller fence 不走这个拒绝捷径。重连以最多 100 条一批对账，最后一批带 final；整个对账完成后还需同步当前本机状态，才能启用新命令。重复 operationId 必须保持相同内容，断线或超时不能触发自动重发原生输入。
 
-事件以执行级 sourceEpoch 和整数 sourceSeq 持久补传，服务端 ACK 后才删除本机 outbox。事件排序使用整数，不按十进制字符串的字典序排序。本机 outbox 限制为 64 MiB，达到 80% 时暂停新增输入；取消仍可执行。容量或持久化失败会停止原生执行并保留独立的持久 gap 标记，已提交的旧事件不会被丢弃。连接恢复并有空间后补发 gap，原生恢复再读取历史；不能将缺失内容伪装成完整 Timeline。Timeline entryId 源于原生条目身份，revision 由 journal 单调维护；历史重读不会制造新的消息行。executionGeneration 隔离原生实例，connectionEpoch 仅隔离网络连接，刷新和重连不改变原生会话。
+### 本机内容与在线读取
 
-服务端在 PostgreSQL 中保存快照、事件、操作、投影和资源，浏览器使用持久游标恢复或按 reset_required 重新读取快照与历史。离线时已加载历史仍可阅读，写操作禁用；unknown 操作继续显示真实的不确定状态。响应中的 operation 按 interactionId 与 interactionRevision 限制同一交互的重复提交，不能按整个 turn 或 interaction_response 类型互斥。工具审批等待 tool_result 确认期间，同一工具可提出新的 MCP form；新交互必须可独立响应。浏览器只持久保存 operation 与交互身份的关联，不保存答案；跨浏览器或旧缓存缺少关联时，服务端交互身份校验仍是最终防重边界。资源只能经会话授权路径读取，不能把任意本机路径转换成下载地址。单资源最大 8 MiB，每会话资源总计最多 64 MiB、1000 个描述符；超限明确拒绝。
+Session 内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、时间线投影和资源。Timeline entryId 源于原生条目身份，entrySeq 在本机首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除本机投影。原生 transcript 可以辅助恢复，但不能替代已丢失的操作受理和未决审批证据。
+
+sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；内容先在本机事务中保存，超限时压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。操作日志不参与 outbox 压缩，不确定输入不得因此重放。
+
+Controller 每次连接先分批 reconcile，排空剩余 outbox，再发送 sync_state，内容为当前状态及最多 100 个待处理交互。服务端收到后返回 sync_ack，完成前禁止网页控制。executionGeneration 隔离原生实例，connectionEpoch 隔离连接；historyEpoch 标识可用展示缓存，改变时网页重新读取本机内容，不创建或恢复另一段原生执行。
+
+历史 HTTP 请求经过权限校验后，经 Controller WebSocket 转发 content_request。Controller 按本机稳定条目序列分页，返回内容捕获时的 sourceThrough；该点之前的事件先获 ACK，随后发送 content_response，再发送较新的事件。服务端在处理响应的同一有序事务中捕获 lastEventSeq，不能改用等待结束后的较晚水位。分页游标绑定 Session 与 historyEpoch。每页最多 200 条，并按 WS 帧大小进一步截断，前后游标表示实际返回边界。
+
+资源以登记的 resourceId 读取，不能把任意本机路径转换为下载地址。每块最多 512 KiB，单资源最多 8 MiB；完整读取检查长度、SHA-256 及相同 Controller 连接身份。每个内容请求最多等待 15 秒，全服务最多 32 个、单 Session 最多 4 个在途请求。等待前后都检查访问权限，取消或迟到的响应不能污染另一请求或断开健康 Controller。当前 Provider 的图片/文件输入与不支持的原生二进制内容仍遵守基础交付边界。
+
+### 服务端存储与容量
+
+PostgreSQL 保存 Session 归属、注册身份、授权、原生与连接代次、生命周期、水位和最小操作账本。不写入时间线、消息、工具输出、资源、动态 controls、待审批正文或自由文本错误；操作正文也不藏在 command 或 snapshot 中。既有内容表和历史行不自动删除，当前实现停止向其中新增内容；既有备份或历史行的清理由运维单独决定，迁移不会宣称已擦除旧数据。
+
+服务端的每 Session 内存状态最多 4 MiB，其中最近事件缓存最多 2 MiB、1000 条。缓存丢失返回 reset_required，从在线本机重新加载；不承诺离线历史回放。最多 64 个 live Session，超额明确拒绝接入，不代表实测并发能力。每 Session 最多保留 4096 条持久操作摘要，达到上限拒绝新操作；不能简单 TTL 删除 unknown 或去重记录后重新执行旧请求。Session 身份仍随创建数增长。
+
+在线状态由持有 Controller 连接的 relay 实例维护。另一实例不能凭共享数据库假装拥有会话内容，也不能抢占仍有效的连接租约；请求需要路由到持有连接的实例，未满足时明确失败。服务端重启后 Agent 继续在本机执行，重新连接、授权和状态对账后恢复网页操作。数据库事务成功后才发布对应内存状态；失败事务不能先向浏览器确认尚未提交的控制结果。
+
+Controller 离线时，新页面只能读取有权限的身份与离线状态，不能加载历史或操作。已打开网页保留当前离线画面；重新同步成功后替换过期内容。归档记录保留身份与必要回执，原 URL 不提供服务器聊天历史；独立 resume 在新的在线执行中从原生本地历史恢复。执行环境的数据保留、备份和丢失恢复由该环境负责。
+
+响应操作按 interactionId 与 interactionRevision 限制同一交互的重复提交，不能按整个 turn 或 interaction_response 类型互斥。工具审批等待 tool_result 确认期间，同一工具提出的新 MCP form 必须可独立响应。浏览器只持久保存 operation 与交互身份的关联，不保存答案；缺少旧缓存时，服务端当前在线交互校验和 Controller 原生校验仍决定能否响应。
 
 ## Session View 的阅读与输入状态
 
@@ -145,6 +165,12 @@ Controller 自身只能报告 stopping。worker 独立检查对应进程停止�
 
 ## 升级与安全失败
 
-先发布可读取旧响应的 CLI/Web，再升级服务端，最后启用新执行方式。新客户端将旧响应缺失的 mode 规范化为 Herdr；服务端新响应显式给出 mode。旧 CLI 的严格字段解析可能拒绝新响应，因此旧数据兼容不等于旧二进制兼容。Web 新执行必须确认服务端支持相应协议，失败时不省略 mode 重试为 Herdr。
+Task API 通过 `Daynight-Worker-Protocol: 2` 显式协商扩展 WorkerClaim。新 CLI 与 Web 发送此请求头，响应包含 `agentControlMode`。未发送或不能识别的版本按旧协议投影：Herdr Codex/Copilot 保留原 WorkerClaim 字段并省略 mode；Web 或 Claude claim 的 worker 摘要为 null，任务本身的状态、版本、依赖和资格不变。该投影仅表示客户端没有可用的 worker 摘要，持久 claim 与实际控制归属不受影响。
+
+普通列表和详情不因项目混用执行方式而失败。带 `workerId` 的旧 worker 清单一旦含有不支持的 claim，整页明确拒绝，不能通过过滤或 null 摘要把正在运行的执行伪装成缺失。无 `workerId`、同时指定 `ready=true`、`allowAgents=true` 和 `compatiblePlatform` 的旧 worker 候选查询过滤不可执行的历史 claim；保留原有排序和游标，连续全过滤页继续扫描到可见结果或末尾，每页不超过请求 limit，也不返回带后续游标的空页。其他普通列表不应用候选过滤。
+
+未协商扩展协议的写请求携带旧 worker 限制。服务层保留原有输入校验顺序，在项目写锁内核对版本及实际 claim，然后决定是否允许更新、状态改变、删除或 worker 操作；claim/resume 还检查新 descriptor。旧客户端看不到的执行不能被当作无主任务重新认领或操作。兼容投影不作为写入依据，也不代替项目权限。
+
+服务端可在保留既有 CLI/Herdr worker 的情况下升级；只有使用 Web 或新增 Provider 的调用方需要支持对应能力的客户端。新客户端仍将旧服务端响应中缺失的 mode 规范化为 Herdr，Herdr claim/resume 不添加旧服务端无法识别的 mode 字段。Web 新执行必须确认服务端支持相应协议，失败时不省略 mode 重试为 Herdr。选择及其成本见[Worker 协议协商决策](../../.agents/notes/implemented/architecture/2026-10-28-worker-protocol-negotiation.md)。
 
 协议解析不授予项目权限，也不能证明原生进程停止。鉴权、持久操作去重、连接代次校验、初始化输入门控和停止证明仍必须在实际调用边界实施。故障不得通过换 ID、重建会话或提升连接代次绕过。

@@ -7,6 +7,8 @@ import type { ExecutionPlatform, Attachment, AttachmentPage, GraphLimitDetails, 
 import { decodeProjectPageJson, decodeTaskGraphJson } from "./project-json";
 
 const serverMessages: Readonly<Record<string, string>> = {
+  controller_offline: "The agent environment is offline. Reconnect it to load history and use controls.",
+  relay_instance_unavailable: "The online agent is connected to another relay instance. Connect through its owning relay.",
   not_found: "The requested resource was not found.",
   task_deleted: "This task has been deleted.",
   unauthenticated: "Your session has expired. Please sign in again.",
@@ -119,7 +121,9 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
   }
   let response: Response;
   try {
-    response = await fetch(url, { ...init, signal, cache: "no-store", credentials: "same-origin", redirect: "error" });
+    const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
+    const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;
+    response = await fetch(url, { ...init, ...(headers ? { headers } : {}), signal, cache: "no-store", credentials: "same-origin", redirect: "error" });
   } catch (error) {
     signal.throwIfAborted();
     if (isAbortError(error)) throw error;

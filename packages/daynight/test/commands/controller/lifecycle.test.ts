@@ -1,7 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, stat } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readLaunchTicket, writeLaunchTicket, controllerExecutionDirectory, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 const roots: string[] = [];
@@ -141,4 +141,54 @@ it("seeds control revisions above retained outbox and snapshot revisions across 
   store.acknowledgeEvents("1");store.patchSnapshot({nativeSessionId:nativeId,lifecycle:"stopped",nativeStopped:true});store.close();
   store=openControllerLifecycleStore(file,{...resumed,launchId:randomUUID(),controllerInstanceId:randomUUID(),executionGeneration:"3"});
   expect(store.getSnapshot().controlsRevisionFloor).toBe("9007199254740995");store.close();
+});
+
+
+it("loads acknowledged timeline from local storage with stable paging after restart", async () => {
+  const { home, ticket } = await fixture(); const file = path.join(home, "content.sqlite");
+  let store = openControllerLifecycleStore(file, ticket, { contentOwnedLocally: true });
+  const ids = Array.from({ length: 4 }, () => randomUUID());
+  ids.forEach((entryId, i) => store.projectTimeline({ entryId, revision: "1", kind: "reasoning", text: `entry ${i}` }));
+  store.acknowledgeEvents("4"); store.close();
+  store = openControllerLifecycleStore(file, ticket, { contentOwnedLocally: true });
+  try {
+    const epoch = randomUUID();
+    const tail = store.readTimeline({ historyEpoch: epoch, direction: "tail", cursor: null, limit: 2 });
+    expect(tail.items.map(entry => entry.entryId)).toEqual(ids.slice(2));
+    expect(tail.hasMoreBefore).toBe(true);
+    const before = store.readTimeline({ historyEpoch: epoch, direction: "before", cursor: tail.beforeCursor, limit: 2 });
+    expect(before.items.map(entry => entry.entryId)).toEqual(ids.slice(0, 2));
+    expect(before.hasMoreBefore).toBe(false);
+    store.projectTimeline({ entryId: ids[0]!, revision: "1", kind: "reasoning", text: "revised" });
+    expect(store.readTimeline({ historyEpoch: epoch, direction: "tail", cursor: null, limit: 4 }).items[0]).toMatchObject({ entrySeq: "1", revision: "2", text: "revised" });
+    expect(() => store.readTimeline({ historyEpoch: randomUUID(), direction: "before", cursor: tail.beforeCursor, limit: 2 })).toThrow(/cursor/i);
+  } finally { store.close(); }
+});
+
+it("compacts offline transport without losing local history or blocking native input", async () => {
+  const { home, ticket } = await fixture(); const store = openControllerLifecycleStore(path.join(home, "content.sqlite"), ticket, { contentOwnedLocally: true, maxOutboxBytes: 512 });
+  try {
+    for (let i = 0; i < 20; i++) store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "reasoning", text: "x".repeat(200) });
+    expect(store.readTimeline({ historyEpoch: randomUUID(), direction: "tail", cursor: null, limit: 100 }).items).toHaveLength(20);
+    expect(BigInt(store.getSourceFloor())).toBeGreaterThan(0n);
+    expect(store.pendingEvents()).toHaveLength(1);
+    expect(store.prepareOperation({ operationId: randomUUID(), kind: "send_message", payload: { text: "continue" } }).state).toBe("accepted");
+  } finally { store.close(); }
+});
+
+
+it("serves only registered local resources in verified bounded chunks", async () => {
+  const { home, ticket } = await fixture(); const store = openControllerLifecycleStore(path.join(home, "content.sqlite"), ticket, { contentOwnedLocally: true });
+  const bytes = Buffer.from("private local resource");
+  const resource = { resourceId: randomUUID(), name: "output.txt", status: "available" as const, mediaType: "text/plain", byteLength: String(bytes.length), sha256: createHash("sha256").update(bytes).digest("hex"), error: null };
+  try {
+    expect(() => store.saveResource(resource, Buffer.from("wrong"))).toThrow(/descriptor/);
+    store.saveResource(resource, bytes);
+    expect(store.readResource(resource.resourceId, "0", 7)).toMatchObject({ offset: "0", data: bytes.subarray(0, 7).toString("base64"), eof: false });
+    expect(store.readResource(resource.resourceId, "7", 524288)).toMatchObject({ data: bytes.subarray(7).toString("base64"), eof: true });
+    expect(() => store.readResource("../../private", "0", 1)).toThrow(/unavailable/);
+    expect(() => store.readResource(resource.resourceId, "999", 1)).toThrow(/unavailable/);
+    expect(() => store.readResource(resource.resourceId, "0", 524289)).toThrow(/limit/);
+    expect(() => store.saveResource({ ...resource, name: "other" }, bytes)).toThrow(/identity/);
+  } finally { store.close(); }
 });

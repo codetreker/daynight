@@ -3,7 +3,7 @@ import { readFile, lstat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import WebSocket from "ws";
 import { SESSION_PROTOCOL, type SessionCommand, type SessionOperation, type ControllerFence } from "../../session/protocol.js";
-import { RELAY_LIMITS, parseControllerGrantResponse, parseRelayMessage, type ControllerMessage, type ControllerGrantResponse, type SourceEvent, type Reconciliation } from "../../session/controller-protocol.js";
+import { RELAY_LIMITS, parseControllerGrantResponse, parseRelayMessage, type ControllerMessage, type ControllerGrantResponse, type SourceEvent, type Reconciliation, type ControllerState, type ContentResponse, type ContentRequest } from "../../session/controller-protocol.js";
 import type { ControllerLaunchTicket } from "./launch-ticket.js";
 import type { ControllerLifecycleStore, ControllerOperation } from "./lifecycle-store.js";
 
@@ -15,8 +15,11 @@ export const readControllerGrant = async (ticket: ControllerLaunchTicket): Promi
   if (grant.sessionId !== ticket.sessionId || grant.claimId !== ticket.claimId || grant.testExecutionId !== ticket.testExecutionId || grant.executionGeneration !== ticket.executionGeneration || grant.controllerId !== ticket.controllerId || grant.controllerInstanceId !== ticket.controllerInstanceId || Date.parse(grant.expiresAt) <= Date.now()) throw new Error("Controller credential is stale or belongs to another execution.");
   return grant;
 };
-export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(message: string): void }) => {
+export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: ControllerLifecycleStore, callbacks: { onConnection(connected: boolean): void; onCommand(command: SessionCommand): Promise<void>; onError(message: string): void; readState?(): ControllerState }) => {
   let socket: WebSocket | null = null, fence: ControllerFence | null = null, stopped = false, synchronized = false;
+  let reconciled = false, requiresLiveSync = false, syncPending = false, connectionFloor = "0";
+  let historyEpoch = "";
+  const contentRequests: { request: ContentRequest; response: ContentResponse | null }[] = [];
   let reconciliation: ControllerOperation[][] = [];
   let pendingBatch: { id: string; through: string } | null = null, currentToken = "", lastHeartbeat = 0, reconnectAt = 0, connecting = false;
   const authorization = new Map<string, { resolve(): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
@@ -26,7 +29,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     if (!local || local.state !== "accepted" || operation.kind !== local.kind || operation.sessionId !== ticket.sessionId || operation.claimId !== ticket.claimId || operation.testExecutionId !== ticket.testExecutionId || (local.executionGeneration ?? ticket.executionGeneration) !== operation.executionGeneration || currentConnection && operation.executionGeneration !== fence?.executionGeneration || (operation.state !== "rejected" && operation.state !== "expired")) throw new Error("Invalid dispatch refusal receipt.");
     journal.recordOperation(operation.operationId, operation.state, null, operation.error?.message ?? "Operation no longer has current permission or state.");
   };
-  const clearConnection = () => { fence = null; synchronized = false; pendingBatch = null; callbacks.onConnection(false); for (const waiter of authorization.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("Relay disconnected before native dispatch authorization.")); } authorization.clear(); };
+  const clearConnection = () => { fence = null; synchronized = false; reconciled = false; syncPending = false; contentRequests.length = 0; pendingBatch = null; callbacks.onConnection(false); for (const waiter of authorization.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("Relay disconnected before native dispatch authorization.")); } authorization.clear(); };
   const send = (message: ControllerMessage) => { if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (Buffer.byteLength(text) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); socket.send(text); };
   const prefix = () => { if (!fence) throw new Error("Session relay is not synchronized."); return { protocol: SESSION_PROTOCOL, ...fence }; };
   const sendReconciliation = () => {
@@ -41,7 +44,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       const ws = new WebSocket(url, { headers: { Authorization: `Bearer ${grant.token}` }, handshakeTimeout: 10_000, maxPayload: RELAY_LIMITS.maxFrameBytes }); socket = ws;
       ws.on("error", error => callbacks.onError(error.message));
       ws.on("close", () => { if (socket !== ws) return; socket = null; clearConnection(); reconnectAt = Date.now() + 1000; });
-      ws.on("open", () => { if (stopped || socket !== ws) return; send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence() }); });
+      ws.on("open", () => { if (stopped || socket !== ws) return; send({ type: "hello", protocol: SESSION_PROTOCOL, schemaVersion: 1, projectionVersion: 1, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, provider: ticket.provider, sourceEpoch: ticket.executionId, lastAckedSourceSeq: journal.getLastAcknowledgedSequence(), ...(journal.getSourceFloor ? { sourceFloor: connectionFloor = journal.getSourceFloor() } : {}) }); });
       ws.on("message", data => {
         if (stopped || socket !== ws) return;
         try {
@@ -49,6 +52,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
           if (message.type === "welcome") {
             if (message.session.sessionId !== ticket.sessionId || message.session.claimId !== ticket.claimId || message.session.testExecutionId !== ticket.testExecutionId || message.session.executionGeneration !== ticket.executionGeneration || message.session.identity.controllerInstanceId !== ticket.controllerInstanceId) throw new Error("Relay identity mismatch.");
             fence = { ...sessionFence(ticket), connectionEpoch: message.connectionEpoch };
+            requiresLiveSync = message.requiresLiveSync === true; historyEpoch = message.session.historyEpoch;
             journal.acknowledgeEvents(message.lastAckedSourceSeq);
             const unacknowledged: ControllerOperation[] = [];
             let after: string | undefined;
@@ -65,7 +69,15 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
               if (operation.state === "rejected" || operation.state === "expired") settleDispatchRefusal(operation);
               journal.markOperationAcknowledged(operation.operationId);
             }
-            if (reconciliation.length) sendReconciliation(); else { synchronized = true; callbacks.onConnection(true); }
+            if (reconciliation.length) sendReconciliation(); else { reconciled = true; if (!requiresLiveSync) { synchronized = true; callbacks.onConnection(true); } }
+          } else if (message.type === "sync_ack") {
+            if (!requiresLiveSync || !syncPending || !reconciled) throw new Error("Unexpected live synchronization acknowledgement.");
+            syncPending = false; synchronized = true; callbacks.onConnection(true);
+          } else if (message.type === "content_request") {
+            if (!synchronized || !requiresLiveSync) throw new Error("Content requested before live synchronization.");
+            if (contentRequests.length >= 4) {
+              send({ ...prefix(), type: "content_response", requestId: message.requestId, sourceThrough: journal.getLastAcknowledgedSequence(), result: null, error: { code: "rate_limited", message: "Local content request capacity is unavailable." } });
+            } else contentRequests.push({ request: message, response: null });
           } else if (message.type === "receipt_ack") {
             const operation = message.operation;
             const waiter = authorization.get(operation.operationId);
@@ -90,12 +102,35 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     if (stopped || polling) return; polling = true;
     try {
       if (!socket) { if (Date.now() >= reconnectAt) await connect(); return; }
-      if (!fence || !synchronized) return;
-      if (Date.now() - lastHeartbeat > 10_000) { const grant = await readControllerGrant(ticket); if (stopped || !socket || !fence || !synchronized) return; if (grant.token !== currentToken) { socket.close(1000, "Credential renewed"); return; } send({ ...prefix(), type: "heartbeat" }); lastHeartbeat = Date.now(); }
+      if (!fence || !reconciled) return;
+      if (journal.getSourceFloor && BigInt(journal.getSourceFloor()) > BigInt(connectionFloor)) { socket.close(1000, "Local history synchronization required"); return; }
+      if (syncPending) return;
+      if (Date.now() - lastHeartbeat > 10_000) { const grant = await readControllerGrant(ticket); if (stopped || !socket || !fence || !reconciled) return; if (grant.token !== currentToken) { socket.close(1000, "Credential renewed"); return; } send({ ...prefix(), type: "heartbeat" }); lastHeartbeat = Date.now(); }
       if (pendingBatch) return;
+      if (requiresLiveSync && !synchronized && !journal.pendingEvents(1).length) {
+        const snapshot = journal.getSnapshot();
+        const state = callbacks.readState?.() ?? { nativeSessionId: snapshot.nativeSessionId, initialInputState: snapshot.initialInputState, synchronized: true, activity: snapshot.activity, currentTurnId: snapshot.currentTurnId, capabilities: snapshot.capabilities, ...(snapshot.controls ? { controls: snapshot.controls } : {}), ...(snapshot.turnStartedAt !== undefined ? { turnStartedAt: snapshot.turnStartedAt } : {}) };
+        send({ ...prefix(), type: "sync_state", state: { ...state, synchronized: true }, pendingInteractions: journal.pendingInteractions() });
+        syncPending = true; return;
+      }
+      const request = contentRequests[0];
+      if (request && !request.response) {
+        let result: ContentResponse["result"] = null, error: ContentResponse["error"] = null;
+        try {
+          if (request.request.kind === "timeline" && request.request.historyEpoch !== historyEpoch) throw new Error("Timeline cursor belongs to another connection.");
+          result = request.request.kind === "timeline" ? journal.readTimeline(request.request) : journal.readResource(request.request.resourceId, request.request.offset, request.request.limit);
+        } catch (failure) { error = { code: "content_unavailable", message: failure instanceof Error ? failure.message.slice(0, 4096) : "Local content is unavailable." }; }
+        request.response = { requestId: request.request.requestId, sourceThrough: journal.getLastSourceSequence(), result, error };
+      }
+      const response = request?.response;
+      if (response && BigInt(journal.getLastAcknowledgedSequence()) >= BigInt(response.sourceThrough)) {
+        // The response and its source barrier share WS ordering. Newer events
+        // remain queued until after the server has captured this page's cursor.
+        send({ ...prefix(), type: "content_response", ...response }); contentRequests.shift(); return;
+      }
       journal.drainProjectionGap();
       const events: SourceEvent[] = []; let bytes = 1024;
-      for (const row of journal.pendingEvents(RELAY_LIMITS.maxBatchEvents)) { const event = { ...(row.payload as object), sourceSeq: row.sequence } as SourceEvent; const size = Buffer.byteLength(JSON.stringify(event)); if (size + 1024 > RELAY_LIMITS.maxFrameBytes) throw new Error("Durable controller event exceeds relay frame limit."); if (bytes + size > RELAY_LIMITS.maxFrameBytes) break; events.push(event); bytes += size; }
+      for (const row of journal.pendingEvents(RELAY_LIMITS.maxBatchEvents)) { if (response && BigInt(row.sequence) > BigInt(response.sourceThrough)) break; const event = { ...(row.payload as object), sourceSeq: row.sequence } as SourceEvent; const size = Buffer.byteLength(JSON.stringify(event)); if (size + 1024 > RELAY_LIMITS.maxFrameBytes) throw new Error("Durable controller event exceeds relay frame limit."); if (bytes + size > RELAY_LIMITS.maxFrameBytes) break; events.push(event); bytes += size; }
       if (events.length) { const id = randomUUID(); pendingBatch = { id, through: events.at(-1)!.sourceSeq }; send({ ...prefix(), type: "events", batchId: id, sourceEpoch: ticket.executionId, events }); }
     } catch (error) { callbacks.onError(String(error)); socket?.close(); }
     finally { polling = false; }

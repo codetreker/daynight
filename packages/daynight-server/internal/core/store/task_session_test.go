@@ -35,7 +35,7 @@ func TestTaskSessionFreezeAndReceiptFailureRollBackTaskCompletion(t *testing.T) 
 			return err
 		})
 	}
-	for _, table := range []string{"session_events", "session_operations"} {
+	for _, table := range []string{"task_sessions", "session_operations"} {
 		mustQueryExec(t, s, `CREATE FUNCTION refuse_session_write() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'session write failure'; END $$`)
 		mustQueryExec(t, s, `CREATE TRIGGER refuse_session_write BEFORE INSERT OR UPDATE ON `+table+` FOR EACH ROW EXECUTE FUNCTION refuse_session_write()`)
 		if err := complete(); err == nil {
@@ -59,8 +59,8 @@ func TestTaskSessionFreezeAndReceiptFailureRollBackTaskCompletion(t *testing.T) 
 	if err := s.Pool.QueryRow(ctx, `SELECT receipt->>'state' FROM session_operations WHERE operation_id=$1`, operation).Scan(&state); err != nil || state != "rejected" {
 		t.Fatal("undispatched operation not rejected", err)
 	}
-	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM session_events WHERE session_id=$1`, session).Scan(&events); err != nil || events != 2 {
-		t.Fatal("freeze/operation outbox is incomplete", err)
+	if err := s.Pool.QueryRow(ctx, `SELECT count(*) FROM session_events WHERE session_id=$1`, session).Scan(&events); err != nil || events != 0 {
+		t.Fatal("claim transition persisted session content", err)
 	}
 }
 

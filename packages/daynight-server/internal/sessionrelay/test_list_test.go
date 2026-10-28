@@ -59,12 +59,12 @@ func TestListTestSessionsUsesOwnerParentAndStableActivityPagination(t *testing.T
 			t.Fatal(err)
 		}
 	}
-	// An archived session remains discoverable and a durable event determines recency.
+	// An archived session remains discoverable; bounded lease metadata determines recency.
 	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{lifecycle}','"archived"') WHERE id=$1`, values[0].SessionID); err != nil {
 		t.Fatal(err)
 	}
 	eventTime := created.Add(time.Minute)
-	if _, err := f.s.DB.Pool.Exec(ctx, `INSERT INTO session_events(session_id,event_seq,event,created_at) VALUES($1,1,'{}',$2)`, values[0].SessionID, eventTime); err != nil {
+	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE task_sessions SET last_seen=$2 WHERE id=$1`, values[0].SessionID, eventTime); err != nil {
 		t.Fatal(err)
 	}
 	expired := listCredential(t, f, f.p.UserID, core.PATCredential)
@@ -184,7 +184,7 @@ func TestListOnlineTestSessionsFiltersBeforePaginationAndBindsCursor(t *testing.
 	}{
 		{"archived", `snapshot=jsonb_set(snapshot,'{lifecycle}','"archived"')`, nil},
 		{"draining", `snapshot=jsonb_set(snapshot,'{lifecycle}','"draining"'),draining_until=$2`, now.Add(time.Hour)},
-		{"disconnected", `snapshot=jsonb_set(snapshot,'{connectionState}','"disconnected"')`, nil},
+		{"disconnected", `connection_expires_at=NULL`, nil},
 		{"no heartbeat", `last_seen=NULL`, nil},
 		{"expired heartbeat", `last_seen=$2`, now.Add(-HeartbeatTimeout - time.Microsecond)},
 		{"no expiry", `connection_expires_at=NULL`, nil},
@@ -205,7 +205,7 @@ func TestListOnlineTestSessionsFiltersBeforePaginationAndBindsCursor(t *testing.
 		}
 	}
 	page, err := f.s.ListTest(ctx, f.p, "", 1, true)
-	if err != nil || len(page.Items) != 1 || page.Items[0].SessionID != synchronizing.SessionID || page.Items[0].ConnectionState != "synchronizing" || page.NextCursor == nil {
+	if err != nil || len(page.Items) != 1 || page.Items[0].SessionID != synchronizing.SessionID || page.Items[0].ConnectionState != "connected" || page.NextCursor == nil {
 		t.Fatal("filtered first page", page, err)
 	}
 	tail, err := f.s.ListTest(ctx, f.p, *page.NextCursor, 1, true)

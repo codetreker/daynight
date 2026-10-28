@@ -53,6 +53,9 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal core.Principal, proje
 	if err != nil {
 		return core.Task{}, err
 	}
+	if err := requireCompatibleWorker(ctx, &core.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
+		return core.Task{}, err
+	}
 	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
@@ -70,6 +73,9 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal core.Principal, proje
 func (s *Tasks) ResumeWorker(ctx context.Context, principal core.Principal, projectID, id string, input ResumeWorker) (core.Task, error) {
 	descriptor, err := canonicalWorkerDescriptor(input.WorkerDescriptor)
 	if err != nil {
+		return core.Task{}, err
+	}
+	if err := requireCompatibleWorker(ctx, &core.WorkerClaim{Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode}); err != nil {
 		return core.Task{}, err
 	}
 	previousID, err := CanonicalID(input.PreviousClaimID)

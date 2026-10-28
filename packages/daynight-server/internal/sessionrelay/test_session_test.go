@@ -40,6 +40,7 @@ func testSession(t *testing.T, initial string) (fixture, sp.Snapshot, string) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	synchronizeFixture(t, f, v)
 	return f, v, epoch
 }
 func TestTestSessionUsesSharedRelayAndOwnerScope(t *testing.T) {

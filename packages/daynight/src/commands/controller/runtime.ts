@@ -16,7 +16,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const ticket = await readLaunchTicket(options.homeDirectory, options.launchId);
   if (ticket.provider !== options.provider || await realpath(ticket.cwd) !== await realpath(process.cwd())) throw new Error("Controller launch provider or working directory mismatch.");
   const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId); await mkdir(directory, { recursive: true, mode: 0o700 });
-  const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket);
+  const journal = openControllerLifecycleStore(path.join(directory, "journal.sqlite"), ticket, { contentOwnedLocally: true });
   let provider: NativeProvider | null = null, stopping = false, synchronized = false;
   let projectionFailure: string | null = null, providerFailure: string | null = null;
   let startup: Promise<void> | null = null, shutdownPromise: Promise<void> | null = null;
@@ -36,7 +36,11 @@ export const runController = async (options: { homeDirectory: string; provider: 
       const waiting = !provider || s.activity === "initializing" || s.initialInputState === "not_submitted" && !synchronized;
       journal.patchSnapshot({ lifecycle: waiting ? "starting" : s.activity === "idle" ? "ready" : "working" });
     }
-    journal.appendEvent({ kind: "state", payload: { nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities } });
+    journal.appendEvent({ kind: "state", payload: readState() });
+  };
+  const readState = (): import("../../session/controller-protocol.js").ControllerState => {
+    const s = journal.getSnapshot();
+    return { nativeSessionId: s.nativeSessionId, initialInputState: s.initialInputState, synchronized, activity: !provider ? "initializing" : stopping ? "stopped" : s.activity, currentTurnId: s.currentTurnId, ...(provider && !stopping && s.controls ? { controls: s.controls } : {}), ...(s.turnStartedAt !== undefined ? { turnStartedAt: s.turnStartedAt } : {}), ...(cleaning ? { cleanupInteractionIds: [...cleanupInteractions] } : {}), capabilities: !provider || stopping ? { send: false, steer: false, cancel: false, respond: false } : cleaning ? { ...s.capabilities, send: false, steer: false, cancel: false } : s.capabilities };
   };
   const fail = (error: unknown) => { const message = error instanceof Error ? error.message : String(error); diagnostic(message); try { journal.patchSnapshot({ lifecycle: "paused", error: message }); } catch { /* The private log retains a journal failure when disk writes fail. */ } };
   const dispatch = (operation: ControllerOperation, invoke: () => Promise<unknown>): Promise<ControllerOperation> => {
@@ -57,6 +61,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
   const relay = createControllerRelay(ticket, journal, {
     onConnection: connected => { synchronized = connected; if (!stopping) { try { publishState(); } catch (error) { fail(error); } } },
     onError: diagnostic,
+    readState,
     onCommand: async command => {
       if (command.sessionId !== ticket.sessionId || command.claimId !== ticket.claimId || command.testExecutionId !== ticket.testExecutionId || command.executionGeneration !== ticket.executionGeneration) throw new Error("Stale session command.");
       const operation = journal.prepareOperation({ operationId: command.operationId, kind: command.kind, payload: command.payload });

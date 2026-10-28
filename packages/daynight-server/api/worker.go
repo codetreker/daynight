@@ -21,7 +21,7 @@ type WorkerClaim struct {
 	Machine          WorkerMachine `json:"machine"`
 	Platform         string        `json:"platform"`
 	Agent            string        `json:"agent"`
-	AgentControlMode string        `json:"agentControlMode"`
+	AgentControlMode string        `json:"agentControlMode,omitempty"`
 	WorktreeID       string        `json:"worktreeId"`
 	Phase            string        `json:"phase"`
 	Herdr            *WorkerHerdr  `json:"herdr"`

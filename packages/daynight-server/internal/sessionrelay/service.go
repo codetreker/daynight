@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
@@ -23,14 +24,19 @@ import (
 
 const PollInterval = 250 * time.Millisecond
 const HeartbeatTimeout = 30 * time.Second
-const MaxSessionResourceBytes = 64 * 1024 * 1024
 
 type Service struct {
-	DB  *store.Store
-	now func() time.Time
+	DB        *store.Store
+	now       func() time.Time
+	liveMutex sync.Mutex
+	live      map[string]*liveCell
+	instance  string
+	content   contentBroker
 }
 
-func New(db *store.Store) *Service     { return &Service{DB: db, now: time.Now} }
+func New(db *store.Store) *Service {
+	return &Service{DB: db, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
+}
 func fault(code, message string) error { return &service.Fault{Code: code, Message: message} }
 func conflict() error {
 	return fault("session_conflict", "Session identity or state no longer matches.")
@@ -42,6 +48,8 @@ func next(s string) string   { return decimal(number(s) + 1) }
 func encode(v any) []byte    { b, _ := json.Marshal(v); return b }
 
 type record struct {
+	Live                                                *liveSession
+	ServerInstance                                      *string
 	FirstInputBlocked                                   bool
 	DrainTimelineSeq                                    *int64
 	Snapshot                                            sp.Snapshot
@@ -62,7 +70,7 @@ func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
 	r := &record{}
 	var raw []byte
 	var parent, kind, connectionParent *string
-	err := tx.QueryRow(ctx, `SELECT snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 FOR UPDATE`, id).Scan(&raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
+	err := tx.QueryRow(ctx, `SELECT server_instance::text,snapshot,owner_user_id::text,parent_credential_id::text,registration,source_epoch::text,source_epochs::text[],last_source_seq,last_operation_seq,grant_hash,grant_expires_at,connection_expires_at,last_seen,draining_until,grant_kind,grant_consumed,stop_proof,connection_parent_credential_id::text,draining_timeline_seq,EXISTS(SELECT 1 FROM session_operations WHERE session_id=task_sessions.id AND command->>'kind'='send_message' AND receipt->>'state' IN ('accepted','offered','dispatching','provider_accepted','confirmed','unknown')) FROM task_sessions WHERE id=$1 FOR UPDATE`, id).Scan(&r.ServerInstance, &raw, &r.Owner, &parent, &r.Registration, &r.SourceEpoch, &r.SourceEpochs, &r.SourceSeq, &r.OperationSeq, &r.GrantHash, &r.GrantExpiry, &r.ConnectionExpiry, &r.LastSeen, &r.DrainUntil, &kind, &r.Consumed, &r.StopProof, &connectionParent, &r.DrainTimelineSeq, &r.FirstInputBlocked)
 	if err != nil {
 		return nil, err
 	}
@@ -76,26 +84,23 @@ func load(ctx context.Context, tx pgx.Tx, id string) (*record, error) {
 		r.GrantKind = *kind
 	}
 	err = json.Unmarshal(raw, &r.Snapshot)
+	if err == nil {
+		r.Snapshot = durableSnapshot(r.Snapshot)
+		err = attachLive(tx, r)
+	}
 	return r, err
 }
 func save(ctx context.Context, tx pgx.Tx, r *record) error {
 	r.Snapshot.Operations = sp.Operations{}
-	_, err := tx.Exec(ctx, `UPDATE task_sessions SET snapshot=$2,source_epoch=$3,source_epochs=$4,last_source_seq=$5,last_operation_seq=$6 WHERE id=$1`, r.Snapshot.SessionID, encode(r.Snapshot), r.SourceEpoch, r.SourceEpochs, r.SourceSeq, r.OperationSeq)
-	return err
-}
-func transact(ctx context.Context, db *store.Store, fn func(pgx.Tx) error) error {
-	tx, err := db.Pool.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(context.Background())
-	if err = fn(tx); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return fault("not_found", "Session was not found.")
+	if r.Live != nil {
+		r.Live.LastSeen = r.LastSeen
+		r.Live.Snapshot = r.Snapshot
+		if err := r.Live.checkCapacity(); err != nil {
+			return err
 		}
-		return err
 	}
-	return tx.Commit(ctx)
+	_, err := tx.Exec(ctx, `UPDATE task_sessions SET snapshot=$2,source_epoch=$3,source_epochs=$4,last_source_seq=$5,last_operation_seq=$6 WHERE id=$1`, r.Snapshot.SessionID, encode(durableSnapshot(r.Snapshot)), r.SourceEpoch, r.SourceEpochs, r.SourceSeq, r.OperationSeq)
+	return err
 }
 func credential(ctx context.Context, tx pgx.Tx, p core.Principal, now time.Time) error {
 	table := "sessions"
@@ -152,7 +157,7 @@ func active(t task, r *record) bool {
 	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Properties.Worker.State == core.WorkerActive)
 }
 func (s *Service) browser(ctx context.Context, p core.Principal, project, taskID, id string, fn func(pgx.Tx, *record, task, bool) error) error {
-	return transact(ctx, s.DB, func(tx pgx.Tx) error {
+	return s.transact(ctx, func(tx pgx.Tx) error {
 		if project == "" && taskID == "" {
 			r, err := load(ctx, tx, id)
 			if err != nil {
@@ -252,7 +257,7 @@ func (s *Service) Register(ctx context.Context, p core.Principal, project, taskI
 	if p.Kind != core.PATCredential {
 		return result, denied()
 	}
-	err := transact(ctx, s.DB, func(tx pgx.Tx) error {
+	err := s.transact(ctx, func(tx pgx.Tx) error {
 		// Serialize registration on the task row; event streaming only takes a shared task lock.
 		if _, err := tx.Exec(ctx, `SELECT id FROM tasks WHERE project_id=$1 AND id=$2 FOR UPDATE`, project, taskID); err != nil {
 			return err
@@ -286,7 +291,7 @@ func (s *Service) Register(ctx context.Context, p core.Principal, project, taskI
 			return err
 		}
 		result = sp.Snapshot{ControllerFence: sp.ControllerFence{Fence: sp.Fence{SessionID: uuid.NewString(), ClaimID: input.ClaimID, ExecutionGeneration: "1"}, ConnectionEpoch: "0"}, Protocol: sp.Protocol, SchemaVersion: 1, ProjectionVersion: 1, Identity: sp.Identity{ProjectID: project, TaskID: taskID, WorkerID: input.WorkerID, WorktreeID: input.WorktreeID, ControllerID: input.ControllerID, ControllerInstanceID: input.ControllerInstanceID, AgentControlMode: "web", Provider: input.Provider}, SessionRevision: "1", HistoryEpoch: uuid.NewString(), LastEventSeq: "0", LastTimelineSeq: "0", InitialInputState: "not_submitted", Lifecycle: "active", ConnectionState: "disconnected", Activity: "initializing"}
-		_, err = tx.Exec(ctx, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, result.SessionID, project, taskID, input.ClaimID, p.UserID, input.RegistrationID, encode(input), encode(result))
+		_, err = tx.Exec(ctx, `INSERT INTO task_sessions(id,project_id,task_id,claim_id,owner_user_id,registration_id,registration,snapshot) VALUES($1,$2,$3,$4,$5,$6,$7,$8)`, result.SessionID, project, taskID, input.ClaimID, p.UserID, input.RegistrationID, encode(input), encode(durableSnapshot(result)))
 		return err
 	})
 	return result, err
@@ -362,7 +367,7 @@ func (s *Service) Grant(ctx context.Context, p core.Principal, project, taskID, 
 // Connect repeats these checks atomically with hello validation and grant consumption.
 func (s *Service) AuthenticateController(ctx context.Context, token string) error {
 	hash := sha256.Sum256([]byte(token))
-	return transact(ctx, s.DB, func(tx pgx.Tx) error {
+	return s.transact(ctx, func(tx pgx.Tx) error {
 		_, err := s.controllerGrant(ctx, tx, hash[:])
 		return err
 	})
@@ -394,12 +399,15 @@ func (s *Service) controllerGrant(ctx context.Context, tx pgx.Tx, hash []byte) (
 func (s *Service) Connect(ctx context.Context, token string, h sp.ControllerMessage, instance string) (sp.Snapshot, error) {
 	var out sp.Snapshot
 	hash := sha256.Sum256([]byte(token))
-	err := transact(ctx, s.DB, func(tx pgx.Tx) error {
+	err := s.transact(ctx, func(tx pgx.Tx) error {
 		r, err := s.controllerGrant(ctx, tx, hash[:])
 		if err != nil {
 			return err
 		}
 		v := &r.Snapshot
+		if r.ServerInstance != nil && *r.ServerInstance != s.instance && r.LastSeen != nil && s.now().Sub(*r.LastSeen) < HeartbeatTimeout && r.ConnectionExpiry != nil && s.now().Before(*r.ConnectionExpiry) {
+			return fault("relay_instance_unavailable", "The live controller belongs to another relay instance.")
+		}
 		id := v.SessionID
 		if h.SessionID != id || h.ClaimID != v.ClaimID || h.TestExecutionID != v.TestExecutionID || h.ExecutionGeneration != v.ExecutionGeneration || h.ControllerID != v.Identity.ControllerID || h.ControllerInstanceID != v.Identity.ControllerInstanceID || h.Provider != v.Identity.Provider || h.SchemaVersion != 1 || h.ProjectionVersion != 1 {
 			return conflict()
@@ -410,6 +418,9 @@ func (s *Service) Connect(ctx context.Context, token string, h sp.ControllerMess
 		} else if *r.SourceEpoch != h.SourceEpoch {
 			return conflict()
 		}
+		if h.SourceFloor != nil && number(*h.SourceFloor) > r.SourceSeq {
+			r.SourceSeq = number(*h.SourceFloor)
+		}
 		if number(h.LastAckedSourceSeq) > r.SourceSeq {
 			return conflict()
 		}
@@ -419,7 +430,11 @@ func (s *Service) Connect(ctx context.Context, token string, h sp.ControllerMess
 		now := s.now()
 		r.LastSeen = &now
 		r.ConnectionExpiry = r.GrantExpiry
-		if _, err = tx.Exec(ctx, `UPDATE task_sessions SET grant_consumed=true,server_instance=$2,connected_at=$3,last_seen=$3,connection_expires_at=$4,connection_parent_credential_id=parent_credential_id WHERE id=$1`, id, instance, now, r.GrantExpiry); err != nil {
+		v.HistoryEpoch = uuid.NewString()
+		if err := createLive(tx, r); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `UPDATE task_sessions SET grant_consumed=true,server_instance=$2,connected_at=$3,last_seen=$3,connection_expires_at=$4,connection_parent_credential_id=parent_credential_id WHERE id=$1`, id, s.instance, now, r.GrantExpiry); err != nil {
 			return err
 		}
 		if err = s.emit(ctx, tx, r, "snapshot", *v, nil); err != nil {
@@ -431,7 +446,7 @@ func (s *Service) Connect(ctx context.Context, token string, h sp.ControllerMess
 	return out, err
 }
 func (s *Service) controller(ctx context.Context, f sp.ControllerFence, fn func(pgx.Tx, *record, task) error) error {
-	return transact(ctx, s.DB, func(tx pgx.Tx) error {
+	return s.transact(ctx, func(tx pgx.Tx) error {
 		var project, taskID string
 		if err := tx.QueryRow(ctx, `SELECT COALESCE(project_id::text,''),COALESCE(task_id::text,'') FROM task_sessions WHERE id=$1`, f.SessionID).Scan(&project, &taskID); err != nil {
 			return err
@@ -447,7 +462,7 @@ func (s *Service) controller(ctx context.Context, f sp.ControllerFence, fn func(
 		if _, err = s.scopePermission(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.ConnectionParent}, r); err != nil {
 			return err
 		}
-		if r.Snapshot.ControllerFence != f || r.ConnectionExpiry == nil || !s.now().Before(*r.ConnectionExpiry) || r.Snapshot.Lifecycle == "archived" || r.DrainUntil != nil && !s.now().Before(*r.DrainUntil) {
+		if r.ServerInstance == nil || *r.ServerInstance != s.instance || r.Live == nil || r.Snapshot.ControllerFence != f || r.ConnectionExpiry == nil || !s.now().Before(*r.ConnectionExpiry) || r.Snapshot.Lifecycle == "archived" || r.DrainUntil != nil && !s.now().Before(*r.DrainUntil) {
 			return conflict()
 		}
 		if !active(t, r) && r.Snapshot.Lifecycle != "draining" {
@@ -468,12 +483,24 @@ func (s *Service) emit(ctx context.Context, tx pgx.Tx, r *record, kind string, p
 	if operation, ok := payload.(sp.Operation); ok {
 		event["executionGeneration"] = operation.ExecutionGeneration
 	}
-	var epoch, seq, body any
-	if source != nil {
-		epoch = r.SourceEpoch
-		seq = number(source.SourceSeq)
-		body = encode(source)
+	if r.Live == nil {
+		return nil
 	}
-	_, err := tx.Exec(ctx, `INSERT INTO session_events(session_id,event_seq,source_epoch,source_seq,source_body,event) VALUES($1,$2,$3,$4,$5,$6)`, v.SessionID, number(v.LastEventSeq), epoch, seq, body, encode(event))
-	return err
+	raw := encode(event)
+	if len(raw) > maxEventBytes-1024 {
+		return fault("payload_too_large", "Live event exceeds relay capacity.")
+	}
+	r.Live.Events = append(r.Live.Events, raw)
+	r.Live.EventBytes += len(raw)
+	for r.Live.EventBytes > maxEventBytes || len(r.Live.Events) > 1000 {
+		first := r.Live.Events[0]
+		var value struct {
+			EventSeq string `json:"eventSeq"`
+		}
+		_ = json.Unmarshal(first, &value)
+		r.Live.MinEventSeq = number(value.EventSeq)
+		r.Live.EventBytes -= len(first)
+		r.Live.Events = r.Live.Events[1:]
+	}
+	return nil
 }

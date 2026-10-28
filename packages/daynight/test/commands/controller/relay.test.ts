@@ -18,7 +18,8 @@ import { createControllerRelay, publicOperation } from "../../../src/commands/co
 import { RELAY_LIMITS } from "../../../src/session/controller-protocol.js";
 const cleanup: (() => void)[] = [];
 afterEach(() => { cleanup.splice(0).forEach(close => close()); transport.sockets.length = 0; vi.clearAllMocks(); });
-const setup = async (operations: ControllerOperation[] = []) => {
+const setup = async (operations: ControllerOperation[] = [], live = false) => {
+  const historyEpoch = live ? randomUUID() : snapshot.historyEpoch;
   const ticket = { ...snapshot.identity, ...snapshot, provider: "codex", controllerId: snapshot.identity.controllerId, controllerInstanceId: snapshot.identity.controllerInstanceId, executionId: randomUUID(), credentialFile: "/private/grant", serverOrigin: "http://127.0.0.1:19000" } as unknown as ControllerLaunchTicket;
   files.lstat.mockResolvedValue({ isFile: () => true, isSymbolicLink: () => false, size: 100, mode: 0o600 });
   files.readFile.mockResolvedValue(JSON.stringify({ token: "private-token", expiresAt: new Date(Date.now() + 60_000).toISOString(), sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId }));
@@ -29,8 +30,8 @@ const setup = async (operations: ControllerOperation[] = []) => {
   const socket = transport.sockets[0]! as EventEmitter & { sent: Record<string, unknown>[]; close(): void };
   const frame = (type: string, extra = {}) => ({ protocol: snapshot.protocol, sessionId: ticket.sessionId, claimId: ticket.claimId, executionGeneration: ticket.executionGeneration, connectionEpoch: "3", type, ...extra });
   const emit = (value: unknown) => socket.emit("message", Buffer.from(JSON.stringify(value)));
-  emit({ type: "welcome", protocol: snapshot.protocol, connectionEpoch: "3", session: snapshot, lastAckedSourceSeq: "8", limits: RELAY_LIMITS });
-  return { relay, journal, callbacks, ticket, socket, emit, frame };
+  emit({ type: "welcome", protocol: snapshot.protocol, connectionEpoch: "3", session: { ...snapshot, historyEpoch }, lastAckedSourceSeq: "8", limits: RELAY_LIMITS, ...(live ? { requiresLiveSync: true } : {}) });
+  return { relay, journal, callbacks, ticket, socket, emit, frame, historyEpoch };
 };
 
 test("reconciliation waits for all bounded pages and retains unknown without native dispatch", async () => {
@@ -131,5 +132,39 @@ test.each(["rejected", "expired"] as const)("reconciliation settles %s intent af
   expect(journal.recordOperation).toHaveBeenCalledWith(operation.operationId, state, null, "Refused before native dispatch");
   expect(pendingOperations).toEqual([]);
   expect(callbacks.onCommand).not.toHaveBeenCalled();
+  expect(relay.connected()).toBe(true);
+});
+
+
+test("requires fresh local state after reconciliation before exposing remote controls", async () => {
+  const { relay, journal, socket, emit, frame } = await setup([], true);
+  Object.assign(journal, {
+    getSnapshot: () => ({ ...snapshot, nativeSessionId: snapshot.identity.nativeSessionId }),
+    pendingInteractions: () => [], getSourceFloor: () => "0", getLastSourceSequence: () => "8",
+  });
+  emit(frame("reconcile_result", { operations: [] }));
+  expect(relay.connected()).toBe(false);
+  await vi.waitFor(() => expect(socket.sent.some(message => message.type === "sync_state")).toBe(true));
+  expect(relay.connected()).toBe(false);
+  emit(frame("sync_ack"));
+  expect(relay.connected()).toBe(true);
+});
+
+test('serializes large concurrent pages and rejects only excess requests without closing the controller', async () => {
+  const { relay, journal, socket, emit, frame, callbacks, historyEpoch } = await setup([], true);
+  Object.assign(journal, {
+    getSnapshot: () => ({ ...snapshot, nativeSessionId: snapshot.identity.nativeSessionId }),
+    pendingInteractions: () => [], getSourceFloor: () => '0', getLastSourceSequence: () => '8',
+    readTimeline: () => ({ kind: 'timeline', historyEpoch, items: [1, 2].map(i => ({ kind: 'reasoning', entryId: randomUUID(), entrySeq: String(i), revision: '1', text: 'x'.repeat(600000) })), resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false }),
+  });
+  emit(frame('reconcile_result', { operations: [] }));
+  await vi.waitFor(() => expect(socket.sent.some(message => message.type === 'sync_state')).toBe(true));
+  emit(frame('sync_ack'));
+  for (let i = 0; i < 5; i++) emit(frame('content_request', { requestId: randomUUID(), kind: 'timeline', historyEpoch, direction: 'tail', cursor: null, limit: 100 }));
+  await vi.waitFor(() => expect(socket.sent.filter(message => message.type === 'content_response')).toHaveLength(5));
+  const responses = socket.sent.filter(message => message.type === 'content_response');
+  expect(responses.filter(message => message.result !== null)).toHaveLength(4);
+  expect(responses.filter(message => message.result === null)).toEqual([expect.objectContaining({ error: { code: 'rate_limited', message: 'Local content request capacity is unavailable.' } })]);
+  expect(callbacks.onError).not.toHaveBeenCalled();
   expect(relay.connected()).toBe(true);
 });

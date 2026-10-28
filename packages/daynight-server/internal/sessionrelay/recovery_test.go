@@ -2,8 +2,6 @@ package sessionrelay
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"testing"
 	"time"
@@ -33,71 +31,27 @@ func apply(t *testing.T, f fixture, m sp.ControllerMessage) map[string]any {
 	}
 	return out
 }
-func TestResourcesAreBoundedVerifiedAndPortableBetweenInstances(t *testing.T) {
+func TestResourceContentRequiresTheOriginalOnlineController(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
-	resourceID := uuid.NewString()
-	content := []byte("verified content")
-	hash := sha256.Sum256(content)
-	digest := hex.EncodeToString(hash[:])
-	size := decimal(int64(len(content)))
-	descriptor := sp.Resource{ResourceID: resourceID, Status: "pending", Name: "result.txt", MediaType: nil, ByteLength: &size, SHA256: &digest}
-	entry := map[string]any{"entryId": uuid.NewString(), "revision": "1", "kind": "tool_call", "callId": "call", "name": "read", "input": "{}", "output": []any{map[string]any{"type": "resource", "resourceId": resourceID, "label": "result"}}, "status": "completed", "truncated": false}
-	apply(t, f, source(t, f, v, sp.SourceEvent{Kind: "timeline_upsert", Payload: encode(entry)}, sp.SourceEvent{Kind: "resource", Payload: encode(descriptor)}))
-	g, err := f.s.Grant(ctx, f.p, f.project, f.task, v.SessionID, sp.Grant{Protocol: sp.Protocol, ClaimID: v.ClaimID, ControllerID: f.r.ControllerID, ControllerInstanceID: f.r.ControllerInstanceID, ExecutionGeneration: "1", Kind: "reconnect"})
-	if err != nil {
+	syncContent(t, f, v)
+	if _, err := f.s.PutResource(ctx, "invalid", v.ConnectionEpoch, uuid.NewString(), []byte("local only")); err == nil {
+		t.Fatal("server upload accepted")
+	}
+	if _, _, err := New(f.s.DB).Resource(ctx, f.p, f.project, f.task, v.SessionID, uuid.NewString()); err == nil {
+		t.Fatal("another server served local content")
+	}
+	if err := f.s.Disconnect(ctx, v.ControllerFence); err != nil {
 		t.Fatal(err)
 	}
-	missingID := uuid.NewString()
-	apply(t, f, source(t, f, v, sp.SourceEvent{Kind: "timeline_upsert", Payload: encode(map[string]any{"entryId": uuid.NewString(), "revision": "1", "kind": "assistant_message", "content": []any{map[string]any{"type": "resource", "resourceId": missingID, "label": "missing"}}})}))
-	if _, err = f.s.PutResource(ctx, g.Token, v.ConnectionEpoch, missingID, content); err == nil {
-		t.Fatal("uploaded resource without descriptor")
-	}
-	if _, err = f.s.PutResource(ctx, g.Token, v.ConnectionEpoch, resourceID, []byte("wrong")); err == nil {
-		t.Fatal("wrong digest accepted")
-	}
-	if _, err = f.s.PutResource(ctx, g.Token, v.ConnectionEpoch, uuid.NewString(), content); err == nil {
-		t.Fatal("unreferenced upload accepted")
-	}
-	if _, _, err = f.s.Resource(ctx, f.p, f.project, f.task, v.SessionID, resourceID); err == nil {
-		t.Fatal("pending bytes read")
-	}
-	for range 2 {
-		got, err := f.s.PutResource(ctx, g.Token, v.ConnectionEpoch, resourceID, content)
-		if err != nil || got.Status != "available" {
-			t.Fatalf("upload %#v %v", got, err)
-		}
-	}
-	other := New(f.s.DB)
-	body, got, err := other.Resource(ctx, f.p, f.project, f.task, v.SessionID, resourceID)
-	if err != nil || string(body) != string(content) || *got.SHA256 != digest {
-		t.Fatal("cross-instance content changed", err)
-	}
-	page, err := other.Timeline(ctx, f.p, f.project, f.task, v.SessionID, "tail", "", 10)
-	if err != nil || len(page["resources"].([]sp.Resource)) != 1 {
-		t.Fatal("resource metadata absent from history", err)
-	}
-	if _, err = f.s.PutResource(ctx, "invalid", v.ConnectionEpoch, resourceID, content); err == nil {
-		t.Fatal("invalid grant upload")
-	}
-	if _, err = f.s.PutResource(ctx, g.Token, "999", resourceID, content); err == nil {
-		t.Fatal("stale connection upload")
-	}
-	if _, err = f.s.PutResource(ctx, g.Token, v.ConnectionEpoch, resourceID, make([]byte, sp.MaxResourceBytes+1)); err == nil {
-		t.Fatal("oversize upload")
-	}
-	descriptor.Status = "available"
-	if _, err = f.s.Handle(ctx, source(t, f, v, sp.SourceEvent{Kind: "resource", Payload: encode(descriptor)})); err == nil {
-		t.Fatal("controller forged resource availability")
-	}
-	descriptor.Status = "pending"
-	if _, err = f.s.Handle(ctx, source(t, f, v, sp.SourceEvent{Kind: "resource", Payload: encode(descriptor)})); err == nil {
-		t.Fatal("available resource downgraded")
+	if _, _, err := f.s.Resource(ctx, f.p, f.project, f.task, v.SessionID, uuid.NewString()); err == nil {
+		t.Fatal("offline resource served")
 	}
 }
 func TestSourceResetAndCursorRecoveryKeepStableTimelineIdentity(t *testing.T) {
 	f, v := connectFixture(t)
 	ctx := context.Background()
+	syncContent(t, f, v)
 	var entries []sp.SourceEvent
 	for i := range 5 {
 		entries = append(entries, sp.SourceEvent{Kind: "timeline_upsert", Payload: encode(map[string]any{"entryId": uuid.NewString(), "revision": "1", "kind": "reasoning", "text": decimal(int64(i))})})
@@ -135,25 +89,46 @@ func TestSourceResetAndCursorRecoveryKeepStableTimelineIdentity(t *testing.T) {
 			t.Fatal("unreadable event", err)
 		}
 	}
-	page, err := f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, "tail", "", 2)
-	if err != nil {
-		t.Fatal(err)
+	read := readPage(ctx, f, v, "tail", "", 2)
+	request := nextContent(t, f, v)
+	nativeBefore, nativeAfter := "local-before", "local-after"
+	result := pageResult(request["historyEpoch"].(string), localEntry(t, "4"), localEntry(t, "5"))
+	result.BeforeCursor = &nativeBefore
+	result.AfterCursor = &nativeAfter
+	result.HasMoreBefore = true
+	replyContent(t, f, v, request, result, nil)
+	page := <-read
+	if page.err != nil || !page.page["hasMoreBefore"].(bool) {
+		t.Fatal("tail bounds", page.err)
 	}
-	if !page["hasMoreBefore"].(bool) || page["hasMoreAfter"].(bool) {
-		t.Fatal("incorrect tail bounds")
+	read = readPage(ctx, f, v, "before", nativeBefore, 2)
+	request = nextContent(t, f, v)
+	result = pageResult(request["historyEpoch"].(string), localEntry(t, "2"), localEntry(t, "3"))
+	result.AfterCursor = &nativeAfter
+	result.HasMoreAfter = true
+	replyContent(t, f, v, request, result, nil)
+	prior := <-read
+	if prior.err != nil || !prior.page["hasMoreAfter"].(bool) {
+		t.Fatal("before page", prior.err)
 	}
-	prior, err := f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, "before", page["beforeCursor"].(string), 2)
-	if err != nil || !prior["hasMoreAfter"].(bool) {
-		t.Fatal("before page missing", err)
+	read = readPage(ctx, f, v, "after", nativeAfter, 2)
+	request = nextContent(t, f, v)
+	replyContent(t, f, v, request, pageResult(request["historyEpoch"].(string), localEntry(t, "4"), localEntry(t, "5")), nil)
+	next := <-read
+	if next.err != nil || len(next.page["items"].([]sp.TimelineEntry)) != 2 {
+		t.Fatal("after page", next.err)
 	}
-	next, err := f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, "after", prior["afterCursor"].(string), 2)
-	if err != nil || len(next["items"].([]sp.TimelineEntry)) != 2 {
-		t.Fatal("after page missing", err)
+	read = readPage(ctx, f, v, "before", "invalid", 1)
+	request = nextContent(t, f, v)
+	replyContent(t, f, v, request, nil, &sp.OperationError{Code: "reset_required", Message: "Local cursor invalid"})
+	if got := <-read; got.err == nil {
+		t.Fatal("invalid local cursor accepted")
 	}
+
 	for _, args := range []struct {
 		direction, cursor string
 		limit             int
-	}{{"tail", "unexpected", 1}, {"before", "invalid", 1}, {"unknown", "", 1}, {"tail", "", 0}, {"tail", "", 201}} {
+	}{{"tail", "unexpected", 1}, {"unknown", "", 1}, {"tail", "", 0}, {"tail", "", 201}} {
 		if _, err = f.s.Timeline(ctx, f.p, f.project, f.task, v.SessionID, args.direction, args.cursor, args.limit); err == nil {
 			t.Fatal("invalid page accepted")
 		}

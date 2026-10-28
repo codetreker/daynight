@@ -181,7 +181,7 @@ export const createApiClient = (options: {
         dispatched = true;
         return fetch(url, {
         method,
-        headers: { Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }) },
+        headers: { "Daynight-Worker-Protocol": "2", Accept: mode.kind === "bytes" ? "*/*" : "application/json", ...(contentType === undefined ? {} : { "Content-Type": contentType }), ...(serverToken === undefined ? {} : { Authorization: `Bearer ${serverToken}` }) },
         ...(payload === undefined ? {} : { body: payload }),
         ...(body?.kind === "bytes" ? { duplex: "half" } : {}),
         ...(mutable ? { cache: "no-store" } : {}),

@@ -468,7 +468,7 @@ func TestRelayControllerSourceBoundary(t *testing.T) {
 	}
 	for _, mutated := range []string{
 		strings.Replace(string(data), `"connectionEpoch":"1"`, `"connectionEpoch":"0"`, 1),
-		strings.Replace(string(data), `"revision":"1"`, `"revision":"1","entrySeq":"1"`, 1),
+		strings.Replace(string(data), `"revision":"1"`, `"revision":"1","entrySeq":"0"`, 1),
 		strings.Replace(string(data), `"revision":"1"`, `"revision":"01"`, 1),
 		strings.Replace(string(data), `"text":"Thinking"`, `"text":"\ud800"`, 1),
 		strings.Replace(string(data), `"text":"Thinking"`, `"text":"Thinking","text":"Other"`, 1),

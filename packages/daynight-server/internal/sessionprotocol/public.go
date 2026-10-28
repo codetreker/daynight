@@ -182,7 +182,9 @@ func decodeTimeline(data []byte, source bool) (TimelineEntry, error) {
 		return TimelineEntry{}, errInvalid
 	}
 	base := schema{"entryId": identifier, "revision": sequence, "kind": enum(value.Kind)}
-	if !source {
+	var sourceFields map[string]json.RawMessage
+	_ = json.Unmarshal(data, &sourceFields)
+	if !source || sourceFields["entrySeq"] != nil {
 		base["entrySeq"] = sequence
 	}
 	if !validateObject(data, extend(base, extra)) {

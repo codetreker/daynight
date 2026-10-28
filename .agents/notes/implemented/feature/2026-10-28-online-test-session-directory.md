@@ -16,8 +16,10 @@ heartbeat and valid connection credentials. A new unconsumed grant does not
 invalidate the existing live connection. Cursors bind the filter mode.
 
 This changes the page behavior of the [directory decision](2026-10-28-test-session-directory.md).
-The unfiltered API and direct history URLs remain available; Controller resume
-continues to use its local stopped-execution evidence. The [requirements](../../../../docs/spec/controller-test-sessions.md)
+The unfiltered identity API and direct URLs remain available; content reads
+require the original Controller online under the
+[local content decision](../architecture/2026-10-28-local-session-content.md).
+Controller resume continues to use its local stopped-execution evidence. The [requirements](../../../../docs/spec/controller-test-sessions.md)
 and [design](../../../../docs/design/task-session-protocol.md) own current behavior.
 
 ## Alternatives

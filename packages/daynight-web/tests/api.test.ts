@@ -321,6 +321,7 @@ describe("API requests", () => {
     fetchMock.mockResolvedValue(response(task));
     await expect(getTask(projectId.toUpperCase(), taskId.toUpperCase(), signal(), admission)).resolves.toMatchObject({ id: taskId, projectId });
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}`);
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("Daynight-Worker-Protocol")).toBe("2");
     fetchMock.mockResolvedValue(response({ ...graph, project: { ...project, id: otherId } }));
     await expect(getTaskGraph(projectId, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
     fetchMock.mockResolvedValue(response({ ...task, id: otherId }));

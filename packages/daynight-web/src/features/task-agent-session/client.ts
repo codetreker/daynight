@@ -47,6 +47,7 @@ export class TaskSessionClient {
   private hydrating = false;
   private buffer: Extract<BrowserMessage, { type: 'event' }>[] = [];
   private hydrated = false;
+  private replaceHistory = false;
   private replayThrough = '0';
   private retries = 0;
   private draftKey: string | null = null;
@@ -201,7 +202,9 @@ export class TaskSessionClient {
       if (!this.matches(current.session)) { this.invalidate(); return; }
       const previous = this.view.state.snapshot;
       if (previous && (sessionFenceKey(previous) !== sessionFenceKey(current.session) || previous.historyEpoch !== current.session.historyEpoch)) {
-        this.cursor = null; this.hydrated = false; this.publish({ state: emptySessionState() });
+        this.cursor = null; this.hydrated = false; this.replaceHistory = true;
+        if (sessionFenceKey(previous) !== sessionFenceKey(current.session)) this.publish({ state: emptySessionState() });
+        else this.publish({ connected: false, state: { ...this.view.state, recoveryRequired: true } });
       }
       this.publish({ state: { ...this.view.state, snapshot: current.session }, status: 'ready' });
       this.connection = this.options.api.channel(current.session.sessionId, this.hydrated ? this.cursor : null, (value) => this.receive(value, generation), (error) => {
@@ -248,7 +251,8 @@ export class TaskSessionClient {
       if (previous && (sessionFenceKey(previous) !== sessionFenceKey(value.snapshot) || previous.historyEpoch !== value.snapshot.historyEpoch)) {
         this.hydrated = false; this.cursor = null;
         const sameExecution = sessionFenceKey(previous) === sessionFenceKey(value.snapshot);
-        this.publish({ connected: false, state: { ...emptySessionState(), ...(sameExecution ? { operations: this.view.state.operations, responseTargets: this.view.state.responseTargets } : {}) } });
+        this.replaceHistory = true;
+        this.publish({ connected: false, state: sameExecution ? { ...this.view.state, recoveryRequired: true } : emptySessionState() });
       }
       const s = previous && this.hydrated && BigInt(previous.sessionRevision) > BigInt(value.snapshot.sessionRevision) ? previous : value.snapshot;
       this.publish({ state: { ...this.view.state, snapshot: s }, status: 'ready' });
@@ -280,7 +284,9 @@ export class TaskSessionClient {
       if (!(this.paused() ? await this.admit() : this.admitted()) || generation !== this.connectionGeneration) return;
       this.validatePage(page, snapshot);
       if (BigInt(page.lastEventSeq) < BigInt(snapshot.lastEventSeq)) throw new ApiError('protocol');
-      let state = hydrateSession(this.view.state, snapshot, page.items, page.resources);
+      const previous = this.replaceHistory ? { ...this.view.state, entries: [], resources: new Map() } : this.view.state;
+      let state = hydrateSession(previous, snapshot, page.items, page.resources);
+      this.replaceHistory = false;
       state = { ...state, lastEventSeq: page.lastEventSeq };
       // The tail may include events newer than the initial WS snapshot. Replay only their
       // latest state receipts while retaining the page's already materialized timeline.

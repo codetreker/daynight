@@ -77,6 +77,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	t.Helper()
 	f := &sessionHTTPFixture{db: projectTestStore(t)}
 	f.handler = projectTestHandler(t, f.db, io.Discard)
+	extendedWorkerTestHandler(f.handler)
 	project := taskProject(t, f.handler)
 	f.task = updateHTTPTask(t, f.handler, createHTTPTask(t, f.handler, project.ID, "Web session"), map[string]any{"allowAgents": true})
 	body := workerClaimBody(f.task.Version)
@@ -95,6 +96,9 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 		t.Fatal(err)
 	}
 	f.application = application.(*sessionApplication)
+	// Live relay state is process-local: HTTP control and WebSocket traffic share the same application.
+	f.handler.Handler = RequestLogging(testLogger(), application)
+	extendedWorkerTestHandler(f.handler)
 	f.server = httptest.NewServer(RequestLogging(testLogger(), application))
 	t.Cleanup(f.server.Close)
 	t.Cleanup(func() {
@@ -176,76 +180,79 @@ func (f *sessionHTTPFixture) controller(t *testing.T, epoch string) (*websocket.
 	if err != nil {
 		t.Fatal(err)
 	}
+	state := sp.State{NativeSessionID: snapshot.Identity.NativeSessionID, InitialInputState: snapshot.InitialInputState, Synchronized: true, Activity: "initializing"}
+	sessionWSWrite(t, conn, sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}})
+	sessionWSKind(t, conn, "sync_ack")
 	return conn, snapshot
 }
 
-func TestSessionRoutesRelayPersistsAcrossHTTPInstances(t *testing.T) {
+func TestSessionRoutesContentRequiresItsOnlineController(t *testing.T) {
 	f := sessionHTTPSetup(t)
 	epoch := uuid.NewString()
 	controller, snapshot := f.controller(t, epoch)
+	online := &resourceTestHandler{Handler: f.application, token: f.handler.token, principal: f.handler.principal}
 	path := f.base + "/" + snapshot.SessionID
 	browser := sessionDial(t, f.server.URL, path+"/channel", f.handler.token, nil)
 	first := sessionWSKind(t, browser, "snapshot")
-	var initialCursor, user string
+	var initialCursor string
 	_ = json.Unmarshal(first["cursor"], &initialCursor)
-	_ = json.Unmarshal(first["userId"], &user)
-	if initialCursor == "" || user != f.handler.principal.UserID {
-		t.Fatal("missing browser identity or cursor")
-	}
-	initial, err := sp.DecodeSnapshot(first["snapshot"])
-	if err != nil || initial.Operations.CanSend {
-		t.Fatalf("initial gate bypassed %v", err)
-	}
 	native := "native-session"
 	entryID, resourceID := uuid.NewString(), uuid.NewString()
-	content := []byte("persistent resource")
+	content := []byte("local resource")
 	digest := sha256.Sum256(content)
 	hash := hex.EncodeToString(digest[:])
-	media := "text/plain"
-	size := "19"
-	state := sp.State{NativeSessionID: &native, InitialInputState: "provider_accepted", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true, Cancel: true, Respond: true}}
-	events := sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{
-		{SourceSeq: "1", Kind: "state", Payload: json.RawMessage(jsonBody(t, state))},
-		{SourceSeq: "2", Kind: "timeline_upsert", Payload: json.RawMessage(jsonBody(t, map[string]any{"entryId": entryID, "revision": "1", "kind": "assistant_message", "content": []any{map[string]any{"type": "text", "text": "Saved output"}, map[string]any{"type": "resource", "resourceId": resourceID, "label": "Output"}}}))},
-		{SourceSeq: "3", Kind: "resource", Payload: json.RawMessage(jsonBody(t, sp.Resource{ResourceID: resourceID, Status: "pending", Name: "output.txt", MediaType: &media, ByteLength: &size, SHA256: &hash}))},
-	}}
-	sessionWSWrite(t, controller, events)
-	sessionWSKind(t, controller, "events_ack")
-	// Retrying a committed batch after a lost ACK must not duplicate history.
-	sessionWSWrite(t, controller, events)
-	sessionWSKind(t, controller, "events_ack")
-	page := decodeResponse[struct {
-		Items []json.RawMessage `json:"items"`
-	}](t, projectRequest(f.handler, http.MethodGet, path+"/timeline?direction=tail&limit=10", ""), http.StatusOK)
-	if len(page.Items) != 1 {
-		t.Fatalf("duplicated timeline entries: %d", len(page.Items))
-	}
-	if _, err = sp.DecodeTimeline(page.Items[0]); err != nil {
+	media, size := "text/plain", strconv.Itoa(len(content))
+	descriptor := sp.Resource{ResourceID: resourceID, Status: "available", Name: "output.txt", MediaType: &media, ByteLength: &size, SHA256: &hash}
+	entry, err := sp.DecodeTimeline([]byte(jsonBody(t, map[string]any{"entryId": entryID, "entrySeq": "1", "revision": "1", "kind": "assistant_message", "content": []any{map[string]any{"type": "text", "text": "Local output"}, map[string]any{"type": "resource", "resourceId": resourceID, "label": "Output"}}})))
+	if err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodPut, "/api/v1/controller-resources/"+resourceID, strings.NewReader(string(content)))
-	request.Header.Set("Authorization", "Bearer "+f.grant.Token)
-	request.Header.Set("Daynight-Connection-Epoch", snapshot.ConnectionEpoch)
-	upload := httptest.NewRecorder()
-	f.handler.ServeHTTP(upload, request)
-	decodeResponse[map[string]any](t, upload, http.StatusOK)
-	other := projectTestHandler(t, f.db, io.Discard)
-	download := projectRequest(other, http.MethodGet, path+"/resources/"+resourceID+"/content", "")
+	state := sp.State{NativeSessionID: &native, InitialInputState: "provider_accepted", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true, Cancel: true, Respond: true}}
+	events := sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: json.RawMessage(jsonBody(t, state))}, {SourceSeq: "2", Kind: "timeline_upsert", Payload: json.RawMessage(jsonBody(t, entry))}, {SourceSeq: "3", Kind: "resource", Payload: json.RawMessage(jsonBody(t, descriptor))}}}
+	sessionWSWrite(t, controller, events)
+	sessionWSKind(t, controller, "events_ack")
+	sessionWSWrite(t, controller, events)
+	sessionWSKind(t, controller, "events_ack")
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() { done <- projectRequest(online, http.MethodGet, path+"/timeline?direction=tail&limit=10", "") }()
+	request := sessionWSKind(t, controller, "content_request")
+	var requestID, historyEpoch string
+	_ = json.Unmarshal(request["requestId"], &requestID)
+	_ = json.Unmarshal(request["historyEpoch"], &historyEpoch)
+	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "content_response", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, RequestID: requestID, SourceThrough: "3", ContentResult: &sp.ContentResult{Kind: "timeline", HistoryEpoch: historyEpoch, Items: []sp.TimelineEntry{entry}, Resources: []sp.Resource{descriptor}}})
+	page := decodeResponse[struct {
+		Items []json.RawMessage `json:"items"`
+	}](t, <-done, http.StatusOK)
+	if len(page.Items) != 1 {
+		t.Fatal("local page missing")
+	}
+	go func() { done <- projectRequest(online, http.MethodGet, path+"/resources/"+resourceID+"/content", "") }()
+	request = sessionWSKind(t, controller, "content_request")
+	_ = json.Unmarshal(request["requestId"], &requestID)
+	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "content_response", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, RequestID: requestID, SourceThrough: "3", ContentResult: &sp.ContentResult{Kind: "resource", Resource: &descriptor, Offset: "0", Data: base64.StdEncoding.EncodeToString(content), EOF: true}})
+	download := <-done
 	if download.Code != http.StatusOK || download.Body.String() != string(content) || download.Header().Get("X-Content-Type-Options") != "nosniff" {
-		t.Fatalf("cross-instance resource: %d %s", download.Code, download.Body)
+		t.Fatalf("local resource %d %s", download.Code, download.Body)
+	}
+	other := projectTestHandler(t, f.db, io.Discard)
+	if response := projectRequest(other, http.MethodGet, path+"/timeline?direction=tail&limit=10", ""); response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("another instance exposed local history: %d", response.Code)
+	}
+	for _, table := range []string{"session_events", "session_timeline", "session_resources"} {
+		var n int
+		if err = f.db.Pool.QueryRow(context.Background(), "SELECT count(*) FROM "+table+" WHERE session_id=$1", snapshot.SessionID).Scan(&n); err != nil || n != 0 {
+			t.Fatalf("new session stored body in %s: %d %v", table, n, err)
+		}
 	}
 	command := sp.Command{Fence: snapshot.Fence, Protocol: sp.Protocol, RequestID: "session-http", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"Continue"}],"expectedTurnId":null}`)}
 	accepted := decodeResponse[struct {
 		Operation sp.Operation `json:"operation"`
 		URL       string       `json:"operationUrl"`
-	}](t, projectRequest(other, http.MethodPost, path+"/commands", jsonBody(t, command)), http.StatusAccepted)
-	if accepted.Operation.State != "accepted" || accepted.URL == "" {
-		t.Fatal("HTTP acknowledged native completion")
-	}
+	}](t, projectRequest(online, http.MethodPost, path+"/commands", jsonBody(t, command)), http.StatusAccepted)
 	offer := sessionWSKind(t, controller, "operation_offer")
 	var offered sp.Command
 	if json.Unmarshal(offer["command"], &offered) != nil || offered.OperationID != command.OperationID {
-		t.Fatal("wrong native intent offered")
+		t.Fatal("wrong native intent")
 	}
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "operation_begin", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, OperationID: command.OperationID})
 	sessionWSKind(t, controller, "operation_authorized")
@@ -256,18 +263,13 @@ func TestSessionRoutesRelayPersistsAcrossHTTPInstances(t *testing.T) {
 		Operation sp.Operation `json:"operation"`
 	}](t, projectRequest(other, http.MethodGet, accepted.URL, ""), http.StatusOK)
 	if got.Operation.State != "confirmed" {
-		t.Fatal("receipt not durable")
+		t.Fatal("receipt ledger missing")
 	}
 	reconnected := sessionDial(t, f.server.URL, path+"/channel?after="+initialCursor, f.handler.token, nil)
-	replay := sessionWSKind(t, reconnected, "snapshot")
-	var replayCursor string
-	_ = json.Unmarshal(replay["cursor"], &replayCursor)
-	if replayCursor != initialCursor {
-		t.Fatal("reconnect skipped requested cursor")
-	}
+	sessionWSKind(t, reconnected, "snapshot")
 	frame := sessionWSKind(t, reconnected, "event")
-	if _, err := sp.DecodeEvent(frame["event"]); err != nil {
-		t.Fatal("invalid durable event", err)
+	if _, err = sp.DecodeEvent(frame["event"]); err != nil {
+		t.Fatal(err)
 	}
 	if _, err = f.db.Pool.Exec(context.Background(), `DELETE FROM personal_access_tokens WHERE id=$1`, f.handler.principal.CredentialID); err != nil {
 		t.Fatal(err)
@@ -275,13 +277,12 @@ func TestSessionRoutesRelayPersistsAcrossHTTPInstances(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	for {
-		_, _, err = controller.Read(ctx)
-		if err != nil {
+		if _, _, err = controller.Read(ctx); err != nil {
 			break
 		}
 	}
 	if ctx.Err() != nil {
-		t.Fatal("revoked controller grant retained access")
+		t.Fatal("revoked controller retained access")
 	}
 }
 
@@ -299,7 +300,7 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 		{http.MethodGet, path + "/timeline?limit=201", "", 400}, {http.MethodGet, path + "/timeline?direction=before", "", 400}, {http.MethodGet, path + "/timeline?x=1", "", 400},
 		{http.MethodGet, path + "/operations/" + uuid.NewString() + "?x=1", "", 400},
 		{http.MethodGet, path + "/resources/" + uuid.NewString() + "/content?x=1", "", 400},
-		{http.MethodGet, path + "/resources/" + uuid.NewString() + "/content", "", 404},
+		{http.MethodGet, path + "/resources/" + uuid.NewString() + "/content", "", 503},
 		{http.MethodGet, strings.Replace(f.base, "/projects/"+f.task.ProjectID, "/projects/invalid", 1) + "/current", "", 400},
 		{http.MethodDelete, f.base, "", 405}, {http.MethodHead, f.base + "/current", "", 405},
 	} {
@@ -328,7 +329,7 @@ func TestSessionRoutesRejectInvalidHTTPInputs(t *testing.T) {
 	}
 	command := sp.Command{Fence: f.snapshot.Fence, Protocol: sp.Protocol, RequestID: "initial", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"Too soon"}],"expectedTurnId":null}`)}
 	response := projectRequest(f.handler, http.MethodPost, path+"/commands", jsonBody(t, command))
-	if response.Code != 409 {
+	if response.Code != 503 {
 		t.Fatalf("initial gate HTTP status: %d %s", response.Code, response.Body)
 	}
 	for _, test := range []struct {
@@ -433,21 +434,21 @@ func TestSessionRoutesBrowserHistoryResetClosesOldCursorAndRecovers(t *testing.T
 	if err := json.Unmarshal(first["cursor"], &oldCursor); err != nil || oldCursor == "" {
 		t.Fatalf("initial cursor: %s, %v", first["cursor"], err)
 	}
-	// Rotate persisted history after the socket has captured its cursor, as a
-	// history replacement would. Source resets alone preserve historyEpoch.
-	historyEpoch := uuid.NewString()
-	if _, err := f.db.Pool.Exec(context.Background(), `UPDATE task_sessions SET snapshot=jsonb_set(snapshot,'{historyEpoch}',to_jsonb($2::text)) WHERE id=$1`, snapshot.SessionID, historyEpoch); err != nil {
-		t.Fatal(err)
-	}
+	// A disconnected browser may resume after the bounded live event ring has
+	// evicted its cursor. History stays local and retains its identity.
+	_ = browser.CloseNow()
+	historyEpoch := snapshot.HistoryEpoch
 	writeEntry := func(seq string) string {
 		entryID := uuid.NewString()
 		sessionWSWrite(t, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: sourceEpoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{
-			{SourceSeq: seq, Kind: "timeline_upsert", Payload: json.RawMessage(jsonBody(t, map[string]any{"entryId": entryID, "revision": "1", "kind": "reasoning", "text": "Output in the replacement history"}))},
+			{SourceSeq: seq, Kind: "timeline_upsert", Payload: json.RawMessage(jsonBody(t, map[string]any{"entryId": entryID, "revision": "1", "kind": "reasoning", "text": strings.Repeat("x", 100*1024)}))},
 		}})
 		sessionWSKind(t, controller, "events_ack")
 		return entryID
 	}
-	writeEntry("1")
+	for seq := 1; seq <= 24; seq++ {
+		writeEntry(strconv.Itoa(seq))
+	}
 	assertResetAndClosed := func(conn *websocket.Conn) {
 		t.Helper()
 		frame := sessionWSRead(t, conn)
@@ -465,11 +466,11 @@ func TestSessionRoutesBrowserHistoryResetClosesOldCursorAndRecovers(t *testing.T
 			t.Fatalf("reset must close without further cursor traffic: frame=%s error=%v context=%v", data, err, ctx.Err())
 		}
 	}
-	assertResetAndClosed(browser)
 	stale := sessionDial(t, f.server.URL, path+"/channel?after="+oldCursor, f.handler.token, nil)
 	assertResetAndClosed(stale)
 
 	recovered := sessionDial(t, f.server.URL, path+"/channel", f.handler.token, nil)
+	recovered.SetReadLimit(sp.MaxFrameBytes)
 	frame := sessionWSKind(t, recovered, "snapshot")
 	current, err := sp.DecodeSnapshot(frame["snapshot"])
 	if err != nil || current.HistoryEpoch != historyEpoch {
@@ -479,7 +480,7 @@ func TestSessionRoutesBrowserHistoryResetClosesOldCursorAndRecovers(t *testing.T
 	if err := json.Unmarshal(frame["cursor"], &freshCursor); err != nil || freshCursor == "" || freshCursor == oldCursor {
 		t.Fatalf("replacement cursor: %s, %v", frame["cursor"], err)
 	}
-	entryID := writeEntry("2")
+	entryID := writeEntry("25")
 	frame = sessionWSKind(t, recovered, "event")
 	event, err := sp.DecodeEvent(frame["event"])
 	if err != nil || event.HistoryEpoch != historyEpoch || event.Kind != "timeline_upsert" {

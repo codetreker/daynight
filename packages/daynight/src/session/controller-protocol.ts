@@ -14,28 +14,38 @@ export type OperationResponse = { readonly operation: SessionOperation };
 export type CommandResponse = OperationResponse & { readonly operationUrl: string };
 export type ControllerState = Pick<SessionSnapshot, "controls" | "turnStartedAt"> & { readonly cleanupInteractionIds?: readonly string[]; readonly nativeSessionId: string | null; readonly initialInputState: SessionSnapshot["initialInputState"]; readonly synchronized: boolean; readonly activity: SessionSnapshot["activity"]; readonly currentTurnId: string | null; readonly capabilities: SessionCapabilities };
 type WithoutEntrySeq<T> = T extends unknown ? Omit<T, "entrySeq"> : never;
-export type SourceTimelineEntry = WithoutEntrySeq<TimelineEntry>;
+export type SourceTimelineEntry = WithoutEntrySeq<TimelineEntry> & { readonly entrySeq?: DecimalSequence };
 export type SourceEvent = { readonly sourceSeq: DecimalSequence } & (
   | { readonly kind: "state"; readonly payload: ControllerState }
   | { readonly kind: "timeline_upsert"; readonly payload: SourceTimelineEntry }
   | { readonly kind: "resource"; readonly payload: SessionResource }
   | { readonly kind: "gap"; readonly payload: { readonly reason: string } });
 export type Reconciliation = { readonly operationId: string; readonly state: "not_submitted" | "dispatching" | "provider_accepted" | "confirmed" | "failed" | "rejected" | "expired" | "unknown"; readonly providerResult: SessionOperation["providerResult"]; readonly error: SessionOperation["error"] };
-export type ControllerHello = Wire & SessionFence & { readonly type: "hello"; readonly schemaVersion: 1; readonly projectionVersion: 1; readonly controllerId: string; readonly controllerInstanceId: string; readonly provider: SessionProvider; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence };
+export type ContentRequest = { readonly requestId: string } & (
+  | { readonly kind: "timeline"; readonly historyEpoch: string; readonly direction: "tail" | "before" | "after"; readonly cursor: string | null; readonly limit: number }
+  | { readonly kind: "resource"; readonly resourceId: string; readonly offset: string; readonly limit: number });
+export type ContentResult = (Omit<TimelinePage, "sessionId" | "lastEventSeq"> & { readonly kind: "timeline" })
+  | { readonly kind: "resource"; readonly resource: SessionResource; readonly offset: string; readonly data: string; readonly eof: boolean };
+export type ContentResponse = { readonly requestId: string; readonly sourceThrough: string; readonly result: ContentResult | null; readonly error: { readonly code: string; readonly message: string } | null };
+export type ControllerHello = Wire & SessionFence & { readonly type: "hello"; readonly schemaVersion: 1; readonly projectionVersion: 1; readonly controllerId: string; readonly controllerInstanceId: string; readonly provider: SessionProvider; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly sourceFloor?: DecimalSequence };
 export type ControllerMessage = ControllerHello | (Wire & ControllerFence & (
   | { readonly type: "events"; readonly batchId: string; readonly sourceEpoch: string; readonly events: readonly SourceEvent[] }
   | { readonly type: "source_reset"; readonly previousSourceEpoch: string; readonly newSourceEpoch: string; readonly reason: string }
   | { readonly type: "operation_begin"; readonly operationId: string }
   | { readonly type: "operation_receipt"; readonly operation: SessionOperation }
   | { readonly type: "reconcile"; readonly final: boolean; readonly operations: readonly Reconciliation[] }
+  | { readonly type: "sync_state"; readonly state: ControllerState; readonly pendingInteractions: readonly TimelineEntry[] }
+  | ({ readonly type: "content_response" } & ContentResponse)
   | { readonly type: "heartbeat" }));
-export type RelayMessage = (Wire & { readonly type: "welcome"; readonly connectionEpoch: DecimalSequence; readonly session: SessionSnapshot; readonly lastAckedSourceSeq: DecimalSequence; readonly limits: typeof RELAY_LIMITS }) | (Wire & ControllerFence & (
+export type RelayMessage = (Wire & { readonly type: "welcome"; readonly connectionEpoch: DecimalSequence; readonly session: SessionSnapshot; readonly lastAckedSourceSeq: DecimalSequence; readonly limits: typeof RELAY_LIMITS; readonly requiresLiveSync?: true }) | (Wire & ControllerFence & (
   | { readonly type: "events_ack"; readonly batchId: string; readonly sourceEpoch: string; readonly lastAckedSourceSeq: DecimalSequence; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "source_reset_ack"; readonly sourceEpoch: string; readonly lastEventSeq: DecimalSequence }
   | { readonly type: "operation_offer"; readonly operationSeq: DecimalSequence; readonly command: SessionCommand }
   | { readonly type: "operation_authorized"; readonly operationId: string }
   | { readonly type: "receipt_ack"; readonly operation: SessionOperation }
   | { readonly type: "reconcile_result"; readonly operations: readonly SessionOperation[] }
+  | { readonly type: "sync_ack" }
+  | ({ readonly type: "content_request" } & ContentRequest)
   | { readonly type: "heartbeat_ack" }
   | { readonly type: "error"; readonly code: string; readonly message: string }));
 export type BrowserMessage = Wire & (
@@ -103,19 +113,28 @@ export const parseSourceEvent = (x: unknown): SourceEvent => {
   if (o.kind === "state") return { sourceSeq, kind: "state", payload: parseControllerState(o.payload) };
   if (o.kind === "resource") return { sourceSeq, kind: "resource", payload: parseSessionResource(o.payload) };
   if (o.kind === "gap") return { sourceSeq, kind: "gap", payload: { reason: str(obj(o.payload, ["reason"]).reason, 1_048_576) } };
-  if (o.kind !== "timeline_upsert" || !o.payload || typeof o.payload !== "object" || "entrySeq" in o.payload) return fail();
-  const { entrySeq: ignored, ...payload } = parseTimelineEntry({ ...o.payload, entrySeq: "1" });
-  void ignored;
-  return { sourceSeq, kind: "timeline_upsert", payload };
+  if (o.kind !== "timeline_upsert" || !o.payload || typeof o.payload !== "object") return fail();
+  const { entrySeq, ...payload } = parseTimelineEntry({ ...o.payload, entrySeq: "entrySeq" in o.payload ? o.payload.entrySeq : "1" });
+  return { sourceSeq, kind: "timeline_upsert", payload: { ...payload, ...("entrySeq" in o.payload ? { entrySeq } : {}) } };
+};
+const parseContentResult = (value: unknown): ContentResult => {
+  if (!value || typeof value !== "object" || !("kind" in value)) return fail();
+  if (value.kind === "timeline") {
+    const o = obj(value, ["kind", "historyEpoch", "items", "resources", "beforeCursor", "afterCursor", "hasMoreBefore", "hasMoreAfter"]);
+    return { kind: "timeline", historyEpoch: id(o.historyEpoch), items: list(o.items, parseTimelineEntry, 200), resources: list(o.resources, parseSessionResource, 1000), beforeCursor: nullable(o.beforeCursor, str), afterCursor: nullable(o.afterCursor, str), hasMoreBefore: bool(o.hasMoreBefore), hasMoreAfter: bool(o.hasMoreAfter) };
+  }
+  const o = obj(value, ["kind", "resource", "offset", "data", "eof"]);
+  if (o.kind !== "resource" || typeof o.data !== "string" || o.data.length > 699052 || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(o.data)) return fail();
+  return { kind: "resource", resource: parseSessionResource(o.resource), offset: seq(o.offset, true), data: o.data, eof: bool(o.eof) };
 };
 export const parseControllerMessage = (x: unknown): ControllerMessage => {
   if (!x || typeof x !== "object" || !("type" in x)) return fail();
   if (x.type === "hello") {
-    const o = obj(x, ["type", "protocol", "schemaVersion", "projectionVersion", "sessionId", ...sessionBindingKeys(x), "executionGeneration", "controllerId", "controllerInstanceId", "provider", "sourceEpoch", "lastAckedSourceSeq"]);
+    const o = obj(x, ["type", "protocol", "schemaVersion", "projectionVersion", "sessionId", ...sessionBindingKeys(x), "executionGeneration", "controllerId", "controllerInstanceId", "provider", "sourceEpoch", "lastAckedSourceSeq", ...("sourceFloor" in x ? ["sourceFloor"] : [])]);
     if (o.schemaVersion !== 1 || o.projectionVersion !== 1) return fail();
-    return { type: "hello", protocol: protocol(o.protocol), schemaVersion: 1, projectionVersion: 1, sessionId: id(o.sessionId), ...sessionBinding(o), executionGeneration: seq(o.executionGeneration), controllerId: id(o.controllerId), controllerInstanceId: id(o.controllerInstanceId), provider: choice(o.provider, ["codex", "claude", "copilot"]), sourceEpoch: id(o.sourceEpoch), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true) };
+    return { type: "hello", protocol: protocol(o.protocol), schemaVersion: 1, projectionVersion: 1, sessionId: id(o.sessionId), ...sessionBinding(o), executionGeneration: seq(o.executionGeneration), controllerId: id(o.controllerId), controllerInstanceId: id(o.controllerInstanceId), provider: choice(o.provider, ["codex", "claude", "copilot"]), sourceEpoch: id(o.sourceEpoch), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), ...("sourceFloor" in o ? { sourceFloor: seq(o.sourceFloor, true) } : {}) };
   }
-  const extras: Record<string, readonly string[]> = { events: ["batchId", "sourceEpoch", "events"], source_reset: ["previousSourceEpoch", "newSourceEpoch", "reason"], operation_begin: ["operationId"], operation_receipt: ["operation"], reconcile: ["operations", "final"], heartbeat: [] };
+  const extras: Record<string, readonly string[]> = { events: ["batchId", "sourceEpoch", "events"], source_reset: ["previousSourceEpoch", "newSourceEpoch", "reason"], operation_begin: ["operationId"], operation_receipt: ["operation"], reconcile: ["operations", "final"], sync_state: ["state", "pendingInteractions"], content_response: ["requestId", "sourceThrough", "result", "error"], heartbeat: [] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
   const o = obj(x, ["type", "protocol", ...fenceKeys(x), ...extras[x.type]!]), base = { protocol: protocol(o.protocol), ...fence(o) };
   switch (x.type) {
@@ -123,6 +142,15 @@ export const parseControllerMessage = (x: unknown): ControllerMessage => {
     case "source_reset": return { ...base, type: "source_reset", previousSourceEpoch: id(o.previousSourceEpoch), newSourceEpoch: id(o.newSourceEpoch), reason: str(o.reason, 1_048_576) };
     case "operation_begin": return { ...base, type: "operation_begin", operationId: id(o.operationId) };
     case "operation_receipt": { const operation = parseSessionOperation(o.operation); assertSessionFence(operation, sessionFence(base)); return { ...base, type: "operation_receipt", operation }; }
+    case "sync_state": {
+      const pendingInteractions = list(o.pendingInteractions, parseTimelineEntry);
+      if (pendingInteractions.some(entry => entry.kind !== "interaction" || entry.interaction.state !== "pending") || new Set(pendingInteractions.map(entry => entry.entryId)).size !== pendingInteractions.length) return fail();
+      return { ...base, type: "sync_state", state: parseControllerState(o.state), pendingInteractions };
+    }
+    case "content_response": {
+      if ((o.result === null) === (o.error === null)) return fail();
+      return { ...base, type: "content_response", requestId: id(o.requestId), sourceThrough: seq(o.sourceThrough, true), result: nullable(o.result, parseContentResult), error: nullable(o.error, value => { const e = obj(value, ["code", "message"]); return { code: str(e.code), message: str(e.message, 4096) }; }) };
+    }
     case "heartbeat": return { ...base, type: "heartbeat" };
     case "reconcile": return { ...base, type: "reconcile", final: bool(o.final), operations: list(o.operations, x => { const p = obj(x, ["operationId", "state", "providerResult", "error"]); const state = choice(p.state, ["not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "rejected", "expired", "unknown"]); const parsed = parseSessionOperation({ protocol: SESSION_PROTOCOL, ...sessionFence(base), operationId: p.operationId, kind: "send_message", state: state === "not_submitted" ? "accepted" : state, providerResult: p.providerResult, error: p.error }); return { operationId: parsed.operationId, state, providerResult: parsed.providerResult, error: parsed.error }; }) };
   }
@@ -131,12 +159,13 @@ export const parseControllerMessage = (x: unknown): ControllerMessage => {
 export const parseRelayMessage = (x: unknown): RelayMessage => {
   if (!x || typeof x !== "object" || !("type" in x)) return fail();
   if (x.type === "welcome") {
-    const o = obj(x, ["type", "protocol", "connectionEpoch", "session", "lastAckedSourceSeq", "limits"]);
+    const o = obj(x, ["type", "protocol", "connectionEpoch", "session", "lastAckedSourceSeq", "limits", ...("requiresLiveSync" in x ? ["requiresLiveSync"] : [])]);
+    if ("requiresLiveSync" in o && o.requiresLiveSync !== true) return fail();
     const limits = obj(o.limits, Object.keys(RELAY_LIMITS));
     for (const [k, v] of Object.entries(RELAY_LIMITS)) if (limits[k] !== v) return fail();
-    return { type: "welcome", protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session: parseSessionSnapshot(o.session), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS };
+    return { type: "welcome", protocol: protocol(o.protocol), connectionEpoch: seq(o.connectionEpoch), session: parseSessionSnapshot(o.session), lastAckedSourceSeq: seq(o.lastAckedSourceSeq, true), limits: RELAY_LIMITS, ...("requiresLiveSync" in o ? { requiresLiveSync: true as const } : {}) };
   }
-  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId"], receipt_ack: ["operation"], reconcile_result: ["operations"], heartbeat_ack: [], error: ["code", "message"] };
+  const extras: Record<string, readonly string[]> = { events_ack: ["batchId", "sourceEpoch", "lastAckedSourceSeq", "lastEventSeq"], source_reset_ack: ["sourceEpoch", "lastEventSeq"], operation_offer: ["operationSeq", "command"], operation_authorized: ["operationId"], receipt_ack: ["operation"], reconcile_result: ["operations"], sync_ack: [], content_request: ["requestId", "kind", ...("kind" in x && x.kind === "timeline" ? ["historyEpoch", "direction", "cursor", "limit"] : ["resourceId", "offset", "limit"])], heartbeat_ack: [], error: ["code", "message"] };
   if (typeof x.type !== "string" || !Object.hasOwn(extras, x.type)) return fail();
   const o = obj(x, ["type", "protocol", ...fenceKeys(x), ...extras[x.type]!]), base = { protocol: protocol(o.protocol), ...fence(o) };
   switch (x.type) {
@@ -153,6 +182,19 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
         assertSessionFence(operation, { ...sessionFence(base), executionGeneration: operation.executionGeneration });
       }
       return { ...base, type: "reconcile_result", operations };
+    }
+    case "sync_ack": return { ...base, type: "sync_ack" };
+    case "content_request": {
+      if (typeof o.limit !== "number" || !Number.isSafeInteger(o.limit) || o.limit < 1) return fail();
+      if (o.kind === "timeline") {
+        if (o.limit > 200) return fail();
+        const direction = choice(o.direction, ["tail", "before", "after"]);
+        const cursor = nullable(o.cursor, str);
+        if ((direction === "tail") !== (cursor === null)) return fail();
+        return { ...base, type: "content_request", requestId: id(o.requestId), kind: "timeline", historyEpoch: id(o.historyEpoch), direction, cursor, limit: o.limit };
+      }
+      if (o.kind !== "resource" || o.limit > 524288) return fail();
+      return { ...base, type: "content_request", requestId: id(o.requestId), kind: "resource", resourceId: id(o.resourceId), offset: seq(o.offset, true), limit: o.limit };
     }
     case "heartbeat_ack": return { ...base, type: "heartbeat_ack" };
     case "error": return { ...base, type: "error", code: str(o.code), message: str(o.message, 1_048_576) };
