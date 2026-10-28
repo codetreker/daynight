@@ -939,7 +939,7 @@ settings and configure worker directly:
 worker:
   repositoryRoot: ~/daynights
   maxConcurrent: 1
-  pollIntervalMs: 5000
+  pollIntervalMs: 60000
   recoveryLimit: 3
   agent: copilot
   model: null
@@ -974,7 +974,9 @@ Entry paths are absolute or relative to the configuration directory, never the
 launch directory. They do not expand tilde or accept Windows drive-relative
 paths. Duplicate repositories/Projects and overlapping repository/state paths
 are errors. maxConcurrent is positive, recoveryLimit is nonnegative, and
-pollIntervalMs is a positive safe integer within the timer range.
+pollIntervalMs is a positive safe integer within the timer range. After each
+reconciliation round completes, the worker waits this interval (60 seconds by
+default). Explicit values, including 5000 for a 5-second wait, remain unchanged.
 
 Repository agent settings override fields independently for the same type.
 Explicit null model or [] args clears that field; switching type clears omitted

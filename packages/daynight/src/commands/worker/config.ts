@@ -34,7 +34,7 @@ export type WorkerConfigurationSnapshot = ServerConfiguration & {
 export const workerConfigurationDefaults = Object.freeze({
   repositoryRoot: defaultRepositoryRoot,
   maxConcurrent: 1,
-  pollIntervalMs: 5_000,
+  pollIntervalMs: 60_000,
   recoveryLimit: 3,
   agent: "copilot" as const,
 });
