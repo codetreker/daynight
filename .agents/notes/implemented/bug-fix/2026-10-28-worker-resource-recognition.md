@@ -62,10 +62,12 @@ managed stopping continues to retain the daemon with a visible error.
 
 A repository-change check may start or reconnect the private daemon for resource
 observation before mappings are saved. It does not launch a native agent or run
-native-launch preflight. If startup or manual-control initialization fails, only
-a daemon newly started by that initialization and freshly observed with no
-managed or unmanaged workspace is stopped. A reconnected daemon, restored
-managed or manual workspace, or failed observation is retained.
+native-launch preflight. If runtime or manual control fails, failure cleanup
+stops only a newly started daemon freshly observed with no managed or unmanaged
+workspace and no pending process-stop responsibility. Pending stops are checked
+without Project filtering and retain the instance even after every visible
+workspace has closed. A reconnected daemon, restored managed or manual workspace,
+or failed observation is retained.
 
 This partially supersedes the global discovery failure and unproven-resource
 diagnostics in the [Git workspace decision](../architecture/2026-10-26-worker-git-workspaces.md)

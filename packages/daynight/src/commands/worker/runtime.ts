@@ -75,7 +75,7 @@ const throwFailures = (failures: readonly unknown[]): void => {
   if (failures.length > 1) throw new AggregateError(failures, "Worker operation and resource cleanup failed.");
 };
 
-const createStartupResources = (options: {
+const createRuntimeResources = (options: {
   store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter;
   remote: WorkerRemote; workerId: string; signal: AbortSignal;
 }) => {
@@ -98,8 +98,8 @@ const createStartupResources = (options: {
         if (claims.length > 0 || workspaces.length > 0 || worktrees.length > 0) throw new Error("Owned resources prevent changing the project's original repository binding.");
       } finally { operation.dispose(); }
     },
-    cleanupUnusedInstance: async (): Promise<void> => {
-      if (!startedInstance) return;
+    cleanupAfterFailure: async (): Promise<void> => {
+      if (!startedInstance || options.herdr.tasks.pendingStops().length > 0) return;
       const operation = createOperation({ limits: { totalMs: 30_000 } });
       try {
         if ((await options.herdr.tasks.listResources(operation)).length === 0 && !await options.herdr.tasks.hasUnmanagedWorkspaces(operation)) await options.herdr.stopInstance(operation);
@@ -123,7 +123,7 @@ export const runWorker = async (options: {
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
   let herdr: ReturnType<typeof createWorkerHerdr> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
-  let startupResources: ReturnType<typeof createStartupResources> | undefined;
+  let runtimeResources: ReturnType<typeof createRuntimeResources> | undefined;
   const failures: unknown[] = [];
   try {
     signal.throwIfAborted();
@@ -152,12 +152,12 @@ export const runWorker = async (options: {
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     const resourceStore = store;
     herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, acceptsOwner: (owner) => resourceStore.getProject(owner) !== null });
-    startupResources = createStartupResources({ store, git, herdr, remote, workerId, signal });
+    runtimeResources = createRuntimeResources({ store, git, herdr, remote, workerId, signal });
     const repositories: WorkerRepositoryAssignment[] = [];
     for (const repository of configuration.repositories) {
       const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
       const previous = store.getProject({ projectId: project.id });
-      if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) await startupResources.assertRepositoryChange(previous);
+      if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) await runtimeResources.assertRepositoryChange(previous);
       repositories.push({ project: { projectId: project.id, repoUrl: repository.remote, localPath: repository.path }, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
     }
     for (const repository of repositories) {
@@ -201,11 +201,11 @@ export const runWorker = async (options: {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
         if (!await coordinator.shutdown()) throw new Error("Some task agents could not stop; the private Herdr instance was retained.");
         const operation = createOperation({ limits: { totalMs: 30_000 } });
-        try { if (!await herdr.tasks.hasUnmanagedWorkspaces(operation)) await herdr.stopInstance(operation); }
+        try { if (herdr.tasks.pendingStops().length === 0 && !await herdr.tasks.hasUnmanagedWorkspaces(operation)) await herdr.stopInstance(operation); }
         finally { operation.dispose(); }
       } catch (error) { failures.push(error); }
     } else {
-      try { await startupResources?.cleanupUnusedInstance(); } catch (error) { failures.push(error); }
+      try { await runtimeResources?.cleanupAfterFailure(); } catch (error) { failures.push(error); }
     }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
@@ -228,7 +228,7 @@ export const runWorkerControl = async (options: {
   let store: ReturnType<typeof openWorkerStore> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
-  let startupResources: ReturnType<typeof createStartupResources> | undefined;
+  let runtimeResources: ReturnType<typeof createRuntimeResources> | undefined;
   let completed = false;
   const failures: unknown[] = [];
   try {
@@ -247,12 +247,12 @@ export const runWorkerControl = async (options: {
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     const resourceStore = store;
     const herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, acceptsOwner: (owner) => resourceStore.getProject(owner) !== null });
-    startupResources = createStartupResources({ store, git, herdr, remote, workerId, signal });
+    runtimeResources = createRuntimeResources({ store, git, herdr, remote, workerId, signal });
     const repositories: WorkerRepositoryAssignment[] = [];
     for (const repository of configuration.repositories) {
       const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
       const previous = store.getProject({ projectId: project.id });
-      if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) await startupResources.assertRepositoryChange(previous);
+      if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) await runtimeResources.assertRepositoryChange(previous);
       repositories.push({ project: { projectId: project.id, repoUrl: repository.remote, localPath: repository.path }, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
     }
     for (const repository of repositories) store.registerProject(repository.project);
@@ -272,7 +272,7 @@ export const runWorkerControl = async (options: {
   } catch (error) { failures.push(error); }
   finally {
     if (!completed) {
-      try { await startupResources?.cleanupUnusedInstance(); } catch (error) { failures.push(error); }
+      try { await runtimeResources?.cleanupAfterFailure(); } catch (error) { failures.push(error); }
     }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }

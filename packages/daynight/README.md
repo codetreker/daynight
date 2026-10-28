@@ -1210,7 +1210,9 @@ ended claims. External temporary resources may remain after direct interruption.
 Normal completion, release, withdrawal and manual-control cleanup retain their
 notification and removal sequence. Pending stop confirmations must settle before the private
 Herdr instance can stop; stop errors remain visible, and uncertain stopping retains
-that instance and the affected resources. Independent human workspaces in the
+that instance and the affected resources. Any pending process-stop responsibility
+retains the instance even when no workspace is visible, including during failure
+cleanup. Independent human workspaces in the
 private session survive task cleanup and worker exit. If any unmanaged workspace
 remains after managed stopping, the daemon stays running without a shutdown error;
 attachment remains available and the next run reconnects. A recognized managed

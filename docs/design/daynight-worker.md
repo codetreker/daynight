@@ -96,7 +96,7 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 
 ## 启动、发现与周期对账
 
-启动先取得实例锁、稳定身份并核验账号，再解析当前配置的 Project，完成旧绑定的资源核验后保存 projects。改绑核验可以提前启动或重连私有 daemon 以观察其实际资源，但不启动 native agent 或运行原生启动 preflight。初始化失败时只关闭本次新启动且重新确认没有受管或未受管 workspace 的空 daemon；既有 daemon、恢复出的受管或人工 workspace，以及无法完成观察的实例均保留。首次正常对账的完整清单查询范围为当前配置项目与已有 projects 的并集；空数据库也先完成映射，才能找回原 worker 已有的 claim。
+启动先取得实例锁、稳定身份并核验账号，再解析当前配置的 Project，完成旧绑定的资源核验后保存 projects。改绑核验可以提前启动或重连私有 daemon 以观察其实际资源，但不启动 native agent 或运行原生启动 preflight。运行或人工管理失败后的资源收尾，只关闭本次新启动、没有任何待确认进程停止责任、且重新确认没有受管或未受管 workspace 的空 daemon；待确认停止责任不按项目过滤，即使可见 workspace 已关闭也须保留实例。既有 daemon、恢复出的受管或人工 workspace，以及无法完成观察的实例均保留。首次正常对账的完整清单查询范围为当前配置项目与已有 projects 的并集；空数据库也先完成映射，才能找回原 worker 已有的 claim。
 
 ```text
 完整读取自己的远端 claim 清单，补齐 SQLite 中的实际 claim

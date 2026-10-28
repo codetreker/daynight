@@ -43,7 +43,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async () => ({ id: uuid(1) })), ownInventory: vi.fn(async () => []) });
   mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}) });
-  mocks.herdr.mockReturnValue({ ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(async () => ({ stopped: true })), tasks: { listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) }, attachment: {} });
+  mocks.herdr.mockReturnValue({ ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(async () => ({ stopped: true })), tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) }, attachment: {} });
   mocks.prompt.mockResolvedValue(() => "prompt");
   mocks.coordinator.mockReturnValue(coordinator(async () => {}));
 });
@@ -123,7 +123,7 @@ describe("worker repository preparation lifecycle", () => {
     const previous = { projectId: f.repository.projectId, repoUrl: f.repository.remote, localPath: path.join(f.homeDirectory, "previous-repo") }; f.store!.registerProject(previous);
     const owner = { projectId: previous.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(5) };
     const workspace = { owner, workspaceId: "original-workspace", panes: [{ binding: { session: "w", workspaceId: "original-workspace", paneId: "original-pane", terminalId: "original-terminal" }, cwd: path.join(previous.localPath, ".worktrees", "daynight", owner.taskId) }] };
-    const native = { ensureInstance: vi.fn(async () => ({ reconnected: true })), stopInstance: vi.fn(), tasks: { listResources: vi.fn(async () => proof === "private Herdr" ? [workspace] : []), hasUnmanagedWorkspaces: vi.fn() } };
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected: true })), stopInstance: vi.fn(), tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => proof === "private Herdr" ? [workspace] : []), hasUnmanagedWorkspaces: vi.fn() } };
     mocks.herdr.mockReturnValue(native);
     const remote = { currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async ({ projectId }: { projectId: string }) => ({ id: projectId })), ownInventory: vi.fn(async () => proof === "current claim" ? [{ projectId: owner.projectId, id: owner.taskId, properties: { worker: { ...owner, workerId, state: "active" } } }] : []) };
     mocks.remote.mockReturnValue(remote);
@@ -152,7 +152,7 @@ describe("worker repository preparation lifecycle", () => {
     const previous = { projectId: f.repository.projectId, repoUrl: f.repository.remote, localPath: path.join(f.homeDirectory, "previous-repo") }; f.store!.registerProject(previous);
     const owner = { projectId: previous.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(5) };
     const workspaces = managed ? [{ owner, workspaceId: "restored", panes: [] }] : [];
-    const native = { ensureInstance: vi.fn(async () => ({ reconnected })), stopInstance: vi.fn(async () => {}), tasks: { listResources: vi.fn(async () => workspaces), hasUnmanagedWorkspaces: vi.fn(async () => unmanaged) } }; mocks.herdr.mockReturnValue(native);
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected })), stopInstance: vi.fn(async () => {}), tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => workspaces), hasUnmanagedWorkspaces: vi.fn(async () => unmanaged) } }; mocks.herdr.mockReturnValue(native);
     mocks.git.mockReturnValue({ listWorktrees: vi.fn(async () => []), prepareRepository: vi.fn(async () => { throw failure; }), dispose: vi.fn(async () => {}) });
     const running = runWorker(f);
     if (managed) await expect(running).rejects.toThrow("Owned resources prevent changing");
@@ -170,7 +170,7 @@ describe("worker repository preparation lifecycle", () => {
     f.store!.registerProject(previous); f.store!.registerProject(other);
     await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [f.repository, { projectId: other.projectId, remote: other.repoUrl, path: path.join(f.homeDirectory, "next-other") }] } }));
     const remote = { currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async ({ projectId }: { projectId: string }) => ({ id: projectId })), ownInventory: vi.fn(async () => []) }; mocks.remote.mockReturnValue(remote);
-    const native = { ensureInstance: vi.fn().mockResolvedValueOnce({ reconnected: false }).mockResolvedValueOnce({ reconnected: true }), stopInstance: vi.fn(async () => {}), tasks: { listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) } }; mocks.herdr.mockReturnValue(native);
+    const native = { ensureInstance: vi.fn().mockResolvedValueOnce({ reconnected: false }).mockResolvedValueOnce({ reconnected: true }), stopInstance: vi.fn(async () => {}), tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) } }; mocks.herdr.mockReturnValue(native);
     mocks.git.mockReturnValue({ listWorktrees: vi.fn(async (project: { projectId: string }) => { if (project.projectId === other.projectId) throw failure; return []; }), dispose: vi.fn(async () => {}) });
     await expect(runWorker(f)).rejects.toBe(failure);
     expect(native.ensureInstance).toHaveBeenCalledTimes(2); expect(native.stopInstance).toHaveBeenCalledOnce();
@@ -180,7 +180,7 @@ describe("worker repository preparation lifecycle", () => {
   it("retains a newly started instance when fatal-startup inventory cannot be confirmed", async () => {
     const f = await fixture(true, true); const failure = new Error("Git discovery failed."); const observationFailure = new Error("Herdr cleanup observation failed.");
     f.store!.registerProject({ projectId: f.repository.projectId, repoUrl: f.repository.remote, localPath: path.join(f.homeDirectory, "previous-repo") });
-    const native = { ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(), tasks: { listResources: vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(observationFailure), hasUnmanagedWorkspaces: vi.fn() } }; mocks.herdr.mockReturnValue(native);
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(), tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(observationFailure), hasUnmanagedWorkspaces: vi.fn() } }; mocks.herdr.mockReturnValue(native);
     mocks.git.mockReturnValue({ listWorktrees: vi.fn(async () => { throw failure; }), dispose: vi.fn(async () => {}) });
     await expect(runWorker(f)).rejects.toMatchObject({ errors: [failure, observationFailure] });
     expect(native.stopInstance).not.toHaveBeenCalled(); expect(native.tasks.hasUnmanagedWorkspaces).not.toHaveBeenCalled();
@@ -191,7 +191,7 @@ describe("worker repository preparation lifecycle", () => {
     const lifecycle = coordinator(async () => { controller.abort(new Error("Shutdown requested.")); });
     const hasUnmanagedWorkspaces = vi.fn(async () => { expect(lifecycle.shutdown).toHaveBeenCalledOnce(); return unmanaged; });
     const stopInstance = vi.fn(async () => {});
-    mocks.herdr.mockReturnValue({ stopInstance, tasks: { hasUnmanagedWorkspaces } });
+    mocks.herdr.mockReturnValue({ stopInstance, tasks: { pendingStops: vi.fn(() => []), hasUnmanagedWorkspaces } });
     mocks.coordinator.mockReturnValue(lifecycle);
     await runWorker({ ...f, signal: controller.signal, log: (message) => messages.push(message) });
     expect(hasUnmanagedWorkspaces).toHaveBeenCalledOnce();
@@ -199,11 +199,21 @@ describe("worker repository preparation lifecycle", () => {
     expect(messages.some((message) => message.includes("shutdown-error"))).toBe(false);
   });
 
+  it.each([uuid(1), uuid(900)])("retains the daemon for an unresolved stop even when its project is absent from the store: %s", async (projectId) => {
+    const f = await fixture(false, true); const controller = new AbortController();
+    const pending = [{ context: { projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(5), cwd: path.join(f.homeDirectory, "worktree") }, binding: { session: "w", workspaceId: "closed", paneId: "pane", terminalId: "terminal" } }];
+    const hasUnmanagedWorkspaces = vi.fn(async () => false); const stopInstance = vi.fn();
+    mocks.herdr.mockReturnValue({ stopInstance, tasks: { pendingStops: vi.fn(() => pending), hasUnmanagedWorkspaces } });
+    mocks.coordinator.mockReturnValue(coordinator(async () => { controller.abort(new Error("Shutdown requested.")); }));
+    await runWorker({ ...f, signal: controller.signal });
+    expect(stopInstance).not.toHaveBeenCalled(); expect(hasUnmanagedWorkspaces).not.toHaveBeenCalled();
+  });
+
   it("retains the daemon and exposes failures to inspect remaining workspaces", async () => {
     const f = await fixture(false, true); const controller = new AbortController();
     const failure = new Error("Herdr snapshot could not be read.");
     const hasUnmanagedWorkspaces = vi.fn(async () => { throw failure; }); const stopInstance = vi.fn();
-    mocks.herdr.mockReturnValue({ stopInstance, tasks: { hasUnmanagedWorkspaces } });
+    mocks.herdr.mockReturnValue({ stopInstance, tasks: { pendingStops: vi.fn(() => []), hasUnmanagedWorkspaces } });
     mocks.coordinator.mockReturnValue(coordinator(async () => { controller.abort(new Error("Shutdown requested.")); }));
     await expect(runWorker({ ...f, signal: controller.signal })).rejects.toBe(failure);
     expect(stopInstance).not.toHaveBeenCalled();
@@ -213,7 +223,7 @@ describe("worker repository preparation lifecycle", () => {
     const f = await fixture(false, true); const controller = new AbortController();
     const lifecycle = coordinator(async () => { controller.abort(new Error("Shutdown requested.")); }); lifecycle.shutdown.mockResolvedValue(false);
     const hasUnmanagedWorkspaces = vi.fn(); const stopInstance = vi.fn();
-    mocks.herdr.mockReturnValue({ stopInstance, tasks: { hasUnmanagedWorkspaces } }); mocks.coordinator.mockReturnValue(lifecycle);
+    mocks.herdr.mockReturnValue({ stopInstance, tasks: { pendingStops: vi.fn(() => []), hasUnmanagedWorkspaces } }); mocks.coordinator.mockReturnValue(lifecycle);
     await expect(runWorker({ ...f, signal: controller.signal })).rejects.toThrow("Some task agents could not stop");
     expect(hasUnmanagedWorkspaces).not.toHaveBeenCalled(); expect(stopInstance).not.toHaveBeenCalled();
   });

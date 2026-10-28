@@ -7,11 +7,12 @@ import { acquireWorkerInstanceLock } from "../../../src/commands/worker/instance
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
+import type { HerdrOwnedWorkspace, HerdrPendingStop } from "../../../src/commands/worker/herdr.js";
 
 const mocks = vi.hoisted(() => ({ submit: vi.fn(), coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn() }));
 vi.mock("../../../src/commands/worker/control.js", () => ({ submitWorkerControl: mocks.submit }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
-vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
+vi.mock("../../../src/commands/worker/herdr.js", async (importOriginal) => ({ ...await importOriginal<typeof import("../../../src/commands/worker/herdr.js")>(), createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
@@ -81,7 +82,7 @@ describe("worker synchronous management runtime ownership", () => {
     mocks.submit.mockResolvedValue({ task: null, message: "Control completed." });
     const owner = { projectId: f.project.projectId, taskId: uuid(200), claimId: uuid(201), worktreeId: uuid(202) };
     const workspace = { owner, workspaceId: "rowless-workspace", panes: [{ binding: { session: "w", workspaceId: "rowless-workspace", paneId: "rowless-pane", terminalId: "rowless-terminal" } }] };
-    const native = { ensureInstance: vi.fn(async () => ({ reconnected: true })), stopInstance: vi.fn(), tasks: { listResources: vi.fn(async () => proof === "private Herdr" ? [workspace] : []), hasUnmanagedWorkspaces: vi.fn(async () => true) } }; mocks.herdr.mockReturnValue(native);
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected: true })), stopInstance: vi.fn(), tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => proof === "private Herdr" ? [workspace] : []), hasUnmanagedWorkspaces: vi.fn(async () => true) } }; mocks.herdr.mockReturnValue(native);
     const remote = { currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async ({ projectId }: { projectId: string }) => ({ id: projectId })), ownInventory: vi.fn(async () => proof === "current claim" ? [{ projectId: owner.projectId, id: owner.taskId, properties: { worker: { ...owner, workerId: uuid(4), state: "active" } } }] : []) }; mocks.remote.mockReturnValue(remote);
     const listWorktrees = vi.fn(async (_project: unknown, _operation: unknown, acceptsOwner: (value: typeof owner) => boolean) => {
       expect(acceptsOwner(owner)).toBe(proof !== "unproven Git");
@@ -106,12 +107,43 @@ describe("worker synchronous management runtime ownership", () => {
   it("cleans a newly started empty daemon after control startup fails", async () => {
     const f = await fixture(); f.store.completeTask(f.task); f.store.completeTask(f.sibling); const originalTasks = f.store.listTasks();
     const failure = new Error("Control failed."); mocks.submit.mockImplementation(async () => { throw failure; });
-    const native = { ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(async () => {}), tasks: { listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) } }; mocks.herdr.mockReturnValue(native);
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(async () => {}), tasks: { pendingStops: vi.fn(() => []), listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) } }; mocks.herdr.mockReturnValue(native);
     mocks.git.mockReturnValue({ listWorktrees: vi.fn(async () => []), dispose: vi.fn(async () => {}) });
     await writeFile(f.paths.configFile, stringify({ serverUrl: origin, serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { repositories: [{ remote: f.project.repoUrl, projectId: f.project.projectId, path: path.join(f.homeDirectory, "next-repo") }] } }));
     await expect(runWorkerControl(f)).rejects.toBe(failure);
     expect(native.stopInstance).toHaveBeenCalledOnce(); expect(native.tasks.listResources).toHaveBeenCalledTimes(2);
     expect(f.store.listTasks()).toEqual(originalTasks);
+  });
+
+  it("preserves a newly started daemon and the source claim when release closes its workspace without confirming its stop", async () => {
+    const f = await fixture(); const originalTasks = f.store.listTasks();
+    const idle = { projectId: uuid(10), repoUrl: "https://example.test/idle/repo.git", localPath: path.join(f.homeDirectory, "idle-old") }; f.store.registerProject(idle);
+    const owner = { projectId: f.project.projectId, taskId: f.task.taskId, claimId: f.task.claimId, worktreeId: uuid(5) };
+    const binding = { session: "w", workspaceId: "source-workspace", paneId: "source-pane", terminalId: "source-terminal" };
+    const context = { ...owner, cwd: path.join(f.project.localPath, ".worktrees", "daynight", owner.taskId) };
+    let workspaces: HerdrOwnedWorkspace[] = [{ owner, workspaceId: binding.workspaceId, panes: [{ binding, cwd: context.cwd, kind: null, status: "idle", launchPending: false, interactiveReady: false, nativeSession: null, stateChangeSeq: 0, completionSeq: 0 }] }];
+    const pending: HerdrPendingStop[] = []; const failure = new Error("Workspace closed before native stop confirmation failed.");
+    const native = {
+      ensureInstance: vi.fn().mockResolvedValueOnce({ reconnected: false }).mockResolvedValue({ reconnected: true }), stopInstance: vi.fn(),
+      tasks: {
+        pendingStops: vi.fn(() => [...pending]), listResources: vi.fn(async () => workspaces), hasUnmanagedWorkspaces: vi.fn(async () => false),
+        stopAndClose: vi.fn(async () => { workspaces = []; pending.push({ context, binding }); throw failure; }),
+      },
+    }; mocks.herdr.mockReturnValue(native);
+    const observed = { projectId: f.project.projectId, id: f.task.taskId, status: "in_progress", version: f.request.version, properties: { worker: { ...owner, userId: uuid(6), workerId: uuid(4), state: "active", agent: f.task.agent } } };
+    const originalRemote = structuredClone(observed);
+    const remote = { serverOrigin: origin, currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async () => ({ id: idle.projectId })), ownInventory: vi.fn(async () => []), readTask: vi.fn(async () => observed), authorizeControl: vi.fn(async () => {}), release: vi.fn() }; mocks.remote.mockReturnValue(remote);
+    mocks.git.mockReturnValue({ listWorktrees: vi.fn(async () => []), dispose: vi.fn(async () => {}) });
+    const control = await vi.importActual<typeof import("../../../src/commands/worker/control.js")>("../../../src/commands/worker/control.js"); mocks.submit.mockImplementation(control.submitWorkerControl);
+    const coordinator = await vi.importActual<typeof import("../../../src/commands/worker/coordinator.js")>("../../../src/commands/worker/coordinator.js"); mocks.coordinator.mockImplementation(coordinator.createWorkerCoordinator);
+    const next = { remote: idle.repoUrl, projectId: idle.projectId, path: path.join(f.homeDirectory, "idle-new") };
+    await writeFile(f.paths.configFile, stringify({ serverUrl: origin, serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { repositories: [next] } }));
+    await expect(runWorkerControl(f)).rejects.toBe(failure);
+    expect(native.ensureInstance).toHaveBeenCalledTimes(2); expect(native.tasks.stopAndClose).toHaveBeenCalledOnce();
+    expect(workspaces).toEqual([]); expect(pending).toEqual([{ context, binding }]);
+    expect(native.stopInstance).not.toHaveBeenCalled(); expect(native.tasks.hasUnmanagedWorkspaces).not.toHaveBeenCalled();
+    expect(remote.release).not.toHaveBeenCalled(); expect(f.store.listTasks()).toEqual(originalTasks); expect(f.store.getProject(f.project)).toEqual(f.project);
+    expect(observed).toEqual(originalRemote);
   });
 
   it("rejects management while run owns the lock before submission or native controller construction", async () => {
