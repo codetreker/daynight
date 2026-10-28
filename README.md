@@ -142,9 +142,13 @@ execution permission before the worker can acquire them.
 The worker runs in the foreground with one execution slot by default. It uses
 fixed state under `~/.daynight/worker/`. Run `daynight worker attach` in another
 terminal to open its private Herdr session for human input. Detaching the client
-leaves ongoing worker tasks running. Ctrl+C in `worker run` stops original
-agents through bounded cleanup while retaining unfinished claims, worktrees and
-native history. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+leaves ongoing worker tasks running. Ctrl+C in `worker run` cancels and joins
+all running jobs, then directly stops agents and closes their workspaces without
+sending a cleanup prompt or waiting for a cleanup turn. Claims, worktrees, native
+history and unfinished local rows remain, including for ended claims; restart
+reconciles them normally. Stop failures remain visible and retain the private
+Herdr instance when stopping is uncertain. External temporary resources may
+remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
 
 Fresh and resumed Copilot/Codex processes use fixed full access and task-folder

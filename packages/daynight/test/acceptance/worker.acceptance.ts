@@ -419,6 +419,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     await waitFor("fixture daemon shutdown evidence", async () => (await events()).filter((event) => event.kind === "daemon-stop").length >= (scenario === "inventory-failure" ? 1 : 2));
     const observed = await events();
     expect(observed.filter((event) => event.kind === "fixture-error")).toEqual([]);
+    const cleanupPrompts = observed.filter((event) => event.kind === "prompt" && event.text!.startsWith("The controller is stopping this execution"));
+    expect(cleanupPrompts.filter((event) => event.taskId === first.id)).toHaveLength(1);
+    expect(cleanupPrompts.filter((event) => event.taskId === second.id)).toHaveLength(scenario === "inventory-failure" ? 1 : 0);
     expect(observed.filter((event) => event.kind === "native-start").map((event) => event.taskId)).toEqual(scenario === "inventory-failure" ? tasks.map((task) => task.id) : [first.id, second.id, second.id]);
     for (const event of observed.filter((entry) => entry.kind === "workspace" || entry.kind === "native-start")) {
       expect(event.row).toMatchObject({ status: "active", agent: "codex" });

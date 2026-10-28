@@ -101,16 +101,16 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 - 业务表精确为 projects(project_id,repo_url,local_path) 与 tasks(project_id,task_id,claim_id,status,agent,session_id)。Task 主键为 project/task/claim；status 为 pending/active/done，agent 为 copilot/codex，session_id nullable。同 project/task 至多一个 active；结束行保留。
 - 项目映射在 claim 前保存。首次与空库启动先解析并登记配置项目，再查询配置与持久映射并集的自有 claim。映射有未结束任务或实际受管资源时不能改变；移出配置只停止新领取，原映射继续对账。
 - 完整 workerId-only 查询穷尽相关项目及分页，固定当前认证 principal。失败、部分查询或未查询项目不能授权缺席清理。Herdr/Git 读取失败不作为空资源；未知项目的遗留资源保留并报告。
-- 远端实际 claim 缺少本机行时补 pending；确认可以启动先提交 active 后建资源；成功完整清单缺少原 claim 时统一清理。资源发现覆盖历史 done 行及遗留受管资源，旧资源未收尾前同 task 新 claim 等待。
+- 远端实际 claim 缺少本机行时补 pending；确认可以启动先提交 active 后建资源；成功完整清单缺少原 claim 时统一清理。资源发现覆盖历史 done 行及遗留受管资源，旧资源未收尾前同 task 新 claim 等待。清理或退出关闭已验证归属的 Herdr workspace 前，缺失本机行的 claim 必须以实际观察的 agent 类型登记 pending，存活 agent 的已知原生会话 ID 一并保存；重启后继续清理保留的 worktree，再允许同 task 后继执行。无法确认原 agent 类型时保留 workspace 并报告错误，不从当前配置猜测。未证明归属的 Git-only 资源不得据此登记。
 - 配置、启动/输入回执、PID 观察、恢复次数、清理进度、原期限和管理意图不持久保存或转存其他台账。日志不作为恢复输入。恢复使用当前适用设置；计数和超限等待只在当前进程内，重启清零。
-- Ctrl+C 停止新领取、取消普通调度并等待当前同 task 操作结束。有效执行有界清理工作区外临时资源、停止 agent、关闭 workspace，保留 claim/worktree/session_id 与 active/pending 行，最后停止私有实例。退出失败返回错误并保留实际资源，不把未完成行置 done。
+- Ctrl+C 停止新领取和调度，取消所有运行中的 job（包括终止清理 job），等待它们全部收尾后直接中断并停止受管 agent、关闭 workspace。进程退出不发送清理 prompt，也不等待 agent 清理轮；工作区外临时资源可能遗留。保留 claim、worktree、原生 session ID 与所有未完成 active/pending 行，包括归属已经结束的任务；退出不删除 worktree、不把未完成行置 done。重启后按正常完整清单对账，为已结束归属的剩余资源重新进入终止清理。待确认的停止操作收尾后才停止私有实例；停止错误保持可见，无法确认停止时保留私有 Herdr 与相关资源。正常完成、release、强制撤回和人工管理仍使用原有通知及清理时序。
 - 仅新 schema 建库；不迁移旧详细状态库，不自动删除真实数据库。操作者停止旧 worker 后删除旧 SQLite，再启动重建。原生历史与 workerId 保留原有位置。
 
 ### W-10：Agent 完成与资源清理
 
 - Agent 完成全部要求、验收和证据后，最后使用原 claimId 与观察版本通过 task set-status done 提交已有完成操作。必要 PR、授权合并和人工验收未完成时保持任务未完成；worker 不重复解释或提交业务 done。
-- 原 claim 不在成功完整清单时通知 agent 清理可归属的工作区外临时资源，最多等待本次尝试的 10 分钟，再停止进程、关闭 workspace、删除 worktree，最后本机 done。Done/release/强制撤回后的本地结束规则一致，分支与历史保留。
-- 清理消息成功递交后，由后续巡查读取 agent 状态；观察到 idle 即视为该清理轮完成，可以停止 agent 并关闭 workspace，不要求序列计数递增或 interactiveReady。通知前的 idle 和递交回执本身不替代后续巡查；消息失败或结果未知时保留错误，按本次既定期限等待，不自动重发。该 idle 只表示退出清理完成，不提交业务 done。
+- 正常对账发现原 claim 不在成功完整清单时通知 agent 清理可归属的工作区外临时资源，最多等待本次尝试的 10 分钟，再停止进程、关闭 workspace、删除 worktree，最后本机 done。Done/release/强制撤回后的本地结束规则一致，分支与历史保留。
+- 清理消息成功递交后，由后续巡查读取 agent 状态；观察到 idle 即视为该清理轮完成，可以停止 agent 并关闭 workspace，不要求序列计数递增或 interactiveReady。通知前的 idle 和递交回执本身不替代后续巡查；消息失败或结果未知时保留错误，按本次既定期限等待，不自动重发。该 idle 只表示终止清理轮完成，不提交业务 done；worker 进程退出遵循 W-09 的直接停止规则。
 - 同进程内的清理 job 保留自己的期限，轮询不重置。重启后按剩余实际资源重新进入清理并重新计时，通知可重复；不为清理新建 agent。已确认归属结束的内存 job 可在后续服务轮询失败时继续；各任务独立有界。
 - 失败保留错误与收尾责任，已不存在的资源可完成对应步骤。读取失败或无法确认停止时不能删除工作区或标 done，清理不影响其他任务与人工 Herdr。
 - 已知目标的清理或退出按对应 Herdr 执行推进，删除仅验证该目标的 Git 工作区。其他仓库或同项目其他 worktree 的注册错误单独报告，不阻塞健康 agent 停止或正常退出。
@@ -131,7 +131,8 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 | W-06 | Dirty worktree 复用，静态归属、注册、指针与删除核对成立；缺失原成果和外来路径保持可见错误。 |
 | W-07、W-09 | 活进程重连不重发启动 prompt；idle/done 且就绪时 ping，working/blocked/unknown 保持观察，未改变观察和未知回执不触发重复输入；已知原生 ID resume；NULL Warning 后新建并保存 ID；空库先建项目映射再找回已有 claim。 |
 | W-08 | 人工操作与 run 互斥；远端拒绝保留 worktree；成功后本机删除失败可由下次对账收尾；未知结果不重放；Web 强制撤回不声明远端已停，原 worker 下次对账收尾。 |
-| W-09、W-10 | 精确两表与列数，三态/唯一 active；退出保留有效资源；完整清单缺席统一清理；清理消息成功递交后的巡查观察到 idle 即推进关闭，缺失或不变计数不阻塞；本次十分钟上限、失败保留责任及重启重新计时成立。 |
+| W-09 | 精确两表与列数，三态/唯一 active；退出取消并等待所有 job 收尾，含正在等待通知、清理轮或停止确认的终止清理 job，随后直接停止并关闭 workspace，不发送清理 prompt、不等待清理轮、不删除 worktree、不把未完成行置 done；归属已结束及原本缺失本机行的任务也保留 worktree、有效 session ID 与未完成行，重启按完整清单重新进入终止清理并解除同 task 后继的启动屏障；停止错误可见，停止不确定时私有 Herdr 保留。 |
+| W-10 | 正常完整清单缺席统一清理，正常完成、release、强制撤回及人工管理的清理语义不变；清理消息成功递交后的巡查观察到 idle 即推进关闭，缺失或不变计数不阻塞；本次十分钟上限、失败保留责任及重启重新计时成立。 |
 | W-11 | 关联日志、Warning、原错误链和脱敏成立；attach 只连接并保持既有执行；验证关联实际源码、平台和环境。 |
 
 完整平台运行验收要求其实际门禁与端到端结果，组件检查和 schema 验证不能替代。
