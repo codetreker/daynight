@@ -144,7 +144,7 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 
 NULL 分支覆盖上次已经启动但 ID 尚未保存就中断的窗口，沿用 task/claim/worktree。该分支没有历史反查、暂停或人工审批门槛。处理当前可见的同 claim 遗留进程后再启动，避免同时运行两个 agent。已知 ID 的 resume 失败是可见错误，不静默清除 ID。
 
-首次启动和明确恢复使用完整 managed assignment，显式提供 worker-managed 环境、using-daynight、execute-task-in-managed 及 task/claim/worktree 上下文和本次执行配置。Prompt 声明这是后台任务，不向用户提问，任务范围和已有授权内的决定自行处理；等待 review 或 CI 时自行等待、定期检查并继续交付，不结束当前轮执行。连接存活 agent 不重发启动指令。适配层递交调用方给出的不透明 prompt，不选择业务任务或解释验收。
+首次启动和明确恢复使用完整 managed assignment，显式提供 worker-managed 环境、using-daynight、autopilot-managed-task 及 task/claim/worktree 上下文和本次执行配置。Prompt 声明这是后台任务，不向用户提问，任务范围和已有授权内的决定自行处理；等待 review 或 CI 时自行等待、定期检查并继续交付，不结束当前轮执行。连接存活 agent 不重发启动指令。适配层递交调用方给出的不透明 prompt，不选择业务任务或解释验收。
 
 巡查在每个 task 的串行操作内读取当前 agent。原 claim 仍有效、agent 存活、interactiveReady 且未在启动、没有首次输入待递交时，idle/done 触发继续原任务的 ping；working、blocked、unknown 或尚未就绪只观察。Ping 沿用原任务、claim、worktree 和授权，要求自行等待 review/CI；agent 的 idle/done 不作为业务完成凭据。进入终止清理后只推进收尾。
 

@@ -144,7 +144,7 @@ looks empty. Native consent is an explicit operator decision in the original
 session or normal prerequisite configuration.
 
 The controller owns the complete startup and restart prompt, including explicit
-worker-managed environment, using-daynight execute-task-in-managed mode and the
+worker-managed environment, using-daynight autopilot-managed-task mode and the
 original assignment/frozen configuration. The adapter treats it as opaque text,
 preserves multiline content and never infers task mode or builds business
 instructions. Reconnecting to a live original agent does not resubmit startup
