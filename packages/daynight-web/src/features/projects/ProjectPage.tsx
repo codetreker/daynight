@@ -13,6 +13,7 @@ import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
 import { useChainVisibility, useProjectSection, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
+import { compareTaskStatus } from "./task-order";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -66,11 +67,13 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   currentView.current = activeView;
   const { showAll, onShowAllChange, issue: visibilityIssue } = useChainVisibility(projectId);
   const { showAll: showAllStandalone, onShowAllChange: onStandaloneVisibilityChange, issue: standaloneIssue } = useStandaloneVisibility(projectId);
-  // Database timestamp precision is retained by reversing the server's exact order.
   const categories = useMemo(() => {
     if (snapshot === null) return null;
-    const chains = snapshot.index.representativeIds.toReversed().filter((id) => snapshot.index.components.get(id)!.memberIds.size > 1);
-    const standalone = snapshot.index.representativeIds.toReversed().filter((id) => snapshot.index.components.get(id)!.memberIds.size === 1);
+    // Stable status sorting preserves the reversed server order's timestamp precision.
+    const ordered = snapshot.index.representativeIds.toReversed().sort((left, right) => compareTaskStatus(
+      snapshot.index.components.get(left)!.progress.status, snapshot.index.components.get(right)!.progress.status));
+    const chains = ordered.filter((id) => snapshot.index.components.get(id)!.memberIds.size > 1);
+    const standalone = ordered.filter((id) => snapshot.index.components.get(id)!.memberIds.size === 1);
     let unfinishedChainTaskCount = 0;
     let unfinishedStandaloneTaskCount = 0;
     for (const task of snapshot.index.nodes.values()) {

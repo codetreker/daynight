@@ -49,10 +49,13 @@ needed fact without another state field or persistent receipt.
 
 A live agent is reconnected without replaying its startup prompt. A native
 process that needs starting resumes the recorded ID when present. A NULL ID
-emits Warning and starts a fresh native conversation in the same task, claim and
-worktree, then saves its ID. It has no history-search, pause or approval gate.
-Known-ID native resume errors remain visible. A non-NULL saved ID is also
-validated against every reported native reference before binding it or sending
+starts a fresh native conversation in the same task, claim and worktree, then
+saves its ID. It has no history-search, pause or approval gate. This decision
+originally classified that event as Warning to expose the fresh-conversation
+choice during recovery. The [fresh-session logging decision](../bug-fix/2026-10-28-worker-fresh-session-info.md)
+uses `info` because NULL is also the normal state of a new claim. Known-ID native
+resume errors remain visible. A non-NULL saved ID is also validated against every
+reported native reference before binding it or sending
 deferred input. A mismatch remains an error and retains the original ID, so a
 later live reconnect cannot turn a failed resume into another conversation.
 A genuine live observation may fill a NULL row; inactive retained references
@@ -173,10 +176,10 @@ Old claim resources still block the same task's new execution and retain
 capacity until actual cleanup completes.
 
 Restart does not preserve the first cleanup deadline, accumulated recovery
-budget, old model/args or an interrupted management decision. NULL native IDs can
-lose old conversation continuity, with a Warning and fresh conversation as the
-explicit behavior. Management takes the runner offline. The state directory is
-for one configured service/account/worker identity; changes require completing
+budget, old model/args or an interrupted management decision. A NULL native ID
+starts a fresh conversation with an `info` event; if a prior conversation existed,
+its continuity can be lost. Management takes the runner offline. The state
+directory is for one configured service/account/worker identity; changes require completing
 old executions and rebuilding local state.
 
 There is no old-schema migration or automatic deletion. An operator stops the

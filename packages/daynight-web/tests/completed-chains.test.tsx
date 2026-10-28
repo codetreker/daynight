@@ -70,7 +70,7 @@ describe('completed task chain visibility', () => {
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('checkbox', { name: '显示所有' });
     expect(checkbox()).not.toBeChecked();
-    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000001']);
+    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000001', 'task-root-00000000-0000-4000-8000-000000000006']);
     expect(screen.getByLabelText('显示 2 条，共 4 条任务链')).toHaveTextContent('2 / 4');
     expect([count('任务总数'), count('已完成'), count('待处理')]).toEqual(['8', '5', '3']);
     fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
@@ -83,7 +83,7 @@ describe('completed task chain visibility', () => {
     checkbox().focus();
     fireEvent.click(checkbox());
     expect(checkbox()).toHaveFocus();
-    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003', 'task-root-00000000-0000-4000-8000-000000000001']);
+    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000001', 'task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003']);
     expect(graphButton('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-haspopup', 'dialog');
     expect(screen.queryByTestId('projection')).toBeNull();
     expect(request).toHaveBeenCalledTimes(1);

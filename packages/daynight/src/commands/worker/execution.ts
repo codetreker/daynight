@@ -146,7 +146,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         await workerOperation((operation) => deps.herdr.tasks.stopAndClose(context, actual.binding, operation), signal);
       }
       const binding = await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, operation), signal);
-      if (task.sessionId === null) deps.emit({ kind: "warning", task, message: "The native session ID is missing; starting a new conversation in the existing task worktree." });
+      if (task.sessionId === null) deps.emit({ kind: "info", task, message: "Starting a new native conversation in the task worktree." });
       const assignment: ManagedAssignment = { ...task, serverOrigin: input.owner.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree, configuration: input.configuration };
       const prompt = deps.buildPrompt(assignment, deps.platform);
       pendingInput.set(identity, { binding, prompt });

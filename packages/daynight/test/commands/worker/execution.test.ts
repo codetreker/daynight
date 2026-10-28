@@ -120,7 +120,8 @@ describe("execution from current Herdr resources", () => {
     if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(codexProjectTrustArguments(f.context.cwd).at(-1));
     expect(f.launches[0]!.args.some((arg) => arg === "resume" || arg.startsWith("--resume="))).toBe(false);
     expect(f.store.getTask(f.input.task)?.sessionId).toBe(freshId);
-    expect(f.events.some((event) => event.kind === "warning")).toBe(true);
+    expect(f.events).toContainEqual({ kind: "info", task: f.input.task, message: "Starting a new native conversation in the task worktree." });
+    expect(f.events.some((event) => event.kind === "warning")).toBe(false);
     expect(f.store.getTask(f.input.task)?.sessionId).not.toBe(staleId);
   });
 
@@ -132,6 +133,7 @@ describe("execution from current Herdr resources", () => {
     expect(f.launches[0]!.args).toEqual(expect.arrayContaining(agent === "codex" ? ["--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"] : ["--allow-all", "--no-ask-user", "--no-sandbox"]));
     if (agent === "codex") expect(f.launches[0]!.args.at(-1)).toBe(codexProjectTrustArguments(f.context.cwd).at(-1));
     expect(f.launches[0]!.args).toContain(agent === "codex" ? savedId : `--resume=${savedId}`);
+    expect(f.events.some((event) => event.kind === "info")).toBe(false);
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
   });
 

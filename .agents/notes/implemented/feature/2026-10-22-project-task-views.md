@@ -40,7 +40,8 @@ task one membership; toolbars separately report all filter-matching entries
 against complete category totals, independently of page size.
 
 Each inner category has its own Show all choice and scroll position. Both lists
-use exact newest-first presentation order. The [recent browsing and pagination
+use status-first presentation order with exact newest-first ties, as defined by
+the [status ordering decision](../bug-fix/2026-10-28-project-status-order.md). The [recent browsing and pagination
 decision](2026-10-27-recent-task-pages.md) replaces the unfinished-only default
 with all unfinished work plus recent local-calendar completions, and adds
 independent 15-entry task pages under the

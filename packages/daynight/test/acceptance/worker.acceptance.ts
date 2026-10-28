@@ -406,7 +406,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       } else {
         expect(restartedSession).not.toBe(originalSession);
         expect(latestStart.argv).not.toContain("resume");
-        expect(logs.slice(restartLogOffset).join("")).toContain("native session ID is missing");
+        const restartLogs = logs.slice(restartLogOffset).join("");
+        expect(restartLogs).toContain(` info ${second.projectId}/${second.id}/${originalClaim} active Starting a new native conversation in the task worktree.`);
+        expect(restartLogs).not.toContain(" warning ");
       }
       expect(second.properties.worker!.claimId).toBe(originalClaim);
       expect(requests.slice(restartRequestOffset).some((request) => request.method === "POST")).toBe(false);

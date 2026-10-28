@@ -1020,7 +1020,7 @@ Native recovery uses current resources and the recorded session ID:
 |---|---|
 | Matching agent is alive | Reconnect and observe without resending the startup prompt. |
 | Agent needs starting, session_id is present | Resume that native session using the recorded agent type. |
-| Agent needs starting, session_id is NULL | Emit Warning, start a fresh native conversation, and save its ID in the same row. |
+| Agent needs starting, session_id is NULL | Emit `info`, start a fresh native conversation, and save its ID in the same row. |
 
 When a native process must restart, the worker stops/closes an existing
 inactive workspace and creates a new one with the current native environment
@@ -1168,10 +1168,10 @@ Retry performs one attempt for an active claim still owned by this worker:
 daynight worker retry <task-id> --claim-id <claim-id> --project <project-id>
 ```
 
-It connects the live agent or resumes its recorded native session. NULL emits
-Warning and starts a fresh conversation in the same task worktree. The claim
-and agent type remain; pending rows are started through normal run scheduling.
-After the attempt, run connects to the actual surviving resource. Retry does not
+It connects the live agent or resumes its recorded native session. A NULL ID
+starts a fresh conversation in the same task worktree with an `info` event. The
+claim and agent type remain; pending rows are started through normal run
+scheduling. After the attempt, run connects to the actual surviving resource. Retry does not
 persist a permit or a cumulative cross-restart budget.
 
 Release validates current Project access, source owner/admin, original claim
