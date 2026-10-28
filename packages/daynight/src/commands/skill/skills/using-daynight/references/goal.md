@@ -2,8 +2,8 @@
 
 Read this reference when starting or registering a Goal, discussing one of its
 stages, or advancing its authorized scope. Use [create-task](create-task.md) for
-registration, [the task content standard](task-content.md) for the shared six
-content requirements, [shared task execution](task-execution.md) for input,
+registration, [the task content standard](task-content.md) for task definitions
+and results, [shared task execution](task-execution.md) for input,
 delivery, and acceptance rules, and [the handbook](handbook.md) for CLI semantics.
 The selected execution mode owns task lifecycle and return behavior. A Goal uses existing tasks,
 attachments, complete `dependsOn` relationships, their `externalDependsOn`
@@ -15,7 +15,7 @@ Use a Goal when a concrete outcome needs requirements discussion, solution or
 architecture discussion, and actual delivery work. Independently understandable
 features, bug fixes, architecture/design assignments, and real breakdown items
 are tasks. Agent-generated commands, file reads, and routine checks stay in the
-owning task's execution plan.
+session's execution plan, not task descriptions or attachments.
 
 Permission to create a Goal covers its requirements discussion, the later solution
 discussion, and the confirmed in-scope delivery breakdown. Create each only at
@@ -38,10 +38,11 @@ Create or reuse only the requirements discussion task, titled `[Goal]<outcome>`.
 The marker is followed directly by the outcome. Do not create an architecture
 placeholder or delivery tasks at this point. Give the task a self-contained Markdown description
 for the known problem, intended outcome, scope, constraints, open
-questions, and observable completion conditions. The description and actual
-references provide this discussion's solution, acceptance criteria, confirmation
-gate, and task-owned evidence location under the shared content standard;
-finished requirements and prototypes are outputs, not prerequisites to starting.
+questions, and observable completion conditions under the shared content
+standard. Include the intended requirements and applicable prototype deliverables
+and the required human-confirmation completion condition. Finished requirements
+and prototypes are outputs, not prerequisites to starting; the session holds the
+discussion plan and process.
 
 Each task starts in `todo`. For an explicit discussion-start request, read its
 current materials and exact version, use `task set-status <task-id> in_progress`
@@ -53,9 +54,10 @@ task is resumed after checking its actual work and context.
 Discuss requirements with the user: the whole problem, desired behavior, scope,
 constraints, exclusions, and whole-Goal acceptance. Keep current material and open
 questions in this task's description or attachments. The description remains a
-task-specific brief and source entrypoint; detailed requirements have one owner,
-and confirmation, validation, and evidence stay at an identified task-owned location. Before requesting user review, save the complete current material,
-read it back, and provide the task and resource reference.
+task-specific brief and source entrypoint; detailed requirements have one owner.
+Before requesting user review, save the complete current requirements artifact,
+read it back, and provide the task and resource reference. Keep discussion,
+validation, and confirmation processes in the session.
 
 For a UI Goal, produce a final-style interactive frontend-only prototype with
 working relative resources and relevant populated, empty, loading, failure,
@@ -70,9 +72,11 @@ current requirements and directs the next discussion, for example, "Requirements
 are settled; move to architecture discussion." Agent confidence, completed text,
 a review result, or elapsed time does not satisfy this gate.
 
-Record the user's confirmation with the accepted material in the owning task and
-verify it is readable. A material revision after confirmation requires renewed
-user confirmation before advancement. When the discussion's acceptance is met,
+Keep the accepted requirements and their effective state in the owning task and
+verify they are readable. Preserve the actual confirmation and transition
+authorization in the session. A material revision after confirmation requires
+renewed user confirmation before advancement. When the discussion's acceptance
+is met,
 reread the task, use `task set-status <task-id> done` with its observed version, and confirm done.
 Do not create the solution discussion until that completion is confirmed; reconcile
 an uncertain completion before another mutation.
@@ -91,8 +95,10 @@ During solution discussion, consume the confirmed requirements and applicable
 prototype. Discuss how to achieve the outcome: responsibilities, data and control
 flow, interfaces, error behavior, key decisions, verification, and the proposed
 breakdown. The solution task owns the current architecture, proposal, and draft
-breakdown. Keep discussion material accessible in its description or attachments,
-verify it before user review, and synchronize revisions and review decisions.
+breakdown. Keep these current artifacts accessible in its description or
+attachments, verify them before user review, and synchronize accepted decisions
+and necessary rationale. The discussion plan, review handling, and confirmation
+process remain in the session.
 Do not register delivery subtasks before the user confirms the current solution.
 
 A discussion task completes from user-confirmed Daynight material and its stated
@@ -104,8 +110,9 @@ requirement and its delivery permissions. An unresolved user review keeps the
 current discussion `in_progress`. Successful CI or a design review cannot replace
 the user's confirmation.
 
-After explicit user confirmation of the current solution, record that confirmation
-with the accepted material and register the delivery breakdown below. Complete
+After explicit user confirmation of the current solution, keep the accepted
+solution and its effective state in the owning task, preserve the confirmation
+in the session, and register the delivery breakdown below. Complete
 the solution discussion only after the accepted solution and actual registered delivery tasks,
 their required materials, and their dependencies are read back
 and verified. Use `task set-status <task-id> done` with the observed version and confirm done.
@@ -116,9 +123,10 @@ either discussion does not establish whole-Goal completion.
 
 Only after user solution confirmation, create or reuse the concrete delivery tasks
 needed for the agreed outcome. Each description and its actual references must
-satisfy the six-item content standard, including task-specific responsibility,
-input/output contracts, observable acceptance, verification, and evidence ownership. Include independently scoped acceptance work when it
-has its own outcome. A [final-acceptance](../SKILL.md#final-acceptance) brief
+satisfy the task content standard, including task-specific responsibility,
+actual required inputs, deliverables and contracts, and observable acceptance.
+Include independently scoped acceptance work when it has its own outcome. A
+[final-acceptance](../SKILL.md#final-acceptance) brief
 identifies the original whole-Goal requirements and confirmed changes, and assesses
 the combined delivery under the shared rule. Do not turn agent-generated execution
 steps into tasks. The combined scope must cover the confirmed Goal, rather than a
@@ -190,8 +198,9 @@ Read these attachments from that task before implementation:
 - `design/architecture.md`: upload flow and component responsibilities.
 - `design/upload-errors.md`: error classification and retry behavior.
 
-## Task plan
-This task's `plan.md` owns its implementation plan and full acceptance criteria.
+## Deliverable
+Upload retry controls in the existing upload UI, using the API's error contract;
+no additional task-to-task exchange is introduced.
 ```
 
 When the shared architecture is inline, the architecture inputs instead identify
@@ -204,9 +213,10 @@ paths only for actual attachment documents that are also required.
 Stage briefs describe the work to produce the stage's outputs; they do not claim
 unfinished results exist. Every stage and delivery task provides a task-specific
 Markdown brief and the complete applicable content, directly or through verified
-references. Complete inline content needs no primary attachment. Identify each
-task's own confirmation and evidence location. Keep shared inputs at their actual
-owner. Do not distribute a duplicate whole packet to every task. An independently
+references. Complete inline content needs no primary attachment. Save produced
+results at their actual owner and make them discoverable from the task. Keep
+shared inputs at their actual owner. Do not distribute a duplicate whole packet
+to every task. An independently
 needed snapshot records its purpose, original source, and source revision or
 content identity. Existing attachment reads support these references; do not
 invent a URL scheme, cross-task relative links, or fixed service host.
@@ -237,13 +247,14 @@ modes preserve their own return boundary when reading this stage protocol.
 
 Delivery tasks satisfy [shared acceptance readiness](task-execution.md#confirm-acceptance-readiness)
 and complete through their selected execution mode: accepted outcomes, required
-review, all necessary authorized PR merges, and readable evidence. To report the
+review, all necessary authorized PR merges, and readable task results. To report
+the
 whole Goal complete, inspect the full confirmed delivery scope, every delivery
 task's completion, all required delivery PR merges, and the original whole-Goal
 requirements with their confirmed changes. Apply
-[Final acceptance](../SKILL.md#final-acceptance) to the combined delivery and its
-evidence; completing or passing temporary helpers does not establish that the
-Goal is complete.
+[Final acceptance](../SKILL.md#final-acceptance) to the combined delivery;
+completing or passing temporary helpers does not establish that the Goal is
+complete.
 
 The requirements task being done means only that requirements discussion is
 complete. The solution task being done means the confirmed solution and verified

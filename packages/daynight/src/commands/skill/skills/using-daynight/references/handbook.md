@@ -255,9 +255,10 @@ unchanged; clearing and option-pairing syntax is in command help.
 
 **Markdown descriptions.** Write task-specific Markdown descriptions following
 [create-task](create-task.md) and [the task content standard](task-content.md).
-The description and actual references jointly supply the six requirements;
-complete inline content needs no primary attachment, and task-owned confirmation
-and evidence locations must be explicit. The Web displays CommonMark/GFM, while
+The description and actual references jointly supply the task definition and
+produced results; complete inline content needs no primary attachment. Execution
+and discussion plans, processes, and operational authorization stay in the
+session under the shared content boundary. The Web displays CommonMark/GFM, while
 API and CLI reads preserve the original string, including line breaks and fenced code. There
 is no format flag. Relative description links and images start at the current
 task's attachment root; Markdown attachment internals start at their containing

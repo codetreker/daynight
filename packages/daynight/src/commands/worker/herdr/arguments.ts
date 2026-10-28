@@ -75,5 +75,5 @@ export const buildHerdrAgentArguments = (configuration: HerdrAgentConfiguration,
   }
   const args = configuration.agent === "codex" ? ["--no-daemon", ...(sessionId === undefined ? [] : ["resume", sessionId])] : (sessionId === undefined ? [] : [`--resume=${sessionId}`]);
   if (configuration.model !== null) args.push("--model", configuration.model);
-  return [...args, ...configuration.args, ...nativeAgentPermissionArguments(configuration.agent), ...(configuration.agent === "codex" ? codexProjectTrustArguments(cwd) : [])];
+  return [...args, ...configuration.args, ...nativeAgentPermissionArguments(configuration.agent), ...(configuration.agent === "codex" ? ["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments(cwd)] : [])];
 };

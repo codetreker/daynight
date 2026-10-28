@@ -1,19 +1,20 @@
 # Shared task execution
 
 Read this reference after the selected execution mode establishes the task's
-identity. It owns required inputs, authorized work, delivery, evidence, and
+identity. It owns required inputs, authorized work, delivery, results, and
 acceptance readiness. The execution mode owns starting or resuming the task,
 its final status operation, and returning to its caller.
 
 ## Read the task and stage inputs
 
 Read the complete task and its actual required references under
-[the task content standard](task-content.md), including the solution, acceptance
-criteria, and explicit task-owned confirmation/evidence location. Its Markdown
-description must identify the concrete current work, responsibility, and content
-sources. Complete inline content needs no primary attachment; document-owned
-and mixed organization are valid when their combined contents satisfy the same
-six requirements.
+[the task content standard](task-content.md), including the task definition,
+actual required design inputs, acceptance criteria, and existing results. Its
+Markdown description must identify the concrete current work, responsibility,
+and content sources. Complete inline content needs no primary attachment;
+document-owned and mixed organization are valid when their combined contents
+provide the stage-appropriate task definition. A missing session execution plan
+is not a missing task input.
 
 Resolve description-relative links and images from the current task's attachment
 root; links inside a Markdown attachment use its own directory. Resolve real
@@ -65,8 +66,9 @@ apply the shared rule to verification methods, temporary helpers, and result
 ownership.
 
 Follow the target repository's instructions for worktrees, implementation,
-review, validation, and delivery. Use the task's stage-appropriate solution and
+review, validation, and delivery. Use the task's required design inputs and
 acceptance criteria, including applicable final-style prototype interactions.
+Keep the implementation or discussion plan in the session.
 Requirements discussion defines the problem without architecture decisions or
 production implementation. Solution discussion keeps its draft architecture and
 breakdown in its owning task. Preserve the Goal's user-confirmation gates:
@@ -78,24 +80,27 @@ Resolve material changes to the agreed solution or acceptance within the current
 authorization. Rewrite the owning artifact and affected task summaries and input
 references coherently. Preserve requirements; do not silently weaken acceptance.
 Descriptions remain self-contained Markdown task summaries. Preserve valid
-syntax, original content, and actual resource references during full-field
-updates; confirm new or replaced resources before linking them. Dependency edits
+syntax, required task content, and actual resource references during full-field
+updates; confirm new or replaced resources before linking them. Apply the content
+boundary to authorized rewrites without modifying unrelated historical tasks.
+Dependency edits
 must follow the handbook's CLI replacement contract: read full D/E, retain needed
 ordinary D−E and external E declarations, submit their intended complete sets
 with the observed version, and read back both. Omit all dependency options for
-unrelated metadata updates. Keep detailed content at its identified owner and
-confirmations and evidence at their explicit task-owned location; shared inputs
-remain at their verified source.
+unrelated metadata updates. Keep detailed task content and produced results at
+their identified owners; shared inputs remain at their verified source.
 
 Advance only this task. Subagents collaborate on it, and waiting for CI, review,
 approval, or merge remains part of it. Keep all required delivery PR URLs and
 titles in the complete `properties.pullRequests` list, preserving existing
-entries. Record acceptance results and necessary delivery evidence, including
-merge commits, at this task's identified evidence location against the
-corresponding acceptance criteria. Rewrite current evidence coherently rather
-than accumulating an execution log. Keep operational progress, blockers, waiting
-items, and next action in the conversation or existing execution checkpoint,
-retaining the task ID and needed PR and workspace references.
+entries. Save actual task results and acceptance conclusions at their owners.
+Use verified artifact locations or immutable revisions when needed to identify
+the final deliverable. Rewrite current results coherently rather than
+accumulating an execution log. Keep operational authorization, implementation
+steps, CI/review/merge handling, progress, blockers, waiting items, and next
+action in the conversation or existing execution checkpoint, retaining the task
+ID and needed PR and workspace references. Recover authorization and assignment
+from that session context, not task material or status.
 
 ## Confirm acceptance readiness
 
@@ -122,9 +127,10 @@ completion pending and successors blocked.
 
 For tasks without a development or PR delivery path, use their stated stage
 acceptance. For [final acceptance](../SKILL.md#final-acceptance), also apply the
-shared whole-task or whole-Goal completion rule. In every case, confirm required
-evidence is recorded and readable before returning to the execution mode's
-completion operation. Discussion completion establishes that stage's accepted
+shared whole-task or whole-Goal completion rule. In every case, confirm the
+required deliverables and acceptance conclusions are readable before returning
+to the execution mode's completion operation; retain operational verification
+in the session. Discussion completion establishes that stage's accepted
 output; it does not establish whole-Goal completion.
 
 ## Preserve waiting context

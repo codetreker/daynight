@@ -34,19 +34,21 @@ using its observed version and confirming the result. A registration-only reques
 leaves the sole requirements task todo and
 returns. No architecture placeholder or delivery tasks are created upfront.
 
-The requirements task owns current requirements, applicable interactive prototype
-and the user's review. Only the user's confirmation of the current requirements
+The requirements task owns current requirements and the applicable interactive
+prototype; the [task/session content decision](2026-10-28-task-session-content.md)
+keeps review process and operational authorization in the session. Only the user's confirmation of the current requirements
 and instruction to move to solution or architecture discussion permits the
-transition. Record the accepted material and confirmation, complete the
+transition. Save the accepted material, verify its confirmation in the session, complete the
 requirements task, and confirm the service result before creating or starting the
 next task. The solution-discussion task uses an ordinary dependency on the
 completed requirements task. That explicit transition instruction authorizes
 starting this next discussion task; completion alone does not.
 
-The solution task owns architecture, execution approach and a draft breakdown.
+The solution task owns system architecture and a draft outcome breakdown; the
+session owns how the discussion is conducted.
 No actual delivery tasks are registered before the user confirms the current
 solution. After confirmation, register the complete outcome-based delivery
-breakdown with real dependencies, task-specific plans and verified shared inputs.
+breakdown with real dependencies, task definitions and verified shared inputs.
 Read back the complete registration before completing the solution-discussion
 task. Delivery tasks are registered as todo without execution. Existing explicit
 execution scope remains effective for ready successors; solution acceptance alone

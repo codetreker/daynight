@@ -106,8 +106,15 @@ const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
 
 describe("native argument ownership", () => {
   it.each([undefined, nativeId])("owns full access while preserving model/configuration/exact resume selection (%s)", (resume) => {
-    expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? [] : ["resume", resume]), "--model", "model-a", ...configuration.args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", ...codexProjectTrustArguments("/task")]);
+    expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? [] : ["resume", resume]), "--model", "model-a", ...configuration.args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments("/task")]);
     expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, "/task", resume)).toEqual([...(resume === undefined ? [] : [`--resume=${resume}`]), "--allow-tool=shell(git:*)", "--reasoning-effort", "low", "--allow-all", "--no-ask-user", "--no-sandbox"]);
+  });
+  it.each([undefined, nativeId])("disables startup updates after configurable overrides for fresh/resumed Codex (%s)", (resume) => {
+    for (const configured of [["-c", "check_for_update_on_startup=true"], ["--config", "check_for_update_on_startup=true"], ["--config=check_for_update_on_startup=true"]]) {
+      const args = buildHerdrAgentArguments({ ...configuration, args: configured }, "/task", resume);
+      expect(args.slice(-4)).toEqual(["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments("/task")]);
+      expect(args.slice(resume === undefined ? 3 : 5, -(4 + 2))).toEqual(configured);
+    }
   });
   it.each(['/repo/.worktrees/task.name', '/repo/中文/"quoted"', 'C:\\repo\\.worktrees\\中文 "task"'])('encodes the exact trust path in a final inline TOML table: %s', (cwd) => {
     const args = buildHerdrAgentArguments({ ...configuration, args: ["-c", 'projects={"other"={trust_level="untrusted"}}', "-c", 'approval_policy="on-request"', "--profile", "work"] }, cwd);
@@ -381,6 +388,19 @@ describe("direct task resource management", () => {
     expect(f.prompts).toEqual(["initial"]); expect(f.preflights()).toBe(1);
     expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ kind, nativeSession: { agent: kind, sessionId: nativeId } });
     expect(await f.manager.listResources(operation())).toMatchObject([{ owner: { projectId, taskId, claimId }, panes: [{ binding, nativeSession: { sessionId: nativeId } }] }]);
+  });
+
+  it.each([undefined, nativeId])("passes Codex update configuration through RPC separately from opaque task input (%s)", async (resume) => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    const instructionPath = String.raw`/repo/中文 'task' "quoted" $HOME;$(echo literal).md`;
+    const config: HerdrAgentConfiguration = { ...configuration, args: ["--config", `model_instructions_file=${JSON.stringify(instructionPath)}`, "--no-alt-screen"] };
+    const prompt = `Continue 中文 task with 'quotes', "quotes", $HOME; $(echo literal).\n-c check_for_update_on_startup=true belongs to this task text.`;
+    await f.manager.start(f.context, binding, { configuration: config, prompt, ...(resume === undefined ? {} : { resumeSessionId: resume }) }, operation());
+    const args = f.calls.find((call) => call.method === "agent.start")!.params.args as string[];
+    expect(args).toContain(`model_instructions_file=${JSON.stringify(instructionPath)}`);
+    expect(args.slice(-4)).toEqual(["-c", "check_for_update_on_startup=false", ...codexProjectTrustArguments(await realpath(f.context.cwd))]);
+    expect(args).not.toContain(prompt);
+    expect(f.prompts).toEqual([prompt]);
   });
 
   it.each(["codex", "copilot"] as const)("passes a known %s session directly to native resume without looking up history", async (kind) => {
