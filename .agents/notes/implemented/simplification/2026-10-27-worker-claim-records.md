@@ -33,7 +33,12 @@ they do not store dynamic execution progress. Existing Git markers have no
 workerId, so a Git-only claim requires a matching local row, private Herdr
 resource or current own claim before this worker can clean it. Unproven
 resources are reported and preserved, including in repositories shared with
-another worker.
+another worker. Before cleanup or exit removes a verified private Herdr label,
+a missing local claim is recorded as pending with its observed native agent and
+any live session ID. The [direct shutdown decision](../bug-fix/2026-10-28-worker-direct-shutdown.md)
+owns this use of the existing index to preserve orphan cleanup responsibility
+after workspace closure. An unavailable original agent type remains a visible
+error that preserves the workspace; no configuration-derived type is invented.
 
 Herdr snapshots from polling drive scheduling and capacity only. Startup or
 recovery reads Herdr again inside the task's serialized operation before choosing

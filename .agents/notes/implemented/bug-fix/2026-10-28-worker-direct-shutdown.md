@@ -22,7 +22,19 @@ resources.
 Exit preserves claims, worktrees, native session IDs and unfinished local rows,
 even when ownership has already ended. The next run uses normal complete-inventory
 reconciliation to re-enter terminal cleanup for ended claims. Normal completion,
-release, withdrawal and manual-control cleanup keep their existing behavior.
+release, withdrawal and manual-control cleanup retain their notification and
+resource-removal sequence. Before either cleanup or exit closes a verified
+private workspace whose claim has no local row, the coordinator records that
+claim as pending using its observed native agent and, for a live agent, its
+observed session ID. Pending preserves ownership without colliding with another
+active claim for the same task. This record survives workspace closure and
+allows restart to clean the old worktree before starting its successor.
+
+An unidentified agent cannot populate the required agent column. Its workspace
+is retained with an explicit error before closure; configuration defaults cannot
+establish the historical agent type. Unproven Git-only resources remain
+unregistered and preserved. No new table, schema column or progress journal is
+needed.
 
 This decision partially supersedes the worker-exit use of bounded cleanup in the
 [agent patrol decision](2026-10-27-worker-agent-patrol.md). Its fresh idle signal
@@ -41,6 +53,11 @@ model-dependent turn and its deadline, including an already running cleanup job.
 **Cancel only ordinary execution jobs.** Terminal-cleanup jobs can continue
 waiting or mutate worktrees and local rows during exit. Cancelling and joining
 all jobs establishes a single boundary before direct stopping.
+
+**Close an orphan workspace without recording its claim.** Its private label
+can be the last worker-specific ownership proof. Losing that label leaves the
+retained Git marker unproven after restart, preventing cleanup and same-task
+progress. The existing claim index preserves this responsibility.
 
 ## Consequences
 

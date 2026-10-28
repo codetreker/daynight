@@ -1121,9 +1121,15 @@ unfinished active/pending rows, including those whose ownership has ended. The
 next run uses normal inventory reconciliation to re-enter terminal cleanup for
 ended claims. External temporary resources may remain after direct interruption.
 Normal completion, release, withdrawal and manual-control cleanup retain their
-existing behavior. Pending stop confirmations must settle before the private
+notification and removal sequence. Pending stop confirmations must settle before the private
 Herdr instance stops; stop errors remain visible, and uncertain stopping retains
-that instance and the affected resources.
+that instance and the affected resources. Before closing a verified orphan
+workspace with no local task row, cleanup and exit save its observed native
+agent and any live session ID in the existing pending claim index. Restart can
+then remove its retained worktree and unblock a later claim for the same task.
+An unknown original agent type retains the workspace with a visible error;
+current configuration does not establish that historical type. Unproven Git-only
+resources remain untouched.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
 known session ID. Startup prints the log location and attach guidance. Routine
