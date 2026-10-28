@@ -1,6 +1,7 @@
 import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stringify } from "yaml";
 import { runWorkerControl } from "../../../src/commands/worker/runtime.js";
 import { acquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -27,7 +28,7 @@ afterEach(async () => {
 });
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async () => ({ id: uuid(1) })) });
+  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async () => ({ id: uuid(1) })), ownInventory: vi.fn(async () => []) });
   mocks.git.mockReturnValue({ prepareRepository: vi.fn(), dispose: vi.fn(async () => {}) });
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn() });
   mocks.prompt.mockResolvedValue(() => "prompt");
@@ -73,6 +74,44 @@ describe("worker synchronous management runtime ownership", () => {
     expect(mocks.herdr.mock.results[0]!.value.stopInstance).not.toHaveBeenCalled();
     expect(f.store.getTask(f.task)?.status).toBe("done"); expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
     const next = await acquireWorkerInstanceLock(f.paths); await next.release();
+  });
+
+  it.each(["private Herdr", "current claim", "unproven Git"] as const)("checks %s evidence before changing any original mapping or submitting control", async (proof) => {
+    const f = await fixture(); f.store.completeTask(f.task); f.store.completeTask(f.sibling); const originalTasks = f.store.listTasks();
+    mocks.submit.mockResolvedValue({ task: null, message: "Control completed." });
+    const owner = { projectId: f.project.projectId, taskId: uuid(200), claimId: uuid(201), worktreeId: uuid(202) };
+    const workspace = { owner, workspaceId: "rowless-workspace", panes: [{ binding: { session: "w", workspaceId: "rowless-workspace", paneId: "rowless-pane", terminalId: "rowless-terminal" } }] };
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected: true })), stopInstance: vi.fn(), tasks: { listResources: vi.fn(async () => proof === "private Herdr" ? [workspace] : []), hasUnmanagedWorkspaces: vi.fn(async () => true) } }; mocks.herdr.mockReturnValue(native);
+    const remote = { currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async ({ projectId }: { projectId: string }) => ({ id: projectId })), ownInventory: vi.fn(async () => proof === "current claim" ? [{ projectId: owner.projectId, id: owner.taskId, properties: { worker: { ...owner, workerId: uuid(4), state: "active" } } }] : []) }; mocks.remote.mockReturnValue(remote);
+    const listWorktrees = vi.fn(async (_project: unknown, _operation: unknown, acceptsOwner: (value: typeof owner) => boolean) => {
+      expect(acceptsOwner(owner)).toBe(proof !== "unproven Git");
+      return proof === "private Herdr" ? [{ owner }] : [];
+    }); mocks.git.mockReturnValue({ listWorktrees, dispose: vi.fn(async () => {}) });
+    const next = { remote: f.project.repoUrl, projectId: f.project.projectId, path: path.join(f.homeDirectory, "next-repo") };
+    const added = { ...next, remote: "https://git.example/another/repo.git", projectId: uuid(10), path: path.join(f.homeDirectory, "another-repo") };
+    await writeFile(f.paths.configFile, stringify({ serverUrl: origin, serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { repositories: [added, next] } }));
+    const running = runWorkerControl(f);
+    if (proof === "unproven Git") {
+      await running;
+      expect(f.store.getProject(f.project)?.localPath).toBe(next.path); expect(mocks.submit).toHaveBeenCalledOnce();
+    } else {
+      await expect(running).rejects.toThrow("Owned resources prevent changing");
+      expect(f.store.listProjects()).toEqual([f.project]); expect(f.store.listTasks()).toEqual(originalTasks); expect(mocks.submit).not.toHaveBeenCalled();
+    }
+    expect(remote.ownInventory).toHaveBeenCalledExactlyOnceWith([f.project], uuid(4), expect.any(AbortSignal));
+    expect(listWorktrees).toHaveBeenCalledOnce(); expect(native.stopInstance).not.toHaveBeenCalled();
+    expect(workspace.panes[0]!.binding.terminalId).toBe("rowless-terminal");
+  });
+
+  it("cleans a newly started empty daemon after control startup fails", async () => {
+    const f = await fixture(); f.store.completeTask(f.task); f.store.completeTask(f.sibling); const originalTasks = f.store.listTasks();
+    const failure = new Error("Control failed."); mocks.submit.mockImplementation(async () => { throw failure; });
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(async () => {}), tasks: { listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) } }; mocks.herdr.mockReturnValue(native);
+    mocks.git.mockReturnValue({ listWorktrees: vi.fn(async () => []), dispose: vi.fn(async () => {}) });
+    await writeFile(f.paths.configFile, stringify({ serverUrl: origin, serverToken: "dn_pat_abcdefghijklmnopqrstuvwxyz1234567890", workerId: uuid(4), worker: { repositories: [{ remote: f.project.repoUrl, projectId: f.project.projectId, path: path.join(f.homeDirectory, "next-repo") }] } }));
+    await expect(runWorkerControl(f)).rejects.toBe(failure);
+    expect(native.stopInstance).toHaveBeenCalledOnce(); expect(native.tasks.listResources).toHaveBeenCalledTimes(2);
+    expect(f.store.listTasks()).toEqual(originalTasks);
   });
 
   it("rejects management while run owns the lock before submission or native controller construction", async () => {

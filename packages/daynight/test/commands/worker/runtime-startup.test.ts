@@ -41,9 +41,9 @@ const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), shutdow
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async () => ({ id: uuid(1) })) });
+  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async () => ({ id: uuid(1) })), ownInventory: vi.fn(async () => []) });
   mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}) });
-  mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), tasks: { hasUnmanagedWorkspaces: vi.fn(async () => false) }, attachment: {} });
+  mocks.herdr.mockReturnValue({ ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(async () => ({ stopped: true })), tasks: { listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) }, attachment: {} });
   mocks.prompt.mockResolvedValue(() => "prompt");
   mocks.coordinator.mockReturnValue(coordinator(async () => {}));
 });
@@ -109,13 +109,81 @@ describe("worker repository preparation lifecycle", () => {
     mocks.coordinator.mockReturnValue(coordinator(async () => { controller.abort(new Error("Startup observed.")); }));
     const running = runWorker({ ...f, signal: controller.signal });
     if (owned) {
-      await expect(running).rejects.toThrow("Owned worktrees prevent changing");
+      await expect(running).rejects.toThrow("Owned resources prevent changing");
       expect(f.store!.getProject(previous)).toEqual(previous); expect(mocks.coordinator).not.toHaveBeenCalled();
     } else {
       await running;
       expect(f.store!.getProject(previous)?.localPath).toBe(f.repository.path); expect(mocks.coordinator).toHaveBeenCalledOnce();
     }
     expect(listWorktrees).toHaveBeenCalledOnce();
+  });
+
+  it.each(["private Herdr", "current claim"] as const)("preserves a rowless original binding backed by %s before every project write", async (proof) => {
+    const f = await fixture(true, true);
+    const previous = { projectId: f.repository.projectId, repoUrl: f.repository.remote, localPath: path.join(f.homeDirectory, "previous-repo") }; f.store!.registerProject(previous);
+    const owner = { projectId: previous.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(5) };
+    const workspace = { owner, workspaceId: "original-workspace", panes: [{ binding: { session: "w", workspaceId: "original-workspace", paneId: "original-pane", terminalId: "original-terminal" }, cwd: path.join(previous.localPath, ".worktrees", "daynight", owner.taskId) }] };
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected: true })), stopInstance: vi.fn(), tasks: { listResources: vi.fn(async () => proof === "private Herdr" ? [workspace] : []), hasUnmanagedWorkspaces: vi.fn() } };
+    mocks.herdr.mockReturnValue(native);
+    const remote = { currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async ({ projectId }: { projectId: string }) => ({ id: projectId })), ownInventory: vi.fn(async () => proof === "current claim" ? [{ projectId: owner.projectId, id: owner.taskId, properties: { worker: { ...owner, workerId, state: "active" } } }] : []) };
+    mocks.remote.mockReturnValue(remote);
+    const listWorktrees = vi.fn(async (_project: unknown, _operation: unknown, acceptsOwner: (value: typeof owner) => boolean) => {
+      expect(acceptsOwner(owner)).toBe(true);
+      return proof === "private Herdr" ? [{ owner }] : [];
+    });
+    const prepareRepository = vi.fn(); mocks.git.mockReturnValue({ listWorktrees, prepareRepository, dispose: vi.fn(async () => {}) });
+    const added = { ...f.repository, remote: "https://git.example/another/repo.git", projectId: uuid(10), path: path.join(f.homeDirectory, "another-repo") };
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [added, f.repository], maxConcurrent: 1 } }));
+    await expect(runWorker(f)).rejects.toThrow("Owned resources prevent changing");
+    expect(remote.ownInventory).toHaveBeenCalledExactlyOnceWith([previous], workerId, expect.any(AbortSignal));
+    expect(listWorktrees).toHaveBeenCalledOnce(); expect(prepareRepository).not.toHaveBeenCalled(); expect(mocks.coordinator).not.toHaveBeenCalled();
+    expect(f.store!.listProjects()).toEqual([previous]); expect(f.store!.listTasks()).toEqual([]);
+    expect(native.stopInstance).not.toHaveBeenCalled(); expect(native.tasks.listResources).toHaveBeenCalledOnce();
+    expect(workspace.panes[0]!.binding.terminalId).toBe("original-terminal");
+  });
+
+  it.each([
+    { label: "a newly started empty instance", reconnected: false, managed: false, unmanaged: false, stopped: true },
+    { label: "a reconnected empty instance", reconnected: true, managed: false, unmanaged: false, stopped: false },
+    { label: "newly restored managed workspaces", reconnected: false, managed: true, unmanaged: false, stopped: false },
+    { label: "newly restored manual workspaces", reconnected: false, managed: false, unmanaged: true, stopped: false },
+  ])("handles fatal startup with $label", async ({ reconnected, managed, unmanaged, stopped }) => {
+    const f = await fixture(true, true); const failure = new Error("Repository preparation failed.");
+    const previous = { projectId: f.repository.projectId, repoUrl: f.repository.remote, localPath: path.join(f.homeDirectory, "previous-repo") }; f.store!.registerProject(previous);
+    const owner = { projectId: previous.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(5) };
+    const workspaces = managed ? [{ owner, workspaceId: "restored", panes: [] }] : [];
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected })), stopInstance: vi.fn(async () => {}), tasks: { listResources: vi.fn(async () => workspaces), hasUnmanagedWorkspaces: vi.fn(async () => unmanaged) } }; mocks.herdr.mockReturnValue(native);
+    mocks.git.mockReturnValue({ listWorktrees: vi.fn(async () => []), prepareRepository: vi.fn(async () => { throw failure; }), dispose: vi.fn(async () => {}) });
+    const running = runWorker(f);
+    if (managed) await expect(running).rejects.toThrow("Owned resources prevent changing");
+    else await expect(running).rejects.toBe(failure);
+    expect(native.stopInstance).toHaveBeenCalledTimes(stopped ? 1 : 0); expect(mocks.coordinator).not.toHaveBeenCalled();
+    expect(f.store!.listTasks()).toEqual([]);
+    if (managed) expect(f.store!.getProject(previous)).toEqual(previous);
+    if (reconnected || managed) expect(native.tasks.hasUnmanagedWorkspaces).not.toHaveBeenCalled();
+  });
+
+  it("retains startup ownership across repeated ensure calls and leaves every mapping unchanged on a later failure", async () => {
+    const f = await fixture(true, true); const failure = new Error("Second original repository could not be inspected.");
+    const previous = { projectId: f.repository.projectId, repoUrl: f.repository.remote, localPath: path.join(f.homeDirectory, "previous-repo") };
+    const other = { projectId: uuid(10), repoUrl: "https://git.example/another/repo.git", localPath: path.join(f.homeDirectory, "previous-other") };
+    f.store!.registerProject(previous); f.store!.registerProject(other);
+    await writeFile(f.paths.configFile, stringify({ ...f.document, worker: { repositories: [f.repository, { projectId: other.projectId, remote: other.repoUrl, path: path.join(f.homeDirectory, "next-other") }] } }));
+    const remote = { currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async ({ projectId }: { projectId: string }) => ({ id: projectId })), ownInventory: vi.fn(async () => []) }; mocks.remote.mockReturnValue(remote);
+    const native = { ensureInstance: vi.fn().mockResolvedValueOnce({ reconnected: false }).mockResolvedValueOnce({ reconnected: true }), stopInstance: vi.fn(async () => {}), tasks: { listResources: vi.fn(async () => []), hasUnmanagedWorkspaces: vi.fn(async () => false) } }; mocks.herdr.mockReturnValue(native);
+    mocks.git.mockReturnValue({ listWorktrees: vi.fn(async (project: { projectId: string }) => { if (project.projectId === other.projectId) throw failure; return []; }), dispose: vi.fn(async () => {}) });
+    await expect(runWorker(f)).rejects.toBe(failure);
+    expect(native.ensureInstance).toHaveBeenCalledTimes(2); expect(native.stopInstance).toHaveBeenCalledOnce();
+    expect(f.store!.listProjects()).toEqual([previous, other]); expect(f.store!.listTasks()).toEqual([]);
+  });
+
+  it("retains a newly started instance when fatal-startup inventory cannot be confirmed", async () => {
+    const f = await fixture(true, true); const failure = new Error("Git discovery failed."); const observationFailure = new Error("Herdr cleanup observation failed.");
+    f.store!.registerProject({ projectId: f.repository.projectId, repoUrl: f.repository.remote, localPath: path.join(f.homeDirectory, "previous-repo") });
+    const native = { ensureInstance: vi.fn(async () => ({ reconnected: false })), stopInstance: vi.fn(), tasks: { listResources: vi.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(observationFailure), hasUnmanagedWorkspaces: vi.fn() } }; mocks.herdr.mockReturnValue(native);
+    mocks.git.mockReturnValue({ listWorktrees: vi.fn(async () => { throw failure; }), dispose: vi.fn(async () => {}) });
+    await expect(runWorker(f)).rejects.toMatchObject({ errors: [failure, observationFailure] });
+    expect(native.stopInstance).not.toHaveBeenCalled(); expect(native.tasks.hasUnmanagedWorkspaces).not.toHaveBeenCalled();
   });
 
   it.each([true, false])("retains the daemon exactly when unmanaged workspaces remain after successful managed shutdown: %s", async (unmanaged) => {

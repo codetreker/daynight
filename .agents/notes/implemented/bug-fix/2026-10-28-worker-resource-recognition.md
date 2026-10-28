@@ -31,6 +31,15 @@ A static Git marker identifies a claim rather than a worker, so a recognized
 Git-only resource still needs a matching local claim row, private Herdr resource
 or current own claim before this worker manages it.
 
+Run and manual control resolve all configured Projects and check every changed
+saved repository binding before registering any replacement. Each check reads
+the original Project's complete current own-claim inventory and private managed
+Herdr resources. The union of local claim rows, current own claims and managed
+Herdr identities supplies the Git ownership predicate. A current own claim,
+managed workspace or proven Git worktree blocks rebinding even without a local
+task row. Unknown Git metadata and independent manual workspaces supply no
+worker ownership proof.
+
 Herdr discovery recognizes the current title-prefixed four-ID owner and applies
 the saved Project scope before decoding pane or native-agent metadata. An
 unrecognized label or unmapped Project leaves the whole workspace untouched.
@@ -50,6 +59,13 @@ stays running as a normal result. Its independent process and file-backed logs
 allow attachment after runner exit and reconnection by the next run. When no
 unmanaged workspace remains, normal daemon shutdown still applies. Uncertain
 managed stopping continues to retain the daemon with a visible error.
+
+A repository-change check may start or reconnect the private daemon for resource
+observation before mappings are saved. It does not launch a native agent or run
+native-launch preflight. If startup or manual-control initialization fails, only
+a daemon newly started by that initialization and freshly observed with no
+managed or unmanaged workspace is stopped. A reconnected daemon, restored
+managed or manual workspace, or failed observation is retained.
 
 This partially supersedes the global discovery failure and unproven-resource
 diagnostics in the [Git workspace decision](../architecture/2026-10-26-worker-git-workspaces.md)

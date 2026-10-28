@@ -914,8 +914,12 @@ starting tasks. Noninteractive startup requires a configured repository and
 prints `worker repo add --project PROJECT_UUID` guidance. Service credentials
 and selected worker settings come from one captured configuration source;
 changed credentials require restarting the command. Startup resolves configured
-Projects into the local projects table before reading claim inventory, including
-when the state database is empty.
+Projects into the local projects table before normal claim reconciliation,
+including when the state database is empty. Before replacing any saved repository
+binding, run and manual control check the original Project's complete current
+own claims, private managed Herdr resources and proven Git worktrees. A missing
+local task row does not permit rebinding an existing managed execution. Unknown
+Git metadata and independent human workspaces do not establish worker ownership.
 
 `worker.repositoryRoot` defaults to `~/daynights`, independently of review's
 root. New registration expands the actual home shortcut or resolves a path

@@ -11,14 +11,19 @@ import type { WorkerRepositoryAssignment } from "./coordinator.js";
 import { submitWorkerControl } from "./control.js";
 import type { WorkerControlRequest } from "./control.js";
 import { createWorkerDiagnostics } from "./diagnostics.js";
-import { isWorkerCancellation } from "./execution.js";
+import { isWorkerCancellation, sameClaim } from "./execution.js";
+import type { WorkerGitManager } from "./execution.js";
 import { createWorkerHerdr } from "./herdr.js";
+import type { WorkerHerdrAdapter } from "./herdr.js";
 import { ensureWorkerIdentity } from "./identity.js";
 import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./instance-lock.js";
 import { resolveWorkerPaths } from "./paths.js";
 import { createWorkerPromptBuilder } from "./prompts.js";
 import { createWorkerRemote } from "./remote.js";
+import type { WorkerRemote } from "./remote.js";
 import { openWorkerStore } from "./store.js";
+import type { WorkerStore } from "./store.js";
+import type { ClaimIdentity, WorkerProject } from "./types.js";
 import { createWorkerGitManager } from "./worktrees.js";
 
 export const currentWorkerPlatform = (platform: NodeJS.Platform = process.platform): TaskPlatform => {
@@ -70,6 +75,39 @@ const throwFailures = (failures: readonly unknown[]): void => {
   if (failures.length > 1) throw new AggregateError(failures, "Worker operation and resource cleanup failed.");
 };
 
+const createStartupResources = (options: {
+  store: WorkerStore; git: WorkerGitManager; herdr: WorkerHerdrAdapter;
+  remote: WorkerRemote; workerId: string; signal: AbortSignal;
+}) => {
+  let startedInstance = false;
+  return {
+    assertRepositoryChange: async (previous: WorkerProject): Promise<void> => {
+      const inventory = await options.remote.ownInventory([previous], options.workerId, options.signal);
+      const claims: ClaimIdentity[] = inventory.map((task) => {
+        const claim = task.properties.worker;
+        if (task.projectId !== previous.projectId || claim === null || claim.state !== "active" || claim.workerId !== options.workerId) throw new Error("The claim inventory does not identify an active claim for the original worker project.");
+        return { projectId: task.projectId, taskId: task.id, claimId: claim.claimId };
+      });
+      const operation = createOperation({ signal: options.signal });
+      try {
+        const instance = await options.herdr.ensureInstance(operation);
+        if (!instance.reconnected) startedInstance = true;
+        const workspaces = (await options.herdr.tasks.listResources(operation)).filter((workspace) => workspace.owner.projectId === previous.projectId);
+        const proof = [...options.store.listTasks(), ...claims, ...workspaces.map((workspace) => workspace.owner)];
+        const worktrees = await options.git.listWorktrees(previous, operation, (owner) => proof.some((identity) => sameClaim(identity, owner)));
+        if (claims.length > 0 || workspaces.length > 0 || worktrees.length > 0) throw new Error("Owned resources prevent changing the project's original repository binding.");
+      } finally { operation.dispose(); }
+    },
+    cleanupUnusedInstance: async (): Promise<void> => {
+      if (!startedInstance) return;
+      const operation = createOperation({ limits: { totalMs: 30_000 } });
+      try {
+        if ((await options.herdr.tasks.listResources(operation)).length === 0 && !await options.herdr.tasks.hasUnmanagedWorkspaces(operation)) await options.herdr.stopInstance(operation);
+      } finally { operation.dispose(); }
+    },
+  };
+};
+
 export const runWorker = async (options: {
   homeDirectory: string; packageDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
@@ -85,6 +123,7 @@ export const runWorker = async (options: {
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
   let herdr: ReturnType<typeof createWorkerHerdr> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
+  let startupResources: ReturnType<typeof createStartupResources> | undefined;
   const failures: unknown[] = [];
   try {
     signal.throwIfAborted();
@@ -113,21 +152,19 @@ export const runWorker = async (options: {
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     const resourceStore = store;
     herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, acceptsOwner: (owner) => resourceStore.getProject(owner) !== null });
+    startupResources = createStartupResources({ store, git, herdr, remote, workerId, signal });
     const repositories: WorkerRepositoryAssignment[] = [];
     for (const repository of configuration.repositories) {
       const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
       const previous = store.getProject({ projectId: project.id });
-      if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) {
-        const operation = createOperation({ signal });
-        try {
-          if ((await git.listWorktrees(previous, operation, (owner) => resourceStore.getTask(owner) !== null)).length > 0) throw new Error("Owned worktrees prevent changing the project's original repository binding.");
-        } finally { operation.dispose(); }
-      }
-      const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
+      if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) await startupResources.assertRepositoryChange(previous);
+      repositories.push({ project: { projectId: project.id, repoUrl: repository.remote, localPath: repository.path }, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
+    }
+    for (const repository of repositories) {
+      const binding = store.registerProject(repository.project);
       const operation = createOperation({ signal });
       try { await git.prepareRepository(binding, operation); }
       finally { operation.dispose(); }
-      repositories.push({ project: binding, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
     }
     coordinator = createWorkerCoordinator({
       store, git, herdr, remote, serverOrigin: serverUrl, workerId, platform,
@@ -167,6 +204,8 @@ export const runWorker = async (options: {
         try { if (!await herdr.tasks.hasUnmanagedWorkspaces(operation)) await herdr.stopInstance(operation); }
         finally { operation.dispose(); }
       } catch (error) { failures.push(error); }
+    } else {
+      try { await startupResources?.cleanupUnusedInstance(); } catch (error) { failures.push(error); }
     }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
@@ -189,6 +228,8 @@ export const runWorkerControl = async (options: {
   let store: ReturnType<typeof openWorkerStore> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
+  let startupResources: ReturnType<typeof createStartupResources> | undefined;
+  let completed = false;
   const failures: unknown[] = [];
   try {
     signal.throwIfAborted();
@@ -202,16 +243,19 @@ export const runWorkerControl = async (options: {
     const remote = createWorkerRemote({ serverUrl, serverToken });
     await remote.currentUserId(signal);
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
-    const repositories: WorkerRepositoryAssignment[] = [];
-    for (const repository of configuration.repositories) {
-      const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
-      const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
-      repositories.push({ project: binding, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
-    }
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     const resourceStore = store;
     const herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, acceptsOwner: (owner) => resourceStore.getProject(owner) !== null });
+    startupResources = createStartupResources({ store, git, herdr, remote, workerId, signal });
+    const repositories: WorkerRepositoryAssignment[] = [];
+    for (const repository of configuration.repositories) {
+      const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
+      const previous = store.getProject({ projectId: project.id });
+      if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) await startupResources.assertRepositoryChange(previous);
+      repositories.push({ project: { projectId: project.id, repoUrl: repository.remote, localPath: repository.path }, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
+    }
+    for (const repository of repositories) store.registerProject(repository.project);
     const machine = machineDescription(platform);
     const coordinator = createWorkerCoordinator({
       store, git, herdr, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories,
@@ -224,8 +268,12 @@ export const runWorkerControl = async (options: {
       emit: diagnostics.emit,
     });
     diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
+    completed = true;
   } catch (error) { failures.push(error); }
   finally {
+    if (!completed) {
+      try { await startupResources?.cleanupUnusedInstance(); } catch (error) { failures.push(error); }
+    }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }

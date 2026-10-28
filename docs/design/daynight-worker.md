@@ -90,13 +90,13 @@ CREATE UNIQUE INDEX tasks_one_active_per_task
 
 `agent` 来自实际取得的 claim；`session_id` 是 Codex/Copilot 原生会话 ID，尚未取得时为 NULL。Herdr workspace/pane/terminal ID 每次从资源观察取得。启动资源前先提交 active，终止清理全部完成后才提交 done；失败保留责任，结束行保留。
 
-Projects 在远端认领前保存仓库映射。有未结束任务或实际受管资源时不能改变该项目绑定。存储使用实际 SQLite 事务、STRICT 表和唯一约束；没有配置快照、启动回执、PID、恢复次数、清理进度、管理意图或时间列，也不把这些信息转存其他台账。日志只用于诊断。
+Projects 在远端认领前保存仓库映射。有未结束任务或实际受管资源时不能改变该项目绑定。Run 与人工管理先解析全部配置项目，并在保存任何新映射前核验每个发生变化的旧绑定：读取旧项目的完整当前自有 claim 清单和私有 Herdr 受管资源，用本机任务行、当前自有 claim 与受管 Herdr 身份的并集筛选原仓库 Git 注册。即使没有本机任务行，当前 claim、受管 workspace 或经上述证明归属的 worktree 也阻止改绑；未知 Git 标记与人工 workspace 不建立这份证明。存储使用实际 SQLite 事务、STRICT 表和唯一约束；没有配置快照、启动回执、PID、恢复次数、清理进度、管理意图或时间列，也不把这些信息转存其他台账。日志只用于诊断。
 
 数据库按此 schema 新建。遇到旧的详细执行 schema 时明确要求停止 worker 并删除旧 SQLite；程序不迁移或自动删除旧库。workerId 与原生历史保持各自原有位置。
 
 ## 启动、发现与周期对账
 
-启动先取得实例锁、稳定身份并核验账号，再解析当前配置的 Project 并保存 projects。首次完整清单查询范围为当前配置项目与已有 projects 的并集；空数据库也先完成映射，才能找回原 worker 已有的 claim。
+启动先取得实例锁、稳定身份并核验账号，再解析当前配置的 Project，完成旧绑定的资源核验后保存 projects。改绑核验可以提前启动或重连私有 daemon 以观察其实际资源，但不启动 native agent 或运行原生启动 preflight。初始化失败时只关闭本次新启动且重新确认没有受管或未受管 workspace 的空 daemon；既有 daemon、恢复出的受管或人工 workspace，以及无法完成观察的实例均保留。首次正常对账的完整清单查询范围为当前配置项目与已有 projects 的并集；空数据库也先完成映射，才能找回原 worker 已有的 claim。
 
 ```text
 完整读取自己的远端 claim 清单，补齐 SQLite 中的实际 claim
