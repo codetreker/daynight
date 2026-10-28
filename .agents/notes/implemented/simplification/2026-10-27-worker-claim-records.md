@@ -52,7 +52,7 @@ process that needs starting resumes the recorded ID when present. A NULL ID
 starts a fresh native conversation in the same task, claim and worktree, then
 saves its ID. It has no history-search, pause or approval gate. This decision
 originally classified that event as Warning to expose the fresh-conversation
-choice during recovery. The [log presentation decision](../bug-fix/2026-10-28-worker-log-presentation.md)
+choice during recovery. The [fresh-session logging decision](../bug-fix/2026-10-28-worker-fresh-session-info.md)
 uses `info` because NULL is also the normal state of a new claim. Known-ID native
 resume errors remain visible. A non-NULL saved ID is also validated against every
 reported native reference before binding it or sending
