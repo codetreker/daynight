@@ -17,7 +17,7 @@ func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 	for number := 10; number < 14; number++ {
 		queryTask(t, database, project.ID, number, core.TaskInProgress)
 		claim := &core.WorkerClaim{ClaimID: queryID(number + 100), State: core.WorkerActive, UserID: owner, WorkerID: workerID,
-			Machine: core.WorkerMachine{ID: queryID(4), Name: "Machine"}, Platform: core.PlatformLinux, Agent: core.AgentCodex, WorktreeID: queryID(number + 200), Phase: core.WorkerPreparing, ClaimedAt: time.Now().UTC()}
+			Machine: core.WorkerMachine{ID: queryID(4), Name: "Machine"}, Platform: core.PlatformLinux, Agent: core.AgentCodex, AgentControlMode: core.AgentControlModeHerdr, WorktreeID: queryID(number + 200), Phase: core.WorkerPreparing, ClaimedAt: time.Now().UTC()}
 		if number < 12 {
 			claim.UserID = queryID(5)
 		}

@@ -66,7 +66,7 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "worktreeId"}, claimWorkerInput, h.tasks.ClaimWorker)
+	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId"}, claimWorkerInput, h.tasks.ClaimWorker)
 }
 
 func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -82,7 +82,7 @@ func (h *taskHandler) transferWorker(w http.ResponseWriter, request *http.Reques
 }
 
 func (h *taskHandler) resumeWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "resume", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "worktreeId", "previousClaimId"}, resumeWorkerInput, h.tasks.ResumeWorker)
+	workerMutation(h, w, request, principal, "resume", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "previousClaimId"}, resumeWorkerInput, h.tasks.ResumeWorker)
 }
 
 func workerMachineInput(raw json.RawMessage) (core.WorkerMachine, error) {
@@ -122,7 +122,22 @@ func workerDescriptorInput(fields map[string]json.RawMessage) (service.WorkerDes
 		return service.WorkerDescriptor{}, err
 	}
 	input.Agent = core.WorkerAgent(agent)
-	return input, nil
+	input.AgentControlMode, err = workerAgentControlModeInput(fields)
+	return input, err
+}
+
+func workerAgentControlModeInput(fields map[string]json.RawMessage) (core.WorkerAgentControlMode, error) {
+	if _, exists := fields["agentControlMode"]; !exists {
+		return core.AgentControlModeHerdr, nil
+	}
+	mode, err := requiredString(fields, "agentControlMode")
+	if err != nil {
+		return "", err
+	}
+	if mode != string(core.AgentControlModeHerdr) && mode != string(core.AgentControlModeWeb) {
+		return "", invalidInput("agentControlMode must be herdr or web.")
+	}
+	return core.WorkerAgentControlMode(mode), nil
 }
 
 func claimWorkerInput(fields map[string]json.RawMessage) (service.ClaimWorker, error) {
@@ -241,7 +256,7 @@ func transferWorkerInput(fields map[string]json.RawMessage) (service.TransferWor
 			return service.TransferWorker{}, err
 		}
 	}
-	target, err := jsonobject.Decode(fields["target"], "target", "userId", "workerId", "machine", "platform", "agent")
+	target, err := jsonobject.Decode(fields["target"], "target", "userId", "workerId", "machine", "platform", "agent", "agentControlMode")
 	if err != nil {
 		return service.TransferWorker{}, invalidInput(err.Error())
 	}
@@ -267,6 +282,10 @@ func transferWorkerInput(fields map[string]json.RawMessage) (service.TransferWor
 		return service.TransferWorker{}, err
 	}
 	input.Target.Agent = core.WorkerAgent(agent)
+	input.Target.AgentControlMode, err = workerAgentControlModeInput(target)
+	if err != nil {
+		return service.TransferWorker{}, err
+	}
 	input.StoppedConfirmed, err = requiredWorkerConfirmation(fields, "stoppedConfirmed")
 	return input, err
 }

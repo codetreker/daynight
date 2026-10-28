@@ -17,7 +17,7 @@ func workerFixture() core.WorkerClaim {
 		ClaimID: "00000000-0000-4000-8000-000000000001", State: core.WorkerActive,
 		UserID: "00000000-0000-4000-8000-000000000002", WorkerID: "00000000-0000-4000-8000-000000000003",
 		Machine:  core.WorkerMachine{ID: "00000000-0000-4000-8000-000000000004", Name: "Build machine 中文"},
-		Platform: core.PlatformLinux, Agent: core.AgentCodex, WorktreeID: "00000000-0000-4000-8000-000000000005",
+		Platform: core.PlatformLinux, Agent: core.AgentCodex, AgentControlMode: core.AgentControlModeHerdr, WorktreeID: "00000000-0000-4000-8000-000000000005",
 		Phase: core.WorkerExecuting, Herdr: &core.WorkerHerdr{Session: "w", WorkspaceID: "workspace", PaneID: "pane"},
 		NativeSessionID: &native, ClaimedAt: time.Date(2026, 10, 24, 1, 2, 3, 456789123, time.UTC),
 	}
@@ -49,7 +49,7 @@ func workerPropertiesJSON(t *testing.T, worker map[string]json.RawMessage) []byt
 func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
 	for _, state := range []core.WorkerState{core.WorkerActive, core.WorkerReleased, core.WorkerCompleted} {
 		for _, platform := range []core.TaskPlatform{core.PlatformWindows, core.PlatformLinux, core.PlatformMacOS} {
-			for _, agent := range []core.WorkerAgent{core.AgentCodex, core.AgentCopilot} {
+			for _, agent := range []core.WorkerAgent{core.AgentCodex, core.AgentClaude, core.AgentCopilot} {
 				for _, phase := range []core.WorkerPhase{core.WorkerPreparing, core.WorkerExecuting, core.WorkerVerifying, core.WorkerCompleting, core.WorkerWaiting, core.WorkerPaused} {
 					t.Run(fmt.Sprintf("%s/%s/%s/%s", state, platform, agent, phase), func(t *testing.T) {
 						worker := workerFixture()
@@ -93,7 +93,7 @@ func TestWorkerCodecRequiresCompleteStrictReadStructure(t *testing.T) {
 	}
 	for _, test := range []struct{ name, key, value string }{
 		{"claim uuid", "claimId", `"invalid"`}, {"user uuid", "userId", `"invalid"`}, {"worker uuid", "workerId", `"invalid"`}, {"worktree uuid", "worktreeId", `"invalid"`},
-		{"state", "state", `"idle"`}, {"platform", "platform", `"darwin"`}, {"agent", "agent", `"claude"`}, {"phase", "phase", `"done"`},
+		{"state", "state", `"idle"`}, {"platform", "platform", `"darwin"`}, {"agent", "agent", `"other"`}, {"phase", "phase", `"done"`},
 		{"state null", "state", `null`}, {"worker numeric", "workerId", `123`}, {"claimed timestamp", "claimedAt", `"not-time"`}, {"zero timestamp", "claimedAt", `"0001-01-01T00:00:00Z"`},
 		{"machine scalar", "machine", `3`}, {"machine missing id", "machine", `{"name":"build"}`}, {"machine missing name", "machine", `{"id":"00000000-0000-4000-8000-000000000004"}`},
 		{"machine wrong id", "machine", `{"id":"wrong","name":"build"}`}, {"machine blank name", "machine", `{"id":"00000000-0000-4000-8000-000000000004","name":" \n"}`},

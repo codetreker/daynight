@@ -135,6 +135,13 @@ func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite
 	if result.RowsAffected() == 0 {
 		return core.Task{}, queryError("update task", core.ErrNotFound)
 	}
+	var activeClaim *string
+	if worker := values.Properties.Worker; values.Status == core.TaskInProgress && worker != nil && worker.State == core.WorkerActive && worker.AgentControlMode == core.AgentControlModeWeb {
+		activeClaim = &worker.ClaimID
+	}
+	if err := tx.freezeTaskSessions(ctx, id, activeClaim); err != nil {
+		return core.Task{}, err
+	}
 	if _, err := tx.tx.Exec(ctx, `DELETE FROM task_dependencies WHERE project_id = $1 AND task_id = $2`, tx.projectID, id); err != nil {
 		return core.Task{}, queryError("replace dependencies", err)
 	}
@@ -197,8 +204,59 @@ func (tx *ProjectTx) DeleteTask(ctx context.Context, id string, removeDepends bo
 	if result.RowsAffected() == 0 {
 		return queryError("delete task", core.ErrNotFound)
 	}
+	if err := tx.freezeTaskSessions(ctx, id, nil); err != nil {
+		return err
+	}
 	if _, err := tx.tx.Exec(ctx, `UPDATE projects SET task_cache_epoch = gen_random_uuid() WHERE id = $1`, tx.projectID); err != nil {
 		return queryError("invalidate deleted task cache", err)
+	}
+	return nil
+}
+
+// Claim transitions and relay freezing share the task transaction. Stream
+// writes lock the task before the session, so no command can cross this fence.
+func (tx *ProjectTx) freezeTaskSessions(ctx context.Context, taskID string, activeClaim *string) error {
+	_, err := tx.tx.Exec(ctx, `WITH frozen AS (
+		UPDATE task_sessions SET draining_until=statement_timestamp()+interval '60 seconds',
+ draining_timeline_seq=(snapshot->>'lastTimelineSeq')::bigint,
+		snapshot=(snapshot - 'cleanupInteractionIds') || jsonb_build_object('lifecycle','draining',
+		 'sessionRevision',((snapshot->>'sessionRevision')::bigint+1)::text,
+		 'lastEventSeq',((snapshot->>'lastEventSeq')::bigint+1)::text,
+		 'operations',jsonb_build_object('canSend',false,'canCancel',false,'canRespond',false))
+		WHERE project_id=$1 AND task_id=$2 AND snapshot->>'lifecycle'='active'
+		AND ($3::uuid IS NULL OR claim_id<>$3::uuid) RETURNING id,snapshot
+	) INSERT INTO session_events(session_id,event_seq,event)
+	SELECT id,(snapshot->>'lastEventSeq')::bigint,jsonb_build_object(
+	 'protocol','daynight.session.v1','sessionId',id::text,'claimId',snapshot->>'claimId',
+	 'executionGeneration',snapshot->>'executionGeneration','connectionEpoch',snapshot->>'connectionEpoch',
+	 'eventSeq',snapshot->>'lastEventSeq','historyEpoch',snapshot->>'historyEpoch','kind','snapshot','payload',snapshot)
+	FROM frozen`, tx.projectID, taskID, activeClaim)
+	if err != nil {
+		return queryError("freeze task sessions", err)
+	}
+	// Inputs that never crossed the offered boundary are safely rejected. Already
+	// offered inputs retain their real receipts and drain through the controller.
+	_, err = tx.tx.Exec(ctx, `WITH rejected AS (
+	 UPDATE session_operations o SET receipt=receipt || jsonb_build_object('state','rejected',
+	 'error',jsonb_build_object('code','claim_ended','message','The claim ended before this operation was offered.'))
+	 WHERE receipt->>'state'='accepted' AND session_id IN
+	 (SELECT id FROM task_sessions WHERE project_id=$1 AND task_id=$2 AND snapshot->>'lifecycle'='draining')
+	 RETURNING session_id,operation_id,receipt
+	), numbered AS (
+	 SELECT session_id,receipt,row_number() OVER(PARTITION BY session_id ORDER BY operation_id) AS offset FROM rejected
+	), appended AS (
+	 INSERT INTO session_events(session_id,event_seq,event)
+	 SELECT n.session_id,(s.snapshot->>'lastEventSeq')::bigint+n.offset,jsonb_build_object(
+	 'protocol','daynight.session.v1','sessionId',n.session_id::text,'claimId',n.receipt->>'claimId',
+	 'executionGeneration',n.receipt->>'executionGeneration','connectionEpoch',s.snapshot->>'connectionEpoch',
+	 'eventSeq',((s.snapshot->>'lastEventSeq')::bigint+n.offset)::text,'historyEpoch',s.snapshot->>'historyEpoch',
+	 'kind','operation','payload',n.receipt)
+	 FROM numbered n JOIN task_sessions s ON s.id=n.session_id RETURNING session_id
+	), counts AS (SELECT session_id,count(*) AS total FROM appended GROUP BY session_id)
+	 UPDATE task_sessions s SET snapshot=jsonb_set(snapshot,'{lastEventSeq}',to_jsonb(((snapshot->>'lastEventSeq')::bigint+c.total)::text))
+	 FROM counts c WHERE s.id=c.session_id`, tx.projectID, taskID)
+	if err != nil {
+		return queryError("reject undispatched session operations", err)
 	}
 	return nil
 }

@@ -50,7 +50,7 @@ func propertiesResponse(properties core.TaskProperties) api.TaskProperties {
 	if worker := properties.Worker; worker != nil {
 		result.Worker = &api.WorkerClaim{ClaimID: worker.ClaimID, State: string(worker.State), UserID: worker.UserID,
 			WorkerID: worker.WorkerID, Machine: api.WorkerMachine{ID: worker.Machine.ID, Name: worker.Machine.Name},
-			Platform: string(worker.Platform), Agent: string(worker.Agent), WorktreeID: worker.WorktreeID,
+			Platform: string(worker.Platform), Agent: string(worker.Agent), AgentControlMode: string(worker.AgentControlMode), WorktreeID: worker.WorktreeID,
 			Phase: string(worker.Phase), NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC()}
 		if worker.Herdr != nil {
 			result.Worker.Herdr = &api.WorkerHerdr{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}

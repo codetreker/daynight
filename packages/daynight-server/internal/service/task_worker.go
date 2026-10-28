@@ -11,12 +11,13 @@ import (
 )
 
 type WorkerDescriptor struct {
-	ClaimID    string
-	WorkerID   string
-	Machine    core.WorkerMachine
-	Platform   core.TaskPlatform
-	Agent      core.WorkerAgent
-	WorktreeID string
+	ClaimID          string
+	WorkerID         string
+	Machine          core.WorkerMachine
+	Platform         core.TaskPlatform
+	Agent            core.WorkerAgent
+	AgentControlMode core.WorkerAgentControlMode
+	WorktreeID       string
 }
 
 type ClaimWorker struct {
@@ -39,11 +40,12 @@ type ReleaseWorker struct {
 }
 
 type WorkerTarget struct {
-	UserID   string
-	WorkerID string
-	Machine  core.WorkerMachine
-	Platform core.TaskPlatform
-	Agent    core.WorkerAgent
+	UserID           string
+	WorkerID         string
+	Machine          core.WorkerMachine
+	Platform         core.TaskPlatform
+	Agent            core.WorkerAgent
+	AgentControlMode core.WorkerAgentControlMode
 }
 
 type TransferWorker struct {
@@ -134,6 +136,9 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, proj
 		if worker.UserID != principal.UserID {
 			return taskMutation{}, &Fault{Code: "forbidden", Message: "Only the current execution owner may update worker execution."}
 		}
+		if worker.AgentControlMode == core.AgentControlModeWeb && input.Herdr != nil && *input.Herdr != nil {
+			return taskMutation{}, invalidInput("Web execution cannot bind Herdr resources.")
+		}
 		next := *worker
 		if input.Phase != nil {
 			next.Phase = *input.Phase
@@ -186,7 +191,7 @@ func (s *Tasks) TransferWorker(ctx context.Context, principal core.Principal, pr
 	if err != nil {
 		return core.Task{}, err
 	}
-	descriptor, err := canonicalWorkerDescriptor(WorkerDescriptor{ClaimID: input.NewClaimID, WorkerID: input.Target.WorkerID, Machine: input.Target.Machine, Platform: input.Target.Platform, Agent: input.Target.Agent, WorktreeID: input.WorktreeID})
+	descriptor, err := canonicalWorkerDescriptor(WorkerDescriptor{ClaimID: input.NewClaimID, WorkerID: input.Target.WorkerID, Machine: input.Target.Machine, Platform: input.Target.Platform, Agent: input.Target.Agent, AgentControlMode: input.Target.AgentControlMode, WorktreeID: input.WorktreeID})
 	if err != nil {
 		return core.Task{}, err
 	}
@@ -220,6 +225,9 @@ func (s *Tasks) TransferWorker(ctx context.Context, principal core.Principal, pr
 }
 
 func canonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error) {
+	if input.AgentControlMode == "" {
+		input.AgentControlMode = core.AgentControlModeHerdr
+	}
 	for _, field := range []*string{&input.ClaimID, &input.WorkerID, &input.Machine.ID, &input.WorktreeID} {
 		value, err := CanonicalID(*field)
 		if err != nil {
@@ -227,8 +235,8 @@ func canonicalWorkerDescriptor(input WorkerDescriptor) (WorkerDescriptor, error)
 		}
 		*field = value
 	}
-	if !input.Platform.Valid() || !input.Agent.Valid() || !workerText(input.Machine.Name) {
-		return WorkerDescriptor{}, invalidInput("Worker requires a supported platform, agent and nonempty UTF-8 machine name without NUL.")
+	if !input.Platform.Valid() || !input.AgentControlMode.Supports(input.Agent) || !workerText(input.Machine.Name) {
+		return WorkerDescriptor{}, invalidInput("Worker requires a supported platform, agent/control mode combination and nonempty UTF-8 machine name without NUL.")
 	}
 	return input, nil
 }
@@ -270,7 +278,7 @@ func acquireWorker(ctx context.Context, tx *store.ProjectTx, current core.Task, 
 	}
 	values := currentTaskWrite(current)
 	values.Status = core.TaskInProgress
-	values.Properties.Worker = &core.WorkerClaim{ClaimID: descriptor.ClaimID, State: core.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, WorktreeID: descriptor.WorktreeID, Phase: core.WorkerPreparing, ClaimedAt: claimedAt}
+	values.Properties.Worker = &core.WorkerClaim{ClaimID: descriptor.ClaimID, State: core.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: core.WorkerPreparing, ClaimedAt: claimedAt}
 	return taskMutation{id: current.ID, current: current, values: values, changed: true}, nil
 }
 

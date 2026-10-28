@@ -18,10 +18,24 @@ type WorkerAgent string
 
 const (
 	AgentCodex   WorkerAgent = "codex"
+	AgentClaude  WorkerAgent = "claude"
 	AgentCopilot WorkerAgent = "copilot"
 )
 
-func (agent WorkerAgent) Valid() bool { return agent == AgentCodex || agent == AgentCopilot }
+func (agent WorkerAgent) Valid() bool {
+	return agent == AgentCodex || agent == AgentClaude || agent == AgentCopilot
+}
+
+type WorkerAgentControlMode string
+
+const (
+	AgentControlModeHerdr WorkerAgentControlMode = "herdr"
+	AgentControlModeWeb   WorkerAgentControlMode = "web"
+)
+
+func (mode WorkerAgentControlMode) Supports(agent WorkerAgent) bool {
+	return (mode == AgentControlModeHerdr || mode == AgentControlModeWeb) && agent.Valid()
+}
 
 type WorkerPhase string
 
@@ -50,16 +64,17 @@ type WorkerHerdr struct {
 }
 
 type WorkerClaim struct {
-	ClaimID         string
-	State           WorkerState
-	UserID          string
-	WorkerID        string
-	Machine         WorkerMachine
-	Platform        TaskPlatform
-	Agent           WorkerAgent
-	WorktreeID      string
-	Phase           WorkerPhase
-	Herdr           *WorkerHerdr
-	NativeSessionID *string
-	ClaimedAt       time.Time
+	ClaimID          string
+	State            WorkerState
+	UserID           string
+	WorkerID         string
+	Machine          WorkerMachine
+	Platform         TaskPlatform
+	Agent            WorkerAgent
+	AgentControlMode WorkerAgentControlMode
+	WorktreeID       string
+	Phase            WorkerPhase
+	Herdr            *WorkerHerdr
+	NativeSessionID  *string
+	ClaimedAt        time.Time
 }

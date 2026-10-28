@@ -68,6 +68,21 @@ var deviceAuthorizationSQL string
 //go:embed migrations/019_optional_token_expiry.sql
 var optionalTokenExpirySQL string
 
+//go:embed migrations/020_worker_agent_control_mode.sql
+var workerAgentControlModeSQL string
+
+//go:embed migrations/021_task_sessions.sql
+var taskSessionsSQL string
+
+//go:embed migrations/022_session_connection_credential.sql
+var sessionConnectionCredentialSQL string
+
+//go:embed migrations/023_session_transaction_ownership.sql
+var sessionTransactionOwnershipSQL string
+
+//go:embed migrations/024_test_sessions.sql
+var testSessionsSQL string
+
 type migration struct {
 	version int64
 	sql     string
@@ -93,6 +108,11 @@ var schemaMigrations = []migration{
 	{version: 17, sql: taskSoftDeleteSQL},
 	{version: 18, sql: deviceAuthorizationSQL},
 	{version: 19, sql: optionalTokenExpirySQL},
+	{version: 20, sql: workerAgentControlModeSQL},
+	{version: 21, sql: taskSessionsSQL},
+	{version: 22, sql: sessionConnectionCredentialSQL},
+	{version: 23, sql: sessionTransactionOwnershipSQL},
+	{version: 24, sql: testSessionsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

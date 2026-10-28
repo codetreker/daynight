@@ -14,16 +14,17 @@ type WorkerHerdr struct {
 }
 
 type WorkerClaim struct {
-	ClaimID         string        `json:"claimId"`
-	State           string        `json:"state"`
-	UserID          string        `json:"userId"`
-	WorkerID        string        `json:"workerId"`
-	Machine         WorkerMachine `json:"machine"`
-	Platform        string        `json:"platform"`
-	Agent           string        `json:"agent"`
-	WorktreeID      string        `json:"worktreeId"`
-	Phase           string        `json:"phase"`
-	Herdr           *WorkerHerdr  `json:"herdr"`
-	NativeSessionID *string       `json:"nativeSessionId"`
-	ClaimedAt       time.Time     `json:"claimedAt"`
+	ClaimID          string        `json:"claimId"`
+	State            string        `json:"state"`
+	UserID           string        `json:"userId"`
+	WorkerID         string        `json:"workerId"`
+	Machine          WorkerMachine `json:"machine"`
+	Platform         string        `json:"platform"`
+	Agent            string        `json:"agent"`
+	AgentControlMode string        `json:"agentControlMode"`
+	WorktreeID       string        `json:"worktreeId"`
+	Phase            string        `json:"phase"`
+	Herdr            *WorkerHerdr  `json:"herdr"`
+	NativeSessionID  *string       `json:"nativeSessionId"`
+	ClaimedAt        time.Time     `json:"claimedAt"`
 }

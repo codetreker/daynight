@@ -194,6 +194,8 @@ func writeError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusForbidden
 		case "invalid_input":
 			status = http.StatusBadRequest
+		case "payload_too_large":
+			status = http.StatusRequestEntityTooLarge
 		case "rate_limited":
 			status = http.StatusTooManyRequests
 			w.Header().Set("Retry-After", "60")
@@ -201,7 +203,7 @@ func writeError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusGone
 		case "not_found":
 			status = http.StatusNotFound
-		case "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "last_admin", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded":
+		case "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "last_admin", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict":
 			status = http.StatusConflict
 		}
 		if status != http.StatusInternalServerError {

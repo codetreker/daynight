@@ -25,18 +25,19 @@ type herdrDocument struct {
 }
 
 type workerDocument struct {
-	ClaimID         string            `json:"claimId"`
-	State           core.WorkerState  `json:"state"`
-	UserID          string            `json:"userId"`
-	WorkerID        string            `json:"workerId"`
-	Machine         machineDocument   `json:"machine"`
-	Platform        core.TaskPlatform `json:"platform"`
-	Agent           core.WorkerAgent  `json:"agent"`
-	WorktreeID      string            `json:"worktreeId"`
-	Phase           core.WorkerPhase  `json:"phase"`
-	Herdr           *herdrDocument    `json:"herdr"`
-	NativeSessionID *string           `json:"nativeSessionId"`
-	ClaimedAt       string            `json:"claimedAt"`
+	ClaimID          string                      `json:"claimId"`
+	State            core.WorkerState            `json:"state"`
+	UserID           string                      `json:"userId"`
+	WorkerID         string                      `json:"workerId"`
+	Machine          machineDocument             `json:"machine"`
+	Platform         core.TaskPlatform           `json:"platform"`
+	Agent            core.WorkerAgent            `json:"agent"`
+	AgentControlMode core.WorkerAgentControlMode `json:"agentControlMode"`
+	WorktreeID       string                      `json:"worktreeId"`
+	Phase            core.WorkerPhase            `json:"phase"`
+	Herdr            *herdrDocument              `json:"herdr"`
+	NativeSessionID  *string                     `json:"nativeSessionId"`
+	ClaimedAt        string                      `json:"claimedAt"`
 }
 
 func encodeWorker(worker *core.WorkerClaim) *workerDocument {
@@ -44,7 +45,7 @@ func encodeWorker(worker *core.WorkerClaim) *workerDocument {
 		return nil
 	}
 	value := &workerDocument{ClaimID: worker.ClaimID, State: worker.State, UserID: worker.UserID, WorkerID: worker.WorkerID,
-		Machine: machineDocument{ID: worker.Machine.ID, Name: worker.Machine.Name}, Platform: worker.Platform, Agent: worker.Agent,
+		Machine: machineDocument{ID: worker.Machine.ID, Name: worker.Machine.Name}, Platform: worker.Platform, Agent: worker.Agent, AgentControlMode: worker.AgentControlMode,
 		WorktreeID: worker.WorktreeID, Phase: worker.Phase, NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC().Format(time.RFC3339Nano)}
 	if worker.Herdr != nil {
 		value.Herdr = &herdrDocument{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}
@@ -56,7 +57,7 @@ func decodeWorker(data []byte) (*core.WorkerClaim, error) {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return nil, nil
 	}
-	fields, err := jsonobject.Decode(data, "properties.worker", "claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt")
+	fields, err := jsonobject.Decode(data, "properties.worker", "claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt")
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +94,17 @@ func decodeWorker(data []byte) (*core.WorkerClaim, error) {
 		return nil, fmt.Errorf("properties.worker.claimedAt must be an RFC3339 timestamp")
 	}
 	worker := &core.WorkerClaim{ClaimID: values["claimId"], State: core.WorkerState(values["state"]), UserID: values["userId"], WorkerID: values["workerId"], Machine: core.WorkerMachine{ID: machineID, Name: machineName}, Platform: core.TaskPlatform(values["platform"]), Agent: core.WorkerAgent(values["agent"]), WorktreeID: values["worktreeId"], Phase: core.WorkerPhase(values["phase"]), ClaimedAt: claimedAt.UTC()}
+	worker.AgentControlMode = core.AgentControlModeHerdr
+	if _, exists := fields["agentControlMode"]; exists {
+		mode, err := stringField(fields, "agentControlMode", "properties.worker")
+		if err != nil {
+			return nil, err
+		}
+		worker.AgentControlMode = core.WorkerAgentControlMode(mode)
+	}
+	if !worker.AgentControlMode.Supports(worker.Agent) {
+		return nil, fmt.Errorf("properties.worker has an unsupported agent control mode and agent combination")
+	}
 	if !worker.State.Valid() || !worker.Platform.Valid() || !worker.Agent.Valid() || !worker.Phase.Valid() {
 		return nil, fmt.Errorf("properties.worker has invalid state, platform, agent or phase")
 	}
@@ -116,6 +128,9 @@ func decodeWorker(data []byte) (*core.WorkerClaim, error) {
 			parts = append(parts, value)
 		}
 		worker.Herdr = &core.WorkerHerdr{Session: parts[0], WorkspaceID: parts[1], PaneID: parts[2]}
+	}
+	if worker.AgentControlMode == core.AgentControlModeWeb && worker.Herdr != nil {
+		return nil, fmt.Errorf("properties.worker.herdr must be null for web execution")
 	}
 	raw, exists := fields["nativeSessionId"]
 	if !exists {
