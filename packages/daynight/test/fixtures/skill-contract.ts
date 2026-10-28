@@ -219,9 +219,9 @@ export const instructionScenarios: readonly InstructionScenario[] = [
   {
     id: "accepted-completion",
     input: "All stage acceptance and required authorized PR merges are confirmed, or there is no PR delivery path.",
-    obligation: "Record readable evidence, reread in_progress and complete its observed version; stage completion is bounded.",
+    obligation: "Confirm readable task results, reread in_progress and complete its observed version; stage completion is bounded.",
     propositions: [
-      { resource: "references/task-execution.md", section: "## Confirm acceptance readiness", requires: [/every necessary delivery PR is merged/, /Completion rules grant no merge, deployment, external communication, or mainline push permission/, /For tasks without a development or PR delivery path, use their stated stage acceptance/, /confirm required evidence is recorded and readable/] },
+      { resource: "references/task-execution.md", section: "## Confirm acceptance readiness", requires: [/every necessary delivery PR is merged/, /Completion rules grant no merge, deployment, external communication, or mainline push permission/, /For tasks without a development or PR delivery path, use their stated stage acceptance/, /confirm the required deliverables and acceptance conclusions are readable/] },
       { resource: "references/run-task.md", section: "## Complete or return waiting", requires: [/reread the complete in-progress task/, /task set-status <task-id> done/, /exact observed version/, /Only service confirmation establishes the status update/, /Whole-Goal acceptance follows the Goal protocol/] },
       { resource: "references/goal.md", section: "## Execute the appropriate stage", requires: [/Completion satisfies dependencies and grants no delivery execution permission/] },
     ],
@@ -296,23 +296,41 @@ export const instructionScenarios: readonly InstructionScenario[] = [
   },
   {
     id: "markdown-resource-ownership",
-    input: "A Markdown brief links its own plan and references a prototype owned by another task.",
+    input: "A Markdown brief provides its own requirements and references a prototype owned by another task.",
     obligation: "Keep a self-contained brief and one detailed owner; resolve real resources from the proper task or document base.",
     propositions: [
       { resource: "references/create-task.md", section: "## Write task-specific content", requires: [/description that identifies its concrete work, responsibility, and actual content sources/, /Complete inline content needs no primary attachment/, /reference-owned and mixed content are also valid without repeating complete documents/, /Reference the owning task ID and its description with applicable sections for inline content, full paths for actual attachments, or verified immutable repository sources/, /Read source descriptions through `task show --json` and attachment bytes through the attachment commands/, /Do not copy the whole shared packet into every task/] },
-      { resource: "references/task-content.md", section: "## Content ownership and evidence", requires: [/Each detailed explanation has one owner/, /Record this task's user confirmations, acceptance conclusions, and delivery evidence in an explicitly identified location in its own description or attachments/, /do not leave them only in chat or mix them into shared design/] },
-      { resource: "references/create-task.md", section: "## Author Markdown", requires: [/A relative link or image in a description starts at this task's attachment root/, /A link inside a Markdown attachment starts at that file's directory/, /Confirm an upload and read back its contents before adding its link/, /Use these paths only when those files actually belong to that task/, /A Goal stage that produces a prototype links it only after producing and confirming it/] },
+      { resource: "references/task-content.md", section: "## Content ownership", requires: [/Each detailed explanation has one owner/, /Save this task's results at their actual owner and make them discoverable from its description/, /do not accumulate an execution log/] },
+      { resource: "references/create-task.md", section: "## Author Markdown", requires: [/A relative link or image in a description starts at this task's attachment root/, /A link inside a Markdown attachment starts at that file's directory/, /Confirm an upload and read back its contents before adding its link/, /Use this path only when those files actually belong to that task/, /A Goal stage that produces a prototype links it only after producing and confirming it/] },
       { resource: "references/handbook.md", section: "**Markdown descriptions.**", requires: [/reads preserve the original string, including line breaks and fenced code/, /Shared inputs retain their owning task ID and content location: description with applicable sections for inline content, full path for an actual attachment, or verified immutable repository URL/, /They are not cross-task relative links/] },
     ],
   },
   {
-    id: "task-content-organization",
-    input: "A task provides all required information inline, through readable documents, or using both, without a dedicated primary attachment.",
-    obligation: "Apply the same six content requirements to every organization and identify task-owned confirmations and evidence.",
+    id: "task-session-content-boundary",
+    input: "A request combines sorting behavior with registration-only authorization, chosen tools, agent assignments and recovery information.",
+    obligation: "Keep the task definition and results in task material while execution and discussion methods, operational authorization and recovery remain session context.",
     propositions: [
-      { resource: "references/task-content.md", section: "## Six content requirements", requires: [/content requirements, not six mandatory headings/, /in the description, in clearly referenced documents, or through a mixture of both/, /Complete inline content needs no primary attachment/, /Objective and requirements/, /Scope and deliverables/, /Solution and design/, /Input and output contracts/, /Acceptance criteria and verification/, /Sources/, /Judge completeness from the description and the contents actually read/, /unreadable resources, and missing decisions are insufficient/] },
-      { resource: "references/create-task.md", section: "## Register and verify", requires: [/all six content requirements, the explicit task-owned evidence location/] },
-      { resource: "references/task-execution.md", section: "## Read the task and stage inputs", requires: [/Complete inline content needs no primary attachment/, /document-owned and mixed organization are valid when (?:their|the) combined contents satisfy the same six requirements/] },
+      { resource: "references/task-content.md", section: "## Task and session boundary", requires: [/Tasks describe what must be achieved and delivered/, /Sessions hold how the task is executed or discussed/, /Keep execution and discussion plans, steps, tool choices, collaboration, operational authorization, progress, blockers, and recovery context in the session/, /Apply this boundary to descriptions, attachments, and referenced task material/, /Missing authorization or assignment cannot be reconstructed from a task's description, attachments, acceptance state, or status/] },
+    ],
+  },
+  {
+    id: "task-content-organization",
+    input: "A task supplies its definition inline, through readable documents, or using both, without a dedicated primary attachment or session execution plan.",
+    obligation: "Read the same substantive task definition in every organization, without requiring universal solutions, procedures, confirmation records or prefilled results.",
+    propositions: [
+      { resource: "references/task-content.md", section: "## Task definition and results", requires: [/in the description, clearly referenced documents, or a mixture of both/, /These are not mandatory headings/, /Complete inline content needs no primary attachment/, /Objective and requirements/, /Scope and constraints/, /Inputs and sources/, /Deliverables and contracts/, /Acceptance criteria/, /A task does not universally require a separate solution, implementation plan, verification procedure, confirmation record, or evidence location/, /Do not require unfinished results or prefilled result sections at registration/, /Judge completeness from the description and the contents actually read/, /unreadable resources, and missing required decisions are insufficient/, /Absence of a session execution plan is not a task-content gap/] },
+      { resource: "references/create-task.md", section: "## Register and verify", requires: [/task definition/, /produced results/] },
+      { resource: "references/task-execution.md", section: "## Read the task and stage inputs", requires: [/Complete inline content needs no primary attachment/, /required design inputs/, /task definition/] },
+    ],
+  },
+  {
+    id: "task-content-required-inputs-and-results",
+    input: "A delivery task consumes an upstream architecture, a design task produces a proposal, and a requested runbook contains commands and steps.",
+    obligation: "Retain genuine required inputs and deliverables by purpose, including current design artifacts and acceptance results; exclude the session's plan and history for producing them.",
+    propositions: [
+      { resource: "references/task-content.md", section: "## Task and session boundary", requires: [/A design supplied as a required input or produced as the task's deliverable is task content/, /the session's plan for producing that deliverable is session context/, /Classify information by its purpose, not its filename/, /A requested migration design, test strategy, or runbook can be a task deliverable/, /Do not invent such a deliverable to upload a session checkpoint or execution log/] },
+      { resource: "references/task-content.md", section: "## Task definition and results", requires: [/Save results as they are produced: current reviewable requirements or designs, actual deliverables, acceptance conclusions, defects, and material limitations/, /An immutable revision or verified resource location may identify a result/, /commands, debugging history, CI logs, and review handling remain execution context/] },
+      { resource: "references/task-content.md", section: "## Check sufficiency", requires: [/Check both directions: session context stays out, and actual requirements, required design inputs, and task results remain complete/, /does not authorize bulk edits of historical tasks or automatic changes to fields, permissions, or recorded history/] },
     ],
   },
   {
@@ -375,6 +393,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
   },
 ];
 
+// Presence checks qualify the shipped artifact; contradictory additions and model behavior need independent semantic validation.
 export const verifyInstructionScenario = (bundle: InstalledSkillContract, scenario: InstructionScenario): readonly string[] => {
   const checked: string[] = [];
   for (const proposition of scenario.propositions) {

@@ -55,7 +55,7 @@ business writes immediately.
 The worker has already claimed and started this task. Do not claim it, set it
 to `in_progress`, select candidates, or rerun automatic candidate qualification.
 Read and apply [shared task execution](task-execution.md) for the complete task
-and stage inputs, current prerequisites, authorized work, evidence, and
+and stage inputs, current prerequisites, authorized work, results, and
 acceptance. A missing required input or unmet prerequisite keeps this assignment
 waiting in `in_progress`; it does not authorize another task.
 
@@ -84,7 +84,9 @@ local planning mechanism. Retain the original assignment identities, supplied
 worktree and branch, existing authorization, confirmed scope and acceptance,
 PR URLs and head SHA, validation and review state, blockers, attributable
 resources, and next action. Identify the invocation configuration without
-copying credentials or secrets into checkpoints, task evidence, or logs.
+copying credentials or secrets into checkpoints, task material, or logs. Keep
+this recovery context out of task descriptions and attachments; task material
+cannot replace missing operational authorization or the original assignment.
 
 Refresh the checkpoint before a long wait or session compaction. On recovery,
 restore it, verify the original active claim, and refresh remote PR state before
@@ -95,8 +97,9 @@ honor explicit pause, stop, and authorization changes without discarding its wor
 ## Deliver the assigned task
 
 1. **Implement and verify.** Read applicable repository instructions and existing
-   mechanisms. Reuse the confirmed task plan and acceptance criteria. Implement
-   the complete agreed behavior in the supplied worktree, synchronize affected
+   mechanisms. Use the task's required design inputs and acceptance criteria;
+   keep the execution plan in this session. Implement the complete agreed behavior
+   in the supplied worktree, synchronize affected
    documents, and run relevant checks and behavioral verification. Collaborating
    agents share this assignment and worktree. Use research and independent review
    agents when available and authorized. Reassess the design when repeated
@@ -138,15 +141,18 @@ honor explicit pause, stop, and authorization changes without discarding its wor
    the platform supports it. A changed head or failed precondition requires a
    fresh decision from current state.
 
-   Confirm the platform reports every necessary delivery PR as merged and record
-   each resulting merge commit. An accepted auto-merge request or merge-queue
+   Confirm the platform reports every necessary delivery PR as merged and retain
+   its merge result in the session. A final revision may identify the task's
+   delivered artifact. An accepted auto-merge request or merge-queue
    entry is not completion. Do not wait for post-merge mainline CI unless the user
    explicitly requires that verification. Continue with required task acceptance
-   and evidence after the platform confirms the merge.
+   and results after the platform confirms the merge.
 
 5. **Record acceptance and close this claim.** Complete the task's confirmed
-   acceptance and save readable evidence at its identified owner, including actual
-   validation and remaining limitations. Release attributable temporary services,
+   acceptance and save its readable results at their actual owners, including the
+   acceptance conclusion and material limitations. Keep verification procedures
+   and CI/review/merge history in the session. Release attributable temporary
+   services,
    probes, and monitoring resources, including those left by failed collaborators,
    while preserving controller-owned resources. Finish that cleanup before
    [original-claim completion](#complete-the-original-claim), because confirmed
@@ -179,7 +185,7 @@ never treat a blocker or ordinary waiting as completion.
 ## Complete the original claim
 
 When [shared acceptance readiness](task-execution.md#confirm-acceptance-readiness)
-is satisfied, all required evidence is readable, and attributable temporary
+is satisfied, all required task results are readable, and attributable temporary
 resources have been released, reread the complete task, verify the same active
 claim, and finish with the original claim ID and the version observed for that
 decision:

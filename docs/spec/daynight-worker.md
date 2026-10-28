@@ -66,6 +66,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 - 分支为 daynight/<taskId>，目录为 .worktrees/daynight/<taskId>。首次分支从仓库 HEAD 创建，保留分支从原 tip 使用；仍有效 claim 正常复用 dirty worktree，不 reset/clean。普通退出、失败和崩溃保留其 worktree 与原生历史。
 - 创建、复用和删除核对实际仓库、Git 注册、静态 projectId/taskId/claimId/worktreeId、分支及精确 .git 指针。资源身份仅含这四项 canonical UUID，Herdr 与 Git 标记一致；服务地址是连接配置，不进入本地资源身份。符号链接、外来路径、缺指针和歧义注册不能授权破坏性动作。Device/inode 仅为辅助，refs backend 通过 Git 核对，支持 reftable。
+- 发现资源时，Git 注册的 marker 或 Herdr workspace label 不符合当前格式即静默跳过并保留，不阻塞其他资源；成功解析后的受管资源仍严格校验实际身份和完整性。
 - 原生会话已知而原 worktree 意外丢失时报告错误并保留 active；尚无原会话的新执行可以按规则准备工作区。异常既有路径保留并报告，不用空目录掩盖旧成果丢失。
 - Git 静态标记没有 workerId，须关联本机行、专用 Herdr 或当前自有 claim 才能证明属于本 worker。没有这种关联的 Git-only 遗留资源报告并保留，不因自有清单缺席删除。
 - 终止删除前确认当前受管进程停止、workspace 关闭。保留 .git 指针至内容移除完成，最后删除目录和注册；中断后仍存在但缺指针的路径保留错误。结束后保留分支、提交历史和交付引用，新 claim 使用新工作区身份及原生会话。

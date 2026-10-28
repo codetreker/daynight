@@ -23,18 +23,20 @@ conditions. Solution, architecture, and design reviews use their owning task
 under the entrypoint's required tracking and review rules.
 
 Keep an agent's transient execution steps, such as reading files, running
-commands, and routine checks, in the existing execution plan. Do not turn these
-steps into Daynight tasks merely because an agent generated them. A distinct
-acceptance or validation assignment with its own outcome can still be a task.
+commands, and routine checks, in the session's execution plan. Do not put these
+steps in task descriptions or attachments or turn them into Daynight tasks
+merely because an agent generated them. A distinct acceptance or validation
+assignment with its own outcome can still be a task.
 For [final acceptance](../SKILL.md#final-acceptance), identify the entire task or
 Goal being assessed and its confirmed requirement sources. Define the deliverable
-as the acceptance conclusion, evidence, defects, and unverified items. Apply the
-shared rule to temporary helpers; do not make their development or repository
+as the requirement-based acceptance conclusion, supporting observations, defects,
+and unverified items. Apply the shared rule to temporary helpers; do not make
+their development or repository
 delivery the acceptance outcome.
 
 Running a check while delivering an existing task is an execution step. If the
-request contains only execution steps for existing work, keep them with that
-work and return without registering additional tasks.
+request contains only execution steps for existing work, keep them in that
+work's session and return without registering additional tasks.
 
 For a multi-stage Goal, follow [the Goal protocol](goal.md). Register only the
 current requirements discussion task; do not create an architecture placeholder
@@ -47,8 +49,10 @@ explicit discussion-start request authorizes its start through
 run-task. Creating a Goal covers the later in-scope stages and breakdown only
 at those confirmation gates.
 
-For a single tracked outcome, prepare its solution, acceptance criteria, and
-applicable mock UI before registration, following the artifact rules below.
+For a single tracked outcome, prepare its stage-appropriate task definition,
+actual required inputs, and acceptance criteria before registration. A frontend
+delivery task also needs its applicable mock UI under the artifact rules below.
+A design-producing task does not require its unfinished design as an input.
 
 Look for existing work with the same problem and scope, including completed
 tasks; the default list contains only unfinished work. Inspect full descriptions,
@@ -59,16 +63,16 @@ registration does not justify a duplicate task or chain.
 
 ## Write task-specific content
 
-Use the target repository's document and workspace rules and the shared six-item
+Use the target repository's document and workspace rules and the shared task
 content standard. Give each task an outcome-focused title and a Markdown
 description that identifies its concrete work, responsibility, and actual content
-sources. The description and readable references together provide the objective,
-scope, solution, exchange contracts, acceptance, and sources. Complete inline
-content needs no primary attachment; reference-owned and mixed content are also
-valid without repeating complete documents. State where this task's confirmations,
-acceptance conclusions, and delivery evidence will live in its description or
-attachments. Stage briefs describe work that produces the stage's outputs; do
-not claim unfinished outputs already exist.
+sources. The description and readable references together provide its objective
+and requirements, scope and constraints, inputs and sources, deliverables and
+contracts, and acceptance criteria. Complete inline content needs no primary
+attachment; reference-owned and mixed content are also valid without repeating
+complete documents. Save results as they are produced. Stage briefs describe
+work that produces the stage's outputs; do not claim unfinished outputs already
+exist or require an execution plan, confirmation log, or evidence attachment.
 
 Attach only resources this task needs or owns. Keep shared Goal requirements
 with the requirements task and architecture and breakdown with the solution
@@ -102,7 +106,7 @@ ownership before registering the relationship. A top-level task has no ordinary
 prerequisites; it may still have real external prerequisites that block execution.
 Do not add a Dependencies section or duplicate the relationship lists in task
 prose. Repository specifications and design documents retain their full contracts;
-the current task identifies its specific solution and verifiable acceptance
+the current task identifies its required design inputs and verifiable acceptance
 criteria directly or through their actual owners.
 
 ## Author Markdown
@@ -122,33 +126,30 @@ attachment path, or by an immutable repository URL. A relative link cannot
 identify another task's content.
 
 For example, the following brief applies to a task whose confirmed, readable
-attachments include its own `plan.md` and the complete `mockui/index.html`
-prototype with its resources. Use these paths only when those files actually
-belong to that task; adapt the content and references to the actual assignment.
-A Goal stage that produces a prototype links it only after producing and
-confirming it.
+attachments include the complete `mockui/index.html` prototype and its resources.
+Use this path only when those files actually belong to that task; adapt the
+content and references to the actual assignment. A Goal stage that produces a
+prototype links it only after producing and confirming it.
 
 ```markdown
-## 问题与行动
-登录失败后，用户无法判断是否可以重试。实现明确的失败原因和重试入口，保留当前登录表单输入。
+## 问题与要求
+登录失败后，用户无法判断是否可以重试。显示明确的失败原因和重试入口，保留当前登录表单输入。
 
 ## 范围与交付
-更新登录页的错误提示、重试交互和中英文文案；沿用现有认证接口与会话边界。
+交付登录页的错误提示、重试交互和中英文文案；沿用现有认证接口与会话边界。
+
+## 输入
+[交互原型](mockui/index.html) 定义相关视觉样式和交互状态；认证接口沿用仓库现有契约，无新增任务间交换。
 
 ## 完成条件
-网络失败和凭据错误均显示对应提示；重试成功后进入工作区。桌面与窄屏、两种语言的交互通过验证，表单输入保持正确。
-
-## 资料
-
-- [方案与验收](plan.md)
-- [交互原型](mockui/index.html)
+网络失败和凭据错误均显示对应提示；重试成功后进入工作区。桌面与窄屏、两种语言的交互正确，表单输入保持。
 ```
 
-This example uses an attachment for the detailed content; the same six-item
-standard also permits complete inline or mixed organization. Its actual `plan.md`
-provides the requirements, solution, applicable exchange contracts, acceptance,
-and task-owned evidence location. The prototype stays with its actual owner when
-shared across a Goal.
+This example defines the task inline and references its actual prototype. Shared
+design inputs retain their real owner under the source rules above. Neither the
+brief nor an attachment needs the session's implementation steps, tool choices,
+or review schedule. A filename such as `plan.md` does not determine whether its
+contents belong to the task.
 
 ## Register and verify
 
@@ -170,8 +171,8 @@ already readable shared inputs at their source. Do not present planned uploads a
 
 Read back each complete task, its attachment inventory and required contents,
 and its referenced shared inputs. Verify self-contained Markdown descriptions,
-valid links and images, all six content requirements, the explicit task-owned
-evidence location, real source identities, complete necessary direct prerequisites
+valid links and images, the stage-appropriate task definition, produced results,
+real source identities, complete necessary direct prerequisites
 and their intended external subset, absence of redundant dependencies under the
 handbook's reduction rule, and applicable mock UI resources and interaction. For a
 Goal, verify only the current discussion stage and its brief;

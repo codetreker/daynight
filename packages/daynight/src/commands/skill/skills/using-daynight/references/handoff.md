@@ -21,6 +21,9 @@ required source contents, including referenced source-task descriptions or
 actual attachments, and necessary further references under the content standard.
 Check current-stage sufficiency, responsibility boundaries, relevant
 producer/consumer contracts, and Goal delivery tasks' direct architecture index.
+Check the task definition, actual required inputs, and produced results; do not
+require a session execution plan or record the handoff review process in task
+material.
 
 For a `todo` task with permission false, organize its description or authorized
 source documents only from existing confirmed information. Missing decisions

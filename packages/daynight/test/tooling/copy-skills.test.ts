@@ -105,6 +105,30 @@ describe("packaged skill resource copy", () => {
     }
   });
 
+  it("detects replacement of task/session separation and genuine input/result obligations", async () => {
+    const f = fixture();
+    const copied = f.run();
+    expect(copied.status, copied.stderr).toBe(0);
+    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
+    const resource = "references/task-content.md";
+    const mutations = [
+      { scenario: "task-session-content-boundary", before: "Keep execution and discussion plans, steps, tool choices, collaboration, operational authorization, progress, blockers, and recovery context in the session", after: "Save execution plans and session recovery context in task attachments" },
+      { scenario: "task-session-content-boundary", before: "Apply this boundary to descriptions, attachments, and referenced task material", after: "Apply this boundary only to descriptions; attachments may contain session context" },
+      { scenario: "task-content-organization", before: "Absence of a session execution plan is not a task-content gap", after: "Absence of a session execution plan makes task content incomplete" },
+      { scenario: "task-content-required-inputs-and-results", before: "A design supplied as a required input or produced as the task's deliverable is task content", after: "Required design inputs and produced designs are session-only methods" },
+      { scenario: "task-content-required-inputs-and-results", before: "A requested migration design, test strategy, or runbook can be a task deliverable", after: "A requested runbook must not enter task material because it contains steps" },
+      { scenario: "task-content-required-inputs-and-results", before: "Save results as they are produced: current reviewable requirements or designs, actual deliverables, acceptance conclusions, defects, and material limitations", after: "Keep design artifacts and acceptance conclusions only in the session" },
+    ];
+    for (const mutation of mutations) {
+      const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
+      const documents = new Map(bundle.documents);
+      const original = documents.get(resource)!.replaceAll(/\s+/g, " ");
+      expect(original).toContain(mutation.before);
+      documents.set(resource, documents.get(resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
+      expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario), `${mutation.scenario}: ${mutation.before}`).toThrow();
+    }
+  });
+
   it("detects managed assignment, claim fencing and controller ownership regressions in copied instructions", async () => {
     const f = fixture();
     const copied = f.run();

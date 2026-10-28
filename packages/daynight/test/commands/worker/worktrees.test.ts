@@ -88,18 +88,24 @@ describe("worker repositories and task worktrees", () => {
     expect(await readFile(path.join(target, "unrelated"), "utf8")).toBe("keep\n");
   });
 
-  it("reports a stripped ownership marker while retaining its registered task resource", async () => {
+  it("ignores a stripped ownership marker while retaining its registered task resource", async () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     await rm(path.join(administrativeDirectory(binding.worktreePath), "locked"));
-    await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow("no recognized ownership registration");
+    expect(await adapter.listWorktrees(f.project, operation())).toEqual([]);
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
-  it("reports malformed ownership and moved registrations during discovery", async () => {
+  it("ignores unrecognized markers while still reporting moved recognized registrations", async () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const healthyOwner = { ...f.owner, taskId: "99999999-9999-4999-8999-999999999999" };
+    const healthyBinding = await adapter.prepareWorktree(f.project, healthyOwner, operation());
     const admin = administrativeDirectory(binding.worktreePath); const locked = path.join(admin, "locked"); const original = await readFile(locked, "utf8");
-    await writeFile(locked, "daynight-worker:{}\n");
-    await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow("ownership marker is invalid");
+    for (const marker of ["human", "daynight-worker:{", "daynight-worker:{}", `daynight-worker:${JSON.stringify({ ...JSON.parse(original.slice("daynight-worker:".length)), serverOrigin: "https://example.com" })}`]) {
+      await writeFile(locked, `${marker}\n`);
+      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: healthyOwner, binding: healthyBinding }]);
+      expect(await readFile(locked, "utf8")).toBe(`${marker}\n`);
+      await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow();
+    }
     await writeFile(locked, original);
     await writeFile(path.join(admin, "gitdir"), path.join(f.root, "foreign", ".git"));
     await expect(adapter.listWorktrees(f.project, operation())).rejects.toThrow("fixed task path");

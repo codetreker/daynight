@@ -20,20 +20,21 @@ take precedence.
   A request to investigate or discuss remains read-only unless edits are
   authorized. Skills describe workflows and grant no additional permission.
 - Manage this repository's tasks in Daynight, including task breakdowns,
-  dependencies, execution status and task-specific plans and attachments. When
-  `using-daynight` and Daynight are available, use Daynight to manage concrete
+  dependencies, execution status, task definitions, inputs, and resulting
+  artifacts. When `using-daynight` and Daynight are available, use Daynight to manage concrete
   work with a defined objective and completion conditions: features, bug fixes,
   architecture/design work, and actual work items produced by their breakdown.
   An agent's transient execution steps, such as reading files, running commands,
-  and routine checks, belong in its execution plan; their presence in a plan does
-  not make them Daynight tasks.
+  and routine checks, belong in its session execution plan; their presence in a
+  plan does not make them Daynight tasks or task material.
   All solution, architecture, and design reviews must use the owning Daynight
   task. Before requesting user review of such a discussion, save the complete
   current material in that task's description or
   attachments, read it back, and provide the task and resource reference.
-  Synchronize revisions and review decisions there; chat summaries and repository
-  or PR links supplement the saved material. This instruction authorizes creation
-  of required tasks within the user's confirmed scope, without granting approval,
+  Synchronize the current requirements, design, and resulting decisions there;
+  discussion methods, review process, and operational authorization stay in the
+  session. Chat summaries and repository or PR links supplement the saved
+  material. This instruction authorizes creation of required tasks within the user's confirmed scope, without granting approval,
   execution, or delivery permission. Report actual availability or upload failures.
   Do not commit task-management files, including `*-tasks.md`, or add execution
   bookkeeping and task-tracking pointers to repository documents. Keep durable
@@ -93,10 +94,14 @@ original circumstances. Explicit archives remain immutable.
   code review. Delegate context-heavy implementation and validation with the
   task scope, permitted worktree, and required evidence.
 - Use the task worktree's `.tmp/` for probes, clones, and generated evidence.
-  Local scratch execution plans may use Git-ignored `docs/plans/`; persistent
-  task content belongs in its owning Daynight description or explicitly referenced
-  documents, with confirmation and delivery evidence located in that task. Keep temporary files inside the
-  project and remove task-owned temporary resources after verification.
+  Local scratch execution plans may use Git-ignored `docs/plans/`. Task
+  definitions, required inputs, deliverables, acceptance criteria, and results
+  belong in the owning Daynight description or referenced documents. Execution
+  and discussion plans, tool choices, collaboration, operational authorization,
+  progress, blockers, and recovery context stay in the session or its local
+  checkpoint. This boundary applies to descriptions, attachments, and referenced
+  task material. Keep temporary files inside the project and remove task-owned
+  temporary resources after verification.
 - Clean up task-owned services and probes, including resources left by failed
   subagents. Retain an unfinished worktree until its changes are delivered;
   remove it after authorized integration into the mainline.

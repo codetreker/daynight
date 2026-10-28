@@ -17,18 +17,19 @@ with a defined objective and completion conditions: features, bug fixes,
 architecture/design work, actual work items produced by their breakdown, and
 independently scoped [final acceptance](#final-acceptance). An agent's transient
 execution steps, such as reading files, running commands, and routine checks,
-belong in its execution plan; their presence in a plan does not make them
-Daynight tasks. Use the owning Daynight task for every solution, architecture,
-and design review.
+belong in its session execution plan, not task descriptions or attachments.
+Their presence in a plan does not make them Daynight tasks. Use the owning
+Daynight task for every solution, architecture, and design review.
 
-Before asking the user to review any solution, architecture, design, or related
-discussion, save the complete current review material in the owning task's
-description or attachments. Read it back to confirm it is accessible, then
-provide the task ID or verified URL and any attachment paths. Keep revisions and
-review decisions synchronized with that task. Chat summaries and repository or
-PR links may supplement the material; they do not replace it. The description
-and its actual sources follow the shared [task content standard](references/task-content.md),
-including task-owned confirmation and delivery evidence.
+Before asking the user to review a solution, architecture, design, or related
+task result, save the complete current artifact in the owning task's description
+or attachments. Read it back to confirm it is accessible, then provide the task
+ID or verified URL and any attachment paths. Keep the current artifact, accepted
+decisions, and necessary rationale synchronized there. Discussion and review
+processes remain in the session. Chat summaries and repository or PR links may
+supplement the artifact; they do not replace it. Use the shared
+[task content standard](references/task-content.md) for task definitions, inputs,
+and results, and its boundary between task material and session context.
 
 Confirm the CLI, configured service, and intended project are accessible using
 the handbook's discovery rules. Preserve actual availability or upload failures;
@@ -38,9 +39,11 @@ do not claim materials are ready for review until the saved contents are verifie
 
 Final acceptance determines whether the complete requested task or Goal satisfies
 its confirmed requirements. Define that outcome explicitly when creating or
-breaking down work. Deliver the requirement-based conclusion, supporting evidence,
-defects, and unverified items on the owning task. Record the verification methods,
-tested source and environment, observations, and material limits.
+breaking down work. Deliver the requirement-based conclusion, defects, and
+unverified items on the owning task, with the assessed source, key observations,
+and material limits needed to support that result. Keep verification procedures,
+commands, debugging history, and execution progress in the session unless they
+are themselves a required task deliverable.
 
 Use manual verification, existing checks, or temporary helper scripts as
 appropriate. Keep final-acceptance helpers in the project's temporary area and
@@ -129,11 +132,12 @@ is ready. This skill does not discover and continuously select subsequent tasks.
   task may cover the whole Goal when that is its confirmed scope.
 - Use the shared [task content standard](references/task-content.md) when
   creating, breaking down, handing off, or executing tasks. The description and
-  actual references jointly supply the six content requirements; complete inline
-  content needs no primary attachment. Give confirmations and delivery evidence
-  an explicit location in the owning task. Confirm resources before linking and
-  keep shared sources at their real owner. Each Goal delivery description directly
-  identifies the architecture task and every required source location, including
+  actual references jointly supply the task definition and produced results;
+  complete inline content needs no primary attachment. Keep execution and
+  discussion methods and processes in the session. Confirm resources before
+  linking and keep shared sources at their real owner. Each Goal delivery
+  description directly identifies the architecture task and every required source
+  location, including
   inline description sections and full paths for actual attachment documents,
   even for indirect successors, under the Goal protocol's readback rules. Express
   necessary direct prerequisites through complete `dependsOn` and its

@@ -57,9 +57,11 @@ The npm-bundled `using-daynight` entry and applicable mode/Goal references follo
 the [Goal brief decision](../process/2026-10-22-goal-workflow-design.md) with
 Markdown task content. The later [task-content and handoff decision](../process/2026-10-25-task-content-handoff.md)
 replaces mandatory primary-attachment ownership: descriptions identify current task
-responsibility and readable sources; body and references jointly provide the six
-content items, each with one owner. Confirmation, acceptance conclusions and delivery
-evidence have a designated location in the current task. Shared body content names
+responsibility and readable sources with one owner for each detailed explanation.
+The [task/session content decision](../process/2026-10-28-task-session-content.md)
+defines task content as task definitions, required inputs and resulting artifacts;
+execution/discussion methods, operational authorization and recovery context stay
+in the session. Shared body content names
 its owning task ID, explicit description field (whole body or applicable sections) for task show
 reads; actual attachment inputs retain source task/full path, and repository inputs
 use verified immutable URLs; real uploads are confirmed before references are added. Existing
