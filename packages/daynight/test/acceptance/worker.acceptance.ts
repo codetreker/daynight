@@ -452,6 +452,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         expect(event.name).toMatch(/^dn_[0-9a-f]{24}$/);
         expect(event.argv).toContain("--dangerously-bypass-approvals-and-sandbox");
         expect(event.argv).toContain("--dangerously-bypass-hook-trust");
+        expect(event.argv?.slice(-4, -2)).toEqual(["-c", "check_for_update_on_startup=false"]);
         const repository = repositoryPaths[tasks.findIndex((task) => task.id === event.taskId)]!;
         const expectedCwd = path.join(await realpath(repository), ".worktrees", "daynight", event.taskId!);
         expect(event.argv?.slice(-2)).toEqual(codexProjectTrustArguments(expectedCwd));
