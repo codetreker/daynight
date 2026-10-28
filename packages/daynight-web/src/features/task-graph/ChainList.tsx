@@ -54,6 +54,7 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
   const progress = component.progress;
+  const inProgressCount = [...component.memberIds].filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
@@ -66,9 +67,7 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
         aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
         <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
         <span className="root-heading">
-          <span className="goal-eyebrow">{m.goalTitle}</span>
-          <span className="root-title">{title}</span>
-          <span className="root-meta">{m.rootSummary({ total: progress.total, remaining: progress.total - progress.done })}</span>
+          <span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span></span>
         </span>
         <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.done / progress.total * 100}%` }} /></span></span>
         <span className={`root-status graph-status-${progress.status}`}>{common.status[progress.status]}</span>

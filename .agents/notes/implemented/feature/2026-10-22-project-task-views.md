@@ -43,7 +43,8 @@ Each inner category has its own Show all choice and scroll position. Both lists
 use exact newest-first presentation order. The [recent browsing and pagination
 decision](2026-10-27-recent-task-pages.md) replaces the unfinished-only default
 with all unfinished work plus recent local-calendar completions, and adds
-independent 20-entry pages without truncating component data. Current page
+independent 15-entry task pages under the
+[compact-list decision](../simplification/2026-10-28-compact-task-list.md) without truncating component data. Current page
 numbers remain in memory for the project visit; category, standalone visibility,
 completed-chain visibility and scroll positions keep their independent records. Storage failure leaves in-memory interaction available with a visible
 persistence notice. Page positions do not persist graph geometry, pan, zoom,

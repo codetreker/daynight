@@ -840,26 +840,40 @@ describe('recent task browsing and pagination', () => {
     expect(within(overview).getByRole('button', { name: /^独立任务，/ })).toHaveTextContent('1 / 1');
   });
 
-  it.each([20, 21, 40, 41])('paginates %i standalone tasks in pages of 20 and keeps complete counts', async (count) => {
-    graphRequest.mockResolvedValue(snapshot(manyStandalone(count)));
-    mount(); await screen.findByRole('tab', { name: '独立任务' }); fireEvent.click(tab('standalone'));
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(Math.min(20, count));
-    expect(tab('standalone').querySelector('.graph-count-pill')).toHaveTextContent(String(count));
-    if (count === 20) {
-      expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull();
+  it.each((['standalone', 'chains'] as const).flatMap((category) => [0, 1, 15, 16, 30, 31].map((count) => [category, count] as const)))('paginates %s with %i entries without losing or repeating entries', async (category, count) => {
+    graphRequest.mockClear();
+    graphRequest.mockResolvedValue(snapshot(category === 'standalone' ? manyStandalone(count) : manyChains(count)));
+    mount(); await screen.findByRole('heading', { name: project });
+    if (count === 0) {
+      expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
+      expect(document.querySelectorAll('.standalone-row, .goal-toggle')).toHaveLength(0);
       return;
     }
-    const controls = pagination('独立任务列表');
-    expect(within(controls).getByRole('button', { name: '上一页' })).toBeDisabled();
-    fireEvent.click(within(controls).getByRole('button', { name: '下一页' }));
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(Math.min(20, count - 20));
-    expect(controls).toHaveTextContent(`第 21–${Math.min(40, count)} 条，共 ${count} 条`);
-    expect(within(controls).getByRole('button', { name: '上一页' })).toBeEnabled();
-    if (count <= 40) expect(within(controls).getByRole('button', { name: '下一页' })).toBeDisabled();
-    fireEvent.click(tab('chains')); fireEvent.click(tab('standalone'));
-    expect(pagination('独立任务列表')).toHaveTextContent(`第 2 / ${Math.ceil(count / 20)} 页`);
-    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
-    expect(pagination('独立任务列表')).toHaveTextContent(`第 1 / ${Math.ceil(count / 20)} 页`);
+    fireEvent.click(tab(category));
+    const selector = category === 'standalone' ? '.standalone-row' : '.goal-toggle';
+    const label = category === 'standalone' ? '独立任务列表' : '任务链列表';
+    const seen: string[] = [];
+    const pageCount = Math.ceil(count / 15);
+    for (let page = 1; page <= pageCount; page++) {
+      const entries = [...document.querySelectorAll(selector)];
+      expect(entries).toHaveLength(Math.min(15, count - (page - 1) * 15));
+      seen.push(...entries.map((entry) => entry.id));
+      if (pageCount === 1) expect(screen.queryByRole('navigation', { name: `${label}分页` })).toBeNull();
+      else {
+        const controls = pagination(label);
+        expect(controls).toHaveTextContent(`第 ${(page - 1) * 15 + 1}–${Math.min(page * 15, count)} 条，共 ${count} 条`);
+        expect(within(controls).getByRole('button', { name: '上一页' }).hasAttribute('disabled')).toBe(page === 1);
+        expect(within(controls).getByRole('button', { name: '下一页' }).hasAttribute('disabled')).toBe(page === pageCount);
+        if (page < pageCount) fireEvent.click(within(controls).getByRole('button', { name: '下一页' }));
+      }
+    }
+    expect(new Set(seen).size).toBe(count);
+    if (pageCount > 1) {
+      fireEvent.click(tab(category === 'standalone' ? 'chains' : 'standalone')); fireEvent.click(tab(category));
+      expect(pagination(label)).toHaveTextContent(`第 ${pageCount} / ${pageCount} 页`);
+      fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
+      expect(pagination(label)).toHaveTextContent(`第 1 / ${pageCount} 页`);
+    }
     expect(graphRequest).toHaveBeenCalledTimes(1);
   });
 
@@ -896,18 +910,18 @@ describe('recent task browsing and pagination', () => {
   });
 
   it('clamps a removed final page immediately and does not restore it when tasks return', async () => {
-    const initial = snapshot(manyStandalone(41));
-    graphRequest.mockResolvedValueOnce(initial).mockResolvedValueOnce(resetSnapshot(snapshot(manyStandalone(20)))).mockResolvedValueOnce(resetSnapshot(initial));
+    const initial = snapshot(manyStandalone(31));
+    graphRequest.mockResolvedValueOnce(initial).mockResolvedValueOnce(resetSnapshot(snapshot(manyStandalone(15)))).mockResolvedValueOnce(resetSnapshot(initial));
     mount(); await screen.findByRole('tab', { name: '独立任务' }); fireEvent.click(tab('standalone'));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
     expect(document.querySelectorAll('.standalone-row')).toHaveLength(1);
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull());
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(20);
+    expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await waitFor(() => expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页'));
-    expect(document.querySelectorAll('.standalone-row')).toHaveLength(20);
+    expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);
   });
 
   it('keeps every Goal child visible inside one top-level page entry', async () => {

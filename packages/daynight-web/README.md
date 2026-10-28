@@ -625,8 +625,8 @@ deadline updates Overview and Task list together at midnight, pauses while the
 page is hidden, and recalculates on visibility recovery without requiring a new
 snapshot.
 
-Overview, Task chains and Standalone tasks each display 20 top-level entries per
-page. A whole Goal is one entry regardless of expanded children; the single
+Overview displays 20 top-level entries per page; Task chains and Standalone
+tasks each display 15. A whole Goal is one entry regardless of expanded children; the single
 standalone aggregate is one Overview entry, placed last across all pages.
 Pagination shows the current item range and filtered total with previous/next
 controls; one-page results have no pager. Each list retains its own page during
@@ -686,14 +686,18 @@ prerequisites, while `externalDependsOn` marks edges that do not join
 components. A normal `A → C ← B` creates one chain with two starting tasks and
 one member set. A chain's representative is its earliest ordinary-root member
 in exact service order; its title and creation ordering supply the top-level
-Goal row. Goal is a browsing label, not a stored task type or a title-based
-membership rule. Singletons with no ordinary incoming or outgoing edge are
+chain row. Goal describes the browsing hierarchy rather than a stored task type
+or a title-based membership rule. The header omits the Goal label and total/unfinished
+summary. A localized in-progress count follows the title, including zero and the
+representative while excluding external-only prerequisites. It counts only members
+whose own status is `in_progress`, independently of aggregate status. Singletons with no ordinary incoming or outgoing edge are
 standalone tasks, even when external prerequisites block execution. Status and
 completion filters do not change membership. All edges still participate in
 execution consistency and full prerequisite inspection.
 
 Standalone rows are compact native detail triggers with title, individual
-status, ID, creation time, automation permission and known execution timing. An
+status, ID, creation time, automation permission and known execution timing. The
+clock and duration follow creation time in the same wrapping information line. An
 unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. A Goal row
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
