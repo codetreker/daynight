@@ -12,6 +12,10 @@ sharing a global execution limit across repositories.
 
 ## Decision
 
+The foreground worker now uses current service/Git/Herdr facts and process-local jobs under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). The following records the original durable execution controller, including the uncertainty guarantees that motivated its checkpoints. Those persistent mechanisms are historical, not requirements on the current six-column store.
+
+### Original implementation and rationale
+
 The installed `worker run` command lazily loads its own runtime, strict worker
 configuration and fixed user state. The [worker
 design](../../../../docs/design/daynight-worker.md) owns the mechanisms; the
@@ -20,6 +24,22 @@ guide](../../../../packages/daynight/README.md#worker-configuration-and-startup)
 owns configuration and operation. Review keeps its own database, coordinator and
 lifecycle. Worker composes existing typed HTTP, identity/lock, Git, Herdr and
 managed-skill modules instead of introducing another delivery engine.
+
+Configuration presence does not determine whether runtime defaults apply. A
+missing file, an omitted worker mapping and omitted optional fields use the
+existing defaults, with an empty acquisition list when repositories are omitted.
+Only MissingConfigurationFileError means a missing file; malformed explicit
+values, filesystem faults and cancellation remain errors. The configuration
+reader does not create state or infer worker repositories from review settings.
+Explicit repository entries still determine where new tasks may be acquired.
+
+[Project registration](2026-10-27-worker-repository-selection.md) owns explicit
+acquisition selection and its independent worker clone root. The public command
+passes preparation into the runtime: cold startup resolves an empty selection
+before persistent resources; retained state establishes committed cleanup first.
+The original service/credential context and prepared worker settings are checked
+from one captured configuration source for subsequent startup, without mixing
+file revisions or changing frozen executions.
 
 A single coordinator owns repository rotation, capacity and per-task serial
 advancement. Every inventory/acquisition round reads complete current own-claim
@@ -167,7 +187,7 @@ window while preserving actual-claim-only tasks and the two-table ownership
 model.
 
 The runtime validates the installed using-daynight bundle and builds an explicit
-worker-managed / execute-task-in-managed prompt with absolute installed entry
+worker-managed / autopilot-managed-task prompt with absolute installed entry
 and reference paths, original assignment, actual platform and frozen settings.
 The agent owns business delivery, acceptance, evidence and final claim-bound
 done. Live reconnection does not repeat startup input. The [Herdr
@@ -243,15 +263,27 @@ records. An unrelated failure remains a failure even after that signal aborts. A
 read-only cancellation followed by confirmed shutdown can therefore resume the
 original native session without a synthetic fault barrier.
 
-The public attachment descriptor is advertised only after complete inventory and
-managed private-instance/snapshot readiness. It applies routing variables only
-to the attach client. It does not change the existing task pane's original
-native XDG or private HISTFILE. It exposes required paths and identity removals,
-without copying credentials. Diagnostics correlate original IDs, local state,
-recovery and cleanup errors; neither diagnostics nor terminal idle/done
-authorize task completion.
+The public `daynight worker attach` hint is advertised only after complete
+inventory and managed private-instance/snapshot readiness. The [attach
+command](../feature/2026-10-27-worker-attach-command.md) consumes the existing
+attachment descriptor, applies routing variables and identity removals only to
+the client, and leaves each existing task pane's native XDG and private HISTFILE
+unchanged. It does not load worker business state or server credentials.
+Diagnostics correlate original IDs, local state, recovery and cleanup errors;
+neither diagnostics nor terminal idle/done authorize task completion.
 
 ## Alternatives
+
+**Require an explicit worker mapping and repositories field.** The original
+runtime required those declarations to make acquisition scope explicit. Omitted
+runtime parameters already have defined defaults, and an empty acquisition list
+has no implicit repository selection. Requiring an otherwise empty mapping adds
+no scope guarantee; strict validation continues to distinguish omission from
+invalid input.
+
+**Treat every configuration read failure as omission.** That would let malformed
+settings, access failures or cancellation select defaults. Only the dedicated
+missing-file error has omission semantics, so other failures remain visible.
 
 **Keep request identity only in memory.** Complete inventory recovers a
 successful claim, but a restart cannot remember a still-uncertain outbound
@@ -308,9 +340,15 @@ initialization failures preserves both responsibilities.
 
 ## Consequences
 
+The [current simplification](../simplification/2026-10-27-worker-claim-records.md) owns the delivered storage and restart trade-offs. The original consequences below belong to the detailed model retained here as decision history.
+
+### Original consequences
+
 The command, discovery loop and transient cleanup jobs remain one foreground
 process rather than another server or OS background service. Configuration
-defaults and repository overrides have one strict owner; startup reload affects
+defaults and repository overrides have one strict owner. Omission reaches normal
+authentication and runtime checks without creating an empty configuration file;
+new acquisition remains limited to explicit repositories. Startup reload affects
 new assignments while existing ones keep their snapshots. Fixed paths and a
 stable worker identity give restarts the same record/resource scope.
 
@@ -322,7 +360,10 @@ checks, real service behavior and native-agent lifecycle evidence remain
 distinct.
 
 The [manual-control decision](2026-10-27-worker-manual-control.md) adds explicit
-release/transfer/resume/retry consumers and fresh terminal-execution identities
+release/resume/retry consumers and fresh terminal-execution identities
 to these same persistence, serialization and cleanup boundaries. Complete Linux,
 Windows and macOS Goal acceptance is separate from this runtime composition;
-shipping the command does not assert those final results.
+shipping the command does not assert those final results. The
+[force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes transfer
+while preserving this runtime's complete-inventory absence and original-resource
+cleanup boundaries.

@@ -41,8 +41,8 @@ for explicit version-bound writes and uncertain mutation results.
 This partially supersedes the no-inventory discovery choice in the
 [worker design](2026-10-22-worker-design.md) and
 [claim foundation](2026-10-24-worker-claim-foundation.md). Their original rationale
-remains valid for explaining why current ownership cannot reconstruct lost
-worktrees, frozen configuration or native history. The
+explains why current ownership cannot reconstruct lost worktrees or native
+history. The [six-column record decision](../simplification/2026-10-27-worker-claim-records.md) explicitly uses current configuration rather than retaining the original frozen snapshot. The
 [server architecture](../../../../docs/design/daynight-server.md#列表与读取一致性)
 owns the query and pagination mechanism; the
 [claim architecture](../../../../docs/design/daynight-worker-claims.md#进程内客户端候选和恢复)

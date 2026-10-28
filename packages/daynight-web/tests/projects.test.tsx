@@ -4,6 +4,7 @@ import { createLocaleRender } from './helpers/renderWithLocale';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Project } from '../src/api/types';
 import { ProjectsPage } from '../src/features/projects/ProjectsPage';
+import { ProjectsProvider } from '../src/features/projects/ProjectsProvider';
 
 const render = createLocaleRender('zh-CN');
 
@@ -42,7 +43,7 @@ describe('project browsing', () => {
     const second = deferred<Response>();
     const fetch = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
     vi.stubGlobal('fetch', fetch);
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     expect(screen.getByRole('status').textContent).toContain('正在加载项目');
     expect(fetch.mock.calls[0]?.[0]).toBe('/api/v1/projects?limit=50');
     await act(async () => { first.resolve(response(Array.from({ length: 50 }, (_, index) => project(index + 1)), 'next/+ cursor')); });
@@ -70,7 +71,7 @@ describe('project browsing', () => {
   it('shows a safe first-load network error and retries into the empty state', async () => {
     const fetch = vi.fn().mockRejectedValueOnce(new Error('private token')).mockResolvedValueOnce(response([]));
     vi.stubGlobal('fetch', fetch);
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     await screen.findByRole('alert');
     expect(screen.getByText('无法连接服务，请检查本地服务后重试。')).toBeTruthy();
     expect(screen.queryByText(/private token/)).toBeNull();
@@ -83,7 +84,7 @@ describe('project browsing', () => {
 
   it('exposes only a safe request ID for server errors', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(failure()));
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('项目加载失败');
     expect(alert.textContent).toContain('request-123');
@@ -92,7 +93,7 @@ describe('project browsing', () => {
 
   it('shows malformed responses as a visible load failure', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('{}', { headers: { 'Content-Type': 'application/json' } })));
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     expect((await screen.findByRole('alert')).textContent).toContain('暂时无法读取项目，请重试。');
     expect(screen.queryByText('还没有项目')).toBeNull();
   });
@@ -102,7 +103,7 @@ describe('project browsing', () => {
     const fetch = vi.fn().mockResolvedValueOnce(response([project(1)], 'page-two'))
       .mockReturnValueOnce(continuation.promise).mockResolvedValueOnce(response([project(2)]));
     vi.stubGlobal('fetch', fetch);
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     await screen.findByRole('heading', { name: '项目 1' });
     fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
     expect((screen.getByRole('button', { name: '正在加载更多…' }) as HTMLButtonElement).disabled).toBe(true);
@@ -125,7 +126,7 @@ describe('project browsing', () => {
     const fetch = vi.fn().mockResolvedValueOnce(response([project(1)], 'old-cursor'))
       .mockReturnValueOnce(oldPage.promise).mockReturnValueOnce(freshPage.promise);
     vi.stubGlobal('fetch', fetch);
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     await screen.findByRole('heading', { name: '项目 1' });
     fireEvent.click(screen.getByRole('button', { name: '加载更多' }));
     const oldSignal = fetch.mock.calls[1]?.[1].signal as AbortSignal;
@@ -146,7 +147,7 @@ describe('project browsing', () => {
     const oldPage = deferred<Response>();
     const fetch = vi.fn().mockReturnValueOnce(oldPage.promise).mockResolvedValueOnce(response([project(4)]));
     vi.stubGlobal('fetch', fetch);
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '项目 4' });
     await act(async () => { oldPage.reject(new Error('late failed request')); });
@@ -158,7 +159,7 @@ describe('project browsing', () => {
     const pending = deferred<Response>();
     const fetch = vi.fn().mockReturnValue(pending.promise);
     vi.stubGlobal('fetch', fetch);
-    const view = render(<ProjectsPage />);
+    const view = render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     const signal = fetch.mock.calls[0]?.[1].signal as AbortSignal;
     view.unmount();
     expect(signal.aborted).toBe(true);
@@ -175,7 +176,7 @@ describe('project browsing', () => {
       project(1, { createdAt: '2026-10-20T09:00:00.000000001Z' }),
     ];
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(items)));
-    const view = render(<ProjectsPage />);
+    const view = render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     await screen.findByRole('heading', { name });
     expect(screen.getByText(repo)).toBeTruthy();
     expect(view.container.querySelector('img')).toBeNull();
@@ -189,7 +190,7 @@ describe('project browsing', () => {
 
   it('keeps modified card clicks available to normal browser navigation', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response([project(1)])));
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     await screen.findByRole('heading', { name: '项目 1' });
     const card = screen.getByRole('heading', { name: '项目 1' }).closest('a')!;
     let intercepted = true;
@@ -205,7 +206,7 @@ describe('project browsing', () => {
     const more = deferred<Response>();
     const fetch = vi.fn().mockResolvedValueOnce(response([project(1)], 'cursor')).mockReturnValueOnce(more.promise);
     vi.stubGlobal('fetch', fetch);
-    render(<ProjectsPage />);
+    render(<ProjectsProvider><ProjectsPage /></ProjectsProvider>);
     await screen.findByRole('heading', { name: '项目 1' });
     const button = screen.getByRole('button', { name: '加载更多' });
     fireEvent.click(button);

@@ -30,11 +30,11 @@ export const ensureWorkerIdentity = async (
     const current = source === undefined ? undefined : parseConfigurationDocument(source, paths);
     if (current !== undefined) {
       const identity = configuredWorkerIdentity(current.mapping);
-      if (identity !== undefined) return { result: identity };
+      if (identity !== undefined) return { kind: "unchanged", result: identity };
     }
     const identity = randomUUID();
     const document = current === undefined ? new Document({}) : current.document;
     document.set("workerId", identity);
-    return { result: identity, source: document.toString() };
+    return { kind: "write", result: identity, source: document.toString(), ownership: { fields: ["workerId"] } };
   }, signal);
 };

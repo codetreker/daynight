@@ -35,23 +35,41 @@ describe("repository registration", () => {
     const result = await addRepository({ remote }, paths, options);
     expect(result.added).toBe(true);
     expect(result.repository.path).toBe(path.join(options.homeDirectory, "daynights", "github.com", "owner", "repo"));
-    expect(await readFile(paths.configFile, "utf8")).toContain("repositoryRoot: ~/daynights");
+    expect(await readFile(paths.configFile, "utf8")).toContain("review:\n  repositoryRoot: ~/daynights");
     expect((await loadConfiguration(paths)).repositories).toEqual([result.repository]);
     expect(await readdir(options.homeDirectory)).toEqual([".daynight"]);
     expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
   });
 
-  it("resolves explicit relative paths against cwd and keeps YAML comments and settings", async () => {
-    const { paths, options } = await setup("existing", "# Review settings\npollIntervalMs: 120000 # keep interval\ncopilotModel: auto # keep model\ncopilotReasoningEffort: high # keep reasoning effort\nrepositories:\n  # Existing repository\n  - remote: https://github.com/o/old\n    path: ../old # keep path\n");
+  it("resolves explicit relative paths against cwd and preserves comments, settings and unknown fields", async () => {
+    const { paths, options } = await setup("existing", "# Review settings\nfuture: { enabled: true }\nreview:\n  future: review-owned\n  pollIntervalMs: 120000 # keep interval\n  copilotModel: auto # keep model\n  copilotReasoningEffort: high # keep reasoning effort\n  repositories:\n    # Existing repository\n    - remote: https://github.com/o/old\n      path: ../old # keep path\n      future: repository-owned\n");
     const result = await addRepository({ remote, path: "../my-clone" }, paths, options);
     expect(result.repository.path).toBe(path.resolve(options.workingDirectory, "../my-clone"));
     const source = await readFile(paths.configFile, "utf8");
-    for (const retained of ["# Review settings", "pollIntervalMs: 120000 # keep interval", "copilotModel: auto # keep model", "copilotReasoningEffort: high # keep reasoning effort", "# Existing repository", "path: ../old # keep path", "repositoryRoot: ~/daynights"]) {
+    for (const retained of ["# Review settings", "future: { enabled: true }", "future: review-owned", "future: repository-owned", "pollIntervalMs: 120000 # keep interval", "copilotModel: auto # keep model", "copilotReasoningEffort: high # keep reasoning effort", "# Existing repository", "path: ../old # keep path", "repositoryRoot: ~/daynights"]) {
       expect(source).toContain(retained);
     }
     expect((await loadConfiguration(paths)).pollIntervalMs).toBe(120000);
     expect((await loadConfiguration(paths)).copilotModel).toBe("auto");
     expect((await loadConfiguration(paths)).copilotReasoningEffort).toBe("high");
+  });
+
+  it.each(["root", "review", "repository"] as const)("refuses to mutate a repository alias used by an unknown %s field", async (location) => {
+    const source = `review:\n  repositories: &repos\n    - remote: https://github.com/o/old\n      path: ../old\n${location === "repository" ? "      future: *repos\n" : location === "review" ? "  future: *repos\n" : "future: *repos\n"}`;
+    const { paths, options } = await setup(`unknown-alias-${location}`, source);
+    await expect(addRepository({ remote }, paths, options)).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(paths.configFile, "utf8")).toBe(source);
+    expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it("preserves unknown aliases whose decoded values are unaffected by registration", async () => {
+    const source = "future: &metadata { enabled: true }\nreview:\n  future: *metadata\n  repositories:\n    - remote: https://github.com/o/old\n      path: ../old\n      future: *metadata\n";
+    const { paths, options } = await setup("unknown-unchanged-alias", source);
+    await addRepository({ remote }, paths, options);
+    const saved = await readFile(paths.configFile, "utf8");
+    expect(saved).toContain("future: &metadata { enabled: true }");
+    expect(saved.match(/future: \*metadata/g)).toHaveLength(2);
+    expect((await loadConfiguration(paths)).repositories).toHaveLength(2);
   });
 
   it("adds the first review repository to server-only configuration and preserves its YAML and idempotence", async () => {
@@ -68,25 +86,25 @@ describe("repository registration", () => {
 
   it("retains anchors and comments while adding the first repository with explicit review metadata", async () => {
     const root = path.join(directory, "first-aliased-root");
-    const source = `# Review destination\nserverUrl: invalid-for-server\nrepositoryRoot: &cloneRoot ${JSON.stringify(root)} # keep root\n`;
+    const source = `# Review destination\nserverUrl: invalid-for-server\nreview:\n  repositoryRoot: &cloneRoot ${JSON.stringify(root)} # keep root\n`;
     const { paths, options } = await setup("server-first-aliased-root", source);
     const result = await addRepository({ remote }, paths, options);
     expect(result.repository.path).toBe(path.join(root, "github.com", "owner", "repo"));
     const updated = await readFile(paths.configFile, "utf8");
-    for (const retained of ["# Review destination", "serverUrl: invalid-for-server", "repositoryRoot: &cloneRoot", "# keep root"]) {
+    for (const retained of ["# Review destination", "serverUrl: invalid-for-server", "review:\n  repositoryRoot: &cloneRoot", "# keep root"]) {
       expect(updated).toContain(retained);
     }
   });
 
   it.each([
-    "maxConcurrentWorker: 0",
-    "repositoryRoot: null",
-    "copilotModel: null",
-    "copilotReasoningEffort: null",
-    "repositories: []",
-    "repositories: null",
-    "repositories: false",
-    "repositories: [{remote: https://github.com/o/r}]",
+    "review:\n  maxConcurrentWorker: 0",
+    "review:\n  repositoryRoot: null",
+    "review:\n  copilotModel: null",
+    "review:\n  copilotReasoningEffort: null",
+    "review:\n  repositories: []",
+    "review:\n  repositories: null",
+    "review:\n  repositories: false",
+    "review:\n  repositories: [{remote: https://github.com/o/r}]",
   ])("does not bootstrap over explicitly malformed review fields: %s", async (field) => {
     const source = `serverUrl: http://localhost:8787\n${field}\n`;
     const { paths, options } = await setup(`invalid-bootstrap-${field.split(":")[0]}-${String(field.length)}`, source);
@@ -98,7 +116,7 @@ describe("repository registration", () => {
   it("uses a changed root only for new repositories and keeps repeated addition untouched", async () => {
     const { paths, options } = await setup("changed-root");
     const original = await addRepository({ remote }, paths, options);
-    const edited = (await readFile(paths.configFile, "utf8")).replace("repositoryRoot: ~/daynights", "repositoryRoot: ../new-root");
+    const edited = (await readFile(paths.configFile, "utf8")).replace("review:\n  repositoryRoot: ~/daynights", "review:\n  repositoryRoot: ../new-root");
     await writeFile(paths.configFile, edited);
     expect(await addRepository({ remote: "git@github.com:owner/repo.git" }, paths, options)).toEqual({ ...original, added: false });
     expect(await readFile(paths.configFile, "utf8")).toBe(edited);
@@ -109,7 +127,7 @@ describe("repository registration", () => {
 
   it("resolves a valid aliased root without rewriting its anchor", async () => {
     const root = path.join(directory, "aliased-clones");
-    const { paths, options } = await setup("aliased-root", `repositories:\n  - remote: https://github.com/o/existing\n    path: &cloneRoot ${JSON.stringify(root)}\nrepositoryRoot: *cloneRoot # shared root\n`);
+    const { paths, options } = await setup("aliased-root", `review:\n  repositories:\n    - remote: https://github.com/o/existing\n      path: &cloneRoot ${JSON.stringify(root)}\n  repositoryRoot: *cloneRoot # shared root\n`);
     const result = await addRepository({ remote }, paths, options);
     expect(result.repository.path).toBe(path.join(root, "github.com", "owner", "repo"));
     expect(await readFile(paths.configFile, "utf8")).toContain("repositoryRoot: *cloneRoot # shared root");
@@ -140,7 +158,7 @@ describe("repository registration", () => {
   });
 
   it("rejects invalid existing configuration without replacing it", async () => {
-    const invalid = "maxConcurrentWorker: 0\nrepositories: [{remote: https://github.com/o/r, path: ../repo}]\n";
+    const invalid = "review:\n  maxConcurrentWorker: 0\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]\n";
     const { paths, options } = await setup("invalid-config", invalid);
     await expect(addRepository({ remote }, paths, options)).rejects.toThrow("maxConcurrentWorker");
     expect(await readFile(paths.configFile, "utf8")).toBe(invalid);
@@ -150,7 +168,7 @@ describe("repository registration", () => {
   it("rejects config symlinks and preserves the link and target", async () => {
     const { paths, options } = await setup("symlink-config");
     const target = path.join(options.homeDirectory, "target.yml");
-    const source = "repositories: [{remote: https://github.com/o/r, path: ../repo}]\n";
+    const source = "review:\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]\n";
     await writeFile(target, source);
     await symlink(target, paths.configFile, "file");
     await expect(addRepository({ remote }, paths, options)).rejects.toThrow("symbolic-link writes are not supported");
@@ -184,7 +202,7 @@ describe("repository registration", () => {
   });
 
   it("preserves configuration and cleans its temporary file and lock if atomic replacement fails", async () => {
-    const source = "repositories: [{remote: https://github.com/o/r, path: ../repo}]\n";
+    const source = "review:\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]\n";
     const { paths, options } = await setup("rename-failure", source);
     const failure = Object.assign(new Error("replacement denied"), { code: "EACCES" });
     const replace = vi.mocked(filesystem.rename).mockRejectedValueOnce(failure);
@@ -198,7 +216,7 @@ describe("repository registration", () => {
   });
 
   it.skipIf(process.platform === "win32")("preserves existing POSIX configuration permissions", async () => {
-    const { paths, options } = await setup("permissions", "repositories: [{remote: https://github.com/o/r, path: ../repo}]\n");
+    const { paths, options } = await setup("permissions", "review:\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]\n");
     await chmod(paths.configFile, 0o640);
     await addRepository({ remote }, paths, options);
     expect((await lstat(paths.configFile)).mode & 0o777).toBe(0o640);
@@ -212,7 +230,7 @@ describe("repository registration", () => {
   });
 
   it("does not require an unused root to be a directory when an explicit path is provided", async () => {
-    const { paths, options } = await setup("unused-root", "repositoryRoot: ../root-file\nrepositories: [{remote: https://github.com/o/r, path: ../repo}]\n");
+    const { paths, options } = await setup("unused-root", "review:\n  repositoryRoot: ../root-file\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]\n");
     await writeFile(path.join(options.homeDirectory, "root-file"), "not a directory");
     expect((await addRepository({ remote, path: "../explicit" }, paths, options)).repository.path).toBe(path.join(options.homeDirectory, "explicit"));
   });

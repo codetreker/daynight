@@ -1,7 +1,7 @@
 import type { MouseEvent } from 'react';
 import { ApiError } from '../../api/client';
 import { navigate } from '../../app/router';
-import { useProjects } from './useProjects';
+import { useProjectList } from './ProjectsProvider';
 import { useI18n } from '../../i18n/LocaleProvider';
 
 const FolderIcon = () => (
@@ -38,7 +38,7 @@ const ErrorDetail = ({ error }: { error: unknown }) => {
 };
 
 export const ProjectsPage = ({ onCreate }: { readonly onCreate?: () => void }) => {
-  const projects = useProjects();
+  const projects = useProjectList();
   const { messages: { workspace: { projects: m, app }, auth: { createProject } }, format } = useI18n();
 
   return (

@@ -83,8 +83,10 @@ the URL and existing record formats remain unchanged.
 
 Statistics and task browsing have clear destinations with one data owner. Outer
 switches do not add requests, caches or index construction. The original section
-split introduced no display timers; the overall-progress extension owns a
-deadline timer only while its recent-completion window is visible. A retained
+split introduced no display timers. The [recent browsing
+decision](2026-10-27-recent-task-pages.md) extends the overall-progress deadline
+to one shared project timer for both sections, so local-midnight expiry updates
+the active task list as well as Overview. Page visibility controls that timer. A retained
 hidden task subtree keeps its existing task-clock subscriptions; that is the
 deliberate runtime cost of preserving interaction state. Authentication changes and project unmount retain their existing owner cleanup.
 Snapshot invalidation clears private task children rather than retaining stale

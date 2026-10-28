@@ -148,7 +148,7 @@ describe("workspace localization", () => {
     await selectTaskList();
     await user.click(screen.getByRole("tab", { name: "Standalone tasks" }));
     const standaloneTab = screen.getByRole("tab", { name: "Standalone tasks" });
-    const filter = screen.getByRole("checkbox", { name: "Show completed standalone tasks (0)" });
+    const filter = screen.getByRole("checkbox", { name: "Show all" });
     await user.click(filter);
     const row = screen.getByRole("button", { name: /Task 用户数据/ });
     const scroll = vi.spyOn(window, "scrollTo");
@@ -157,7 +157,7 @@ describe("workspace localization", () => {
     await user.selectOptions(selector, "zh-CN");
     expect(screen.getByRole("tab", { name: "独立任务" })).toBe(standaloneTab);
     expect(standaloneTab).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("checkbox", { name: "显示已完成独立任务（0）" })).toBe(filter);
+    expect(screen.getByRole("checkbox", { name: "显示所有" })).toBe(filter);
     expect(filter).toBeChecked();
     expect(screen.getByRole("button", { name: /Task 用户数据/ })).toBe(row);
     expect(graphRequest).toHaveBeenCalledTimes(1);
@@ -169,11 +169,18 @@ describe("workspace localization", () => {
     await user.click(screen.getByRole("button", { name: "Refresh test graph" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Task test shell" })).toBeNull());
     const notice = await screen.findByText(zhCN.workspace.project.selectedTaskRemoved);
-    expect(notice).toHaveAttribute("role", "status");
+    expect(notice.closest('[role="status"]')).toBeVisible();
+    const dismiss = screen.getByRole("button", { name: "关闭提示" });
     await user.selectOptions(selector, "en");
     expect(screen.getByText(en.workspace.project.selectedTaskRemoved)).toBe(notice);
+    expect(screen.getByRole("button", { name: "Dismiss notification" })).toBe(dismiss);
     expect(graphRequest).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("heading", { name: "No tasks yet" })).toBeVisible();
+    await user.click(dismiss);
+    expect(screen.queryByText(en.workspace.project.selectedTaskRemoved)).toBeNull();
+    expect(graphRequest).toHaveBeenCalledTimes(2);
+    await user.selectOptions(selector, "zh-CN");
+    expect(screen.queryByRole("button", { name: "关闭提示" })).toBeNull();
   });
 
   it("translates a saved project preference problem at display time and leaves its stored value untouched", async () => {
@@ -207,7 +214,7 @@ describe("workspace localization", () => {
 
   it.each([0, 1, 2])("uses complete standalone count sentences for %i tasks in both languages", (count) => {
     expect(en.workspace.standalone.summary({ visible: count, total: count })).toBe(`Newest first · ${count} / ${count} standalone ${count === 1 ? "task" : "tasks"}`);
-    expect(en.workspace.standalone.hiddenCompleted({ count })).toBe(`${count} completed standalone ${count === 1 ? "task is" : "tasks are"} hidden. Project statistics still include all tasks.`);
+    expect(en.workspace.standalone.hiddenCompleted({ count })).toBe(`${count} completed standalone ${count === 1 ? "task is" : "tasks are"} outside the current filter. Select “Show all” to view them.`);
     expect(zhCN.workspace.standalone.summary({ visible: count, total: count })).toBe(`最新创建在前 · ${count} / ${count} 个独立任务`);
   });
 });

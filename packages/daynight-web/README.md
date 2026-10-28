@@ -112,8 +112,20 @@ It composes the existing project list, graph and shared task-detail surfaces wit
 private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` keeps project links in a scrollable upper region and the
-existing `/account` entry and sidebar toggle in its footer. Desktop widths are
+`WorkspaceSidebar` lists accessible projects as indented links below My projects
+in its scrollable upper region. The index selects My projects; project, member
+and settings routes select the corresponding project. Links preserve native
+modified clicks, expose full names through accessible text and titles, and
+truncate long visible names. Project children appear in expanded desktop and
+mobile navigation and are hidden in the folded rail. Initial loading, empty and
+failed reads have localized feedback and retry; Load more traverses subsequent
+pages without removing earlier links on failure.
+
+Run `pnpm web:dev` and open [the project navigation preview](tests/mockups/sidebar-projects.html)
+for production components with in-page project fixtures: switching, long names,
+multiple pages, loading, empty and retry scenarios. It requires no backend.
+
+The existing `/account` entry and sidebar toggle stay in the footer. Desktop widths are
 190px expanded and 68px collapsed. The footer stays reachable on long pages and
 short viewports; icon entries retain accessible names, hover titles and selected
 route styling. The topbar account link keeps its name and behavior.
@@ -335,8 +347,15 @@ business versions remain bigint. The default ten-second server overlap can
 repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
 invalidate detail records, replace published indexes or broadcast.
 
-The current mount requires its own successful online project sync before private
-cache publication. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
+After identity verification, a project publishes its validated local summary
+snapshot while task-sync runs in the background. Valid empty snapshots render
+normally; missing or invalid baselines retain loading until synchronization.
+Recoverable sync failures retain visible summaries and expose Retry. Summary
+publication does not authorize detail bodies or task writes: those still require
+this mount's successful online project sync. A local-only detail mount keeps its
+visibility gate local and leaves shared session observation unchanged, so an
+already accepted operation can finish preparation in its original authorized
+history; this mount's first live receipt still requires its own opening GET. `Daynight-User-ID` is checked before decoding or acting on sync, detail and task
 mutation responses. A verified different principal synchronously releases old content
 and starts identity verification. Headerless or malformed-principal errors retain
 valid cached content. Project-sync not_found, a trusted not_found for a task known
@@ -350,7 +369,13 @@ gate. `canRevokeProject` and `revokeProject` check the captured user fence/gener
 retire local reuse synchronously, and purge only the matching durable generation
 through the existing transaction. Scope-owned cleanup outlives the view; failure
 keeps admission denied, and beginSync retries cleanup before a fresh online sync.
-An old graph receipt alone cannot re-admit the detail.
+An old graph receipt alone cannot re-admit the detail. `canPreviewProject` also
+keeps local summaries hidden after effective withdrawal, deriving eligibility
+from existing retired generations and online authorization. The hook checks it
+both before and after the asynchronous disk read. Same-scope navigation, remounts,
+ordinary hints and failed Retry or polling cannot restore previews, even when
+CAS cleanup preserves a newer durable generation. Successful online sync restores
+authorization without removing the old-generation fences.
 
 Ordinary broadcast hints contain no task content or access grant; authorized
 receivers reread committed stores without another network request. Negative hints
@@ -429,6 +454,13 @@ unknown, reconciling and exact-version gates remain. The
 owns the complete admission, race, budget and failure rules.
 
 ## Task execution time and possible stalls
+
+A local-only snapshot has revision zero and no server clock or successful receipt.
+It displays neither a refreshed timestamp nor running durations or stall warnings;
+completed durations still use their persisted endpoints. Overview uses client wall
+time for provisional recent-completion classification, then switches to the live
+server sample. This provisional time never establishes execution time or sync
+coverage.
 
 `useTaskGraph` captures `receivedMonotonic` immediately after decoding task-sync,
 before IDB application or index work, and pairs it with that response's database
@@ -555,9 +587,14 @@ backend authentication settings and explicit HTTP test policy follow the
 [deployment guide](../../deployment/localhost/README.md); changing the browser
 origin does not relax callback or Cookie-write Origin checks.
 
-The project list requests 50 items per page, preserves
+An identity-scoped projects provider supplies both the sidebar directory and
+project cards from one request owner. It requests 50 items per page, preserves
 server order, and follows `nextCursor` through Load more. Repeated IDs count once.
-Refresh discards old pages and cursors; late responses cannot repopulate them.
+Project navigation retains loaded pages. Refresh discards old pages and cursors;
+late responses cannot repopulate them. Creating a project or removing one's own
+membership refreshes the shared directory; a new authenticated identity starts
+with a new directory. The [project navigation decision](../../.agents/notes/implemented/feature/2026-10-27-sidebar-project-navigation.md)
+records ownership and pagination choices.
 
 The application implements public `/`, explicit `/login`, the `/projects` index,
 `/projects/{projectId}`, `/account`,
@@ -566,24 +603,67 @@ The application implements public `/`, explicit `/login`, the `/projects` index,
 reload, browser back/forward and a generic not-found page. All resource reads use
 the current authenticated identity. A project without a saved section preference
 opens Overview, with six statistics and an overall progress list from the complete
-snapshot. Unfinished ordinary task-chain components each have one row with title,
-completed/total count and a floored integer percentage. The final standalone row
-counts completions within the rolling last seven days; its denominator adds all
-unfinished standalone tasks. Older and unknown completion times are excluded
-from that recent count. The row remains visible while standalone work is
-unfinished. Neither statistic cards nor the task lists change their existing
-full-history semantics. Clicking a progress row selects Task list and the matching
-category, scrolls and focuses the chain row or standalone list, and briefly
-highlights that destination. Explicit positioning wins over the saved category
-scroll for that activation; ordinary later switches retain their usual memory.
-The [progress decision](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)
-owns timing and navigation trade-offs. Its adjacent Task
+snapshot. Its recent rows include every unfinished ordinary task-chain component
+and completed components from the latest seven local calendar days. A row shows
+the representative title, completed/total count and a floored integer percentage.
+A Goal completes only when all ordinary members are done; its last member
+completion determines recency, with external prerequisites excluded. The latest
+known member completion supplies evidence when some historical times are unknown;
+without known recent evidence, completed Goals appear only through Show all.
+The standalone aggregate row combines every unfinished standalone task with known
+completions in the same window. It remains visible at 100% when only recent
+completions remain, as do recent completed Goals. Project statistic cards retain
+full-history totals.
+
+The window includes today and the previous six days in the browser's local time
+zone, starting at local midnight six dates ago. For example, October 27 includes
+completions from October 21 at 00:00 onward. Local date arithmetic preserves
+calendar-day semantics across daylight-saving changes. Current time advances
+from the server sample and monotonic elapsed time after synchronization;
+local-only summaries use their provisional client-time anchor. One project-owned
+deadline updates Overview and Task list together at midnight, pauses while the
+page is hidden, and recalculates on visibility recovery without requiring a new
+snapshot.
+
+Overview displays 20 top-level entries per page; Task chains and Standalone
+tasks each display 15. A whole Goal is one entry regardless of expanded children; the single
+standalone aggregate is one Overview entry. All display sequences sort by
+`in_progress`, `todo`, then `done` before pagination, using individual status for
+standalone tasks and complete component status for chains. Within a status,
+exact newest-first order remains stable; the standalone aggregate follows
+matching-status chains.
+Pagination shows the current item range and filtered total with previous/next
+controls; one-page results have no pager. Each list retains its own page during
+the project visit. Changing Show all resets that list to page one; shrinking
+results clamp the page immediately. These display slices do not truncate the
+cached graph, statistics, Goal progress or dependency context, and do not add
+requests or stored page preferences.
+
+Clicking a progress row selects Task list and the matching category, switches to
+the destination Goal's page, then scrolls, focuses and briefly highlights it.
+The standalone aggregate selects its list's first page. Explicit positioning wins
+over saved category scroll for that activation; later ordinary switches retain
+their usual memory. The [recent browsing decision](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)
+owns the shared window and paging policy; the [progress decision](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)
+retains the original aggregation and navigation rationale. The adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
 left of the selected content; narrow screens use horizontal tabs with matching
 keyboard direction. The outer choice is stored per project in browser
 preferences, so the first render after reload or return already shows the saved
 Overview or Task list selection. It does not change the URL or history. Empty
 projects retain both section destinations.
+
+With `pnpm web:dev`, open the [recent-task preview](tests/mockups/recent-tasks.html)
+at `/tests/mockups/recent-tasks.html`. It mounts the real `ProjectPage`, production
+CSS and locale catalog with controlled read-only task-sync responses. Choose
+`#mixed`, `#completed`, `#empty`, `#loading` or `#failure`; the mixed inventory
+includes 42 visible Goals, 43 visible standalone tasks, an old representative
+with a recently completed child, a Goal with 33 children, calendar cutoffs and
+older/unknown completion history. The completed case retains 100% recent rows.
+Loading release and service recovery controls exercise the corresponding states.
+This frontend-only entry needs no Go service or PostgreSQL and is excluded from
+the production build; it supplies interaction evidence, not real-service
+acceptance.
 
 Both sections use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
@@ -598,21 +678,30 @@ Within Task list, an absent category preference selects Task chains; later
 visits restore the project's last inner category. Both badges count unfinished
 tasks (pending and in progress) from the complete snapshot, independently of
 completed-item visibility, outer/inner selection and the open graph dialog. Their sum
-equals the project's unfinished total; toolbars report visible/total entries.
+equals the project's unfinished total; toolbars report all entries matching the
+current filter against complete category totals, independently of page size.
+Both categories default to all unfinished work plus completions in the local
+calendar window. Their independent Show all controls include all history when
+checked and restore the recent default when cleared. The label has no completed
+count suffix; each choice retains its existing per-project browser record.
 
 Chain membership is an ordinary-edge weak component: `dependsOn` contains all
 prerequisites, while `externalDependsOn` marks edges that do not join
 components. A normal `A → C ← B` creates one chain with two starting tasks and
 one member set. A chain's representative is its earliest ordinary-root member
 in exact service order; its title and creation ordering supply the top-level
-Goal row. Goal is a browsing label, not a stored task type or a title-based
-membership rule. Singletons with no ordinary incoming or outgoing edge are
+chain row. Goal describes the browsing hierarchy rather than a stored task type
+or a title-based membership rule. The header omits the Goal label and total/unfinished
+summary. A localized in-progress count follows the title, including zero and the
+representative while excluding external-only prerequisites. It counts only members
+whose own status is `in_progress`, independently of aggregate status. Singletons with no ordinary incoming or outgoing edge are
 standalone tasks, even when external prerequisites block execution. Status and
 completion filters do not change membership. All edges still participate in
 execution consistency and full prerequisite inspection.
 
 Standalone rows are compact native detail triggers with title, individual
-status, ID, creation time, automation permission and known execution timing. An
+status, ID, creation time, automation permission and known execution timing. The
+clock and duration follow creation time in the same wrapping information line. An
 unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. A Goal row
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
@@ -621,8 +710,8 @@ then `done`; tasks with the same status retain snapshot order. This child
 priority preserves top-level Goal ordering. Other starting tasks in a merge are
 included, while external prerequisite context is excluded. The
 list always retains `done`, `in_progress` and `todo` children; completed tasks
-remain visible. The chain-level Show completed control applies only to whole
-completed Goals and never filters children. Child rows show their own status,
+remain visible. The chain-level Show all control changes whole-Goal visibility
+and never filters children by status or completion date. Child rows show their own status,
 applicable ready/blocked markers and known execution duration after the title,
 and open the shared task dialog. The expanded heading offers the representative task's own
 details. Aggregate progress still includes that representative. Chain rows
@@ -638,7 +727,7 @@ ordering uses its representative's exact `(created_at,id)` service order,
 reversed for newest first without lossy JavaScript timestamp conversion. The
 open graph dialog keeps an original task witness only for the current reading
 session and resolves its component after merges or splits without overwriting
-a valid witness with a new representative. A removed, standalone or hidden
+a valid witness with a new representative. A removed, standalone, filtered or off-page
 witness closes the dialog. Membership changes initialize a new bounded overview
 and framing without remounting a same-representative canvas or active Details.
 A representative change initializes the newly represented graph within the
@@ -688,11 +777,36 @@ Ordinary and successful notices use three-second bubbles; errors and notices
 with actions use eight seconds. Hover or focus pauses expiry. Close and expiry
 change only presentation; unresolved recovery remains accessible from a compact
 floating trigger, without changing write locks or replaying writes. Status does
-not stop a process, transfer worker ownership or
-provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
+not stop a process or provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
 owns server rules, migration and timing. The [component fixture](tests/mockups/browsing.html)
 uses production sessions/styles for frontend behavior; actual service acceptance
 separately proves HTTP, database and persistence behavior.
+
+Task details share claim display and force withdrawal across the dialog,
+standalone page and fullscreen. Active claims show the user, machine, agent and
+phase; released claims are labeled, while completed history is not a current
+claim. Project membership supplies user names/accounts; a former member remains
+identified by its real user ID, and membership-read errors remain visible. The
+claimed heading has a bounded, focusable scroll region so full names, accounts,
+machine names and member errors remain readable without consuming the tabs and
+reading panels. This applies to dialog and standalone entries in normal and
+fullscreen modes; short claimed views hide the informational footer and reuse
+compact tabs, attachment padding and preview metadata layout. Short claimed
+standalone pages also compact the auxiliary navigation bar spacing so complete
+return links and language controls fit together at 320px in both languages
+without consuming the attachment reading area. Keyboard
+focus can reveal the withdrawal control within that region. Only
+the original owner or a project admin sees **Force withdraw** for active/released
+ownership; the service rechecks membership and authority.
+
+Withdrawal confirmation freezes the task, claim and precise version. It explains
+that the task returns to `todo`, worker ownership and execution timing are cleared,
+and automatic execution is disabled. The remote agent may continue until its
+worker synchronizes and cleans up; immediate stopping is not guaranteed. Cancel
+submits nothing. The shared TaskDetailSession serializes the operation, validates
+the returned reset while preserving other materials and refreshes the graph.
+Conflicts require a fresh review; uncertain outcomes use GET-only reconciliation
+without replay. This action does not require the original worker to be online.
 
 Both lists use newest creation first, with descending IDs breaking equal-time
 ties. Presentation reverses the exact API sequence without reducing timestamp
@@ -819,8 +933,8 @@ response updates the mount's clock receipt, including duplicate-only responses.
 Detail content follows its own summary business version and project generation;
 unchanged receipts do not cause GETs or detail writes. Receipt-driven recovery
 still retries failed reads and raw graph disagreements. `GraphSnapshot.revision`
-is the successful mount-local receipt and online-admission signal, not a task
-version or durable commit counter. Equivalent
+is zero for local-only summaries; positive values are the successful mount-local
+receipt and online-admission signal, not a task version or durable commit counter. Equivalent
 task data retains its index and layout; settings-only changes update Project
 metadata without rebuilding task projections, and changed intrinsic data replaces
 statistics and both task-category lists together. The
@@ -917,8 +1031,9 @@ a focusable one-line-height scroll region. The task action-menu trigger and
 attachment popout icons retain their accessible labels. The preview header keeps
 path/metadata context and actions on one row, preserving full strings through
 DOM/title text.
-These fullscreen-only rules leave readable nonzero Overview and preview bodies
-at 320×240. Verification observes body/frame dimensions, actual content paint
+The claimed body heading additionally retains its bounded scroll region in both
+normal and fullscreen modes, including long identity and machine text. The
+combined sizing leaves readable nonzero Overview and preview bodies at 320×240. Verification observes body/frame dimensions, actual content paint
 and scrolling; visible controls alone do not establish reading access. The
 [fullscreen-reading decision](../../.agents/notes/implemented/feature/2026-10-25-task-detail-fullscreen.md)
 records mode, scroll and keyboard ownership.
@@ -1295,9 +1410,11 @@ all-module selection rule.
 `node packages/daynight-web/scripts/ci.mts quality` runs `test:harness` and the complete
 `test:coverage` command serially. Each retains a separate 180-second deadline,
 so harness duration cannot consume the coverage command's budget. Only the
-Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=2`, retaining
+Vitest/V8 child receives a copied environment with `VITEST_MAX_WORKERS=4`, retaining
 its `forks` pool, per-file isolation, full product manifest and strict statement
-gate. No file or assertion is omitted.
+gate. The [worker capacity decision](../../.agents/notes/implemented/testing/2026-10-28-web-quality-worker-capacity.md)
+calibrates this existing resource setting for the dedicated public standard
+Linux runner's four CPUs. No file or assertion is omitted.
 
 `node packages/daynight-web/scripts/ci.mts browser` installs pinned Chromium and
 Linux dependencies under the
@@ -1603,7 +1720,7 @@ scenario annotations validated in each target's report.
 | W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained task-list subtree and closed graph dialog across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/scroll restoration and temporary graph-dialog opening, dependency reclassification and consistent full refresh |
 | W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: Goal disclosure with complete unique child rows and direct task details, independent explicit 80% graph dialog and narrow-screen gutters, list/focus/scroll restoration, complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and detail/viewport actions |
 | W8, TI12–TI14 | `detail-navigation`, `refresh-staleness`, `task-detail-page`: shared complete dialog/page content and actions, title-bar/attachment popouts, task/tab/file history, query-preserving login, nested confirmations, precise/conflicting/unknown writes, automatic full-detail reads and retained geometry/state |
-| W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, correlated errors, empty/not-found states, delayed request replacement and complete size refusal |
+| W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, cached content with correlated refresh errors across reload, cold-cache initial failure/loading, empty/not-found states, cached project navigation during delayed sync with request cancellation, and complete size refusal |
 | W10 | Native and container functional targets, exact image identity and dev-ci cleanup receipt |
 | W11 | Strict raw Go/V8 coverage reports, validated complete browser/performance receipts and the final `checks` result |
 | W12, TI6–TI7, TI16 | `detail-navigation`, `keyboard-focus`, `narrow-layout`, `project-view-tabs`, `refresh-staleness`, `task-attachments`: normal and fullscreen dialog/page geometry at desktop/320px/390px and short heights, independent scrolling and persistent controls; graph/standalone entry, layered detail/graph Escape, trigger disappearance, inert/scroll release, retained Surface/frame/input/session identity and same-origin frame owner changes |

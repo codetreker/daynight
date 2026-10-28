@@ -14,11 +14,11 @@ afterEach(async () => {
 
 describe("shared YAML document boundary", () => {
   it("recognizes each command's fields without imposing its value rules", () => {
-    const source = "# Server settings\nworkerId: null\nworker: malformed\nserverUrl: &server nonsense\nrepositoryRoot: *server # preserved alias\nrepositories: malformed\npollIntervalMs: null\nmaxConcurrentWorker: false\nagentTimeoutMs: []\nmaxAttempts: {}\nretryDelayMs: -1\ncopilotModel: null\ncopilotReasoningEffort: false\n";
+    const source = "# Server settings\nworkerId: null\nworker: malformed\nserverUrl: &server nonsense\nreview:\n  repositoryRoot: *server # preserved alias\n  repositories: malformed\n  pollIntervalMs: null\n  maxConcurrentWorker: false\n  agentTimeoutMs: []\n  maxAttempts: {}\n  retryDelayMs: -1\n  copilotModel: null\n  copilotReasoningEffort: false\n";
     const { document, mapping } = parseConfigurationDocument(source, paths);
-    expect(mapping).toEqual({ workerId: null, worker: "malformed", serverUrl: "nonsense", repositoryRoot: "nonsense", repositories: "malformed", pollIntervalMs: null, maxConcurrentWorker: false, agentTimeoutMs: [], maxAttempts: {}, retryDelayMs: -1, copilotModel: null, copilotReasoningEffort: false });
+    expect(mapping).toEqual({ workerId: null, worker: "malformed", serverUrl: "nonsense", review: { repositoryRoot: "nonsense", repositories: "malformed", pollIntervalMs: null, maxConcurrentWorker: false, agentTimeoutMs: [], maxAttempts: {}, retryDelayMs: -1, copilotModel: null, copilotReasoningEffort: false } });
     expect(document.toString()).toContain("serverUrl: &server nonsense");
-    expect(document.toString()).toContain("repositoryRoot: *server # preserved alias");
+    expect(document.toString()).toContain("review:\n  repositoryRoot: *server # preserved alias");
   });
 
   it.each(["", "null", "[]", "42", "serverUrl"])("requires a mapping: %s", (source) => {
@@ -27,7 +27,7 @@ describe("shared YAML document boundary", () => {
 
   it.each([
     "serverUrl: http://localhost\nserverUrl: http://other\n",
-    "repositories: [{remote: first, remote: second}]\n",
+    "review:\n  repositories: [{remote: first, remote: second}]\n",
     "serverUrl: [\n",
     "serverUrl: !unsupported http://localhost\n",
     "serverUrl: http://localhost\n---\nserverUrl: http://other\n",
@@ -42,8 +42,11 @@ describe("shared YAML document boundary", () => {
     }
   });
 
-  it.each(["typo: true\nserverUrl: http://localhost", "1: value", "__proto__: value"])("rejects unknown root fields: %s", (source) => {
-    expect(() => parseConfigurationDocument(source, paths)).toThrow("unsupported field");
+  it.each(["typo: true\nserverUrl: http://localhost", "1: value", "__proto__: value"])("retains unknown root fields in the document: %s", (source) => {
+    const { document, mapping } = parseConfigurationDocument(source, paths);
+    expect(Object.keys(mapping)).toEqual(source.split("\n").map((line) => line.split(":")[0]));
+    expect(parseConfigurationDocument(document.toString(), paths).mapping).toEqual(mapping);
+    expect(Object.getPrototypeOf(mapping)).toBe(Object.prototype);
   });
 
   it("preserves an unresolved alias as a decode failure", () => {
@@ -55,7 +58,6 @@ describe("shared YAML document boundary", () => {
     ["verbatim tag warning", (secret: string) => `serverUrl: https://service.example\nserverToken: !<${secret}> value\n`, "TAG_RESOLVE_FAILED at offsets"],
     ["local tag warning", (secret: string) => `serverUrl: https://service.example\nserverToken: !${secret} value\n`, "TAG_RESOLVE_FAILED at offsets"],
     ["duplicate secret key", (secret: string) => `${secret}: first\n${secret}: second\n`, "DUPLICATE_KEY at offsets"],
-    ["secret root key", (secret: string) => `${secret}: value\n`, "unsupported field"],
     ["malformed scalar", (secret: string) => `serverToken: "${secret}\n`, "MISSING_CHAR at offsets"],
     ["malformed collection", (secret: string) => `serverToken: [${secret}\n`, "BAD_INDENT at offsets"],
   ])("reports %s without retaining secret bytes anywhere in the diagnostic chain", (_name, source, category) => {

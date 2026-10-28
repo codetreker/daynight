@@ -44,8 +44,12 @@ All data entrypoints use this lifecycle check, and stale tickets or scopes canno
 publish across the replacement after commit.
 
 TaskCacheScope belongs to the authenticated user/session generation and spans
-project, standalone task and attachment routes. Every mounted project view needs
-its own successful authenticated sync before publishing private cached content.
+project, standalone task and attachment routes. The original decision required
+every mounted project view to complete its own authenticated sync before private
+cache publication, using that response as both access confirmation and a clock
+receipt. The [local summary display decision](2026-10-27-project-cache-display.md)
+separates validated summary visibility from online detail admission; detail
+bodies and writes retain the successful mount-local sync requirement.
 The foreground identity gate also covers durable reads and positive content
 publication. Trusted negative access withdrawal immediately removes admission
 even while the gate is paused; its persistence still waits for the gate. A valid
@@ -105,9 +109,11 @@ separate content, freshness and eviction policy to the same scope.
 
 ## Consequences
 
-Navigation retains a durable summary base while online access remains mandatory
-before private publication. Each apply can read and validate the full bounded
-local set; its local work is not guaranteed proportional to the changed rows.
+Navigation retains a durable summary base. After identity verification, validated
+summaries can render during background synchronization; online project admission
+remains mandatory for detail bodies and task writes. Each apply can read and
+validate the full bounded local set; its local work is not guaranteed proportional
+to the changed rows.
 The accepted tail window can still repeat indefinitely. Storage failures remain
 visible through existing error and Retry states, with an allowed current view
 retained; there is no silent network-only fallback.
@@ -117,5 +123,5 @@ cross-tab behavior; fake-indexeddb supplies deterministic unit coverage without
 claiming browser scheduling or disk guarantees. The existing graph limits and
 four-dataset interaction budgets remain. Detail LRU, live-GET admission and
 change-driven detail refresh are implemented by the detail-cache owner. The
-current GraphSnapshot revision remains a mount-local successful-read receipt,
-not a persistent revision or task version.
+current GraphSnapshot revision is zero for local-only summaries and positive for
+a mount-local successful-read receipt, not a persistent revision or task version.

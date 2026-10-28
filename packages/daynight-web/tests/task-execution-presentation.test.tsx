@@ -103,12 +103,18 @@ describe("task execution presentation", () => {
     const rowIndex = buildGraphIndex(rowGraph);
     const ids = rows.map(({ id }) => id);
     const view = renderWithLocale(<TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(30_000), graph: rowGraph, index: rowIndex }}>
-      <StandaloneList index={rowIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} showCompleted onShowCompletedChange={noop} />
+      <StandaloneList index={rowIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} showAll onShowAllChange={noop} />
     </TaskExecutionClockProvider>, { locale });
     const running = document.getElementById("standalone-task-running")!;
     const completed = document.getElementById("standalone-task-completed")!;
     const unknown = document.getElementById("standalone-task-unknown")!;
     const completedTime = completed.querySelector(".task-duration")!;
+    for (const row of [running, completed]) {
+      const metadata = row.querySelector(".root-meta")!;
+      expect(metadata.querySelector(".standalone-execution .task-duration")).not.toBeNull();
+      expect(metadata.querySelector(".standalone-execution")!.previousElementSibling).toBe(metadata.querySelector("time"));
+      expect(row.querySelector(".root-heading > .standalone-execution")).toBeNull();
+    }
     expect(running.querySelector(".task-duration")).toHaveTextContent(locale === "en" ? "< 1 min" : "不足 1 分钟");
     expect(completedTime).toHaveTextContent(locale === "en" ? "2d 3h 4min" : "2 天 3 小时 4 分钟");
     expect(completedTime).toHaveAttribute("datetime", "PT183840.000S");
@@ -136,7 +142,7 @@ describe("task execution presentation", () => {
     const manualIndex = buildGraphIndex(manualGraph);
     const content = (elapsed: number) => <TaskExecutionClockProvider projectId="project" snapshot={{ ...snapshot(elapsed), graph: manualGraph, index: manualIndex }}>
       <TaskGraph index={manualIndex} rootId="A" onOpenTask={noop} />
-      <StandaloneList index={manualIndex} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} showCompleted onShowCompletedChange={noop} />
+      <StandaloneList index={manualIndex} taskIds={["C"]} allTaskIds={["C"]} onSelectTask={noop} showAll onShowAllChange={noop} />
     </TaskExecutionClockProvider>;
     const view = renderWithLocale(content(3_601_000), { locale });
     await waitFor(() => expect(view.container.querySelector(".task-node-in_progress")).not.toBeNull());
@@ -161,7 +167,7 @@ describe("task execution presentation", () => {
     const unknownIndex = buildGraphIndex({ ...graph, tasks: [task("unknown-running", { status: "in_progress" }), task("unknown-done", { completedAt: start })],
       summary: { ...graph.summary, total: 2, inProgress: 1, done: 1 } });
     const ids = ["unknown-running", "unknown-done"];
-    const view = renderWithLocale(<StandaloneList index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} showCompleted onShowCompletedChange={noop} />, { locale });
+    const view = renderWithLocale(<StandaloneList index={unknownIndex} taskIds={ids} allTaskIds={ids} onSelectTask={noop} showAll onShowAllChange={noop} />, { locale });
     expect(view.container.querySelector(".task-duration, .task-stuck-label")).toBeNull();
   });
 });

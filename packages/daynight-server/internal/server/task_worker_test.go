@@ -97,7 +97,7 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim", body), http.StatusBadRequest, "invalid_input")
 	}
 	assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim?", jsonBody(t, base)), http.StatusBadRequest, "invalid_input")
-	for _, path := range []string{"worker-claim", "worker-claim/release", "worker-claim/transfer", "worker-claim/resume"} {
+	for _, path := range []string{"worker-claim", "worker-claim/release", "worker-claim/withdraw", "worker-claim/resume"} {
 		response := projectRequest(handler, http.MethodGet, taskPath(task)+"/"+path, "")
 		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("Allow") == "" {
 			t.Fatalf("worker action method response changed: %s %d %s", path, response.Code, response.Body)
@@ -128,17 +128,13 @@ func TestWorkerHTTPStrictInputsAndMethods(t *testing.T) {
 	} {
 		assertProjectError(t, projectRequest(handler, action.method, taskPath(task)+"/worker-claim"+action.suffix, jsonBody(t, action.body)), http.StatusBadRequest, "invalid_input")
 	}
-	for _, field := range []string{"version", "claimId", "target", "userId", "workerId", "machine", "platform", "agent", "stoppedConfirmed"} {
-		target := map[string]any{"userId": handler.principal.UserID, "workerId": uuid.NewString(), "machine": base["machine"], "platform": "linux", "agent": "codex"}
-		body := map[string]any{"version": task.Version, "claimId": base["claimId"], "newClaimId": uuid.NewString(), "target": target, "worktreeId": uuid.NewString(), "stoppedConfirmed": true}
-		if field == "userId" || field == "workerId" || field == "machine" || field == "platform" || field == "agent" {
-			target[field] = nil
-		} else {
-			body[field] = nil
-		}
-		assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/transfer", jsonBody(t, body)), http.StatusBadRequest, "invalid_input")
+	for _, body := range []string{`{}`, `{"version":null,"claimId":"` + base["claimId"].(string) + `"}`, `{"version":1}`, `{"version":1,"claimId":null}`, `{"version":1,"claimId":"invalid"}`, `{"version":1,"claimId":"` + base["claimId"].(string) + `","stoppedConfirmed":true}`, `{"version":1,"version":1,"claimId":"` + base["claimId"].(string) + `"}`} {
+		assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/withdraw", body), http.StatusBadRequest, "invalid_input")
 	}
-	for _, suffix := range []string{"release", "transfer", "resume"} {
+	if response := projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/transfer", `{}`); response.Code != http.StatusNotFound {
+		t.Fatalf("removed worker action still routed: %d %s", response.Code, response.Body)
+	}
+	for _, suffix := range []string{"release", "withdraw", "resume"} {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/"+suffix, `{}`), http.StatusBadRequest, "invalid_input")
 		assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/"+suffix+"?unexpected=1", `{}`), http.StatusBadRequest, "invalid_input")
 	}
@@ -192,10 +188,36 @@ func TestWorkerHTTPRejectsDeprecatedContinuityInputs(t *testing.T) {
 	}
 	rejectContinuity(taskPath(task)+"/worker-claim", claim)
 	task = claimHTTPWorker(t, handler, task, claim)
-	transfer := map[string]any{"version": task.Version, "claimId": claim["claimId"], "newClaimId": uuid.NewString(), "target": map[string]any{"userId": handler.principal.UserID, "workerId": uuid.NewString(), "machine": claim["machine"], "platform": "linux", "agent": "copilot"}, "worktreeId": uuid.NewString(), "stoppedConfirmed": true}
-	rejectContinuity(taskPath(task)+"/worker-claim/transfer", transfer)
+	rejectContinuity(taskPath(task)+"/worker-claim/withdraw", map[string]any{"version": task.Version, "claimId": claim["claimId"]})
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": claim["claimId"], "stoppedConfirmed": true})), http.StatusOK)
 	resume := workerClaimBody(task.Version)
 	resume["previousClaimId"] = claim["claimId"]
 	rejectContinuity(taskPath(task)+"/worker-claim/resume", resume)
+}
+
+func TestWorkerHTTPWithdrawalReturnsClearedClaim(t *testing.T) {
+	var logs bytes.Buffer
+	handler := projectTestHandler(t, projectTestStore(t), &logs)
+	project := taskProject(t, handler)
+	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Force withdrawal"), map[string]any{"allowAgents": true})
+	body := workerClaimBody(task.Version)
+	task = claimHTTPWorker(t, handler, task, body)
+	claimID := task.Properties.Worker.ClaimID
+	path := taskPath(task) + "/worker-claim/withdraw"
+	assertProjectError(t, projectRequest(handler, http.MethodPost, path, jsonBody(t, map[string]any{"version": task.Version - 1, "claimId": claimID})), http.StatusConflict, "version_conflict")
+	assertProjectError(t, projectRequest(handler, http.MethodPost, path, jsonBody(t, map[string]any{"version": task.Version, "claimId": uuid.NewString()})), http.StatusConflict, "claim_conflict")
+	response := projectRequest(handler, http.MethodPost, path, jsonBody(t, map[string]any{"version": task.Version, "claimId": claimID}))
+	if response.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("withdrawal response can be cached")
+	}
+	withdrawn := decodeResponse[api.Task](t, response, http.StatusOK)
+	if withdrawn.Status != "todo" || withdrawn.AllowAgents || withdrawn.Properties.Worker != nil || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil || withdrawn.Version != task.Version+1 {
+		t.Fatalf("withdrawal response retained execution state: %#v", withdrawn)
+	}
+	if !strings.Contains(response.Body.String(), `"worker":null`) || !reflect.DeepEqual(readHTTPTask(t, handler, withdrawn), withdrawn) {
+		t.Fatal("withdrawal did not persist its complete task response")
+	}
+	if !strings.Contains(logs.String(), `"phase":"withdraw"`) || !strings.Contains(logs.String(), `"claim_id":"`+claimID+`"`) {
+		t.Fatal("withdrawal log lost execution correlation")
+	}
 }

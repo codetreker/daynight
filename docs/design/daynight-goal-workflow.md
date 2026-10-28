@@ -21,7 +21,7 @@ packages/daynight/src/commands/skill/skills/using-daynight/
     handbook.md
     create-task.md
     run-task.md
-    execute-task-in-managed.md
+    autopilot-managed-task.md
     task-execution.md
     goal.md
     task-content.md
@@ -36,7 +36,7 @@ packages/daynight/src/commands/skill/skills/using-daynight/
 | `references/handoff.md` | 明确指定的移交审查与许可更新；不替代 Goal 确认和执行门槛。 |
 | `references/create-task.md` | 在授权范围内复用或登记具体工作；仅登记请求返回，明确开始讨论时按协议进入当前阶段。 |
 | `references/run-task.md` | 普通指定任务的开始、恢复、普通完成和返回；拥有用户明确要求的普通 Goal 讨论转场。 |
-| `references/execute-task-in-managed.md` | Worker prompt 显式激活后核对原 assignment，复用 active claim 并最终 claim-bound done，完成或等待后交还 controller。 |
+| `references/autopilot-managed-task.md` | Worker prompt 显式激活后核对原 assignment，使用当前任务已有的充分交付与合并授权，满足条件后直接合并，最终 claim-bound done；完成或真实外部阻塞时交还 controller。 |
 | `references/task-execution.md` | 两种入口共同读取的任务/阶段输入、范围、交付、证据和完成准备；不包含普通或 managed 状态转换。 |
 | `references/handbook.md` | CLI 命令用途、项目发现、版本与完整替换、附件独立性及不确定写入背景。 |
 

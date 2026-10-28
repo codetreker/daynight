@@ -57,7 +57,7 @@ describe("in-process worker task API", () => {
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;
-    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(claim("released")), task({ ...claim(), claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot" }), task({ ...claim(), claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot" })];
+    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(claim("released")), { ...task(null), allowAgents: false }, task({ ...claim(), claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot" })];
     const origin = await listen((request, response, body) => {
       requests.push({ method: request.method!, path: request.url!, body });
       const result = responses.shift();
@@ -71,18 +71,17 @@ describe("in-process worker task API", () => {
     await client.updateWorkerClaim(projectId, taskId, update);
     await client.completeWorkerTask(projectId, taskId, { version: 1n, claimId });
     await client.releaseWorkerClaim(projectId, taskId, { version: 1n, claimId, stoppedConfirmed: true });
-    const target = { userId, workerId, machine: descriptor.machine, platform: descriptor.platform, agent: "copilot" } as const;
-    await client.transferWorkerClaim(projectId, taskId, { version: 1n, claimId, newClaimId, target, worktreeId: newWorktreeId, stoppedConfirmed: true });
+    await client.withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId });
     await client.resumeWorkerTask(projectId, taskId, { ...descriptor, claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot", version: 1n, previousClaimId: claimId });
     const prefix = `/api/v1/projects/${projectId}/tasks/${taskId}`;
     expect(requests.map(({ method, path }) => [method, path])).toEqual([
       ["POST", `${prefix}/worker-claim`], ["PATCH", `${prefix}/worker-claim`], ["PUT", `${prefix}/status`],
-      ["POST", `${prefix}/worker-claim/release`], ["POST", `${prefix}/worker-claim/transfer`], ["POST", `${prefix}/worker-claim/resume`],
+      ["POST", `${prefix}/worker-claim/release`], ["POST", `${prefix}/worker-claim/withdraw`], ["POST", `${prefix}/worker-claim/resume`],
     ]);
     expect(requests[0]!.body).toEqual(initial);
     expect(requests[1]!.body).toEqual(update);
     expect(requests[2]!.body).toEqual({ version: 1n, claimId, status: "done" });
-    expect(requests[4]!.body).toEqual({ version: 1n, claimId, newClaimId, target, worktreeId: newWorktreeId, stoppedConfirmed: true });
+    expect(requests[4]!.body).toEqual({ version: 1n, claimId });
     expect(requests[5]!.body).toEqual({ ...descriptor, claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot", version: 1n, previousClaimId: claimId });
   });
 
@@ -91,9 +90,8 @@ describe("in-process worker task API", () => {
     const operation = createOperation();
     cleanups.push(() => operation.dispose());
     const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
-    const target = { userId, workerId, machine: descriptor.machine, platform: descriptor.platform, agent: descriptor.agent };
     expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, continuityConfirmed } as never)).toThrow("continuityConfirmed is no longer accepted");
-    expect(() => client.transferWorkerClaim(projectId, taskId, { version: 1n, claimId, newClaimId, target, worktreeId: newWorktreeId, stoppedConfirmed: true, continuityConfirmed } as never)).toThrow("continuityConfirmed is no longer accepted");
+    expect(() => client.withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId, continuityConfirmed } as never)).toThrow("continuityConfirmed is no longer accepted");
     expect(() => client.resumeWorkerTask(projectId, taskId, { ...descriptor, claimId: newClaimId, worktreeId: newWorktreeId, version: 1n, previousClaimId: claimId, continuityConfirmed } as never)).toThrow("continuityConfirmed is no longer accepted");
     expect(fetch).not.toHaveBeenCalled();
   });
@@ -103,16 +101,42 @@ describe("in-process worker task API", () => {
     const upper = { ...descriptor, claimId: lower.claimId.toUpperCase(), workerId: lower.workerId.toUpperCase(), machine: { ...lower.machine, id: lower.machine.id.toUpperCase() }, worktreeId: lower.worktreeId.toUpperCase() };
     const replacementId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
     const active = { ...claim(), ...lower };
-    const responses = [task(active), task(active), task({ ...active, state: "completed" }), task({ ...active, state: "released" }), task({ ...active, claimId: replacementId }), task({ ...active, claimId: replacementId })];
+    const responses = [task(active), task(active), task({ ...active, state: "completed" }), task({ ...active, state: "released" }), { ...task(null), allowAgents: false }, task({ ...active, claimId: replacementId })];
     const origin = await listen((_request, response) => respond(response, responses.shift()));
     const client = api(origin);
     await expect(client.claimWorkerTask(projectId, taskId, { ...upper, version: 1n })).resolves.toHaveProperty("properties.worker.claimId", lower.claimId);
     await client.updateWorkerClaim(projectId, taskId, { version: 1n, claimId: upper.claimId, phase: "preparing" });
     await client.completeWorkerTask(projectId, taskId, { version: 1n, claimId: upper.claimId });
     await client.releaseWorkerClaim(projectId, taskId, { version: 1n, claimId: upper.claimId, stoppedConfirmed: true });
-    const target = { userId: lower.userId.toUpperCase(), workerId: upper.workerId, machine: upper.machine, platform: upper.platform, agent: upper.agent };
-    await client.transferWorkerClaim(projectId, taskId, { version: 1n, claimId: upper.claimId, newClaimId: replacementId.toUpperCase(), target, worktreeId: upper.worktreeId, stoppedConfirmed: true });
+    await client.withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId: upper.claimId });
     await client.resumeWorkerTask(projectId, taskId, { ...upper, version: 1n, claimId: replacementId.toUpperCase(), previousClaimId: upper.claimId });
+  });
+
+  it.each([
+    { properties: { ...task(null).properties, worker: claim() } },
+    { status: "in_progress" },
+    { allowAgents: true },
+    { startedAt: time },
+    { completedAt: time },
+    { version: 1n },
+    { version: 3n },
+  ])("rejects an incomplete withdrawal response %# without retry", async (change) => {
+    let requests = 0;
+    const origin = await listen((_request, response) => {
+      requests++;
+      respond(response, { ...task(null), allowAgents: false, ...change });
+    });
+    await expect(api(origin).withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+    expect(requests).toBe(1);
+  });
+
+  it("validates the withdrawal claim identity before dispatch", () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation();
+    cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId: "invalid" })).toThrow("hyphenated UUID");
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("leaves uncertain claim writes for a direct known-task read without repeating the mutation", async () => {

@@ -51,7 +51,7 @@ describe('localized task graph presentation', () => {
     };
     const waitingIndex = buildGraphIndex(waitingGraph);
     const view = renderWithLocale(<ChainList index={waitingIndex} representativeIds={['A', 'F']} allRepresentativeIds={['A', 'F']}
-      openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} showCompleted={false} onShowCompletedChange={noop} />, { locale: 'en' });
+      openChainId="A" onOpenChain={noop} onOpenTask={noop} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en' });
     const selected = await screen.findByRole('button', { name: '最终验收, To do, blocked' });
     expect(view.container.querySelector('#task-root-A .root-status')).toHaveTextContent('To do');
     expect(view.container.querySelector('#task-root-A .root-progress-label')).toHaveTextContent('0/2 completed');
@@ -68,11 +68,12 @@ describe('localized task graph presentation', () => {
     const layout = vi.spyOn(layoutModule, 'layoutGraph');
     const select = vi.fn();
     const view = renderWithLocale(<ChainList index={index} representativeIds={representativeIds} allRepresentativeIds={representativeIds}
-      openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} showCompleted={false} onShowCompletedChange={noop} />, { locale: 'en' });
+      openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en' });
     await ready(view.container);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
-    expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(2);
-    expect(screen.getByRole('checkbox', { name: 'Show completed task chains (1)' })).not.toBeChecked();
+    expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(1);
+    expect(view.container.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 in progress');
+    expect(screen.getByRole('checkbox', { name: 'Show all' })).not.toBeChecked();
     expect(screen.getByText('Chain 3 · External 2 · Tasks 5/5 · Dependencies 4/4')).toBeTruthy();
     const selected = screen.getByRole('button', { name: '合流实现…, In progress' });
     fireEvent.click(selected);
@@ -93,8 +94,9 @@ describe('localized task graph presentation', () => {
     await user.selectOptions(screen.getByRole('combobox'), 'zh-CN');
     expect(screen.getByRole('combobox')).toHaveFocus();
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
-    expect(screen.getAllByText('3 个任务 · 2 个未完成')).toHaveLength(2);
-    expect(screen.getByRole('checkbox', { name: '显示已完成任务链（1）' })).not.toBeChecked();
+    expect(screen.getAllByText('3 个任务 · 2 个未完成')).toHaveLength(1);
+    expect(view.container.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 进行中');
+    expect(screen.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
     expect(screen.getByRole('button', { name: '合流实现…，进行中，已选中' })).toBe(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');
     expect(screen.getByRole('button', { name: '最终验收，待处理，被阻塞，不在所选依赖路径中' })).toBeTruthy();
@@ -220,15 +222,15 @@ describe('localized task graph presentation', () => {
 
   it('renders empty and hidden-completed chain states in the chosen language', () => {
     const props = { index, allRepresentativeIds: [], representativeIds: [], openChainId: null,
-      onOpenChain: noop, onCloseChain: noop, onOpenTask: noop, showCompleted: false, onShowCompletedChange: noop };
+      onOpenChain: noop, onCloseChain: noop, onOpenTask: noop, showAll: false, onShowAllChange: noop };
     const view = renderWithLocale(<ChainList {...props} />, { locale: 'en' });
     expect(screen.getByRole('heading', { name: 'No task chains' })).toBeTruthy();
     expect(screen.getByLabelText('Showing 0 of 0 task chains')).toHaveTextContent('Newest first · 0 / 0 task chains');
     const completeIndex = buildGraphIndex({ ...graph, summary: { total: 5, todo: 0, inProgress: 0, done: 5, ready: 0, blocked: 0 }, tasks: graph.tasks.map((task) => ({ ...task, status: 'done', blockedBy: [], ready: false })) });
     view.rerender(<ChainList {...props} index={completeIndex} allRepresentativeIds={representativeIds} />);
-    expect(screen.getByRole('heading', { name: 'All task chains are complete' })).toBeTruthy();
-    expect(screen.getByText('3 completed task chains are hidden. Project statistics still include all tasks.')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Show completed task chains' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'No recent task chains' })).toBeTruthy();
+    expect(screen.getByText('3 completed task chains are outside the current filter. Select “Show all” to view them.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Show all' })).toBeTruthy();
   });
 
   it.each([0, 1, 2, 1000])('formats complete English and Chinese graph counts for %i', (value) => {
@@ -236,7 +238,7 @@ describe('localized task graph presentation', () => {
     const zh = messagesByLocale['zh-CN'].graph;
     const formatted = new Intl.NumberFormat('en').format(value);
     expect(en.counts({ main: value, external: value, visible: value, total: 1000, edges: value, dependencies: 1000 })).toBe(`Chain ${formatted} · External ${formatted} · Tasks ${formatted}/1,000 · Dependencies ${formatted}/1,000`);
-    expect(en.completedDescription({ count: value })).toBe(`${formatted} completed task ${value === 1 ? 'chain is' : 'chains are'} hidden. Project statistics still include all tasks.`);
+    expect(en.completedDescription({ count: value })).toBe(`${formatted} completed task ${value === 1 ? 'chain is' : 'chains are'} outside the current filter. Select “Show all” to view them.`);
     expect(zh.counts({ main: value, external: value, visible: value, total: 1000, edges: value, dependencies: 1000 })).toBe(`链内 ${formatted} · 外部 ${formatted} · 任务 ${formatted}/1,000 · 依赖 ${formatted}/1,000`);
     expect(en.progress({ done: value, total: 1000 })).toBe(`${formatted}/1,000 completed`);
   });

@@ -27,8 +27,10 @@ filters. Categories with only finished tasks show zero even when completed rows
 are visible. Snapshot replacement recomputes classification and counts together;
 failed refreshes retain the last successful snapshot. There are no new API
 requests or browser preference records. List toolbars still describe visible and
-total standalone items or ordinary-component entries; per-chain progress uses
-that component's members.
+total standalone items or ordinary-component entries, including every page of
+the filtered sequence; per-chain progress uses that component's complete members.
+The [recent browsing and pagination decision](2026-10-27-recent-task-pages.md)
+changes displayed recency and page size without changing these counting units.
 
 This partially supersedes badge semantics in the [task view decision](2026-10-22-project-task-views.md).
 Required behavior belongs in the [specification](../../../../docs/spec/daynight-web.md),

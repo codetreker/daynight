@@ -18,11 +18,11 @@ with another target. Ordinary status setting remains unchanged when the option
 is absent. Expected versions, confirmed-result rendering and no automatic write
 retries remain shared with the existing command.
 
-The canonical using-daynight skill has a separate execute-task-in-managed
+The canonical using-daynight skill has a separate autopilot-managed-task
 reference under the [managed execution decision](2026-10-26-managed-task-skill.md).
 A worker startup prompt explicitly specifies the worker-managed environment,
 using-daynight skill and managed mode, with project/task/claim/worktree identity,
-actual worktree/branch and frozen configuration. The agent verifies the latest
+actual worktree/branch and the configuration for that invocation. The agent verifies the latest
 active in-progress claim and actual workspace before business work. A worker
 record, cwd or environment variable alone is not an assignment or mode selector.
 Missing or mismatched context waits without falling back to ordinary execution.
@@ -38,7 +38,7 @@ run as a preliminary managed workflow.
 
 The [task status architecture](../../../../docs/design/daynight-task-status.md#cli-与工作流)
 owns CLI dispatch. The canonical
-[worker-managed rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/execute-task-in-managed.md)
+[worker-managed rules](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md)
 own the agent workflow. This partially supersedes the completion-verifier
 responsibility in the [worker design decision](2026-10-22-worker-design.md) and
 originally added a bounded execution case within ordinary run-task under the

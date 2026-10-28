@@ -89,7 +89,7 @@ it("configures review through add-repo and preserves controlled service configur
   expect(review.code, review.stderr).toBe(0);
   expect(review.stdout).toContain("Repository github.com/configuration-acceptance/repository added.");
   expect(review.stdout + review.stderr).not.toContain("configured-secret");
-  expect(await decoded(fixture.configuration)).toMatchObject({ serverUrl: "http://127.0.0.1:8787", serverToken: "configured-secret", repositories: [{ remote, path: path.join(fixture.root, "review clone") }] });
+  expect(await decoded(fixture.configuration)).toMatchObject({ serverUrl: "http://127.0.0.1:8787", serverToken: "configured-secret", review: { repositories: [{ remote, path: path.join(fixture.root, "review clone") }] } });
   const reviewOnly = await fresh();
   const explicitReview = await pipe(["review", "add-repo", remote], reviewOnly.home);
   expect(explicitReview.code, explicitReview.stderr).toBe(0);
@@ -117,7 +117,7 @@ it.skipIf(process.platform === "win32")("first review use configures repositorie
   expect(result.stderr).not.toContain("Server URL");
   expect(result.stderr).not.toContain("Server token");
   expect(result.stdout + result.stderr).not.toContain(secret);
-  expect(await decoded(fixture.configuration)).toMatchObject({ serverToken: secret, repositories: [{ remote }] });
+  expect(await decoded(fixture.configuration)).toMatchObject({ serverToken: secret, review: { repositories: [{ remote }] } });
   expect(await decoded(fixture.configuration)).not.toHaveProperty("serverUrl");
   expect((await stat(fixture.configuration)).mode & 0o777).toBe(0o600);
 });
@@ -141,7 +141,7 @@ it.skipIf(process.platform === "win32")("first review configuration rejects a co
   const fixture = await fresh();
   await mkdir(path.dirname(fixture.configuration));
   await writeFile(fixture.configuration, "serverToken: existing-credential\n");
-  const concurrent = JSON.stringify({ serverToken: "existing-credential", repositories: [{ remote: "https://github.com/Concurrent/Repository.git", path: path.join(fixture.root, "concurrent clone") }] });
+  const concurrent = JSON.stringify({ serverToken: "existing-credential", review: { repositories: [{ remote: "https://github.com/Concurrent/Repository.git", path: path.join(fixture.root, "concurrent clone") }] } });
   const result = await terminal(["review", "list"], fixture.home, [
     { waitFor: reviewPrompt, input: `${remote}\n` },
     { waitFor: pathPrompt, write: { file: fixture.configuration, contents: concurrent }, input: "\n" },
@@ -153,7 +153,7 @@ it.skipIf(process.platform === "win32")("first review configuration rejects a co
   expect(await readdir(path.dirname(fixture.configuration))).toEqual(["config.yml"]);
 });
 
-it("reads an automation credential from a controlled configuration file without exposing it", async () => {
+it("uses an automation credential with unknown configuration fields and preserves them on review setup", async () => {
   const fixture = await fresh();
   const secret = "configured-automation-credential";
   const requests: string[] = [];
@@ -166,7 +166,7 @@ it("reads an automation credential from a controlled configuration file without 
   const address = server.address();
   if (address === null || typeof address === "string") throw new Error("Missing configured-service listener.");
   await mkdir(path.dirname(fixture.configuration));
-  await writeFile(fixture.configuration, `serverUrl: http://127.0.0.1:${address.port}\nserverToken: ${secret}\n`, { mode: 0o600 });
+  await writeFile(fixture.configuration, `future: { enabled: true }\nserverUrl: http://127.0.0.1:${address.port}\nserverToken: ${secret}\nreview: { future: review-owned }\nworker: { future: worker-owned }\n`, { mode: 0o600 });
   try {
     const result = await pipe(["project", "list", "--json"], fixture.home);
     expect(result.code, result.stderr).toBe(0);
@@ -181,7 +181,7 @@ it("reads an automation credential from a controlled configuration file without 
       expect((await stat(fixture.configuration)).mode & 0o777).toBe(0o600);
       expect(await decoded(fixture.configuration)).toMatchObject(parse(original));
     }
-    for (const source of ["serverUrl: [\n", "serverUrl: http://remote.example\nserverToken: configured-automation-credential\n", "serverToken: invalid token\n"]) {
+    for (const source of ["future: true\nserverUrl: [\n", "future: true\nserverUrl: http://remote.example\nserverToken: configured-automation-credential\n", "future: true\nserverToken: invalid token\n"]) {
       await writeFile(fixture.configuration, source);
       const rejected = await pipe(["project", "list", "--json"], fixture.home);
       expect(rejected.code).toBe(1);

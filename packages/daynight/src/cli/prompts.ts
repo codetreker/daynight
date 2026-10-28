@@ -2,7 +2,7 @@ import { createInterface } from "node:readline";
 import type { Interface } from "node:readline";
 import { CliCancelledError } from "./cancellation.js";
 
-export type PromptChoice<Value> = { name: string; value: Value };
+export type PromptChoice<Value> = { name: string; value: Value; checked?: boolean };
 export type PromptSelection<Value> = { message: string; choices: readonly PromptChoice<Value>[]; default: Value };
 export type PromptMultipleSelection<Value> = { message: string; choices: readonly PromptChoice<Value>[]; requiredMessage: string };
 

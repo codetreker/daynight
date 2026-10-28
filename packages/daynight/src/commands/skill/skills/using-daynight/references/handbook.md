@@ -89,9 +89,13 @@ completion operation: a real completion requires the current owner, active
 claim, in-progress task, and exact version, and retains worker history with
 `state=completed`. Omit `--claim-id` for ordinary status setting; refusal never
 causes fallback between these operations. Read the
-[managed execution reference](execute-task-in-managed.md) only when the worker
+[managed autopilot reference](autopilot-managed-task.md) only when the worker
 startup prompt explicitly selects that mode; ordinary status operations do not
-load its execution rules.
+load its execution rules. A valid worker-managed assignment already has sufficient
+authorization for its in-scope delivery and PR merge. Its executor merges once the
+required checks, current-head approvals, blocking-thread resolution, and
+mergeability conditions are met without requesting additional permission, while
+honoring explicit user restrictions, pause, and revocation.
 
 The service checks the exact version
 before a same-status no-op; it preserves all fields for a current-version no-op
@@ -106,7 +110,7 @@ new execution interval and clears completion; returning to todo clears both
 endpoints. In_progress to done retains the nullable start and records completion.
 Todo to done records only completion, with unknown duration. Same-status and
 metadata updates preserve timing. Ordinary status changes provide no process ownership,
-release, transfer, stop, or lease semantics. The Web confirms every status choice,
+release, withdrawal, stop, or lease semantics. The Web confirms every status choice,
 including the current status; cancel and Escape submit no request.
 
 **Task deletion.** `task delete <task-id> [--remove-depends] --if-version <version>`

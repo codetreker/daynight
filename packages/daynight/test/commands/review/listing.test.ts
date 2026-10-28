@@ -172,7 +172,7 @@ const diskFixture = async () => {
   directories.push(directory);
   const paths = resolveReviewPaths(directory);
   await mkdir(paths.stateDirectory);
-  const source = "repositories:\n  - remote: https://github.com/owner/repo.git\n    path: ../not-a-directory/repo\n  - remote: https://github.com/owner/other.git\n    path: ../not-a-directory/REPO\n";
+  const source = "review:\n  repositories:\n    - remote: https://github.com/owner/repo.git\n      path: ../not-a-directory/repo\n    - remote: https://github.com/owner/other.git\n      path: ../not-a-directory/REPO\n";
   await writeFile(paths.configFile, source);
   await writeFile(path.join(directory, "not-a-directory"), "A path probe would reject this ancestor.");
   return { paths, directory, source };
@@ -286,11 +286,11 @@ describe("review listing reads", () => {
 
   it("reports invalid configuration before opening SQLite", async () => {
     const { paths } = await diskFixture();
-    await writeFile(paths.configFile, "repositories: []\n");
+    await writeFile(paths.configFile, "review:\n  repositories: []\n");
     await writeFile(paths.databaseFile, "invalid database");
     await expect(listReviews(paths)).rejects.toMatchObject({
-      message: `Invalid configuration file ${paths.configFile}: repositories must be a nonempty sequence.`,
-      cause: { message: "repositories must be a nonempty sequence." },
+      message: `Invalid configuration file ${paths.configFile}: review.repositories must be a nonempty sequence.`,
+      cause: { message: "review.repositories must be a nonempty sequence." },
     });
     expect(await readFile(paths.databaseFile, "utf8")).toBe("invalid database");
   });

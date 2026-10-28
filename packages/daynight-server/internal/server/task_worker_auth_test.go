@@ -3,19 +3,17 @@ package server
 import (
 	"net/http"
 	"net/url"
-	"reflect"
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
-	"github.com/google/uuid"
 )
 
-func TestWorkerHTTPAuthenticatedOwnerAndTransfer(t *testing.T) {
+func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	integration := newIdentityIntegration(t)
 	admin, member, outsider, anonymous := identityBrowser(t), identityBrowser(t), identityBrowser(t), identityBrowser(t)
 	adminUser := integration.login(t, admin, "alice")
 	integration.login(t, member, "bob")
-	outsiderUser := integration.login(t, outsider, "nullable")
+	integration.login(t, outsider, "nullable")
 	origin := map[string]string{"Origin": integration.server.URL}
 	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Worker authorization","repoUrl":"https://example.com/worker"}`, origin, http.StatusCreated)
 	project := identityDecode[api.Project](t, data)
@@ -56,7 +54,6 @@ func TestWorkerHTTPAuthenticatedOwnerAndTransfer(t *testing.T) {
 	if claim == nil || claim.UserID == adminUser.ID {
 		t.Fatal("PAT claim did not derive its execution owner from authentication")
 	}
-	before := task
 	for _, action := range []struct {
 		method string
 		path   string
@@ -64,43 +61,42 @@ func TestWorkerHTTPAuthenticatedOwnerAndTransfer(t *testing.T) {
 	}{
 		{http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}},
 		{http.MethodPost, path + "/release", map[string]any{"version": task.Version, "claimId": claim.ClaimID, "stoppedConfirmed": true}},
-		{http.MethodPost, path + "/transfer", map[string]any{"version": task.Version, "claimId": claim.ClaimID, "newClaimId": uuid.NewString(), "target": map[string]any{"userId": adminUser.ID, "workerId": uuid.NewString(), "machine": body["machine"], "platform": "linux", "agent": "codex"}, "worktreeId": uuid.NewString(), "stoppedConfirmed": true}},
+		{http.MethodPost, path + "/withdraw", map[string]any{"version": task.Version, "claimId": claim.ClaimID}},
 	} {
 		request(anonymous, action.method, action.path, action.body, nil, http.StatusUnauthorized, "unauthenticated")
 		request(outsider, action.method, action.path, action.body, origin, http.StatusNotFound, "not_found")
 		request(member, action.method, action.path, action.body, map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden, "forbidden")
 	}
 	request(admin, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}, origin, http.StatusForbidden, "forbidden")
-	target := map[string]any{"userId": adminUser.ID, "workerId": uuid.NewString(), "machine": body["machine"], "platform": "linux", "agent": "copilot"}
-	transfer := map[string]any{"version": task.Version, "claimId": claim.ClaimID, "newClaimId": uuid.NewString(), "target": target, "worktreeId": uuid.NewString(), "stoppedConfirmed": true}
-	target["userId"] = outsiderUser.ID
-	request(member, http.MethodPost, path+"/transfer", transfer, origin, http.StatusBadRequest, "invalid_input")
-	target["userId"], target["platform"] = adminUser.ID, "windows"
-	request(member, http.MethodPost, path+"/transfer", transfer, origin, http.StatusConflict, "invalid_transition")
-	target["platform"] = "linux"
-	transfer["stoppedConfirmed"] = false
-	request(member, http.MethodPost, path+"/transfer", transfer, origin, http.StatusBadRequest, "invalid_input")
-	transfer["stoppedConfirmed"] = true
-	data = request(anonymous, http.MethodPost, path+"/transfer", transfer, bearer, http.StatusOK, "")
+	withdraw := map[string]any{"version": task.Version, "claimId": claim.ClaimID}
+	data = request(anonymous, http.MethodPost, path+"/withdraw", withdraw, bearer, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
-	if task.Properties.Worker.UserID != adminUser.ID || task.Properties.Worker.ClaimID != transfer["newClaimId"] || task.Properties.Worker.WorktreeID != transfer["worktreeId"] || task.Properties.Worker.Agent != "copilot" || !reflect.DeepEqual(task.StartedAt, before.StartedAt) || task.Status != "in_progress" {
-		t.Fatal("transfer confused the source authority, target identity, new resources or task timing")
+	if task.Properties.Worker != nil || task.AllowAgents || task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
+		t.Fatal("owner withdrawal did not reset execution and disable automatic claims")
 	}
 	request(member, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}, origin, http.StatusConflict, "claim_conflict")
-	request(member, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "phase": "executing"}, origin, http.StatusForbidden, "forbidden")
-	request(member, http.MethodPost, path+"/release", map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "stoppedConfirmed": true}, origin, http.StatusForbidden, "forbidden")
-	request(member, http.MethodPut, taskPath(task)+"/status", map[string]any{"version": task.Version, "status": "done", "claimId": task.Properties.Worker.ClaimID}, origin, http.StatusForbidden, "forbidden")
+	data = request(member, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true}, origin, http.StatusOK, "")
+	task = identityDecode[api.Task](t, data)
+	body = workerClaimBody(task.Version)
+	data = request(member, http.MethodPost, path, body, origin, http.StatusOK, "")
+	task = identityDecode[api.Task](t, data)
 	data = request(admin, http.MethodPost, path+"/release", map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "stoppedConfirmed": true}, origin, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
 	resume := workerClaimBody(task.Version)
 	resume["previousClaimId"] = task.Properties.Worker.ClaimID
-	request(member, http.MethodPost, path+"/resume", resume, origin, http.StatusForbidden, "forbidden")
 	request(outsider, http.MethodPost, path+"/resume", resume, origin, http.StatusNotFound, "not_found")
 	request(anonymous, http.MethodPost, path+"/resume", resume, nil, http.StatusUnauthorized, "unauthenticated")
 	data = request(admin, http.MethodPost, path+"/resume", resume, origin, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
 	if task.Properties.Worker.UserID != adminUser.ID || task.Properties.Worker.ClaimID != resume["claimId"] {
 		t.Fatal("manual resume did not establish the authorized caller's new claim")
+	}
+	withdraw = map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID}
+	request(member, http.MethodPost, path+"/withdraw", withdraw, origin, http.StatusForbidden, "forbidden")
+	data = request(admin, http.MethodPost, path+"/withdraw", withdraw, origin, http.StatusOK, "")
+	task = identityDecode[api.Task](t, data)
+	if task.Properties.Worker != nil || task.AllowAgents || task.Status != "todo" {
+		t.Fatal("administrator withdrawal retained ownership")
 	}
 	if integration.logs.contains(token.Token) || integration.logs.contains("Owned execution") || integration.logs.contains("Worker machine") {
 		t.Fatal("worker authentication or execution content leaked to logs")

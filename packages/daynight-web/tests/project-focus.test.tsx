@@ -185,9 +185,9 @@ describe('project dialog focus restoration', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭任务详情' }));
     await waitFor(() => expect(keepRemaining ? document.getElementById(`task-root-${remainingId}`)! : screen.getByRole('tab', { name: '任务链' })).toHaveFocus());
     expectModalReleased();
-    const checkbox = screen.getByRole('checkbox', { name: /^显示已完成任务链/ });
+    const checkbox = screen.getByRole('checkbox', { name: /^显示所有/ });
     if (!keepRemaining) {
-      fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
+      fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
       expect(checkbox).toHaveFocus();
       expect(document.getElementById(`task-chain-graph-${rootId}`)).toHaveAttribute('aria-haspopup', 'dialog');
       expect(document.querySelector('.task-chain-dialog')).toBeNull();

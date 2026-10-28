@@ -151,7 +151,7 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
     const publicSkillRelativeDirectory = "commands/skill/skills/using-daynight";
     const publicBundle = bundleFiles(path.join(packageDirectory, "src", publicSkillRelativeDirectory));
     expect(publicBundle["SKILL.md"]).toBeDefined();
-    for (const reference of ["handbook", "run-task", "execute-task-in-managed", "task-execution", "create-task", "handoff", "goal", "task-content"]) expect(publicBundle[`references/${reference}.md`]).toBeDefined();
+    for (const reference of ["handbook", "run-task", "autopilot-managed-task", "task-execution", "create-task", "handoff", "goal", "task-content"]) expect(publicBundle[`references/${reference}.md`]).toBeDefined();
     expect(bundleFiles(path.join(installedPackage, "dist", publicSkillRelativeDirectory))).toEqual(publicBundle);
     const installedSkillFile = path.join(installedSkillDirectory, "SKILL.md");
     const originalSkillContents = originalBundle["SKILL.md"]!.toString("utf8");
@@ -286,8 +286,10 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
     const configFile = path.join(stateDirectory, "config.yml");
     register(["https://github.com/fixture/review-project.git", "--path", path.relative(directory, repository)]);
     expect(parse(readFileSync(configFile, "utf8"))).toMatchObject({
-      repositoryRoot: "~/daynights",
-      repositories: [{ remote: "https://github.com/fixture/review-project.git", path: repository }],
+      review: {
+        repositoryRoot: "~/daynights",
+        repositories: [{ remote: "https://github.com/fixture/review-project.git", path: repository }],
+      },
     });
     expect(readdirSync(stateDirectory)).toEqual(["config.yml"]);
     expect(existsSync(repository)).toBe(false);
@@ -301,19 +303,23 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
     register(["https://github.com/fixture/default-project.git"], registrationHome);
     const registrationConfig = parseDocument(readFileSync(registrationConfigFile, "utf8"));
     expect(registrationConfig.toJS()).toMatchObject({
-      repositoryRoot: "~/daynights",
-      repositories: [{ remote: "https://github.com/fixture/default-project.git", path: defaultRepository }],
+      review: {
+        repositoryRoot: "~/daynights",
+        repositories: [{ remote: "https://github.com/fixture/default-project.git", path: defaultRepository }],
+      },
     });
     const changedRoot = path.join(registrationHome, "future repositories 中文");
-    registrationConfig.set("repositoryRoot", changedRoot);
+    registrationConfig.setIn(["review", "repositoryRoot"], changedRoot);
     writeFileSync(registrationConfigFile, registrationConfig.toString());
     register(["https://github.com/fixture/future-project.git"], registrationHome);
     expect(parse(readFileSync(registrationConfigFile, "utf8"))).toMatchObject({
-      repositoryRoot: changedRoot,
-      repositories: [
-        { remote: "https://github.com/fixture/default-project.git", path: defaultRepository },
-        { remote: "https://github.com/fixture/future-project.git", path: path.join(changedRoot, "github.com/fixture/future-project") },
-      ],
+      review: {
+        repositoryRoot: changedRoot,
+        repositories: [
+          { remote: "https://github.com/fixture/default-project.git", path: defaultRepository },
+          { remote: "https://github.com/fixture/future-project.git", path: path.join(changedRoot, "github.com/fixture/future-project") },
+        ],
+      },
     });
     expect(readdirSync(registrationState)).toEqual(["config.yml"]);
     expect(existsSync(path.join(registrationHome, "daynights"))).toBe(false);
@@ -340,7 +346,7 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
     const copilotModel = "configured-review-model";
     const copilotReasoningEffort = "high";
     const lifecycleConfig = parseDocument(readFileSync(configFile, "utf8"));
-    for (const [key, value] of Object.entries({ copilotModel, copilotReasoningEffort, pollIntervalMs: 200, maxConcurrentWorker: 1, agentTimeoutMs: 60000, maxAttempts: 3, retryDelayMs: 100 })) lifecycleConfig.set(key, value);
+    for (const [key, value] of Object.entries({ copilotModel, copilotReasoningEffort, pollIntervalMs: 200, maxConcurrentWorker: 1, agentTimeoutMs: 60000, maxAttempts: 3, retryDelayMs: 100 })) lifecycleConfig.setIn(["review", key], value);
     writeFileSync(configFile, lifecycleConfig.toString());
     const start = (cwd: string): void => {
       rmSync(path.join(directory, "stop"), { force: true });

@@ -115,8 +115,8 @@ describe('project task views', () => {
     ]));
     mount();
     const goal = await findChainRow();
-    const showCompleted = screen.getByRole('checkbox', { name: '显示已完成任务链（0）' });
-    expect(showCompleted).not.toBeChecked();
+    const showAll = screen.getByRole('checkbox', { name: '显示所有' });
+    expect(showAll).not.toBeChecked();
     fireEvent.click(goal);
     const list = document.getElementById(`goal-children-${canonicalTask(1)}`)!;
     const childRows = list.querySelectorAll<HTMLButtonElement>('.goal-task-row');
@@ -135,7 +135,7 @@ describe('project task views', () => {
     await waitFor(() => expect(completedChild).toHaveFocus());
     expect(completedChild).toBeVisible();
     expect(goal).toHaveAttribute('aria-expanded', 'true');
-    expect(showCompleted).not.toBeChecked();
+    expect(showAll).not.toBeChecked();
   });
 
   it('opens child and Goal details from the expanded list and preserves disclosure and focus on return', async () => {
@@ -185,7 +185,7 @@ describe('project task views', () => {
     expect(row('00000000-0000-4000-8000-000000000004').querySelector('.root-status')).toHaveClass('graph-status-todo');
     expect(row('00000000-0000-4000-8000-000000000004')).toHaveTextContent('可开始');
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000007')).toBeNull();
-    fireEvent.click(screen.getByRole('checkbox', { name: '显示已完成独立任务（1）' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
     expect(row('00000000-0000-4000-8000-000000000007')).toBeVisible();
     expectUnfinishedCounts(4, 1);
   });
@@ -211,7 +211,7 @@ describe('project task views', () => {
     expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(row('00000000-0000-4000-8000-000000000003')).toHaveTextContent('可开始'); expect(row('00000000-0000-4000-8000-000000000005')).toHaveTextContent('进行中');
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000002')).toBeNull();
-    expect(screen.getByRole('checkbox', { name: '显示已完成独立任务（1）' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
     fireEvent.click(screen.getByRole('tab', { name: '概览' }));
     expect(within(screen.getByRole('region', { name: '项目任务统计' })).getByText('5')).toBeVisible();
     selectTasks();
@@ -247,13 +247,13 @@ describe('project task views', () => {
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000002')).toBeNull();
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000010')).toBeNull();
-    fireEvent.click(screen.getByRole('checkbox', { name: '显示已完成任务链（1）' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
     expect(document.querySelectorAll('.root-toggle')).toHaveLength(3);
     expectUnfinishedCounts(4, 2);
     fireEvent.click(tab('standalone'));
     expect([...document.querySelectorAll('.standalone-row')].map((item) => item.id)).toEqual(['standalone-task-00000000-0000-4000-8000-000000000008', 'standalone-task-00000000-0000-4000-8000-000000000007']);
     expect(tab('standalone').querySelector('.graph-count-pill')).toHaveAttribute('title', '未完成任务数');
-    fireEvent.click(screen.getByRole('checkbox', { name: '显示已完成独立任务（1）' }));
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
     expect(row('00000000-0000-4000-8000-000000000009')).toBeVisible();
     expectUnfinishedCounts(4, 2);
     fireEvent.click(tab('chains'));
@@ -263,14 +263,14 @@ describe('project task views', () => {
 
   it('shows zero unfinished tasks for completed chains and standalone tasks with either filter setting', async () => {
     graphRequest.mockResolvedValue(snapshot([seed('00000000-0000-4000-8000-000000000001', 'done'), seed('00000000-0000-4000-8000-000000000002', 'done', ['00000000-0000-4000-8000-000000000001']), seed('00000000-0000-4000-8000-000000000004', 'done')]));
-    mount(); await screen.findByRole('heading', { name: '所有任务链已完成' });
+    mount(); await screen.findByRole('heading', { name: '暂无近期任务链' });
     expectUnfinishedCounts(0, 0);
-    fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
+    fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
     expectUnfinishedCounts(0, 0);
     fireEvent.click(tab('standalone'));
-    expect(await screen.findByRole('heading', { name: '所有独立任务已完成' })).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '显示已完成独立任务' }));
+    expect(await screen.findByRole('heading', { name: '暂无近期独立任务' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     expectUnfinishedCounts(0, 0);
   });
@@ -289,13 +289,13 @@ describe('project task views', () => {
     await act(async () => { resolve(snapshot([
       seed('00000000-0000-4000-8000-000000000001', 'done'), seed('00000000-0000-4000-8000-000000000002', 'todo', ['00000000-0000-4000-8000-000000000001']), seed('00000000-0000-4000-8000-000000000003', 'todo', ['00000000-0000-4000-8000-000000000001']), seed('00000000-0000-4000-8000-000000000004', 'done'), seed('00000000-0000-4000-8000-000000000005', 'in_progress', ['00000000-0000-4000-8000-000000000001']),
     ])); });
-    expect(await screen.findByRole('heading', { name: '所有独立任务已完成' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '暂无近期独立任务' })).toBeVisible();
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000003')).toBeNull();
     expect(document.getElementById('standalone-task-00000000-0000-4000-8000-000000000005')).toBeNull();
     expectUnfinishedCounts(3, 0);
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
     await screen.findByRole('heading', { name: '刷新失败' });
-    expect(await screen.findByRole('heading', { name: '所有独立任务已完成' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: '暂无近期独立任务' })).toBeVisible();
     expectUnfinishedCounts(3, 0);
     fireEvent.click(tab('chains'));
     expect(document.getElementById('task-root-00000000-0000-4000-8000-000000000001')).toBeVisible();
@@ -331,21 +331,21 @@ describe('project task views', () => {
     let view = mount(); await screen.findByRole('tab', { name: '任务链' });
     await openChain();
     closeChain();
-    fireEvent.click(screen.getByRole('checkbox', { name: /^显示已完成任务链/ }));
-    fireEvent.click(tab('standalone')); fireEvent.click(screen.getByRole('checkbox', { name: /^显示已完成独立任务/ }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /^显示所有/ }));
+    fireEvent.click(tab('standalone')); fireEvent.click(screen.getByRole('checkbox', { name: /^显示所有/ }));
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     cleanup(); view = mount(); await screen.findByRole('tab', { name: '独立任务' });
     expect(tab('standalone')).toHaveAttribute('aria-selected', 'true'); expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     fireEvent.click(tab('chains')); expect(screen.queryByTestId('graph-node')).toBeNull();
-    expect(screen.getByRole('checkbox', { name: /^显示已完成任务链/ })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: /^显示所有/ })).toBeChecked();
     expect(window.localStorage.getItem(key('project-view'))).toBeNull();
     expect(window.localStorage.getItem(key('completed-chains'))).toBe('true');
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks(); await screen.findByRole('heading', { name: otherProject });
     expect(tab('chains')).toHaveAttribute('aria-selected', 'true');
-    fireEvent.click(tab('standalone')); expect(screen.getByRole('checkbox', { name: /^显示已完成独立任务/ })).not.toBeChecked();
+    fireEvent.click(tab('standalone')); expect(screen.getByRole('checkbox', { name: /^显示所有/ })).not.toBeChecked();
     view.rerender(<ProjectPage projectId={project} />); selectTasks(); await screen.findByRole('heading', { name: project });
     expect(tab('chains')).toHaveAttribute('aria-selected', 'true');
-    fireEvent.click(tab('standalone')); expect(screen.getByRole('checkbox', { name: /^显示已完成独立任务/ })).toBeChecked();
+    fireEvent.click(tab('standalone')); expect(screen.getByRole('checkbox', { name: /^显示所有/ })).toBeChecked();
   });
 
   it('saves separate scroll positions, restores on switching and reload, and isolates another project', async () => {
@@ -370,8 +370,8 @@ describe('project task views', () => {
     mount(); await screen.findByRole('heading', { name: '暂无任务链' });
     expectUnfinishedCounts(0, 0);
     expect(screen.queryByRole('checkbox')).toBeNull();
-    fireEvent.click(tab('standalone')); expect(await screen.findByRole('heading', { name: '所有独立任务已完成' })).toBeVisible();
-    fireEvent.click(screen.getByRole('button', { name: '显示已完成独立任务' }));
+    fireEvent.click(tab('standalone')); expect(await screen.findByRole('heading', { name: '暂无近期独立任务' })).toBeVisible();
+    fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
     expect(screen.getByRole('checkbox')).toHaveFocus(); expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     fireEvent.click(screen.getByRole('button', { name: '刷新' })); await screen.findByRole('heading', { name: '还没有任务' });
     expect(screen.queryByRole('tab', { name: '任务链' })).toBeNull(); expect(screen.getByRole('tab', { name: '任务列表' })).toHaveAttribute('aria-selected', 'true'); expect(screen.queryByRole('checkbox')).toBeNull();
@@ -410,7 +410,7 @@ describe('project task views', () => {
 
 const newPreferences = [
   ['task-view', '"invalid"', /^浏览器保存的任务页签无效/],
-  ['completed-standalone-tasks', '{}', /^浏览器保存的已完成独立任务显示偏好无效/],
+  ['completed-standalone-tasks', '{}', /^浏览器保存的独立任务“显示所有”偏好无效/],
   ['task-view-scroll', '{"chains":-1,"standalone":0}', /^浏览器保存的任务浏览位置无效/],
 ] as const;
 
@@ -429,7 +429,7 @@ describe('task view storage failures', () => {
     });
     mount(); await screen.findByRole('tab', { name: '任务链' });
     expect(screen.getByText(/^无法读取浏览器保存的任务页签/)).toBeVisible();
-    expect(screen.getByText(/^无法读取浏览器保存的已完成独立任务显示偏好/)).toBeVisible();
+    expect(screen.getByText(/^无法读取浏览器保存的独立任务“显示所有”偏好/)).toBeVisible();
     expect(screen.getByText(/^无法读取浏览器保存的任务浏览位置/)).toBeVisible();
     fireEvent.click(tab('standalone')); fireEvent.click(screen.getByRole('checkbox'));
     expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
@@ -446,11 +446,11 @@ describe('task view storage failures', () => {
     scroll = 100; fireEvent.scroll(window); fireEvent.click(tab('standalone')); fireEvent.click(screen.getByRole('checkbox'));
     expect(screen.getByText(/^任务页签无法保存到浏览器/)).toBeVisible();
     expect(screen.getByText(/^任务浏览位置无法保存到浏览器/)).toBeVisible();
-    expect(screen.getByText(/^已完成独立任务显示偏好无法保存到浏览器/)).toBeVisible(); expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
+    expect(screen.getByText(/^独立任务“显示所有”偏好无法保存到浏览器/)).toBeVisible(); expect(row('00000000-0000-4000-8000-000000000004')).toBeVisible();
     fail.mockRestore(); scroll = 200; fireEvent.scroll(window); fireEvent.click(screen.getByRole('checkbox')); fireEvent.click(tab('chains'));
     expect(screen.queryByText(/^任务页签无法保存到浏览器/)).toBeNull();
     expect(screen.queryByText(/^任务浏览位置无法保存到浏览器/)).toBeNull();
-    expect(screen.queryByText(/^已完成独立任务显示偏好无法保存到浏览器/)).toBeNull();
+    expect(screen.queryByText(/^独立任务“显示所有”偏好无法保存到浏览器/)).toBeNull();
   });
 });
 
@@ -800,5 +800,264 @@ describe('project overview and task workspace', () => {
     mountOverview();
     expect(sectionTab('tasks')).toHaveAttribute('aria-selected', 'true');
     await screen.findByRole('heading', { name: project });
+  });
+});
+
+describe('recent task browsing and pagination', () => {
+  const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+  beforeEach(() => { Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() }); });
+  afterEach(() => {
+    if (originalScrollIntoView === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
+  });
+  const pagination = (name: string) => screen.getByRole('navigation', { name: `${name}分页` });
+  const manyChains = (count: number) => Array.from({ length: count }, (_, position) => {
+    const root = canonicalTask(position * 2 + 1);
+    return [seed(root), seed(canonicalTask(position * 2 + 2), 'todo', [root])];
+  }).flat();
+  const manyStandalone = (count: number) => Array.from({ length: count }, (_, position) => seed(canonicalTask(1_000 + position)));
+
+  it('shows recent completed standalone tasks and Goals while Show all adds older completions only to lists', async () => {
+    const completed = (value: number, when: string, dependsOn: string[] = []) => ({ ...seed(canonicalTask(value), 'done', dependsOn), completedAt: when });
+    graphRequest.mockResolvedValue(snapshot([
+      completed(1, '2026-10-01T10:00:00Z'), completed(2, '2026-10-19T10:00:00Z', [canonicalTask(1)]),
+      completed(3, '2026-10-01T10:00:00Z'), completed(4, '2026-10-10T12:00:00Z', [canonicalTask(3)]),
+      completed(5, '2026-10-19T10:00:00Z'), completed(6, '2026-10-10T12:00:00Z'),
+    ]));
+    mount(); await findChainRow(canonicalTask(1));
+    expect(chainRow(canonicalTask(3))).toBeNull();
+    expect(chainRow(canonicalTask(1))).toHaveTextContent('已完成');
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
+    expect(chainRow(canonicalTask(3))).toBeVisible();
+    fireEvent.click(tab('standalone'));
+    expect(row(canonicalTask(5))).toBeVisible(); expect(row(canonicalTask(6))).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
+    expect(row(canonicalTask(6))).toBeVisible();
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    const overview = screen.getByRole('region', { name: '整体进度' });
+    expect(within(overview).getAllByRole('button')).toHaveLength(2);
+    expect(within(overview).getByRole('button', { name: new RegExp(canonicalTask(1)) })).toHaveTextContent('100%');
+    expect(within(overview).getByRole('button', { name: /^独立任务，/ })).toHaveTextContent('1 / 1');
+  });
+
+  it.each((['standalone', 'chains'] as const).flatMap((category) => [0, 1, 15, 16, 30, 31].map((count) => [category, count] as const)))('paginates %s with %i entries without losing or repeating entries', async (category, count) => {
+    graphRequest.mockClear();
+    graphRequest.mockResolvedValue(snapshot(category === 'standalone' ? manyStandalone(count) : manyChains(count)));
+    mount(); await screen.findByRole('heading', { name: project });
+    if (count === 0) {
+      expect(screen.getByRole('heading', { name: '还没有任务' })).toBeVisible();
+      expect(document.querySelectorAll('.standalone-row, .goal-toggle')).toHaveLength(0);
+      return;
+    }
+    fireEvent.click(tab(category));
+    const selector = category === 'standalone' ? '.standalone-row' : '.goal-toggle';
+    const label = category === 'standalone' ? '独立任务列表' : '任务链列表';
+    const seen: string[] = [];
+    const pageCount = Math.ceil(count / 15);
+    for (let page = 1; page <= pageCount; page++) {
+      const entries = [...document.querySelectorAll(selector)];
+      expect(entries).toHaveLength(Math.min(15, count - (page - 1) * 15));
+      seen.push(...entries.map((entry) => entry.id));
+      if (pageCount === 1) expect(screen.queryByRole('navigation', { name: `${label}分页` })).toBeNull();
+      else {
+        const controls = pagination(label);
+        expect(controls).toHaveTextContent(`第 ${(page - 1) * 15 + 1}–${Math.min(page * 15, count)} 条，共 ${count} 条`);
+        expect(within(controls).getByRole('button', { name: '上一页' }).hasAttribute('disabled')).toBe(page === 1);
+        expect(within(controls).getByRole('button', { name: '下一页' }).hasAttribute('disabled')).toBe(page === pageCount);
+        if (page < pageCount) fireEvent.click(within(controls).getByRole('button', { name: '下一页' }));
+      }
+    }
+    expect(new Set(seen).size).toBe(count);
+    if (pageCount > 1) {
+      fireEvent.click(tab(category === 'standalone' ? 'chains' : 'standalone')); fireEvent.click(tab(category));
+      expect(pagination(label)).toHaveTextContent(`第 ${pageCount} / ${pageCount} 页`);
+      fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
+      expect(pagination(label)).toHaveTextContent(`第 1 / ${pageCount} 页`);
+    }
+    expect(graphRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('counts the standalone overview aggregate as one row and navigates to a Goal on another task-list page', async () => {
+    graphRequest.mockResolvedValue(snapshot([...manyChains(21), ...manyStandalone(25)]));
+    mount(); await findChainRow(canonicalTask(41));
+    fireEvent.click(within(pagination('任务链列表')).getByRole('button', { name: '下一页' }));
+    expect(chainRow(canonicalTask(1))).toBeVisible();
+    fireEvent.click(tab('standalone'));
+    fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    const overview = screen.getByRole('region', { name: '整体进度' });
+    expect(overview.querySelectorAll('.overview-progress-row')).toHaveLength(20);
+    fireEvent.click(within(pagination('整体进度')).getByRole('button', { name: '下一页' }));
+    expect(overview.querySelectorAll('.overview-progress-row')).toHaveLength(2);
+    expect(within(overview).getByRole('button', { name: /^独立任务，/ })).toHaveTextContent('0 / 25');
+    fireEvent.click(within(overview).getByRole('button', { name: new RegExp(canonicalTask(1)) }));
+    expect(pagination('任务链列表')).toHaveTextContent('第 2 / 2 页');
+    expect(chainRow(canonicalTask(1))).toHaveFocus();
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    expect(pagination('整体进度')).toHaveTextContent('第 2 / 2 页');
+    fireEvent.click(within(overview).getByRole('button', { name: /^独立任务，/ }));
+    expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 2 页');
+  });
+
+  it('moves to the target Goal page when the task list was left on another page', async () => {
+    graphRequest.mockResolvedValue(snapshot(manyChains(21)));
+    mount(); await findChainRow(canonicalTask(41));
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    fireEvent.click(within(pagination('整体进度')).getByRole('button', { name: '下一页' }));
+    fireEvent.click(screen.getByRole('button', { name: new RegExp(`${canonicalTask(1)}，已完成`) }));
+    expect(chainRow(canonicalTask(1))).toHaveFocus();
+    expect(pagination('任务链列表')).toHaveTextContent('第 2 / 2 页');
+  });
+
+  it('clamps a removed final page immediately and does not restore it when tasks return', async () => {
+    const initial = snapshot(manyStandalone(31));
+    graphRequest.mockResolvedValueOnce(initial).mockResolvedValueOnce(resetSnapshot(snapshot(manyStandalone(15)))).mockResolvedValueOnce(resetSnapshot(initial));
+    mount(); await screen.findByRole('tab', { name: '独立任务' }); fireEvent.click(tab('standalone'));
+    fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
+    fireEvent.click(within(pagination('独立任务列表')).getByRole('button', { name: '下一页' }));
+    expect(document.querySelectorAll('.standalone-row')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(screen.queryByRole('navigation', { name: '独立任务列表分页' })).toBeNull());
+    expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);
+    fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    await waitFor(() => expect(pagination('独立任务列表')).toHaveTextContent('第 1 / 3 页'));
+    expect(document.querySelectorAll('.standalone-row')).toHaveLength(15);
+  });
+
+  it('keeps every Goal child visible inside one top-level page entry', async () => {
+    const root = canonicalTask(1);
+    graphRequest.mockResolvedValue(snapshot([seed(root), ...Array.from({ length: 30 }, (_, position) => seed(canonicalTask(position + 2), 'todo', [root]))]));
+    mount(); fireEvent.click(await findChainRow());
+    expect(document.querySelectorAll('.goal-task-row')).toHaveLength(30);
+    expect(screen.queryByRole('navigation', { name: '任务链列表分页' })).toBeNull();
+    expect(graphRequest).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('status-first project presentation', () => {
+  const recentCompletion = '2026-10-19T10:00:00Z';
+  const oldCompletion = '2026-10-01T10:00:00Z';
+  const completed = (value: number, when = recentCompletion, dependsOn: string[] = []) => ({ ...seed(canonicalTask(value), 'done', dependsOn), completedAt: when });
+  const chain = (value: number, status: GraphTask['status'], when = recentCompletion): GraphTask[] => [
+    status === 'done' ? completed(value, when) : seed(canonicalTask(value), status),
+    status === 'done' ? completed(value + 1, when, [canonicalTask(value)]) : seed(canonicalTask(value + 1), 'todo', [canonicalTask(value)]),
+  ];
+  const presentedIds = (view: 'chains' | 'standalone') => [...document.querySelectorAll(view === 'chains' ? '.root-toggle' : '.standalone-row')]
+    .map((item) => item.id.replace(view === 'chains' ? 'task-root-' : 'standalone-task-', ''));
+  const overviewTitles = () => [...document.querySelectorAll('#project-overview-progress .overview-progress-title')]
+    .map((item) => item.firstChild!.textContent);
+  const title = (value: number) => `任务 ${canonicalTask(value)}`;
+  const pagination = (view: 'chains' | 'standalone' | 'overview') => screen.getByRole('navigation', {
+    name: `${view === 'chains' ? '任务链列表' : view === 'standalone' ? '独立任务列表' : '整体进度'}分页`,
+  });
+  const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+  beforeEach(() => { Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() }); });
+  afterEach(() => {
+    if (originalScrollIntoView === undefined) delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
+  });
+
+  it('orders both categories by complete status and retains exact timestamp and ID ties without changing the source graph', async () => {
+    const at = (task: GraphTask, fraction: string): GraphTask => ({ ...task, createdAt: `2026-10-20T12:00:00.${fraction}Z` });
+    const value = snapshot([
+      at(completed(1), '123451'), at(seed(canonicalTask(2), 'todo', [canonicalTask(1)]), '123452'),
+      at(seed(canonicalTask(101), 'in_progress'), '123453'),
+      at(seed(canonicalTask(3), 'in_progress'), '123454'), at(seed(canonicalTask(4), 'todo', [canonicalTask(3)]), '123455'),
+      at(seed(canonicalTask(102), 'in_progress'), '123456'),
+      at(seed(canonicalTask(5)), '123457'), at(seed(canonicalTask(7)), '123457'),
+      at(seed(canonicalTask(103)), '123457'), at(seed(canonicalTask(104)), '123457'),
+      at(seed(canonicalTask(6), 'todo', [canonicalTask(5)]), '123458'), at(seed(canonicalTask(8), 'todo', [canonicalTask(7)]), '123458'),
+      at(completed(9), '123459'), at(completed(10, recentCompletion, [canonicalTask(9)]), '123460'),
+      at(completed(105), '123461'), at(completed(11), '123462'),
+      at(completed(12, recentCompletion, [canonicalTask(11)]), '123463'), at(completed(106), '123464'),
+    ]);
+    const original = JSON.stringify(value.tasks);
+    Object.freeze(value.tasks);
+    for (const task of value.tasks) Object.freeze(task);
+    expect(new Set(value.tasks.map((task) => Date.parse(task.createdAt))).size).toBe(1);
+    graphRequest.mockResolvedValue(value);
+    mount(); await findChainRow(canonicalTask(3));
+    expect(presentedIds('chains')).toEqual([3, 1, 7, 5, 11, 9].map(canonicalTask));
+    expect(chainRow(canonicalTask(1)).querySelector('.root-status')).toHaveTextContent('进行中');
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
+    expect(presentedIds('chains')).toEqual([3, 1, 7, 5, 11, 9].map(canonicalTask));
+    fireEvent.click(tab('standalone'));
+    expect(presentedIds('standalone')).toEqual([102, 101, 104, 103, 106, 105].map(canonicalTask));
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
+    expect(presentedIds('standalone')).toEqual([102, 101, 104, 103, 106, 105].map(canonicalTask));
+    expect(JSON.stringify(value.tasks)).toBe(original);
+    expectUnfinishedCounts(7, 4);
+    expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it.each(['chains', 'standalone'] as const)('sorts the complete %s category before recent filtering and pagination in both visibility modes', async (view) => {
+    const taskNumber = (position: number) => view === 'chains' ? position * 2 + 1 : position + 1_000;
+    const tasks = Array.from({ length: 23 }, (_, position) => {
+      const value = taskNumber(position);
+      if (view === 'standalone') return [position === 0 ? seed(canonicalTask(value), 'in_progress')
+        : position >= 21 ? completed(value, position === 22 ? oldCompletion : recentCompletion) : seed(canonicalTask(value))];
+      if (position === 0) return [completed(value), seed(canonicalTask(value + 1), 'todo', [canonicalTask(value)])];
+      return chain(value, position >= 21 ? 'done' : 'todo', position === 22 ? oldCompletion : recentCompletion);
+    }).flat();
+    graphRequest.mockResolvedValue(snapshot(tasks));
+    mount(); await screen.findByRole('tab', { name: '独立任务' });
+    if (view === 'standalone') fireEvent.click(tab('standalone'));
+    const unfinished = [0, ...Array.from({ length: 20 }, (_, position) => 20 - position)];
+    const ids = (positions: number[]) => positions.map((position) => canonicalTask(taskNumber(position)));
+    const firstPage = ids(unfinished.slice(0, 15));
+    expect(presentedIds(view)).toEqual(firstPage);
+    expect(pagination(view)).toHaveTextContent('第 1–15 条，共 22 条');
+    fireEvent.click(within(pagination(view)).getByRole('button', { name: '下一页' }));
+    expect(presentedIds(view)).toEqual(ids([...unfinished.slice(15), 21]));
+    fireEvent.click(screen.getByRole('checkbox', { name: '显示所有' }));
+    expect(presentedIds(view)).toEqual(firstPage);
+    expect(pagination(view)).toHaveTextContent('第 1–15 条，共 23 条');
+    fireEvent.click(within(pagination(view)).getByRole('button', { name: '下一页' }));
+    expect(presentedIds(view)).toEqual(ids([...unfinished.slice(15), 22, 21]));
+    expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it.each(['in_progress', 'todo', 'done'] as const)('places a %s standalone aggregate among the full overview sequence before pagination', async (status) => {
+    const todoRoots = Array.from({ length: 19 }, (_, position) => position * 2 + 10);
+    graphRequest.mockResolvedValue(snapshot([
+      completed(1), seed(canonicalTask(2), 'todo', [canonicalTask(1)]),
+      ...todoRoots.flatMap((value) => chain(value, 'todo')), ...chain(50, 'done'),
+      status === 'done' ? completed(100) : seed(canonicalTask(100), status),
+    ]));
+    mount(); await findChainRow(canonicalTask(1));
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    const expected = [title(1), ...todoRoots.toReversed().map(title), title(50)];
+    expected.splice(status === 'in_progress' ? 1 : status === 'todo' ? 20 : 21, 0, '独立任务');
+    expect(overviewTitles()).toEqual(expected.slice(0, 20));
+    expect(pagination('overview')).toHaveTextContent('第 1–20 条，共 22 条');
+    fireEvent.click(within(pagination('overview')).getByRole('button', { name: '下一页' }));
+    expect(overviewTitles()).toEqual(expected.slice(20));
+    expect(graphRequest).toHaveBeenCalledOnce();
+  });
+
+  it.each(['manual', 'polling'] as const)('reorders both task categories and overview together after a %s status refresh', async (refresh) => {
+    if (refresh === 'polling') vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    graphRequest.mockResolvedValueOnce(snapshot([
+      completed(1), seed(canonicalTask(2), 'todo', [canonicalTask(1)]), ...chain(3, 'todo'), ...chain(5, 'done'),
+      seed(canonicalTask(101), 'in_progress'), seed(canonicalTask(102)), completed(103),
+    ])).mockResolvedValueOnce(snapshot([
+      ...chain(1, 'done'), ...chain(3, 'in_progress'), ...chain(5, 'todo'),
+      completed(101), seed(canonicalTask(102), 'in_progress'), seed(canonicalTask(103)),
+    ]));
+    mount(); await findChainRow(canonicalTask(1));
+    expect(presentedIds('chains')).toEqual([1, 3, 5].map(canonicalTask));
+    fireEvent.click(tab('standalone'));
+    expect(presentedIds('standalone')).toEqual([101, 102, 103].map(canonicalTask));
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    expect(overviewTitles()).toEqual([title(1), '独立任务', title(3), title(5)]);
+    if (refresh === 'manual') fireEvent.click(screen.getByRole('button', { name: '刷新' }));
+    else await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    await waitFor(() => expect(overviewTitles()).toEqual([title(3), '独立任务', title(5), title(1)]));
+    selectTasks();
+    expect(presentedIds('standalone')).toEqual([102, 103, 101].map(canonicalTask));
+    fireEvent.click(tab('chains'));
+    expect(presentedIds('chains')).toEqual([3, 5, 1].map(canonicalTask));
+    expectUnfinishedCounts(4, 2);
+    expect(graphRequest).toHaveBeenCalledTimes(2);
   });
 });

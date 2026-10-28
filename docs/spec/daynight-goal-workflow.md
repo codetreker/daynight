@@ -74,7 +74,7 @@ B 只直接依赖 A，沿链继承架构前置，并在自己的 description 保
 
 任意三状态对可由 set-status 设置并受版本、权限和依赖保护，重开不表示停止旧执行进程。
 普通讨论转场保持指定身份，不从候选列表自行选取后继。只有 worker 启动 prompt 显式指定
-worker-managed 环境、using-daynight 技能和 execute-task-in-managed 模式时，才加载 managed
+worker-managed 环境、using-daynight 技能和 autopilot-managed-task 模式时，才加载 managed
 指令；该入口使用原 claim，不套用普通开始或完成流程，也不执行 Goal 阶段转场。共同
 任务输入、交付、验收和证据准备由 references/task-execution.md 拥有，阶段要求由本文拥有。
 

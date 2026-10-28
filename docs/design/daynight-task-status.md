@@ -168,7 +168,7 @@ status 使用既有 positional choices 三值，Bash/Zsh 补全由 schema 派生
 
 随包技能使用相同三状态，但入口拥有各自执行生命周期。普通 run-task 只处理一个明确指定任务：创建普通任务和 Goal 各阶段均为 todo，登记本身不开始执行；指定 ready todo 满足实际阶段资料后设置 in_progress，验收和必要授权交付后设置 done。既有执行授权的范围持续有效，但状态、ready 或完成本任务不会让普通技能自动选择后继，也不重建另一种批准字段。
 
-Worker 的启动 prompt 显式指定 worker-managed 环境、using-daynight 技能和 execute-task-in-managed 模式，并提供原 project/task/claim/worktreeId、实际工作区/branch 和冻结配置。SKILL.md 据此路由到 references/execute-task-in-managed.md；普通执行读取 run-task.md，不加载 managed 详细规则。两种入口共用 references/task-execution.md 的资料、范围、交付、验收和证据要求，普通开始/重开/done 与 managed 原 claim 完成分别保留。Managed agent 复用已在执行中的 claim 和系统 worktree，完成全部条件后最后显式 claim-bound done；不再次 set-status in_progress，不选择下一任务或清理系统工作区。不能从任务 worker 属性、cwd 或环境变量自行推断 managed，显式上下文缺失或不匹配时等待。
+Worker 的启动 prompt 显式指定 worker-managed 环境、using-daynight 技能和 autopilot-managed-task 模式，并提供原 project/task/claim/worktreeId、实际工作区/branch 和本次启动或恢复的配置。SKILL.md 据此路由到 references/autopilot-managed-task.md；普通执行读取 run-task.md，不加载 managed 详细规则。两种入口共用 references/task-execution.md 的资料、范围、交付、验收和证据要求，普通开始/重开/done 与 managed 原 claim 完成分别保留。Managed agent 复用已在执行中的 claim 和系统 worktree，完成全部条件后最后显式 claim-bound done；不再次 set-status in_progress，不选择下一任务或清理系统工作区。不能从任务 worker 属性、cwd 或环境变量自行推断 managed，显式上下文缺失或不匹配时等待。
 
 allowAgents 仍默认 false，只控制自动发现选择。用户明确安排的任务可用手工状态操作，worker 拥有连续调度，agent 不自行开启许可。PR 审查批准、必要合并权限与任务审批不是同一概念，继续遵守现有交付规则。同状态响应只确认当前事实，不提供新执行权、归属或完成证据。
 
@@ -218,7 +218,7 @@ const expectedVersion = operation.version + (changed ? 1n : 0n);
 
 ## Worker、可观测性与调用预算
 
-[Worker 认领基础](daynight-worker-claims.md)接入同一项目写事务。SetTaskStatus 的可选 ClaimID 仅供 done；普通 CLI setTaskStatus 保持 version/status，typed completeWorkerTask 提供 done 与 claimId。成员/版本及同状态 no-op 之后，实际转换检查归属：active 完成要求 owner/当前 claim，普通退回不能替代 release；released 未完成成果须认领或人工 resume，completed 历史保留普通重开。自动 claim 重验 ready、allowAgents、平台、版本及唯一归属；移交要求 source owner/admin、当前目标成员、自动资格、依赖及真实停止，目标使用新 claimId/worktreeId 与明确 agent；released resume 同样开始新执行。运行时不由状态 setter 启动。
+[Worker 认领基础](daynight-worker-claims.md)接入同一项目写事务。SetTaskStatus 的可选 ClaimID 仅供 done；普通 CLI setTaskStatus 保持 version/status，typed completeWorkerTask 提供 done 与 claimId。成员/版本及同状态 no-op 之后，实际转换检查归属：active 完成要求 owner/当前 claim，普通退回不能替代 release 或强制撤回；released 未完成成果须认领或人工 resume，completed 历史保留普通重开。自动 claim 重验 ready、allowAgents、平台、版本及唯一归属；强制撤回要求当前成员中的原 owner/admin、匹配 active/released claimId 和精确版本，同一事务清除 worker、返回 todo、清空起止并关闭 allowAgents，无需 stoppedConfirmed，也不保证远端进程立即停止。Released resume 使用新 claimId/worktreeId 与本次 agent 开始新执行。运行时不由状态 setter 启动。
 
 复用 request context、X-Request-ID 和 JSON slog。handler logger 记录资源 ID，context 进入 service/store；安全日志保留 type/component/phase/cause/error_code/diagnostic，不记录凭据、请求正文、SQL 或驱动敏感信息。状态资源日志用 set_status 阶段和 changed/unchanged 结果，不能把无修改说成状态改变。服务器不引入后台执行，取消向事务传播。
 
