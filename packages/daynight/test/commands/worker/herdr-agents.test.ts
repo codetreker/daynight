@@ -523,10 +523,11 @@ describe("direct task resource management", () => {
     expect(f.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
   });
 
-  it("leaves unrelated workspaces alone and closes all panes of the claimed workspace", async () => {
+  it.each(["human", "human | daynight:{", "human | daynight:{}", ` | daynight:${JSON.stringify({ projectId, taskId, claimId, worktreeId })}`, `bad\nname | daynight:${JSON.stringify({ projectId, taskId, claimId, worktreeId })}`])("ignores unrecognized workspace label %j during discovery and stop", async (label) => {
     const f = await fixture(); const binding = await launch(f);
-    f.workspaces.push({ workspace_id: "human", label: "human" });
-    await f.manager.stopAndClose(f.context, binding, operation()); expect(f.workspaces).toEqual([{ workspace_id: "human", label: "human" }]);
+    f.workspaces.push({ workspace_id: "human", label });
+    expect((await f.manager.listResources(operation())).map((workspace) => workspace.workspaceId)).toEqual([binding.workspaceId]);
+    await f.manager.stopAndClose(f.context, binding, operation()); expect(f.workspaces).toEqual([{ workspace_id: "human", label }]);
     expect(f.calls.find((call) => call.method === "workspace.close")!.params).toEqual({ workspace_id: binding.workspaceId, close_group: false });
   });
 

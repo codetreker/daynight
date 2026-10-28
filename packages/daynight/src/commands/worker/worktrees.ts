@@ -225,18 +225,15 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
         const marker = await ordinaryFile(path.join(admin, "locked"));
         const pointer = await ordinaryFile(path.join(admin, "gitdir"));
         const target = pointer === null ? null : path.resolve(admin, pointer);
-        if (marker === null || !marker.startsWith(prefix)) {
-          if (target !== null && path.basename(target) === ".git" && path.dirname(path.dirname(target)) === physicalNamespace && canonicalId(path.basename(path.dirname(target))) === path.basename(path.dirname(target))) {
-            throw new Error("The reserved task worktree has no recognized ownership registration; it was retained.");
-          }
-          continue;
-        }
-        const owner = coordinates(markerOwner(marker));
+        if (target !== null && path.basename(target) === ".git") present.delete(path.dirname(target));
+        if (marker === null || !marker.startsWith(prefix)) continue;
+        let owner: ResourceOwner;
+        try { owner = coordinates(markerOwner(marker)); }
+        catch { continue; }
         const expectedPointer = path.join(physicalNamespace, owner.taskId, ".git");
         if (target !== expectedPointer) throw new Error("The owned task worktree registration does not point to its fixed task path.");
         const observed = await inspectWorktree({ ...project, projectId: owner.projectId }, owner, repository, operation, true);
         if (observed.registration === null || observed.registration.directory !== admin) throw new Error("The owned task worktree registration is ambiguous.");
-        present.delete(path.dirname(expectedPointer));
         if (owner.projectId === project.projectId) result.push({ owner, binding: observed.binding });
       }
       if (present.size > 0) throw new Error("A reserved task directory has no recognized ownership registration; it was retained.");
