@@ -44,9 +44,11 @@ Counting individual member status expresses current activity accurately.
 ## Consequences
 
 Desktop rows use less vertical space. Long titles and metadata can still wrap.
-At narrow widths the title and count occupy the disclosure row, with progress
-and status on a separate line; this keeps short English titles from squeezing
-the count into adjacent metrics. Counts refresh with
+When the row container is at most 600px wide, the title and count occupy the
+disclosure row, with progress and status on a separate line. A container query
+uses the actual row width because expanded workspace and project navigation can
+leave a narrow row even in a wider viewport. This keeps short English titles
+from squeezing the count into adjacent metrics. Counts refresh with
 the existing index rather than introducing a new state or backend field. A page
 still bounds parent entries rather than expanded children, and synchronization
 retains the complete graph.
