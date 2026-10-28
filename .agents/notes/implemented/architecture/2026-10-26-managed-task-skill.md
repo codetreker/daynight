@@ -28,9 +28,13 @@ reference selected for the current invocation. Ordinary specified tasks use
 `references/autopilot-managed-task.md`. Task worker properties, working
 directories, and environment variables do not establish that mode. The managed
 mode follows the delivery flow of the separately installed `autopilot` skill
-without requiring that skill at runtime or activating its session mode. Existing
-user and repository authorization remains the source of execution, external
-communication, merge, and mainline push permission.
+without requiring that skill at runtime or activating its session mode. A valid
+worker-managed assignment already carries sufficient authorization for its
+in-scope delivery, including PR merge. Its executor does not request separate
+permission for those delivery steps. Explicit user restrictions, pause, and
+revocation still apply. This assignment premise does not authorize unrelated
+backlog work, deployment, destructive operations, or permission and protection
+changes, and reading or editing its instructions does not establish an assignment.
 
 Each execution reference owns its lifecycle. Ordinary execution handles its
 version-bound start, recovery, and completion. Managed execution validates the
@@ -51,19 +55,23 @@ Managed autopilot drives the assigned task through implementation, relevant
 verification, focused publication, CI diagnosis, and review repair. It checks
 introduced Critical/Major findings against the original scope, records deferred
 improvements under the project's tracking rules, and handles each review thread.
-An authorized merge requires successful required checks, handled blocking
-threads, and actual approval for the current PR head. Platform-confirmed merge
-and its resulting commit establish delivery; an auto-merge request or queue
-entry does not. Post-merge mainline CI is awaited only when the user explicitly
-requires it. Required task acceptance, readable evidence, and attributable temporary-resource
-cleanup precede final claim-bound completion because the worker may stop the
+The executor merges immediately once required checks, blocking-thread
+resolution, current-head approvals, and mergeability meet repository rules,
+without an additional permission request. Successful required checks and actual
+reviewer approval for the current head remain mandatory; protections are never
+bypassed. Platform-confirmed merge and its resulting commit establish delivery;
+an auto-merge request or queue entry does not. Post-merge mainline CI is awaited
+only when the user explicitly requires it. Required task acceptance, readable
+evidence, and attributable temporary resource cleanup precede final claim-bound
+completion because the worker may stop the
 agent and remove its workspace immediately afterward.
 
 Routine pending CI or review remains ongoing execution with bounded watches or
 polls. A polling timeout is not a return condition. Demonstrated external
-blockers preserve the original assignment, actual state, minimum needed
-intervention, and next action before returning waiting to the controller. A
-background executor does not ask the user questions. Its checkpoint retains the
+blockers such as unavailable credentials or reviewers, unmet human gates, and
+explicit user restrictions or revocation preserve the original assignment,
+actual state, minimum needed intervention, and next action before returning
+waiting to the controller. A background executor does not ask the user questions. Its checkpoint retains the
 original identities, workspace, authorization, scope, PR head, validation and
 review state, owned resources, and next action without copying secrets. Recovery
 refreshes the same active claim and current remote state before further writes.

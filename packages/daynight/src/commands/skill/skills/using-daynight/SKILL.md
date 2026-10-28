@@ -79,8 +79,11 @@ The managed execution reference is loaded only for that explicit worker launch;
 ordinary calls do not read it. Task properties, the working directory, and
 environment variables do not select the managed mode. An invocation presented
 as managed with an incomplete launch declaration waits for the missing context.
-Managed autopilot delivers only its original assignment under existing
-authorization; its name grants no additional authority or successor selection.
+A valid worker-managed assignment already carries sufficient authorization for
+its in-scope delivery, including PR merge; deliver it without additional permission
+requests once the required conditions are met. Explicit user restrictions, pause,
+and revocation still apply. The mode executes only that original assignment;
+reading its name does not authorize work or successor selection.
 
 For ordinary calls, honor the explicitly selected mode. For `using-daynight`
 without further input, infer the ordinary mode and target from the current

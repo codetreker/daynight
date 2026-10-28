@@ -128,11 +128,11 @@ export const instructionScenarios: readonly InstructionScenario[] = [
   },
   {
     id: "worker-managed-authorized-delivery",
-    input: "The assigned task has a delivery PR that is ready to merge, or its checks, approvals, head or merge authorization are incomplete.",
-    obligation: "Deliver only within existing authority, verify current-head checks and review before an authorized merge, and avoid inventing a post-merge CI gate.",
+    input: "A valid worker-managed assignment has a delivery PR whose current-head checks, approvals, blocking threads and mergeability satisfy the repository rules.",
+    obligation: "Use the assignment's sufficient prior delivery authorization to merge immediately after verifying all gates, honoring explicit user restrictions without another permission request or an invented post-merge CI gate.",
     propositions: [
-      { resource: "references/autopilot-managed-task.md", section: "## Establish the assignment", requires: [/This mode grants no additional execution, external communication, merge, or mainline push permission/] },
-      { resource: "references/autopilot-managed-task.md", section: "## Deliver the assigned task", requires: [/Only an explicitly authorized merge may proceed/, /successful required checks/, /handled blocking review threads/, /actual reviewer approval for the current head/, /Do not wait for post-merge mainline CI unless the user explicitly requires that verification/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Establish the assignment", requires: [/A valid worker-managed assignment already carries sufficient authorization for its in-scope delivery, including PR merge/, /Do not request additional permission for those steps/, /Honor explicit user restrictions, pause requests, and revocation/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Deliver the assigned task", requires: [/required checks, current-head approvals, blocking-thread resolution, and mergeability all satisfy the repository's rules/, /merge immediately without requesting additional permission/, /successful required checks/, /handled blocking review threads/, /actual reviewer approval for the current head/, /Do not wait for post-merge mainline CI unless the user explicitly requires that verification/] },
     ],
   },
   {

@@ -19,12 +19,14 @@ missing, incomplete, or mismatched, return waiting without task or business
 writes. Do not infer replacement values or fall back to ordinary execution,
 claiming, starting, or selecting another task.
 
-This mode grants no additional execution, external communication, merge, or
-mainline push permission. Honor the task's confirmed scope and existing user and
-repository authorization. Reading, editing, or mentioning this mode does not
-activate the separately installed `autopilot` skill, which is not a runtime
-dependency. Perform already-authorized delivery steps without repeated permission
-requests; an action outside that authorization requires controller intervention.
+A valid worker-managed assignment already carries sufficient authorization for
+its in-scope delivery, including PR merge. Do not request additional permission
+for those steps. Honor explicit user restrictions, pause requests, and
+revocation. The assignment does not authorize unrelated backlog work, production
+deployment, destructive data operations, or changes to permissions or protections.
+Reading, editing, or mentioning this mode does not establish a managed assignment
+or activate the separately installed `autopilot` skill, which is not a runtime
+dependency.
 
 The worker produces the launch prompt and decides subsequent scheduling. A new
 agent started to recover the same claim receives the original mode and
@@ -109,8 +111,8 @@ honor explicit pause, stop, and authorization changes without discarding its wor
 
 3. **Follow CI and review through repair.** Inspect the actual remote PR head,
    checks, review requests, comments, and approvals. Request review through the
-   repository's established mechanism when authorized. Diagnose failed checks
-   from their logs and repair the cause without weakening acceptance. Rerun an
+   repository's established mechanism. Diagnose failed checks from their logs
+   and repair the cause without weakening acceptance. Rerun an
    unchanged failure only after confirming a transient infrastructure cause.
    Each push requires refreshed checks and review for the resulting head.
 
@@ -123,12 +125,15 @@ honor explicit pause, stop, and authorization changes without discarding its wor
    final round has no new Critical/Major findings and remote review requirements
    are satisfied.
 
-4. **Merge when authorized and confirm.** Only an explicitly authorized merge may
-   proceed. Immediately before merging, refresh the head SHA, required checks,
+4. **Merge and confirm.** The assignment already authorizes its in-scope PR
+   merge. Immediately before merging, refresh the head SHA, required checks,
    review threads, mergeability, and approvals. Require successful required
    checks, handled blocking review threads, and actual reviewer approval for the
-   current head. Never infer approval from silence, approve your own PR, weaken
-   checks or protections, or use an administrative override. Use the repository's
+   current head. When required checks, current-head approvals, blocking-thread
+   resolution, and mergeability all satisfy the repository's rules, merge
+   immediately without requesting additional permission. Never infer approval
+   from silence, approve your own PR, weaken checks or protections, or use an
+   administrative override. Use the repository's
    permitted linear-history method and bind the merge to the verified head when
    the platform supports it. A changed head or failed precondition requires a
    fresh decision from current state.
@@ -149,8 +154,8 @@ honor explicit pause, stop, and authorization changes without discarding its wor
 
 For tasks without a PR delivery path, verify the actual artifact against their
 confirmed acceptance criteria. Do not invent a PR or reviewer gate for those
-tasks. Goal discussion confirmation gates remain mandatory and do not become
-authority to implement or merge.
+tasks. Goal discussion confirmation gates remain mandatory; this assignment
+never authorizes execution of a later Goal stage.
 
 ## Wait for delivery results
 
@@ -163,10 +168,10 @@ continuation mechanism; do not claim monitoring continues without one or start
 an independent scheduling service.
 
 Continue while useful authorized actions remain. A demonstrated blocker such as
-missing credentials, missing execution or merge permission, an unavailable
-required reviewer, a material unresolved decision, or an unmet human confirmation
-gate requires external intervention. This is a background task: do not ask the
-user questions. Preserve the concrete blocker, actual task and PR state,
+missing credentials, an unavailable required reviewer, a material unresolved
+decision, an unmet human confirmation gate, or an explicit user restriction or
+revocation that prevents delivery requires external intervention. This is a
+background task: do not ask the user questions. Preserve the concrete blocker, actual task and PR state,
 completed work, minimum needed intervention, and next action in the checkpoint,
 then return waiting to the controller. Preserve the assignment in `in_progress`;
 never treat a blocker or ordinary waiting as completion.
@@ -193,8 +198,8 @@ unconfirmed; an observed claim change stops further business writes.
 ## Return to the controller
 
 Return after this task completes or requires demonstrated external intervention.
-Preserve the assignment and waiting checkpoint when missing permission, a human
-gate, or unmet acceptance requires that intervention. A required PR with pending
-CI or review follows the ongoing wait above. The worker decides subsequent work
+Preserve the assignment and waiting checkpoint when a human gate, an explicit
+user restriction or revocation, or unmet acceptance requires that intervention.
+A required PR with pending CI or review follows the ongoing wait above. The worker decides subsequent work
 and owns system-resource cleanup; this mode does not select a successor or advance
 a Goal stage.

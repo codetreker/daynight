@@ -258,8 +258,10 @@ Assignment 包括 projectId、taskId、claimId、worktreeId、实际 worktree �
 以及本次启动或恢复所用的有效配置。先读完整任务并核对 project/task、in_progress、active
 worker claim 及 worktreeId，再核对真实工作目录、分支与给定配置。上下文缺失或不匹配
 时等待，不降级普通认领、开始或任务选择；模式声明不能替代服务端权限和精确版本保护。
-模式名称不授予额外权限；实现、分支交付、外部回复与合并继续使用原 assignment、
-任务和用户已有授权。后台任务在该范围内自主决定，真实外部阻塞交还 controller。
+有效的 worker-managed assignment 已有完成当前任务所需的充分授权，包含实现、
+分支交付、评审回复与 PR 合并；达到检查和评审条件后直接合并，无需再次请求确认。
+用户明确的暂停、限制或撤回授权继续生效；该授权只覆盖原任务，后台任务在此范围内
+自主决定，真实外部阻塞交还 controller。
 
 同 claim 已 completed 且 task done 时报告已有结果，不重新执行。恢复及任务写入前刷新
 原 claim；claim 变化立即停止业务写入，不用后来读到的 claim 替换 worker 给定身份。
@@ -279,7 +281,7 @@ worker claim 及 worktreeId，再核对真实工作目录、分支与给定配�
 交付 PR。每次 push 后刷新真实远端 head、检查和 review。失败先查明原因；只有确认
 是临时基础设施问题才重跑原样失败。评审逐项区分修复、延后和不成立，修复本次引入的
 Critical/Major 及影响约定交付正确性的缺陷，逐线程回应并处理阻塞。最终评审没有新的
-Critical/Major，且满足实际远端评审要求，才进入已有授权内的合并。
+Critical/Major，且满足实际远端评审与合并条件后，立即使用已有充分授权合并。
 
 合并前刷新当前 head、必需检查、实际 reviewer approval、阻塞线程和可合并状态；
 approval 必须对应当前 head。遵守保护规则和线性历史，平台支持时绑定核验过的 head，
@@ -299,7 +301,7 @@ done、worker.state=completed 和原 claimId。拒绝或未知结果只读核对
 不回退普通 done；读取失败保持未确认，claim 变化停止后续业务写入。公开 CLI 的
 `--claim-id` 及 owner、claim、版本保护保持不变。
 
-只有明确的人类确认门槛、缺少授权或凭据、reviewer 不可用等实际外部阻塞才保留
+只有明确的人类确认门槛、授权被撤回或受到明确限制、缺少凭据、reviewer 不可用等实际外部阻塞才保留
 检查点并返回等待，不向用户提问；验收未满足且仍有可执行的授权动作时继续处理。
 全部验收通过并确认原 claim 完成后交还 controller。
 该入口不选择后继、不推进 Goal 阶段，也不删除系统工作区。普通入口和 managed 入口

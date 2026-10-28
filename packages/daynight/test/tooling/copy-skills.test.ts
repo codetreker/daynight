@@ -136,9 +136,12 @@ describe("packaged skill resource copy", () => {
     const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
     const resource = "references/autopilot-managed-task.md";
     const mutations = [
-      { scenario: "worker-managed-authorized-delivery", before: "This mode grants no additional execution, external communication, merge, or mainline push permission", after: "This mode authorizes every action needed to finish the task" },
-      { scenario: "worker-managed-authorized-delivery", before: "Only an explicitly authorized merge may proceed", after: "Merge whenever the task is ready" },
+      { scenario: "worker-managed-authorized-delivery", before: "A valid worker-managed assignment already carries sufficient authorization for its in-scope delivery, including PR merge", after: "A valid worker-managed assignment requires additional permission before PR merge" },
+      { scenario: "worker-managed-authorized-delivery", before: "Do not request additional permission for those steps", after: "Request additional permission for each delivery step" },
+      { scenario: "worker-managed-authorized-delivery", before: "Honor explicit user restrictions, pause requests, and revocation", after: "Ignore subsequent restrictions, pause requests, and revocation" },
+      { scenario: "worker-managed-authorized-delivery", before: "merge immediately without requesting additional permission", after: "request user confirmation before merging" },
       { scenario: "worker-managed-authorized-delivery", before: "successful required checks", after: "checks that appear unrelated may be bypassed" },
+      { scenario: "worker-managed-authorized-delivery", before: "handled blocking review threads", after: "unresolved blocking review threads" },
       { scenario: "worker-managed-authorized-delivery", before: "actual reviewer approval for the current head", after: "approval from any earlier head" },
       { scenario: "worker-managed-authorized-delivery", before: "Do not wait for post-merge mainline CI unless the user explicitly requires that verification", after: "Always wait for post-merge mainline CI before completing the claim" },
       { scenario: "worker-managed-pending-delivery", before: "Pending PR CI or review is ongoing execution, not external intervention", after: "Pending PR CI or review requires returning to the controller" },
