@@ -43,7 +43,9 @@ records why standalone progress has a recent denominator and why navigation uses
 a task witness. This decision replaces its rolling-duration window and
 unfinished-only row policy.
 
-All three lists page their filtered sequence in groups of 20 top-level entries.
+Overview pages its filtered sequence in groups of 20 top-level entries. The
+[compact-list decision](../simplification/2026-10-28-compact-task-list.md) sets
+both task categories to 15 entries per page.
 A Goal counts once and keeps its complete child list; the standalone
 aggregate counts once across the entire Overview sequence. The
 [status ordering decision](../bug-fix/2026-10-28-project-status-order.md)

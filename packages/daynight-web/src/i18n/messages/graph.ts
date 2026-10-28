@@ -3,9 +3,9 @@ import type { AriaLabelConfig } from '@xyflow/react';
 export type GraphMessages = {
   readonly chainList: string;
   readonly rootSummary: (args: { total: number; remaining: number }) => string;
+  readonly inProgressCount: (args: { count: number }) => string;
   readonly progress: (args: { done: number; total: number }) => string;
   readonly chainTitle: string;
-  readonly goalTitle: string;
   readonly childTasks: (args: { count: number }) => string;
   readonly goalDetails: string;
   readonly goalDetailsLabel: (args: { title: string }) => string;

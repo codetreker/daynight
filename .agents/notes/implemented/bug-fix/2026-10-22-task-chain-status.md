@@ -67,6 +67,6 @@ prerequisite from another chain is active. Aggregate status is a frontend snapsh
 projection, not stored task data or a new API field, so the original aggregation
 fix required no migration. The later status migration removes proposed while
 preserving counted membership and progress. Recent-completion filtering and
-20-entry pages consume this full aggregate without changing its computation.
+15-entry task pages consume this full aggregate without changing its computation.
 The task view decision changes category presentation while graph nodes and
 details continue to show each task's individual status.
