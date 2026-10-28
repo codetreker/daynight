@@ -46,12 +46,15 @@ describe("stable resource ownership and workspace presentation", () => {
     expect(parseHerdrExecutionLabel(label)).toEqual(owner);
   });
 
-  it("distinguishes unrelated labels and invalid managed labels", () => {
+  it("ignores labels that do not match the managed format", () => {
     expect(parseHerdrExecutionLabel("human workspace")).toBeNull();
     expect(parseHerdrExecutionLabel("")).toBeNull();
-    expect(() => parseHerdrExecutionLabel(` | daynight:${JSON.stringify(owner)}`)).toThrow("nonempty");
-    expect(() => parseHerdrExecutionLabel(`bad\nname | daynight:${JSON.stringify(owner)}`)).toThrow("single-line");
-    expect(() => parseHerdrExecutionLabel(`name | daynight:${JSON.stringify(owner)} trailing`)).toThrow();
+    expect(parseHerdrExecutionLabel(`name | daynight:${JSON.stringify(owner)} trailing`)).toBeNull();
     expect(() => herdrExecutionLabel(owner, "\n\t")).toThrow("nonempty");
+  });
+
+  it("identifies ownership independently of display title validity", () => {
+    expect(parseHerdrExecutionLabel(` | daynight:${JSON.stringify(owner)}`)).toEqual(owner);
+    expect(parseHerdrExecutionLabel(`bad\nname | daynight:${JSON.stringify(owner)}`)).toEqual(owner);
   });
 });

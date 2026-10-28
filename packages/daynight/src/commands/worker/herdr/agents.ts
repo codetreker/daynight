@@ -60,9 +60,8 @@ export const herdrExecutionAgentName = (context: HerdrExecutionOwner): string =>
 export const parseHerdrExecutionLabel = (label: string): HerdrExecutionOwner | null => {
   const separator = label.lastIndexOf(labelSeparator);
   if (separator === -1) return null;
-  const title = label.slice(0, separator);
-  if (title.trim().length === 0 || unsafeTitleCharacter.test(title)) throw new TypeError("The managed Herdr workspace title must be nonempty single-line display text.");
-  return parseResourceOwner(label.slice(separator + labelSeparator.length));
+  try { return parseResourceOwner(label.slice(separator + labelSeparator.length)); }
+  catch { return null; }
 };
 const matchesWorkspaceOwner = (workspace: RecordValue, owner: HerdrExecutionOwner): boolean => {
   if (typeof workspace.label !== "string") throw new TypeError("The Herdr workspace label must be a string.");
