@@ -12,7 +12,16 @@ import type { WorkerSessionApi } from "./session-api.js";
 import { writeControllerCredential } from "./session-api.js";
 export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number }) => {
   const current = (task: LocalTask) => { const latest = options.store.getTask(task); if (latest?.webExecution == null) throw new Error("The web execution identity disappeared."); return latest; };
-  return {
+  const tails = new Map<string, Promise<void>>();
+  const serialize = async <T>(task: LocalTask, action: () => Promise<T>): Promise<T> => {
+    const key = task.webExecution?.executionId ?? task.claimId;
+    const previous = tails.get(key) ?? Promise.resolve(); let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const tail = previous.then(() => gate);
+    tails.set(key, tail); await previous;
+    try { return await action(); } finally { release(); if (tails.get(key) === tail) tails.delete(key); }
+  };
+  const methods = {
     prepare: async (input: LocalTask, prompt: string, signal: AbortSignal): Promise<ControllerLaunchTicket> => {
       let task = current(input); let execution = task.webExecution!;
       if (execution.ticketPath !== null) { const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId); if (execution.nativeHome === null) options.store.updateWebExecution(task,{nativeHome:ticket.nativeHome},options.now()); return ticket; }
@@ -69,11 +78,22 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         throw new Error("Controller startup outcome is unknown; the original process and launch intent are retained.");
       } finally { await log.close(); }
     },
-    refreshGrant: async (task: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+    refreshGrant: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
+      const task = current(input);
+      if (task.webExecution!.launchId !== ticket.launchId || task.cleanup?.agentStopped) return;
       let expiresAt: unknown; try { expiresAt = (JSON.parse(await readFile(ticket.credentialFile, "utf8")) as { expiresAt: unknown }).expiresAt; } catch { throw new Error("Controller credential state is unavailable; it cannot be silently replaced."); }
       if (typeof expiresAt !== "string" || !Number.isFinite(Date.parse(expiresAt))) throw new Error("Controller credential expiry is invalid.");
-      if (Date.parse(expiresAt) - Date.now() > 60000) return;
-      await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(task, task.webExecution!, signal));
+      if (Date.parse(expiresAt) - options.now() > 120_000) return;
+      const grant = await options.sessionApi.grant(task, task.webExecution!, signal);
+      const latest = current(task);
+      if (latest.webExecution!.launchId !== ticket.launchId || latest.cleanup?.agentStopped) return;
+      signal.throwIfAborted();
+      await writeControllerCredential(ticket.credentialFile, grant);
     },
+  };
+  return {
+    prepare: (...args: Parameters<typeof methods.prepare>) => serialize(args[0], () => methods.prepare(...args)),
+    launch: (...args: Parameters<typeof methods.launch>) => serialize(args[0], () => methods.launch(...args)),
+    refreshGrant: (...args: Parameters<typeof methods.refreshGrant>) => serialize(args[0], () => methods.refreshGrant(...args)),
   };
 };

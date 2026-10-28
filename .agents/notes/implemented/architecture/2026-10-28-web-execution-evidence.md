@@ -36,6 +36,12 @@ then requires independent native stop proof before deleting the worktree. A
 force withdrawal freezes Session writes in the service transaction and lets the
 worker reconcile the absent claim; it does not assert immediate native shutdown.
 
+Web Controller grants are maintained every 30 seconds, independently of claim
+discovery polling. Renewal starts with no more than 120 seconds remaining and
+validates the original execution ticket. Preparation, launch and credential writes
+are serialized per execution; shutdown cancels and joins maintenance before
+closing the execution store.
+
 ## Alternatives
 
 **Restore the detailed worker ledger for both modes.** That would replace
@@ -46,6 +52,11 @@ intents and change existing recovery behavior solely to support Web sessions.
 whether a prompt was accepted, an old process stopped, or a cleanup was already
 submitted. Reconstructing those facts from a NULL ID or missing local record
 would weaken the Controller's no-replay and single-writer guarantees.
+
+**Renew only during claim discovery.** The 60-second default poll matches the
+former renewal window, leaving no request margin; a longer configured poll can
+exceed the grant lifetime. Native-channel authorization cannot depend on that
+user-controlled scheduling interval.
 
 ## Consequences
 

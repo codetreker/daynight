@@ -1,4 +1,5 @@
 import path from "node:path";
+import { maintainWorkerControllerGrants } from "./backends/grant-renewal.js";
 import { openWebExecutionStore } from "./backends/web-store.js";
 import { createWebExecutionBackend } from "./backends/web.js";
 import { createWebControllerLauncher } from "./backends/web-process.js";
@@ -91,7 +92,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       },
       emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
     });
-    return { webStore, webBackend, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
+    return { webStore, webBackend, launcher, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
   } catch (error) { webStore.close(); throw error; }
 };
 
@@ -112,6 +113,7 @@ export const runWorker = async (options: {
   let herdr: ReturnType<typeof createWorkerHerdr> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   const failures: unknown[] = [];
+  let renewal: Promise<void> | undefined;
   try {
     signal.throwIfAborted();
     let configuration = await readWorkerConfiguration(paths, signal);
@@ -141,6 +143,9 @@ export const runWorker = async (options: {
       herdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory }); return Reflect.get(herdr, property);
     } });
     web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
+    renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
+      onError: message => diagnostics?.emit({ kind: "credential-renewal-error", message }),
+    }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
     const repositories: WorkerRepositoryAssignment[] = [];
     for (const repository of configuration.repositories) {
       const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
@@ -187,6 +192,7 @@ export const runWorker = async (options: {
     if (!isWorkerCancellation(error, signal)) failures.push(error);
   } finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
+    await renewal;
     if (coordinator !== undefined) {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });

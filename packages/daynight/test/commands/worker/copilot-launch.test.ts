@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -29,5 +29,26 @@ it.each([true, false])("freezes the Copilot profile in the launch ticket and dur
     vi.stubEnv("COPILOT_HOME", path.join(home, "changed"));
     const repeated = await launcher.prepare(store.getTask(claim)!, "managed task", new AbortController().signal);
     expect(repeated).toEqual(ticket); expect(sessionApi.register).toHaveBeenCalledOnce(); expect(sessionApi.grant).toHaveBeenCalledOnce();
+  } finally { store.close(); }
+});
+
+it("renews before two default polling cycles and serializes concurrent credential refresh", async () => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
+  const home = await mkdtemp(path.join(base, "gr-")); roots.push(home);
+  const store = openWebExecutionStore(path.join(home, "worker.sqlite")), now = Date.now();
+  try {
+    const project = { projectId: randomUUID(), repoUrl: "https://example.test/repo.git", localPath: home };
+    const identity = { projectId: project.projectId, taskId: randomUUID(), claimId: randomUUID(), workerId: randomUUID(), worktreeId: randomUUID(), serverOrigin: "https://daynight.example" };
+    store.register({ ...identity, project, configuration: { agent: "copilot", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: randomUUID() }, now);
+    store.bindWorktree(identity, { repositoryPath: home, commonDirectory: path.join(home, ".git"), worktreePath: home, branch: "task" }, now);
+    const task = store.initializeWebExecution(identity, now);
+    const grant = vi.fn().mockResolvedValueOnce({ token: "initial", expiresAt: new Date(now + 90_000).toISOString() }).mockResolvedValue({ token: "renewed", expiresAt: new Date(now + 900_000).toISOString() });
+    const sessionApi = { register: vi.fn(async () => ({ sessionId: randomUUID() })), grant, verifySupport: vi.fn(), verifyUnregistered: vi.fn() } as unknown as WorkerSessionApi;
+    const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => now });
+    const ticket = await launcher.prepare(task, "managed task", new AbortController().signal);
+    const active = store.updateWebExecution(task, { launchSubmission: "acknowledged" }, now);
+    await Promise.all([launcher.refreshGrant(active, ticket, new AbortController().signal), launcher.refreshGrant(active, ticket, new AbortController().signal)]);
+    expect(grant).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(await readFile(ticket.credentialFile, "utf8"))).toEqual({ token: "renewed", expiresAt: new Date(now + 900_000).toISOString() });
   } finally { store.close(); }
 });

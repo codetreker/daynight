@@ -332,7 +332,8 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     try {
       expect(sql.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
       expect((sql.prepare("PRAGMA table_info(projects)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "repo_url", "local_path"]);
-      expect((sql.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id"]);
+      expect((sql.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
+      expect(sql.prepare("SELECT DISTINCT agent_control_mode FROM tasks").all()).toEqual([{ agent_control_mode: "herdr" }]);
     } finally { sql.close(); }
     if (scenario === "resume") {
       const currentWorkspace = (await events()).find((event) => event.kind === "workspace" && event.taskId === second.id)!;

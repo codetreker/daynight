@@ -105,6 +105,8 @@ Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending
 
 Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限建立另一条 WebSocket；命令和历史也有 HTTP 接口。bootstrap grant 有效期 120 秒，reconnect grant 为 15 分钟；launcher 在首次 spawn 前将 bootstrap 换成可复连凭据，避免首次连接后短暂断网必须等待续签；grant 冻结签发凭据归属，撤销父凭据会使现有连接失效。服务端每次操作核验项目权限、claim、executionGeneration 和连接 fencing，不将浏览器传入的 native ID 当作授权。Controller 在 WebSocket 升级前先验证 grant、父凭据与 active scope，收到 hello 后在 Connect 事务中重复验证并消费凭据；握手预检不能替代原子 fence 校验。连接配额包含正在升级的请求，失败升级释放预留名额，伪造或失效 token 不能先占用 WebSocket。
 
+Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web 执行，在凭据剩余不超过 120 秒时续签，不受 claim 发现的 pollIntervalMs 影响。维护过程验证 launch ticket 与原 claim、Controller、execution generation 一致；prepare、launch 和续签按执行串行，读取最新执行记录后才写入凭据。退出先取消并等待维护结束，再关闭执行存储，避免后台续签访问已关闭的数据库。续签失败保留原执行和凭据事实，并通过 worker diagnostic 暴露。
+
 原生调用前，Controller 先持久记录操作，再请求服务端 operation_begin 授权，获准后写 dispatching 并调用原生。数据库保存服务端命令和 receipt，Controller 保存本地调用证据。已 offered 但尚未 dispatch 的操作如果因状态或权限变化失去授权，服务端持久化 rejected 并返回 receipt_ack，只拒绝该操作，保留当前连接。Controller 记录拒绝并拒绝对应 authorization 等待，不调用原生；迟到回执与重连对账仍按同 operation 身份收敛。已 dispatching 的不确定结果、内部错误或失效 Controller fence 不走这个拒绝捷径。重连以最多 100 条一批对账，最后一批带 final；只有整个对账完成才启用新命令。重复 operationId 必须保持相同内容，断线或超时不能触发自动重发原生输入。
 
 事件以执行级 sourceEpoch 和整数 sourceSeq 持久补传，服务端 ACK 后才删除本机 outbox。事件排序使用整数，不按十进制字符串的字典序排序。本机 outbox 限制为 64 MiB，达到 80% 时暂停新增输入；取消仍可执行。容量或持久化失败会停止原生执行并保留独立的持久 gap 标记，已提交的旧事件不会被丢弃。连接恢复并有空间后补发 gap，原生恢复再读取历史；不能将缺失内容伪装成完整 Timeline。Timeline entryId 源于原生条目身份，revision 由 journal 单调维护；历史重读不会制造新的消息行。executionGeneration 隔离原生实例，connectionEpoch 仅隔离网络连接，刷新和重连不改变原生会话。
