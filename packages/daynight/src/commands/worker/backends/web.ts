@@ -73,7 +73,9 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
       return current(task);
     },
     cleanup: async (input: LocalTask, kind: CleanupState["kind"], deadline: number, signal: AbortSignal = new AbortController().signal, immediateStop = false): Promise<LocalTask> => {
-      let task = options.store.beginCleanup(current(input), { kind, deadline }, options.now());
+      const startedAt = options.now();
+      // An elapsed caller deadline has zero remaining budget, including immediate shutdown.
+      let task = options.store.beginCleanup(current(input), { kind, deadline: Math.max(startedAt, deadline) }, startedAt);
       if (task.resources.worktree === null) { const found = await workerOperation(operation => options.git.findWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal); if (found !== null) task = options.store.bindWorktree(task, found, options.now()); }
       const execution = task.webExecution;
       if (execution == null && task.configuration === null) throw new Error("The recovered Web claim has no original launch provenance; its native writer and worktree are retained.");

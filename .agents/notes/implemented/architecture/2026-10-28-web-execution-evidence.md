@@ -8,7 +8,10 @@ The worker can reconcile Herdr from current terminal resources and a small
 claim/session index. A private Web Controller also needs durable native-call
 receipts, connection fencing and process-stop evidence. Applying Herdr's NULL
 session recovery or process-local cleanup rules to that Controller can replay
-an uncertain input or replace a writer that is still running.
+an uncertain input or replace a writer that is still running. An immediate-stop
+deadline captured by the coordinator can also precede the backend cleanup start
+by a millisecond, causing strict persistence validation to reject shutdown before
+it attempts to stop that writer.
 
 ## Decision
 
@@ -35,6 +38,11 @@ claims. Normal Web claim-end cleanup retains its original operation and deadline
 then requires independent native stop proof before deleting the worktree. A
 force withdrawal freezes Session writes in the service transaction and lets the
 worker reconcile the absent claim; it does not assert immediate native shutdown.
+For the first cleanup record, an already elapsed deadline is normalized to its
+start time, representing zero remaining cleanup budget. Existing records retain
+their original start and deadline; retries cannot extend that budget. Immediate
+shutdown still bypasses the cleanup prompt and proves the original processes
+stopped.
 
 Web Controller grants are maintained every 30 seconds, independently of claim
 discovery polling. Renewal starts with no more than 120 seconds remaining and

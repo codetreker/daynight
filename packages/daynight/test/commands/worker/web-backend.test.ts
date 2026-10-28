@@ -98,3 +98,25 @@ it("requires a matching unregistered server claim before recovering missing laun
   fetch.mockResolvedValueOnce(new Response("", { status: 503 }));
   await expect(api.verifyUnregistered(f.identity, signal)).rejects.toThrow("503");
 });
+
+it.each(["codex", "claude", "copilot"] as const)("starts %s immediate shutdown with zero remaining cleanup budget after the caller clock advances", async provider => {
+  const f = await fixture(provider), request = vi.fn<typeof requestController>();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 101, request });
+  const result = await backend.cleanup(f.store.getTask(f.identity)!, "shutdown", 100, undefined, true);
+  expect(result.cleanup).toMatchObject({ startedAt: 101, deadline: 101, agentStopped: true, backendResourcesClosed: true, worktreeDeleted: false });
+  expect(result.claimId).toBe(f.identity.claimId);
+  expect(request).not.toHaveBeenCalled();
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
+
+it("preserves an existing cleanup deadline and gives an expired first terminal cleanup no new grace period", async () => {
+  const f = await fixture(), request = vi.fn<typeof requestController>(); let now = 101;
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => now, request });
+  const first = await backend.cleanup(f.store.getTask(f.identity)!, "terminal", 100);
+  expect(first.cleanup).toMatchObject({ startedAt: 101, deadline: 101, agentStopped: true, worktreeDeleted: true });
+  now = 1_000;
+  const retry = await backend.cleanup(first, "terminal", now + 600_000);
+  expect(retry.cleanup).toMatchObject({ startedAt: 101, deadline: 101 });
+  expect(request).not.toHaveBeenCalled();
+  expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+});
