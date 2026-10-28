@@ -71,7 +71,8 @@ describe('localized task graph presentation', () => {
       openChainId="A" onOpenChain={noop} onOpenTask={select} onCloseChain={noop} showAll={false} onShowAllChange={noop} />, { locale: 'en' });
     await ready(view.container);
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
-    expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(2);
+    expect(screen.getAllByText('3 tasks · 2 unfinished')).toHaveLength(1);
+    expect(view.container.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 in progress');
     expect(screen.getByRole('checkbox', { name: 'Show all' })).not.toBeChecked();
     expect(screen.getByText('Chain 3 · External 2 · Tasks 5/5 · Dependencies 4/4')).toBeTruthy();
     const selected = screen.getByRole('button', { name: '合流实现…, In progress' });
@@ -93,7 +94,8 @@ describe('localized task graph presentation', () => {
     await user.selectOptions(screen.getByRole('combobox'), 'zh-CN');
     expect(screen.getByRole('combobox')).toHaveFocus();
     expect(screen.getByRole('dialog')).toHaveClass('task-chain-dialog');
-    expect(screen.getAllByText('3 个任务 · 2 个未完成')).toHaveLength(2);
+    expect(screen.getAllByText('3 个任务 · 2 个未完成')).toHaveLength(1);
+    expect(view.container.querySelector('#task-root-A .goal-in-progress')).toHaveTextContent('1 进行中');
     expect(screen.getByRole('checkbox', { name: '显示所有' })).not.toBeChecked();
     expect(screen.getByRole('button', { name: '合流实现…，进行中，已选中' })).toBe(selected);
     expect(selected.closest('.task-node')).toHaveClass('task-node-selected');

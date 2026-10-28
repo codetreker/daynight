@@ -5,11 +5,11 @@ const { number } = getFormats('en');
 const count = (value: number, singular: string, plural: string) => `${number(value)} ${value === 1 ? singular : plural}`;
 
 export const graph: GraphMessages = {
-  chainList: 'Task chains',
   rootSummary: ({ total, remaining }) => `${count(total, 'task', 'tasks')} · ${number(remaining)} unfinished`,
+  inProgressCount: ({ count }) => `${number(count)} in progress`,
+  chainList: 'Task chains',
   progress: ({ done, total }) => `${number(done)}/${number(total)} completed`,
   chainTitle: 'Task chain',
-  goalTitle: 'Goal',
   childTasks: ({ count: value }) => `Tasks · ${number(value)}`,
   goalDetails: 'View Goal details',
   goalDetailsLabel: ({ title }) => `${title}, View Goal details`,
@@ -18,7 +18,7 @@ export const graph: GraphMessages = {
   closeDialog: 'Close dependency graph',
   chainSummary: ({ shown, total }) => `Newest first · ${number(shown)} / ${count(total, 'task chain', 'task chains')}`,
   chainSummaryLabel: ({ shown, total }) => `Showing ${number(shown)} of ${count(total, 'task chain', 'task chains')}`,
-  chainNote: 'Select a Goal to expand its tasks, then select a task for details. Use “View dependencies” to open the graph. Ordinary dependencies connect tasks into one chain. All dependencies affect execution; prerequisites outside this chain are excluded from its task list and progress. Sorted by representative creation time, newest first. Unfinished chains and chains completed today or in the previous 6 days are shown by default.',
+  chainNote: 'Select a task chain to expand its tasks, then select a task for details. Use “View dependencies” to open the graph. Ordinary dependencies connect tasks into one chain. All dependencies affect execution; prerequisites outside this chain are excluded from its task list and progress. Sorted by representative creation time, newest first. Unfinished chains and chains completed today or in the previous 6 days are shown by default.',
   emptyTitle: 'No task chains',
   emptyDescription: 'Tasks connected by ordinary dependencies appear here. Standalone tasks are available in the other tab.',
   completedTitle: 'No recent task chains',

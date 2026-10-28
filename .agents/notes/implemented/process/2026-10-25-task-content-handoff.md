@@ -11,6 +11,9 @@ requiring a primary attachment rejects a complete task description and encourage
 an extra copy of content merely to satisfy its storage location. Automatic-selection
 permission also needs an explicit transition from reviewed task material to an
 allowed candidate; creating complete material alone does not authorize that change.
+A request can also mix durable task requirements with instructions for the current
+conversation. Copying both into the task can turn a registration-only arrangement
+into a lasting execution restriction or bury confirmed decisions in discussion history.
 
 ## Decision
 
@@ -23,6 +26,14 @@ referenced documents and mixed organization meet the same sufficiency test; a
 complete description needs no primary attachment. Each content item has one
 owner, and confirmation, acceptance conclusions and delivery evidence have an
 explicit location in the current task's body or attachments.
+
+The shared standard distinguishes task requirements from session-only constraints
+before applying the six content requirements. Only task-specific information is
+recorded. Confirmed decisions, stage questions and confirmation gates, actual
+execution, permission and verification constraints, and evidence remain task
+content. Session-only operation arrangements and discussion narration are excluded;
+the current operation still follows the original instructions. Existing entrypoint
+and creation references apply the same rule without duplicating its wording.
 
 This partially replaces the mandatory primary-attachment storage rules in the
 [mode decision](../../archived/architecture/2026-10-21-using-daynight-modes.md),
@@ -93,6 +104,12 @@ owner preserve the useful separation without imposing that file.
 would be independently readable, but changes would create competing versions and
 unclear owners. Accurate source identity, applicable sections and actual reads
 provide the required context while preserving a single shared owner.
+
+**Copy all conversation constraints into the task.** This preserves the request's
+words but loses their scope: an instruction to register without executing or enabling
+Agents in the current conversation can become a permanent task restriction.
+Retaining only task-specific information preserves real execution and permission
+constraints without importing that temporary arrangement.
 
 **Treat a link or existing true permission as review proof.** A readable name
 says nothing about content sufficiency, and permission can predate the current

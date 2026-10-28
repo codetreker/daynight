@@ -14,7 +14,11 @@ and keep external prerequisite context separate from actual chain members.
 ## Decision
 
 Each existing chain representative supplies a top-level Goal row with its
-original title, aggregate status and progress. Goal is a browsing label; task
+original title, aggregate status and progress. The original Goal browsing label
+helped distinguish the new disclosure hierarchy; the
+[compact-list decision](../simplification/2026-10-28-compact-task-list.md) removes
+that extra header label and summary while showing the actual in-progress member
+count. Task
 classification, representative selection and membership continue to come from
 the ordinary-dependency component. A singleton remains a standalone task even
 if its title contains `[Goal]`.
@@ -29,7 +33,7 @@ chain-external context remains in the graph. The list retains `done`, `in_progre
 completed tasks. The chain-level Show all control changes whole-Goal visibility; it never filters
 child rows by status or completion date. The [recent browsing and pagination
 decision](2026-10-27-recent-task-pages.md) owns the shared local-calendar default
-and 20-Goal pages. Expanded children remain complete and do not consume separate
+while the compact-list decision sets 15-Goal pages. Expanded children remain complete and do not consume separate
 parent-page entries; standalone rows apply the same recent policy individually. Child rows show
 individual task status, applicable ready or blocked markers and known execution
 duration immediately after the title. They open the existing task-detail dialog,

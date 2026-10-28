@@ -151,12 +151,46 @@ const compatible = (pong: HerdrRpcResult): { version: string; protocol: 22 } => 
   return { version: pong.version, protocol: 22 };
 };
 
-type OwnedChild = { child: ChildProcess; closed: boolean; code: number | null; signal: NodeJS.Signals | null; error: Error | null };
-const observeChild = (child: ChildProcess): OwnedChild => {
-  const owned: OwnedChild = { child, closed: false, code: null, signal: null, error: null };
+type OwnedChild = { child: ChildProcess; environment: NodeJS.ProcessEnv; closed: boolean; code: number | null; signal: NodeJS.Signals | null; error: Error | null };
+const observeChild = (child: ChildProcess, environment: NodeJS.ProcessEnv): OwnedChild => {
+  const owned: OwnedChild = { child, environment, closed: false, code: null, signal: null, error: null };
   child.once("error", (error) => { owned.error = error; });
   child.once("close", (code, signal) => { owned.closed = true; owned.code = code; owned.signal = signal; });
   return owned;
+};
+const liveOwnedChild = (owned: OwnedChild | null): owned is OwnedChild => owned !== null && !owned.closed && owned.error === null &&
+  owned.child.pid !== undefined && owned.child.exitCode === null && owned.child.signalCode === null;
+
+export const assertCodexIntegrationHome = (environment: NodeJS.ProcessEnv, root: string, platform: NodeJS.Platform = process.platform): void => {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const value = (name: string): string | undefined => {
+    if (platform !== "win32") return environment[name];
+    const key = Object.keys(environment).sort().find((key) => key.toUpperCase() === name);
+    return key === undefined ? undefined : environment[key];
+  };
+  const parentTraversal = (directory: string): boolean => directory.split(platform === "win32" ? /[\\/]/ : /\//).includes("..");
+  let directory = value("CODEX_HOME");
+  if (directory === undefined || directory === "") {
+    let home = value("HOME");
+    if ((home === undefined || home === "") && platform === "win32") {
+      home = value("USERPROFILE");
+      if (home === undefined || home === "") {
+        const drive = value("HOMEDRIVE");
+        const suffix = value("HOMEPATH");
+        if (drive !== undefined && /^[a-z]:[\\/]?$/i.test(drive) && suffix !== undefined && /^[\\/](?![\\/])/.test(suffix) && !parentTraversal(suffix)) {
+          home = paths.resolve(drive, suffix);
+        }
+      }
+    }
+    if (home !== undefined && home !== "" && paths.isAbsolute(home) && !parentTraversal(home)) directory = paths.join(home, ".codex");
+  }
+  // Herdr uses its daemon environment, including HOME before USERPROFILE, rather than Node's OS home lookup.
+  // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/integration/env.rs#L91-L104
+  // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/integration/env.rs#L223-L244
+  // Resolving '..' lexically can inspect a different directory when an earlier component is a symlink.
+  if (directory === undefined || !paths.isAbsolute(directory) || /[\0\r\n]/.test(directory) || parentTraversal(directory) || paths.normalize(directory) !== paths.normalize(root)) {
+    throw new Error("Cannot safely install the Codex integration: the daemon's native configuration directory does not match the inspected directory. Set an absolute CODEX_HOME and restart the worker with a newly started private daemon.");
+  }
 };
 const killOwnedChild = (owned: OwnedChild): void => {
   if (owned.closed || owned.child.pid === undefined) return;
@@ -219,7 +253,8 @@ export const createHerdrInstance = (options: {
         let stderr: number | undefined;
         try {
           stderr = openSync(paths.stderrLogFile, "a", 0o600);
-          owned = observeChild(start(executable, ["--session", session, "server"], { env: environment, detached: true, windowsHide: true, stdio: ["ignore", stdout, stderr] }));
+          const spawnEnvironment = Object.freeze({ ...environment });
+          owned = observeChild(start(executable, ["--session", session, "server"], { env: spawnEnvironment, detached: true, windowsHide: true, stdio: ["ignore", stdout, stderr] }), spawnEnvironment);
           startedHere = owned;
         } finally { closeSync(stdout); if (stderr !== undefined) closeSync(stderr); }
         while (true) {
@@ -249,6 +284,10 @@ export const createHerdrInstance = (options: {
     paths, environment, rpc,
     attachment: { executable, arguments: ["--session", session], environment: attachmentEnvironment, unsetEnvironment: [...inheritedIdentity] } satisfies HerdrAttachment,
     ensure,
+    assertIntegrationEnvironment: (root: string): void => {
+      if (!liveOwnedChild(owned)) throw new Error("Cannot safely install the Codex integration: the private daemon is not a live process started by this worker. Stop the worker and its private daemon, then restart the worker before repairing the integration.");
+      assertCodexIntegrationHome(owned.environment, root);
+    },
     connect: async (operation: Operation): Promise<HerdrInstanceReady> => {
       const scope = bounded(operation, 30_000);
       try {

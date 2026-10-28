@@ -6,6 +6,9 @@ private worktree, temporary files, or session-only authorization. The descriptio
 and its readable references must together explain the current task completely.
 Use the target repository's document and language rules.
 
+Distinguish task requirements from session-only constraints, and record only
+task-specific information in the task.
+
 ## Six content requirements
 
 These are content requirements, not six mandatory headings. Provide each item

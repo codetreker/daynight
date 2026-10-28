@@ -880,12 +880,12 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect(standalone(page, predecessor.id)).toHaveCount(0);
   await expect(standalone(page, dependent.id)).toHaveCount(0);
   await expect(standalone(page, independent.id)).toBeVisible();
-  await expect(page.locator('.standalone-row')).toHaveCount(20);
+  await expect(page.locator('.standalone-row')).toHaveCount(15);
   const standalonePagination = page.getByRole('navigation', { name: '独立任务列表分页', exact: true });
-  await expect(standalonePagination).toContainText('第 1–20 条，共 22 条');
+  await expect(standalonePagination).toContainText('第 1–15 条，共 22 条');
   await standalonePagination.getByRole('button', { name: '下一页', exact: true }).click();
-  await expect(page.locator('.standalone-row')).toHaveCount(2);
-  await expect(standalonePagination).toContainText('第 21–22 条，共 22 条');
+  await expect(page.locator('.standalone-row')).toHaveCount(7);
+  await expect(standalonePagination).toContainText('第 16–22 条，共 22 条');
   await standalonePagination.getByRole('button', { name: '上一页', exact: true }).click();
   await expect(standalone(page, independent.id)).toBeVisible();
   const standaloneCompleted = page.getByRole('checkbox', { name: '显示所有' });

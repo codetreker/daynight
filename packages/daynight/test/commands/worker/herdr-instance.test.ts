@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { createHerdrEnvironment, createHerdrInstance, resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
+import { assertCodexIntegrationHome, createHerdrEnvironment, createHerdrInstance, resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
 import type { HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
 import { terminateOwnedHerdrProcess } from "../../../src/commands/worker/herdr/command.js";
 import { herdrIpcAddress } from "../../../src/commands/worker/herdr/rpc.js";
@@ -80,6 +80,50 @@ afterEach(async () => {
 });
 
 describe("private Herdr instance", () => {
+  it.each([
+    [{ HOME: "/native" }, "/native/.codex", "linux"],
+    [{ HOME: "/wrong", CODEX_HOME: "/explicit" }, "/explicit", "linux"],
+    [{ HOME: "C:\\native", USERPROFILE: "C:\\other" }, "C:\\native\\.codex", "win32"],
+    [{ HOME: "", USERPROFILE: "C:\\profile" }, "C:\\profile\\.codex", "win32"],
+    [{ HOMEDRIVE: "C:", HOMEPATH: "\\profile" }, "C:\\profile\\.codex", "win32"],
+    [{ HOME: "C:\\wrong", CODEX_HOME: "C:\\explicit" }, "C:\\explicit", "win32"],
+    [{ home: "C:\\wrong", codex_home: "C:\\explicit" }, "C:\\explicit", "win32"],
+  ] as const)("binds the installer root to daemon environment %j", (environment, root, platform) => {
+    expect(() => assertCodexIntegrationHome(environment, root, platform)).not.toThrow();
+  });
+
+  it.each([
+    [{}, "/os-home/.codex", "linux"],
+    [{ HOME: "relative" }, "/os-home/.codex", "linux"],
+    [{ CODEX_HOME: "relative", HOME: "/native" }, "/native/.codex", "linux"],
+    [{ HOME: "C:\\native", USERPROFILE: "C:\\profile" }, "C:\\profile\\.codex", "win32"],
+    [{ USERPROFILE: "/native" }, "/native/.codex", "linux"],
+    [{ CODEX_HOME: "/a/symlink/../native" }, "/a/native", "linux"],
+    [{ HOME: "/a/symlink/../native" }, "/a/native/.codex", "linux"],
+    [{ codex_home: "C:\\other", HOME: "C:\\native" }, "C:\\native\\.codex", "win32"],
+    [{ USERPROFILE: "C:\\a\\symlink\\..\\native" }, "C:\\a\\native\\.codex", "win32"],
+    [{ HOMEDRIVE: "C:", HOMEPATH: "\\a\\symlink\\..\\native" }, "C:\\a\\native\\.codex", "win32"],
+    [{ CODEX_HOME: undefined, codex_home: "C:\\a\\.codex", HOME: "C:\\b", USERPROFILE: "C:\\a" }, "C:\\a\\.codex", "win32"],
+  ] as const)("refuses an unproven native home %j", (environment, root, platform) => {
+    expect(() => assertCodexIntegrationHome(environment, root, platform)).toThrow("does not match the inspected directory");
+  });
+
+  it("allows integration repair only for its own live daemon and captured native home", async () => {
+    const root = path.resolve("native-config");
+    const f = await fixture({ CODEX_HOME: root });
+    expect(() => f.instance.assertIntegrationEnvironment(root)).toThrow("not a live process");
+    await f.instance.ensure(operation());
+    expect(() => f.instance.assertIntegrationEnvironment(root)).not.toThrow();
+    f.instance.environment.CODEX_HOME = path.resolve("different-config");
+    expect(() => f.instance.assertIntegrationEnvironment(root)).not.toThrow();
+    expect(() => f.instance.assertIntegrationEnvironment(f.instance.environment.CODEX_HOME!)).toThrow("does not match");
+    const other = createHerdrInstance({ paths: f.worker, environment: f.environment, spawnProcess: f.start });
+    await other.ensure(operation());
+    expect(() => other.assertIntegrationEnvironment(root)).toThrow("not a live process");
+    await f.instance.stop(operation());
+    expect(() => f.instance.assertIntegrationEnvironment(root)).toThrow("not a live process");
+  });
+
   it("derives fixed private paths and rejects both socket and pipe limits without a fallback", () => {
     const linux = resolveHerdrInstancePaths({ herdrDirectory: "/home/a/.daynight/worker/h", logsDirectory: "/home/a/.daynight/worker/logs" }, "linux");
     expect(linux.apiEndpoint).toBe("/home/a/.daynight/worker/h/c/herdr/sessions/w/herdr.sock");
