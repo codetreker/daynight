@@ -9,6 +9,7 @@ import type { GraphIndex } from "../task-graph/model";
 import { TaskPlatformBadge } from "../task-detail/TaskPlatform";
 import { TaskAgentPermissionBadge } from "../task-detail/TaskAgentPermissionBadge";
 import "../../styles/graph.css";
+import "../../styles/task-status-rows.css";
 
 type StandaloneListProps = {
   readonly index: GraphIndex;
@@ -24,7 +25,7 @@ const StandaloneRow = memo(({ task, onSelectTask }: { readonly task: GraphTask; 
   const { messages: { workspace: { standalone: m, project }, common }, format } = useI18n();
   const execution = useTaskExecution(task);
   const descriptionId = useId();
-  return <li><button className={`standalone-row${execution?.overdue ? " standalone-row-stuck" : ""}`} id={`standalone-task-${task.id}`} type="button"
+  return <li><button className={`standalone-row task-status-surface${execution?.overdue ? " standalone-row-stuck" : ""}`} data-task-status={task.status} id={`standalone-task-${task.id}`} type="button"
     aria-describedby={execution === null ? undefined : descriptionId} onClick={(event) => { onSelectTask(task.id, event.currentTarget); }}>
     <span className="root-heading"><span className="root-title">{task.titlePreview}{task.titleTruncated ? "…" : ""}</span>
       <span className="root-meta"><span className="standalone-task-id">{task.id}</span> · <time dateTime={task.createdAt}>{m.createdOn({ date: format.date(task.createdAt) })}</time>
@@ -44,7 +45,6 @@ export const StandaloneList = ({ index, taskIds, allTaskIds, onSelectTask, showA
         {allTaskIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showAll} onChange={(event) => { onShowAllChange(event.currentTarget.checked); }} />{m.showAll}</label>}
         <span className="task-view-summary" aria-label={m.summaryLabel({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}>{m.summary({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}</span>
       </div>
-      <p className="graph-note">{m.explanation}</p>
       {allTaskIds.length === 0 ? (
         <div className="state-box"><h3>{m.empty}</h3><p>{m.emptyDetail}</p></div>
       ) : taskIds.length === 0 ? (

@@ -2,11 +2,11 @@ import path from "node:path";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
-import { normalizeServerUrl } from "../../config/server.js";
 import { runRepositoryGit } from "../../repository/git.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
+import { canonicalResourceOwner } from "./resource-owner.js";
 
 type GitRunner = typeof runRepositoryGit;
 type Owner = ResourceOwner & { leaf: string; root: string; common: string };
@@ -45,12 +45,13 @@ const ensureDirectory = async (target: string): Promise<void> => {
   catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
   if (await directory(target) === null) throw new Error(`Managed directory ${target} disappeared.`);
 };
-const coordinates = (owner: ResourceOwner): ResourceOwner => ({ serverOrigin: normalizeServerUrl(owner.serverOrigin), projectId: uuid(owner.projectId, "Project ID"), taskId: uuid(owner.taskId, "Task ID"), claimId: uuid(owner.claimId, "Claim ID"), worktreeId: uuid(owner.worktreeId, "Worktree ID") });
+const coordinates = canonicalResourceOwner;
 const markerOwner = (marker: string): Owner => {
   if (!marker.startsWith(prefix)) throw new Error("The task worktree has a different ownership marker.");
   const value: unknown = JSON.parse(marker.slice(prefix.length));
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("The task worktree ownership marker is invalid.");
-  const fields = ["serverOrigin", "projectId", "taskId", "claimId", "worktreeId", "leaf", "root", "common"];
+  if (Object.hasOwn(value, "serverOrigin")) throw new Error("The task worktree uses legacy ownership. Stop the worker and run daynight worker migrate-workspaces before restarting.");
+  const fields = ["projectId", "taskId", "claimId", "worktreeId", "leaf", "root", "common"];
   if (Object.keys(value).length !== fields.length || fields.some((field) => !Object.hasOwn(value, field) || typeof (value as Record<string, unknown>)[field] !== "string")) throw new Error("The task worktree ownership marker is invalid.");
   const owner = value as Owner;
   for (const field of ["leaf", "root", "common"] as const) if (!/^\d+:\d+$/.test(owner[field])) throw new Error("The task worktree ownership fingerprint is invalid.");

@@ -8,6 +8,7 @@ import { TaskExecutionDuration } from '../task-execution/TaskExecutionPresentati
 import type { GraphIndex } from './model';
 import { TaskChainDialog } from './TaskChainDialog';
 import '../../styles/graph.css';
+import '../../styles/task-status-rows.css';
 
 const statusOrder: Readonly<Record<TaskStatus, number>> = { in_progress: 0, todo: 1, done: 2 };
 
@@ -39,7 +40,7 @@ const GoalTaskRow = memo(({ task, rootId, onOpenTask }: GoalTaskRowProps) => {
   const { messages: { common, workspace: { project } } } = useI18n();
   const execution = useTaskExecution(task);
   return <li>
-    <button className="goal-task-row" id={`chain-task-${rootId}-${task.id}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
+    <button className="goal-task-row task-status-surface" data-task-status={task.status} id={`chain-task-${rootId}-${task.id}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
       <span className={`goal-task-dot graph-status-${task.status}`} aria-hidden="true" />
       <span className="root-heading"><span className="root-title">{task.titlePreview}{task.titleTruncated ? '…' : ''}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}</span>
       <span className="goal-task-status"><span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
@@ -61,8 +62,8 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
     return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
       .toSorted((left, right) => statusOrder[left.status] - statusOrder[right.status]);
   }, [index, rootId]);
-  return <li className="root-row goal-row" data-chain-id={rootId}>
-    <div className="goal-header">
+  return <li className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
+    <div className="goal-header task-status-surface" data-task-status={progress.status}>
       <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded}
         aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
         <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
@@ -137,7 +138,6 @@ export const ChainList = ({ index, representativeIds, allRepresentativeIds, open
       {allRepresentativeIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showAll} onChange={(event) => { onShowAllChange(event.currentTarget.checked); }} />{m.showAll}</label>}
       <span className="task-view-summary" aria-label={m.chainSummaryLabel({ shown: pagination === undefined ? representativeIds.length : pagination.total, total: allRepresentativeIds.length })}>{m.chainSummary({ shown: pagination === undefined ? representativeIds.length : pagination.total, total: allRepresentativeIds.length })}</span>
     </div>
-    <p className="graph-note">{m.chainNote}</p>
     {allRepresentativeIds.length === 0 ? <div className="state-box"><h3>{m.emptyTitle}</h3><p>{m.emptyDescription}</p></div>
       : representativeIds.length === 0 ? <div className="state-box completed-chains-empty"><h3>{m.completedTitle}</h3><p>{m.completedDescription({ count: completedCount })}</p><button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowAllChange(true); }}>{m.showAll}</button></div>
         : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} index={index} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} />)}</ul>}

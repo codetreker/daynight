@@ -12,13 +12,14 @@ import type { createWorkerGitManager } from "./worktrees.js";
 
 export type WorkerEvent = { kind: string; message: string; task?: LocalTask; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
-export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; configuration: ExecutionConfiguration };
+export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration };
 export type ExecutionDependencies = {
   store: WorkerStore;
   git: WorkerGitManager;
   herdr: WorkerHerdrAdapter;
   platform: TaskPlatform;
   workerId: string;
+  serverOrigin: string;
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
   emit: (event: WorkerEvent) => void;
   now: () => number;
@@ -36,7 +37,7 @@ export const workerOperation = async <T>(action: (operation: Operation) => Promi
 export const sameClaim = (left: { projectId: string; taskId: string; claimId: string }, right: { projectId: string; taskId: string; claimId: string }): boolean =>
   left.projectId === right.projectId && left.taskId === right.taskId && left.claimId === right.claimId;
 export const ownedWorkspace = (owner: ResourceOwner, resources: readonly HerdrOwnedWorkspace[]): HerdrOwnedWorkspace | undefined => {
-  const matches = resources.filter((resource) => sameClaim(resource.owner, owner) && resource.owner.serverOrigin === owner.serverOrigin);
+  const matches = resources.filter((resource) => sameClaim(resource.owner, owner));
   if (matches.length > 1 || matches.some((resource) => resource.owner.worktreeId !== owner.worktreeId)) throw new Error("The claim has conflicting Herdr resource identities.");
   return matches[0];
 };
@@ -52,7 +53,7 @@ export const executionContext = (input: Pick<ExecutionInput, "owner" | "project"
   ...input.owner, cwd: path.join(input.project.localPath, ".worktrees", "daynight", input.owner.taskId), agent: input.task.agent,
 });
 export const settleWorkerStops = async (deps: Pick<ExecutionDependencies, "herdr">, owner: ResourceOwner, signal?: AbortSignal): Promise<boolean> => {
-  const pending = deps.herdr.tasks.pendingStops().filter((stop) => sameClaim(stop.context, owner) && stop.context.serverOrigin === owner.serverOrigin);
+  const pending = deps.herdr.tasks.pendingStops().filter((stop) => sameClaim(stop.context, owner));
   for (const stop of pending) {
     if (stop.context.worktreeId !== owner.worktreeId) throw new Error("The claim has conflicting pending Herdr stop identities.");
     await workerOperation((operation) => deps.herdr.tasks.stopAndClose(stop.context, stop.binding, operation), signal);
@@ -145,9 +146,9 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
         // https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/persist/restore.rs#L687-L713
         await workerOperation((operation) => deps.herdr.tasks.stopAndClose(context, actual.binding, operation), signal);
       }
-      const binding = await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, operation), signal);
+      const binding = await workerOperation((operation) => deps.herdr.tasks.prepareWorkspace(context, input.title, operation), signal);
       if (task.sessionId === null) deps.emit({ kind: "info", task, message: "Starting a new native conversation in the task worktree." });
-      const assignment: ManagedAssignment = { ...task, serverOrigin: input.owner.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree, configuration: input.configuration };
+      const assignment: ManagedAssignment = { ...task, serverOrigin: deps.serverOrigin, workerId: deps.workerId, worktreeId: input.owner.worktreeId, worktree, configuration: input.configuration };
       const prompt = deps.buildPrompt(assignment, deps.platform);
       pendingInput.set(identity, { binding, prompt });
       lastInput.delete(identity);

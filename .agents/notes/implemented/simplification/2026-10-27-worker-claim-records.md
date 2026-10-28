@@ -29,7 +29,11 @@ Herdr instance supply actual resources. Startup resolves configured Projects and
 saves their mappings before the first inventory, including with an empty
 SQLite database. Only a successfully queried complete Project scope authorizes
 absence cleanup. Static resource ownership checks remain with Git and Herdr;
-they do not store dynamic execution progress. Existing Git markers have no
+they do not store dynamic execution progress. The [workspace naming and identity
+decision](../architecture/2026-10-28-worker-workspace-names.md) keeps the shared
+resource coordinates to project/task/claim/worktree and uses titles only for
+Herdr display. Its one-time migration backup and startup block serve upgrade
+recovery rather than business execution progress. Existing Git markers have no
 workerId, so a Git-only claim requires a matching local row, private Herdr
 resource or current own claim before this worker can clean it. Unproven
 resources are reported and preserved, including in repositories shared with

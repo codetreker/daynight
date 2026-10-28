@@ -25,7 +25,12 @@ outdated integration, then verifies current state and effective hooks. Setup
 retains read-only inspection. The
 [full-access decision](2026-10-27-worker-full-access.md) replaces the original
 operator-managed native folder, hook and tool permission confirmations with a
-fixed invocation policy for fresh and resumed processes. The original receipts,
+fixed invocation policy for fresh and resumed processes. The [workspace naming
+and identity decision](2026-10-28-worker-workspace-names.md) uses task titles as
+mutable display prefixes and four stable UUIDs as owner identity, replacing the
+original origin/project/task/claim/worktree label and whole-label name hash.
+Native environment reconnection stays read-only; a separate serialized naming
+operation may update the display prefix. The original receipts,
 history prerequisites, persisted PID provenance and native-consent handling below
 explain the earlier recovery design; they are historical rationale rather than
 current storage or permission requirements.

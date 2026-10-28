@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createOperation } from "../../../src/api/operation.js";
+import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
 import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrPromptReceipt, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
@@ -15,6 +15,7 @@ const operations: Operation[] = [];
 const operation = (totalMs = 10_000): Operation => { const value = createOperation({ limits: { totalMs } }); operations.push(value); return value; };
 afterEach(async () => { operations.splice(0).forEach((value) => value.dispose()); await Promise.all(directories.splice(0).map((value) => rm(value, { recursive: true, force: true }))); });
 
+const taskTitle = "Repair worker startup";
 const projectId = "11111111-1111-4111-8111-111111111111";
 const taskId = "22222222-2222-4222-8222-222222222222";
 const claimId = "33333333-3333-4333-8333-333333333333";
@@ -27,7 +28,7 @@ const trustScreen = "  Folder access\n  /task\n\n  Trust this folder? Codex can 
 const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
   const cwd = await mkdtemp(path.join(scratch, "task-")); directories.push(cwd);
-  const context: HerdrExecutionContext = { serverOrigin: "https://daynight.example", projectId, taskId, claimId, worktreeId, cwd, agent: kind };
+  const context: HerdrExecutionContext = { projectId, taskId, claimId, worktreeId, cwd, agent: kind };
   const workspaces: Entry[] = [];
   const panes: Entry[] = [];
   const agents: Entry[] = [];
@@ -63,6 +64,11 @@ const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment
       workspaces.push(workspace); const created = addPane(workspace, "task");
       return { type: "workspace_created", workspace, tab: created.tab, root_pane: created.pane };
     }
+    if (method === "workspace.rename") {
+      const workspace = workspaces.find((value) => value.workspace_id === params.workspace_id)!;
+      workspace.label = params.label;
+      return { type: "workspace_info", workspace: structuredClone(workspace) };
+    }
     if (method === "agent.start") return { type: "agent_started", agent: launch(params), argv: [kind, ...params.args as string[]] };
     if (method === "agent.prompt") { prompts.push(String(params.text)); return { type: "agent_prompted", agent: structuredClone(agents.find((value) => value.pane_id === params.target)) }; }
     if (method === "agent.read") {
@@ -93,7 +99,7 @@ const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment
   return { context, manager, workspaces, panes, agents, tabs, calls, prompts, processes, executing, closeProcesses, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
-  const binding = await f.manager.prepareWorkspace(f.context, operation());
+  const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
   const result = await f.manager.start(f.context, binding, { configuration: { ...configuration, agent: f.context.agent, args: f.context.agent === "codex" ? configuration.args : ["--allow-all-tools"] }, prompt: "initial" }, operation());
   expect(result.nativeSession?.sessionId).toBe(nativeId); return binding;
 };
@@ -148,16 +154,142 @@ describe("direct task resource management", () => {
 
   it("creates one workspace with native XDG settings and rediscovers it without receipts", async () => {
     const environment = { XDG_CONFIG_HOME: "/native/config", XDG_STATE_HOME: "/native/state" };
-    const f = await fixture("codex", environment); const binding = await f.manager.prepareWorkspace(f.context, operation());
-    expect(await f.manager.prepareWorkspace(f.context, operation())).toEqual(binding);
-    expect(f.calls.filter((call) => call.method === "workspace.create")).toEqual([{ method: "workspace.create", params: { cwd: f.context.cwd, focus: false, label: herdrExecutionLabel(f.context), env: environment } }]);
+    const f = await fixture("codex", environment); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+    expect(await f.manager.prepareWorkspace(f.context, taskTitle, operation())).toEqual(binding);
+    expect(f.calls.filter((call) => call.method === "workspace.create")).toEqual([{ method: "workspace.create", params: { cwd: f.context.cwd, focus: false, label: herdrExecutionLabel(f.context, taskTitle), env: environment } }]);
     expect(parseHerdrExecutionLabel(String(f.workspaces[0]!.label))).toMatchObject({ projectId, taskId, claimId, worktreeId });
     expect(herdrExecutionAgentName(f.context)).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
   });
 
+  it("renames an existing live workspace without changing native identity or rediscoverability", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    const name = f.agents[0]!.name;
+    const newTitle = '修复中文任务 👨‍👩‍👧‍👦 | daynight:{"title":"literal"}';
+    await f.manager.syncWorkspaceName(f.context, binding, newTitle, operation());
+    expect(f.workspaces[0]!.label).toBe(herdrExecutionLabel(f.context, newTitle));
+    expect(f.agents[0]!.name).toBe(name);
+    expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ name, nativeSession: { sessionId: nativeId } });
+    expect(await f.manager.prepareWorkspace(f.context, "another title", operation())).toEqual(binding);
+    expect(await f.manager.listResources(operation())).toMatchObject([{ owner: { projectId, taskId, claimId, worktreeId }, workspaceId: binding.workspaceId }]);
+    await f.manager.syncWorkspaceName(f.context, binding, newTitle, operation());
+    expect(f.calls.filter((call) => call.method === "workspace.rename")).toHaveLength(1);
+    expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
+    expect(f.prompts).toEqual(["initial"]);
+    await f.manager.stopAndClose(f.context, binding, operation());
+    expect(f.workspaces).toEqual([]);
+  });
+
+  it("observes a lost rename result before considering another rename", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    const failure = new HerdrRpcError("rename result lost", { method: "workspace.rename", requestId: "rename", submission: "unknown" });
+    f.hook(async (method, params) => {
+      if (method !== "workspace.rename") return undefined;
+      f.workspaces[0]!.label = params.label;
+      throw failure;
+    });
+    await expect(f.manager.syncWorkspaceName(f.context, binding, "New title", operation())).rejects.toMatchObject({ action: "workspace.rename", submission: "unknown", cause: failure });
+    await f.manager.syncWorkspaceName(f.context, binding, "New title", operation());
+    expect(f.calls.filter((call) => call.method === "workspace.rename")).toHaveLength(1);
+  });
+
+  it("keeps a failed confirmation snapshot outside execution after a successful rename", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    const failure = new HerdrRpcError("confirmation snapshot lost", { method: "session.snapshot", requestId: "snapshot", submission: "unknown" });
+    let renamed = false;
+    f.hook(async (method, params) => {
+      if (method === "workspace.rename") {
+        renamed = true;
+        f.workspaces[0]!.label = params.label;
+        return { type: "workspace_info", workspace: structuredClone(f.workspaces[0]) };
+      }
+      if (method === "session.snapshot" && renamed) { renamed = false; throw failure; }
+      return undefined;
+    });
+    await expect(f.manager.syncWorkspaceName(f.context, binding, "New title", operation())).rejects.toMatchObject({ action: "workspace.rename", submission: "unknown", cause: failure });
+    expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ nativeSession: { sessionId: nativeId } });
+    await f.manager.syncWorkspaceName(f.context, binding, "New title", operation());
+    expect(f.calls.filter((call) => call.method === "workspace.rename")).toHaveLength(1);
+  });
+
+  it.each([
+    new HerdrRpcError("name observation unavailable", { method: "session.snapshot", requestId: "snapshot", submission: "unknown" }),
+    new OperationError("deadline"),
+  ])("classifies a failed pre-rename snapshot without claiming rename submission: %s", async (failure) => {
+    const f = await fixture(); const binding = await launch(f);
+    f.hook(async (method) => { if (method === "session.snapshot") throw failure; return undefined; });
+    await expect(f.manager.syncWorkspaceName(f.context, binding, "New title", operation())).rejects.toMatchObject({ action: "workspace.rename", submission: "not-submitted", cause: failure });
+    expect(f.calls.filter((call) => call.method === "workspace.rename")).toEqual([]);
+  });
+
+  it("preserves cancellation during a name ownership observation", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
+    const failure = new HerdrRpcError("snapshot cancelled", { method: "session.snapshot", requestId: "snapshot", submission: "not-submitted" });
+    f.hook(async (method) => { if (method === "session.snapshot") { controller.abort(new Error("stop name update")); throw failure; } return undefined; });
+    await expect(f.manager.syncWorkspaceName(f.context, binding, "New title", op)).rejects.toBe(failure);
+    expect(f.calls.filter((call) => call.method === "workspace.rename")).toEqual([]);
+  });
+
+  it.each([{ type: "ok" }, { type: "workspace_info" }, { type: "workspace_info", workspace: {} }])("classifies a malformed rename receipt as an unknown naming outcome: %j", async (result) => {
+    const f = await fixture(); const binding = await launch(f);
+    f.hook(async (method) => method === "workspace.rename" ? result : undefined);
+    await expect(f.manager.syncWorkspaceName(f.context, binding, "New title", operation())).rejects.toMatchObject({ action: "workspace.rename", submission: "unknown" });
+    expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ nativeSession: { sessionId: nativeId } });
+  });
+
+  it("does not submit a rename once the operation is cancelled", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    const controller = new AbortController(); controller.abort(new Error("cancel name update"));
+    const op = createOperation({ signal: controller.signal }); operations.push(op);
+    await expect(f.manager.syncWorkspaceName(f.context, binding, "New title", op)).rejects.toMatchObject({ kind: "cancelled" });
+    expect(f.calls.filter((call) => call.method === "workspace.rename")).toEqual([]);
+  });
+
+  it("rejects ownership changed during a rename as a lifecycle error", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    f.hook(async (method) => {
+      if (method !== "workspace.rename") return undefined;
+      f.workspaces[0]!.label = herdrExecutionLabel({ ...f.context, claimId: projectId }, "Foreign claim");
+      return { type: "workspace_info", workspace: f.workspaces[0] };
+    });
+    const failure = await f.manager.syncWorkspaceName(f.context, binding, "New title", operation()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(HerdrAgentActionError);
+  });
+
+  it("keeps ownership and terminal replacement errors distinct from cosmetic rename failures", async () => {
+    const f = await fixture(); const binding = await launch(f);
+    f.panes[0]!.terminal_id = "replacement";
+    const failure = await f.manager.syncWorkspaceName(f.context, binding, "New title", operation()).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(HerdrAgentActionError);
+    expect(f.calls.filter((call) => call.method === "workspace.rename")).toEqual([]);
+  });
+
+  it("rejects duplicate identities even when their displayed titles differ", async () => {
+    const f = await fixture(); await launch(f);
+    f.workspaces.push({ workspace_id: "duplicate", label: herdrExecutionLabel(f.context, "Different title") });
+    await expect(f.manager.listResources(operation())).rejects.toThrow("duplicate identities");
+    await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation())).rejects.toThrow("identity is duplicated");
+  });
+
+  it("keeps process-stop responsibility after the title changes between close attempts", async () => {
+    const f = await fixture(); const binding = await launch(f); f.closeProcesses.terminate = false;
+    const failure = new HerdrRpcError("close rejected", { method: "workspace.close", requestId: "close", submission: "not-submitted" });
+    let closeAttempts = 0;
+    f.hook(async (method) => { if (method === "workspace.close" && ++closeAttempts === 1) throw failure; return undefined; });
+    await expect(f.manager.stopAndClose(f.context, binding, operation())).rejects.toMatchObject({ cause: failure });
+    f.workspaces[0]!.label = herdrExecutionLabel(f.context, "Renamed while awaiting stop");
+    await expect(f.manager.stopAndClose(f.context, binding, operation(25))).rejects.toMatchObject({ kind: "deadline" });
+    expect(f.manager.pendingStops()).toHaveLength(1);
+    f.executing.delete(200);
+    await f.manager.stopAndClose(f.context, binding, operation());
+    expect(f.manager.pendingStops()).toEqual([]);
+  });
+
   it("sets Copilot's permission environment on every new task workspace", async () => {
     const f = await fixture("copilot");
-    await f.manager.prepareWorkspace(f.context, operation());
+    await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     expect(f.calls.find((call) => call.method === "workspace.create")!.params.env).toEqual({ XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", COPILOT_ALLOW_ALL: "true", COPILOT_ASSISTED_APPROVAL: "false" });
   });
 
@@ -169,7 +301,7 @@ describe("direct task resource management", () => {
   });
 
   it.each(["codex", "copilot"] as const)("rejects conflicting %s permissions before any native-start RPC", async (agent) => {
-    const f = await fixture(agent); const binding = await f.manager.prepareWorkspace(f.context, operation()); f.calls.splice(0);
+    const f = await fixture(agent); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation()); f.calls.splice(0);
     const args = agent === "codex" ? ["--sandbox", "workspace-write"] : ["--deny-tool=shell"];
     await expect(f.manager.start(f.context, binding, { configuration: { ...configuration, agent, args }, prompt: "assignment" }, operation())).rejects.toThrow("owned by the worker");
     expect(f.calls).toEqual([]); expect(f.preflights()).toBe(0);
@@ -183,7 +315,7 @@ describe("direct task resource management", () => {
   });
 
   it.each(["codex", "copilot"] as const)("passes a known %s session directly to native resume without looking up history", async (kind) => {
-    const f = await fixture(kind); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(kind); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const config: HerdrAgentConfiguration = { agent: kind, model: "current-model", args: [] };
     const result = await f.manager.start(f.context, binding, { configuration: config, prompt: "continue task", resumeSessionId: nativeId }, operation());
     expect(result.nativeSession?.sessionId).toBe(nativeId);
@@ -201,7 +333,7 @@ describe("direct task resource management", () => {
   });
 
   it("reports the acknowledged pre-input observation before startup discovers a completed turn", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const receipts: HerdrPromptReceipt[] = [];
     f.hook(async (method, params) => {
       if (method === "agent.prompt") {
@@ -219,7 +351,7 @@ describe("direct task resource management", () => {
   });
 
   it("observes a native process after an unknown start response without replaying the launch", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const failure = new HerdrRpcError("start response lost", { method: "agent.start", requestId: "request", submission: "unknown" });
     f.hook(async (method, params) => { if (method === "agent.start") { f.launch(params); throw failure; } return undefined; });
     await expect(f.manager.start(f.context, binding, { configuration, prompt: "assignment" }, operation())).rejects.toMatchObject({ submission: "unknown", cause: failure });
@@ -228,13 +360,13 @@ describe("direct task resource management", () => {
   });
 
   it("serializes concurrent starts against the same pane", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     await Promise.all([f.manager.start(f.context, binding, { configuration, prompt: "first" }, operation()), f.manager.start(f.context, binding, { configuration, prompt: "second" }, operation())]);
     expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1); expect(f.prompts).toEqual(["first"]);
   });
 
   it("observes SessionStart emitted only after the first native input", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     f.hook(async (method, params) => {
       if (method === "agent.start") { const agent = f.launch(params); delete agent.agent_session; return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] }; }
       if (method === "agent.prompt") { f.prompts.push(String(params.text)); f.agents[0]!.agent_session = { source: "herdr:codex", agent: "codex", kind: "id", value: nativeId }; return { type: "agent_prompted", agent: f.agents[0] }; }
@@ -245,13 +377,13 @@ describe("direct task resource management", () => {
   });
 
   it("reports a native resume that identifies another session", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     await expect(f.manager.start(f.context, binding, { configuration, prompt: "continue", resumeSessionId: "66666666-6666-4666-8666-666666666666" }, operation())).rejects.toThrow("different native session");
     expect(f.prompts).toEqual([]);
   });
 
   it("reports a definitely unsent startup prompt while the current native process is blocked", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     f.hook(async (method, params) => { if (method !== "agent.start") return undefined; const agent = f.launch(params); agent.agent_status = "blocked"; return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] }; });
     await expect(f.manager.start(f.context, binding, { configuration, prompt: "task" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted" }); expect(f.prompts).toEqual([]);
   });
@@ -266,7 +398,7 @@ describe("direct task resource management", () => {
   });
 
   it("retains definite non-submission when cancellation interrupts readiness after a launch", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
     f.hook(async (method, params) => {
       if (method === "agent.start") { const agent = f.launch(params); agent.launch_pending = true; agent.interactive_ready = false; return { type: "agent_started", agent, argv: ["codex", ...params.args as string[]] }; }
@@ -278,14 +410,14 @@ describe("direct task resource management", () => {
   });
 
   it("rejects false idle/readiness on a real folder trust screen", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     f.hook(async (method) => method === "agent.read" ? visible(f, binding, trustScreen) : undefined);
     await expect(f.manager.start(f.context, binding, { configuration, prompt: "must not accept trust" }, operation())).rejects.toMatchObject({ action: "agent.prompt", submission: "not-submitted", promptSubmission: "not-submitted" });
     expect(f.prompts).toEqual([]); expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
   });
 
   it.each(["› Ask Codex to do anything", "» Ask Codex to do anything", "› Ask a follow-up question"])("accepts the current native composer %s", async (marker) => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     f.hook(async (method) => method === "agent.read" ? visible(f, binding, composerScreen.replace("› Ask Codex to do anything", marker)) : undefined);
     await f.manager.start(f.context, binding, { configuration, prompt: "exact\ntext" }, operation()); expect(f.prompts).toEqual(["exact\ntext"]);
   });
@@ -328,7 +460,7 @@ describe("direct task resource management", () => {
   });
 
   it("closes an empty owned workspace without a native agent or persisted PID observation", async () => {
-    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, taskTitle, operation());
     const { agent: _agent, ...context } = f.context;
     await f.manager.stopAndClose(context, binding, operation()); expect(f.workspaces).toEqual([]);
     await f.manager.stopAndClose(context, binding, operation());
@@ -388,13 +520,13 @@ describe("direct task resource management", () => {
 
   it("rejects duplicate owned labels and mismatched native providers", async () => {
     const f = await fixture(); await launch(f); f.workspaces.push({ ...f.workspaces[0], workspace_id: "duplicate" });
-    await expect(f.manager.listResources(operation())).rejects.toThrow("duplicate labels");
+    await expect(f.manager.listResources(operation())).rejects.toThrow("duplicate identities");
     f.workspaces.pop(); f.agents[0]!.agent_session = { source: "herdr:copilot", agent: "copilot", kind: "id", value: nativeId };
     await expect(f.manager.listResources(operation())).rejects.toThrow("provider differ");
   });
 
   it("reports unavailable worktree paths before creating anything", async () => {
     const f = await fixture(); await rm(f.context.cwd, { recursive: true });
-    await expect(f.manager.prepareWorkspace(f.context, operation())).rejects.toMatchObject({ submission: "not-submitted", cause: { code: "ENOENT" } }); expect(f.calls).toEqual([]);
+    await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation())).rejects.toMatchObject({ submission: "not-submitted", cause: { code: "ENOENT" } }); expect(f.calls).toEqual([]);
   });
 });

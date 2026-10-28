@@ -109,6 +109,8 @@ describe("task execution presentation", () => {
     const completed = document.getElementById("standalone-task-completed")!;
     const unknown = document.getElementById("standalone-task-unknown")!;
     const completedTime = completed.querySelector(".task-duration")!;
+    expect(running).toHaveAttribute("data-task-status", "in_progress");
+    expect(completed).toHaveAttribute("data-task-status", "done");
     for (const row of [running, completed]) {
       const metadata = row.querySelector(".root-meta")!;
       expect(metadata.querySelector(".standalone-execution .task-duration")).not.toBeNull();

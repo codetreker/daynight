@@ -10,6 +10,7 @@ import { workerDefinition } from "./definition.js";
 export type WorkerCommandDependencies = {
   setup: (context: CliContext) => Promise<void>;
   attach: (options: { homeDirectory: string }) => Promise<void>;
+  migrateWorkspaces: (options: { homeDirectory: string; rollback: boolean; log: (message: string) => void }) => Promise<void>;
   prepareRepositories: (context: CliContext, signal?: AbortSignal) => Promise<void>;
   repository: (request: WorkerRepositoryCommandRequest, context: CliContext) => Promise<void>;
   run: (options: { homeDirectory: string; packageDirectory: string; log?: (message: string) => void; signal?: AbortSignal; prepareRepositories?: (signal: AbortSignal) => Promise<void> }) => Promise<void>;
@@ -19,6 +20,7 @@ export type WorkerCommandDependencies = {
 const defaultDependencies: WorkerCommandDependencies = {
   setup: async (context) => (await import("./setup.js")).runWorkerSetup(context),
   attach: async (options) => (await import("./attach.js")).attachWorker(options),
+  migrateWorkspaces: async (options) => (await import("./migration.js")).migrateWorkerWorkspaces(options),
   prepareRepositories: async (context, signal) => (await import("./configuration-guide.js")).ensureWorkerRepositories(context, undefined, signal),
   repository: async (request, context) => (await import("./configuration-guide.js")).runWorkerRepositoryCommand(request, context),
   run: async (options) => (await import("./runtime.js")).runWorker(options),
@@ -37,6 +39,10 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   }
   if (command.command.name === "attach") {
     await dependencies.attach({ homeDirectory: context.homeDirectory() });
+    return;
+  }
+  if (command.command.name === "migrate-workspaces") {
+    await dependencies.migrateWorkspaces({ homeDirectory: context.homeDirectory(), rollback: command.options.has("--rollback"), log: (message) => { context.stderr(message); } });
     return;
   }
   const runtime = () => ({ homeDirectory: context.homeDirectory(), packageDirectory: context.packageDirectory, log: (message: string) => { context.stderr(message); } });

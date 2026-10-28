@@ -222,6 +222,8 @@ describe("project overview progress presentation", () => {
     const region = screen.getByRole("region", { name: "整体进度" });
     const buttons = within(region).getAllByRole("button");
     expect(buttons).toHaveLength(2); expect(buttons[0]).toHaveTextContent("Title root…");
+    expect(buttons[0]).toHaveAttribute("data-task-status", "in_progress");
+    expect(buttons[1]).toHaveAttribute("data-task-status", "in_progress");
     expect(buttons[1]).toHaveTextContent("2 / 5"); expect(buttons[1]).toHaveTextContent("40%");
     fireEvent.click(buttons[0]!); fireEvent.click(buttons[1]!);
     expect(onNavigate.mock.calls).toEqual([[{ kind: "chain", taskId: "root" }], [{ kind: "standalone" }]]);
@@ -235,6 +237,7 @@ describe("project overview progress presentation", () => {
     expect(screen.getByRole("heading", { name: "还没有任务" })).toBeTruthy();
     view.rerender(<ProjectOverview {...presentation(snapshot([{ id: "done", status: "done", completedAt: observedAt }]))} onNavigate={vi.fn()} />);
     expect(screen.getByRole("region", { name: "整体进度" })).toHaveTextContent("100%");
+    expect(document.querySelector(".overview-progress-row")).toHaveAttribute("data-task-status", "done");
     view.rerender(<ProjectOverview {...presentation(snapshot([{ id: "old", status: "done", completedAt: beforeCutoff }]))} onNavigate={vi.fn()} />);
     expect(within(screen.getByRole("region", { name: "整体进度" })).queryByRole("button")).toBeNull();
   });

@@ -29,7 +29,7 @@ const fixture = (local = true) => {
   resources.push({ directory, store });
   const project = store.registerProject({ projectId, repoUrl: "https://github.com/example/repo.git", localPath: path.join(directory, "repository") });
   const identity = { projectId, taskId, claimId };
-  const resourceOwner: ResourceOwner = { ...identity, serverOrigin: origin, worktreeId };
+  const resourceOwner: ResourceOwner = { ...identity, worktreeId };
   if (local) store.activateTask(store.registerPending({ ...identity, agent: "copilot" }));
   let observed = remoteTask();
   const order: string[] = [];

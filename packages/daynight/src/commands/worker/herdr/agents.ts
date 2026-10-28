@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import path from "node:path";
+import { OperationError } from "../../../api/operation.js";
 import type { Operation } from "../../../api/operation.js";
 import { canonicalId } from "../../../api/parse.js";
 import type { WorkerAgent } from "../../../api/types.js";
-import { normalizeServerUrl } from "../../../config/server.js";
+import type { ResourceOwner } from "../types.js";
+import { parseResourceOwner, resourceOwnerKey, sameResourceOwner } from "../resource-owner.js";
 import { buildHerdrAgentArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
 import type { HerdrAgentConfiguration } from "./arguments.js";
 import { codexInputSurface } from "./codex-input.js";
@@ -13,8 +15,8 @@ import type { HerdrRpcClient, HerdrRpcResult } from "./rpc.js";
 
 export type { HerdrAgentConfiguration } from "./arguments.js";
 export { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./arguments.js";
-export type HerdrExecutionContext = { serverOrigin: string; projectId: string; taskId: string; claimId: string; worktreeId: string; cwd: string; agent: WorkerAgent };
-export type HerdrExecutionOwner = Pick<HerdrExecutionContext, "serverOrigin" | "projectId" | "taskId" | "claimId" | "worktreeId">;
+export type HerdrExecutionOwner = ResourceOwner;
+export type HerdrExecutionContext = HerdrExecutionOwner & { cwd: string; agent: WorkerAgent };
 export type HerdrTaskBinding = { session: string; workspaceId: string; paneId: string; terminalId: string };
 export type HerdrPendingStop = { context: HerdrExecutionOwner & { cwd: string }; binding: HerdrTaskBinding };
 export type HerdrNativeReference = { source: string; agent: WorkerAgent; sessionId: string };
@@ -47,21 +49,28 @@ const optionalBoolean = (value: unknown, name: string): boolean => { if (value =
 const pid = (value: unknown): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647) throw new TypeError("Herdr process ID must be a positive process identifier."); return value; };
 const counter = (value: unknown, name: string): number => { if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) throw new TypeError(`${name} must be a nonnegative safe integer.`); return value; };
 const expectedResult = (value: HerdrRpcResult, type: string): HerdrRpcResult => { if (value.type !== type) throw new TypeError(`Expected Herdr ${type} result; received ${value.type}.`); return value; };
-const contextIdentity = (context: HerdrExecutionOwner) => {
-  const identifier = (value: string, label: string): string => { const result = canonicalId(value); if (result === null) throw new TypeError(`${label} must be a UUID.`); return result; };
-  return { serverOrigin: normalizeServerUrl(context.serverOrigin), projectId: identifier(context.projectId, "Project ID"), taskId: identifier(context.taskId, "Task ID"), claimId: identifier(context.claimId, "Claim ID"), worktreeId: identifier(context.worktreeId, "Worktree ID") };
+const labelSeparator = " | daynight:";
+const unsafeTitleCharacter = /[\p{Cc}\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/u;
+const workspaceTitle = (title: string): string => {
+  if (typeof title !== "string" || title.trim().length === 0) throw new TypeError("The task title must be nonempty text.");
+  return Array.from(title, (character) => unsafeTitleCharacter.test(character) ? `\\u{${character.codePointAt(0)!.toString(16)}}` : character).join("");
 };
-export const herdrExecutionLabel = (context: HerdrExecutionOwner): string => `daynight:${JSON.stringify(contextIdentity(context))}`;
-export const herdrExecutionAgentName = (context: HerdrExecutionOwner): string => `dn_${createHash("sha256").update(herdrExecutionLabel(context)).digest("hex").slice(0, 24)}`;
+export const herdrExecutionLabel = (context: HerdrExecutionOwner, title: string): string => `${workspaceTitle(title)}${labelSeparator}${resourceOwnerKey(context)}`;
+export const herdrExecutionAgentName = (context: HerdrExecutionOwner): string => `dn_${createHash("sha256").update(resourceOwnerKey(context)).digest("hex").slice(0, 24)}`;
 export const parseHerdrExecutionLabel = (label: string): HerdrExecutionOwner | null => {
-  if (!label.startsWith("daynight:")) return null;
-  const data = object(JSON.parse(label.slice("daynight:".length)) as unknown, "Herdr execution label");
-  const fields = ["serverOrigin", "projectId", "taskId", "claimId", "worktreeId"];
-  if (Object.keys(data).length !== fields.length || fields.some((field) => !Object.hasOwn(data, field))) throw new TypeError("The reserved Herdr execution label has invalid fields.");
-  const owner = { serverOrigin: normalizeServerUrl(text(data.serverOrigin, "Label server origin")), projectId: text(data.projectId, "Label project ID"), taskId: text(data.taskId, "Label task ID"), claimId: text(data.claimId, "Label claim ID"), worktreeId: text(data.worktreeId, "Label worktree ID") };
-  for (const value of [owner.projectId, owner.taskId, owner.claimId, owner.worktreeId]) if (canonicalId(value) !== value) throw new TypeError("Reserved Herdr label identifiers must be canonical UUIDs.");
-  if (`daynight:${JSON.stringify(owner)}` !== label) throw new TypeError("The reserved Herdr execution label must use its canonical identity encoding.");
-  return owner;
+  const separator = label.lastIndexOf(labelSeparator);
+  if (separator === -1) {
+    if (label.startsWith("daynight:")) throw new TypeError("The Herdr workspace uses legacy ownership. Stop the worker and run daynight worker migrate-workspaces before restarting.");
+    return null;
+  }
+  const title = label.slice(0, separator);
+  if (title.trim().length === 0 || unsafeTitleCharacter.test(title)) throw new TypeError("The managed Herdr workspace title must be nonempty single-line display text.");
+  return parseResourceOwner(label.slice(separator + labelSeparator.length));
+};
+const matchesWorkspaceOwner = (workspace: RecordValue, owner: HerdrExecutionOwner): boolean => {
+  if (typeof workspace.label !== "string") throw new TypeError("The Herdr workspace label must be a string.");
+  const actual = parseHerdrExecutionLabel(workspace.label);
+  return actual !== null && sameResourceOwner(actual, owner);
 };
 
 export class HerdrAgentActionError extends Error {
@@ -147,16 +156,27 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const readOwned = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, allowMissingPane = false) => {
     if (binding.session !== session) throw new Error("The task binding belongs to another Herdr session.");
     const data = await snapshot(operation);
-    const label = herdrExecutionLabel(context);
-    const matching = data.workspaces.filter((workspace) => workspace.label === label);
+    const matching = data.workspaces.filter((workspace) => matchesWorkspaceOwner(workspace, context));
     if (matching.length !== 1 || matching[0]!.workspace_id !== binding.workspaceId) throw new Error("The original task workspace is missing, duplicated or has different ownership.");
     const panes = data.panes.filter((pane) => pane.pane_id === binding.paneId);
-    if (panes.length === 0 && allowMissingPane) return { data, pane: null };
+    if (panes.length === 0 && allowMissingPane) return { data, workspace: matching[0]!, pane: null };
     if (panes.length !== 1) throw new Error("The original task pane is missing or duplicated.");
     const pane = panes[0]!;
     if (pane.workspace_id !== binding.workspaceId || pane.terminal_id !== binding.terminalId) throw new Error("The task pane or terminal identity has changed.");
     await verifyCwd(pane.cwd, context);
-    return { data, pane };
+    return { data, workspace: matching[0]!, pane };
+  };
+  const readNameOwnership = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, operation: Operation, submission: "not-submitted" | "unknown") => {
+    try { return await readOwned(context, binding, operation); }
+    catch (cause) {
+      const timedOut = cause instanceof OperationError && cause.kind === "deadline";
+      const snapshotFailure = cause instanceof HerdrRpcError && cause.method === "session.snapshot";
+      const deadlineSignal = operation.signal.reason instanceof OperationError && operation.signal.reason.kind === "deadline";
+      if ((timedOut || snapshotFailure) && (!operation.signal.aborted || deadlineSignal)) {
+        throw new HerdrAgentActionError("The workspace name ownership observation could not be completed.", "workspace.rename", submission, { cause });
+      }
+      throw cause;
+    }
   };
   const nativeReference = (value: unknown, expectedAgent: WorkerAgent): HerdrNativeReference | null => {
     if (value === undefined) return null;
@@ -233,7 +253,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     listResources: async (operation: Operation): Promise<HerdrOwnedWorkspace[]> => {
       const data = await snapshot(operation);
       const result: HerdrOwnedWorkspace[] = [];
-      const labels = new Set<string>();
+      const identities = new Set<string>();
       const workspaceIds = new Set<string>();
       for (const workspace of data.workspaces) {
         if (typeof workspace.label !== "string") throw new TypeError("The Herdr workspace label must be a string.");
@@ -241,8 +261,9 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         const owner = parseHerdrExecutionLabel(label);
         if (owner === null) continue;
         const workspaceId = text(workspace.workspace_id, "Owned workspace ID");
-        if (labels.has(label) || workspaceIds.has(workspaceId) || data.workspaces.filter((value) => value.workspace_id === workspaceId).length !== 1) throw new Error("Owned Herdr workspaces have duplicate labels or IDs.");
-        labels.add(label); workspaceIds.add(workspaceId);
+        const identity = resourceOwnerKey(owner);
+        if (identities.has(identity) || workspaceIds.has(workspaceId) || data.workspaces.filter((value) => value.workspace_id === workspaceId).length !== 1) throw new Error("Owned Herdr workspaces have duplicate identities or IDs.");
+        identities.add(identity); workspaceIds.add(workspaceId);
         const resource: HerdrOwnedWorkspace = { owner, workspaceId, panes: [] };
         for (const pane of data.panes.filter((value) => value.workspace_id === workspaceId)) {
           const paneId = text(pane.pane_id, "Owned pane ID");
@@ -264,7 +285,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           const status = text(info.agent_status, "Owned agent status");
           if (!["idle", "working", "blocked", "done", "unknown"].includes(status)) throw new TypeError("The owned native status is invalid.");
           const name = optionalText(info.name, "Owned agent name");
-          if (name !== null && name !== `dn_${createHash("sha256").update(label).digest("hex").slice(0, 24)}`) throw new Error("The owned Herdr pane has a foreign managed agent name.");
+          if (name !== null && name !== herdrExecutionAgentName(owner)) throw new Error("The owned Herdr pane has a foreign managed agent name.");
           resource.panes.push({ binding: { session, workspaceId, paneId, terminalId }, cwd, kind, status, launchPending: optionalBoolean(info.launch_pending, "Owned launch state"), interactiveReady: optionalBoolean(info.interactive_ready, "Owned readiness"), nativeSession: nativeAgent === null ? null : nativeReference(info.agent_session, nativeAgent), stateChangeSeq: agents[0] === undefined ? null : counter(info.state_change_seq, "Owned state-change sequence"), completionSeq: agents[0] === undefined || info.completion_seq === undefined ? null : counter(info.completion_seq, "Owned completion sequence") });
         }
         if (resource.panes.length === 0) throw new Error("The owned Herdr workspace has no associated panes.");
@@ -275,14 +296,14 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
       return result;
     },
-    prepareWorkspace: async (context: HerdrExecutionContext, operation: Operation): Promise<HerdrTaskBinding> => {
+    prepareWorkspace: async (context: HerdrExecutionContext, title: string, operation: Operation): Promise<HerdrTaskBinding> => {
       let createPossible = false;
       try {
-        const label = herdrExecutionLabel(context);
+        const label = herdrExecutionLabel(context, title);
         const expectedCwd = path.normalize(await realpath(context.cwd));
         const data = await snapshot(operation);
-        const matching = data.workspaces.filter((workspace) => workspace.label === label);
-        if (matching.length > 1) throw new Error("The task workspace label is duplicated.");
+        const matching = data.workspaces.filter((workspace) => matchesWorkspaceOwner(workspace, context));
+        if (matching.length > 1) throw new Error("The task workspace identity is duplicated.");
         if (matching.length === 1) {
           const workspaceId = text(matching[0]!.workspace_id, "Task workspace ID");
           const panes = data.panes.filter((pane) => pane.workspace_id === workspaceId);
@@ -307,6 +328,21 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The task workspace could not be prepared.", "workspace.create", createPossible ? "unknown" : "not-submitted", { cause });
       }
     },
+    syncWorkspaceName: (context: HerdrExecutionContext, binding: HerdrTaskBinding, title: string, operation: Operation): Promise<void> => serialized(binding.workspaceId, operation, async () => {
+      const label = herdrExecutionLabel(context, title);
+      const before = await readNameOwnership(context, binding, operation, "not-submitted");
+      if (before.workspace.label === label) return;
+      const renamed = await mutation("workspace.rename", { workspace_id: binding.workspaceId, label }, "workspace_info", operation);
+      let workspace: RecordValue;
+      try {
+        workspace = object(renamed.workspace, "Renamed workspace");
+        text(workspace.workspace_id, "Renamed workspace ID");
+        text(workspace.label, "Renamed workspace label");
+      } catch (cause) { throw new HerdrAgentActionError("The workspace rename receipt could not be decoded.", "workspace.rename", "unknown", { cause }); }
+      if (workspace.workspace_id !== binding.workspaceId || !matchesWorkspaceOwner(workspace, context)) throw new Error("The workspace name receipt has different resource ownership.");
+      const after = await readNameOwnership(context, binding, operation, "unknown");
+      if (workspace.label !== label || after.workspace.label !== label) throw new HerdrAgentActionError("The requested workspace name was not confirmed by the current snapshot.", "workspace.rename", "unknown");
+    }),
     observe: observation,
     start: (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput, operation: Operation): Promise<HerdrAgentObservation> => serialized(binding.workspaceId, operation, async () => {
       if (input.configuration.agent !== context.agent) throw new TypeError("The agent configuration differs from the execution identity.");
@@ -353,14 +389,14 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     stopAndClose: (context: HerdrExecutionOwner & { cwd: string }, binding: HerdrTaskBinding, operation: Operation): Promise<void> => serialized(binding.workspaceId, operation, async () => {
       if (binding.session !== session) throw new Error("The task binding belongs to another Herdr session.");
       const before = await snapshot(operation);
-      const label = herdrExecutionLabel(context);
-      const key = JSON.stringify([binding.session, binding.workspaceId, label]);
-      const matching = before.workspaces.filter((workspace) => workspace.workspace_id === binding.workspaceId || workspace.label === label);
+      const identity = resourceOwnerKey(context);
+      const key = JSON.stringify([binding.session, binding.workspaceId, identity]);
+      const matching = before.workspaces.filter((workspace) => workspace.workspace_id === binding.workspaceId || matchesWorkspaceOwner(workspace, context));
       if (matching.length === 0) {
         if ([...before.panes, ...before.agents].some((resource) => resource.workspace_id === binding.workspaceId || resource.pane_id === binding.paneId || resource.terminal_id === binding.terminalId)) throw new Error("The missing task workspace still has associated resources.");
         return finishStop(key, operation);
       }
-      if (matching.length !== 1 || matching[0]!.workspace_id !== binding.workspaceId || matching[0]!.label !== label) throw new Error("The task workspace identity changed before stopping.");
+      if (matching.length !== 1 || matching[0]!.workspace_id !== binding.workspaceId || !matchesWorkspaceOwner(matching[0]!, context)) throw new Error("The task workspace identity changed before stopping.");
       const currentPanes = before.panes.filter((pane) => pane.workspace_id === binding.workspaceId);
       // Closing removes discovery evidence before all processes necessarily exit.
       // Retain this process-local responsibility across failed close/wait calls.
@@ -382,7 +418,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       }
       await mutation("workspace.close", { workspace_id: binding.workspaceId, close_group: false }, "ok", operation);
       const after = await snapshot(operation);
-      if (after.workspaces.some((workspace) => workspace.workspace_id === binding.workspaceId || workspace.label === label) || [...after.panes, ...after.agents].some((resource) => resource.workspace_id === binding.workspaceId)) throw new HerdrAgentActionError("The task workspace still exists after closure.", "workspace.close", "unknown");
+      if (after.workspaces.some((workspace) => workspace.workspace_id === binding.workspaceId || matchesWorkspaceOwner(workspace, context)) || [...after.panes, ...after.agents].some((resource) => resource.workspace_id === binding.workspaceId)) throw new HerdrAgentActionError("The task workspace still exists after closure.", "workspace.close", "unknown");
       await finishStop(key, operation);
     }),
   };
