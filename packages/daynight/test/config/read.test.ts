@@ -17,11 +17,11 @@ describe("missing configuration classification", () => {
     const paths = resolveConfigurationPaths(directory);
     await expect(readConfigurationSource(paths)).rejects.toBeInstanceOf(MissingConfigurationFileError);
     await writeFile(paths.stateDirectory, "not a directory");
-    expect(isMissingConfiguration(await readConfigurationSource(paths).catch((cause: unknown) => cause), "repositories")).toBe(false);
+    expect(isMissingConfiguration(await readConfigurationSource(paths).catch((cause: unknown) => cause), "review.repositories")).toBe(false);
     if (process.platform !== "win32") {
       await rm(paths.stateDirectory);
       await symlink(path.join(directory, "missing-state"), paths.stateDirectory);
-      expect(isMissingConfiguration(await readConfigurationSource(paths).catch((cause: unknown) => cause), "repositories")).toBe(false);
+      expect(isMissingConfiguration(await readConfigurationSource(paths).catch((cause: unknown) => cause), "review.repositories")).toBe(false);
     }
   });
 });

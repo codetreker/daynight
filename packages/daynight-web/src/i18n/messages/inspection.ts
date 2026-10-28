@@ -1,4 +1,36 @@
+import type { WorkerPhase } from '../../api/types';
+
 export type InspectionMessages = {
+  readonly claim: {
+    readonly controls: string;
+    readonly active: string;
+    readonly released: string;
+    readonly machine: string;
+    readonly agent: string;
+    readonly phase: Readonly<Record<WorkerPhase, string>>;
+    readonly membersLoading: string;
+    readonly membersError: string;
+    readonly retryMembers: string;
+    readonly formerMember: string;
+    readonly withdraw: string;
+    readonly title: string;
+    readonly question: string;
+    readonly explanation: string;
+    readonly pending: string;
+    readonly confirmed: string;
+    readonly conflict: string;
+    readonly unknown: string;
+    readonly reconciled: string;
+    readonly checking: string;
+    readonly checkState: string;
+    readonly checkFailed: string;
+    readonly networkError: string;
+    readonly protocolError: string;
+    readonly versionConflict: string;
+    readonly claimConflict: string;
+    readonly refused: string;
+    readonly requestFailed: string;
+  };
   readonly mermaid: {
     readonly loading: string;
     readonly diagram: string;

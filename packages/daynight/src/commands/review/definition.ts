@@ -27,7 +27,7 @@ export const reviewDefinition: CommandDefinition = {
         { names: ["--path"], description: "Dedicated review clone path (relative to the current directory)", value: { name: "path", kind: "directory" } },
         helpOption,
       ],
-      details: "Without --path, repositoryRoot (default: ~/daynights) determines the clone path.\nThe resolved absolute path is saved in ~/.daynight/config.yml.\nChanges take effect the next time daynight review run starts.",
+      details: "Without --path, review.repositoryRoot (default: ~/daynights) determines the clone path.\nThe resolved absolute path is saved in ~/.daynight/config.yml.\nChanges take effect the next time daynight review run starts.",
     },
   ],
   options: [helpOption],

@@ -42,7 +42,7 @@ that assumption. Follow the state rules below before any permission change.
 | `todo`, permission false, review fails | Keep permission false and report concrete gaps. Confirmed-information organization follows the review rules above. |
 | `todo`, permission true | Read-only re-audit; do not rewrite the same flag as an audit marker. |
 | `in_progress`, permission false | Report the permission lock; do not newly enable or reset status to evade it. |
-| `in_progress`, permission true | Read-only re-audit and report actual execution state. Review does not pause, stop, release, or transfer execution. |
+| `in_progress`, permission true | Read-only re-audit and report actual execution state. Review does not pause, stop, release, or withdraw execution. |
 | `done` | Report completion and no handoff needed; do not reopen or update permission. This is mode policy, not an API prohibition on completed-task updates. |
 | Active or released worker record | Preserve ownership and execution history. An active execution keeps its original resources. A released task starts a fresh claim/worktree/native session only through an authorized management decision; enabling permission neither resumes it nor restores deleted source resources. |
 

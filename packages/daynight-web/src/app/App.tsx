@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent } from 'react';
 import { TaskDetailPage } from '../features/task-detail/TaskDetailPage';
 import { ProjectsPage } from '../features/projects/ProjectsPage';
+import { ProjectsProvider } from '../features/projects/ProjectsProvider';
 import { ProjectPage } from '../features/projects/ProjectPage';
 import { navigate, parseRoute } from './router';
 import { useI18n } from '../i18n/LocaleProvider';
@@ -66,7 +67,7 @@ const AppView = () => {
           <div className="topbar-tools"><span className="local-label">{m.localLabel}</span><LanguageSelector /></div>
         </header>
         <main className="content" id="main-content" ref={content} tabIndex={-1}>
-          {route.kind === 'projects' ? <ProjectsPage /> : route.kind === 'project' ? <ProjectPage key={route.projectId} projectId={route.projectId} /> : (
+          {route.kind === 'projects' ? <ProjectsProvider><ProjectsPage /></ProjectsProvider> : route.kind === 'project' ? <ProjectPage key={route.projectId} projectId={route.projectId} /> : (
             <section className="state-box">
               <p className="eyebrow">404</p>
               <h1>{m.notFound}</h1>

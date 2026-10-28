@@ -45,7 +45,7 @@ CLI 默认使用 `https://daynight.cc`，显式 `login/logout` 管理通过设�
 | 现有归属 | 可复用事实 |
 |---|---|
 | [`cli/commands.ts`](../../packages/daynight/src/cli/commands.ts) 与 [`cli/application.ts`](../../packages/daynight/src/cli/application.ts) | 命令登记保留异步 `load`，应用统一处理 `0/1/2` 退出结果 |
-| [`config/document.ts`](../../packages/daynight/src/config/document.ts)、[`config/files.ts`](../../packages/daynight/src/config/files.ts) | 共享严格 YAML、已知顶层字段、独立锁和原子配置保存 |
+| [`config/document.ts`](../../packages/daynight/src/config/document.ts)、[`config/files.ts`](../../packages/daynight/src/config/files.ts) | 共享严格 YAML、已知值投影、独立锁、写入归属校验和原子配置保存 |
 | [`commands/review/config.ts`](../../packages/daynight/src/commands/review/config.ts) | review 字段投影与 GitHub 专用 remote 身份规则 |
 | [`api/index.ts`](../../packages/daynight/src/api/index.ts) | 命令级操作、服务 DTO、完整分页、有界 ready 选择、精确 JSON 与 HTTP 错误 |
 | [`commands/server/runtime.ts`](../../packages/daynight/src/commands/server/runtime.ts) | 配置读取、共享操作、信号取消和完整结果输出 |
@@ -70,7 +70,7 @@ review/update/completion 及 Task 命令已实现。职责如下：
 ```text
 src/
   cli/                     # 帮助、分发、通用退出结果
-  config/                  # 全局路径、严格 YAML 读取、顶层字段登记
+  config/                  # 全局路径、严格 YAML 读取、归属声明与配置保存
   api/                     # 服务 DTO 验证、请求、分页、结构化错误
   repository/              # Git 定位、repo 正规化、关联解析和原子持久化
   platform/                # 通用文件、服务文本契约及终端显示原语
@@ -102,14 +102,15 @@ project/task 不导入 review runtime、SQLite 或外部审查适配器。`proje
 加载仓库关联保存。task 显式 project 分支也只需要配置与 HTTP；自动分支才加载 Git
 与仓库状态。共享模块不反向导入命令模块。
 
-配置共享层产出 YAML mapping 和文档上下文，拒绝语法、重复 key、非 mapping 及
-未登记顶层字段。review 投影只解析 review 字段；server 投影在文件或 `serverUrl` 缺省时
+配置共享层产出 YAML mapping 和文档上下文，拒绝语法、重复 key 和非 mapping；
+未知字段保留在文档中，运行投影只读取已知字段。review 投影只解析 `review` 节点内的字段；server 投影在文件或 `serverUrl` 缺省时
 使用 `https://daynight.cc`，校验明确提供的地址与可选 `serverToken`。共享层保留 YAML 格式，
 不迁移 review 数据。服务调用不进入配置引导；缺少本地凭据时在网络前提示 `daynight login`。
 已有无效服务值、共享文档错误及读取错误直接暴露。
 review 配置可始终省略，其业务字段不参与服务校验。YAML 错误以安全类别、代码和
-位置表达，原始标量及 parser cause 不进入错误对象。共享写入者在持锁重读的文档上
-保存，含令牌结果使用 POSIX `0600`；无令牌文件继续既有权限行为，普通文件/符号
+位置表达，原始标量及 parser cause 不进入错误对象。每个变更返回明确的 unchanged 或带字段归属
+声明的 write 描述。共享写入者在持锁重读的原配置与候选配置之间统一比较非归属解码值，
+拒绝会连带改变无关字段的 alias 写入，再执行保存。含令牌结果使用 POSIX `0600`；无令牌文件继续既有权限行为，普通文件/符号
 链接检查与原子替换不变。
 
 [`platform/text.ts`](../../packages/daynight/src/platform/text.ts) 统一名称、标题及 DTO

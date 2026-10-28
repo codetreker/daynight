@@ -46,6 +46,35 @@ describe("configuration mutation failures", () => {
     expect(await readdir(paths.stateDirectory)).toEqual(["config.yml", "config.yml.lock"]);
   });
 
+  it("enforces write ownership under the lock before replacing aliased unknown values", async () => {
+    const { paths } = await fixture();
+    const source = "serverUrl: &server http://localhost:8787\nfuture: *server\n";
+    await writeFile(paths.configFile, source);
+    await expect(updateConfigurationFile(paths, async (current) => {
+      expect(current).toBe(source);
+      expect(await readdir(paths.stateDirectory)).toContain("config.yml.lock");
+      return {
+        kind: "write", result: "updated", ownership: { fields: ["serverUrl"] },
+        source: "serverUrl: &server http://other:8787\nfuture: *server\n",
+      };
+    })).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(filesystem.rename).not.toHaveBeenCalled();
+    expect(await readFile(paths.configFile, "utf8")).toBe(source);
+    expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it("writes owned fields while preserving unrelated cyclic unknown values", async () => {
+    const { paths } = await fixture();
+    const source = "serverUrl: http://localhost:8787\nfuture: &metadata { loop: *metadata }\n";
+    await writeFile(paths.configFile, source);
+    const proposed = "serverUrl: http://other:8787\nfuture: &metadata { loop: *metadata }\n";
+    expect(await updateConfigurationFile(paths, async () => ({
+      kind: "write", result: "updated", source: proposed, ownership: { fields: ["serverUrl"] },
+    }))).toBe("updated");
+    expect(await readFile(paths.configFile, "utf8")).toBe(proposed);
+    expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
   it("retains replacement and temporary cleanup errors while releasing the writer lock", async () => {
     const { paths, source } = await fixture();
     const replaceFailure = new Error("Atomic replacement denied");
@@ -53,7 +82,7 @@ describe("configuration mutation failures", () => {
     vi.mocked(filesystem.rename).mockRejectedValueOnce(replaceFailure);
     vi.mocked(filesystem.unlink).mockRejectedValueOnce(cleanupFailure);
     try {
-      await updateConfigurationFile(paths, async () => ({ result: "updated", source: "serverUrl: http://other:8787\n" }));
+      await updateConfigurationFile(paths, async () => ({ kind: "write", result: "updated", source: "serverUrl: http://other:8787\n", ownership: { fields: ["serverUrl"] } }));
       expect.unreachable("The mutation must fail.");
     } catch (error) {
       expect(error).toBeInstanceOf(AggregateError);

@@ -1,6 +1,7 @@
 import path from "node:path";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { readConfigurationSource } from "../../config/files.js";
+import { resolveRepositoryRoot as resolveSharedRepositoryRoot, validateRepositoryRoot } from "../../repository/location.js";
 import { MissingConfigurationFieldError } from "../../config/errors.js";
 import { ancestorIdentities, missingPathsReferToSameDirectory, pathsEqual, pathsOverlap, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ReviewPaths } from "./paths.js";
@@ -26,7 +27,7 @@ export type ReviewConfiguration = {
   repositories: RepositoryConfiguration[];
 };
 
-export const defaultRepositoryRoot = "~/daynights";
+export { defaultRepositoryRoot } from "../../repository/location.js";
 
 export const configurationDefaults = {
   pollIntervalMs: 60_000,
@@ -41,18 +42,6 @@ const asMapping = (value: unknown, field: string): Record<string, unknown> => {
     throw new Error(`${field} must be a mapping.`);
   }
   return value as Record<string, unknown>;
-};
-
-const validateKeys = (
-  value: Record<string, unknown>,
-  accepted: readonly string[],
-  field: string,
-): void => {
-  for (const key of Object.keys(value)) {
-    if (!accepted.includes(key)) {
-      throw new Error(`${field} contains unsupported field ${JSON.stringify(key)}.`);
-    }
-  }
 };
 
 const nonEmptyString = (value: unknown, field: string): string => {
@@ -71,10 +60,10 @@ const positiveInteger = (
   }
   const value = mapping[field];
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${field} must be a positive safe integer.`);
+    throw new Error(`review.${field} must be a positive safe integer.`);
   }
   if (field.endsWith("Ms") && value > 2_147_483_647) {
-    throw new Error(`${field} must not exceed the supported timer limit of 2147483647 milliseconds.`);
+    throw new Error(`review.${field} must not exceed the supported timer limit of 2147483647 milliseconds.`);
   }
   return value;
 };
@@ -158,7 +147,7 @@ const validateRepositoryPaths = (
   for (const [index, repositoryPath] of repositoryPaths.entries()) {
     if (pathsOverlap(repositoryPath, stateDirectory, pathApi)) {
       throw new Error(
-        `repositories[${index}].path must not overlap the state directory ${stateDirectory}.`,
+        `review.repositories[${index}].path must not overlap the state directory ${stateDirectory}.`,
       );
     }
     const duplicate = repositoryPaths
@@ -166,7 +155,7 @@ const validateRepositoryPaths = (
       .findIndex((previous) => pathsEqual(previous, repositoryPath, pathApi));
     if (duplicate !== -1) {
       throw new Error(
-        `repositories[${index}].path resolves to the same location as repositories[${duplicate}].path (${repositories[duplicate]!.coordinate}).`,
+        `review.repositories[${index}].path resolves to the same location as review.repositories[${duplicate}].path (${repositories[duplicate]!.coordinate}).`,
       );
     }
   }
@@ -177,25 +166,14 @@ export const resolveRepositoryRoot = (
   runtimePaths: ReviewPaths,
   homeDirectory: string,
   pathApi: PathApi = path,
-): string => {
-  const root = validateRepositoryRoot(configuredRoot, pathApi);
-  if (!pathApi.isAbsolute(homeDirectory)) {
-    throw new Error("The current user's home directory must be an absolute path.");
-  }
-  return root === "~" || root.startsWith("~/") || (pathApi.sep === "\\" && root.startsWith("~\\"))
-    ? pathApi.resolve(pathApi.join(homeDirectory, root.slice(2)))
-    : pathApi.resolve(pathApi.dirname(runtimePaths.configFile), root);
-};
+): string => resolveSharedRepositoryRoot(configuredRoot, runtimePaths, homeDirectory, "review.repositoryRoot", pathApi);
 
-const validateRepositoryRoot = (value: unknown, pathApi: PathApi): string => {
-  const root = nonEmptyString(value, "repositoryRoot");
-  if (root.startsWith("~") && root !== "~" && !root.startsWith("~/") && !(pathApi.sep === "\\" && root.startsWith("~\\"))) {
-    throw new Error("repositoryRoot supports only the current user's home directory (~ or ~/), absolute paths, or config-directory-relative paths.");
+export const reviewConfigurationMapping = (root: Record<string, unknown>): Record<string, unknown> => {
+  if (!Object.hasOwn(root, "review")) {
+    return {};
   }
-  if (pathApi.sep === "\\" && /^[a-z]:(?![\\/])/i.test(root)) {
-    throw new Error("repositoryRoot must not use a drive-relative Windows path.");
-  }
-  return root;
+  const review = asMapping(root.review, "review");
+  return review;
 };
 
 const parseReviewConfiguration = (
@@ -204,9 +182,10 @@ const parseReviewConfiguration = (
   pathApi: PathApi,
   allowMissingRepositories: boolean,
 ): ReviewConfiguration => {
-  const { mapping } = parseConfigurationDocument(source, runtimePaths);
+  const { mapping: root } = parseConfigurationDocument(source, runtimePaths);
+  const mapping = reviewConfigurationMapping(root);
   if (Object.hasOwn(mapping, "repositoryRoot")) {
-    validateRepositoryRoot(mapping.repositoryRoot, pathApi);
+    validateRepositoryRoot(mapping.repositoryRoot, "review.repositoryRoot", pathApi);
   }
   const settings = {
     pollIntervalMs: positiveInteger(mapping, "pollIntervalMs"),
@@ -214,23 +193,22 @@ const parseReviewConfiguration = (
     agentTimeoutMs: positiveInteger(mapping, "agentTimeoutMs"),
     maxAttempts: positiveInteger(mapping, "maxAttempts"),
     retryDelayMs: positiveInteger(mapping, "retryDelayMs"),
-    ...(Object.hasOwn(mapping, "copilotModel") ? { copilotModel: nonEmptyString(mapping.copilotModel, "copilotModel") } : {}),
-    ...(Object.hasOwn(mapping, "copilotReasoningEffort") ? { copilotReasoningEffort: nonEmptyString(mapping.copilotReasoningEffort, "copilotReasoningEffort") } : {}),
+    ...(Object.hasOwn(mapping, "copilotModel") ? { copilotModel: nonEmptyString(mapping.copilotModel, "review.copilotModel") } : {}),
+    ...(Object.hasOwn(mapping, "copilotReasoningEffort") ? { copilotReasoningEffort: nonEmptyString(mapping.copilotReasoningEffort, "review.copilotReasoningEffort") } : {}),
   };
   if (!Object.hasOwn(mapping, "repositories")) {
     if (allowMissingRepositories) {
       return { ...settings, repositories: [] };
     }
-    throw new MissingConfigurationFieldError("repositories", "Review repositories are not configured; use daynight review add-repo <remote>.");
+    throw new MissingConfigurationFieldError("review.repositories", "Review repositories are not configured; use daynight review add-repo <remote>.");
   }
   if (!Array.isArray(mapping.repositories) || mapping.repositories.length === 0) {
-    throw new Error("repositories must be a nonempty sequence.");
+    throw new Error("review.repositories must be a nonempty sequence.");
   }
   const identities = new Set<string>();
   const repositories = mapping.repositories.map((value: unknown, index: number) => {
-    const field = `repositories[${index}]`;
+    const field = `review.repositories[${index}]`;
     const repository = asMapping(value, field);
-    validateKeys(repository, ["remote", "path"], field);
     const remote = nonEmptyString(repository.remote, `${field}.remote`);
     const identity = remoteIdentity(remote, `${field}.remote`);
     if (identities.has(identity.coordinate)) {
@@ -292,7 +270,7 @@ const validatePhysicalRepositoryPaths = async (
       (stateDirectory.missingComponents.length === 0 && repositoryAncestors.has(stateDirectory.ancestorIdentity)) ||
       (directory.missingComponents.length === 0 && stateAncestors.has(directory.ancestorIdentity)) || sharedMissingPrefix
     ) {
-      throw new Error(`repositories[${index}].path must not overlap the state directory ${statePath}.`);
+      throw new Error(`review.repositories[${index}].path must not overlap the state directory ${statePath}.`);
     }
     for (const [previousIndex, previous] of repositoryDirectories.slice(0, index).entries()) {
       if (directory.ancestorIdentity !== previous.ancestorIdentity) {
@@ -308,7 +286,7 @@ const validatePhysicalRepositoryPaths = async (
         directory.missingComponents,
       );
       if (exact || observedSameDirectory) {
-        throw new Error(`repositories[${index}].path resolves to the same location as repositories[${previousIndex}].path (${configuration.repositories[previousIndex]!.coordinate}).`);
+        throw new Error(`review.repositories[${index}].path resolves to the same location as review.repositories[${previousIndex}].path (${configuration.repositories[previousIndex]!.coordinate}).`);
       }
     }
   }

@@ -1,20 +1,20 @@
 import { useId } from "react";
 import { useI18n } from "../../i18n/LocaleProvider";
-import type { OverviewProgressCount, OverviewTaskTarget } from "./overview-progress";
-import { useOverviewProgress } from "./useOverviewProgress";
+import type { OverviewProgress, OverviewProgressCount, OverviewTaskTarget } from "./overview-progress";
+import { ListPagination } from "./ListPagination";
+import type { PaginationState } from "./usePagination";
 import type { GraphSnapshot } from "./useTaskGraph";
 import "../../styles/task-status-rows.css";
+import { compareTaskStatus } from "./task-order";
 
-export const ProjectOverview = ({ snapshot, chainIds, standaloneIds, active, onNavigate }: {
+export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate }: {
   readonly snapshot: GraphSnapshot;
-  readonly chainIds: readonly string[];
-  readonly standaloneIds: readonly string[];
-  readonly active: boolean;
+  readonly progress: OverviewProgress;
+  readonly pagination: PaginationState;
   readonly onNavigate: (target: OverviewTaskTarget) => void;
 }) => {
   const { messages: { workspace: { project: m, sections, overview }, common }, format } = useI18n();
   const summary = snapshot.graph.summary;
-  const progress = useOverviewProgress(snapshot, chainIds, standaloneIds, active);
   const headingId = useId();
   const completion = summary.total === 0 ? 0 : Math.round(summary.done * 100 / summary.total);
   const row = (title: string, value: OverviewProgressCount, target: OverviewTaskTarget, scope?: string) => <button className="overview-progress-row task-status-surface" data-task-status={value.status} type="button"
@@ -25,6 +25,11 @@ export const ProjectOverview = ({ snapshot, chainIds, standaloneIds, active, onN
     <span className="overview-progress-percent">{format.number(value.percent)}%</span>
     <svg className="overview-progress-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
   </button>;
+  const rows = progress.chains.map((chain) => ({ status: chain.status,
+    element: <li key={chain.taskId}>{row(`${chain.title}${chain.titleTruncated ? "…" : ""}`, chain, { kind: "chain", taskId: chain.taskId })}</li> }));
+  if (progress.standalone !== null) rows.push({ status: progress.standalone.status,
+    element: <li key="standalone">{row(overview.standalone, progress.standalone, { kind: "standalone" }, overview.standaloneScope)}</li> });
+  const orderedRows = rows.toSorted((left, right) => compareTaskStatus(left.status, right.status));
   return <>
     <div className="project-section-heading"><h2>{sections.overview}</h2><p title={sections.overviewDescription}>{sections.overviewDescription}</p></div>
     <section className="stats" aria-label={m.statistics}>
@@ -35,12 +40,10 @@ export const ProjectOverview = ({ snapshot, chainIds, standaloneIds, active, onN
       <div className="stat ready"><p className="stat-label">{m.ready}</p><p className="stat-number">{format.number(summary.ready)}</p><p className="stat-foot">{m.todoSubset}</p></div>
       <div className="stat blocked"><p className="stat-label">{m.blocked}</p><p className="stat-number">{format.number(summary.blocked)}</p><p className="stat-foot">{m.todoSubset}</p></div>
     </section>
-    <section className="overview-progress" aria-labelledby={headingId}>
+    <section className="overview-progress" id="project-overview-progress" tabIndex={-1} aria-labelledby={headingId}>
       <h2 id={headingId}>{overview.heading}</h2>
-      {progress.chains.length > 0 || progress.standalone !== null ? <ul className="overview-progress-list">
-        {progress.chains.map((chain) => <li key={chain.taskId}>{row(`${chain.title}${chain.titleTruncated ? "…" : ""}`, chain, { kind: "chain", taskId: chain.taskId })}</li>)}
-        {progress.standalone !== null && <li>{row(overview.standalone, progress.standalone, { kind: "standalone" }, overview.standaloneScope)}</li>}
-      </ul> : <div className="state-box overview-progress-empty"><h3>{summary.total === 0 ? m.empty : overview.allCompleted}</h3><p>{summary.total === 0 ? m.emptyDetail : overview.allCompletedDetail}</p></div>}
+      {rows.length > 0 ? <ul className="overview-progress-list">{orderedRows.slice(pagination.start - 1, pagination.end).map(({ element }) => element)}</ul> : <div className="state-box overview-progress-empty"><h3>{summary.total === 0 ? m.empty : overview.allCompleted}</h3><p>{summary.total === 0 ? m.emptyDetail : overview.allCompletedDetail}</p></div>}
+      <ListPagination label={overview.heading} {...pagination} />
     </section>
   </>;
 };

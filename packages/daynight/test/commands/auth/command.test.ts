@@ -208,7 +208,7 @@ describe("explicit device login", () => {
   });
 
   it("merges concurrent review edits but refuses changed origin or credential", async () => {
-    for (const concurrent of ["# review\npollIntervalMs: 2000\n", "serverUrl: https://test.example\n", "serverToken: another-login\n"]) {
+    for (const concurrent of ["# review\nreview:\n  pollIntervalMs: 2000\n", "serverUrl: https://test.example\n", "serverToken: another-login\n"]) {
       const { context, paths } = await fixture("# initial\n{}\n");
       const fetch = successFetch();
       const login = runLoginCommand(["--no-browser"], context, { fetch, wait: async () => { await writeFile(paths.configFile, concurrent); } });
@@ -216,7 +216,7 @@ describe("explicit device login", () => {
         await login;
         const source = await readFile(paths.configFile, "utf8");
         expect(source).toContain("# review");
-        expect(parse(source)).toEqual({ pollIntervalMs: 2000, serverToken: token.access_token });
+        expect(parse(source)).toEqual({ review: { pollIntervalMs: 2000 }, serverToken: token.access_token });
       } else {
         await expect(login).rejects.toThrow("configuration changed");
         expect(await readFile(paths.configFile, "utf8")).toBe(concurrent);
@@ -324,13 +324,13 @@ describe("native device transport failures", () => {
 
 describe("explicit logout", () => {
   it.each([204, 401])("revokes the current credential and clears local state after HTTP %s", async (status) => {
-    const { context, paths } = await fixture("# settings\npollIntervalMs: 2000\nserverToken: current-credential\n");
+    const { context, paths } = await fixture("# settings\nreview:\n  pollIntervalMs: 2000\nserverToken: current-credential\n");
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response(null, { status }));
     await runLogoutCommand([], context, { fetch });
     expect(String(fetch.mock.calls[0]![0])).toBe("https://daynight.cc/api/v1/auth/device/logout");
     expect(fetch.mock.calls[0]![1]).toMatchObject({ method: "POST", redirect: "manual", cache: "no-store" });
     expect(new Headers(fetch.mock.calls[0]![1]!.headers).get("Authorization")).toBe("Bearer current-credential");
-    expect(parse(await readFile(paths.configFile, "utf8"))).toEqual({ pollIntervalMs: 2000 });
+    expect(parse(await readFile(paths.configFile, "utf8"))).toEqual({ review: { pollIntervalMs: 2000 } });
     expect(await readFile(paths.configFile, "utf8")).toContain("# settings");
     expect(await loadServerConfiguration(paths)).toEqual({ serverUrl: "https://daynight.cc" });
     expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);

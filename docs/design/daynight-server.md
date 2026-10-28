@@ -260,7 +260,7 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标三状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
-| `POST .../tasks/{taskId}/worker-claim/transfer` | owner/admin 向当前目标成员原子移交 |
+| `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active/released，清除归属并关闭自动执行 |
 | `POST .../tasks/{taskId}/worker-claim/resume` | owner/admin 显式为 released task 开始新执行 |
 
 创建 project 的输入为 `name` 和 `repoUrl`。创建 task 的输入为 `title`、可省略的

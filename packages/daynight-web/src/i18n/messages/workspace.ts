@@ -58,6 +58,7 @@ export type WorkspaceMessages = {
     readonly showingSnapshot: string;
     readonly retryRefresh: string;
     readonly selectedTaskRemoved: string;
+    readonly dismissNotice: string;
     readonly statistics: string;
     readonly totalTasks: string;
     readonly uniqueTasks: string;
@@ -82,7 +83,6 @@ export type WorkspaceMessages = {
   };
   readonly standalone: {
     readonly list: string;
-    readonly showCompletedCount: (args: { readonly count: number }) => string;
     readonly summary: (args: { readonly visible: number; readonly total: number }) => string;
     readonly summaryLabel: (args: { readonly visible: number; readonly total: number }) => string;
     readonly explanation: string;
@@ -90,8 +90,15 @@ export type WorkspaceMessages = {
     readonly emptyDetail: string;
     readonly allCompleted: string;
     readonly hiddenCompleted: (args: { readonly count: number }) => string;
-    readonly showCompleted: string;
+    readonly showAll: string;
     readonly createdOn: (args: { readonly date: string }) => string;
+  };
+  readonly pagination: {
+    readonly label: (args: { readonly list: string }) => string;
+    readonly range: (args: { readonly start: number; readonly end: number; readonly total: number }) => string;
+    readonly page: (args: { readonly page: number; readonly pages: number }) => string;
+    readonly previous: string;
+    readonly next: string;
   };
   readonly sections: {
     readonly label: string;

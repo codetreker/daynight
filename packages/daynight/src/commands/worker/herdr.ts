@@ -8,13 +8,12 @@ export type {
   HerdrExecutionOwner,
   HerdrOwnedWorkspace,
   HerdrTaskBinding,
-  HerdrWorkspaceEvidence,
-  HerdrPreparedWorkspace,
+  HerdrPendingStop,
   HerdrAgentConfiguration,
   HerdrAgentObservation,
+  HerdrAgentStartInput,
+  HerdrPromptReceipt,
   HerdrNativeReference,
-  HerdrStopObservation,
-  HerdrLaunchEvidence,
 } from "./herdr/agents.js";
 export { HerdrAgentActionError, validateHerdrAgentArguments } from "./herdr/agents.js";
 export { HerdrRpcError } from "./herdr/rpc.js";

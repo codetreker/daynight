@@ -14,6 +14,19 @@ execution.
 
 ## Decision
 
+The Herdr adapter uses direct current-resource operations and call-local
+stop/input observations under the [simplification
+decision](../simplification/2026-10-27-worker-claim-records.md). Private instance
+isolation, explicit native integration and input readiness remain. The
+[full-access decision](2026-10-27-worker-full-access.md) replaces the original
+operator-managed native folder, hook and tool permission confirmations with a
+fixed invocation policy for fresh and resumed processes. The original receipts,
+history prerequisites, persisted PID provenance and native-consent handling below
+explain the earlier recovery design; they are historical rationale rather than
+current storage or permission requirements.
+
+### Original implementation and rationale
+
 The [adapter entry](../../../../packages/daynight/src/commands/worker/herdr.ts)
 composes private-instance lifecycle, bounded IPC, native preflight and concrete
 task operations. One worker uses one private named session `w`, with independent
@@ -47,7 +60,9 @@ Bash/Zsh that honor it write their history there. This does not sandbox shell
 profiles: custom rc files may override it, and other shells or APPDATA-based
 history are not universally redirected. The structured attachment descriptor
 contains required routing/native-home/history overrides and identity removals,
-not a full copy of authentication environment values.
+not a full copy of authentication environment values. The [worker attach
+command](../feature/2026-10-27-worker-attach-command.md) consumes that descriptor
+to connect an interactive client to the existing private instance.
 
 Instance readiness checks compatible Herdr version/protocol, a restored snapshot
 and both endpoints. An incompatible or uncertain existing server is retained. A
@@ -129,7 +144,7 @@ looks empty. Native consent is an explicit operator decision in the original
 session or normal prerequisite configuration.
 
 The controller owns the complete startup and restart prompt, including explicit
-worker-managed environment, using-daynight execute-task-in-managed mode and the
+worker-managed environment, using-daynight autopilot-managed-task mode and the
 original assignment/frozen configuration. The adapter treats it as opaque text,
 preserves multiline content and never infers task mode or builds business
 instructions. Reconnecting to a live original agent does not resubmit startup
@@ -331,6 +346,10 @@ exposes that capability boundary. A diagnostic preserves the request and cause
 without a second configuration interpretation engine.
 
 ## Consequences
+
+The [current simplification](../simplification/2026-10-27-worker-claim-records.md) owns the delivered storage and restart trade-offs. The original consequences below belong to the detailed model retained here as decision history.
+
+### Original consequences
 
 The adapter exposes concrete submission and resource facts without a reporting
 protocol, callback service, prompt DSL or another local ledger. A known missing

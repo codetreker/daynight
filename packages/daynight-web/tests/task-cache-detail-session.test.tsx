@@ -59,6 +59,31 @@ it("does not publish a disk body until this mount has a successful graph receipt
   live.resolve(resourceResponse(detail, TEST_VIEWER_ID)); await waitFor(() => expect(result.current.canSetStatus).toBe(true));
 });
 
+it("keeps accepted preparation alive across cached reopening and still requires the reopened view's live GET", async () => {
+  const detail = body(); const scope = await seed([detail]); const prepare = deferred<void>(); const fresh = deferred<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(detail, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse(detail, TEST_VIEWER_ID))
+    .mockReturnValueOnce(fresh.promise); vi.stubGlobal("fetch", fetch);
+  const latest = { current: null as ReturnType<typeof useTaskDetail> | null }; const observed = node(scope);
+  const Probe = ({ revision }: { readonly revision: number }) => { latest.current = useTaskDetail(projectId, taskId, revision, observed); return null; };
+  const Host = ({ visible, revision }: { readonly visible: boolean; readonly revision: number }) => <TaskCacheProvider scope={scope}><TaskDetailSessionProvider>{visible && <Probe revision={revision} />}</TaskDetailSessionProvider></TaskCacheProvider>;
+  const view = render(<Host visible revision={1} />); await waitFor(() => expect(latest.current?.canSetStatus).toBe(true));
+  const transaction = scope.detailTransaction.bind(scope);
+  const preparation = vi.spyOn(scope, "detailTransaction").mockImplementationOnce(async (...args) => { await prepare.promise; return transaction(...args); });
+  act(() => latest.current!.setStatus("todo", detail.version)); await waitFor(() => expect(preparation).toHaveBeenCalledOnce());
+  view.rerender(<Host visible={false} revision={1} />); view.rerender(<Host visible revision={0} />);
+  expect(latest.current).toMatchObject({ detail: null, requiresFreshRead: true, canSetStatus: false, canSetAgentPermission: false, canSetRequiredPlatform: false, canDelete: false,
+    mutation: { phase: "pending" } });
+  await act(async () => { prepare.resolve(); });
+  await waitFor(() => expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1));
+  await waitFor(() => expect(latest.current?.mutation.phase).toBe("confirmed"));
+  expect(latest.current?.detail).toBeNull(); expect(latest.current?.canSetStatus).toBe(false); expect(fetch).toHaveBeenCalledTimes(2);
+  view.rerender(<Host visible revision={1} />);
+  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3));
+  expect(latest.current?.requiresFreshRead).toBe(true); expect(latest.current?.canSetStatus).toBe(false);
+  fresh.resolve(resourceResponse(detail, TEST_VIEWER_ID)); await waitFor(() => expect(latest.current?.canSetStatus).toBe(true));
+  expect(fetch.mock.calls.filter((call) => call[1]?.method === "PUT")).toHaveLength(1);
+});
+
 it("refreshes description-only versions even when a cross-tab graph update retains this mount receipt", async () => {
   const first = body({ description: "Old" }); const next = { ...first, version: 6n, description: "New" }; const scope = await seed([first]);
   const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(first, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse(next, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch);

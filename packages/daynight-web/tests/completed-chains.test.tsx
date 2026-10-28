@@ -42,7 +42,7 @@ const graph = (items = seeds, id = projectId): TaskGraph => {
 const allDone = () => seeds.map((item) => ({ ...item, status: 'done' as const }));
 const visibilityKey = (id = projectId) => `daynight:completed-chains:${id}`;
 const expansionKey = `daynight:project-view:${projectId}`;
-const checkbox = () => screen.getByRole('checkbox', { name: /^显示已完成任务链/ });
+const checkbox = () => screen.getByRole('checkbox', { name: /^显示所有/ });
 const root = (id: string) => document.getElementById(`task-root-${id}`)!;
 const graphButton = (id: string) => document.getElementById(`task-chain-graph-${id}`)!;
 const roots = () => [...document.querySelectorAll('.root-toggle')].map((item) => item.id);
@@ -68,9 +68,9 @@ beforeEach(() => { request.mockReset(); request.mockResolvedValue(graph()); });
 describe('completed task chain visibility', () => {
   it('hides only complete chains while keeping done roots, explicit external dependencies and full project counts', async () => {
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
-    await screen.findByRole('checkbox', { name: '显示已完成任务链（2）' });
+    await screen.findByRole('checkbox', { name: '显示所有' });
     expect(checkbox()).not.toBeChecked();
-    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000001']);
+    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000001', 'task-root-00000000-0000-4000-8000-000000000006']);
     expect(screen.getByLabelText('显示 2 条，共 4 条任务链')).toHaveTextContent('2 / 4');
     expect([count('任务总数'), count('已完成'), count('待处理')]).toEqual(['8', '5', '3']);
     fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
@@ -83,7 +83,7 @@ describe('completed task chain visibility', () => {
     checkbox().focus();
     fireEvent.click(checkbox());
     expect(checkbox()).toHaveFocus();
-    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003', 'task-root-00000000-0000-4000-8000-000000000001']);
+    expect(roots()).toEqual(['task-root-00000000-0000-4000-8000-000000000001', 'task-root-00000000-0000-4000-8000-000000000006', 'task-root-00000000-0000-4000-8000-000000000005', 'task-root-00000000-0000-4000-8000-000000000003']);
     expect(graphButton('00000000-0000-4000-8000-000000000001')).toHaveAttribute('aria-haspopup', 'dialog');
     expect(screen.queryByTestId('projection')).toBeNull();
     expect(request).toHaveBeenCalledTimes(1);
@@ -131,14 +131,14 @@ describe('completed task chain visibility', () => {
     window.localStorage.setItem(expansionKey, legacyValue);
     request.mockResolvedValue(graph([seeds[2]!, seeds[3]!, seeds[4]!, seeds[7]!]));
     render(<ProjectPage projectId={projectId} />); await selectTaskList();
-    await screen.findByRole('heading', { name: '所有任务链已完成' });
+    await screen.findByRole('heading', { name: '暂无近期任务链' });
     expect(screen.queryByText('还没有任务')).toBeNull();
     expect(count('任务总数')).toBe('4'); expect(count('已完成')).toBe('4');
     expect(screen.getByLabelText('显示 0 条，共 2 条任务链')).toBeVisible();
     expect(savedExpansion()).toBe(legacyValue);
-    fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
+    fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
     expect(checkbox()).toBeChecked(); expect(checkbox()).toHaveFocus();
-    expect(screen.queryByRole('heading', { name: '所有任务链已完成' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '暂无近期任务链' })).toBeNull();
     expect(screen.queryByTestId('projection')).toBeNull();
     expect(document.querySelector('[aria-expanded="true"]')).toBeNull();
     fireEvent.click(checkbox()); expect(checkbox()).toHaveFocus();
@@ -149,7 +149,7 @@ describe('completed task chain visibility', () => {
     request.mockResolvedValue(graph([])); render(<ProjectPage projectId={projectId} />); await selectTaskList();
     await screen.findByRole('heading', { name: '还没有任务' });
     expect(screen.queryByRole('checkbox')).toBeNull();
-    expect(screen.queryByRole('heading', { name: '所有任务链已完成' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: '暂无近期任务链' })).toBeNull();
   });
 
   it('closes a graph when refresh hides its completed chain and does not open a replacement', async () => {
@@ -158,14 +158,14 @@ describe('completed task chain visibility', () => {
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     fireEvent.click(graphButton('00000000-0000-4000-8000-000000000001'));
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
-    await screen.findByRole('heading', { name: '所有任务链已完成' });
+    await screen.findByRole('heading', { name: '暂无近期任务链' });
     expect(screen.queryByTestId('projection')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: '显示已完成任务链' }));
+    fireEvent.click(screen.getByRole('button', { name: '显示所有' }));
     expect(root('00000000-0000-4000-8000-000000000001')).toBeVisible();
     expect(screen.queryByTestId('projection')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '刷新' }));
-    await screen.findByRole('checkbox', { name: '显示已完成任务链（0）' });
-    expect(root('00000000-0000-4000-8000-000000000011')).toBeVisible();
+    await screen.findByRole('checkbox', { name: '显示所有' });
+    await waitFor(() => expect(root('00000000-0000-4000-8000-000000000011')).toBeVisible());
     expect(screen.queryByTestId('projection')).toBeNull();
     expect(savedExpansion()).toBeNull();
   });
@@ -205,7 +205,7 @@ describe('completed task chain visibility', () => {
   it.each(['{', 'null', '{}', '[]', '"true"', '1'])('reports invalid visibility data and keeps filtering usable (%s)', async (saved) => {
     window.localStorage.setItem(visibilityKey(), saved);
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
-    expect(screen.getByText(/^浏览器保存的已完成任务链显示偏好无效/)).toBeVisible();
+    expect(screen.getByText(/^浏览器保存的任务链“显示所有”偏好无效/)).toBeVisible();
     expect(checkbox()).not.toBeChecked(); fireEvent.click(checkbox());
     expect(checkbox()).toBeChecked(); expect(window.localStorage.getItem(visibilityKey())).toBe('true');
   });
@@ -217,7 +217,7 @@ describe('completed task chain visibility', () => {
       return original.call(this, key);
     });
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
-    expect(screen.getByText(/^无法读取浏览器保存的已完成任务链显示偏好/)).toBeVisible();
+    expect(screen.getByText(/^无法读取浏览器保存的任务链“显示所有”偏好/)).toBeVisible();
     fireEvent.click(checkbox()); expect(checkbox()).toBeChecked(); expect(roots()).toHaveLength(4);
   });
 
@@ -229,17 +229,17 @@ describe('completed task chain visibility', () => {
     });
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
     fireEvent.click(checkbox()); expect(checkbox()).toBeChecked(); expect(roots()).toHaveLength(4);
-    expect(screen.getByText(/^已完成任务链显示偏好无法保存到浏览器/)).toBeVisible();
+    expect(screen.getByText(/^任务链“显示所有”偏好无法保存到浏览器/)).toBeVisible();
     write.mockRestore(); fireEvent.click(checkbox());
-    expect(screen.queryByText(/^已完成任务链显示偏好无法保存到浏览器/)).toBeNull();
+    expect(screen.queryByText(/^任务链“显示所有”偏好无法保存到浏览器/)).toBeNull();
     expect(window.localStorage.getItem(visibilityKey())).toBe('false');
   });
 
   it('keeps visibility controls usable when browser storage access is entirely denied', async () => {
     vi.spyOn(window, 'localStorage', 'get').mockImplementation(() => { throw new DOMException('Storage denied', 'SecurityError'); });
     render(<ProjectPage projectId={projectId} />); await selectTaskList(); await screen.findByRole('checkbox');
-    expect(screen.getByText(/^无法读取浏览器保存的已完成任务链显示偏好/)).toBeVisible();
+    expect(screen.getByText(/^无法读取浏览器保存的任务链“显示所有”偏好/)).toBeVisible();
     fireEvent.click(checkbox()); expect(checkbox()).toBeChecked(); expect(roots()).toHaveLength(4);
-    expect(screen.getByText(/^已完成任务链显示偏好无法保存到浏览器/)).toBeVisible();
+    expect(screen.getByText(/^任务链“显示所有”偏好无法保存到浏览器/)).toBeVisible();
   });
 });

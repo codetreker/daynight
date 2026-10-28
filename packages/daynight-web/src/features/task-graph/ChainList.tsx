@@ -1,3 +1,5 @@
+import { ListPagination } from "../projects/ListPagination";
+import type { PaginationState } from "../projects/usePagination";
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { GraphTask, TaskStatus } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -18,8 +20,9 @@ type ChainListProps = {
   readonly onOpenChain: (id: string, trigger: HTMLElement) => void;
   readonly onCloseChain: () => void;
   readonly onOpenTask: (id: string, trigger: HTMLElement) => void;
-  readonly showCompleted: boolean;
-  readonly onShowCompletedChange: (show: boolean) => void;
+  readonly pagination?: PaginationState;
+  readonly showAll: boolean;
+  readonly onShowAllChange: (show: boolean) => void;
 };
 
 type ChainRowProps = Pick<ChainListProps, 'index' | 'onOpenChain' | 'onOpenTask'> & {
@@ -52,6 +55,7 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
   const task = index.nodes.get(rootId)!;
   const component = index.components.get(rootId)!;
   const progress = component.progress;
+  const inProgressCount = [...component.memberIds].filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
@@ -64,9 +68,7 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
         aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
         <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
         <span className="root-heading">
-          <span className="goal-eyebrow">{m.goalTitle}</span>
-          <span className="root-title">{title}</span>
-          <span className="root-meta">{m.rootSummary({ total: progress.total, remaining: progress.total - progress.done })}</span>
+          <span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span></span>
         </span>
         <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.done / progress.total * 100}%` }} /></span></span>
         <span className={`root-status graph-status-${progress.status}`}>{common.status[progress.status]}</span>
@@ -92,7 +94,7 @@ const focusAvailable = (element: HTMLElement | null | undefined) => {
   return true;
 };
 
-export const ChainList = ({ index, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, showCompleted, onShowCompletedChange }: ChainListProps) => {
+export const ChainList = ({ index, representativeIds, allRepresentativeIds, openChainId, onOpenChain, onCloseChain, onOpenTask, showAll, onShowAllChange, pagination }: ChainListProps) => {
   const { messages: { graph: m } } = useI18n();
   const checkbox = useRef<HTMLInputElement>(null);
   const container = useRef<HTMLElement>(null);
@@ -125,7 +127,7 @@ export const ChainList = ({ index, representativeIds, allRepresentativeIds, open
     restoreListFocus(focusedChain.current);
   }, [index, openChainId, representativeIds, restoreListFocus]);
   const completedCount = useMemo(() => allRepresentativeIds.filter((id) => index.components.get(id)!.progress.status === 'done').length, [index, allRepresentativeIds]);
-  return <section aria-label={m.chainList} ref={container} tabIndex={-1} onFocusCapture={(event) => {
+  return <section id="project-chain-list" aria-label={m.chainList} ref={container} tabIndex={-1} onFocusCapture={(event) => {
     if (event.currentTarget.contains(event.target)) {
       focusedControl.current = event.target;
       const chainId = event.target.closest<HTMLElement>('[data-chain-id]')?.dataset.chainId;
@@ -133,13 +135,14 @@ export const ChainList = ({ index, representativeIds, allRepresentativeIds, open
     }
   }}>
     <div className="task-view-toolbar">
-      {allRepresentativeIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showCompleted} onChange={(event) => { onShowCompletedChange(event.currentTarget.checked); }} />{m.showCompletedCount({ count: completedCount })}</label>}
-      <span className="task-view-summary" aria-label={m.chainSummaryLabel({ shown: representativeIds.length, total: allRepresentativeIds.length })}>{m.chainSummary({ shown: representativeIds.length, total: allRepresentativeIds.length })}</span>
+      {allRepresentativeIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showAll} onChange={(event) => { onShowAllChange(event.currentTarget.checked); }} />{m.showAll}</label>}
+      <span className="task-view-summary" aria-label={m.chainSummaryLabel({ shown: pagination === undefined ? representativeIds.length : pagination.total, total: allRepresentativeIds.length })}>{m.chainSummary({ shown: pagination === undefined ? representativeIds.length : pagination.total, total: allRepresentativeIds.length })}</span>
     </div>
     <p className="graph-note">{m.chainNote}</p>
     {allRepresentativeIds.length === 0 ? <div className="state-box"><h3>{m.emptyTitle}</h3><p>{m.emptyDescription}</p></div>
-      : representativeIds.length === 0 ? <div className="state-box completed-chains-empty"><h3>{m.completedTitle}</h3><p>{m.completedDescription({ count: completedCount })}</p><button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowCompletedChange(true); }}>{m.showCompleted}</button></div>
+      : representativeIds.length === 0 ? <div className="state-box completed-chains-empty"><h3>{m.completedTitle}</h3><p>{m.completedDescription({ count: completedCount })}</p><button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowAllChange(true); }}>{m.showAll}</button></div>
         : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} index={index} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} />)}</ul>}
+    {pagination !== undefined && <ListPagination label={m.chainList} {...pagination} />}
     {openChainId !== null && <TaskChainDialog index={index} rootId={openChainId} onOpenTask={onOpenTask} onClose={onCloseChain} onRestoreFocus={restoreFocus} />}
   </section>;
 };

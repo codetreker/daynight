@@ -1,9 +1,11 @@
 import path from "node:path";
 import { Document } from "yaml";
+import { verifyConfigurationUpdate } from "../../config/ownership.js";
 import { parseConfigurationDocument } from "../../config/document.js";
+import { repositoryPathComponent } from "../../repository/location.js";
 import { updateConfigurationFile } from "../../config/files.js";
 import type { ConfigurationUpdate } from "../../config/files.js";
-import { defaultRepositoryRoot, remoteIdentity, resolveRepositoryRoot, validateConfigurationSource, validateRegistrationConfigurationSource } from "./config.js";
+import { defaultRepositoryRoot, remoteIdentity, reviewConfigurationMapping, resolveRepositoryRoot, validateConfigurationSource, validateRegistrationConfigurationSource } from "./config.js";
 import type { RepositoryConfiguration } from "./config.js";
 import { missingPathsReferToSameDirectory, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ReviewPaths } from "./paths.js";
@@ -12,14 +14,10 @@ export type AddRepositoryInput = { remote: string; path?: string };
 export type AddRepositoryOptions = { workingDirectory: string; homeDirectory: string };
 export type AddRepositoryResult = { repository: RepositoryConfiguration; added: boolean };
 
-const repositoryPathComponent = (component: string): string => {
-  let escaped = component.replace(/[<>:"/\\|?*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`)
-    .replace(/\.+$/, (dots) => "%2E".repeat(dots.length));
-  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(escaped)) {
-    escaped = `%${escaped.charCodeAt(0).toString(16).toUpperCase()}${escaped.slice(1)}`;
-  }
-  return escaped;
-};
+const reviewRepositoryOwnership = {
+  section: "review", fields: ["repositoryRoot", "repositories"],
+  retainedSequence: { field: "repositories", identity: "remote", fields: [] },
+} as const;
 
 const sameDirectory = async (first: string, second: string): Promise<boolean> => {
   const [left, right] = await Promise.all([resolvePhysicalDirectory(first), resolvePhysicalDirectory(second)]);
@@ -37,13 +35,14 @@ export const updateRepositoryConfiguration = async (
   options: AddRepositoryOptions,
 ): Promise<ConfigurationUpdate<AddRepositoryResult>> => {
   const existing = source === undefined ? undefined : await validateRegistrationConfigurationSource(source, runtimePaths);
-  const document = source === undefined ? new Document({ repositoryRoot: defaultRepositoryRoot, repositories: [] }) : parseConfigurationDocument(source, runtimePaths).document;
-  const decoded = document.toJS() as Record<string, unknown>;
-  const root = document.has("repositoryRoot") ? decoded.repositoryRoot : defaultRepositoryRoot;
+  const document = source === undefined ? new Document({ review: { repositoryRoot: defaultRepositoryRoot, repositories: [] } }) : parseConfigurationDocument(source, runtimePaths).document;
+  const mapping = document.toJS() as Record<string, unknown>;
+  const decoded = reviewConfigurationMapping(mapping);
+  const root = document.hasIn(["review", "repositoryRoot"]) ? decoded.repositoryRoot : defaultRepositoryRoot;
   const identity = remoteIdentity(input.remote, "remote");
   const previous = existing?.repositories.find((repository) => repository.coordinate === identity.coordinate);
   if (previous !== undefined && input.path === undefined) {
-    return { result: { repository: previous, added: false } };
+    return { kind: "unchanged", result: { repository: previous, added: false } };
   }
   let repositoryPath: string;
   if (input.path === undefined) {
@@ -59,21 +58,22 @@ export const updateRepositoryConfiguration = async (
   }
   if (previous !== undefined) {
     if (await sameDirectory(previous.path, repositoryPath)) {
-      return { result: { repository: previous, added: false } };
+      return { kind: "unchanged", result: { repository: previous, added: false } };
     }
     throw new Error(`Repository ${identity.coordinate} is already configured at ${previous.path}; the requested path ${repositoryPath} differs.`);
   }
-  if (!document.has("repositoryRoot")) {
-    document.set("repositoryRoot", defaultRepositoryRoot);
+  if (!document.hasIn(["review", "repositoryRoot"])) {
+    document.setIn(["review", "repositoryRoot"], defaultRepositoryRoot);
   }
-  if (!document.has("repositories")) {
-    document.set("repositories", document.createNode([]));
+  if (!document.hasIn(["review", "repositories"])) {
+    document.setIn(["review", "repositories"], document.createNode([]));
   }
-  document.addIn(["repositories"], { remote: input.remote, path: repositoryPath });
+  document.addIn(["review", "repositories"], { remote: input.remote, path: repositoryPath });
   const updatedSource = document.toString();
+  verifyConfigurationUpdate(mapping, parseConfigurationDocument(updatedSource, runtimePaths).mapping, reviewRepositoryOwnership);
   const configuration = await validateConfigurationSource(updatedSource, runtimePaths);
   const repository = configuration.repositories.at(-1)!;
-  return { result: { repository, added: true }, source: updatedSource };
+  return { kind: "write", result: { repository, added: true }, source: updatedSource, ownership: reviewRepositoryOwnership };
 };
 
 export const addRepository = async (

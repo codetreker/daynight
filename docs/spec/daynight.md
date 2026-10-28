@@ -48,7 +48,9 @@ daynight update
 daynight login [--no-browser]
 daynight logout
 daynight worker
+daynight worker setup
 daynight worker run
+daynight worker attach
 daynight review
 daynight review run
 daynight review list
@@ -112,7 +114,7 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 工作目录、获取实例锁、读取审查状态或执行 npm 和网络请求。生成的脚本在按 Tab 时
 遵守 C5 的本地执行要求。
 
-`worker run` 在参数分派后才加载前台配置、SQLite、Git、Herdr 与协调循环，读取固定状态根及启动时配置，不触发 review 配置引导。独立有界请求与常驻命令生命周期分开，取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
+`worker setup` 在参数分派后加载配置和有界只读环境检查，选择 agent 与既有 Project 后确认原子保存；它不启动 worker、Herdr 或 native agent，不创建 SQLite、clone 或 claim。`worker run` 加载前台配置、SQLite、Git、Herdr 与协调循环，读取固定状态根及启动时配置，不触发 review 配置引导。`worker attach` 只加载私有 Herdr 客户端入口，在交互式终端连接已有会话，不读取凭据、SQLite、worker 锁或调用服务端。独立有界请求、客户端连接与常驻命令生命周期分开，worker 取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
 
 `review add-repo` 与 review 首次引导只写配置。按 C6 完成必要的配置引导后，
 `review list` 与 `review ls` 只读取配置及已存数据库，
@@ -223,10 +225,11 @@ review 配置或数据库，不访问网络。候选和输入必须作为数据�
 登录/退出的配置写入在锁内重查 origin 与凭据，不能覆盖期间完成的另一次登录或服务切换。
 完整身份、安全和失败语义由[鉴权需求](daynight-auth.md)拥有。
 
-`review run`、`review list` 和 `review ls` 只要求 review 配置。配置文件或 `repositories`
+`review run`、`review list` 和 `review ls` 只要求 review 配置。配置文件、`review` 或 `review.repositories`
 字段缺失且 stdin/stderr 均为 TTY 时，询问一个 GitHub 远程地址及可选本地路径，复用仓库登记规则。
-共享 YAML/schema 错误、当前能力的非法值、空仓库列表和读取失败保留原错误；其他能力的业务字段由各自
-投影校验。配置完整时不询问，非交互缺少 review 配置时以状态码 1 失败并给出
+共享 YAML 语法、重复键及节点结构错误、当前能力已知字段的非法值、空仓库列表和读取失败保留原错误；
+根节点、review、worker 及其仓库条目的未知字段在运行时忽略，CLI 配置编辑保留原字段。
+其他能力的业务字段由各自投影校验。配置完整时不询问，非交互缺少 review 配置时以状态码 1 失败并给出
 `daynight review add-repo <remote> [--path <path>]` 指引。显式添加与交互引导使用相同远程身份和路径规则。
 
 顶层不提供 `daynight setup`，不保留旧入口兼容别名；`daynight completion setup` 继续负责 shell 启动配置。
@@ -239,7 +242,8 @@ review 配置或数据库，不访问网络。候选和输入必须作为数据�
 重读、合并、校验并原子保存，保留注释、其他字段、既有仓库路径和无关字段的已完成并发修改。
 所选 review 字段变化时明确报冲突。登录与退出在锁内共同核对 origin 与令牌观察值。配置锁已占用时
 明确失败。CLI 写入拒绝符号链接和非普通文件；含令牌结果在 POSIX 上使用 `0600`，其他能力写入同样遵守，
-无令牌文件沿用既有权限。
+无令牌文件沿用既有权限。所有 CLI 配置写入，包括首次生成 workerId，都必须保留非本次操作所拥有字段的解码值；
+共享 YAML alias 会连带改变无关字段时拒绝保存并保留原文件，未受影响的合法 alias 继续保留。
 
 EOF、Ctrl+C、SIGTERM 或 Windows SIGBREAK 取消输入，不保存部分值也不进入原业务。
 review 配置引导不访问网络、不认证、不 clone、不初始化 SQLite 或审查运行时。YAML 诊断只保留

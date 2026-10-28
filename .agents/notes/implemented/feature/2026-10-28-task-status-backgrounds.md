@@ -26,8 +26,10 @@ no executing member. The standalone overview aggregate uses its current counting
 window: all unfinished members plus eligible recent completions. Its lifecycle
 cue changes when the last eligible completion expires, using the existing
 overview deadline rather than a new timer. The
-[overview decision](2026-10-26-project-overview-progress.md) retains ownership of
-membership, completion windows and display conditions.
+[recent-task decision](2026-10-27-recent-task-pages.md) retains ownership of
+membership, local-calendar completion windows and display conditions. The
+existing aggregate status also covers a recent set containing only completed
+members, so its row is green at 100%.
 
 Existing standalone overdue warnings override the lifecycle background with
 amber while retaining the in-progress label. Warnings do not spread to aggregate

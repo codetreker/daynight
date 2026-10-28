@@ -4,6 +4,8 @@ import type { ConfigurationPaths } from "./paths.js";
 import { replaceFileAtomically } from "../platform/files.js";
 import { MissingConfigurationFileError } from "./errors.js";
 import { parseConfigurationDocument } from "./document.js";
+import { verifyConfigurationUpdate } from "./ownership.js";
+import type { ConfigurationOwnership } from "./ownership.js";
 
 const hasCode = (error: unknown, code: string): boolean =>
   error instanceof Error && "code" in error && error.code === code;
@@ -40,7 +42,9 @@ export const readConfigurationSource = async (paths: ConfigurationPaths, signal?
   }
 };
 
-export type ConfigurationUpdate<Result> = { result: Result; source?: string };
+export type ConfigurationUpdate<Result> =
+  | { kind: "unchanged"; result: Result }
+  | { kind: "write"; result: Result; source: string; ownership: ConfigurationOwnership };
 
 export const updateConfigurationFile = async <Result>(
   paths: ConfigurationPaths,
@@ -74,8 +78,10 @@ export const updateConfigurationFile = async <Result>(
     const source = existingEntry === undefined ? undefined : await readConfigurationSource(paths);
     const updated = await update(source);
     signal?.throwIfAborted();
-    if (updated.source !== undefined) {
+    if (updated.kind === "write") {
+      const before = source === undefined ? {} : parseConfigurationDocument(source, paths).mapping;
       const { mapping } = parseConfigurationDocument(updated.source, paths);
+      verifyConfigurationUpdate(before, mapping, updated.ownership);
       const mode = process.platform !== "win32" && Object.hasOwn(mapping, "serverToken") ? 0o600 : existingEntry?.mode;
       await replaceFileAtomically(paths.configFile, updated.source, mode);
     }
