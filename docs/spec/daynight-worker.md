@@ -85,7 +85,8 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 - 首次启动和明确恢复使用完整 prompt，显式声明 worker-managed、using-daynight、autopilot-managed-task，提供 project/task/claim/worktree 身份、实际路径/branch 和本次配置。Prompt 明确这是后台任务，不向用户提问，任务范围及已有授权内的决定自行处理；等待 review 或 CI 时自行等待、定期检查并继续交付，不因此结束当前轮执行或退出。适配层递交不透明 prompt；重连活 agent 不重发启动输入。普通技能不推断 managed 模式或加载其详细指令，缺失 assignment 保持等待。
 - 定时巡查在原 claim 仍有效时读取当前 agent 状态。已就绪、未在启动的存活 agent 处于 idle 或 done 时发送继续原任务的 ping；working、blocked、unknown、未就绪及尚有首次输入待递交时继续观察。Ping 保留原任务、claim、worktree 和授权，提醒自行等待 review/CI，不能把 agent 的 idle/done 当作业务完成。进程内保留上次输入对应的观察，观察未改变时不重复递交；未知输入结果先观察核对，不盲目重放。进入终止清理后不再发送业务 ping。
 - Copilot 与 Codex 的每次 fresh/resume 启动固定使用 full access，并为本次任务目录启用信任，免除原生工具权限、目录信任及 hook trust 确认。Copilot 使用 `--allow-all --no-ask-user --no-sandbox`，并覆盖本次 workspace 环境为 `COPILOT_ALLOW_ALL=true`、`COPILOT_ASSISTED_APPROVAL=false`；Codex 使用 `--no-daemon`、`--dangerously-bypass-approvals-and-sandbox`、`--dangerously-bypass-hook-trust` 及当前真实任务路径的调用级 trusted 配置。该策略不是可选配置；不能通过 args 降低权限或恢复确认。
-- 固定策略只作用于本次原生命令及任务 workspace，不改写全局 native 配置、凭据或组织/操作系统策略。业务执行和交付仍遵循任务授权；缺失认证、集成或能力明确报错，不降级为等待权限确认。
+- Codex 每次 fresh/resume 启动在配置参数之后以两个独立 argv 传入 `-c`、`check_for_update_on_startup=false`，覆盖同名配置，关闭本次启动的更新检查和交互提示，使任务能够进入正常输入流程。该设置通过 Herdr 启动选项传递，任务 prompt 保持独立；Copilot 启动方式不变。
+- 固定策略只作用于本次原生命令及任务 workspace，不改写全局 native 配置（包括用户 `config.toml`）、凭据或组织/操作系统策略。业务执行和交付仍遵循任务授权；缺失认证、集成或能力明确报错，不降级为等待权限确认。
 - 保留官方 native/Herdr 集成、当前参数和 composer readiness 校验。原生历史可用性由原生命令报告，不扫描 provider 数据库或会话 manifest。已知 ID 恢复失败保持可见，不静默清除 ID。启动输入只提交到可用的业务 composer。
 - 进程中的启动回执、输入提交和停止观察只保留内存，重启不承诺启动输入恰好一次。业务所需的人工输入通过原 worker attach 操作。
 
@@ -134,7 +135,7 @@ Web 与 Herdr 共用 claim 结束和工作区删除门槛。下述按 native idl
 
 | 范围 | 必须观察到的结果 |
 |---|---|
-| W-01、W-07 | 配置严格、省略值一致，项目选择明确；managed assignment 完整，正常与 managed 模式互斥；后台 prompt 明确不提问、自主决定及自行等待 review/CI；恢复使用保存的 agent 和当前适用配置；两个 provider 的 fresh/resume 均带固定 full access、目录信任参数或环境，冲突参数和缺失能力明确拒绝。 |
+| W-01、W-07 | 配置严格、省略值一致，项目选择明确；managed assignment 完整，正常与 managed 模式互斥；后台 prompt 明确不提问、自主决定及自行等待 review/CI；恢复使用保存的 agent 和当前适用配置；两个 provider 的 fresh/resume 均带固定 full access、目录信任参数或环境，冲突参数和缺失能力明确拒绝；Codex 通过独立启动 argv 关闭更新检查，有新版时不等待更新选择，没有新版时正常进入任务，配置参数和含引号等字符的 prompt 保持各自原值与传递位置。 |
 | W-02、W-03 | 默认许可、双向确认、平台清除、未知结果及候选组合过滤成立，不合格任务不遮挡合格候选。 |
 | W-04、W-05 | 同 task 竞争单赢家；未知 claim 不启动资源或重放；多项目公平调度，等待与收尾占容量，同 task 旧资源形成启动屏障；撤回只允许原 owner/admin，原子重置归属/状态/计时并关闭许可。 |
 | W-06 | Dirty worktree 复用，静态归属、注册、指针与删除核对成立；缺失原成果和外来路径保持可见错误。 |

@@ -1138,10 +1138,14 @@ trust. Copilot receives `--allow-all --no-ask-user --no-sandbox` and per-workspa
 `COPILOT_ALLOW_ALL=true`, `COPILOT_ASSISTED_APPROVAL=false`, overriding inherited
 values. Codex receives `--no-daemon`,
 `--dangerously-bypass-approvals-and-sandbox`,
-`--dangerously-bypass-hook-trust` and a final `-c` trusted-project override for
-the task's canonical path, using Codex's normalized Windows trust keys. These
-invocation settings require no native tool,
-folder or hook permission confirmation and are not optional configuration.
+`--dangerously-bypass-hook-trust`, `-c check_for_update_on_startup=false` and a
+final `-c` trusted-project override for the task's canonical path, using Codex's
+normalized Windows trust keys. The update setting follows configured arguments,
+so startup update checks and their interactive prompts stay disabled for fresh
+and resumed Codex processes. Herdr receives the option and its value as separate
+arguments; task input is submitted separately. These invocation settings require
+no native tool, folder or hook permission confirmation and are not optional
+configuration.
 
 Copilot arguments that enable assisted approval or sandboxing, deny tools/URLs,
 or restrict available tools are rejected. Codex approval/sandbox controls and
