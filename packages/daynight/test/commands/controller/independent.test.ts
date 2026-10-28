@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -248,9 +249,12 @@ test("an initial IPC transport loss keeps supervision alive without replaying in
   const v = await setup("initial exactly once");
   const { requestController: realRequest } = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
   const { createServer } = await import("node:net");
-  const endpoint = path.join(v.home, "loss.sock");
-  const server = createServer(socket => { socket.once("data", () => socket.end()); });
-  await new Promise<void>(resolve => server.listen(endpoint, resolve));
+  const endpoint = process.platform === "win32" ? String.raw`\\.\pipe\daynight-loss-test-${randomUUID()}` : path.join(v.home, "loss.sock");
+  const sockets = new Set<import("node:net").Socket>();
+  const server = createServer(socket => {
+    sockets.add(socket); socket.once("close", () => sockets.delete(socket));
+    socket.on("error", () => {}); socket.once("data", () => socket.end());
+  });
   let attempted = false, observations = 0;
   const original = f.request.getMockImplementation()!;
   f.request.mockImplementation(async (ticket, action, options) => {
@@ -267,8 +271,16 @@ test("an initial IPC transport loss keeps supervision alive without replaying in
     }
     return original(ticket, action, options);
   });
-  try { await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context); }
-  finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  try {
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(endpoint, () => { server.off("error", reject); resolve(); });
+    });
+    await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
+  }
   expect(observations).toBe(3);
   expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
   expect(f.spawn).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce();
