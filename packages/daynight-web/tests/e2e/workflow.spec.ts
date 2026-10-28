@@ -826,7 +826,9 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await expect(progressRows).toHaveCount(15);
     await expect(chainProgress).toBeVisible();
     await expect(progress.getByText(completedRoot.title, { exact: true })).toBeVisible();
-    await expect(progressRows.last()).toHaveAccessibleName('独立任务，已完成 1 / 22，4%，前往任务列表');
+    await expect(progressRows.nth(0)).toHaveAccessibleName(`${predecessor.title}，已完成 1 / 2，50%，前往任务列表`);
+    await expect(progressRows.nth(1)).toHaveAccessibleName('独立任务，已完成 1 / 22，4%，前往任务列表');
+    await expect(progressRows.last()).toHaveAccessibleName(`${completedRoot.title}，已完成 2 / 2，100%，前往任务列表`);
     await expect(standaloneProgress).toContainText('未完成任务 + 今天及前 6 天完成的任务');
     expect(await page.locator('.stats .stat').allTextContents()).toEqual(statistics);
     for (const width of [390, 320]) {
@@ -846,7 +848,6 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await expect(root(page, predecessor.id)).toHaveClass(/overview-progress-target/);
     await expectClosedChain(page, predecessor.id);
     const chainPosition = await page.evaluate(() => window.scrollY);
-    expect(chainPosition).toBeGreaterThan(0);
     await activateViewWithoutScrolling(page, '概览');
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(overviewPosition);
     await activateViewWithoutScrolling(page, '任务列表');
@@ -890,7 +891,11 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   const standaloneCompleted = page.getByRole('checkbox', { name: '显示所有' });
   await expect(standaloneCompleted).not.toBeChecked();
   await standaloneCompleted.check();
+  await expect(standalone(page, completedIndependent.id)).toHaveCount(0);
+  await standalonePagination.getByRole('button', { name: '下一页', exact: true }).click();
   await expect(standalone(page, completedIndependent.id)).toBeVisible();
+  await standalonePagination.getByRole('button', { name: '上一页', exact: true }).click();
+  await expect(standalone(page, independent.id)).toBeVisible();
   await expect(viewTab(page, '独立任务').locator('.graph-count-pill')).toHaveText('21');
   const trigger = standalone(page, independent.id);
   await trigger.focus();

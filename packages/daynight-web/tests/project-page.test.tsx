@@ -326,7 +326,7 @@ describe("project dashboard", () => {
   });
 });
 
-describe("newest-first task chains", () => {
+describe("status-first task chains", () => {
   beforeEach(() => { window.localStorage.setItem(`daynight:completed-chains:${projectId}`, "true"); });
   const presentedRoots = () => [...screen.getByTestId("root-list").querySelectorAll('[id^="task-root-"]')].map((root) => root.id);
   const newerRoots: readonly Seed[] = [
@@ -354,7 +354,7 @@ describe("newest-first task chains", () => {
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await screen.findByRole("button", { name: "最新任务链" });
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
-    expect(presentedRoots()).toEqual([F, E, A].map((id) => `task-root-${id}`));
+    expect(presentedRoots()).toEqual([A, F, E].map((id) => `task-root-${id}`));
     expect(screen.getByTestId("root-list")).toHaveAttribute("data-index-roots", [A, E, F].join(","));
     expect(snapshot.tasks.map((task) => task.id)).toEqual([A, B, C, D, E, F, X, Y]);
     await openChain("最早任务链");
@@ -371,7 +371,7 @@ describe("newest-first task chains", () => {
     await openChain("已完成根");
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     await screen.findByRole("button", { name: "最新任务链" });
-    expect(presentedRoots()).toEqual([F, E, C, A].map((id) => `task-root-${id}`));
+    expect(presentedRoots()).toEqual([A, F, E, C].map((id) => `task-root-${id}`));
     expect(screen.getByTestId(`chain-${A}`)).toBeVisible();
     expect(screen.queryByTestId(`chain-${F}`)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
@@ -387,7 +387,7 @@ describe("newest-first task chains", () => {
     await screen.findByRole("button", { name: "另一任务链" });
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     await screen.findByRole("button", { name: "最新任务链" });
-    expect(presentedRoots()).toEqual([F, E, C, A].map((id) => `task-root-${id}`));
+    expect(presentedRoots()).toEqual([A, F, E, C].map((id) => `task-root-${id}`));
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(window.localStorage.getItem(preferenceKey())).toBeNull();
   });

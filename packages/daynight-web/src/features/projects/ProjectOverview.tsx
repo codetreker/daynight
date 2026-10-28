@@ -4,6 +4,7 @@ import type { OverviewProgress, OverviewProgressCount, OverviewTaskTarget } from
 import { ListPagination } from "./ListPagination";
 import type { PaginationState } from "./usePagination";
 import type { GraphSnapshot } from "./useTaskGraph";
+import { compareTaskStatus } from "./task-order";
 
 export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate }: {
   readonly snapshot: GraphSnapshot;
@@ -23,8 +24,11 @@ export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate }: 
     <span className="overview-progress-percent">{format.number(value.percent)}%</span>
     <svg className="overview-progress-arrow" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
   </button>;
-  const rows = progress.chains.map((chain) => <li key={chain.taskId}>{row(`${chain.title}${chain.titleTruncated ? "…" : ""}`, chain, { kind: "chain", taskId: chain.taskId })}</li>);
-  if (progress.standalone !== null) rows.push(<li key="standalone">{row(overview.standalone, progress.standalone, { kind: "standalone" }, overview.standaloneScope)}</li>);
+  const rows = progress.chains.map((chain) => ({ status: chain.status,
+    element: <li key={chain.taskId}>{row(`${chain.title}${chain.titleTruncated ? "…" : ""}`, chain, { kind: "chain", taskId: chain.taskId })}</li> }));
+  if (progress.standalone !== null) rows.push({ status: progress.standalone.status,
+    element: <li key="standalone">{row(overview.standalone, progress.standalone, { kind: "standalone" }, overview.standaloneScope)}</li> });
+  const orderedRows = rows.toSorted((left, right) => compareTaskStatus(left.status, right.status));
   return <>
     <div className="project-section-heading"><h2>{sections.overview}</h2><p title={sections.overviewDescription}>{sections.overviewDescription}</p></div>
     <section className="stats" aria-label={m.statistics}>
@@ -37,7 +41,7 @@ export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate }: 
     </section>
     <section className="overview-progress" id="project-overview-progress" tabIndex={-1} aria-labelledby={headingId}>
       <h2 id={headingId}>{overview.heading}</h2>
-      {rows.length > 0 ? <ul className="overview-progress-list">{rows.slice(pagination.start - 1, pagination.end)}</ul> : <div className="state-box overview-progress-empty"><h3>{summary.total === 0 ? m.empty : overview.allCompleted}</h3><p>{summary.total === 0 ? m.emptyDetail : overview.allCompletedDetail}</p></div>}
+      {rows.length > 0 ? <ul className="overview-progress-list">{orderedRows.slice(pagination.start - 1, pagination.end).map(({ element }) => element)}</ul> : <div className="state-box overview-progress-empty"><h3>{summary.total === 0 ? m.empty : overview.allCompleted}</h3><p>{summary.total === 0 ? m.emptyDetail : overview.allCompletedDetail}</p></div>}
       <ListPagination label={overview.heading} {...pagination} />
     </section>
   </>;

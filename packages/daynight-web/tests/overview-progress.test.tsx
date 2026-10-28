@@ -62,10 +62,22 @@ const presentation = (value: GraphSnapshot) => {
 };
 
 describe("overview and task-list visibility", () => {
+  it.each<[{ statuses: TaskStatus[]; expected: TaskStatus }]>([
+    [{ statuses: ["todo"], expected: "todo" }],
+    [{ statuses: ["todo", "todo"], expected: "todo" }],
+    [{ statuses: ["in_progress", "todo"], expected: "in_progress" }],
+    [{ statuses: ["done", "todo"], expected: "in_progress" }],
+    [{ statuses: ["done", "in_progress"], expected: "in_progress" }],
+    [{ statuses: ["done", "done"], expected: "done" }],
+  ])("derives standalone aggregate status from the complete recent set: $statuses", ({ statuses, expected }) => {
+    const value = snapshot(statuses.map((status, position) => ({ id: String(position), status, completedAt: status === "done" ? observedAt : null })));
+    expect(project(value).standalone?.status).toBe(expected);
+  });
+
   it("keeps unfinished components whole and derives the same standalone row set used by its aggregate", () => {
     const result = project(mixed());
-    expect(result.chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: true, done: 1, total: 4, percent: 25 }]);
-    expect(result.standalone).toEqual({ done: 2, total: 5, percent: 40 });
+    expect(result.chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: true, done: 1, total: 4, percent: 25, status: "in_progress" }]);
+    expect(result.standalone).toEqual({ done: 2, total: 5, percent: 40, status: "in_progress" });
     expect(result.recentStandaloneIds).toEqual(["boundary", "recent", "external", "running", "todo"]);
     expect(result.nextUpdateAt).toBe(timestampNanoseconds(localDate(27)));
   });
@@ -75,15 +87,15 @@ describe("overview and task-list visibility", () => {
     const value = snapshot([{ id: "todo", status: "todo" }, { id: "boundary", status: "done", completedAt: cutoff },
       { id: "old", status: "done", completedAt: beforeCutoff }, { id: "future", status: "done", completedAt: future }, { id: "unknown", status: "done" }]);
     const now = timestampNanoseconds(observedAt);
-    expect(project(value, now).standalone).toEqual({ done: 1, total: 2, percent: 50 });
+    expect(project(value, now).standalone).toEqual({ done: 1, total: 2, percent: 50, status: "in_progress" });
     expect(project(value, now).nextUpdateAt).toBe(now + 1n);
-    expect(project(value, now + 1n).standalone).toEqual({ done: 2, total: 3, percent: 66 });
+    expect(project(value, now + 1n).standalone).toEqual({ done: 2, total: 3, percent: 66, status: "in_progress" });
     expect(project(value, timestampNanoseconds(localDate(27))).recentStandaloneIds).toEqual(["future", "todo"]);
   });
 
   it("shows a fully complete recent standalone aggregate and excludes all-unknown or old completed inventory", () => {
     expect(project(snapshot([{ id: "done", status: "done", completedAt: observedAt }]))).toEqual({ chains: [],
-      standalone: { done: 1, total: 1, percent: 100 }, recentStandaloneIds: ["done"], nextUpdateAt: timestampNanoseconds(localDate(27)) });
+      standalone: { done: 1, total: 1, percent: 100, status: "done" }, recentStandaloneIds: ["done"], nextUpdateAt: timestampNanoseconds(localDate(27)) });
     expect(project(snapshot([{ id: "unknown", status: "done" }, { id: "old", status: "done", completedAt: beforeCutoff }])).standalone).toBeNull();
   });
 
@@ -116,7 +128,7 @@ describe("overview and task-list visibility", () => {
       { id: "root", status: "done", completedAt: beforeCutoff },
       { id: "child", status: "todo", dependsOn: ["root"] },
     ]);
-    expect(project(reopened).chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: false, done: 1, total: 2, percent: 50 }]);
+    expect(project(reopened).chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: false, done: 1, total: 2, percent: 50, status: "in_progress" }]);
     expect(project(reopened).nextUpdateAt).toBeNull();
   });
 
@@ -150,9 +162,9 @@ describe("shared local calendar clock", () => {
     const cached: GraphSnapshot = { ...live, observedAt: null, receivedAt: null, revision: 0, localTime: new Date(2026, 10, 2, 12).getTime() };
     const { chainIds, standaloneIds } = categories(live);
     const { result, rerender, unmount } = renderHook(({ value }: { value: GraphSnapshot }) => useOverviewProgress(value, chainIds, standaloneIds, true), { initialProps: { value: cached as GraphSnapshot } });
-    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0 });
+    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0, status: "todo" });
     rerender({ value: live });
-    expect(result.current.standalone).toEqual({ done: 1, total: 2, percent: 50 });
+    expect(result.current.standalone).toEqual({ done: 1, total: 2, percent: 50, status: "in_progress" });
     unmount(); expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -166,7 +178,7 @@ describe("shared local calendar clock", () => {
     expect(result.current.recentStandaloneIds).toEqual(["done", "todo"]);
     act(() => { monotonic = 1; vi.advanceTimersByTime(1); });
     expect(result.current.chains).toEqual([]);
-    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0 });
+    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0, status: "todo" });
     expect(result.current.recentStandaloneIds).toEqual(["todo"]);
     unmount(); expect(vi.getTimerCount()).toBe(0);
   });

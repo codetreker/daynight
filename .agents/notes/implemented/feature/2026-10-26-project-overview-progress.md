@@ -14,10 +14,12 @@ dominate the current backlog, obscuring recent work.
 Overview presents ordinary-dependency components with representative titles,
 complete progress and ordering from the same index as Task list. A completed
 representative does not complete its remaining group; external prerequisites
-remain outside progress. Percentages are floored. The final standalone aggregate
+remain outside progress. Percentages are floored. The standalone aggregate
 combines recent known completions with every unfinished standalone task, keeping
 old throughput out of the denominator. Project statistic cards retain complete
-history.
+history. The [status ordering decision](../bug-fix/2026-10-28-project-status-order.md)
+places chain and standalone progress together by aggregate status, retaining
+existing order within each status.
 
 The original overview decision showed unfinished components only, kept the
 standalone row only while unfinished work remained, and used an inclusive
