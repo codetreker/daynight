@@ -1,8 +1,9 @@
 import path from "node:path";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Operation } from "../../../src/api/operation.js";
 import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { inspectWorkerEnvironment } from "../../../src/commands/worker/setup-environment.js";
 
@@ -37,7 +38,7 @@ const fixture = async () => {
     else if (command.file === "python3") stdout = "Python 3.12.3\n";
     else if (command.file === "powershell") stdout = "5.1.0\n";
     else if (command.args[0] === "--version") stdout = command.file === "codex" ? "codex-cli 0.164.0\n" : "GitHub Copilot CLI 1.0.103.\n";
-    else if (command.args[0] === "--help") stdout = "--no-daemon Run without the shared daemon\n";
+    else if (command.args.includes("--help")) stdout = "--no-daemon --dangerously-bypass-approvals-and-sandbox --dangerously-bypass-hook-trust --allow-all --no-ask-user\n";
     else if (command.args.at(-2) === "features" && command.args.at(-1) === "list") stdout = "hooks stable true\n";
     else if (command.file === "copilot" && command.args.join(" ") === "config hooks") stdout = JSON.stringify(copilotHooks);
     else throw new Error(`Unexpected command: ${command.file}`);
@@ -113,18 +114,18 @@ describe("worker setup environment inspection", () => {
     await rm(path.join(f.codex, "herdr-agent-state.sh"));
     await writeFile(path.join(f.codex, "hooks.json"), JSON.stringify({ hooks: { SessionStart: [] } }));
     f.runCommand.mockImplementation(async (command) => {
-      if (command.args[0] === "--help") return { stdout: "No isolated execution flag", stderr: "" };
+      if (command.args.includes("--help")) return { stdout: "No isolated execution flag", stderr: "" };
       if (command.args.at(-2) === "features") return { stdout: "hooks stable false\n", stderr: "" };
       return original(command);
     });
     const args = ["--config", "features.hooks=false", "--profile=work", "--no-alt-screen"];
     const checks = await inspectWorkerEnvironment({ ...f.options, configuration: { agent: "codex", model: null, args } }, f.dependencies);
     expect(checks.filter(({ status }) => status === "missing").map(({ label }) => label)).toEqual([
-      "codex official hook asset", "codex isolated execution", "codex effective hooks feature", "codex effective SessionStart hook",
+      "codex official hook asset", "codex unattended full access", "codex effective hooks feature", "codex effective SessionStart hook",
     ]);
-    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0]).toMatchObject({ cwd: f.cwd, args: ["--config", "features.hooks=false", "--profile=work", "features", "list"] });
+    expect(f.runCommand.mock.calls.find(([command]) => command.args.at(-2) === "features")?.[0]).toMatchObject({ cwd: await realpath(f.cwd), args: ["--config", "features.hooks=false", "--profile=work", ...codexProjectTrustArguments(await realpath(f.cwd)), "features", "list"] });
     expect(f.runCommand.mock.calls.some(([command]) => command.file !== "codex")).toBe(false);
-    expect(checks.at(-1)).toMatchObject({ label: "codex provider authentication and trust", status: "unverified", agent: "codex" });
+    expect(checks.at(-1)).toMatchObject({ label: "codex provider authentication", status: "unverified", agent: "codex" });
   });
 
   it("shares the existing native Copilot hook verification without treating installation as authentication", async () => {
@@ -132,8 +133,8 @@ describe("worker setup environment inspection", () => {
     const checks = await inspectWorkerEnvironment({ ...f.options, configuration: { agent: "copilot", model: "custom", args: [] } }, f.dependencies);
     expect(checks.filter(({ status }) => status === "missing")).toEqual([]);
     expect(checks.find(({ label }) => label === "copilot effective SessionStart hook")?.status).toBe("passed");
-    expect(checks.find(({ label }) => label === "copilot provider authentication and trust")?.status).toBe("unverified");
-    expect(f.runCommand.mock.calls.map(([command]) => [command.file, command.args])).toEqual([["copilot", ["config", "hooks"]]]);
+    expect(checks.find(({ label }) => label === "copilot provider authentication")?.status).toBe("unverified");
+    expect(f.runCommand.mock.calls.map(([command]) => [command.file, command.args])).toEqual([["copilot", ["--allow-all", "--no-ask-user", "--no-sandbox", "--help"]], ["copilot", ["config", "hooks"]]]);
   });
 
   it("retains private configuration bytes in files when hook parsing fails", async () => {

@@ -1,10 +1,11 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
-import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
+import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrPromptReceipt, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
+import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 
@@ -98,23 +99,47 @@ const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
 };
 
 describe("native argument ownership", () => {
-  it("preserves exact configuration tokens and owns model/no-daemon/exact resume selection", () => {
-    expect(buildHerdrAgentArguments(configuration)).toEqual(["--no-daemon", "--model", "model-a", ...configuration.args]);
-    expect(buildHerdrAgentArguments(configuration, nativeId)).toEqual(["--no-daemon", "resume", nativeId, "--model", "model-a", ...configuration.args]);
-    expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, nativeId)).toEqual([`--resume=${nativeId}`, "--allow-tool=shell(git:*)", "--reasoning-effort", "low"]);
+  it.each([undefined, nativeId])("owns full access while preserving model/configuration/exact resume selection (%s)", (resume) => {
+    expect(buildHerdrAgentArguments(configuration, "/task", resume)).toEqual(["--no-daemon", ...(resume === undefined ? [] : ["resume", resume]), "--model", "model-a", ...configuration.args, "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", ...codexProjectTrustArguments("/task")]);
+    expect(buildHerdrAgentArguments({ agent: "copilot", model: null, args: ["--allow-tool=shell(git:*)", "--reasoning-effort", "low"] }, "/task", resume)).toEqual([...(resume === undefined ? [] : [`--resume=${resume}`]), "--allow-tool=shell(git:*)", "--reasoning-effort", "low", "--allow-all", "--no-ask-user", "--no-sandbox"]);
   });
-  it.each(["resume", "a positional prompt", "--model=x", "-m", "--cd", "--no-daemon", "--worktree", "--remote=x", "--help"])("refuses Codex-owned/positional argument %s", (value) => {
+  it.each(['/repo/.worktrees/task.name', '/repo/中文/"quoted"', 'C:\\repo\\.worktrees\\中文 "task"'])('encodes the exact trust path in a final inline TOML table: %s', (cwd) => {
+    const args = buildHerdrAgentArguments({ ...configuration, args: ["-c", 'projects={"other"={trust_level="untrusted"}}', "-c", 'approval_policy="on-request"', "--profile", "work"] }, cwd);
+    const trust = codexProjectTrustArguments(cwd, "linux").at(-1)!;
+    expect(args.at(-2)).toBe("-c");
+    expect(trust.startsWith("projects={")).toBe(true);
+    expect(trust.endsWith('={trust_level="trusted"}}')).toBe(true);
+    expect(JSON.parse(trust.slice("projects={".length, -'={trust_level="trusted"}}'.length))).toBe(cwd);
+    expect(args.slice(3, 9)).toEqual(["-c", 'projects={"other"={trust_level="untrusted"}}', "-c", 'approval_policy="on-request"', "--profile", "work"]);
+  });
+  it.each([
+    [String.raw`C:\Repo\.Worktrees\ÄΩ中`, String.raw`c:\repo\.worktrees\ÄΩ中`, String.raw`\\?\c:\repo\.worktrees\ÄΩ中`],
+    [String.raw`\\?\C:\Repo\.Worktrees\ÄΩ中`, String.raw`c:\repo\.worktrees\ÄΩ中`, String.raw`\\?\c:\repo\.worktrees\ÄΩ中`],
+    [String.raw`\\Server\Share\Repo`, String.raw`\\server\share\repo`, String.raw`\\?\unc\server\share\repo`],
+    [String.raw`\\?\UNC\Server\Share\Repo`, String.raw`\\server\share\repo`, String.raw`\\?\unc\server\share\repo`],
+    [String.raw`C:\Repo\${"LongPath".repeat(40)}`, String.raw`c:\repo\${"longpath".repeat(40)}`, String.raw`\\?\c:\repo\${"longpath".repeat(40)}`],
+  ])("targets Codex's exact Windows trust keys for %s", (cwd, regularKey, namespacedKey) => {
+    expect(codexProjectTrustArguments(cwd, "win32")).toEqual(["-c", `projects={${JSON.stringify(regularKey)}={trust_level="trusted"},${JSON.stringify(namespacedKey)}={trust_level="trusted"}}`]);
+  });
+  it.each(["linux", "darwin"] as const)("preserves case-sensitive trust keys on %s", (platform) => {
+    expect(codexProjectTrustArguments("/Repo/ÄΩ中/.Worktrees/Task", platform)).toEqual(["-c", 'projects={"/Repo/ÄΩ中/.Worktrees/Task"={trust_level="trusted"}}']);
+  });
+  it("deduplicates unchanged Windows device spellings", () => {
+    expect(codexProjectTrustArguments(String.raw`\\.\Device\Volume`, "win32")).toEqual(["-c", `projects={${JSON.stringify(String.raw`\\.\device\volume`)}={trust_level="trusted"}}`]);
+  });
+  it.each(["resume", "a positional prompt", "--model=x", "-m", "--cd", "--no-daemon", "--worktree", "--remote=x", "--help", "-a", "--ask-for-approval=never", "-s", "--sandbox=read-only", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust"])("refuses Codex-owned/positional argument %s", (value) => {
     expect(() => validateHerdrAgentArguments("codex", [value])).toThrow();
   });
-  it.each(["-p", "--prompt=execute", "-i", "--interactive=execute", "--resume=x", "--continue", "--session-id=x", "-C", "--mode=autopilot", "--autopilot", "--fleet", "--plan"])("refuses Copilot-owned argument %s", (value) => {
+  it.each(["-p", "--prompt=execute", "-i", "--interactive=execute", "--resume=x", "--continue", "--session-id=x", "-C", "--mode=autopilot", "--autopilot", "--fleet", "--plan", "--assisted-approval", "--sandbox", "--deny-tool=shell", "--deny-url=*", "--available-tools=shell", "--excluded-tools=shell"])("refuses Copilot-owned argument %s", (value) => {
     expect(() => validateHerdrAgentArguments("copilot", [value])).toThrow();
   });
   it("rejects hidden option values, control characters, unknown flags and ambiguous variadic options", () => {
     expect(() => validateHerdrAgentArguments("codex", ["--config", "--model=x"])).toThrow();
     expect(() => validateHerdrAgentArguments("codex", ["--config", "x=one\ntwo"])).toThrow();
     expect(() => validateHerdrAgentArguments("copilot", ["--allow-tool", "shell(git:*)"])).toThrow("=value");
-    expect(() => buildHerdrAgentArguments({ ...configuration, model: "x\ny" })).toThrow();
-    expect(() => buildHerdrAgentArguments(configuration, "prefix")).toThrow("exact original session UUID");
+    expect(() => buildHerdrAgentArguments({ ...configuration, model: "x\ny" }, "/task")).toThrow();
+    expect(() => buildHerdrAgentArguments(configuration, "/task", "prefix")).toThrow("exact original session UUID");
+    expect(() => buildHerdrAgentArguments(configuration, "relative")).toThrow("absolute path");
   });
 });
 
@@ -130,6 +155,26 @@ describe("direct task resource management", () => {
     expect(herdrExecutionAgentName(f.context)).toMatch(/^[a-z][a-z0-9_-]{0,31}$/);
   });
 
+  it("sets Copilot's permission environment on every new task workspace", async () => {
+    const f = await fixture("copilot");
+    await f.manager.prepareWorkspace(f.context, operation());
+    expect(f.calls.find((call) => call.method === "workspace.create")!.params.env).toEqual({ XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", COPILOT_ALLOW_ALL: "true", COPILOT_ASSISTED_APPROVAL: "false" });
+  });
+
+  it("trusts the canonical working directory when the task path traverses a symlink", async () => {
+    const f = await fixture(); const canonicalCwd = await realpath(f.context.cwd);
+    const alias = path.join(f.context.cwd, "linked"); await symlink(canonicalCwd, alias, "junction"); f.context.cwd = alias;
+    await launch(f);
+    expect((f.calls.find((call) => call.method === "agent.start")!.params.args as string[]).at(-1)).toBe(codexProjectTrustArguments(canonicalCwd).at(-1));
+  });
+
+  it.each(["codex", "copilot"] as const)("rejects conflicting %s permissions before any native-start RPC", async (agent) => {
+    const f = await fixture(agent); const binding = await f.manager.prepareWorkspace(f.context, operation()); f.calls.splice(0);
+    const args = agent === "codex" ? ["--sandbox", "workspace-write"] : ["--deny-tool=shell"];
+    await expect(f.manager.start(f.context, binding, { configuration: { ...configuration, agent, args }, prompt: "assignment" }, operation())).rejects.toThrow("owned by the worker");
+    expect(f.calls).toEqual([]); expect(f.preflights()).toBe(0);
+  });
+
   it.each(["codex", "copilot"] as const)("starts %s with exact caller configuration and saves no execution receipt", async (kind) => {
     const f = await fixture(kind); const binding = await launch(f);
     expect(f.prompts).toEqual(["initial"]); expect(f.preflights()).toBe(1);
@@ -142,15 +187,35 @@ describe("direct task resource management", () => {
     const config: HerdrAgentConfiguration = { agent: kind, model: "current-model", args: [] };
     const result = await f.manager.start(f.context, binding, { configuration: config, prompt: "continue task", resumeSessionId: nativeId }, operation());
     expect(result.nativeSession?.sessionId).toBe(nativeId);
-    expect(f.calls.find((call) => call.method === "agent.start")!.params.args).toEqual(buildHerdrAgentArguments(config, nativeId));
+    expect(f.calls.find((call) => call.method === "agent.start")!.params.args).toEqual(buildHerdrAgentArguments(config, await realpath(f.context.cwd), nativeId));
     expect(f.prompts).toEqual(["continue task"]);
   });
 
   it("reconnects a surviving native process without launching or sending the assignment again", async () => {
     const f = await fixture(); const binding = await launch(f);
-    await f.manager.start(f.context, binding, { configuration, prompt: "must not repeat" }, operation());
+    let submissions = 0;
+    await f.manager.start(f.context, binding, { configuration, prompt: "must not repeat", onPromptSubmitted: () => { submissions++; } }, operation());
+    expect(submissions).toBe(0);
     expect(f.calls.filter((call) => call.method === "agent.start")).toHaveLength(1);
     expect(f.prompts).toEqual(["initial"]); expect(f.preflights()).toBe(1);
+  });
+
+  it("reports the acknowledged pre-input observation before startup discovers a completed turn", async () => {
+    const f = await fixture(); const binding = await f.manager.prepareWorkspace(f.context, operation());
+    const receipts: HerdrPromptReceipt[] = [];
+    f.hook(async (method, params) => {
+      if (method === "agent.prompt") {
+        f.prompts.push(String(params.text));
+        const current = f.agents[0]!;
+        current.agent_status = "idle"; current.state_change_seq = 9; current.completion_seq = 1;
+        return { type: "agent_prompted", agent: current };
+      }
+      if (method === "session.snapshot" && f.prompts.length > 0) expect(receipts).toHaveLength(1);
+      return undefined;
+    });
+    const result = await f.manager.start(f.context, binding, { configuration, prompt: "short turn", onPromptSubmitted: (receipt) => { receipts.push(receipt); } }, operation());
+    expect(receipts).toMatchObject([{ submission: "submitted", observation: { status: "unknown", stateChangeSeq: 7, completionSeq: null } }]);
+    expect(result).toMatchObject({ status: "idle", stateChangeSeq: 9, completionSeq: 1, nativeSession: { sessionId: nativeId } });
   });
 
   it("observes a native process after an unknown start response without replaying the launch", async () => {

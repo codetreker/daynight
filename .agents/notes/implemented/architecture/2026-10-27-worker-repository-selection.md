@@ -84,13 +84,17 @@ never clones, opens SQLite, launches native resources or acquires a claim.
 
 Setup shares native prerequisite checks with the runtime's [Herdr
 adapter](2026-10-26-worker-herdr-adapter.md). Local version, directory, runtime,
-hook and effective-settings checks use bounded read-only commands; official
-integration state is inspected through offline herdr integration status. The
+hook, effective-settings and fixed launch-argument capability checks use bounded
+read-only commands; official integration state is inspected through offline
+herdr integration status. The
 runtime uses typed RPC integration checks in task cwd and reports native resume
 errors directly. Independent reports are collected together, and missing
-selected prerequisites allow saving with a repair instruction. Provider
-authentication, future task-directory trust, hook execution and live daemon
-capabilities remain unverified.
+selected prerequisites allow saving with a repair instruction. The
+[full-access policy](2026-10-27-worker-full-access.md) fixes tool permissions and
+task-folder trust for every fresh/resumed process without changing global native
+settings. Codex requires at least 0.135 for the functioning hook-trust bypass.
+Provider authentication, hook execution and live daemon capabilities remain
+unverified by setup.
 
 Every launched probe settles before inspection returns. Cleanup failures,
 including wrapped AggregateError causes, remain failures even during cancellation.

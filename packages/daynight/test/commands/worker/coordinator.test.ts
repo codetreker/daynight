@@ -8,7 +8,7 @@ import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { HerdrAgentObservation, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
+import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
@@ -32,6 +32,7 @@ const fixture = async (maxConcurrent = 1) => {
   const worktrees = new Map<string, { owner: ResourceOwner; binding: WorktreeBinding }>();
   const resources = new Map<string, HerdrOwnedWorkspace>();
   const events: WorkerEvent[] = []; const order: string[] = []; let clock = 1000; let sequence = 0;
+  let blockedStartupInput = false;
   const bind = (owner: ResourceOwner): WorktreeBinding => {
     const source = store.getProject(owner)!;
     return { repositoryPath: source.localPath, commonDirectory: path.join(source.localPath, ".git"), worktreePath: path.join(source.localPath, ".worktrees", "daynight", owner.taskId), branch: `daynight/${owner.taskId}` };
@@ -54,17 +55,24 @@ const fixture = async (maxConcurrent = 1) => {
       return binding;
     }),
     observe: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => observe(context, binding)),
-    start: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: { configuration: ExecutionConfiguration; prompt: string; resumeSessionId?: string }) => {
+    start: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput) => {
       order.push("start"); const pane = resources.get(context.claimId)!.panes[0]!;
-      pane.kind = context.agent; pane.status = "working"; pane.interactiveReady = true; pane.stateChangeSeq = 1;
+      pane.kind = context.agent; pane.status = "idle"; pane.interactiveReady = true; pane.stateChangeSeq = 1;
       pane.nativeSession = { source: "herdr", agent: context.agent, sessionId: input.resumeSessionId ?? uuid(1000 + sequence) };
+      if (blockedStartupInput) {
+        blockedStartupInput = false; pane.status = "blocked"; pane.nativeSession = null;
+        throw new HerdrAgentActionError("trust requires input", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
+      }
+      input.onPromptSubmitted?.({ submission: "submitted", observation: observe(context, binding) });
+      pane.status = "working"; pane.stateChangeSeq = 2;
       return observe(context, binding);
     }),
-    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => {
+    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string) => {
       order.push("notify"); const pane = resources.get(context.claimId)!.panes[0]!;
-      pane.status = "idle"; pane.interactiveReady = true; pane.stateChangeSeq! += 1; pane.completionSeq! += 1;
       const before = observe(context, binding);
-      pane.stateChangeSeq! += 2; pane.completionSeq! += 1;
+      pane.interactiveReady = true; pane.stateChangeSeq! += 1;
+      if (prompt.startsWith("The controller is stopping this execution")) { pane.status = "idle"; pane.completionSeq! += 1; }
+      else pane.status = "working";
       return { submission: "submitted" as const, observation: before };
     }),
     stopAndClose: vi.fn(async (owner: ResourceOwner) => { order.push("stop-close"); resources.delete(owner.claimId); }),
@@ -83,7 +91,7 @@ const fixture = async (maxConcurrent = 1) => {
     update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker!, ...update } } }; grants.set(current.properties.worker!.claimId, result); return result; }),
   } as unknown as WorkerRemote;
   const options = { store, git, herdr, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, buildPrompt: vi.fn(() => "worker-managed using-daynight execute-task-in-managed"), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
-  return { root, store, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind };
+  return { root, store, project, candidates, grants, grant, resources, worktrees, git, herdr, tasks, remote, order, events, options, coordinator: createWorkerCoordinator(options), clock: (value: number) => { clock = value; }, bind, blockStartupInput: () => { blockedStartupInput = true; } };
 };
 
 describe("minimal worker resource reconciliation", () => {
@@ -181,13 +189,7 @@ describe("minimal worker resource reconciliation", () => {
 
   it("keeps a definitely unsent first input only in the current process", async () => {
     const f = await fixture();
-    const start = f.tasks.start.getMockImplementation()!;
-    f.tasks.start.mockImplementationOnce(async (context, binding, input) => {
-      await start(context, binding, input);
-      const pane = f.resources.get(context.claimId)!.panes[0]!;
-      pane.status = "blocked"; pane.nativeSession = null;
-      throw new HerdrAgentActionError("trust requires input", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-    });
+    f.blockStartupInput();
     await f.coordinator.tick();
     await eventually(() => expect(f.events.some((event) => event.message.includes("first managed input"))).toBe(true));
     const pane = [...f.resources.values()][0]!.panes[0]!; pane.status = "idle";
@@ -196,19 +198,17 @@ describe("minimal worker resource reconciliation", () => {
     await f.coordinator.tick(); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
   });
 
-  it("does not recover a lost first-input decision from durable state", async () => {
+  it("pings after restart without recovering or replaying a lost first-input decision", async () => {
     const f = await fixture();
-    const start = f.tasks.start.getMockImplementation()!;
-    f.tasks.start.mockImplementationOnce(async (context, binding, input) => {
-      await start(context, binding, input);
-      const pane = f.resources.get(context.claimId)!.panes[0]!; pane.status = "blocked"; pane.nativeSession = null;
-      throw new HerdrAgentActionError("trust requires input", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
-    });
+    f.blockStartupInput();
     await f.coordinator.tick(); await eventually(() => expect(f.events.some((event) => event.message.includes("first managed input"))).toBe(true));
     [...f.resources.values()][0]!.panes[0]!.status = "idle";
     const restarted = createWorkerCoordinator(f.options); await restarted.tick();
     await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(2));
-    expect(f.tasks.submitPrompt).not.toHaveBeenCalled(); expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
+    expect(f.tasks.submitPrompt.mock.calls[0]![2]).toContain("worker's periodic check");
+    expect(f.tasks.submitPrompt.mock.calls[0]![2]).not.toBe(f.options.buildPrompt.mock.results[0]!.value);
+    expect(f.tasks.start).toHaveBeenCalledOnce();
   });
 
   it("resets cleanup timing with a new in-memory driver", async () => {
@@ -248,6 +248,64 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.events.some((event) => event.message.includes("unproven Git ownership"))).toBe(true);
     await expect(f.coordinator.shutdown()).resolves.toBe(true);
     expect(f.worktrees.has(owner.claimId)).toBe(true);
+  });
+
+  it.each(["foreign service", "unproven ownership"])("reports stable %s worktree warnings once and reports their recurrence", async (kind) => {
+    const f = await fixture(); f.candidates.splice(0);
+    const owners = [700, 710].map((id) => ({ serverOrigin: kind === "foreign service" ? "https://other.example" : origin, projectId: f.project.projectId, taskId: uuid(id), claimId: uuid(id + 1), worktreeId: uuid(id + 2) }));
+    for (const owner of owners) f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    await f.coordinator.tick(); await f.coordinator.tick(); await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
+
+    const changed = { ...owners[0]!, worktreeId: uuid(720) };
+    f.worktrees.set(changed.claimId, { owner: changed, binding: f.bind(changed) });
+    await f.coordinator.tick(); await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(3);
+
+    const retained = [...f.worktrees]; f.worktrees.clear();
+    await f.coordinator.tick();
+    for (const [claimId, worktree] of retained) f.worktrees.set(claimId, worktree);
+    await f.coordinator.tick(); await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(5);
+    expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+  });
+
+  it("retains warning history when a later project makes the snapshot incomplete", async () => {
+    const f = await fixture(); f.candidates.splice(0);
+    const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
+    f.store.registerProject(other);
+    const owner = { serverOrigin: origin, projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
+    const worktree = { owner, binding: f.bind(owner) };
+    f.worktrees.set(owner.claimId, worktree);
+    await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(1);
+
+    f.worktrees.clear();
+    const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+    vi.mocked(f.git.listWorktrees).mockImplementation(async (project, operation) => {
+      if (project.projectId === other.projectId) throw new Error("other repository unreadable");
+      return list(project, operation);
+    });
+    await expect(f.coordinator.tick()).rejects.toThrow("other repository unreadable");
+    vi.mocked(f.git.listWorktrees).mockImplementation(list);
+    f.worktrees.set(owner.claimId, worktree);
+    await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(1);
+  });
+
+  it("keeps independent warning histories during project-scoped shutdown observations", async () => {
+    const f = await fixture(); f.candidates.splice(0);
+    const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
+    f.store.registerProject(other);
+    for (const [index, project] of [f.project, other].entries()) {
+      const owner = { serverOrigin: origin, projectId: project.projectId, taskId: uuid(700 + index * 10), claimId: uuid(701 + index * 10), worktreeId: uuid(702 + index * 10) };
+      f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+    }
+    await f.coordinator.tick();
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
+    await expect(f.coordinator.shutdown()).resolves.toBe(true);
+    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
+    expect(f.worktrees.size).toBe(2); expect(f.git.removeWorktree).not.toHaveBeenCalled();
   });
 
   it("scopes one source cleanup away from an unrelated Git observation failure", async () => {

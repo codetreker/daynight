@@ -821,17 +821,19 @@ unchanged.
 Local diagnostics inspect tools and integration settings without starting Herdr
 or native agents. Missing prerequisites are reported together; selected-agent
 checks use effective retained native arguments in the setup launch directory.
-Missing native dependencies allow saving with a repair-needed result. Versions
-and hook configuration do not prove provider authentication, future task-directory
-trust, hook execution, live Herdr protocol, Git access or completed delivery.
+Missing native dependencies allow saving with a repair-needed result. Versions,
+fixed launch-argument capabilities and hook configuration do not prove provider
+authentication, hook execution, live Herdr protocol, Git access or completed
+delivery.
 Setup does not install tools, edit provider configuration, sign in, clone, open
 worker state or acquire tasks. Unconfirmed probe-process cleanup is a failure,
 including during cancellation.
 
 Install Git, Herdr 0.9.5 or newer with protocol 22 capabilities, and the selected
 native agent on PATH. Configure native/provider credentials and the current
-official Herdr SessionStart integration explicitly. Codex needs hooks and
-`--no-daemon`; Unix hooks need bash and python3, while Windows hooks need
+official Herdr SessionStart integration explicitly. Codex must be 0.135 or newer
+and support hooks, `--no-daemon` and the fixed full-access/hook-trust flags;
+Unix hooks need bash and python3, while Windows hooks need
 PowerShell. Inspect official integration with `herdr integration status`. Missing
 capabilities and native launch failures remain visible;
 the worker does not install or change global native configuration. Git transport
@@ -933,9 +935,11 @@ pollIntervalMs is a positive safe integer within the timer range.
 Repository agent settings override fields independently for the same type.
 Explicit null model or [] args clears that field; switching type clears omitted
 model/args, and args replaces the list. Worker owns cwd/session/model/mode
-arguments. Configuration loads at startup without hot reload. Each claim retains
-its recorded agent type and native session ID; a restarted agent uses the current
-settings appropriate to that type. Settings for another type are not applied to it.
+arguments and the fixed full-access policy; conflicting arguments are rejected
+before launch. Configuration loads at startup without hot reload. Each claim
+retains its recorded agent type and native session ID; a restarted agent uses the
+current settings appropriate to that type. Settings for another type are not
+applied to it.
 
 New tasks have automatic execution disabled. Enable it explicitly through the
 normal task update workflow after reading the current task and version. Worker
@@ -1015,6 +1019,23 @@ The saved SQLite session_id still selects resume or fresh startup; an inactive
 pane's retained reference is not saved as a newly observed session ID. A live
 agent keeps its current connection.
 
+Startup and recovery prompts identify the assignment as a background task: the
+agent asks no questions and makes decisions within the task scope and existing
+authorization. While waiting for review or CI, it waits, checks for results and
+continues delivery without ending its execution turn. Fixed native full access
+and folder trust apply to every fresh/resumed process; task delivery remains
+within its existing business authorization.
+
+For a still-owned active claim, each patrol observes the live agent. An
+interactive-ready agent that is not launching and has no first input pending
+receives a continuation ping when idle or done. Working, blocked, unknown and
+not-ready agents remain under observation. The ping preserves the original task,
+claim, worktree and authorization; idle or done does not complete the business
+task. The driver retains the last input observation in memory and suppresses
+repeated input while it is unchanged. Unknown submission results require
+observation before another decision, without blind replay. Terminal cleanup
+suppresses business pings.
+
 A non-NULL saved session ID remains the recovery identity. A different native
 ID reported during startup, live reconnection or before deferred input is an
 error: the saved ID is retained and that input is not sent. A genuine live
@@ -1039,11 +1060,30 @@ and does not start a replacement daemon. Detaching leaves worker and tasks
 running. Original task panes retain their native XDG and private HISTFILE;
 client routing comes from the existing attachment descriptor.
 
-Folder trust or authorization must be handled explicitly in the native tool or
-attached task pane. Worker retains input-readiness and supported Codex composer
-checks and does not auto-accept trust or alter global settings. Unknown layouts
-or launch errors remain visible. Reconnecting an already alive agent does not
-promise to resend an input lost across a process interruption.
+Every fresh or resumed native process uses fixed full access and task-folder
+trust. Copilot receives `--allow-all --no-ask-user --no-sandbox` and per-workspace
+`COPILOT_ALLOW_ALL=true`, `COPILOT_ASSISTED_APPROVAL=false`, overriding inherited
+values. Codex receives `--no-daemon`,
+`--dangerously-bypass-approvals-and-sandbox`,
+`--dangerously-bypass-hook-trust` and a final `-c` trusted-project override for
+the task's canonical path, using Codex's normalized Windows trust keys. These
+invocation settings require no native tool,
+folder or hook permission confirmation and are not optional configuration.
+
+Copilot arguments that enable assisted approval or sandboxing, deny tools/URLs,
+or restrict available tools are rejected. Codex approval/sandbox controls and
+duplicate worker-owned bypass flags are rejected. Ordinary model, reasoning,
+logging and additional configuration arguments remain supported. Setup and
+runtime use read-only native argument-capability probes; unsupported flags or
+versions fail explicitly.
+
+The policy applies only to native invocations and task workspaces. Global native
+configuration, credentials and organization/OS policies keep their existing
+owners; task delivery still follows its business authorization. Input-readiness
+and supported Codex composer checks remain. Unknown layouts, missing credentials,
+integration failures and launch errors stay visible. Use attach for business
+input. Reconnecting an already alive agent does not promise to resend an input
+lost across a process interruption.
 
 When the original claim is absent from a successful complete inventory, the
 worker asks its agent to release attributable temporary files, services and
@@ -1057,11 +1097,14 @@ worktree deletion validates only its target Git registration and directory.
 Unrelated repository or sibling-worktree registration errors are reported
 separately and do not prevent a healthy agent from stopping.
 
-Early cleanup completion uses only the successful cleanup-prompt receipt's
-idle, interactive-ready observation with both sequence counters present; later
-observations must advance both counters. A prior polling snapshot cannot supply
-that baseline. Busy, unknown, rejected or unattributable notification results
-retain the current bounded wait instead of counting an old task turn as cleanup.
+After the cleanup message is successfully submitted, a subsequent patrol that
+observes idle completes the cleanup turn and proceeds to stop the agent and
+close its workspace. Sequence counters and interactive readiness are not
+required. A pre-notification observation or the submission receipt itself
+cannot finish cleanup. Failed or unknown notification results retain their error
+and the current bounded wait, without automatic replay. Reaching the deadline
+still proceeds through actual stop confirmation. Idle in this exit phase does
+not complete the business task.
 
 Cleanup timing and progress are in memory. Polls do not extend the current
 attempt's deadline; after a crash, the next successful reconciliation observes
@@ -1076,8 +1119,15 @@ worktrees, session IDs and active/pending rows remain for the next run. The
 private instance stops last; exit failures remain visible.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
-known session ID. Startup prints the log location and attach guidance. Logs are
-diagnostic only; they do not supply a second recovery ledger. The
+known session ID. Startup prints the log location and attach guidance. Routine
+observations report the first connection and changes to a claim’s waiting or
+executing phase, terminal or native session. Unchanged polls stay quiet, including
+the first poll after a successful start. Claims are tracked independently.
+Resource-preservation warnings appear once while continuously observed and
+appear again if they clear and return. Actual starts, recoveries, cleanup, manual
+operations and failed attempts remain visible. This reporting state lasts for
+the current process. Logs are diagnostic only; they do not supply a second
+recovery ledger. The
 [worker requirements](../../docs/spec/daynight-worker.md) and
 [design](../../docs/design/daynight-worker.md) own full behavior and validation.
 

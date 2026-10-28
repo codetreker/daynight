@@ -36,7 +36,7 @@ export const runCi = async (mode: string, cancellation: AbortController,
   if (mode === 'quality') {
     await run(['--filter', '@codetreker/daynight-web', 'test:harness'], { timeoutMs: 180_000 });
     await run(['--filter', '@codetreker/daynight-web', 'test:coverage'], {
-      env: { ...process.env, VITEST_MAX_WORKERS: '2' }, timeoutMs: 180_000,
+      env: { ...process.env, VITEST_MAX_WORKERS: '4' }, timeoutMs: 180_000,
     });
     return;
   }

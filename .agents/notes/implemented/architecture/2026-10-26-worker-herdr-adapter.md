@@ -14,7 +14,16 @@ execution.
 
 ## Decision
 
-The Herdr adapter now uses direct current-resource operations and call-local stop/input observations under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Private instance isolation, explicit native integration and input readiness remain. The original receipts, history prerequisites and persisted PID provenance below explain the earlier recovery design; they are not current storage prerequisites.
+The Herdr adapter uses direct current-resource operations and call-local
+stop/input observations under the [simplification
+decision](../simplification/2026-10-27-worker-claim-records.md). Private instance
+isolation, explicit native integration and input readiness remain. The
+[full-access decision](2026-10-27-worker-full-access.md) replaces the original
+operator-managed native folder, hook and tool permission confirmations with a
+fixed invocation policy for fresh and resumed processes. The original receipts,
+history prerequisites, persisted PID provenance and native-consent handling below
+explain the earlier recovery design; they are historical rationale rather than
+current storage or permission requirements.
 
 ### Original implementation and rationale
 

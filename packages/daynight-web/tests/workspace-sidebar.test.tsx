@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { act, fireEvent, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ProjectsProvider } from "../src/features/projects/ProjectsProvider";
 import { WorkspaceSidebar } from "../src/app/WorkspaceSidebar";
 import { useBodyScrollLock } from "../src/app/useBodyScrollLock";
 import { createLocaleRender } from "./helpers/renderWithLocale";
@@ -19,10 +20,10 @@ type HarnessProps = {
 const Harness = ({ collapsed = false, routeKey = "/", identityChecking = false, initiallyInert = false, anotherLock = false, onToggle = () => {}, onNavigate = () => {} }: HarnessProps) => {
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
-  return <>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} accountActive={routeKey === "/account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
+  return <ProjectsProvider>
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} activeProjectId={null} accountActive={routeKey === "/account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
-  </>;
+  </ProjectsProvider>;
 };
 
 const openDrawer = () => {
@@ -33,6 +34,7 @@ const openDrawer = () => {
 };
 
 describe("workspace sidebar", () => {
+  beforeEach(() => { vi.stubGlobal("fetch", vi.fn().mockImplementation(() => new Promise(() => {}))); });
   it("keeps icon navigation named and invokes only the desktop preference action", () => {
     const onToggle = vi.fn();
     render(<Harness collapsed onToggle={onToggle} />);

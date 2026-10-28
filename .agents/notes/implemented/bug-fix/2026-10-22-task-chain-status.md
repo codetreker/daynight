@@ -22,8 +22,12 @@ removes it and restores three-state aggregation. The
 replaces the original distinct root-and-descendant main set with an exclusive
 ordinary weak component. All-edge ancestor context stays outside that count.
 
-The row badge, completed-chain count and visibility filter in the task-chain
-tab consume the same aggregate status. The [task view decision](../feature/2026-10-22-project-task-views.md)
+The row badge and whole-Goal visibility filter in the task-chain tab consume
+the same aggregate status. The [recent browsing and pagination
+decision](../feature/2026-10-27-recent-task-pages.md) retains recently completed
+Goals using the last known member completion time after all members are done.
+It changes the historical unfinished-only default while keeping this aggregate
+completion rule. The [task view decision](../feature/2026-10-22-project-task-views.md)
 separates ordinary singleton components into direct-detail standalone rows,
 whose badge and completion filter use individual status. The original unified
 list remains the historical context for the incorrect badge. Graph nodes, task details, project counters and the server API
@@ -62,7 +66,7 @@ pending, even when an external
 prerequisite from another chain is active. Aggregate status is a frontend snapshot
 projection, not stored task data or a new API field, so the original aggregation
 fix required no migration. The later status migration removes proposed while
-preserving counted membership and progress. Completed-chain visibility behavior is
-preserved for multi-member ordinary chains while its badge agrees with that behavior.
-The task view decision changes category presentation without changing the
-aggregate status computation.
+preserving counted membership and progress. Recent-completion filtering and
+20-entry pages consume this full aggregate without changing its computation.
+The task view decision changes category presentation while graph nodes and
+details continue to show each task's individual status.

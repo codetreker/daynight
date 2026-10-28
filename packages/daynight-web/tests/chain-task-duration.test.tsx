@@ -30,7 +30,7 @@ const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot 
 const noop = () => {};
 const content = (value: GraphSnapshot, onOpenTask = noop) => <TaskExecutionClockProvider projectId="project" snapshot={value}>
   <ChainList index={value.index} representativeIds={['Goal']} allRepresentativeIds={['Goal']} openChainId={null}
-    onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showCompleted onShowCompletedChange={noop} />
+    onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll onShowAllChange={noop} />
 </TaskExecutionClockProvider>;
 const row = (id: string) => document.getElementById(`chain-task-Goal-${id}`)!;
 const duration = (id: string) => row(id).querySelector('time');

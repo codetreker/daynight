@@ -26,9 +26,11 @@ then `done`. Equal-status tasks retain complete snapshot order. This priority
 applies only to children; top-level Goals retain their existing newest-first
 ordering. Other starting tasks and merged descendants are included;
 chain-external context remains in the graph. The list retains `done`, `in_progress` and `todo` children, including
-completed tasks. The chain-level Show completed control hides or reveals whole
-completed Goals only; it never filters child rows. Standalone completion
-filtering retains its existing individual-task behavior. Child rows show
+completed tasks. The chain-level Show all control changes whole-Goal visibility; it never filters
+child rows by status or completion date. The [recent browsing and pagination
+decision](2026-10-27-recent-task-pages.md) owns the shared local-calendar default
+and 20-Goal pages. Expanded children remain complete and do not consume separate
+parent-page entries; standalone rows apply the same recent policy individually. Child rows show
 individual task status, applicable ready or blocked markers and known execution
 duration immediately after the title. They open the existing task-detail dialog,
 and the list heading offers the representative task's own details. Aggregate
@@ -53,8 +55,8 @@ Each mounted row owns an initially collapsed disclosure choice. Several rows
 can be expanded together. Same-row refreshes update the member list while
 preserving disclosure, as do task-detail and graph round trips. The retained
 outer Task list subtree preserves those choices while Overview is visible.
-Inner category departure, filtering or representative replacement can unmount
-a row; its next mount starts collapsed. Disclosure has no browser storage record.
+Inner category departure, paging, filtering or representative replacement can
+unmount a row; its next mount starts collapsed. Disclosure has no browser storage record.
 
 A sibling View dependencies / 查看依赖关系 button opens the existing
 `TaskChainDialog` without changing disclosure. The disclosure and graph actions
@@ -69,7 +71,7 @@ This partially supersedes the whole-row entry in the
 [graph-dialog decision](2026-10-26-task-chain-graph-dialog.md). That decision
 continues to own dialog geometry, graph witness reconciliation, fullscreen,
 focus containment, layered Escape and scroll locks. The
-ordering, completion filtering and compact readable text chosen in the
+ordering and compact readable text chosen in the
 [presentation decision](../../archived/feature/2026-10-21-task-chain-presentation.md) remain, as do the
 independent project records chosen in the
 [browsing-preference decision](../../archived/feature/2026-10-21-task-browsing-preferences.md). The
