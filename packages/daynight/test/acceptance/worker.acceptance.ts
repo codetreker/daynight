@@ -439,8 +439,8 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       const assignments = observed.filter((event) => event.kind === "prompt" && event.taskId === task.id && event.text!.includes("Assignment:"));
       expect(assignments).toHaveLength(task === second && scenario !== "inventory-failure" ? 2 : 1);
       const assignment = assignments[0]!.text!;
-      expect(assignment).toContain("worker-managed"); expect(assignment).toContain("using-daynight"); expect(assignment).toContain("execute-task-in-managed");
-      expect(assignment).toContain("references/execute-task-in-managed.md"); expect(assignment).not.toContain("worker-fixture-token");
+      expect(assignment).toContain("worker-managed"); expect(assignment).toContain("using-daynight"); expect(assignment).toContain("autopilot-managed-task");
+      expect(assignment).toContain("references/autopilot-managed-task.md"); expect(assignment).not.toContain("worker-fixture-token");
       const originalClaim = originalClaims.get(task.id)!;
       expect(JSON.parse(assignment.split("Assignment:")[1]!)).toMatchObject({ projectId: task.projectId, taskId: task.id, claimId: originalClaim.claimId, workerId: originalClaim.workerId, worktreeId: originalClaim.worktreeId, platform: "linux", nativeSessionId: null, configuration: { agent: "codex", model: "fixture-model", args: ["--search"], recoveryLimit: 3 } });
     }

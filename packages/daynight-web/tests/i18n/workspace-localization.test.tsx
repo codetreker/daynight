@@ -169,11 +169,18 @@ describe("workspace localization", () => {
     await user.click(screen.getByRole("button", { name: "Refresh test graph" }));
     await waitFor(() => expect(screen.queryByRole("complementary", { name: "Task test shell" })).toBeNull());
     const notice = await screen.findByText(zhCN.workspace.project.selectedTaskRemoved);
-    expect(notice).toHaveAttribute("role", "status");
+    expect(notice.closest('[role="status"]')).toBeVisible();
+    const dismiss = screen.getByRole("button", { name: "关闭提示" });
     await user.selectOptions(selector, "en");
     expect(screen.getByText(en.workspace.project.selectedTaskRemoved)).toBe(notice);
+    expect(screen.getByRole("button", { name: "Dismiss notification" })).toBe(dismiss);
     expect(graphRequest).toHaveBeenCalledTimes(2);
     expect(screen.getByRole("heading", { name: "No tasks yet" })).toBeVisible();
+    await user.click(dismiss);
+    expect(screen.queryByText(en.workspace.project.selectedTaskRemoved)).toBeNull();
+    expect(graphRequest).toHaveBeenCalledTimes(2);
+    await user.selectOptions(selector, "zh-CN");
+    expect(screen.queryByRole("button", { name: "关闭提示" })).toBeNull();
   });
 
   it("translates a saved project preference problem at display time and leaves its stored value untouched", async () => {

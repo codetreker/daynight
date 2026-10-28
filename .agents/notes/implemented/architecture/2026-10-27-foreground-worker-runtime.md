@@ -187,7 +187,7 @@ window while preserving actual-claim-only tasks and the two-table ownership
 model.
 
 The runtime validates the installed using-daynight bundle and builds an explicit
-worker-managed / execute-task-in-managed prompt with absolute installed entry
+worker-managed / autopilot-managed-task prompt with absolute installed entry
 and reference paths, original assignment, actual platform and frozen settings.
 The agent owns business delivery, acceptance, evidence and final claim-bound
 done. Live reconnection does not repeat startup input. The [Herdr

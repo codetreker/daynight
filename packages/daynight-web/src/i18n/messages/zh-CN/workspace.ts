@@ -14,7 +14,7 @@ export const workspace: WorkspaceMessages = {
   project: {
     back: "← 项目", lastRefreshed: ({ time }) => `最近成功刷新 ${time}`, refreshing: "正在刷新…", loading: "正在加载任务图", loadingDetail: "正在读取项目任务和依赖关系。", notFound: "项目不存在", graphLimit: "任务图超过展示上限", incomplete: "任务图数据不完整", loadingFailed: "项目加载失败", networkError: "无法连接服务，请检查本地服务后重试。", protocolError: "任务图数据不完整或不一致，请重试。", notFoundDetail: "这个项目不存在，请返回项目列表。", graphLimitDetail: "完整任务图超过当前支持的展示规模。", readError: "暂时无法读取任务图，请重试。",
     graphLimitCounts: ({ nodes, edges, maxNodes, maxEdges }) => `当前 ${number(nodes)} 个任务、${number(edges)} 条依赖；支持最多 ${number(maxNodes)} 个任务、${number(maxEdges)} 条依赖。`,
-    refreshFailed: "刷新失败", showingSnapshot: "仍显示上次成功读取的数据。", retryRefresh: "重试刷新", selectedTaskRemoved: "所选任务已不在新的任务图中，详情已关闭。", statistics: "项目任务统计", totalTasks: "任务总数", uniqueTasks: "按任务 ID 去重", completion: ({ percent }) => `完成比例 ${number(percent)}%`, waiting: "等待开始", advancing: "正在推进", ready: "可开始", blocked: "被阻塞", todoSubset: "待处理的子集", empty: "还没有任务", emptyDetail: "项目中的任务会显示在这里。创建任务后，点击刷新查看。", chains: "任务依赖链",
+    refreshFailed: "刷新失败", showingSnapshot: "仍显示上次成功读取的数据。", retryRefresh: "重试刷新", selectedTaskRemoved: "所选任务已不在新的任务图中，详情已关闭。", dismissNotice: "关闭提示", statistics: "项目任务统计", totalTasks: "任务总数", uniqueTasks: "按任务 ID 去重", completion: ({ percent }) => `完成比例 ${number(percent)}%`, waiting: "等待开始", advancing: "正在推进", ready: "可开始", blocked: "被阻塞", todoSubset: "待处理的子集", empty: "还没有任务", emptyDetail: "项目中的任务会显示在这里。创建任务后，点击刷新查看。", chains: "任务依赖链",
   },
   overview: {
     heading: "整体进度", standalone: "独立任务", standaloneScope: "未完成任务 + 今天及前 6 天完成的任务",

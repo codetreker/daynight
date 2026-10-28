@@ -11,7 +11,7 @@ const reviewWaitInstruction = "If review or CI is pending, wait and check it per
 
 export const createWorkerPromptBuilder = async (packageDirectory: string) => {
   const bundle = await captureInstalledSkill(packageDirectory);
-  for (const name of ["SKILL.md", "references/execute-task-in-managed.md", "references/task-execution.md", "references/handbook.md", "references/goal.md", "references/task-content.md"]) {
+  for (const name of ["SKILL.md", "references/autopilot-managed-task.md", "references/task-execution.md", "references/handbook.md", "references/goal.md", "references/task-content.md"]) {
     const entry = bundle.find((item) => item.relativePath === name);
     if (entry?.type !== "file" || entry.contents.length === 0) throw new Error(`The installed using-daynight bundle is missing ${name}; reinstall the package before starting a worker.`);
   }
@@ -35,8 +35,8 @@ export const createWorkerPromptBuilder = async (packageDirectory: string) => {
     return [
       "The current execution environment is worker-managed.",
       "This is a background task. Do not ask the user any questions. Make decisions autonomously within this assignment and its existing authorization.",
-      "Use the using-daynight skill in execute-task-in-managed mode for this already-claimed assignment.",
-      `Read the installed skill entry at ${JSON.stringify(path.join(root, "SKILL.md"))} and its references/execute-task-in-managed.md at ${JSON.stringify(path.join(root, "references", "execute-task-in-managed.md"))}. Resolve its other references from that same bundle.`,
+      "Use the using-daynight skill in autopilot-managed-task mode for this already-claimed assignment.",
+      `Read the installed skill entry at ${JSON.stringify(path.join(root, "SKILL.md"))} and its references/autopilot-managed-task.md at ${JSON.stringify(path.join(root, "references", "autopilot-managed-task.md"))}. Resolve its other references from that same bundle.`,
       "Verify the current service task, original claim and actual worktree before business writes.",
       "Execute only this assignment under its task and repository authorization. Preserve the controller-owned worktree and workspace. The controller owns scheduling and cleanup.",
       reviewWaitInstruction,
