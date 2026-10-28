@@ -199,7 +199,14 @@ func durableSnapshot(v sp.Snapshot) sp.Snapshot {
 }
 func durableOperation(v sp.Operation) sp.Operation { v.Error = nil; return v }
 func (v *liveSession) checkCapacity() error {
-	n := v.EventBytes + len(encode(v.Snapshot)) + len(encode(v.Commands)) + len(encode(v.PendingInteractions))
+	n := v.EventBytes
+	for _, value := range []any{v.Snapshot, v.Commands, v.PendingInteractions} {
+		raw, err := sp.MarshalWire(value)
+		if err != nil {
+			return err
+		}
+		n += len(raw)
+	}
 	if n > maxLiveBytes || len(v.PendingInteractions) > 100 {
 		return fault("rate_limited", "Live session relay capacity is unavailable.")
 	}

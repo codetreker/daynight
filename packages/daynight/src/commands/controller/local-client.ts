@@ -24,14 +24,18 @@ export const validateControllerLocalRequest = (value: unknown, ticket: Controlle
   if ((action.kind === "stop" || action.kind === "cleanup") && (typeof action.deadline !== "number" || !Number.isSafeInteger(action.deadline) || action.deadline < 0)) throw new Error("Controller deadline is invalid.");
   return value as ControllerLocalRequest;
 };
+// A missing transport response cannot establish whether an authenticated action
+// reached the controller. Callers may observe its journal, but must not replay it.
+export class ControllerIpcOutcomeUnknownError extends Error {}
+
 export const requestController = (ticket: ControllerLaunchTicket, action: ControllerLocalAction, options: { signal?: AbortSignal; timeoutMs?: number } = {}): Promise<ControllerLocalResponse & { ok: true }> => new Promise((resolve, reject) => {
   const request: ControllerLocalRequest = { requestId: randomUUID(), executionId: ticket.executionId, ...sessionBinding(ticket), executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, secret: ticket.ipcSecret, action };
   validateControllerLocalRequest(request, ticket);
   const socket = createConnection(ticket.ipcEndpoint); let text = ""; let settled = false;
   const finish = (error?: unknown, result?: ControllerLocalResponse & { ok: true }): void => { if (settled) return; settled = true; clearTimeout(timer); options.signal?.removeEventListener("abort", cancel); socket.destroy(); if (error !== undefined) reject(error); else resolve(result!); };
   const cancel = (): void => finish(options.signal?.reason ?? new Error("Controller IPC cancelled."));
-  const timer = setTimeout(() => finish(new Error("Controller IPC outcome is unknown after its deadline.")), options.timeoutMs ?? 10000);
-  socket.setEncoding("utf8"); socket.once("error", finish); socket.once("end", () => { if (!settled) finish(new Error("Controller IPC closed before its response; outcome is unknown.")); });
+  const timer = setTimeout(() => finish(new ControllerIpcOutcomeUnknownError("Controller IPC outcome is unknown after its deadline.")), options.timeoutMs ?? 10000);
+  socket.setEncoding("utf8"); socket.once("error", cause => finish(new ControllerIpcOutcomeUnknownError("Controller IPC transport failed; outcome is unknown.", { cause }))); socket.once("end", () => { if (!settled) finish(new ControllerIpcOutcomeUnknownError("Controller IPC closed before its response; outcome is unknown.")); });
   socket.once("connect", () => socket.write(`${JSON.stringify(request)}\n`));
   socket.on("data", (chunk: string) => {
     text += chunk; if (Buffer.byteLength(text) > 8 * 1024 * 1024) { finish(new Error("Controller IPC response exceeds its limit.")); return; }

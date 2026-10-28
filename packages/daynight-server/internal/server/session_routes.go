@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -110,7 +109,19 @@ func (h *sessionRoutes) result(w http.ResponseWriter, r *http.Request, status in
 		h.failure(w, r, err)
 		return
 	}
-	writeJSON(w, r, h.logger, status, value)
+	if r.Context().Err() != nil {
+		return
+	}
+	data, encodeErr := sp.MarshalWire(value)
+	if encodeErr != nil {
+		h.failure(w, r, encodeErr)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if _, writeErr := w.Write(data); writeErr != nil {
+		LogFailure(h.logger, r.Context(), "session", "response", writeErr)
+	}
 }
 func relayBody(w http.ResponseWriter, r *http.Request) ([]byte, error) {
 	if _, err := queryValues(r); err != nil {
@@ -362,7 +373,7 @@ func (h *sessionRoutes) shutdown(ctx context.Context) error {
 	}
 }
 func relayWrite(ctx context.Context, conn *websocket.Conn, value any) error {
-	data, err := json.Marshal(value)
+	data, err := sp.MarshalWire(value)
 	if err != nil {
 		return err
 	}

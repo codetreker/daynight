@@ -1,3 +1,4 @@
+import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
 import { parseTimelineEntry, parseSessionResource, type TimelineEntry, type SessionResource } from "../../session/protocol.js";
@@ -42,8 +43,8 @@ export const createLocalSessionContent = (db: Database.Database, sessionId: stri
       // Leave room for the envelope and resource descriptors in the WS frame.
       let bytes = 1024;
       for (const row of rows) {
-        const entry = parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
-        const size = Buffer.byteLength(JSON.stringify(entry)) + Buffer.byteLength(JSON.stringify(resourcesFor([entry])));
+        const entry = sessionDisplayEntry(parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq }));
+        const size = sessionWireBytes(entry) + sessionWireBytes(resourcesFor([entry]));
         if (bytes + size > 1_500_000) {
           if (!items.length) throw new Error("Local timeline entry exceeds the relay frame limit.");
           break;

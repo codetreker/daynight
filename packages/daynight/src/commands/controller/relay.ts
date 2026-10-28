@@ -1,3 +1,4 @@
+import { sessionDisplayEntry, sessionWireBytes } from "./wire-display.js";
 import { sessionFence } from "../../session/protocol.js";
 import { readFile, lstat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -30,7 +31,7 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
     journal.recordOperation(operation.operationId, operation.state, null, operation.error?.message ?? "Operation no longer has current permission or state.");
   };
   const clearConnection = () => { fence = null; synchronized = false; reconciled = false; syncPending = false; contentRequests.length = 0; pendingBatch = null; callbacks.onConnection(false); for (const waiter of authorization.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("Relay disconnected before native dispatch authorization.")); } authorization.clear(); };
-  const send = (message: ControllerMessage) => { if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (Buffer.byteLength(text) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); socket.send(text); };
+  const send = (message: ControllerMessage) => { if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (sessionWireBytes(message) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); socket.send(text); };
   const prefix = () => { if (!fence) throw new Error("Session relay is not synchronized."); return { protocol: SESSION_PROTOCOL, ...fence }; };
   const sendReconciliation = () => {
     const batch = reconciliation.shift() ?? [];
@@ -130,7 +131,17 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
       }
       journal.drainProjectionGap();
       const events: SourceEvent[] = []; let bytes = 1024;
-      for (const row of journal.pendingEvents(RELAY_LIMITS.maxBatchEvents)) { if (response && BigInt(row.sequence) > BigInt(response.sourceThrough)) break; const event = { ...(row.payload as object), sourceSeq: row.sequence } as SourceEvent; const size = Buffer.byteLength(JSON.stringify(event)); if (size + 1024 > RELAY_LIMITS.maxFrameBytes) throw new Error("Durable controller event exceeds relay frame limit."); if (bytes + size > RELAY_LIMITS.maxFrameBytes) break; events.push(event); bytes += size; }
+      for (const row of journal.pendingEvents(RELAY_LIMITS.maxBatchEvents)) {
+        if (response && BigInt(row.sequence) > BigInt(response.sourceThrough)) break;
+        const source = { ...(row.payload as object), sourceSeq: row.sequence } as SourceEvent;
+        // Older journals may already contain a display event that could never
+        // fit the relay. Preserve its source identity and project it as history does.
+        const event = requiresLiveSync && source.kind === "timeline_upsert" ? { ...source, payload: sessionDisplayEntry(source.payload) } : source;
+        const size = sessionWireBytes(event);
+        if (size + 1024 > RELAY_LIMITS.maxFrameBytes) throw new Error("Durable controller event exceeds relay frame limit.");
+        if (bytes + size > RELAY_LIMITS.maxFrameBytes) break;
+        events.push(event); bytes += size;
+      }
       if (events.length) { const id = randomUUID(); pendingBatch = { id, through: events.at(-1)!.sourceSeq }; send({ ...prefix(), type: "events", batchId: id, sourceEpoch: ticket.executionId, events }); }
     } catch (error) { callbacks.onError(String(error)); socket?.close(); }
     finally { polling = false; }

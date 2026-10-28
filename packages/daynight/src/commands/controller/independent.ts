@@ -12,7 +12,7 @@ import { writeControllerCredential } from "../worker/backends/session-api.js";
 import { controllerExecutionDirectory, controllerTicketPath, writeLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { readControllerSnapshot, recordStoppedControllerGeneration } from "./lifecycle-store.js";
 import { captureProcessProof, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
-import { requestController } from "./local-client.js";
+import { ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
 import type { ResumeLease } from "./resume.js";
 import type { IndependentControllerInput } from "./index.js";
 
@@ -113,22 +113,37 @@ export const runIndependentController = async (input: IndependentControllerInput
     processProof = await captureProcessProof(child.pid);
     await persist("process.json", processProof);
     let submitted = input.prompt === null, connected = false;
-    let renewalFailures = 0, nextRenewalAt = 0;
+    let renewalFailures = 0, nextRenewalAt = 0, ipcUnavailable = false;
     const startupDeadline = Date.now() + 60_000;
     while (!requestedStop) {
       if (child.exitCode !== null || child.signalCode !== null) throw new Error("Test controller exited; inspect its private controller.log. No replacement native session was created.");
       let observed;
       try { observed = await requestController(ticket, { kind: "observe" }, { timeoutMs: 2000, signal: cancellation.signal }); }
-      catch (error) { if (connected || Date.now() >= startupDeadline || requestedStop) throw error; await new Promise(resolve => setTimeout(resolve, 100)); continue; }
-      if (["paused", "failed", "stopping", "stopped"].includes(observed.snapshot.lifecycle)) throw new Error("Test controller is unavailable; its native outcome is retained in the private journal.");
-      if (observed.snapshot.lifecycle === "ready" && !connected) { connected = true; context.stdout(`Provider ready: ${input.provider}; native session ${observed.snapshot.nativeSessionId ?? "awaiting first input confirmation"}\n`); }
-      if (!connected && Date.now() >= startupDeadline) throw new Error("Test controller startup timed out; its original execution is retained.");
-      if (!submitted && observed.snapshot.lifecycle === "ready") {
-        const initial = await requestController(ticket, { kind: "submit_initial", operationId: ticket.initialOperationId }, { timeoutMs: 65_000, signal: cancellation.signal });
-        if (initial.operation) {
-          submitted = true;
-          context.stdout(`Initial input: ${initial.operation.state}\n`);
-          if (["failed", "rejected", "expired"].includes(initial.operation.state)) throw new Error("Initial input failed; the same operation remains recorded.");
+      catch (error) {
+        if (requestedStop || !(error instanceof ControllerIpcOutcomeUnknownError) || !connected && Date.now() >= startupDeadline) throw error;
+        if (!ipcUnavailable) context.stderr("Controller IPC observation is temporarily unavailable; the original native execution remains supervised.\n");
+        ipcUnavailable = true;
+      }
+      if (observed) {
+        if (ipcUnavailable) { context.stderr("Controller IPC observation recovered for the original native execution.\n"); ipcUnavailable = false; }
+        if (["paused", "failed", "stopping", "stopped"].includes(observed.snapshot.lifecycle)) throw new Error("Test controller is unavailable; its native outcome is retained in the private journal.");
+        if (observed.snapshot.lifecycle === "ready" && !connected) { connected = true; context.stdout(`Provider ready: ${input.provider}; native session ${observed.snapshot.nativeSessionId ?? "awaiting first input confirmation"}\n`); }
+        if (!connected && Date.now() >= startupDeadline) throw new Error("Test controller startup timed out; its original execution is retained.");
+        if (!submitted && observed.snapshot.lifecycle === "ready") {
+          try {
+            const initial = await requestController(ticket, { kind: "submit_initial", operationId: ticket.initialOperationId }, { timeoutMs: 65_000, signal: cancellation.signal });
+            if (initial.operation) {
+              submitted = true;
+              context.stdout(`Initial input: ${initial.operation.state}\n`);
+              if (["failed", "rejected", "expired"].includes(initial.operation.state)) throw new Error("Initial input failed; the same operation remains recorded.");
+            }
+          } catch (error) {
+            if (requestedStop || !(error instanceof ControllerIpcOutcomeUnknownError)) throw error;
+            // Even a later not_submitted snapshot cannot prove that this request
+            // never crossed dispatch. Only observe; keep the original operation ID.
+            submitted = true;
+            context.stderr(`Initial input outcome is unknown; operation ${ticket.initialOperationId} will not be replayed. The original native execution remains supervised.\n`);
+          }
         }
       }
       if (Date.parse(credential.expiresAt) - Date.now() <= 60_000 && Date.now() >= nextRenewalAt) {

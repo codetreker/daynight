@@ -1,3 +1,4 @@
+import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
 import { createLocalSessionContent } from "./local-content.js";
@@ -138,7 +139,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
       parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
       db.prepare("INSERT INTO projection(id,content_hash,revision,value) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_hash=excluded.content_hash,revision=excluded.revision,value=excluded.value").run(entry.entryId, contentHash, BigInt(revision), JSON.stringify(payload));
-      return appendEvent({ kind: "timeline_upsert", payload });
+      return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
     }),
     prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload">): ControllerOperation => atomic(() => {
       if (!/^[a-f0-9-]{36}$/.test(input.operationId)) throw new Error("Controller operation ID must be a UUID.");

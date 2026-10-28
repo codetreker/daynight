@@ -124,6 +124,33 @@ export const runController = async (options: { homeDirectory: string; provider: 
     })();
     return shutdownPromise;
   };
+  // One completion listener per dispatch, with removable socket waiters. A
+  // disconnected caller cannot cancel native work or retain an async handler.
+  const localWaiters = new Map<Promise<ControllerOperation>, Set<(value: ControllerOperation | null, error?: unknown) => void>>();
+  let localWaiterCount = 0;
+  const waitForOperation = (socket: Socket, execution: Promise<ControllerOperation>, milliseconds: number): Promise<ControllerOperation | null> => {
+    const existing = localWaiters.get(execution);
+    const waiters = existing ?? new Set<(value: ControllerOperation | null, error?: unknown) => void>();
+    if (!existing) {
+      localWaiters.set(execution, waiters);
+      const complete = (value: ControllerOperation | null, error?: unknown) => {
+        localWaiters.delete(execution);
+        for (const waiter of waiters) waiter(value, error);
+      };
+      void execution.then(value => complete(value), error => complete(null, error));
+    }
+    return new Promise((resolve, reject) => {
+      const finish = (value: ControllerOperation | null, error?: unknown) => {
+        if (!waiters.delete(finish)) return;
+        localWaiterCount--; clearTimeout(timer); socket.off("close", disconnected);
+        if (error !== undefined) reject(error); else resolve(value);
+      };
+      const disconnected = () => finish(null);
+      const timer = setTimeout(() => { socket.destroy(); disconnected(); }, milliseconds);
+      waiters.add(finish); localWaiterCount++; socket.once("close", disconnected);
+      if (socket.destroyed) disconnected();
+    });
+  };
   const server = createServer(socket => {
     sockets.add(socket); socket.once("close", () => sockets.delete(socket)); socket.on("error", () => {}); socket.setTimeout(30_000, () => socket.destroy()); socket.setEncoding("utf8"); let buffer = "", handled = false;
     socket.on("data", (text: string) => {
@@ -133,11 +160,18 @@ export const runController = async (options: { homeDirectory: string; provider: 
         let requestId = "";
         try {
           const request = validateControllerLocalRequest(JSON.parse(buffer.slice(0, newline)), ticket); requestId = request.requestId;
-          let operation: ControllerOperation | undefined;
+          buffer = "";
+          // Admission bounds unauthenticated/incomplete frames. Once admitted,
+          // native RPC and action deadlines govern completion, including input
+          // acceptance that legitimately takes longer than this socket window.
+          socket.setTimeout(0);
+          let operation: ControllerOperation | null | undefined;
           if (request.action.kind === "stop") {
             socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot() } satisfies ControllerLocalResponse) + "\n", () => { void shutdown(); }); return;
           }
           if (request.action.kind !== "observe") {
+            const pending = active.get(request.action.operationId);
+            if (localWaiterCount >= 32 || localWaiters.size >= 32 && (!pending || !localWaiters.has(pending))) throw new Error("Controller IPC action capacity is unavailable.");
             if (!stopping && request.action.kind === "submit_initial" && (!provider || !synchronized)) {
               // No dispatch intent exists yet. The worker may observe again
               // after startup/reconnection without treating this as a failure.
@@ -147,14 +181,15 @@ export const runController = async (options: { homeDirectory: string; provider: 
             if (!provider || stopping || request.action.kind === "submit_initial" && !synchronized) throw new Error("Controller is still initializing or disconnected.");
             if (request.action.kind === "submit_initial") {
               const prepared = journal.prepareOperation({ operationId: ticket.initialOperationId, kind: "initial", payload: { text: ticket.initialPrompt } });
-              operation = await dispatch(prepared, () => provider!.send(ticket.initialPrompt, ticket.initialOperationId, null));
+              operation = await waitForOperation(socket, dispatch(prepared, () => provider!.send(ticket.initialPrompt, ticket.initialOperationId, null)), 65_000);
+              if (operation === null) return;
             } else {
               const action = request.action;
               cleaning = true; cleanupInputStarted = false; cleanupInteractions.clear(); nativeEvent(publishState);
               if (stopping) throw new Error("Controller stopped after a durable event failure.");
               if (Date.now() >= action.deadline) throw new Error("Cleanup deadline expired.");
               const prepared = journal.prepareOperation({ operationId: action.operationId, kind: "cleanup", payload: { text: action.prompt, deadline: action.deadline } });
-              operation = await dispatch(prepared, async () => {
+              operation = await waitForOperation(socket, dispatch(prepared, async () => {
                 const turn = journal.getSnapshot().currentTurnId;
                 if (turn !== null) {
                   await provider!.cancel(turn);
@@ -168,7 +203,8 @@ export const runController = async (options: { homeDirectory: string; provider: 
                 if (!receipt.turnId) throw new Error("Native cleanup turn identity is unknown.");
                 await provider!.waitForTurn(receipt.turnId, action.deadline);
                 return receipt;
-              });
+              }), Math.max(1, Math.min(30_000, action.deadline - Date.now())));
+              if (operation === null) return;
             }
           }
           socket.end(JSON.stringify({ requestId, ok: true, snapshot: journal.getSnapshot(), ...(operation ? { operation } : {}) } satisfies ControllerLocalResponse) + "\n");

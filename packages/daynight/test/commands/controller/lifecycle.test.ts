@@ -192,3 +192,26 @@ it("serves only registered local resources in verified bounded chunks", async ()
     expect(() => store.saveResource({ ...resource, name: "other" }, bytes)).toThrow(/identity/);
   } finally { store.close(); }
 });
+
+it.each(["<", "\u2028", "x"])("keeps %s tool content local and uses identical bounded live/history display", async (character) => {
+  const { home, ticket } = await fixture();
+  const filename = path.join(home, "display.sqlite");
+  const store = openControllerLifecycleStore(filename, ticket, { contentOwnedLocally: true });
+  const text = character.repeat(character === "x" ? 1_048_576 : 200_000);
+  const entry = { entryId: randomUUID(), revision: "1", kind: "tool_call" as const, callId: "call", name: "shell", input: text, output: [{ type: "text" as const, text }], status: "completed" as const, truncated: false };
+  if (character === "x") expect(Buffer.byteLength(JSON.stringify(entry))).toBeGreaterThan(2 * 1024 * 1024);
+  try {
+    const emitted = store.projectTimeline(entry)!;
+    const page = store.readTimeline({ historyEpoch: randomUUID(), direction: "tail", cursor: null, limit: 10 });
+    expect(page.items).toHaveLength(1);
+    expect(emitted.payload).toEqual({ kind: "timeline_upsert", payload: page.items[0] });
+    if (character === "<") expect(page.items[0]).toMatchObject({ kind: "tool_call", input: text, output: entry.output });
+    else expect(page.items[0]).toMatchObject({ entryId: entry.entryId, entrySeq: "1", revision: "1", kind: "error", code: "display_budget_exceeded" });
+    store.acknowledgeEvents(emitted.sequence);
+    expect(store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "reasoning", text: "following event" })).toMatchObject({ sequence: "2" });
+    const { default: Database } = await import("better-sqlite3");
+    const disk = new Database(filename, { readonly: true });
+    try { expect(JSON.parse((disk.prepare("SELECT value FROM projection WHERE id=?").get(entry.entryId) as { value: string }).value)).toMatchObject({ input: text, output: entry.output }); }
+    finally { disk.close(); }
+  } finally { store.close(); }
+});

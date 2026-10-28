@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), resume: vi.fn(), release: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
-vi.mock("../../../src/commands/controller/local-client.js", () => ({ requestController: f.request }));
+vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readControllerSnapshot: f.snapshot, recordStoppedControllerGeneration: f.record }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: f.capture, stopControllerProcesses: f.stop }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
@@ -241,4 +241,44 @@ test("a definitive authorization response is not retried when its error body fai
   await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context)).rejects.toThrow("HTTP 401");
   expect(f.stop).toHaveBeenCalledOnce();
   expect(v.err.join("")).not.toContain("retry in");
+});
+
+
+test("an initial IPC transport loss keeps supervision alive without replaying input", async () => {
+  const v = await setup("initial exactly once");
+  const { requestController: realRequest } = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  const { createServer } = await import("node:net");
+  const endpoint = path.join(v.home, "loss.sock");
+  const server = createServer(socket => { socket.once("data", () => socket.end()); });
+  await new Promise<void>(resolve => server.listen(endpoint, resolve));
+  let attempted = false, observations = 0;
+  const original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async (ticket, action, options) => {
+    if (action.kind === "submit_initial") { attempted = true; return realRequest({ ...ticket, ipcEndpoint: endpoint }, action, options); }
+    if (action.kind === "observe") {
+      if (attempted) {
+        expect(f.stop).not.toHaveBeenCalled(); expect(v.child.exitCode).toBeNull();
+        observations++;
+        if (observations === 1) return realRequest({ ...ticket, ipcEndpoint: endpoint }, action, options);
+        if (observations === 3) process.emit("SIGINT", "SIGINT");
+      }
+      // A stale snapshot is not evidence that the input was never submitted.
+      return { snapshot: { lifecycle: "ready", initialInputState: observations > 2 ? "confirmed" : "not_submitted", nativeSessionId: "same-native" } };
+    }
+    return original(ticket, action, options);
+  });
+  try { await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context); }
+  finally { await new Promise<void>(resolve => server.close(() => resolve())); }
+  expect(observations).toBe(3);
+  expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
+  expect(f.spawn).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce();
+  expect(v.err.join("")).toContain("unknown");
+  expect(v.err.join("")).toContain("observation recovered");
+});
+
+test("a definitive initial IPC rejection still stops its supervised controller", async () => {
+  const v = await setup("initial once"), original = f.request.getMockImplementation()!;
+  f.request.mockImplementation(async (ticket, action, options) => action.kind === "submit_initial" ? Promise.reject(new Error("Controller IPC authentication or identity mismatch.")) : original(ticket, action, options));
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial once" }, v.context)).rejects.toThrow("authentication");
+  expect(f.stop).toHaveBeenCalledOnce();
 });

@@ -9,8 +9,10 @@ view without preparing a scheduled task. A separate demo UI would not exercise
 the product's interaction, receipt and recovery behavior. Existing session
 identity and authorization assume a task claim, so bypassing that assumption
 would weaken task isolation or invent ownership that does not exist. A temporary
-grant-renewal transport failure also says nothing about the health of the native
-process; unwinding supervision on that failure can stop an otherwise valid loop.
+grant-renewal or local IPC transport failure also says nothing about the health
+of the native process; unwinding supervision on that failure can stop an
+otherwise valid loop. Losing an input response cannot distinguish a request that
+never arrived from an input already accepted by the provider.
 
 ## Decision
 
@@ -47,6 +49,16 @@ a successful renewal replaces only that credential. Explicit shutdown and
 definitive authorization or protocol failures retain the bounded stop path. The
 relay requires a current connection grant before native dispatch, so expiration
 does not authorize further native calls while renewal is unavailable.
+
+Local IPC distinguishes transport uncertainty from explicit rejection or invalid
+response identity. After an uncertain initial-input response, supervision keeps
+the original operation identity and observes the Controller without resubmitting
+that input, even if a later snapshot says `not_submitted`. Transient observation
+failures after startup do not prevent credential renewal. Actual child exit,
+definitive rejection and user cancellation still follow the bounded stop path.
+Frame admission ends after a complete authenticated request; native acceptance
+uses a separate bounded response wait. Releasing that waiter cannot cancel the
+already-dispatched native operation.
 
 An unstarted registration can be archived with `never_started` only before any
 spawn attempt. The service also requires an unused grant and no connection or
@@ -88,6 +100,11 @@ honest without pretending that initialization accepted a prompt.
 then executes local stopping even while the original grant and native process
 remain healthy. Retrying credential acquisition under the same identity avoids
 that interruption without adding process replacement or input replay.
+
+**Retry an initial input after its IPC response is lost.** The original request
+may already be dispatching. Even a subsequent snapshot cannot establish that the
+request never arrived, so retransmission could repeat native work. Observation
+preserves the uncertainty without inventing another operation.
 
 ## Consequences
 

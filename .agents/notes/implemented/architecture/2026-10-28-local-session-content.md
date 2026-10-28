@@ -42,6 +42,16 @@ synchronization. A disconnected relay does not stop a healthy native loop merely
 because unsent display events accumulate. Local storage failure remains an
 execution failure because the Controller cannot preserve required evidence.
 
+Display budgets account for the serialized JSON representation. Session-specific
+HTTP and WebSocket encoders preserve HTML characters, including inside custom
+timeline and content marshalers; Controller budgets also account for Go's Unicode
+separator escaping. Durable hash encoding remains unchanged so a previous
+operation's identity does not change when its transport representation changes.
+Oversized noninteractive entries retain their full local projection and use the
+same explicit error placeholder in live delivery and history, preserving entry
+identity and revision. Applying that projection to existing outbox rows as well
+as new entries prevents an old unsendable event from blocking synchronization.
+
 ## Alternatives
 
 **Keep full PostgreSQL history with retention.** Retention could bound some
@@ -56,6 +66,11 @@ responsibility and offline-history promise.
 records, reconnect cannot recover accurate UI state or distinguish uncertain
 native dispatch from an unsent input. Local durability and a minimal authorized
 control ledger remain necessary.
+
+**Reject and retry every oversized display event.** Retaining the same event at
+the head of the outbox prevents source acknowledgement and live synchronization
+on every reconnect. A consistent placeholder keeps the limit visible and lets
+subsequent events progress without deleting the local content.
 
 ## Consequences
 

@@ -168,3 +168,38 @@ test('serializes large concurrent pages and rejects only excess requests without
   expect(callbacks.onError).not.toHaveBeenCalled();
   expect(relay.connected()).toBe(true);
 });
+
+test("recovers an old oversized display outbox without changing source identity or replaying operations", async () => {
+  const { relay, journal, socket, emit, frame, callbacks } = await setup([], true);
+  const entry = { entryId: randomUUID(), entrySeq: "1", revision: "2", kind: "tool_call", callId: "tool", name: "shell", input: "\u2028".repeat(200_000), output: [{ type: "text", text: "\u2029".repeat(200_000) }], status: "completed", truncated: false };
+  let acknowledged = "8";
+  Object.assign(journal, {
+    getSnapshot: () => ({ ...snapshot, nativeSessionId: snapshot.identity.nativeSessionId }),
+    pendingInteractions: () => [], getSourceFloor: () => "0", getLastSourceSequence: () => "9", getLastAcknowledgedSequence: () => acknowledged,
+    pendingEvents: () => acknowledged === "8" ? [{ sequence: "9", payload: { kind: "timeline_upsert", payload: entry } }] : [],
+    acknowledgeEvents: (seq: string) => { acknowledged = seq; },
+  });
+  emit(frame("reconcile_result", { operations: [] }));
+  await vi.waitFor(() => expect(socket.sent.some(message => message.type === "events")).toBe(true));
+  const batch = socket.sent.find(message => message.type === "events")!;
+  expect(batch.events).toEqual([{ sourceSeq: "9", kind: "timeline_upsert", payload: expect.objectContaining({ entryId: entry.entryId, entrySeq: "1", revision: "2", kind: "error", code: "display_budget_exceeded" }) }]);
+  expect(entry.input).toHaveLength(200_000);
+  emit(frame("events_ack", { batchId: batch.batchId, sourceEpoch: batch.sourceEpoch, lastAckedSourceSeq: "9", lastEventSeq: "20" }));
+  await vi.waitFor(() => expect(socket.sent.some(message => message.type === "sync_state")).toBe(true));
+  emit(frame("sync_ack"));
+  expect(relay.connected()).toBe(true);
+  expect(callbacks.onCommand).not.toHaveBeenCalled();
+  expect(callbacks.onError).not.toHaveBeenCalled();
+});
+
+test("does not HTML-expand or replace pending approval content in live sync", async () => {
+  const { relay, journal, socket, emit, frame, callbacks } = await setup([], true);
+  const pending = { entryId: randomUUID(), entrySeq: "1", revision: "1", kind: "interaction", interaction: { interactionId: randomUUID(), revision: "1", state: "pending", kind: "approval", title: "Approve tool", detail: "<>".repeat(200_000), actions: ["allow_once", "reject"] } };
+  Object.assign(journal, { getSnapshot: () => ({ ...snapshot, nativeSessionId: snapshot.identity.nativeSessionId }), pendingInteractions: () => [pending], getSourceFloor: () => "0", getLastSourceSequence: () => "8" });
+  emit(frame("reconcile_result", { operations: [] }));
+  await vi.waitFor(() => expect(socket.sent.some(message => message.type === "sync_state")).toBe(true));
+  expect(socket.sent.find(message => message.type === "sync_state")!.pendingInteractions).toEqual([pending]);
+  emit(frame("sync_ack"));
+  expect(relay.connected()).toBe(true);
+  expect(callbacks.onError).not.toHaveBeenCalled();
+});

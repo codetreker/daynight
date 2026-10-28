@@ -141,7 +141,7 @@ func (e TimelineEntry) MarshalJSON() ([]byte, error) {
 	} else {
 		delete(fields, "entrySeq")
 	}
-	return json.Marshal(fields)
+	return MarshalWire(fields)
 }
 
 type SourceEvent struct {
@@ -224,5 +224,5 @@ func (m ControllerMessage) MarshalJSON() ([]byte, error) {
 			return nil, errInvalid
 		}
 	}
-	return json.Marshal(fields)
+	return MarshalWire(fields)
 }

@@ -27,10 +27,10 @@ type ContentResult struct {
 
 func (v ContentResult) MarshalJSON() ([]byte, error) {
 	if v.Kind == "timeline" {
-		return json.Marshal(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "items": v.Items, "resources": v.Resources, "beforeCursor": v.BeforeCursor, "afterCursor": v.AfterCursor, "hasMoreBefore": v.HasMoreBefore, "hasMoreAfter": v.HasMoreAfter})
+		return MarshalWire(map[string]any{"kind": v.Kind, "historyEpoch": v.HistoryEpoch, "items": v.Items, "resources": v.Resources, "beforeCursor": v.BeforeCursor, "afterCursor": v.AfterCursor, "hasMoreBefore": v.HasMoreBefore, "hasMoreAfter": v.HasMoreAfter})
 	}
 	if v.Kind == "resource" {
-		return json.Marshal(map[string]any{"kind": v.Kind, "resource": v.Resource, "offset": v.Offset, "data": v.Data, "eof": v.EOF})
+		return MarshalWire(map[string]any{"kind": v.Kind, "resource": v.Resource, "offset": v.Offset, "data": v.Data, "eof": v.EOF})
 	}
 	return nil, errInvalid
 }

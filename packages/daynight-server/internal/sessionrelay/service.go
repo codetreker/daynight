@@ -486,7 +486,10 @@ func (s *Service) emit(ctx context.Context, tx pgx.Tx, r *record, kind string, p
 	if r.Live == nil {
 		return nil
 	}
-	raw := encode(event)
+	raw, err := sp.MarshalWire(event)
+	if err != nil {
+		return err
+	}
 	if len(raw) > maxEventBytes-1024 {
 		return fault("payload_too_large", "Live event exceeds relay capacity.")
 	}
