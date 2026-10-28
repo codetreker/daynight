@@ -11,7 +11,7 @@ transition under [the Goal protocol](goal.md).
 Read the complete task with `daynight task show <task-id> --json`. Preserve the
 requested task ID through recovery and waiting. Read and apply
 [shared task execution](task-execution.md) for its required inputs,
-prerequisites, confirmed scope, work, evidence, and acceptance.
+prerequisites, confirmed scope, work, results, and acceptance.
 
 An explicitly user-selected task may use this execution path regardless of
 `allowAgents` or platform compatibility. These conditions gate automatic worker
@@ -47,8 +47,8 @@ its delivery or acceptance is complete.
 
 ## Complete or return waiting
 
-When all task acceptance and delivery conditions are satisfied and its evidence
-is readable, reread the complete in-progress task and use
+When all task acceptance and delivery conditions are satisfied and its required
+results are readable, reread the complete in-progress task and use
 `task set-status <task-id> done --if-version <observed-version>` with its exact
 observed version. Only service confirmation establishes the status update;
 reconcile uncertain results before reporting success. Do not replay an

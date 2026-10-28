@@ -45,10 +45,12 @@ Missing or mismatched managed context leaves the invocation waiting. Rejection
 or an unknown result does not select ordinary execution or replay the write.
 
 `references/task-execution.md` owns the shared task-input, scope, delivery,
-evidence, and completion-readiness rules. It does not start, reopen, or complete
+results, and completion-readiness rules. It does not start, reopen, or complete
 an execution, select another task, or impose a claim on ordinary callers.
 The existing task-content standard and Final acceptance rules retain their
-respective ownership. Managed execution does not enter ordinary execution and
+respective ownership. The [task/session content decision](../process/2026-10-28-task-session-content.md)
+keeps execution methods, operational authorization and recovery in session
+context while task definitions, required inputs and artifacts remain task content. Managed execution does not enter ordinary execution and
 skip selected steps.
 
 Managed autopilot drives the assigned task through implementation, relevant
@@ -62,7 +64,7 @@ reviewer approval for the current head remain mandatory; protections are never
 bypassed. Platform-confirmed merge and its resulting commit establish delivery;
 an auto-merge request or queue entry does not. Post-merge mainline CI is awaited
 only when the user explicitly requires it. Required task acceptance, readable
-evidence, and attributable temporary resource cleanup precede final claim-bound
+results, and attributable temporary resource cleanup precede final claim-bound
 completion because the worker may stop the
 agent and remove its workspace immediately afterward.
 

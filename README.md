@@ -1,7 +1,7 @@
 # Daynight
 
 Daynight is a project and task workspace for people and coding agents. It keeps
-work, dependencies, design documents and delivery evidence together, with a
+work, dependencies, required inputs and resulting artifacts together, with a
 browser dashboard for understanding progress and a command-line client for
 managing tasks. A foreground worker runs automatically claimed tasks through
 Copilot or Codex in private Herdr workspaces. The CLI also provides automated

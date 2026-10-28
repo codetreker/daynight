@@ -20,18 +20,21 @@ When the skill and Daynight are available, the repository instructions and publi
 skill use Daynight to manage concrete work with a defined objective and completion
 conditions: features, bug fixes, architecture/design assignments, and actual work
 items produced by their breakdown. Agent-generated file reads, commands, and
-routine checks stay in the owning task's execution plan. A distinct acceptance or
+routine checks stay in the session execution plan, not task descriptions or attachments. A distinct acceptance or
 validation assignment may still be a task when it has its own outcome; routine
 checks within another task remain execution steps.
 
 Every solution, architecture, and design review uses its owning task. Before
 requesting user review, the complete current material is saved in its description or attachments,
-read back, and identified by task and resource reference. Revisions and review
-decisions stay synchronized there. The later
+read back, and identified by task and resource reference. Current requirements,
+designs and resulting decisions stay synchronized there; discussion/review
+methods, process and operational authorization stay in the session. The later
 [task-content and handoff decision](2026-10-25-task-content-handoff.md) permits
 detailed content in the description or its explicitly referenced owning documents,
-with one content owner and a task-local confirmation/evidence location. This replaces
-the original requirement to keep detailed plans in a primary Markdown attachment.
+with one content owner. This replaces the original requirement to keep detailed
+plans in a primary Markdown attachment. The [task/session content decision](2026-10-28-task-session-content.md)
+replaces universal solution and confirmation/evidence requirements with task
+definitions and resulting artifacts while preserving real inputs and review material.
 
 An explicit user or applicable repository tracking/review instruction supplies
 standing creation permission for necessary tasks within the user's confirmed

@@ -62,10 +62,12 @@ and activate its tab; complete-inventory checks and visible errors share that
 owner. The published skill teaches self-contained Markdown briefs with concrete
 actions, scope, deliverables, constraints, brief observable completion and actual
 references. The [task-content and handoff decision](../process/2026-10-25-task-content-handoff.md)
-now permits full content in the description or required referenced documents and
-requires a designated task-local confirmation and evidence location. It replaces
-the original primary-attachment storage rule without changing this reading
-composition, Goal stages or independent execution and delivery authority.
+permits full content in the description or required referenced documents. The
+[task/session content decision](../process/2026-10-28-task-session-content.md)
+replaces universal solution and confirmation/evidence requirements with task
+definitions and resulting artifacts, while session methods and process remain
+with the session. These content rules do not change this reading composition,
+Goal stages or independent execution and delivery authority.
 
 ## Alternatives
 
