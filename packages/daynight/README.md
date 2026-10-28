@@ -22,6 +22,7 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Task deletion](#task-deletion)
 - [Task attachments](#task-attachments)
 - [Worker configuration and startup](#worker-configuration-and-startup)
+- [Worker workspace upgrade](#worker-workspace-upgrade)
 - [Worker manual management](#worker-manual-management)
 - [Review configuration and startup](#review-configuration-and-startup)
 - [Review status listing](#review-status-listing)
@@ -101,6 +102,7 @@ daynight worker                     # Show worker help
 daynight worker setup               # Check prerequisites and choose an agent and Projects
 daynight worker run                 # Run until interrupted
 daynight worker attach              # Open the worker Herdr session
+daynight worker migrate-workspaces [--rollback]
 daynight worker repo list [--json]
 daynight worker repo add [--project <project-id>]
 daynight worker repo remove [--project <project-id>]
@@ -967,6 +969,31 @@ private Herdr. Each task uses branch `daynight/<task-id>` and directory
 `<repository>/.worktrees/daynight/<task-id>`. Valid claims retain their dirty
 worktree; task branches and commits remain after terminal cleanup.
 
+A workspace label starts with the task title and ends with its full stable owner:
+
+```text
+Fix worker startup | daynight:{"projectId":"…","taskId":"…","claimId":"…","worktreeId":"…"}
+```
+
+The title is display text. Ownership checks and the managed agent name use only
+those four canonical UUIDs; renaming a task does not change its claim, worktree,
+agent name or native conversation. Herdr and Git ownership markers share that
+four-field identity. The configured service address remains available to API
+requests and the managed assignment, outside resource identity. One retained
+worker state directory belongs to one configured service.
+
+The next successful complete claim inventory supplies the latest task title.
+Changed names are synchronized through Herdr in the task's existing serialized
+operation, including when execution recovery has reached its limit. An unchanged
+name sends no rename request. A naming RPC failure reports `workspace-name-error`
+without spending execution recovery budget or restarting a healthy agent; an
+unknown result is observed again before a later decision. Ownership, binding and
+cancellation failures retain their lifecycle semantics. Titles may contain the
+label delimiter because parsing uses the final owner suffix. Control characters,
+line separators and bidirectional display controls are escaped as visible text;
+Unicode titles and emoji remain readable. Full titles and owner IDs are retained,
+with Herdr responsible for fitting the label into its current terminal width.
+
 The local database has exactly these business fields:
 
 ```text
@@ -1154,6 +1181,64 @@ the current process. Logs are diagnostic only; they do not supply a second
 recovery ledger. The
 [worker requirements](../../docs/spec/daynight-worker.md) and
 [design](../../docs/design/daynight-worker.md) own full behavior and validation.
+
+## Worker workspace upgrade
+
+Stop `daynight worker run` and confirm that its private Herdr and native agents
+have stopped before changing an existing workspace identity format. Normal
+execution accepts the current four-ID format and reports old labels or Git
+markers with a migration instruction. It does not interpret legacy ownership
+while running tasks.
+
+```bash
+daynight worker migrate-workspaces
+```
+
+This explicit local operation uses the worker instance lock. It validates the old
+service identity against the configured service, canonical owner IDs, task and
+native-session records, actual workspace directories and Git administrative
+ownership fingerprints. It preserves the SQLite claim/session index, task
+branches, dirty worktrees and original native conversations. An unfinished
+execution with legacy resources must have its recorded native session ID;
+a fresh pending claim without resources does not block migration. Unknown
+formats, conflicting identities and missing original resources are errors,
+with the original resources retained. A current-format or resource-free state
+needs no conversion, and the command returns without starting a daemon.
+
+Before mutation, migration backs up its affected files below
+`~/.daynight/worker/workspace-migration-backups/<UUID>/` and persists
+`~/.daynight/worker/workspace-migration.json`. Run and manual management refuse
+to proceed while that blocking manifest remains. The backup retains its original
+manifest, file hashes, private Herdr tree and completion outcome.
+A maintenance Herdr keeps automatic native-agent restoration disabled and closes
+only verified legacy task workspaces. Migration waits for its shutdown and reads
+back the saved layout before rewriting the Git administration `locked` markers
+with four IDs and their original physical fingerprints. Old automatic recovery
+snapshots stay with the migration backup so they cannot restore legacy labels.
+Herdr owns its snapshot and terminal-history writes; the operation does not edit
+its history fingerprint.
+
+After successful migration, start `daynight worker run`. It creates task-title
+workspaces and resumes the original SQLite native session IDs. Workspace/pane
+IDs and the closed Herdr terminal scrollback are replaced; the native conversation
+history and task work remain. The operation changes local resource representation,
+not remote claims or business task status.
+
+A failed or interrupted migration keeps normal startup blocked. Restore and verify
+the complete saved state through the same command before retrying the migration:
+
+```bash
+daynight worker migrate-workspaces --rollback
+```
+
+Rollback requires an incomplete blocking manifest; it cannot revert a completed
+migration or later execution state. It restores the backed-up Herdr state,
+database and Git markers as one verified old-format set. It leaves an error and
+the startup block when restoration cannot be verified. A normal migration request
+with an incomplete manifest directs the operator to rollback before retrying.
+Resume an old-format runner only after a successful rollback;
+use the new runner after migration completes. The [workspace naming decision](../../.agents/notes/implemented/architecture/2026-10-28-worker-workspace-names.md)
+records the format and the costs of rebuilding the Herdr workspace.
 
 ## Worker manual management
 

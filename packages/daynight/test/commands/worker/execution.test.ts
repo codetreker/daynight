@@ -26,7 +26,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const base = path.resolve("../../.tmp/execution-tests"); await mkdir(base, { recursive: true });
   const root = await mkdtemp(path.join(base, "r-")); roots.push(root);
   const project: WorkerProject = { projectId: uuid(1), repoUrl: "https://example.test/owner/repo", localPath: path.join(root, "repo") };
-  const owner: ResourceOwner = { serverOrigin: "https://daynight.example", projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4) };
+  const owner: ResourceOwner = { projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4) };
   const cwd = path.join(project.localPath, ".worktrees", "daynight", owner.taskId); await mkdir(cwd, { recursive: true });
   const worktree: WorktreeBinding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: cwd, branch: `daynight/${owner.taskId}` };
   const configuration: ExecutionConfiguration = { agent, model: "current-model", args: [], recoveryLimit: 2 };
@@ -37,7 +37,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const workerEnvironment = { XDG_CONFIG_HOME: "/worker/private/config", XDG_STATE_HOME: "/worker/private/state", COPILOT_ALLOW_ALL: "false", COPILOT_ASSISTED_APPROVAL: "true" };
   const expectedNativeEnvironment = { ...workerEnvironment, ...nativeEnvironment, ...(agent === "copilot" ? { COPILOT_ALLOW_ALL: "true", COPILOT_ASSISTED_APPROVAL: "false" } : {}) };
   const binding = { session: "w", workspaceId: "restored-workspace", paneId: "restored-pane", terminalId: "restored-terminal" };
-  const workspaces: Entry[] = [{ workspace_id: binding.workspaceId, label: herdrExecutionLabel(context) }];
+  const workspaces: Entry[] = [{ workspace_id: binding.workspaceId, label: herdrExecutionLabel(context, "Task execution") }];
   const panes: Entry[] = [{ workspace_id: binding.workspaceId, pane_id: binding.paneId, terminal_id: binding.terminalId, tab_id: "restored-tab", cwd, agent_status: "unknown", agent_session: { source: `herdr:${agent}`, agent, kind: "id", value: staleId } }];
   const agents: Entry[] = [];
   const environments = new Map<string, Entry>([[binding.paneId, workerEnvironment]]);
@@ -102,8 +102,8 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: vi.fn(async () => {}) }, workspaceEnvironment: nativeEnvironment, processExecuting: async (pid) => executing.has(pid), pollIntervalMs: 1 });
   const events: WorkerEvent[] = [];
   const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
-  const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, platform: "linux", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
-  const input: ExecutionInput = { task, project, owner, configuration };
+  const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
+  const input: ExecutionInput = { task, project, owner, title: "Task execution", configuration };
   const resources = async () => { const operation = createOperation(); try { return await manager.listResources(operation); } finally { operation.dispose(); } };
   return { root, store, input, context, manager, rpc, resources, events, calls, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
 };
@@ -433,7 +433,7 @@ describe("execution from current Herdr resources", () => {
     await mkdir(otherContext.cwd, { recursive: true });
     f.store.registerPending({ ...otherOwner, agent: "codex", sessionId: staleId });
     const otherInput = { ...f.input, owner: otherOwner, task: f.store.activateTask(otherOwner) };
-    f.workspaces.push({ workspace_id: "other-workspace", label: herdrExecutionLabel(otherContext) });
+    f.workspaces.push({ workspace_id: "other-workspace", label: herdrExecutionLabel(otherContext, "Other task") });
     const otherPane = { workspace_id: "other-workspace", pane_id: "other-pane", terminal_id: "other-terminal", tab_id: "other-tab", cwd: otherContext.cwd, agent_status: "unknown" };
     f.panes.push(otherPane);
     f.agents.push({ ...otherPane, agent: "codex", name: herdrExecutionAgentName(otherContext), agent_status: "blocked", interactive_ready: true, launch_pending: false, state_change_seq: 1, completion_seq: 0, agent_session: { source: "herdr:codex", agent: "codex", kind: "id", value: staleId } });
@@ -459,7 +459,7 @@ describe("execution from current Herdr resources", () => {
     const context = { ...f.context, ...owner };
     f.store.registerPending({ ...owner, agent: "codex", sessionId: staleId });
     const input = { ...f.input, owner, task: f.store.activateTask(owner) };
-    f.workspaces[0]!.label = herdrExecutionLabel(context);
+    f.workspaces[0]!.label = herdrExecutionLabel(context, "Task execution");
     current.name = herdrExecutionAgentName(context);
     await f.driver.advance(input);
     await f.driver.advance(input);

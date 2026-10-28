@@ -141,8 +141,11 @@ execution permission before the worker can acquire them.
 
 The worker runs in the foreground with one execution slot by default. It uses
 fixed state under `~/.daynight/worker/`. Run `daynight worker attach` in another
-terminal to open its private Herdr session for human input. Detaching the client
-leaves ongoing worker tasks running. Ctrl+C in `worker run` cancels and joins
+terminal to open its private Herdr session for human input. Each task workspace
+starts with its current task title, followed by its stable Project/task/claim/worktree
+identity. The next successful inventory updates changed titles without replacing
+the native conversation. Detaching the client leaves ongoing worker tasks running.
+Ctrl+C in `worker run` cancels and joins
 all running jobs, then directly stops agents and closes their workspaces without
 sending a cleanup prompt or waiting for a cleanup turn. Claims, worktrees, native
 history and unfinished local rows remain, including for ended claims; restart
@@ -150,6 +153,9 @@ reconciles them normally. Stop failures remain visible and retain the private
 Herdr instance when stopping is uncertain. External temporary resources may
 remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
+Stop the worker before upgrading old workspace identities, then use
+[`daynight worker migrate-workspaces`](packages/daynight/README.md#worker-workspace-upgrade)
+to preserve existing task worktrees and native conversation IDs.
 
 Fresh and resumed Copilot/Codex processes use fixed full access and task-folder
 trust settings without native permission prompts. Business input remains

@@ -20,7 +20,7 @@ const fixture = () => {
   const directory = mkdtempSync(path.join(base, "cleanup-"));
   const store = openWorkerStore(path.join(directory, "state.sqlite")); roots.push({ directory, store });
   const project = store.registerProject({ projectId: uuid(1), repoUrl: "https://example.test/owner/repo.git", localPath: path.join(directory, "repo") });
-  const owner: ResourceOwner = { projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), serverOrigin: "https://daynight.example", worktreeId: uuid(4) };
+  const owner: ResourceOwner = { projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), worktreeId: uuid(4) };
   const task = store.activateTask(store.registerPending({ ...owner, agent: "codex" }));
   const binding = { session: "w", workspaceId: "workspace", paneId: "pane", terminalId: "terminal" };
   const observation = (status: string, stateChangeSeq: number | null, completionSeq: number | null, interactiveReady = true): HerdrAgentObservation => ({ binding, kind: "codex", name: "managed", status, launchPending: false, interactiveReady, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(5) }, stateChangeSeq, completionSeq });
@@ -33,7 +33,7 @@ const fixture = () => {
   const herdr = { tasks: { pendingStops: vi.fn(() => []), submitPrompt, stopAndClose } } as unknown as WorkerHerdrAdapter;
   const git = { removeWorktree } as unknown as WorkerGitManager;
   let time = 1_000;
-  const deps: ExecutionDependencies = { store, git, herdr, platform: "linux", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
+  const deps: ExecutionDependencies = { store, git, herdr, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(6), buildPrompt: () => "managed", emit: (event) => events.push(event), now: () => time };
   const driver = createCleanupDriver(deps);
   const advance = (current: HerdrAgentObservation) => driver.advance({ owner, project, task }, resources(current), true);
   return { store, task, owner, driver, advance, observation, submitPrompt, stopAndClose, removeWorktree, order, events, clock: (value: number) => { time = value; } };

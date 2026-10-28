@@ -31,7 +31,7 @@ const fixture = async (refFormat: "files" | "reftable" = "files") => {
   await writeFile(path.join(repository, "tracked.txt"), "original\n"); git(repository, ["add", ".gitattributes", "tracked.txt"]); git(repository, ["commit", "-m", "fixture"]);
   git(repository, ["remote", "add", "origin", remote]);
   const project: WorkerProject = { projectId: ids.projectId, repoUrl: remote, localPath: repository };
-  const owner: ResourceOwner = { serverOrigin: "https://daynight.example", projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId };
+  const owner: ResourceOwner = { projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId };
   return { root, repository, project, owner };
 };
 const administrativeDirectory = (cwd: string): string => git(cwd, ["rev-parse", "--absolute-git-dir"]);
@@ -156,8 +156,18 @@ describe("worker repositories and task worktrees", () => {
     expect(git(binding.worktreePath, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/${binding.branch}`);
     const owner = JSON.parse((await readFile(path.join(administrativeDirectory(binding.worktreePath), "locked"), "utf8")).slice("daynight-worker:".length));
     const entry = await lstat(binding.worktreePath, { bigint: true });
-    expect(owner).toMatchObject({ serverOrigin: f.owner.serverOrigin, projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId, leaf: `${entry.dev}:${entry.ino}` });
+    expect(owner).toMatchObject({ projectId: ids.projectId, taskId: ids.taskId, claimId: ids.claimId, worktreeId: ids.worktreeId, leaf: `${entry.dev}:${entry.ino}` });
+    expect(owner).not.toHaveProperty("serverOrigin");
     expect(await adapter.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
+  });
+
+  it("rejects legacy ownership markers with an explicit migration remedy", async () => {
+    const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const marker = path.join(administrativeDirectory(binding.worktreePath), "locked");
+    const original = JSON.parse((await readFile(marker, "utf8")).slice("daynight-worker:".length));
+    await writeFile(marker, `daynight-worker:${JSON.stringify({ serverOrigin: "https://daynight.example", ...original })}\n`);
+    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("daynight worker migrate-workspaces");
+    expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
   it("recovers an add whose successful result was lost without resetting dirty work", async () => {

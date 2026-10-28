@@ -65,7 +65,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 ### W-06：稳定的 task worktree
 
 - 分支为 daynight/<taskId>，目录为 .worktrees/daynight/<taskId>。首次分支从仓库 HEAD 创建，保留分支从原 tip 使用；仍有效 claim 正常复用 dirty worktree，不 reset/clean。普通退出、失败和崩溃保留其 worktree 与原生历史。
-- 创建、复用和删除核对实际仓库、Git 注册、静态 claim/worktree 身份、分支及精确 .git 指针。符号链接、外来路径、缺指针和歧义注册不能授权破坏性动作。Device/inode 仅为辅助，refs backend 通过 Git 核对，支持 reftable。
+- 创建、复用和删除核对实际仓库、Git 注册、静态 projectId/taskId/claimId/worktreeId、分支及精确 .git 指针。资源身份仅含这四项 canonical UUID，Herdr 与 Git 标记一致；服务地址是连接配置，不进入本地资源身份。符号链接、外来路径、缺指针和歧义注册不能授权破坏性动作。Device/inode 仅为辅助，refs backend 通过 Git 核对，支持 reftable。
 - 原生会话已知而原 worktree 意外丢失时报告错误并保留 active；尚无原会话的新执行可以按规则准备工作区。异常既有路径保留并报告，不用空目录掩盖旧成果丢失。
 - Git 静态标记没有 workerId，须关联本机行、专用 Herdr 或当前自有 claim 才能证明属于本 worker。没有这种关联的 Git-only 遗留资源报告并保留，不因自有清单缺席删除。
 - 终止删除前确认当前受管进程停止、workspace 关闭。保留 .git 指针至内容移除完成，最后删除目录和注册；中断后仍存在但缺指针的路径保留错误。结束后保留分支、提交历史和交付引用，新 claim 使用新工作区身份及原生会话。
@@ -73,6 +73,8 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 ### W-07：专用 Herdr 与 agent 执行
 
 - Worker 自动管理专用 Herdr，每 task/claim 一个 workspace/pane/agent，不干扰人工实例。保持 resume_agents_on_restore=false，由 worker 唯一决定启动或恢复。
+- Workspace 显示名称以当前 task title 开头，后接 ` | daynight:` 与 projectId/taskId/claimId/worktreeId 的完整 canonical JSON。标题只作展示，所有权匹配、恢复、停止、清理及 agent name 哈希只使用四项稳定身份。中文、emoji、长标题、同名标题及包含分隔符的标题均可处理；换行、终端和双向显示控制字符编码为可见转义，不截断身份 JSON。
+- 下一轮成功完整自有清单提供最新 title，仅名称变化时调用 Herdr rename；已存在的活 workspace 与恢复超限任务也能同步。改名保留 claim、worktree、native session 和 agent name。命名 RPC 失败报告 `workspace-name-error`，不消耗执行恢复预算或中断健康执行；未知结果先重新观察。身份或 binding 冲突及取消继续按生命周期失败处理。名称同步与执行/清理共享 task 串行化，失去 claim 后不调度新的命名操作。
 - Herdr 私有 XDG 与端点隔离；task native 环境保留调用方原 XDG set/unset 和认证目录。Bash/Zsh HISTFILE 使用私有文件；自定义 rc 和其他 shell 不在通用历史隔离保证内。
 - 存活 agent 保持原连接；重新启动前停止并关闭已存在的 inactive workspace，以当前 native 环境重建，并清空该 pane 遗留的原生引用。会话选择只使用本机保存的 session_id；不把 inactive pane 的旧引用当作新 ID，不增加历史扫描或持久回执。
 - 活 agent 直接连接并观察；需要启动且 session_id 有值则使用记录的 agent 和原生 ID resume；session_id=NULL 时记录 info 并启动全新原生会话，成功取得 ID 写回原行，沿用 task/claim/worktree。NULL 是新 claim 首次启动的正常状态，也覆盖启动成功但 ID 尚未保存的崩溃窗口，不增加历史反查、暂停或人工确认门槛。
@@ -105,6 +107,8 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 - 配置、启动/输入回执、PID 观察、恢复次数、清理进度、原期限和管理意图不持久保存或转存其他台账。日志不作为恢复输入。恢复使用当前适用设置；计数和超限等待只在当前进程内，重启清零。
 - Ctrl+C 停止新领取和调度，取消所有运行中的 job（包括终止清理 job），等待它们全部收尾后直接中断并停止受管 agent、关闭 workspace。进程退出不发送清理 prompt，也不等待 agent 清理轮；工作区外临时资源可能遗留。保留 claim、worktree、原生 session ID 与所有未完成 active/pending 行，包括归属已经结束的任务；退出不删除 worktree、不把未完成行置 done。重启后按正常完整清单对账，为已结束归属的剩余资源重新进入终止清理。待确认的停止操作收尾后才停止私有实例；停止错误保持可见，无法确认停止时保留私有 Herdr 与相关资源。正常完成、release、强制撤回和人工管理仍使用原有通知及清理时序。
 - 仅新 schema 建库；不迁移旧详细状态库，不自动删除真实数据库。操作者停止旧 worker 后删除旧 SQLite，再启动重建。原生历史与 workerId 保留原有位置。
+- 资源身份格式升级通过显式 `worker migrate-workspaces [--rollback]` 完成，沿用当前六列 schema。停止 runner 和原生执行后，命令取得实例锁，核验旧服务/四项身份、实际 cwd、Git 注册与物理指纹以及原生 session ID。未结束且具有旧格式资源的执行必须保存原 native session ID；新 pending 尚无资源时不阻塞，当前格式或无旧资源时不启动维护 daemon。持久备份和启动阻塞清单后才修改：维护 Herdr 不恢复原生 agent，关闭旧 workspace、退出并读回布局后，原子改写 Git administration 的 locked 标记；旧 recovery snapshots 不可被新 runner 自动恢复。保留 claim、原 worktree/branch、原生历史和 SQLite session_id，新 runner 重建带标题的 workspace 并恢复原会话；临时 Herdr ID 和终端 scrollback 不保留。未知、冲突、缺失原资源或无法证明原生连续性的输入明确失败并保留。
+- 迁移失败或进程中断时阻止 run 和人工管理；普通迁移请求要求先 `--rollback` 验证全组恢复，再重做。回滚只接受仍存在的未完成清单，不回退已完成迁移及后续执行。只有完成全组迁移或验证回滚后才解除阻塞，不能接受混合格式。持久迁移备份与阻塞清单只承担一次性升级恢复，不保存业务执行进度。正常运行只接受新格式，不新增旧数据兼容分支。
 
 ### W-10：Agent 完成与资源清理
 
@@ -129,10 +133,10 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 | W-02、W-03 | 默认许可、双向确认、平台清除、未知结果及候选组合过滤成立，不合格任务不遮挡合格候选。 |
 | W-04、W-05 | 同 task 竞争单赢家；未知 claim 不启动资源或重放；多项目公平调度，等待与收尾占容量，同 task 旧资源形成启动屏障；撤回只允许原 owner/admin，原子重置归属/状态/计时并关闭许可。 |
 | W-06 | Dirty worktree 复用，静态归属、注册、指针与删除核对成立；缺失原成果和外来路径保持可见错误。 |
-| W-07、W-09 | 活进程重连不重发启动 prompt；idle/done 且就绪时 ping，working/blocked/unknown 保持观察，未改变观察和未知回执不触发重复输入；已知原生 ID resume；首次启动与恢复中的 NULL 分支记录 info 后新建并保存 ID；空库先建项目映射再找回已有 claim。 |
+| W-07、W-09 | 活进程重连不重发启动 prompt；idle/done 且就绪时 ping，working/blocked/unknown 保持观察，未改变观察和未知回执不触发重复输入；已知原生 ID resume；首次启动与恢复中的 NULL 分支记录 info 后新建并保存 ID；空库先建项目映射再找回已有 claim。标题首先可见，改名按需同步且不改变执行身份，含控制字符/分隔符/长标题；命名故障和未知回执不消耗恢复预算。 |
 | W-08 | 人工操作与 run 互斥；远端拒绝保留 worktree；成功后本机删除失败可由下次对账收尾；未知结果不重放；Web 强制撤回不声明远端已停，原 worker 下次对账收尾。 |
 | W-09 | 精确两表与列数，三态/唯一 active；退出取消并等待所有 job 收尾，含正在等待通知、清理轮或停止确认的终止清理 job，随后直接停止并关闭 workspace，不发送清理 prompt、不等待清理轮、不删除 worktree、不把未完成行置 done；归属已结束及原本缺失本机行的任务也保留 worktree、有效 session ID 与未完成行，重启按完整清单重新进入终止清理并解除同 task 后继的启动屏障；停止错误可见，停止不确定时私有 Herdr 保留。 |
 | W-10 | 正常完整清单缺席统一清理，正常完成、release、强制撤回及人工管理的清理语义不变；清理消息成功递交后的巡查观察到 idle 即推进关闭，缺失或不变计数不阻塞；本次十分钟上限、失败保留责任及重启重新计时成立。 |
-| W-11 | 关联日志、Warning、原错误链和脱敏成立；attach 只连接并保持既有执行；验证关联实际源码、平台和环境。 |
+| W-09、W-11 | 旧格式迁移成功、各阶段中断、重入及回滚均保留原 claim/worktree/native session；启动阻塞、完整备份与恢复快照处理成立，混合或未知格式不能继续运行。关联日志、Warning、原错误链和脱敏成立；attach 只连接并保持既有执行；验证关联实际源码、平台和环境。 |
 
 完整平台运行验收要求其实际门禁与端到端结果，组件检查和 schema 验证不能替代。

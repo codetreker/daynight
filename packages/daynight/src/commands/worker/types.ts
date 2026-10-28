@@ -14,5 +14,5 @@ export type ExecutionConfiguration = {
   args: readonly string[];
   recoveryLimit: number;
 };
-export type ResourceOwner = ClaimIdentity & { serverOrigin: string; worktreeId: string };
+export type ResourceOwner = ClaimIdentity & { worktreeId: string };
 export type WorktreeBinding = { repositoryPath: string; commonDirectory: string; worktreePath: string; branch: string };

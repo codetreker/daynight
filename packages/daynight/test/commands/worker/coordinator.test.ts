@@ -4,11 +4,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { OperationError } from "../../../src/api/operation.js";
 import { isWorkerCancellation } from "../../../src/commands/worker/execution.js";
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
-import { HerdrAgentActionError } from "../../../src/commands/worker/herdr.js";
+import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
+import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import type { ExecutionConfiguration, ResourceOwner, WorkerProject, WorktreeBinding } from "../../../src/commands/worker/types.js";
@@ -49,11 +50,12 @@ const fixture = async (maxConcurrent = 1) => {
   const tasks = {
     pendingStops: vi.fn((): { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] => []),
     listResources: vi.fn(async () => structuredClone([...resources.values()])),
-    prepareWorkspace: vi.fn(async (context: HerdrExecutionContext) => {
+    prepareWorkspace: vi.fn(async (context: HerdrExecutionContext, _title: string) => {
       sequence++; const binding = { session: "w", workspaceId: `w${sequence}`, paneId: `p${sequence}`, terminalId: `t${sequence}` };
-      resources.set(context.claimId, { owner: { serverOrigin: context.serverOrigin, projectId: context.projectId, taskId: context.taskId, claimId: context.claimId, worktreeId: context.worktreeId }, workspaceId: binding.workspaceId, panes: [{ binding, cwd: context.cwd, kind: null, status: "idle", launchPending: false, interactiveReady: false, nativeSession: null, stateChangeSeq: 0, completionSeq: 0 }] });
+      resources.set(context.claimId, { owner: { projectId: context.projectId, taskId: context.taskId, claimId: context.claimId, worktreeId: context.worktreeId }, workspaceId: binding.workspaceId, panes: [{ binding, cwd: context.cwd, kind: null, status: "idle", launchPending: false, interactiveReady: false, nativeSession: null, stateChangeSeq: 0, completionSeq: 0 }] });
       return binding;
     }),
+    syncWorkspaceName: vi.fn(async (_context: HerdrExecutionContext, _binding: HerdrTaskBinding, _title: string) => {}),
     observe: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding) => observe(context, binding)),
     start: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, input: HerdrAgentStartInput) => {
       order.push("start"); const pane = resources.get(context.claimId)!.panes[0]!;
@@ -90,7 +92,7 @@ const fixture = async (maxConcurrent = 1) => {
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find((value) => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
     update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker!, ...update } } }; grants.set(current.properties.worker!.claimId, result); return result; }),
   } as unknown as WorkerRemote;
-  const options = { store, git, herdr, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, buildPrompt: vi.fn(() => "worker-managed using-daynight autopilot-managed-task"), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
+  const options = { store, git, herdr, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, buildPrompt: vi.fn((_assignment: ManagedAssignment) => "worker-managed using-daynight autopilot-managed-task"), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   const reopenStore = () => {
     stores.splice(stores.indexOf(store), 1); store.close();
     store = openWorkerStore(path.join(root, "state.sqlite")); stores.push(store); options.store = store;
@@ -100,7 +102,7 @@ const fixture = async (maxConcurrent = 1) => {
 };
 
 const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) => {
-  const owner = { serverOrigin: origin, projectId: f.project.projectId, taskId, claimId: uuid(901), worktreeId: uuid(902) };
+  const owner = { projectId: f.project.projectId, taskId, claimId: uuid(901), worktreeId: uuid(902) };
   const binding = { session: "w", workspaceId: "orphan", paneId: "orphan-pane", terminalId: "orphan-terminal" };
   const pane: HerdrOwnedWorkspace["panes"][number] = { binding, cwd: f.bind(owner).worktreePath, kind: "copilot", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "copilot", sessionId: uuid(903) }, stateChangeSeq: 1, completionSeq: 0 };
   f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
@@ -119,6 +121,115 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.observe).toHaveBeenCalled());
     expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.options.buildPrompt).toHaveBeenCalledOnce();
+  });
+
+  it("synchronizes the latest title without changing the running conversation or its assignment", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const workspace = structuredClone(f.resources.get(row.claimId)!);
+    const current = f.grants.get(row.claimId)!;
+    f.grants.set(row.claimId, { ...current, title: "修复 Herdr 启动 👩‍💻" });
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.syncWorkspaceName).toHaveBeenCalledWith(
+      expect.objectContaining({ claimId: row.claimId, worktreeId: workspace.owner.worktreeId }), workspace.panes[0]!.binding, "修复 Herdr 启动 👩‍💻", expect.anything(),
+    ));
+    expect(f.resources.get(row.claimId)).toEqual(workspace);
+    expect(f.store.getTask(row)).toEqual(row);
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.options.buildPrompt).toHaveBeenCalledOnce();
+    expect(f.tasks.prepareWorkspace.mock.calls[0]![1]).toBe(current.title);
+    expect(f.options.buildPrompt.mock.calls[0]![0]).toMatchObject({ serverOrigin: origin });
+    expect(f.options.buildPrompt.mock.calls[0]![0]).not.toHaveProperty("title");
+  });
+
+  it("settles a pending workspace stop before synchronizing or recovering its name", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const workspace = f.resources.get(row.claimId)!;
+    const pending = [{ context: { ...workspace.owner, cwd: f.bind(workspace.owner).worktreePath }, binding: workspace.panes[0]!.binding }];
+    f.tasks.pendingStops.mockImplementation(() => [...pending]);
+    f.tasks.stopAndClose.mockImplementation(async () => { pending.splice(0); f.resources.delete(row.claimId); });
+    f.tasks.syncWorkspaceName.mockClear();
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
+    expect(f.tasks.syncWorkspaceName).not.toHaveBeenCalled();
+    expect(f.tasks.stopAndClose).toHaveBeenCalledOnce();
+    expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: row.sessionId });
+    expect(f.store.getTask(row)).toEqual(row);
+  });
+
+  it("keeps naming failures outside the execution recovery budget", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const failure = new HerdrAgentActionError("rename response lost", "workspace.rename", "unknown");
+    f.tasks.syncWorkspaceName.mockRejectedValue(failure);
+    const observations = f.tasks.observe.mock.calls.length;
+    for (let turn = 0; turn < 4; turn++) {
+      await f.coordinator.tick();
+      await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(observations + turn + 1));
+    }
+    expect(f.events.filter((event) => event.kind === "workspace-name-error")).toHaveLength(4);
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "workspace-name-error", task: row, error: failure }));
+    expect(f.events.some((event) => event.kind === "execution-error")).toBe(false);
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.store.getTask(row)).toEqual(row);
+  });
+
+  it("continues a healthy agent at zero recovery budget after a post-rename snapshot transport failure", async () => {
+    const f = await fixture();
+    const limited = { ...configuration, recoveryLimit: 0 };
+    const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }] });
+    await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const originalWorkspace = structuredClone(f.resources.get(row.claimId)!);
+    const current = f.grants.get(row.claimId)!;
+    f.grants.set(row.claimId, { ...current, title: "Rename already acknowledged" });
+    const snapshotFailure = new HerdrRpcError("Connection closed after rename ACK", { method: "session.snapshot", requestId: uuid(950), submission: "unknown" });
+    const nameFailure = new HerdrAgentActionError("The renamed workspace could not be observed", "workspace.rename", "unknown", { cause: snapshotFailure });
+    f.tasks.syncWorkspaceName.mockRejectedValueOnce(nameFailure);
+    const observations = f.tasks.observe.mock.calls.length;
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(observations + 1));
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "workspace-name-error", task: row, error: nameFailure }));
+    expect(nameFailure.cause).toBe(snapshotFailure);
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(observations + 2));
+    expect(f.events.filter((event) => event.kind === "workspace-name-error")).toHaveLength(1);
+    expect(f.events.some((event) => event.kind === "execution-error")).toBe(false);
+    expect(f.resources.get(row.claimId)).toEqual(originalWorkspace);
+    expect(f.store.getTask(row)).toEqual(row); expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it("synchronizes existing workspaces after execution recovery is exhausted", async () => {
+    const f = await fixture();
+    const limited = { ...configuration, recoveryLimit: 0 };
+    const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }] });
+    await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const failed = new Error("native observation failed");
+    f.tasks.observe.mockRejectedValueOnce(failed);
+    await coordinator.tick();
+    await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: failed })));
+    const observations = f.tasks.observe.mock.calls.length;
+    const current = f.grants.get(row.claimId)!;
+    f.grants.set(row.claimId, { ...current, title: "Renamed while recovery is exhausted" });
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.syncWorkspaceName).toHaveBeenCalledWith(expect.anything(), expect.anything(), "Renamed while recovery is exhausted", expect.anything()));
+    expect(f.tasks.observe).toHaveBeenCalledTimes(observations);
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.store.getTask(row)).toEqual(row);
+  });
+
+  it("keeps ownership mismatches as execution failures rather than cosmetic naming errors", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const mismatch = new Error("The task pane or terminal identity has changed.");
+    f.tasks.syncWorkspaceName.mockRejectedValueOnce(mismatch);
+    const observations = f.tasks.observe.mock.calls.length;
+    await f.coordinator.tick();
+    await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: mismatch })));
+    expect(f.tasks.observe).toHaveBeenCalledTimes(observations);
+    expect(f.events.some((event) => event.kind === "workspace-name-error")).toBe(false);
   });
 
   it("does not clean or launch from a failed inventory", async () => {
@@ -353,7 +464,7 @@ describe("minimal worker resource reconciliation", () => {
 
   it("reports an unknown project resource without treating it as ended", async () => {
     const f = await fixture(); f.candidates.splice(0);
-    f.resources.set(uuid(800), { owner: { serverOrigin: origin, projectId: uuid(900), taskId: uuid(901), claimId: uuid(800), worktreeId: uuid(902) }, workspaceId: "unknown", panes: [] });
+    f.resources.set(uuid(800), { owner: { projectId: uuid(900), taskId: uuid(901), claimId: uuid(800), worktreeId: uuid(902) }, workspaceId: "unknown", panes: [] });
     await expect(f.coordinator.tick()).rejects.toThrow("Restore the project configuration");
     expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
   });
@@ -375,7 +486,7 @@ describe("minimal worker resource reconciliation", () => {
     await f.coordinator.tick(); await eventually(() => expect(f.events.some((event) => event.message.includes("first managed input"))).toBe(true));
     [...f.resources.values()][0]!.panes[0]!.status = "idle";
     const restarted = createWorkerCoordinator(f.options); await restarted.tick();
-    await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(2));
+    await eventually(() => expect(f.events.some((event) => event.kind === "reconnected")).toBe(true));
     expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
     expect(f.tasks.submitPrompt.mock.calls[0]![2]).toContain("worker's periodic check");
     expect(f.tasks.submitPrompt.mock.calls[0]![2]).not.toBe(f.options.buildPrompt.mock.results[0]!.value);
@@ -386,7 +497,7 @@ describe("minimal worker resource reconciliation", () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const owner = f.worktrees.get(row.claimId)!.owner;
     f.tasks.submitPrompt.mockImplementation(async (context, binding) => ({ submission: "submitted", observation: { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding } }));
-    const deps = { store: f.store, git: f.git, herdr: f.herdr, platform: "linux" as const, workerId, buildPrompt: f.options.buildPrompt, emit: f.options.emit, now: f.options.now };
+    const deps = { store: f.store, git: f.git, herdr: f.herdr, platform: "linux" as const, serverOrigin: origin, workerId, buildPrompt: f.options.buildPrompt, emit: f.options.emit, now: f.options.now };
     const first = createCleanupDriver(deps);
     expect(await first.advance({ task: row, project: f.project, owner }, await f.tasks.listResources(), true)).toBe(false);
     f.clock(602_000);
@@ -412,7 +523,7 @@ describe("minimal worker resource reconciliation", () => {
 
   it("preserves a rowless Git marker without proof that this worker owns it", async () => {
     const f = await fixture(); f.candidates.splice(0);
-    const owner = { serverOrigin: origin, projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
+    const owner = { projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
     f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     await f.coordinator.tick();
     expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
@@ -421,9 +532,9 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.worktrees.has(owner.claimId)).toBe(true);
   });
 
-  it.each(["foreign service", "unproven ownership"])("reports stable %s worktree warnings once and reports their recurrence", async (kind) => {
+  it("reports stable unproven ownership warnings once and reports their recurrence", async () => {
     const f = await fixture(); f.candidates.splice(0);
-    const owners = [700, 710].map((id) => ({ serverOrigin: kind === "foreign service" ? "https://other.example" : origin, projectId: f.project.projectId, taskId: uuid(id), claimId: uuid(id + 1), worktreeId: uuid(id + 2) }));
+    const owners = [700, 710].map((id) => ({ projectId: f.project.projectId, taskId: uuid(id), claimId: uuid(id + 1), worktreeId: uuid(id + 2) }));
     for (const owner of owners) f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     await f.coordinator.tick(); await f.coordinator.tick(); await f.coordinator.tick();
     expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
@@ -445,7 +556,7 @@ describe("minimal worker resource reconciliation", () => {
     const f = await fixture(); f.candidates.splice(0);
     const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
     f.store.registerProject(other);
-    const owner = { serverOrigin: origin, projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
+    const owner = { projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
     const worktree = { owner, binding: f.bind(owner) };
     f.worktrees.set(owner.claimId, worktree);
     await f.coordinator.tick();
@@ -469,7 +580,7 @@ describe("minimal worker resource reconciliation", () => {
     const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
     f.store.registerProject(other);
     for (const [index, project] of [f.project, other].entries()) {
-      const owner = { serverOrigin: origin, projectId: project.projectId, taskId: uuid(700 + index * 10), claimId: uuid(701 + index * 10), worktreeId: uuid(702 + index * 10) };
+      const owner = { projectId: project.projectId, taskId: uuid(700 + index * 10), claimId: uuid(701 + index * 10), worktreeId: uuid(702 + index * 10) };
       f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     }
     await f.coordinator.tick();
@@ -493,7 +604,7 @@ describe("minimal worker resource reconciliation", () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const owner = f.worktrees.get(row.claimId)!.owner;
     f.tasks.submitPrompt.mockImplementation(async (context, binding) => ({ submission: "submitted", observation: { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding } }));
-    const driver = createCleanupDriver({ store: f.store, git: f.git, herdr: f.herdr, platform: "linux", workerId, buildPrompt: f.options.buildPrompt, emit: f.options.emit, now: f.options.now });
+    const driver = createCleanupDriver({ store: f.store, git: f.git, herdr: f.herdr, platform: "linux", serverOrigin: origin, workerId, buildPrompt: f.options.buildPrompt, emit: f.options.emit, now: f.options.now });
     const input = { task: row, project: f.project, owner };
     expect(await driver.advance(input, await f.tasks.listResources(), true)).toBe(false); f.clock(602_000);
     const pending: { context: ResourceOwner & { cwd: string }; binding: HerdrTaskBinding }[] = [];
@@ -531,10 +642,10 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   });
 
-  it.each(["unmapped project", "foreign origin"])("does not authorize private-instance shutdown with %s resources", async (kind) => {
+  it("does not authorize private-instance shutdown with unmapped project resources", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!;
-    const unhandled = { serverOrigin: kind === "foreign origin" ? "https://other.example" : origin, projectId: kind === "unmapped project" ? uuid(900) : f.project.projectId, taskId: uuid(901), claimId: uuid(902), worktreeId: uuid(903) };
+    const unhandled = { projectId: uuid(900), taskId: uuid(901), claimId: uuid(902), worktreeId: uuid(903) };
     f.resources.set(unhandled.claimId, { owner: unhandled, workspaceId: "unhandled", panes: [] });
     await expect(f.coordinator.shutdown()).resolves.toBe(false);
     expect(f.resources.has(unhandled.claimId)).toBe(true);
@@ -723,7 +834,7 @@ describe("minimal worker resource reconciliation", () => {
 
   it("keeps an ended rowless orphan's slot while its closed workspace still has pending native PIDs", async () => {
     const f = await fixture();
-    const owner = { serverOrigin: origin, projectId: f.project.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
+    const owner = { projectId: f.project.projectId, taskId: uuid(900), claimId: uuid(901), worktreeId: uuid(902) };
     const binding = { session: "w", workspaceId: "orphan", paneId: "orphan-pane", terminalId: "orphan-terminal" };
     f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     f.resources.set(owner.claimId, { owner, workspaceId: binding.workspaceId, panes: [{ binding, cwd: f.bind(owner).worktreePath, kind: "codex", status: "working", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr", agent: "codex", sessionId: uuid(903) }, stateChangeSeq: 1, completionSeq: 0 }] });

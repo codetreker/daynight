@@ -37,8 +37,12 @@ repoUrl, including worktree-specific configuration.
 Creation exclusively reserves the empty leaf directory, captures its device/inode
 and uses Git's native `worktree add --lock --reason` to persist a
 `daynight-worker:` JSON owner marker in the linked administrative registration.
-The marker contains origin/project/task/claim/worktree identity plus fingerprints
-of the leaf, repository root and common directory. Those fingerprints corroborate
+The marker contains project/task/claim/worktree identity plus fingerprints
+of the leaf, repository root and common directory. The [workspace naming and
+identity decision](2026-10-28-worker-workspace-names.md) removes the original
+service-origin coordinate under the retained state root's single-service rule;
+explicit migration preserves the four coordinates and physical fingerprints.
+Those fingerprints corroborate
 ownership; they do not prove an immutable directory incarnation. Every present
 leaf must retain its exact regular `.git` pointer to the validated administrative
 registration, including during terminal cleanup. Inspection also checks the
