@@ -4,8 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
 import * as configurationFiles from "../../../src/config/files.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
-import { acquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
-import { workspaceMigrationFile } from "../../../src/commands/worker/migration-state.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import { changeWorkerRepositories, readWorkerRepositorySnapshot } from "../../../src/commands/worker/repositories.js";
@@ -55,18 +53,6 @@ afterEach(async () => {
 });
 
 describe("worker repository preparation lifecycle", () => {
-  it("blocks an incomplete workspace migration before identity, store or controller mutation", async () => {
-    const f = await fixture(true, true);
-    const marker = workspaceMigrationFile(f.paths);
-    await writeFile(marker, "{}\n");
-    const before = (await readdir(f.homeDirectory, { recursive: true })).sort();
-    await expect(runWorker(f)).rejects.toThrow("workspace migration is incomplete");
-    expect((await readdir(f.homeDirectory, { recursive: true })).sort()).toEqual(before);
-    expect(await readFile(f.paths.configFile, "utf8")).toBe(f.source);
-    for (const factory of [mocks.coordinator, mocks.herdr, mocks.git, mocks.remote, mocks.prompt]) expect(factory).not.toHaveBeenCalled();
-    const lock = await acquireWorkerInstanceLock(f.paths); await lock.release();
-  });
-
   it("keeps cold cancellation before identity, locks, databases and native controllers", async () => {
     const f = await fixture();
     const before = (await readdir(f.homeDirectory, { recursive: true })).sort();

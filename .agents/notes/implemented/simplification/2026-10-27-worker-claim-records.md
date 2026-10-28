@@ -32,8 +32,9 @@ absence cleanup. Static resource ownership checks remain with Git and Herdr;
 they do not store dynamic execution progress. The [workspace naming and identity
 decision](../architecture/2026-10-28-worker-workspace-names.md) keeps the shared
 resource coordinates to project/task/claim/worktree and uses titles only for
-Herdr display. Its one-time migration backup and startup block serve upgrade
-recovery rather than business execution progress. Existing Git markers have no
+Herdr display. The [migration removal decision](2026-10-28-remove-worker-workspace-migration.md)
+removes the separate workspace-format maintenance state; startup and management
+use the normal claim/session index and resource observations. Existing Git markers have no
 workerId, so a Git-only claim requires a matching local row, private Herdr
 resource or current own claim before this worker can clean it. Unproven
 resources are reported and preserved, including in repositories shared with

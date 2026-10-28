@@ -40,9 +40,9 @@ and uses Git's native `worktree add --lock --reason` to persist a
 The marker contains project/task/claim/worktree identity plus fingerprints
 of the leaf, repository root and common directory. The [workspace naming and
 identity decision](2026-10-28-worker-workspace-names.md) removes the original
-service-origin coordinate under the retained state root's single-service rule;
-explicit migration preserves the four coordinates and physical fingerprints.
-Those fingerprints corroborate
+service-origin coordinate under the retained state root's single-service rule.
+The [migration removal decision](../simplification/2026-10-28-remove-worker-workspace-migration.md)
+keeps this manager limited to current-format resource operations. Those fingerprints corroborate
 ownership; they do not prove an immutable directory incarnation. Every present
 leaf must retain its exact regular `.git` pointer to the validated administrative
 registration, including during terminal cleanup. Inspection also checks the

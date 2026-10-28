@@ -59,10 +59,7 @@ export const herdrExecutionLabel = (context: HerdrExecutionOwner, title: string)
 export const herdrExecutionAgentName = (context: HerdrExecutionOwner): string => `dn_${createHash("sha256").update(resourceOwnerKey(context)).digest("hex").slice(0, 24)}`;
 export const parseHerdrExecutionLabel = (label: string): HerdrExecutionOwner | null => {
   const separator = label.lastIndexOf(labelSeparator);
-  if (separator === -1) {
-    if (label.startsWith("daynight:")) throw new TypeError("The Herdr workspace uses legacy ownership. Stop the worker and run daynight worker migrate-workspaces before restarting.");
-    return null;
-  }
+  if (separator === -1) return null;
   const title = label.slice(0, separator);
   if (title.trim().length === 0 || unsafeTitleCharacter.test(title)) throw new TypeError("The managed Herdr workspace title must be nonempty single-line display text.");
   return parseResourceOwner(label.slice(separator + labelSeparator.length));

@@ -161,12 +161,12 @@ describe("worker repositories and task worktrees", () => {
     expect(await adapter.prepareWorktree(f.project, f.owner, operation())).toEqual(binding);
   });
 
-  it("rejects legacy ownership markers with an explicit migration remedy", async () => {
+  it("rejects ownership markers with unexpected fields without changing work", async () => {
     const f = await fixture(); const adapter = manager(f.root); const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
     const marker = path.join(administrativeDirectory(binding.worktreePath), "locked");
     const original = JSON.parse((await readFile(marker, "utf8")).slice("daynight-worker:".length));
-    await writeFile(marker, `daynight-worker:${JSON.stringify({ serverOrigin: "https://daynight.example", ...original })}\n`);
-    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("daynight worker migrate-workspaces");
+    await writeFile(marker, `daynight-worker:${JSON.stringify({ unexpected: "value", ...original })}\n`);
+    await expect(adapter.verifyWorktree(f.project, f.owner, operation())).rejects.toThrow("ownership marker is invalid");
     expect(await readFile(path.join(binding.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
   });
 
