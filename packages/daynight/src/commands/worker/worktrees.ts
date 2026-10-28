@@ -50,7 +50,6 @@ const markerOwner = (marker: string): Owner => {
   if (!marker.startsWith(prefix)) throw new Error("The task worktree has a different ownership marker.");
   const value: unknown = JSON.parse(marker.slice(prefix.length));
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error("The task worktree ownership marker is invalid.");
-  if (Object.hasOwn(value, "serverOrigin")) throw new Error("The task worktree uses legacy ownership. Stop the worker and run daynight worker migrate-workspaces before restarting.");
   const fields = ["projectId", "taskId", "claimId", "worktreeId", "leaf", "root", "common"];
   if (Object.keys(value).length !== fields.length || fields.some((field) => !Object.hasOwn(value, field) || typeof (value as Record<string, unknown>)[field] !== "string")) throw new Error("The task worktree ownership marker is invalid.");
   const owner = value as Owner;

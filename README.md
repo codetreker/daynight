@@ -157,9 +157,6 @@ reconciles them normally. Stop failures remain visible and retain the private
 Herdr instance when stopping is uncertain. External temporary resources may
 remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
-Stop the worker before upgrading old workspace identities, then use
-[`daynight worker migrate-workspaces`](packages/daynight/README.md#worker-workspace-upgrade)
-to preserve existing task worktrees and native conversation IDs.
 
 Fresh and resumed Copilot/Codex processes use fixed full access and task-folder
 trust settings without native permission prompts. Business input remains
