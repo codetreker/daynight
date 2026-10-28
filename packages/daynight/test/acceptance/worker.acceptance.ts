@@ -21,13 +21,13 @@ const primary = path.basename(path.dirname(workspace)) === ".worktrees" ? path.r
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const time = "2026-10-27T00:00:00Z";
 type Row = { project_id: string; task_id: string; claim_id: string; status: string; agent: string; session_id: string | null };
-type Event = { kind: string; timestamp: number; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; argv?: string[]; message?: string; code?: string; daemonPid?: number; workspaceId?: string; label?: string; cwd?: string; restored?: boolean };
+type Event = { kind: string; timestamp: number; name?: string; pid?: number; taskId?: string; text?: string; row?: Row; projectCount?: number; argv?: string[]; message?: string; code?: string; daemonPid?: number; workspaceId?: string; label?: string; cwd?: string; restored?: boolean };
 type FixtureTask = { -readonly [Key in keyof Task]: Task[Key] };
 
 const daemon = String.raw`#!/usr/bin/env node
 import { createServer } from 'node:net';
 import { createRequire } from 'node:module';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { appendFile, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -40,7 +40,8 @@ const directory=path.join(process.env.XDG_CONFIG_HOME,'herdr','sessions','w');aw
 const workspaces=[],panes=[],agents=[],tabs=[],shells=new Map(),children=new Map(),nativeArguments=new Map();let next=0;
 const clone=value=>JSON.parse(JSON.stringify(value));
 const snapshot=()=>({workspaces:clone(workspaces),panes:clone(panes),agents:clone(agents),tabs:clone(tabs)});
-const owner=pane=>JSON.parse(workspaces.find(workspace=>workspace.workspace_id===pane.workspace_id).label.slice('daynight:'.length));
+const labelOwner=label=>{const separator=' | daynight:',start=label.lastIndexOf(separator);if(start<1)throw new Error('Missing fixture workspace identity suffix');return JSON.parse(label.slice(start+separator.length));};
+const owner=pane=>labelOwner(workspaces.find(workspace=>workspace.workspace_id===pane.workspace_id).label);
 const processChild=async()=>{const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});await new Promise((resolve,reject)=>{child.once('spawn',resolve);child.once('error',reject);});return child;};
 const closeChild=async child=>{if(child&&child.exitCode===null&&child.signalCode===null){const closed=new Promise(resolve=>child.once('close',resolve));child.kill('SIGTERM');await closed;}};
 const stop=async pane=>{const identity=owner(pane),native=children.get(pane.pane_id),shell=shells.get(pane.pane_id);await closeChild(native);await closeChild(shell);if(native)await event({kind:'native-stop',taskId:identity.taskId,workspaceId:pane.workspace_id,pid:native.pid});children.delete(pane.pane_id);shells.delete(pane.pane_id);nativeArguments.delete(pane.pane_id);};
@@ -52,11 +53,12 @@ case 'ping':result={type:'pong',version:'0.9.5',protocol:22,capabilities:{detach
 case 'session.snapshot':result={type:'session_snapshot',snapshot:snapshot()};break;
 case 'integration.list':result={type:'integration_list',integrations:[{target:'codex',label:'Codex',command:'codex',available:true,state:'current'}]};break;
 case 'workspace.create':result=await createWorkspace(p);break;
-case 'agent.start':{const pane=panes.find(item=>item.pane_id===p.pane_id),child=await processChild();children.set(p.pane_id,child);const agent={...pane,agent:p.kind,name:p.name,agent_status:'idle',interactive_ready:true,launch_pending:false,state_change_seq:1,completion_seq:0};agents.push(agent);const argv=[p.kind,...p.args];nativeArguments.set(p.pane_id,argv);await record('native-start',owner(pane).taskId,{argv,pid:child.pid,workspaceId:pane.workspace_id});result={type:'agent_started',agent,argv};break;}
+case 'workspace.rename':{const workspace=workspaces.find(item=>item.workspace_id===p.workspace_id);if(!workspace)throw new Error('Missing workspace rename target');workspace.label=p.label;await event({kind:'workspace-rename',taskId:labelOwner(p.label).taskId,workspaceId:p.workspace_id,label:p.label});result={type:'workspace_info',workspace:clone(workspace)};break;}
+case 'agent.start':{const pane=panes.find(item=>item.pane_id===p.pane_id),identity=owner(pane),expectedName='dn_'+createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0,24);if(p.name!==expectedName)throw new Error('Managed agent name must depend only on stable identity');const child=await processChild();children.set(p.pane_id,child);const agent={...pane,agent:p.kind,name:p.name,agent_status:'idle',interactive_ready:true,launch_pending:false,state_change_seq:1,completion_seq:0};agents.push(agent);const argv=[p.kind,...p.args];nativeArguments.set(p.pane_id,argv);await record('native-start',identity.taskId,{argv,pid:child.pid,workspaceId:pane.workspace_id,name:p.name});result={type:'agent_started',agent,argv};break;}
 case 'agent.read':{if(p.source!=='visible'||p.format!=='text'||p.strip_ansi!==true)throw new Error('Unexpected input-surface read options');const pane=panes.find(item=>item.pane_id===p.target),agent=agents.find(item=>item.pane_id===p.target),argv=nativeArguments.get(p.target);if(!pane||!agent||!argv)throw new Error('Read requires the original running fixture agent');const modelIndex=argv.indexOf('--model'),model=modelIndex<0?'default':argv[modelIndex+1];const text='  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  '+model+' default · '+pane.cwd+'\n';result={type:'pane_read',read:{pane_id:pane.pane_id,workspace_id:pane.workspace_id,tab_id:pane.tab_id,source:'visible',format:'text',text,revision:0,truncated:false}};break;}
 case 'agent.prompt':{const agent=agents.find(item=>item.pane_id===p.target),pane=panes.find(item=>item.pane_id===p.target),receipt=clone(agent),identity=owner(pane);await event({kind:'prompt',taskId:identity.taskId,workspaceId:pane.workspace_id,text:p.text});if(!agent.agent_session){const argv=nativeArguments.get(p.target),resumeIndex=argv.indexOf('resume'),id=resumeIndex<0?randomUUID():argv[resumeIndex+1];agent.agent_session={source:'herdr:codex',agent:'codex',kind:'id',value:id};const history=path.join(process.env.CODEX_HOME,'sessions');await mkdir(history,{recursive:true});await writeFile(path.join(history,'rollout-'+id+'.jsonl'),JSON.stringify({type:'session_meta',payload:{id,cwd:pane.cwd}})+'\n');}agent.state_change_seq+=2;agent.completion_seq+=1;agent.agent_status='idle';result={type:'agent_prompted',agent:receipt};break;}
 case 'pane.process_info':{const pane=panes.find(item=>item.pane_id===p.pane_id),native=children.get(p.pane_id),shell=shells.get(p.pane_id),argv=nativeArguments.get(p.pane_id);if(!shell)throw new Error('Missing fixture task shell');result={type:'pane_process_info',process_info:{pane_id:p.pane_id,shell_pid:shell.pid,foreground_process_group_id:native?native.pid:shell.pid,foreground_processes:native?[{pid:native.pid,name:'codex',argv0:'codex',argv:[...argv],cwd:pane.cwd}]:[]}};break;}
-case 'workspace.close':{const workspace=workspaces.find(item=>item.workspace_id===p.workspace_id),taskId=JSON.parse(workspace.label.slice('daynight:'.length)).taskId;for(const pane of panes.filter(item=>item.workspace_id===p.workspace_id))await stop(pane);for(const items of [workspaces,panes,agents,tabs])for(let i=items.length-1;i>=0;i--)if(items[i].workspace_id===p.workspace_id)items.splice(i,1);await event({kind:'workspace-close',taskId,workspaceId:p.workspace_id});result={type:'ok'};break;}
+case 'workspace.close':{const workspace=workspaces.find(item=>item.workspace_id===p.workspace_id),taskId=labelOwner(workspace.label).taskId;for(const pane of panes.filter(item=>item.workspace_id===p.workspace_id))await stop(pane);for(const items of [workspaces,panes,agents,tabs])for(let i=items.length-1;i>=0;i--)if(items[i].workspace_id===p.workspace_id)items.splice(i,1);await event({kind:'workspace-close',taskId,workspaceId:p.workspace_id});result={type:'ok'};break;}
 case 'server.stop':result={type:'ok'};if(!shutting){shutting=true;setTimeout(async()=>{for(const pane of panes)await stop(pane);for(const item of sockets)item.destroy();api.close();client.close();await event({kind:'daemon-stop',pid:process.pid});process.exit(0);},10);}break;
 default:throw new Error('Unexpected fixture method '+request.method);
 }socket.end(JSON.stringify({id:request.id,result})+'\n');}catch(error){await event({kind:'fixture-error',message:error.stack});socket.end(JSON.stringify({id:request.id,error:{code:'fixture_error',message:error.message}})+'\n');}
@@ -84,7 +86,7 @@ const expectClosedWorkspaceLifecycle = (observed: readonly Event[]): void => {
   const identities = created.map(workspaceKey);
   expect(new Set(identities).size).toBe(created.length);
   expect(closed.map(workspaceKey).sort()).toEqual([...identities].sort());
-  for (const event of observed.filter((entry) => ["native-start", "native-stop", "prompt"].includes(entry.kind))) {
+  for (const event of observed.filter((entry) => ["native-start", "native-stop", "prompt", "workspace-rename"].includes(entry.kind))) {
     const identity = workspaceKey(event);
     const start = created.find((entry) => workspaceKey(entry) === identity)!;
     const end = closed.find((entry) => workspaceKey(entry) === identity)!;
@@ -162,7 +164,7 @@ it.skipIf(process.platform !== "linux")("keeps the fixture daemon alive when an 
       if (Date.now() >= deadline || child.exitCode !== null) throw new Error(`Fixture startup failed: ${stderr}`);
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     }
-    await call("workspace.create", { label: `daynight:${JSON.stringify({ taskId: "t", padding: "x".repeat(1_000_000) })}`, cwd: home });
+    await call("workspace.create", { label: `Transport test | daynight:${JSON.stringify({ taskId: "t", padding: "x".repeat(1_000_000) })}`, cwd: home });
     await call("session.snapshot", {}, true);
     while (!(await readEvents()).some((event) => event.kind === "peer-disconnect")) {
       if (Date.now() >= deadline || child.exitCode !== null) throw new Error(`Cancelled RPC terminated the fixture: ${stderr}`);
@@ -332,6 +334,16 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect((sql.prepare("PRAGMA table_info(projects)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "repo_url", "local_path"]);
       expect((sql.prepare("PRAGMA table_info(tasks)").all() as { name: string }[]).map((column) => column.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id"]);
     } finally { sql.close(); }
+    if (scenario === "resume") {
+      const currentWorkspace = (await events()).find((event) => event.kind === "workspace" && event.taskId === second.id)!;
+      second.title = '重命名运行中的任务 👨‍👩‍👧‍👦 | daynight:{"literal":"title"}';
+      second.version += 1n;
+      await waitFor("live task title synchronization", async () => (await events()).some((event) => event.kind === "workspace-rename" && event.taskId === second.id && event.label!.startsWith(`${second.title} | daynight:`)));
+      const renamed = (await events()).find((event) => event.kind === "workspace-rename" && event.taskId === second.id)!;
+      expect(workspaceKey(renamed)).toBe(workspaceKey(currentWorkspace));
+      expect(row(second.id)).toMatchObject({ claim_id: originalClaim, session_id: originalSession });
+      expect((await events()).filter((event) => event.kind === "native-start")).toHaveLength(2);
+    }
     let restarted: ReturnType<typeof start> | undefined;
     let restartRequestOffset = requests.length;
     let restartLogOffset = logs.length;
@@ -429,7 +441,15 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect(event.row).toMatchObject({ status: "active", agent: "codex" });
       expect(Object.keys(event.row!).sort()).toEqual(["agent", "claim_id", "project_id", "session_id", "status", "task_id"]);
       expect(event.projectCount).toBe(2);
+      if (event.kind === "workspace") {
+        const task = tasks.find((task) => task.id === event.taskId)!;
+        const original = originalClaims.get(task.id)!;
+        const identity = { projectId: task.projectId, taskId: task.id, claimId: original.claimId, worktreeId: original.worktreeId };
+        const expectedTitles = [`Managed ${tasks.indexOf(task) + 1}`, task.title];
+        expect(expectedTitles.some((title) => event.label === `${title} | daynight:${JSON.stringify(identity)}`)).toBe(true);
+      }
       if (event.kind === "native-start") {
+        expect(event.name).toMatch(/^dn_[0-9a-f]{24}$/);
         expect(event.argv).toContain("--dangerously-bypass-approvals-and-sandbox");
         expect(event.argv).toContain("--dangerously-bypass-hook-trust");
         const repository = repositoryPaths[tasks.findIndex((task) => task.id === event.taskId)]!;

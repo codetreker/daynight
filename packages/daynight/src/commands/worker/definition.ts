@@ -26,6 +26,11 @@ export const workerDefinition: CommandDefinition = {
     options: [help],
     details: "Connect to the existing private worker Herdr session. Start it with daynight worker run first. Requires an interactive terminal. Detaching leaves the worker and its agents running.",
   }, {
+    name: "migrate-workspaces",
+    description: "Migrate retained worker workspaces to stable identities and task titles",
+    options: [{ names: ["--rollback"], description: "Restore the verified backup of an interrupted workspace migration" }, help],
+    details: "Stop worker run first. Take the exclusive worker lock and validate the original service, claims, native session IDs and Git ownership.\nBack up retained state, close the old Herdr workspaces without starting native agents, and migrate Git ownership markers.\nThe next worker run resumes the original native sessions and worktrees with task titles in workspace names.\nAn interrupted migration blocks normal startup until migration or verified rollback completes. Herdr workspace IDs and terminal scrollback are replaced; native conversation history is retained.",
+  }, {
     name: "repo",
     description: "Manage repositories selected from existing Daynight Projects",
     commands: [{

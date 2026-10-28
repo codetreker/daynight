@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { OperationError } from "../../api/operation.js";
 import type { Task, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { createCleanupDriver } from "./cleanup.js";
-import { actualTaskPane, createExecutionDriver, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
+import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
+import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
 import type { ManagedAssignment } from "./prompts.js";
 import type { WorkerRemote } from "./remote.js";
@@ -22,15 +24,15 @@ export type WorkerCoordinatorOptions = {
 type Snapshot = { herdr: HerdrOwnedWorkspace[]; owners: Map<string, ResourceOwner>; proven: Set<string> };
 const key = (identity: ClaimIdentity): string => `${identity.projectId}/${identity.taskId}/${identity.claimId}`;
 const taskKey = (identity: Pick<ClaimIdentity, "projectId" | "taskId">): string => `${identity.projectId}/${identity.taskId}`;
-const remoteOwner = (origin: string, task: Task): ResourceOwner => {
+const remoteOwner = (task: Task): ResourceOwner => {
   const claim = task.properties.worker;
   if (claim === null || claim.state !== "active") throw new Error("An actual active remote claim is required.");
-  return { serverOrigin: origin, projectId: task.projectId, taskId: task.id, claimId: claim.claimId, worktreeId: claim.worktreeId };
+  return { projectId: task.projectId, taskId: task.id, claimId: claim.claimId, worktreeId: claim.worktreeId };
 };
 
 export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const now = options.now === undefined ? Date.now : options.now;
-  const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, platform: options.platform, workerId: options.workerId, buildPrompt: options.buildPrompt, emit: options.emit, now };
+  const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, emit: options.emit, now };
   const execution = createExecutionDriver(deps);
   const cleanup = createCleanupDriver(deps);
   const normalSignal = options.signal === undefined ? new AbortController().signal : options.signal;
@@ -66,12 +68,11 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const snapshot = async (signal?: AbortSignal, scope?: WorkerProject, currentClaims: readonly ResourceOwner[] = []): Promise<Snapshot> => {
     const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
-    const herdr = scope === undefined ? observed : observed.filter((resource) => resource.owner.projectId === scope.projectId && resource.owner.serverOrigin === options.serverOrigin);
+    const herdr = scope === undefined ? observed : observed.filter((resource) => resource.owner.projectId === scope.projectId);
     const owners = new Map<string, ResourceOwner>();
     const proven = new Set([...options.store.listTasks().map(key), ...currentClaims.map(key)]);
     const currentWarnings = new Map<string, Map<string, string>>();
     const observe = (owner: ResourceOwner): void => {
-      if (owner.serverOrigin !== options.serverOrigin) throw new Error("An owned resource belongs to another configured service; retain it and restore its original configuration.");
       if (options.store.getProject(owner) === null) throw new Error(`Restore the project configuration for owned resources in ${owner.projectId}.`);
       const previous = owners.get(key(owner));
       if (previous !== undefined && previous.worktreeId !== owner.worktreeId) throw new Error("The same claim has conflicting resource identities.");
@@ -82,14 +83,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const warnings = new Map<string, string>();
       currentWarnings.set(project.projectId, warnings);
       const warn = (category: string, owner: ResourceOwner, message: string): void => {
-        warnings.set(JSON.stringify([category, owner.serverOrigin, owner.projectId, owner.taskId, owner.claimId, owner.worktreeId]), message);
+        warnings.set(JSON.stringify([category, owner.projectId, owner.taskId, owner.claimId, owner.worktreeId]), message);
       };
       const worktrees = await workerOperation((operation) => options.git.listWorktrees(project, operation), signal);
       for (const worktree of worktrees) {
-        if (worktree.owner.serverOrigin !== options.serverOrigin) {
-          warn("foreign-service", worktree.owner, `Preserved a worktree from another service in project ${project.projectId}.`);
-          continue;
-        }
         observe(worktree.owner);
         if (!proven.has(key(worktree.owner))) warn("unproven-ownership", worktree.owner, `Preserved unproven Git ownership for ${key(worktree.owner)}; a static marker does not identify this worker.`);
       }
@@ -105,7 +102,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const tasks = await options.remote.ownInventory(options.store.listProjects(), options.workerId, signal);
     const result = new Map<string, Task>();
     for (const task of tasks) {
-      const owner = remoteOwner(options.serverOrigin, task);
+      const owner = remoteOwner(task);
       if (task.properties.worker!.workerId !== options.workerId) throw new Error("The claim inventory contains another worker's claim.");
       if (result.has(key(owner))) throw new Error("The claim inventory contains duplicate claims.");
       result.set(key(owner), task);
@@ -139,7 +136,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const recordMissingClaim = (owner: ResourceOwner, pane: HerdrOwnedWorkspace["panes"][number] | undefined): LocalTask | null => {
     const task = options.store.getTask(owner);
     if (task !== null) return task;
-    if (pane === undefined && !options.herdr.tasks.pendingStops().some((stop) => sameClaim(stop.context, owner) && stop.context.serverOrigin === owner.serverOrigin)) return null;
+    if (pane === undefined && !options.herdr.tasks.pendingStops().some((stop) => sameClaim(stop.context, owner))) return null;
     const agent = pane?.kind ?? pane?.nativeSession?.agent;
     if (agent === undefined) throw new Error(`Cannot preserve ownership of ${key(owner)} without an observed native agent type; retain its Herdr resources and private instance.`);
     // Persist ownership before a stop can close the only workspace proving it.
@@ -163,11 +160,35 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       startJob(owner, async (signal) => { await runCleanup(owner, true, signal); ending.delete(identityKey); }, true);
     }
   };
-  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal): Promise<void> => {
+  const syncWorkspaceName = async (task: LocalTask, owner: ResourceOwner, title: string, signal: AbortSignal): Promise<void> => {
+    const pending = options.herdr.tasks.pendingStops().filter((stop) => sameClaim(stop.context, owner));
+    if (pending.some((stop) => stop.context.worktreeId !== owner.worktreeId)) throw new Error("The claim has conflicting pending Herdr stop identities.");
+    if (pending.length > 0) return;
+    let workspaceId: string | null = null;
+    try {
+      const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
+      const pane = actualTaskPane(owner, resources);
+      if (pane === undefined) return;
+      workspaceId = pane.binding.workspaceId;
+      await workerOperation((operation) => options.herdr.tasks.syncWorkspaceName(
+        executionContext({ task, owner, project: projectFor(task) }), pane.binding, title, operation,
+      ), signal);
+    } catch (error) {
+      if (isWorkerCancellation(error, signal)) throw error;
+      const snapshotFailure = (error instanceof HerdrRpcError && error.method === "session.snapshot")
+        || (error instanceof OperationError && error.kind === "deadline");
+      if (!snapshotFailure && (!(error instanceof HerdrAgentActionError) || error.action !== "workspace.rename")) throw error;
+      const subject = workspaceId === null ? `workspace discovery for worktree ${owner.worktreeId}` : `workspace ${workspaceId}, worktree ${owner.worktreeId}`;
+      options.emit({ kind: "workspace-name-error", task, message: `Could not confirm workspace.rename for ${subject}; the next inventory will observe its name again.`, error });
+    }
+  };
+  const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, execute = true): Promise<void> => {
     if (ending.has(key(task))) return;
-    const owner = remoteOwner(options.serverOrigin, remoteTask);
+    const owner = remoteOwner(remoteTask);
     if (!sameClaim(task, owner) || remoteTask.properties.worker!.workerId !== options.workerId || remoteTask.properties.worker!.agent !== task.agent) throw new Error("The local execution does not match the observed original worker claim.");
-    const input: ExecutionInput = { task, project: projectFor(task), owner, configuration: configurationFor(task) };
+    await syncWorkspaceName(task, owner, remoteTask.title, signal);
+    if (!execute) return;
+    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: configurationFor(task) };
     const observed = await execution.advance(input, signal);
     const latest = options.store.getTask(task)!;
     await publishSummary(latest, observed, remoteTask, signal);
@@ -182,8 +203,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const schedule = (task: LocalTask, remoteTask: Task): void => {
     if (jobs.has(key(task)) || ending.has(key(task))) return;
     const count = failures.get(key(task)) ?? 0;
-    if (count > configurationFor(task).recoveryLimit) return;
-    startJob(task, (signal) => ensure(task, remoteTask, signal), false);
+    startJob(task, (signal) => ensure(task, remoteTask, signal, count <= configurationFor(task).recoveryLimit), false);
   };
   const reconcile = async (): Promise<void> => {
     launchCleanups();
@@ -200,15 +220,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
     const knownOwners = [...observed.map((workspace) => workspace.owner), ...options.herdr.tasks.pendingStops().map((stop) => stop.context)];
     for (const owner of knownOwners) {
-      if (owner.serverOrigin !== options.serverOrigin || options.store.getProject(owner) === null || inventory.has(key(owner))) continue;
+      if (options.store.getProject(owner) === null || inventory.has(key(owner))) continue;
       ending.set(key(owner), owner);
     }
     launchCleanups();
     for (const remoteTask of inventory.values()) {
-      const local = options.store.getTask(remoteOwner(options.serverOrigin, remoteTask))!;
+      const local = options.store.getTask(remoteOwner(remoteTask))!;
       if (local.status === "active" && !blockedByOldClaim(local, knownOwners)) schedule(local, remoteTask);
     }
-    const resources = await snapshot(normalSignal, undefined, [...inventory.values()].map((task) => remoteOwner(options.serverOrigin, task)));
+    const resources = await snapshot(normalSignal, undefined, [...inventory.values()].map((task) => remoteOwner(task)));
     for (const [identityKey, owner] of resources.owners) {
       if (resources.proven.has(identityKey) && !inventory.has(identityKey)) ending.set(identityKey, owner);
     }
@@ -220,7 +240,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     launchCleanups();
     for (const [identityKey, remoteTask] of inventory) {
-      let local = options.store.getTask(remoteOwner(options.serverOrigin, remoteTask))!;
+      let local = options.store.getTask(remoteOwner(remoteTask))!;
       if (resources.owners.has(identityKey) && local.status === "pending" && !blockedByOldClaim(local, resources.owners.values())) {
         local = options.store.activateTask(local);
         schedule(local, remoteTask);
@@ -261,7 +281,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         const claimId = randomUUID();
         try {
           const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, worktreeId: randomUUID() }, normalSignal);
-          const owner = remoteOwner(options.serverOrigin, granted);
+          const owner = remoteOwner(granted);
           const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: granted.properties.worker!.agent });
           if (!blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
         } catch (error) {
@@ -280,7 +300,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const remoteTask = await options.remote.readTask(identity.projectId, identity.taskId, normalSignal);
     const worker = remoteTask.properties.worker;
     if (worker === null || worker.claimId !== identity.claimId || worker.workerId !== options.workerId || worker.state !== "active") throw new Error("The original claim is no longer active on this worker.");
-    return { task, owner: remoteOwner(options.serverOrigin, remoteTask), remoteTask };
+    return { task, owner: remoteOwner(remoteTask), remoteTask };
   };
   return {
     tick: async (): Promise<void> => {
@@ -312,7 +332,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let complete = true;
       const owners = new Map(ending);
       for (const { context } of options.herdr.tasks.pendingStops()) {
-        if (context.serverOrigin !== options.serverOrigin || options.store.getProject(context) === null) {
+        if (options.store.getProject(context) === null) {
           complete = false;
           options.emit({ kind: "shutdown-error", message: `Retained an unhandled stop operation for ${context.projectId}/${context.taskId}/${context.claimId}.` });
         } else owners.set(key(context), context);
@@ -320,7 +340,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       try {
         const workspaces = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
         for (const workspace of workspaces) {
-          if (workspace.owner.serverOrigin !== options.serverOrigin || options.store.getProject(workspace.owner) === null) {
+          if (options.store.getProject(workspace.owner) === null) {
             complete = false;
             options.emit({ kind: "shutdown-error", message: `Retained unhandled Herdr resources for ${workspace.owner.projectId}/${workspace.owner.taskId}/${workspace.owner.claimId}; restore their original project configuration before stopping the private instance.` });
           } else owners.set(key(workspace.owner), workspace.owner);
