@@ -176,6 +176,61 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.store.getTask(row)).toEqual(row);
   });
 
+  it.each(["transport", "deadline"] as const)("keeps naming discovery %s failures outside a zero execution recovery budget", async (kind) => {
+    const f = await fixture();
+    const limited = { ...configuration, recoveryLimit: 0 };
+    const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }] });
+    await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const originalWorkspace = structuredClone(f.resources.get(row.claimId)!);
+    const failure = kind === "transport"
+      ? new HerdrRpcError("Naming discovery connection closed", { method: "session.snapshot", requestId: uuid(951), submission: "unknown" })
+      : new OperationError("deadline");
+    const resources = structuredClone([...f.resources.values()]);
+    // Reconciliation reads two snapshots before the serialized naming discovery.
+    f.tasks.listResources.mockResolvedValueOnce(resources).mockResolvedValueOnce(resources).mockRejectedValueOnce(failure);
+    const observations = f.tasks.observe.mock.calls.length;
+    f.tasks.syncWorkspaceName.mockClear();
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(observations + 1));
+    expect(f.tasks.syncWorkspaceName).not.toHaveBeenCalled();
+    expect(f.events).toContainEqual(expect.objectContaining({ kind: "workspace-name-error", task: row, error: failure }));
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.observe).toHaveBeenCalledTimes(observations + 2));
+    expect(f.tasks.syncWorkspaceName).toHaveBeenCalledOnce();
+    expect(f.events.filter((event) => event.kind === "workspace-name-error")).toHaveLength(1);
+    expect(f.events.some((event) => event.kind === "execution-error")).toBe(false);
+    expect(f.resources.get(row.claimId)).toEqual(originalWorkspace);
+    expect(f.store.getTask(row)).toEqual(row); expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it("propagates cancellation during naming discovery without reporting a cosmetic failure", async () => {
+    const f = await fixture(); const controller = new AbortController();
+    const coordinator = createWorkerCoordinator({ ...f.options, signal: controller.signal });
+    await coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const reason = new Error("Original claim cancelled during name discovery");
+    vi.mocked(f.herdr.tasks.listResources).mockImplementationOnce(async (operation) => { controller.abort(reason); operation.check(); return []; });
+    const observations = f.tasks.observe.mock.calls.length;
+    await expect(coordinator.advanceRetry(row)).rejects.toMatchObject({ kind: "cancelled", cause: reason });
+    expect(f.tasks.observe).toHaveBeenCalledTimes(observations);
+    expect(f.events.some((event) => event.kind === "workspace-name-error")).toBe(false);
+    expect(f.store.getTask(row)).toEqual(row);
+  });
+
+  it("keeps malformed naming discovery as a lifecycle failure", async () => {
+    const f = await fixture(); await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const malformed = new TypeError("The Herdr workspace label must be a string.");
+    const resources = structuredClone([...f.resources.values()]);
+    f.tasks.listResources.mockResolvedValueOnce(resources).mockResolvedValueOnce(resources).mockRejectedValueOnce(malformed);
+    const observations = f.tasks.observe.mock.calls.length;
+    await f.coordinator.tick();
+    await eventually(() => expect(f.events).toContainEqual(expect.objectContaining({ kind: "execution-error", error: malformed })));
+    expect(f.tasks.observe).toHaveBeenCalledTimes(observations);
+    expect(f.events.some((event) => event.kind === "workspace-name-error")).toBe(false);
+  });
+
   it("continues a healthy agent at zero recovery budget after a post-rename snapshot transport failure", async () => {
     const f = await fixture();
     const limited = { ...configuration, recoveryLimit: 0 };

@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { OperationError } from "../../api/operation.js";
 import type { Task, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import { createCleanupDriver } from "./cleanup.js";
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
-import { HerdrAgentActionError } from "./herdr.js";
+import { HerdrAgentActionError, HerdrRpcError } from "./herdr.js";
 import type { HerdrAgentObservation, HerdrOwnedWorkspace, WorkerHerdrAdapter } from "./herdr.js";
 import type { ManagedAssignment } from "./prompts.js";
 import type { WorkerRemote } from "./remote.js";
@@ -163,17 +164,22 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const pending = options.herdr.tasks.pendingStops().filter((stop) => sameClaim(stop.context, owner));
     if (pending.some((stop) => stop.context.worktreeId !== owner.worktreeId)) throw new Error("The claim has conflicting pending Herdr stop identities.");
     if (pending.length > 0) return;
-    const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
-    const pane = actualTaskPane(owner, resources);
-    if (pane === undefined) return;
+    let workspaceId: string | null = null;
     try {
+      const resources = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
+      const pane = actualTaskPane(owner, resources);
+      if (pane === undefined) return;
+      workspaceId = pane.binding.workspaceId;
       await workerOperation((operation) => options.herdr.tasks.syncWorkspaceName(
         executionContext({ task, owner, project: projectFor(task) }), pane.binding, title, operation,
       ), signal);
     } catch (error) {
       if (isWorkerCancellation(error, signal)) throw error;
-      if (!(error instanceof HerdrAgentActionError) || error.action !== "workspace.rename") throw error;
-      options.emit({ kind: "workspace-name-error", task, message: `Could not confirm workspace.rename for workspace ${pane.binding.workspaceId}, worktree ${owner.worktreeId}; the next inventory will observe its name again.`, error });
+      const snapshotFailure = (error instanceof HerdrRpcError && error.method === "session.snapshot")
+        || (error instanceof OperationError && error.kind === "deadline");
+      if (!snapshotFailure && (!(error instanceof HerdrAgentActionError) || error.action !== "workspace.rename")) throw error;
+      const subject = workspaceId === null ? `workspace discovery for worktree ${owner.worktreeId}` : `workspace ${workspaceId}, worktree ${owner.worktreeId}`;
+      options.emit({ kind: "workspace-name-error", task, message: `Could not confirm workspace.rename for ${subject}; the next inventory will observe its name again.`, error });
     }
   };
   const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, execute = true): Promise<void> => {
