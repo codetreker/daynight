@@ -88,7 +88,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const standaloneIds = showAllStandalone ? categories?.standalone ?? emptyIds : progress.recentStandaloneIds;
   const chainPagination = usePagination(rootIds.length);
   const standalonePagination = usePagination(standaloneIds.length);
-  const overviewPagination = usePagination(progress.chains.length + (progress.standalone === null ? 0 : 1));
+  const overviewPagination = usePagination(progress.chains.length + (progress.standalone === null ? 0 : 1), 20);
   const pageRootIds = rootIds.slice(chainPagination.start - 1, chainPagination.end);
   const pageStandaloneIds = standaloneIds.slice(standalonePagination.start - 1, standalonePagination.end);
   const selectChainPage = (page: number) => { chainPagination.onPageChange(page); setPageNavigation("chains"); };

@@ -4,11 +4,11 @@ import type { GraphMessages } from '../graph';
 const { number } = getFormats('zh-CN');
 
 export const graph: GraphMessages = {
-  chainList: '任务链列表',
   rootSummary: ({ total, remaining }) => `${number(total)} 个任务 · ${number(remaining)} 个未完成`,
+  inProgressCount: ({ count }) => `${number(count)} 进行中`,
+  chainList: '任务链列表',
   progress: ({ done, total }) => `${number(done)}/${number(total)} 已完成`,
   chainTitle: '任务链',
-  goalTitle: 'Goal',
   childTasks: ({ count }) => `子任务 · ${number(count)}`,
   goalDetails: '查看 Goal 详情',
   goalDetailsLabel: ({ title }) => `${title}，查看 Goal 详情`,
@@ -17,7 +17,7 @@ export const graph: GraphMessages = {
   closeDialog: '关闭依赖图',
   chainSummary: ({ shown, total }) => `最新创建在前 · ${number(shown)} / ${number(total)} 条任务链`,
   chainSummaryLabel: ({ shown, total }) => `显示 ${number(shown)} 条，共 ${number(total)} 条任务链`,
-  chainNote: '点击 Goal 展开子任务，点击子任务查看详情；“查看依赖关系”打开依赖图。普通依赖连接的任务构成同一条任务链。两种依赖都影响执行；链外前置不计入子任务或链内进度。按代表任务创建时间倒序排列，默认显示未完成及今天与前 6 天完成的任务链。',
+  chainNote: '点击任务链展开子任务，点击子任务查看详情；“查看依赖关系”打开依赖图。普通依赖连接的任务构成同一条任务链。两种依赖都影响执行；链外前置不计入子任务或链内进度。按代表任务创建时间倒序排列，默认显示未完成及今天与前 6 天完成的任务链。',
   emptyTitle: '暂无任务链',
   emptyDescription: '由普通依赖连接的任务会显示在这里，独立任务可在另一个页签查看。',
   completedTitle: '暂无近期任务链',
