@@ -120,7 +120,10 @@ it.each(['focus', 'focus-first', 'visibility-first'] as const)('reuses a Test Se
   await screen.findByText('Private focus conversation');
   const textbox = screen.getByRole('textbox', { name: 'Message' });
   fireEvent.change(textbox, { target: { value: 'Unsent focus draft' } });
-  expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+  await waitFor(() => {
+    expect(textbox).toHaveValue('Unsent focus draft');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+  });
   const timeline = document.querySelector('.session-timeline')!;
   f.leave(order !== 'focus');
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
