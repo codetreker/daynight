@@ -37,6 +37,25 @@ export const hasNativePrerequisiteCleanupFailure = (cause: unknown): boolean => 
   return false;
 };
 const metadataLimit = 1_048_576;
+type IntegrationState = "not_installed" | "current" | "outdated";
+
+const integrationState = (result: Record<string, unknown>, agent: NativeAgent): IntegrationState => {
+  if (result.type !== "integration_list" || !Array.isArray(result.integrations)) throw new Error("Herdr returned invalid integration metadata.");
+  const targets = new Set<string>();
+  let state: IntegrationState | undefined;
+  for (const value of result.integrations as unknown[]) {
+    const info = mapping(value, "Herdr integration metadata");
+    if (typeof info.target !== "string" || info.target === "" || targets.has(info.target) ||
+      typeof info.label !== "string" || typeof info.command !== "string" || typeof info.available !== "boolean" ||
+      (info.state !== "not_installed" && info.state !== "current" && info.state !== "outdated")) {
+      throw new Error("Herdr returned invalid integration metadata.");
+    }
+    targets.add(info.target);
+    if (info.target === agent) state = info.state;
+  }
+  if (state === undefined) throw new Error(`Herdr integration metadata does not contain the ${agent} target.`);
+  return state;
+};
 
 const mapping = (value: unknown, label: string): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new Error(`${label} must be an object.`);
@@ -248,10 +267,19 @@ export const createHerdrPreflight = (options: {
       const [directories, executable, ...checks] = createNativePrerequisiteChecks({ ...options, environment, homeDirectory: home }, input);
       const root = await directories.verify(operation);
       const version = await executable.verify(operation);
+      operation.check();
       const integrations = await options.rpc.request("integration.list", {}, operation);
-      if (integrations.type !== "integration_list" || !Array.isArray(integrations.integrations)) throw new Error("Herdr returned invalid integration metadata.");
-      const installed = integrations.integrations.filter((value: unknown) => typeof value === "object" && value !== null && !Array.isArray(value) && (value as Record<string, unknown>).target === agent);
-      if (installed.length !== 1 || (installed[0] as Record<string, unknown>).state !== "current") throw new Error(`The official ${agent} Herdr integration is missing or outdated; inspect it with herdr integration status and configure it explicitly.`);
+      operation.check();
+      if (integrationState(integrations, agent) !== "current") {
+        const installed = await options.rpc.request("integration.install", { target: agent }, operation);
+        operation.check();
+        if (installed.type !== "integration_install" || installed.target !== agent) throw new Error("Herdr returned an invalid integration install result.");
+        const details = mapping(installed.details, "Herdr integration install result details");
+        if (!Array.isArray(details.messages) || !details.messages.every((message: unknown) => typeof message === "string")) throw new Error("Herdr returned an invalid integration install result.");
+        const refreshed = await options.rpc.request("integration.list", {}, operation);
+        operation.check();
+        if (integrationState(refreshed, agent) !== "current") throw new Error(`The official ${agent} Herdr integration is not current after installation; inspect herdr integration status.`);
+      }
       for (const check of checks) await check.verify(operation);
       operation.check();
       return { agent, version, nativeHome: root, integrationConfigured: true };

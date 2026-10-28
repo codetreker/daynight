@@ -6,6 +6,8 @@ import type { Operation } from "../../../src/api/operation.js";
 import { createHerdrPreflight } from "../../../src/commands/worker/herdr/preflight.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import type { HerdrCommand } from "../../../src/commands/worker/herdr/command.js";
+import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
+import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
 
 const roots: string[] = [];
 const operations: Operation[] = [];
@@ -36,8 +38,8 @@ const fixture = async () => {
     if (command.args.at(-2) === "features" && command.args.at(-1) === "list") return { stdout: "hooks\tstable\ttrue\n", stderr: "" };
     return { stdout: JSON.stringify(hooks), stderr: "" };
   });
-  const integrations = [{ target: "codex", available: true, state: "current" }, { target: "copilot", available: true, state: "current" }];
-  const rpc = { request: vi.fn(async () => ({ type: "integration_list", integrations })) };
+  const integrations = [{ target: "codex", label: "Codex", command: "codex", available: true, state: "current" }, { target: "copilot", label: "Copilot", command: "copilot", available: true, state: "current" }];
+  const rpc = { request: vi.fn<HerdrRpcClient["request"]>(async () => ({ type: "integration_list", integrations })) };
   const environment: NodeJS.ProcessEnv = {};
   const preflight = createHerdrPreflight({ rpc, homeDirectory: home, environment, platform: "linux", runCommand });
   const input = (agent: "codex" | "copilot", resumeSessionId?: string) => ({ context: { cwd }, configuration: { agent, model: "current-model", args: [] as string[] }, ...(resumeSessionId === undefined ? {} : { resumeSessionId }) });
@@ -57,6 +59,7 @@ describe("Herdr native prerequisites", () => {
     expect(f.runCommand.mock.calls.map(([command]) => [command.file, command.args])).toEqual([["codex", ["--version"]], ["bash", ["--version"]], ["python3", ["--version"]], ["codex", [...codexPermissionFlags, "--help"]], ["codex", [...codexProjectTrustArguments(f.cwd), "features", "list"]]]);
     expect(JSON.parse(await readFile(path.join(f.codex, "hooks.json"), "utf8"))).toEqual(f.codexHooks);
     expect(f.rpc.request).toHaveBeenCalledWith("integration.list", {}, expect.anything());
+    expect(f.rpc.request).toHaveBeenCalledTimes(1);
     expect(f.runCommand.mock.calls.every(([command]) => command.cwd === f.cwd)).toBe(true);
   });
 
@@ -185,17 +188,147 @@ describe("Herdr native prerequisites", () => {
     expect(f.runCommand.mock.calls.some(([command]) => command.args[0] === "config")).toBe(false);
   });
 
-  it.each(["not_installed", "outdated"])("refuses integration state %s without installation or rewrite", async (state) => {
-    const f = await fixture(); f.integrations[0]!.state = state;
-    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toThrow("missing or outdated");
-    expect(f.rpc.request.mock.calls).toHaveLength(1); expect(f.runCommand).toHaveBeenCalledTimes(1);
+  it.each(["codex", "copilot"] as const)("keeps current %s integration read-only", async (agent) => {
+    const f = await fixture(); const op = operation();
+    await f.preflight.verifyStart(f.input(agent), op);
+    expect(f.rpc.request.mock.calls).toEqual([["integration.list", {}, op]]);
   });
 
-  it("rejects duplicated or malformed integration inventory", async () => {
-    const f = await fixture(); f.integrations.push(f.integrations[0]!);
-    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toThrow("missing or outdated");
-    f.rpc.request.mockResolvedValueOnce({ type: "wrong", integrations: [] });
-    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toThrow("invalid integration");
+  it.each([
+    ["codex", "not_installed"], ["codex", "outdated"],
+    ["copilot", "not_installed"], ["copilot", "outdated"],
+  ] as const)("repairs %s integration state %s before inspecting installed assets and effective hooks", async (agent, state) => {
+    const f = await fixture(); const info = f.integrations.find((item) => item.target === agent)!; info.state = state;
+    const asset = agent === "codex" ? f.codexAsset : f.copilotAsset;
+    await rm(asset);
+    if (agent === "codex") await rm(path.join(f.codex, "hooks.json"));
+    else f.hooks.sessionStart = [];
+    f.rpc.request.mockImplementation(async (method, params) => {
+      if (method === "integration.list") return { type: "integration_list", integrations: f.integrations };
+      expect(method).toBe("integration.install"); expect(params).toEqual({ target: agent });
+      expect(f.runCommand).toHaveBeenCalledTimes(1);
+      await writeFile(asset, "officially installed hook\n");
+      if (agent === "codex") await writeFile(path.join(f.codex, "hooks.json"), JSON.stringify(f.codexHooks));
+      else f.hooks.sessionStart = [{ type: "command", bash: `bash ${quote(asset)}` }];
+      info.state = "current";
+      return { type: "integration_install", target: agent, details: { messages: ["Installed"] } };
+    });
+    const op = operation();
+    await expect(f.preflight.verifyStart(f.input(agent), op)).resolves.toMatchObject({ agent, integrationConfigured: true });
+    expect(f.rpc.request.mock.calls).toEqual([["integration.list", {}, op], ["integration.install", { target: agent }, op], ["integration.list", {}, op]]);
+    expect(f.runCommand.mock.calls.some(([command]) => command.args.at(-2) === (agent === "codex" ? "features" : "config"))).toBe(true);
+  });
+
+  it.each([
+    { type: "wrong", integrations: [] },
+    { type: "integration_list", integrations: null },
+    { type: "integration_list", integrations: [] },
+    { type: "integration_list", integrations: [null] },
+    ...["target", "label", "command", "available", "state"].map((key) => {
+      const info: Record<string, unknown> = { target: "codex", label: "Codex", command: "codex", available: true, state: "outdated" };
+      delete info[key]; return { type: "integration_list", integrations: [info] };
+    }),
+    { type: "integration_list", integrations: [{ target: "codex", label: "Codex", command: "codex", available: true, state: "enabled" }] },
+    { type: "integration_list", integrations: [{ target: "codex", label: "Codex", command: "codex", available: "true", state: "outdated" }] },
+  ])("rejects invalid integration inventory without writing (%j)", async (result) => {
+    const f = await fixture(); f.rpc.request.mockResolvedValueOnce(result);
+    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toThrow(/integration metadata/);
+    expect(f.rpc.request).toHaveBeenCalledTimes(1); expect(f.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects duplicate targets before writing", async () => {
+    const f = await fixture(); f.integrations[0]!.state = "outdated"; f.integrations.push({ ...f.integrations[0]! });
+    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toThrow("invalid integration metadata");
+    expect(f.rpc.request).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { type: "ok" },
+    { type: "integration_install", target: "copilot", details: { messages: [] } },
+    { type: "integration_install", target: "codex" },
+    { type: "integration_install", target: "codex", details: null },
+    { type: "integration_install", target: "codex", details: {} },
+    { type: "integration_install", target: "codex", details: { messages: "installed" } },
+    { type: "integration_install", target: "codex", details: { messages: [true] } },
+  ])("rejects malformed installation acknowledgement without replay (%j)", async (result) => {
+    const f = await fixture(); f.integrations[0]!.state = "outdated";
+    f.rpc.request.mockResolvedValueOnce({ type: "integration_list", integrations: f.integrations }).mockResolvedValueOnce(result);
+    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toThrow(/integration install result/);
+    expect(f.rpc.request).toHaveBeenCalledTimes(2); expect(f.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["not_installed", "outdated"])("requires fresh current state after installation, received %s", async (state) => {
+    const f = await fixture(); f.integrations[0]!.state = state;
+    f.rpc.request.mockResolvedValueOnce({ type: "integration_list", integrations: f.integrations })
+      .mockResolvedValueOnce({ type: "integration_install", target: "codex", details: { messages: [] } });
+    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toThrow("not current after installation");
+    expect(f.rpc.request).toHaveBeenCalledTimes(3); expect(f.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects malformed post-install inventory without reinstalling", async () => {
+    const f = await fixture(); f.integrations[0]!.state = "outdated";
+    f.rpc.request.mockResolvedValueOnce({ type: "integration_list", integrations: f.integrations })
+      .mockResolvedValueOnce({ type: "integration_install", target: "codex", details: { messages: [] } })
+      .mockResolvedValueOnce({ type: "integration_list", integrations: [] });
+    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toThrow("does not contain the codex target");
+    expect(f.rpc.request).toHaveBeenCalledTimes(3); expect(f.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["codex", "copilot"] as const)("still rejects ineffective %s hooks after successful official installation", async (agent) => {
+    const f = await fixture(); const info = f.integrations.find((item) => item.target === agent)!; info.state = "outdated";
+    f.rpc.request.mockImplementation(async (method) => {
+      if (method === "integration.list") return { type: "integration_list", integrations: f.integrations };
+      info.state = "current";
+      if (agent === "codex") await writeFile(path.join(f.codex, "hooks.json"), JSON.stringify({ hooks: { SessionStart: [] } }));
+      else f.hooks.sessionStart = [];
+      return { type: "integration_install", target: agent, details: { messages: [] } };
+    });
+    await expect(f.preflight.verifyStart(f.input(agent), operation())).rejects.toThrow("does not invoke");
+    expect(f.rpc.request).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves official install errors that may follow partial writes", async () => {
+    const f = await fixture(); f.integrations[0]!.state = "not_installed";
+    const failure = new HerdrRpcError("hook registration failed", { method: "integration.install", requestId: id, submission: "unknown", code: "integration_install_failed", apiMessage: "hook registration failed" });
+    f.rpc.request.mockResolvedValueOnce({ type: "integration_list", integrations: f.integrations }).mockRejectedValueOnce(failure);
+    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toBe(failure);
+    expect(f.rpc.request).toHaveBeenCalledTimes(2);
+  });
+
+  it.each(["integration.list", "integration.install", "post-install read"])("preserves the original %s error without replay", async (stage) => {
+    const f = await fixture(); f.integrations[0]!.state = "outdated";
+    const failure = new HerdrRpcError("installation outcome unknown", { method: stage, requestId: id, submission: "unknown" });
+    if (stage !== "integration.list") f.rpc.request.mockResolvedValueOnce({ type: "integration_list", integrations: f.integrations });
+    if (stage === "post-install read") f.rpc.request.mockResolvedValueOnce({ type: "integration_install", target: "codex", details: { messages: [] } });
+    f.rpc.request.mockRejectedValueOnce(failure);
+    await expect(f.preflight.verifyStart(f.input("codex"), operation())).rejects.toBe(failure);
+    expect(f.rpc.request).toHaveBeenCalledTimes(stage === "integration.list" ? 1 : stage === "integration.install" ? 2 : 3);
+    expect(f.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["integration.list", "integration.install"])("honors cancellation after %s before issuing another RPC", async (stage) => {
+    const f = await fixture(); f.integrations[0]!.state = "outdated";
+    const controller = new AbortController(); const op = operation({ signal: controller.signal });
+    f.rpc.request.mockImplementation(async (method): Promise<HerdrRpcResult> => {
+      if (method === stage) controller.abort(new Error("stop integration repair"));
+      return method === "integration.list" ? { type: "integration_list", integrations: f.integrations } : { type: "integration_install", target: "codex", details: { messages: [] } };
+    });
+    const failure = await f.preflight.verifyStart(f.input("codex"), op).catch((cause: unknown) => cause);
+    expect(failure).toBe(op.signal.reason);
+    expect(f.rpc.request).toHaveBeenCalledTimes(stage === "integration.list" ? 1 : 2);
+    expect(f.runCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it("honors the shared deadline before installation", async () => {
+    const f = await fixture(); f.integrations[0]!.state = "outdated";
+    const op = operation({ limits: { totalMs: 20 } });
+    f.rpc.request.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { type: "integration_list", integrations: f.integrations };
+    });
+    const failure = await f.preflight.verifyStart(f.input("codex"), op).catch((cause: unknown) => cause);
+    expect(failure).toBe(op.signal.reason); expect(failure).toMatchObject({ kind: "deadline" });
+    expect(f.rpc.request).toHaveBeenCalledTimes(1);
   });
 
   it("refuses Codex without isolated execution or enabled hooks", async () => {

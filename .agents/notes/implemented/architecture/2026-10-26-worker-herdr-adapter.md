@@ -17,7 +17,12 @@ execution.
 The Herdr adapter uses direct current-resource operations and call-local
 stop/input observations under the [simplification
 decision](../simplification/2026-10-27-worker-claim-records.md). Private instance
-isolation, explicit native integration and input readiness remain. The
+isolation, verified official native integration and input readiness remain. The
+[integration preflight decision](../bug-fix/2026-10-28-worker-integration-preflight.md)
+partially supersedes the original refusal to install integrations: runtime
+preflight uses the private daemon's official installer for explicitly missing or
+outdated integration, then verifies current state and effective hooks. Setup
+retains read-only inspection. The
 [full-access decision](2026-10-27-worker-full-access.md) replaces the original
 operator-managed native folder, hook and tool permission confirmations with a
 fixed invocation policy for fresh and resumed processes. The original receipts,
@@ -198,13 +203,19 @@ its existing evidence. The caller may restore a proven undispatched current
 attempt, while an earlier unknown launch cannot become never-submitted merely
 because a later call was refused.
 
-Preflight verifies the native executable and required capabilities, current
-installed official integration, effective SessionStart command and its runtime.
+The original preflight verified the native executable and required capabilities,
+current installed official integration, effective SessionStart command and its
+runtime.
 Every metadata OS command runs with the actual task cwd. Codex feature
 inspection retains the frozen -c/--config, --enable, --disable and -p/--profile
 tokens and values in their original order, rather than checking unrelated host
-defaults. It does not install integrations, alter global configuration or
-silently bypass hook trust. Current/static integration checks are prerequisites,
+defaults. It deliberately required explicit integration installation and left
+global configuration and hook trust under operator control, so inspecting an
+execution's prerequisites did not silently change later native invocations.
+The [integration preflight decision](../bug-fix/2026-10-28-worker-integration-preflight.md)
+replaces that installation refusal for runtime starts; the full-access decision
+above separately replaces native consent handling. Current/static integration
+checks are prerequisites,
 not proof that a hook ran. Resume additionally checks an exact readable native
 manifest ID and physical cwd. Compressed or ambiguous Codex manifests are
 refused explicitly. Native provider databases remain the providers'

@@ -86,9 +86,12 @@ Setup shares native prerequisite checks with the runtime's [Herdr
 adapter](2026-10-26-worker-herdr-adapter.md). Local version, directory, runtime,
 hook, effective-settings and fixed launch-argument capability checks use bounded
 read-only commands; official integration state is inspected through offline
-herdr integration status. The
-runtime uses typed RPC integration checks in task cwd and reports native resume
-errors directly. Independent reports are collected together, and missing
+herdr integration status. Runtime [integration
+preflight](../bug-fix/2026-10-28-worker-integration-preflight.md) separately installs
+or updates explicitly missing or outdated integration through the private daemon,
+verifies current state and checks effective hooks in task cwd. These writes do
+not belong in the shared read-only prerequisite checks. Runtime reports native
+resume errors directly. Independent reports are collected together, and missing
 selected prerequisites allow saving with a repair instruction. The
 [full-access policy](2026-10-27-worker-full-access.md) fixes tool permissions and
 task-folder trust for every fresh/resumed process without changing global native
