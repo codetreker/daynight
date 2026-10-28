@@ -4,6 +4,7 @@ import type { OverviewProgress, OverviewProgressCount, OverviewTaskTarget } from
 import { ListPagination } from "./ListPagination";
 import type { PaginationState } from "./usePagination";
 import type { GraphSnapshot } from "./useTaskGraph";
+import "../../styles/task-status-rows.css";
 import { compareTaskStatus } from "./task-order";
 
 export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate }: {
@@ -16,7 +17,7 @@ export const ProjectOverview = ({ snapshot, progress, pagination, onNavigate }: 
   const summary = snapshot.graph.summary;
   const headingId = useId();
   const completion = summary.total === 0 ? 0 : Math.round(summary.done * 100 / summary.total);
-  const row = (title: string, value: OverviewProgressCount, target: OverviewTaskTarget, scope?: string) => <button className="overview-progress-row" type="button"
+  const row = (title: string, value: OverviewProgressCount, target: OverviewTaskTarget, scope?: string) => <button className="overview-progress-row task-status-surface" data-task-status={value.status} type="button"
     aria-label={overview.rowLabel({ title, ...value })} onClick={() => onNavigate(target)}>
     <span className="overview-progress-title">{title}{scope !== undefined && <span className="overview-progress-scope">{scope}</span>}</span>
     <span className="overview-progress-metric"><span>{format.number(value.done)} / {format.number(value.total)}</span>

@@ -55,6 +55,8 @@ describe('Goal task lists', () => {
     const rows = within(children()).getAllByRole('button', { name: /已完成|进行中|待处理/ });
     expect(rows.map((row) => row.querySelector('.root-title')!.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
     expect(rows.map((row) => row.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
+    expect(rows.map((row) => row.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
+    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'in_progress');
     expect(rows[1]).toHaveTextContent('被阻塞');
     expect(within(children()).queryByText('External')).toBeNull();
     expect(within(children()).queryByText('Standalone')).toBeNull();
@@ -93,6 +95,16 @@ describe('Goal task lists', () => {
       'Active first', 'Active second', 'Todo first', 'Todo second', 'Done first', 'Done second',
     ]);
     expect([...index.nodes.keys()]).toEqual(snapshotOrder);
+  });
+
+  it('keeps a partly completed chain in progress without any executing member', () => {
+    const view = render(list(indexOf([task('Goal', 'done'), task('Waiting', 'todo', ['Goal'])])));
+    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'in_progress');
+    expect(disclosure()).toHaveTextContent('进行中');
+    view.rerender(list(indexOf([task('Goal', 'todo'), task('Waiting', 'todo', ['Goal'])])));
+    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'todo');
+    view.rerender(list(indexOf([task('Goal', 'done'), task('Waiting', 'done', ['Goal'])])));
+    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'done');
   });
 
   it('opens graphs independently from keyboard disclosure and passes the correct task and trigger to details', async () => {
