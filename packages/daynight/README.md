@@ -843,14 +843,47 @@ worker state or acquire tasks. Unconfirmed probe-process cleanup is a failure,
 including during cancellation.
 
 Install Git, Herdr 0.9.5 or newer with protocol 22 capabilities, and the selected
-native agent on PATH. Configure native/provider credentials and the current
-official Herdr SessionStart integration explicitly. Codex must be 0.135 or newer
-and support hooks, `--no-daemon` and the fixed full-access/hook-trust flags;
-Unix hooks need bash and python3, while Windows hooks need
-PowerShell. Inspect official integration with `herdr integration status`. Missing
-capabilities and native launch failures remain visible;
-the worker does not install or change global native configuration. Git transport
-and task tools, such as authenticated GitHub CLI for PR delivery, must be ready.
+native agent on PATH and configure native/provider credentials. Before each
+fresh or resumed native launch, runtime preflight reads the selected agent's
+official integration through the private daemon. A `current` integration causes
+no installation write. Only `not_installed` or `outdated` triggers the official
+`integration.install` RPC with `{target: agent}`; preflight then reads the state
+again and requires `current`. Missing, duplicate, malformed or unknown integration
+metadata fails without repair. Each launch makes its own integration requests to
+the private daemon, whose official handler performs the installation.
+
+The official installer can update native configuration and hook assets in the
+provider home used by the private daemon. Codex repair requires a live private
+daemon started by the current worker, so its native environment matches the
+configuration being checked. An adopted daemon's environment cannot be verified
+through the API; stop and restart the worker normally before attempting Codex
+repair in that case. Repair also requires the audited Herdr 0.9.5 installer and
+checks its projected TOML edit without writing files.
+The original and projected configurations must parse and differ only by enabling
+`features.hooks` and removing the deprecated integration key
+`features.codex_hooks`. Configurations containing date/time values or parser
+constructs whose exact semantics cannot be compared are refused. Inline, dotted
+or quoted feature layouts and multiline strings that this installer would damage
+fail before `integration.install`;
+reformat the affected configuration or use an integration installed safely by
+its owner before retrying. Unknown installer versions also fail before repair;
+already-current integrations keep their ordinary verification path. The check
+compares configuration values; it does not preserve comments or lock out external
+configuration edits between inspection and installation.
+
+Preflight still verifies effective hooks and the SessionStart command in the
+actual task directory before launch; installation success alone is insufficient. Installation, verification and
+cancellation failures remain visible and prevent that native launch. An uncertain
+installation outcome is not automatically replayed; a later attempt first reads
+current state. Setup retains its read-only inspection and repair instructions.
+Inspect shell-side integration with `herdr integration status`; its environment
+can differ from the running private daemon's.
+
+Codex must be 0.135 or newer and support hooks, `--no-daemon` and the fixed
+full-access/hook-trust flags. Unix hooks need bash and python3, while Windows
+hooks need PowerShell. Native capability and launch failures remain visible.
+Git transport and task tools, such as authenticated GitHub CLI for PR delivery,
+must be ready.
 
 Manage individual Project registrations with:
 

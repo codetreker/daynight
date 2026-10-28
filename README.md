@@ -123,9 +123,13 @@ repeat setup. Missing native prerequisites can be repaired after saving; the
 command explicitly reports when the environment still needs attention.
 
 Worker execution requires Git, Herdr 0.9.5 or newer with the supported API, and
-the selected native CLI. Configure provider credentials and the official Herdr
-integration explicitly. Local setup checks do not qualify real native execution,
-provider login or task delivery.
+the selected native CLI. Configure provider credentials before execution. Before
+starting a native agent, runtime preflight installs or updates its official Herdr
+integration through the private daemon when needed, then verifies the current
+integration and effective hook configuration. Codex installation first checks
+that the supported Herdr installer preserves configuration semantics; unsafe
+layouts fail before installation. Setup remains read-only. Local setup checks do
+not qualify real native execution, provider login or task delivery.
 
 `repo add` lists accessible Projects for multiselection. Use `--project
 PROJECT_UUID` for an explicit noninteractive registration; `worker repo list`

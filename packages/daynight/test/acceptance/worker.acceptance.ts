@@ -51,7 +51,7 @@ const api=createServer(socket=>{socket.on('error',socketError);sockets.add(socke
 try{switch(request.method){
 case 'ping':result={type:'pong',version:'0.9.5',protocol:22,capabilities:{detached_server_daemon:true}};break;
 case 'session.snapshot':result={type:'session_snapshot',snapshot:snapshot()};break;
-case 'integration.list':result={type:'integration_list',integrations:[{target:'codex',state:'current'}]};break;
+case 'integration.list':result={type:'integration_list',integrations:[{target:'codex',label:'Codex',command:'codex',available:true,state:'current'}]};break;
 case 'workspace.create':result=await createWorkspace(p);break;
 case 'workspace.rename':{const workspace=workspaces.find(item=>item.workspace_id===p.workspace_id);if(!workspace)throw new Error('Missing workspace rename target');workspace.label=p.label;await event({kind:'workspace-rename',taskId:labelOwner(p.label).taskId,workspaceId:p.workspace_id,label:p.label});result={type:'workspace_info',workspace:clone(workspace)};break;}
 case 'agent.start':{const pane=panes.find(item=>item.pane_id===p.pane_id),identity=owner(pane),expectedName='dn_'+createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0,24);if(p.name!==expectedName)throw new Error('Managed agent name must depend only on stable identity');const child=await processChild();children.set(p.pane_id,child);const agent={...pane,agent:p.kind,name:p.name,agent_status:'idle',interactive_ready:true,launch_pending:false,state_change_seq:1,completion_seq:0};agents.push(agent);const argv=[p.kind,...p.args];nativeArguments.set(p.pane_id,argv);await record('native-start',identity.taskId,{argv,pid:child.pid,workspaceId:pane.workspace_id,name:p.name});result={type:'agent_started',agent,argv};break;}
