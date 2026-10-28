@@ -851,9 +851,26 @@ metadata fails without repair. Each launch makes its own integration requests to
 the private daemon, whose official handler performs the installation.
 
 The official installer can update native configuration and hook assets in the
-provider home used by the private daemon. Preflight still verifies effective
-hooks and the SessionStart command in the actual task directory before launch;
-installation success alone is insufficient. Installation, verification and
+provider home used by the private daemon. Codex repair requires a live private
+daemon started by the current worker, so its native environment matches the
+configuration being checked. An adopted daemon's environment cannot be verified
+through the API; stop and restart the worker normally before attempting Codex
+repair in that case. Repair also requires the audited Herdr 0.9.5 installer and
+checks its projected TOML edit without writing files.
+The original and projected configurations must parse and differ only by enabling
+`features.hooks` and removing the deprecated integration key
+`features.codex_hooks`. Configurations containing date/time values or parser
+constructs whose exact semantics cannot be compared are refused. Inline, dotted
+or quoted feature layouts and multiline strings that this installer would damage
+fail before `integration.install`;
+reformat the affected configuration or use an integration installed safely by
+its owner before retrying. Unknown installer versions also fail before repair;
+already-current integrations keep their ordinary verification path. The check
+compares configuration values; it does not preserve comments or lock out external
+configuration edits between inspection and installation.
+
+Preflight still verifies effective hooks and the SessionStart command in the
+actual task directory before launch; installation success alone is insufficient. Installation, verification and
 cancellation failures remain visible and prevent that native launch. An uncertain
 installation outcome is not automatically replayed; a later attempt first reads
 current state. Setup retains its read-only inspection and repair instructions.

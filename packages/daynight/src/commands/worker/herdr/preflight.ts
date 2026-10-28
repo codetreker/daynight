@@ -6,6 +6,7 @@ import { codexProjectTrustArguments, nativeAgentPermissionArguments, nativeAgent
 import { runHerdrCommand } from "./command.js";
 import type { HerdrCommand, HerdrCommandResult } from "./command.js";
 import type { HerdrRpcClient } from "./rpc.js";
+import { assertCodexInstallConfigurationSafe } from "./codex-install-safety.js";
 
 type NativeAgent = "codex" | "copilot";
 export type HerdrNativeStart = {
@@ -77,7 +78,7 @@ const nativeHome = (agent: NativeAgent, environment: NodeJS.ProcessEnv, home: st
   const value = environment[key];
   return value === undefined ? path.join(home, `.${agent}`) : absolute(value, key);
 };
-const readMetadata = async (file: string, operation: Operation): Promise<string> => {
+const readMetadata = async (file: string, operation: Operation, preserveBom = false): Promise<string> => {
   operation.check();
   const handle = await open(file, "r");
   try {
@@ -95,7 +96,7 @@ const readMetadata = async (file: string, operation: Operation): Promise<string>
       chunks.push(chunk);
     }
     operation.check();
-    return new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: preserveBom }).decode(Buffer.concat(chunks));
   } finally { await handle.close(); }
 };
 const hookCommand = (file: string, agent: NativeAgent, platform: NodeJS.Platform): string => {
@@ -253,6 +254,7 @@ export const createNativePrerequisiteChecks = (options: {
 
 export const createHerdrPreflight = (options: {
   rpc: Pick<HerdrRpcClient, "request">;
+  assertIntegrationEnvironment: (root: string) => void;
   environment: NodeJS.ProcessEnv;
   homeDirectory: string;
   platform?: NodeJS.Platform;
@@ -271,6 +273,25 @@ export const createHerdrPreflight = (options: {
       const integrations = await options.rpc.request("integration.list", {}, operation);
       operation.check();
       if (integrationState(integrations, agent) !== "current") {
+        if (agent === "codex") {
+          options.assertIntegrationEnvironment(root);
+          const pong = await options.rpc.request("ping", {}, operation);
+          operation.check();
+          if (pong.type !== "pong" || pong.version !== "0.9.5" || pong.protocol !== 22 ||
+            typeof pong.capabilities !== "object" || pong.capabilities === null || Array.isArray(pong.capabilities)) {
+            throw new Error("Cannot safely install the Codex integration: the configuration rewrite is audited only for Herdr 0.9.5 with protocol 22 and server capabilities.");
+          }
+          let source: string;
+          try { source = await readMetadata(path.join(root, "config.toml"), operation, true); }
+          catch (cause) {
+            if (!(cause instanceof Error && "code" in cause && cause.code === "ENOENT")) throw cause;
+            source = "";
+          }
+          operation.check();
+          assertCodexInstallConfigurationSafe(source);
+          operation.check();
+          options.assertIntegrationEnvironment(root);
+        }
         const installed = await options.rpc.request("integration.install", { target: agent }, operation);
         operation.check();
         if (installed.type !== "integration_install" || installed.target !== agent) throw new Error("Herdr returned an invalid integration install result.");

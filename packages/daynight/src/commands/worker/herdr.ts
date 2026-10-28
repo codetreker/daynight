@@ -38,6 +38,7 @@ export const createWorkerHerdr = (options: {
   }
   const preflight = createHerdrPreflight({
     rpc: instance.rpc,
+    assertIntegrationEnvironment: instance.assertIntegrationEnvironment,
     environment: nativeEnvironment,
     homeDirectory: options.homeDirectory,
   });

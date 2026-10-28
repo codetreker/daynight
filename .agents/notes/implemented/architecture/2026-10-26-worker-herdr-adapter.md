@@ -227,8 +227,11 @@ original memory and effective configuration.
 Codex 0.164.0 does not accept profile selection for its read-only features
 command. When the selected profile cannot be inspected, preflight reports a
 capability error with the original cause and explicit supported-setting advice.
-It never drops the profile to query defaults or introduces a TOML parser, MCP,
-app-server or SDK configuration engine. Like unsupported compressed manifests,
+It never drops the profile to query defaults or introduces an effective-settings
+configuration engine through TOML, MCP, app-server or SDK. The separate
+[integration preflight guard](../bug-fix/2026-10-28-worker-integration-preflight.md)
+parses only the installer's projected TOML edit before authorizing a write; native
+commands still own effective feature inspection. Like unsupported compressed manifests,
 this is an explicit inspection limit, not a promise that every native argument
 can be validated.
 
