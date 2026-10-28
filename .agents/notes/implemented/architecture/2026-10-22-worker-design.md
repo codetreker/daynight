@@ -34,7 +34,7 @@ superseded by the agent-owned completion and claim-inventory reconciliation
 boundaries. The [managed execution decision](2026-10-26-managed-task-skill.md)
 separates the ordinary and managed skill instructions. The worker constructs
 startup and same-claim relaunch prompts with an explicit worker-managed
-environment, using-daynight skill, execute-task-in-managed mode and original
+environment, using-daynight skill, autopilot-managed-task mode and original
 assignment; the Herdr adapter transports that prompt to the selected native
 agent. The [foreground runtime](2026-10-27-foreground-worker-runtime.md)
 implements that composition; this note owns the responsibility decision. The [claim foundation
