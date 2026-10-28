@@ -36,9 +36,12 @@ Herdr display. The [migration removal decision](2026-10-28-remove-worker-workspa
 removes the separate workspace-format maintenance state; startup and management
 use the normal claim/session index and resource observations. Existing Git markers have no
 workerId, so a Git-only claim requires a matching local row, private Herdr
-resource or current own claim before this worker can clean it. Unproven
-resources are reported and preserved, including in repositories shared with
-another worker. Before cleanup or exit removes a verified private Herdr label,
+resource or current own claim before this worker can manage it. The
+[resource recognition decision](../bug-fix/2026-10-28-worker-resource-recognition.md)
+silently excludes unproven resources from ownership, capacity and cleanup,
+including in repositories shared with another worker. Discovery skips unknown
+metadata without changing it and retains strict integrity checks for recognized
+managed resources. Before cleanup or exit removes a verified private Herdr label,
 a missing local claim is recorded as pending with its observed native agent and
 any live session ID. The [direct shutdown decision](../bug-fix/2026-10-28-worker-direct-shutdown.md)
 owns this use of the existing index to preserve orphan cleanup responsibility
@@ -93,9 +96,10 @@ candidates retain server ready order. This keeps spare capacity from being
 consumed by one busy Project's entire batch.
 
 Known-target cleanup and shutdown observe the target's Herdr execution and
-validate only the target Git worktree when deleting. Sibling or unrelated Git
-registration problems remain diagnostics, without preventing healthy agents
-from stopping. Resource discovery still reports those problems separately.
+validate only the target Git worktree when deleting. Unrecognized sibling or
+unrelated Git registrations are skipped without diagnostics. Genuine repository
+failures and integrity failures in recognized managed resources stay visible,
+without preventing independently observable healthy agents from stopping.
 
 The cleanup criterion originally required an idle, interactive-ready
 submitPrompt receipt and later advancement of both sequence counters to avoid
@@ -111,7 +115,9 @@ owns worker process exit: cancel and join all jobs, including terminal cleanup,
 then directly stop agents and close workspaces without a cleanup prompt or turn.
 Claims, worktrees, native session IDs and unfinished rows remain even for ended
 owners; the next normal inventory re-enters their terminal cleanup. Stop errors
-remain visible and uncertain stopping retains the private daemon.
+remain visible and uncertain stopping retains the private daemon. Independent
+manual workspaces also retain that daemon after successful managed shutdown,
+without an exit error, so attachment and the next run can reconnect.
 
 Configuration and recovery/cleanup state are process-local. A restarted process
 uses the current applicable model/args for the recorded agent type. Cleanup has

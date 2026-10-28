@@ -46,12 +46,17 @@ describe("stable resource ownership and workspace presentation", () => {
     expect(parseHerdrExecutionLabel(label)).toEqual(owner);
   });
 
-  it("distinguishes unrelated labels and invalid managed labels", () => {
-    expect(parseHerdrExecutionLabel("human workspace")).toBeNull();
-    expect(parseHerdrExecutionLabel("")).toBeNull();
-    expect(() => parseHerdrExecutionLabel(` | daynight:${JSON.stringify(owner)}`)).toThrow("nonempty");
-    expect(() => parseHerdrExecutionLabel(`bad\nname | daynight:${JSON.stringify(owner)}`)).toThrow("single-line");
-    expect(() => parseHerdrExecutionLabel(`name | daynight:${JSON.stringify(owner)} trailing`)).toThrow();
+  it.each([
+    undefined, null, false, 1, {}, [], "human workspace", "",
+    ` | daynight:${JSON.stringify(owner)}`, `bad\nname | daynight:${JSON.stringify(owner)}`,
+    `name | daynight:${JSON.stringify(owner)} trailing`, "name | daynight:{broken",
+    `name | daynight:${JSON.stringify({ ...owner, serverOrigin: "https://example.com" })}`,
+    `name | daynight:${JSON.stringify({ ...owner, worktreeId: owner.worktreeId.toUpperCase() })}`,
+  ])("leaves unfamiliar workspace labels unrecognized: %j", (label) => {
+    expect(parseHerdrExecutionLabel(label)).toBeNull();
+  });
+
+  it("requires a valid title when creating managed labels", () => {
     expect(() => herdrExecutionLabel(owner, "\n\t")).toThrow("nonempty");
   });
 });

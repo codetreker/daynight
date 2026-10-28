@@ -35,9 +35,11 @@ export type HerdrAgentPreflight = { verifyStart(input: { context: HerdrExecution
 export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string }>;
 
 type RecordValue = Record<string, unknown>;
+const record = (value: unknown): RecordValue | null => typeof value === "object" && value !== null && !Array.isArray(value) ? value as RecordValue : null;
 const object = (value: unknown, name: string): RecordValue => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError(`${name} must be an object.`);
-  return value as RecordValue;
+  const result = record(value);
+  if (result === null) throw new TypeError(`${name} must be an object.`);
+  return result;
 };
 const text = (value: unknown, name: string): string => {
   if (typeof value !== "string" || value === "" || /[\r\n\0]/.test(value)) throw new TypeError(`${name} must be nonempty text without line breaks or NUL.`);
@@ -57,15 +59,16 @@ const workspaceTitle = (title: string): string => {
 };
 export const herdrExecutionLabel = (context: HerdrExecutionOwner, title: string): string => `${workspaceTitle(title)}${labelSeparator}${resourceOwnerKey(context)}`;
 export const herdrExecutionAgentName = (context: HerdrExecutionOwner): string => `dn_${createHash("sha256").update(resourceOwnerKey(context)).digest("hex").slice(0, 24)}`;
-export const parseHerdrExecutionLabel = (label: string): HerdrExecutionOwner | null => {
+export const parseHerdrExecutionLabel = (label: unknown): HerdrExecutionOwner | null => {
+  if (typeof label !== "string") return null;
   const separator = label.lastIndexOf(labelSeparator);
   if (separator === -1) return null;
   const title = label.slice(0, separator);
-  if (title.trim().length === 0 || unsafeTitleCharacter.test(title)) throw new TypeError("The managed Herdr workspace title must be nonempty single-line display text.");
-  return parseResourceOwner(label.slice(separator + labelSeparator.length));
+  if (title.trim().length === 0 || unsafeTitleCharacter.test(title)) return null;
+  try { return parseResourceOwner(label.slice(separator + labelSeparator.length)); }
+  catch { return null; }
 };
 const matchesWorkspaceOwner = (workspace: RecordValue, owner: HerdrExecutionOwner): boolean => {
-  if (typeof workspace.label !== "string") throw new TypeError("The Herdr workspace label must be a string.");
   const actual = parseHerdrExecutionLabel(workspace.label);
   return actual !== null && sameResourceOwner(actual, owner);
 };
@@ -93,7 +96,7 @@ const processExecuting = async (processId: number): Promise<boolean> => {
   catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") return false; throw cause; }
 };
 
-export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
+export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session: string; preflight: HerdrAgentPreflight; workspaceEnvironment: HerdrWorkspaceEnvironment; acceptsOwner?: (owner: HerdrExecutionOwner) => boolean; processExecuting?: (pid: number) => Promise<boolean>; pollIntervalMs?: number }) => {
   const session = text(options.session, "Herdr session");
   const suppliedEnvironment = object(options.workspaceEnvironment, "Task workspace environment");
   const xdgFields = ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const;
@@ -141,11 +144,16 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       await wait(operation);
     }
   };
-  const snapshot = async (operation: Operation) => {
+  const rawSnapshot = async (operation: Operation): Promise<RecordValue> => {
     const result = expectedResult(await options.rpc.request("session.snapshot", {}, operation), "session_snapshot");
-    const data = object(result.snapshot, "Herdr snapshot");
-    return { workspaces: array(data.workspaces, "Herdr workspaces").map((value) => object(value, "Herdr workspace")), panes: array(data.panes, "Herdr panes").map((value) => object(value, "Herdr pane")), agents: array(data.agents, "Herdr agents").map((value) => object(value, "Herdr agent")), tabs: array(data.tabs, "Herdr tabs").map((value) => object(value, "Herdr tab")) };
+    return object(result.snapshot, "Herdr snapshot");
   };
+  const records = (value: unknown, name: string): RecordValue[] => array(value, name).flatMap((entry) => { const candidate = record(entry); return candidate === null ? [] : [candidate]; });
+  const snapshot = async (operation: Operation) => {
+    const data = await rawSnapshot(operation);
+    return { workspaces: records(data.workspaces, "Herdr workspaces"), panes: records(data.panes, "Herdr panes"), agents: records(data.agents, "Herdr agents") };
+  };
+  const acceptsOwner = (owner: HerdrExecutionOwner): boolean => options.acceptsOwner === undefined || options.acceptsOwner(owner);
   const verifyCwd = async (actual: unknown, context: { cwd: string }): Promise<void> => {
     const actualPath = text(actual, "Herdr pane cwd");
     if (!path.isAbsolute(actualPath) || path.normalize(await realpath(actualPath)) !== path.normalize(await realpath(context.cwd))) throw new Error("The Herdr pane cwd differs from the original task worktree.");
@@ -247,16 +255,21 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   };
   return {
     pendingStops: (): readonly HerdrPendingStop[] => [...stoppingProcesses.values()].map(({ context, binding }) => ({ context: { ...context }, binding: { ...binding } })),
+    hasUnmanagedWorkspaces: async (operation: Operation): Promise<boolean> => {
+      const data = await rawSnapshot(operation);
+      return array(data.workspaces, "Herdr workspaces").some((value) => {
+        const owner = parseHerdrExecutionLabel(record(value)?.label);
+        return owner === null || !acceptsOwner(owner);
+      });
+    },
     listResources: async (operation: Operation): Promise<HerdrOwnedWorkspace[]> => {
       const data = await snapshot(operation);
       const result: HerdrOwnedWorkspace[] = [];
       const identities = new Set<string>();
       const workspaceIds = new Set<string>();
       for (const workspace of data.workspaces) {
-        if (typeof workspace.label !== "string") throw new TypeError("The Herdr workspace label must be a string.");
-        const label = workspace.label;
-        const owner = parseHerdrExecutionLabel(label);
-        if (owner === null) continue;
+        const owner = parseHerdrExecutionLabel(workspace.label);
+        if (owner === null || !acceptsOwner(owner)) continue;
         const workspaceId = text(workspace.workspace_id, "Owned workspace ID");
         const identity = resourceOwnerKey(owner);
         if (identities.has(identity) || workspaceIds.has(workspaceId) || data.workspaces.filter((value) => value.workspace_id === workspaceId).length !== 1) throw new Error("Owned Herdr workspaces have duplicate identities or IDs.");
@@ -310,7 +323,11 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           await readOwned(context, binding, operation);
           return binding;
         }
-        for (const pane of data.panes) {
+        const managedWorkspaceIds = new Set(data.workspaces.flatMap((workspace) => {
+          const owner = parseHerdrExecutionLabel(workspace.label);
+          return owner !== null && acceptsOwner(owner) ? [workspace.workspace_id] : [];
+        }));
+        for (const pane of data.panes.filter((value) => managedWorkspaceIds.has(value.workspace_id))) {
           if (typeof pane.cwd === "string" && [expectedCwd, path.normalize(path.resolve(context.cwd))].includes(path.normalize(path.resolve(pane.cwd)))) throw new Error("The requested task cwd already belongs to a different Herdr workspace.");
         }
         createPossible = true;

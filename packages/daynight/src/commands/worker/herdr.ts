@@ -1,5 +1,6 @@
 import type { WorkerPaths } from "./paths.js";
 import { createHerdrAgentManager } from "./herdr/agents.js";
+import type { HerdrExecutionOwner } from "./herdr/agents.js";
 import { createHerdrInstance } from "./herdr/instance.js";
 import { createHerdrPreflight } from "./herdr/preflight.js";
 
@@ -23,6 +24,7 @@ export const createWorkerHerdr = (options: {
   homeDirectory: string;
   executable?: string;
   environment?: NodeJS.ProcessEnv;
+  acceptsOwner?: (owner: HerdrExecutionOwner) => boolean;
 }) => {
   const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
   const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
@@ -42,7 +44,7 @@ export const createWorkerHerdr = (options: {
     environment: nativeEnvironment,
     homeDirectory: options.homeDirectory,
   });
-  const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight, workspaceEnvironment });
+  const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight, workspaceEnvironment, ...(options.acceptsOwner === undefined ? {} : { acceptsOwner: options.acceptsOwner }) });
   return {
     ensureInstance: instance.ensure,
     stopInstance: instance.stop,

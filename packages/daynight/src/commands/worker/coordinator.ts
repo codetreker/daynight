@@ -21,7 +21,7 @@ export type WorkerCoordinatorOptions = {
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
 };
-type Snapshot = { herdr: HerdrOwnedWorkspace[]; owners: Map<string, ResourceOwner>; proven: Set<string> };
+type Snapshot = { owners: Map<string, ResourceOwner> };
 const key = (identity: ClaimIdentity): string => `${identity.projectId}/${identity.taskId}/${identity.claimId}`;
 const taskKey = (identity: Pick<ClaimIdentity, "projectId" | "taskId">): string => `${identity.projectId}/${identity.taskId}`;
 const remoteOwner = (task: Task): ResourceOwner => {
@@ -41,7 +41,6 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const controllers = new Map<string, { controller: AbortController; terminal: boolean }>();
   const ending = new Map<string, ResourceOwner>();
   const failures = new Map<string, number>();
-  const snapshotWarnings = new Map<string, Set<string>>();
   let nextRepository = 0;
   let nextPendingProject = 0;
   let shuttingDown = false;
@@ -68,35 +67,23 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const snapshot = async (signal?: AbortSignal, scope?: WorkerProject, currentClaims: readonly ResourceOwner[] = []): Promise<Snapshot> => {
     const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation), signal);
-    const herdr = scope === undefined ? observed : observed.filter((resource) => resource.owner.projectId === scope.projectId);
+    const herdr = observed.filter((resource) => options.store.getProject(resource.owner) !== null && (scope === undefined || resource.owner.projectId === scope.projectId));
     const owners = new Map<string, ResourceOwner>();
     const proven = new Set([...options.store.listTasks().map(key), ...currentClaims.map(key)]);
-    const currentWarnings = new Map<string, Map<string, string>>();
     const observe = (owner: ResourceOwner): void => {
-      if (options.store.getProject(owner) === null) throw new Error(`Restore the project configuration for owned resources in ${owner.projectId}.`);
       const previous = owners.get(key(owner));
       if (previous !== undefined && previous.worktreeId !== owner.worktreeId) throw new Error("The same claim has conflicting resource identities.");
       owners.set(key(owner), owner);
     };
     for (const workspace of herdr) { observe(workspace.owner); proven.add(key(workspace.owner)); }
     for (const project of scope === undefined ? options.store.listProjects() : [scope]) {
-      const warnings = new Map<string, string>();
-      currentWarnings.set(project.projectId, warnings);
-      const warn = (category: string, owner: ResourceOwner, message: string): void => {
-        warnings.set(JSON.stringify([category, owner.projectId, owner.taskId, owner.claimId, owner.worktreeId]), message);
-      };
-      const worktrees = await workerOperation((operation) => options.git.listWorktrees(project, operation), signal);
+      const worktrees = await workerOperation((operation) => options.git.listWorktrees(project, operation, (owner) => proven.has(key(owner))), signal);
       for (const worktree of worktrees) {
+        if (options.store.getProject(worktree.owner) === null || !proven.has(key(worktree.owner))) continue;
         observe(worktree.owner);
-        if (!proven.has(key(worktree.owner))) warn("unproven-ownership", worktree.owner, `Preserved unproven Git ownership for ${key(worktree.owner)}; a static marker does not identify this worker.`);
       }
     }
-    for (const [projectId, warnings] of currentWarnings) {
-      const previous = snapshotWarnings.get(projectId);
-      for (const [identity, message] of warnings) if (!previous?.has(identity)) options.emit({ kind: "warning", message });
-      snapshotWarnings.set(projectId, new Set(warnings.keys()));
-    }
-    return { herdr, owners, proven };
+    return { owners };
   };
   const ownInventory = async (signal: AbortSignal): Promise<Map<string, Task>> => {
     const tasks = await options.remote.ownInventory(options.store.listProjects(), options.workerId, signal);
@@ -194,12 +181,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     await publishSummary(latest, observed, remoteTask, signal);
   };
   const capacity = (resources: Snapshot): number => new Set([
-    ...options.store.listUnfinishedTasks().filter((task) => task.status === "active").map(key), ...[...resources.owners.keys()].filter((identity) => resources.proven.has(identity)),
-    ...ending.keys(), ...options.herdr.tasks.pendingStops().map((stop) => key(stop.context)),
+    ...options.store.listUnfinishedTasks().filter((task) => task.status === "active").map(key), ...resources.owners.keys(),
+    ...ending.keys(), ...options.herdr.tasks.pendingStops().filter((stop) => options.store.getProject(stop.context) !== null).map((stop) => key(stop.context)),
   ]).size;
   const blockedByOldClaim = (task: LocalTask, owners: Iterable<ResourceOwner>): boolean =>
     options.store.listUnfinishedTasks().some((other) => other.projectId === task.projectId && other.taskId === task.taskId && other.claimId !== task.claimId && other.status === "active")
-    || [...owners, ...ending.values(), ...options.herdr.tasks.pendingStops().map((stop) => stop.context)].some((owner) => owner.projectId === task.projectId && owner.taskId === task.taskId && owner.claimId !== task.claimId);
+    || [...owners, ...ending.values(), ...options.herdr.tasks.pendingStops().filter((stop) => options.store.getProject(stop.context) !== null).map((stop) => stop.context)].some((owner) => owner.projectId === task.projectId && owner.taskId === task.taskId && owner.claimId !== task.claimId);
   const schedule = (task: LocalTask, remoteTask: Task): void => {
     if (jobs.has(key(task)) || ending.has(key(task))) return;
     const count = failures.get(key(task)) ?? 0;
@@ -218,9 +205,9 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     await workerOperation((operation) => options.herdr.ensureInstance(operation), normalSignal);
     const observed = await workerOperation((operation) => options.herdr.tasks.listResources(operation), normalSignal);
-    const knownOwners = [...observed.map((workspace) => workspace.owner), ...options.herdr.tasks.pendingStops().map((stop) => stop.context)];
+    const knownOwners = [...observed.map((workspace) => workspace.owner), ...options.herdr.tasks.pendingStops().map((stop) => stop.context)].filter((owner) => options.store.getProject(owner) !== null);
     for (const owner of knownOwners) {
-      if (options.store.getProject(owner) === null || inventory.has(key(owner))) continue;
+      if (inventory.has(key(owner))) continue;
       ending.set(key(owner), owner);
     }
     launchCleanups();
@@ -230,7 +217,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     const resources = await snapshot(normalSignal, undefined, [...inventory.values()].map((task) => remoteOwner(task)));
     for (const [identityKey, owner] of resources.owners) {
-      if (resources.proven.has(identityKey) && !inventory.has(identityKey)) ending.set(identityKey, owner);
+      if (!inventory.has(identityKey)) ending.set(identityKey, owner);
     }
     for (const local of options.store.listUnfinishedTasks()) {
       if (inventory.has(key(local))) continue;
@@ -332,18 +319,12 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       let complete = true;
       const owners = new Map(ending);
       for (const { context } of options.herdr.tasks.pendingStops()) {
-        if (options.store.getProject(context) === null) {
-          complete = false;
-          options.emit({ kind: "shutdown-error", message: `Retained an unhandled stop operation for ${context.projectId}/${context.taskId}/${context.claimId}.` });
-        } else owners.set(key(context), context);
+        if (options.store.getProject(context) !== null) owners.set(key(context), context);
       }
       try {
         const workspaces = await workerOperation((operation) => options.herdr.tasks.listResources(operation));
         for (const workspace of workspaces) {
-          if (options.store.getProject(workspace.owner) === null) {
-            complete = false;
-            options.emit({ kind: "shutdown-error", message: `Retained unhandled Herdr resources for ${workspace.owner.projectId}/${workspace.owner.taskId}/${workspace.owner.claimId}; restore their original project configuration before stopping the private instance.` });
-          } else owners.set(key(workspace.owner), workspace.owner);
+          if (options.store.getProject(workspace.owner) !== null) owners.set(key(workspace.owner), workspace.owner);
         }
       } catch (error) {
         complete = false;
@@ -352,7 +333,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await Promise.all(options.store.listProjects().map(async (project) => {
         try {
           const resources = await snapshot(undefined, project);
-          for (const [identity, owner] of resources.owners) if (resources.proven.has(identity)) owners.set(identity, owner);
+          for (const [identity, owner] of resources.owners) owners.set(identity, owner);
         } catch (error) {
           complete = false;
           options.emit({ kind: "shutdown-error", message: `Could not observe owned resources in project ${project.projectId} during shutdown.`, error });

@@ -12,8 +12,7 @@ stable state reliably.
 
 ## Decision
 
-Execution and resource discovery decide when observations become diagnostic
-events. The [worker design](../../../../docs/design/daynight-worker.md#观测关联和错误)
+Execution decides when its observations become diagnostic events. The [worker design](../../../../docs/design/daynight-worker.md#观测关联和错误)
 owns their reporting state and lifecycle. The diagnostics writer retains its
 ordered output, credential redaction and error propagation responsibilities.
 The [foreground runtime decision](../architecture/2026-10-27-foreground-worker-runtime.md)
@@ -22,9 +21,12 @@ retains ownership of runtime composition and correlated diagnostics.
 Execution keeps one observation baseline per claim in memory. Stable polls and
 native idle/working activity stay quiet; phase, terminal, session and deferred
 input transitions remain visible. A successful start establishes the baseline
-without hiding subsequent actual starts or recoveries. Resource-preservation
-warnings are compared across successful discoveries, allowing a resolved warning
-to be reported when it recurs. Failed discoveries cannot establish resolution.
+without hiding subsequent actual starts or recoveries. This decision originally
+compared resource-preservation warnings across successful discoveries so a
+resolved warning could be reported when it recurred. The later
+[resource recognition decision](2026-10-28-worker-resource-recognition.md) removes
+those warnings: unrecognized resources are silently excluded, while actual
+managed-resource integrity failures remain errors.
 
 Actual operations and failed attempts retain their events and original errors.
 The reporting state is process-local and never supplies recovery authority.

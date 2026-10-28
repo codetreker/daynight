@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createOperation, OperationError } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import { buildHerdrAgentArguments, createHerdrAgentManager, HerdrAgentActionError, herdrExecutionAgentName, herdrExecutionLabel, parseHerdrExecutionLabel, validateHerdrAgentArguments } from "../../../src/commands/worker/herdr/agents.js";
-import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrPromptReceipt, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
+import type { HerdrAgentConfiguration, HerdrExecutionContext, HerdrExecutionOwner, HerdrPromptReceipt, HerdrTaskBinding, HerdrWorkspaceEnvironment } from "../../../src/commands/worker/herdr/agents.js";
 import { codexProjectTrustArguments } from "../../../src/commands/worker/herdr/arguments.js";
 import { HerdrRpcError } from "../../../src/commands/worker/herdr/rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "../../../src/commands/worker/herdr/rpc.js";
@@ -25,7 +25,7 @@ const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a
 const composerScreen = "  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1 Sol default · /task\n";
 const trustScreen = "  Folder access\n  /task\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
 
-const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
+const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }, acceptsOwner?: (owner: HerdrExecutionOwner) => boolean) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
   const cwd = await mkdtemp(path.join(scratch, "task-")); directories.push(cwd);
   const context: HerdrExecutionContext = { projectId, taskId, claimId, worktreeId, cwd, agent: kind };
@@ -95,7 +95,7 @@ const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment
     }
     throw new Error(`Unexpected fixture method ${method}`);
   } };
-  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
+  const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: async () => { preflights += 1; } }, workspaceEnvironment, ...(acceptsOwner === undefined ? {} : { acceptsOwner }), processExecuting: async (value) => executing.has(value), pollIntervalMs: 1 });
   return { context, manager, workspaces, panes, agents, tabs, calls, prompts, processes, executing, closeProcesses, rpc, snapshot, launch, hook: (value: typeof hook) => { hook = value; }, preflights: () => preflights };
 };
 const launch = async (f: Awaited<ReturnType<typeof fixture>>) => {
@@ -151,6 +151,75 @@ describe("native argument ownership", () => {
 
 describe("direct task resource management", () => {
   const visible = (f: Awaited<ReturnType<typeof fixture>>, binding: HerdrTaskBinding, screen: string, extra: Entry = {}): HerdrRpcResult => ({ type: "pane_read", read: { pane_id: binding.paneId, workspace_id: binding.workspaceId, tab_id: f.panes.find((pane) => pane.pane_id === binding.paneId)!.tab_id, source: "visible", format: "text", text: screen, revision: 0, truncated: false, ...extra } });
+
+  it("ignores unfamiliar labels and metadata throughout the managed workspace lifecycle", async () => {
+    const f = await fixture();
+    const owner = { projectId, taskId, claimId, worktreeId };
+    const foreign = [
+      "human workspace", null, 42,
+      ` | daynight:${JSON.stringify(owner)}`,
+      `bad\nname | daynight:${JSON.stringify(owner)}`,
+      "old | daynight:{broken",
+      `old | daynight:${JSON.stringify({ ...owner, serverOrigin: "https://example.com" })}`,
+      `old | daynight:${JSON.stringify({ ...owner, projectId: "NOT-A-UUID" })}`,
+      `old | daynight:${JSON.stringify({ ...owner, worktreeId: worktreeId.toUpperCase() })} `,
+    ].map((label, index) => ({ workspace_id: `human-${index}`, label }));
+    f.workspaces.push(...foreign);
+    f.panes.push(...foreign.map((workspace) => ({ workspace_id: workspace.workspace_id, cwd: f.context.cwd, pane_id: null, terminal_id: 3, agent_status: null })));
+    f.agents.push(...foreign.map((workspace) => ({ workspace_id: workspace.workspace_id, pane_id: null, agent_session: { agent: "human", value: null } })));
+    const binding = await launch(f);
+    expect(await f.manager.listResources(operation())).toMatchObject([{ owner, workspaceId: binding.workspaceId }]);
+    expect(await f.manager.prepareWorkspace(f.context, taskTitle, operation())).toEqual(binding);
+    await f.manager.syncWorkspaceName(f.context, binding, "Renamed", operation());
+    expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ nativeSession: { sessionId: nativeId } });
+    expect(await f.manager.hasUnmanagedWorkspaces(operation())).toBe(true);
+    await f.manager.stopAndClose(f.context, binding, operation());
+    expect(f.workspaces).toEqual(foreign);
+    expect(f.calls.filter((call) => call.method === "workspace.close").map((call) => call.params.workspace_id)).toEqual([binding.workspaceId]);
+    expect(await f.manager.listResources(operation())).toEqual([]);
+  });
+
+  it("filters unknown projects before decoding their workspace, pane or native metadata", async () => {
+    const accepted = new Set([projectId]);
+    const f = await fixture("codex", undefined, (owner) => accepted.has(owner.projectId));
+    const binding = await launch(f);
+    const foreignOwner = { ...f.context, projectId: nativeId };
+    f.workspaces.push({ workspace_id: null, label: herdrExecutionLabel(foreignOwner, "Unknown project") });
+    f.panes.push({ workspace_id: null, pane_id: "foreign", cwd: 42 });
+    f.agents.push({ workspace_id: null, pane_id: "foreign", agent_session: false });
+    expect(await f.manager.listResources(operation())).toMatchObject([{ workspaceId: binding.workspaceId }]);
+    expect(await f.manager.hasUnmanagedWorkspaces(operation())).toBe(true);
+    accepted.add(nativeId);
+    await expect(f.manager.listResources(operation())).rejects.toThrow("Owned workspace ID");
+    accepted.delete(nativeId);
+    await f.manager.stopAndClose(f.context, binding, operation());
+    expect(f.workspaces).toHaveLength(1);
+  });
+
+  it("checks unmanaged presence from labels without decoding unrelated resource metadata or mutating", async () => {
+    const f = await fixture();
+    const binding = await launch(f);
+    f.calls.splice(0);
+    expect(await f.manager.hasUnmanagedWorkspaces(operation())).toBe(false);
+    f.workspaces.push({ label: false });
+    f.hook(async (method) => method === "session.snapshot" ? { type: "session_snapshot", snapshot: { workspaces: f.workspaces, panes: null, agents: null, tabs: null } } : undefined);
+    expect(await f.manager.hasUnmanagedWorkspaces(operation())).toBe(true);
+    expect(f.calls.map((call) => call.method)).toEqual(["session.snapshot", "session.snapshot"]);
+    expect(f.workspaces[0]!.workspace_id).toBe(binding.workspaceId);
+  });
+
+  it("ignores rows without recognizable associations while preserving protocol and target errors", async () => {
+    const f = await fixture();
+    const binding = await launch(f);
+    f.hook(async (method) => method === "session.snapshot" ? { type: "session_snapshot", snapshot: { workspaces: [...f.workspaces, null], panes: [...f.panes, null, false], agents: [...f.agents, 42] } } : undefined);
+    expect(await f.manager.listResources(operation())).toMatchObject([{ workspaceId: binding.workspaceId }]);
+    expect(await f.manager.observe(f.context, binding, operation())).toMatchObject({ nativeSession: { sessionId: nativeId } });
+    expect(await f.manager.hasUnmanagedWorkspaces(operation())).toBe(true);
+    f.hook(async (method) => method === "session.snapshot" ? { type: "session_snapshot", snapshot: { workspaces: f.workspaces, panes: null, agents: f.agents } } : undefined);
+    await expect(f.manager.listResources(operation())).rejects.toThrow("Herdr panes must be an array");
+    f.hook(async (method) => method === "session.snapshot" ? { type: "session_snapshot", snapshot: { workspaces: f.workspaces, panes: [null], agents: f.agents } } : undefined);
+    await expect(f.manager.observe(f.context, binding, operation())).rejects.toThrow("original task pane is missing");
+  });
 
   it("creates one workspace with native XDG settings and rediscovers it without receipts", async () => {
     const environment = { XDG_CONFIG_HOME: "/native/config", XDG_STATE_HOME: "/native/state" };

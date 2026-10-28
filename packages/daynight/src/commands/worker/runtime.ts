@@ -111,7 +111,8 @@ export const runWorker = async (options: {
     const remote = createWorkerRemote({ serverUrl, serverToken });
     await remote.currentUserId(signal);
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
-    herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory });
+    const resourceStore = store;
+    herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, acceptsOwner: (owner) => resourceStore.getProject(owner) !== null });
     const repositories: WorkerRepositoryAssignment[] = [];
     for (const repository of configuration.repositories) {
       const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
@@ -119,7 +120,7 @@ export const runWorker = async (options: {
       if (previous !== null && (previous.repoUrl !== repository.remote || previous.localPath !== repository.path)) {
         const operation = createOperation({ signal });
         try {
-          if ((await git.listWorktrees(previous, operation)).length > 0) throw new Error("Owned worktrees prevent changing the project's original repository binding.");
+          if ((await git.listWorktrees(previous, operation, (owner) => resourceStore.getTask(owner) !== null)).length > 0) throw new Error("Owned worktrees prevent changing the project's original repository binding.");
         } finally { operation.dispose(); }
       }
       const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
@@ -163,7 +164,7 @@ export const runWorker = async (options: {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
         if (!await coordinator.shutdown()) throw new Error("Some task agents could not stop; the private Herdr instance was retained.");
         const operation = createOperation({ limits: { totalMs: 30_000 } });
-        try { await herdr.stopInstance(operation); }
+        try { if (!await herdr.tasks.hasUnmanagedWorkspaces(operation)) await herdr.stopInstance(operation); }
         finally { operation.dispose(); }
       } catch (error) { failures.push(error); }
     }
@@ -209,7 +210,8 @@ export const runWorkerControl = async (options: {
     }
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
-    const herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory });
+    const resourceStore = store;
+    const herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, acceptsOwner: (owner) => resourceStore.getProject(owner) !== null });
     const machine = machineDescription(platform);
     const coordinator = createWorkerCoordinator({
       store, git, herdr, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories,

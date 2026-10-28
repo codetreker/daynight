@@ -149,13 +149,16 @@ terminal to open its private Herdr session for human input. Each task workspace
 starts with its current task title, followed by its stable Project/task/claim/worktree
 identity. The next successful inventory updates changed titles without replacing
 the native conversation. Detaching the client leaves ongoing worker tasks running.
-Ctrl+C in `worker run` cancels and joins
-all running jobs, then directly stops agents and closes their workspaces without
+People may create independent workspaces in that session. The worker silently
+skips resources it cannot recognize as its own; those workspaces do not occupy
+worker slots or become cleanup targets. Ctrl+C in `worker run` cancels and joins
+all running jobs, then directly stops managed agents and closes their workspaces without
 sending a cleanup prompt or waiting for a cleanup turn. Claims, worktrees, native
 history and unfinished local rows remain, including for ended claims; restart
 reconciles them normally. Stop failures remain visible and retain the private
-Herdr instance when stopping is uncertain. External temporary resources may
-remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
+Herdr instance when stopping is uncertain. If independent workspaces remain,
+the daemon stays available for attachment and the next worker run reconnects to
+it. External temporary resources may remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
 
 Fresh and resumed Copilot/Codex processes use fixed full access and task-folder

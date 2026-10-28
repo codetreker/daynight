@@ -42,9 +42,10 @@ normal startup. Removing the capability also removes those dependencies.
 
 ## Consequences
 
-The CLI and runtime expose only ordinary worker operations. Current-format
-resource validation continues to report invalid ownership and bindings;
-historical labels and markers are not converted or accepted through compatibility
-branches. Removing this facility does not inspect, delete or rewrite existing
+The CLI and runtime expose only ordinary worker operations. The later
+[resource recognition decision](../bug-fix/2026-10-28-worker-resource-recognition.md)
+silently skips historical or unrecognized labels and markers during discovery.
+Recognized managed targets retain strict ownership and binding validation;
+historical metadata is not converted or accepted through compatibility branches. Removing this facility does not inspect, delete or rewrite existing
 machine state, and it does not change server database migrations or the native
 conversation recovery contract.

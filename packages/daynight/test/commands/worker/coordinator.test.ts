@@ -517,11 +517,21 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.events).toContainEqual(expect.objectContaining({ kind: "shutdown-error", task: failed, error: failure }));
   });
 
-  it("reports an unknown project resource without treating it as ended", async () => {
-    const f = await fixture(); f.candidates.splice(0);
-    f.resources.set(uuid(800), { owner: { projectId: uuid(900), taskId: uuid(901), claimId: uuid(800), worktreeId: uuid(902) }, workspaceId: "unknown", panes: [] });
-    await expect(f.coordinator.tick()).rejects.toThrow("Restore the project configuration");
-    expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+  it("silently skips unknown project resources and pending stops while starting and stopping known work", async () => {
+    const f = await fixture();
+    const owner = { projectId: uuid(900), taskId: uuid(901), claimId: uuid(800), worktreeId: uuid(902) };
+    const workspace: HerdrOwnedWorkspace = { owner, workspaceId: "unknown", panes: [] };
+    const stop = { context: { ...owner, cwd: path.join(f.root, "manual") }, binding: { session: "w", workspaceId: "unknown", paneId: "manual-pane", terminalId: "manual-terminal" } };
+    f.resources.set(owner.claimId, workspace); f.tasks.pendingStops.mockReturnValue([stop]);
+    await f.coordinator.tick();
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    expect(f.remote.claim).toHaveBeenCalledOnce(); expect(f.store.getTask(owner)).toBeNull();
+    expect(f.resources.get(owner.claimId)).toEqual(workspace);
+    await expect(f.coordinator.shutdown()).resolves.toBe(true);
+    expect(f.tasks.stopAndClose).toHaveBeenCalledOnce();
+    expect(f.tasks.stopAndClose.mock.calls[0]![0].projectId).toBe(f.project.projectId);
+    expect(f.resources.get(owner.claimId)).toEqual(workspace); expect(f.tasks.pendingStops()).toEqual([stop]);
+    expect(f.events.some((event) => event.kind === "warning" || event.kind.endsWith("error"))).toBe(false);
   });
 
   it("keeps a definitely unsent first input only in the current process", async () => {
@@ -576,73 +586,64 @@ describe("minimal worker resource reconciliation", () => {
   });
 
 
-  it("preserves a rowless Git marker without proof that this worker owns it", async () => {
-    const f = await fixture(); f.candidates.splice(0);
-    const owner = { projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
-    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
+  it("silently skips rowless Git markers when acquiring a newer claim for the same task", async () => {
+    const f = await fixture();
+    const owner = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(701), worktreeId: uuid(702) };
+    const worktree = { owner, binding: f.bind(owner) }; f.worktrees.set(owner.claimId, worktree);
+    const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
+    vi.mocked(f.git.listWorktrees).mockImplementation(async (project, operation, acceptsOwner) => {
+      expect(acceptsOwner).toBeTypeOf("function");
+      expect(acceptsOwner!(owner)).toBe(false);
+      return (await list(project, operation, acceptsOwner)).filter((candidate) => acceptsOwner!(candidate.owner));
+    });
     await f.coordinator.tick();
-    expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
-    expect(f.events.some((event) => event.message.includes("unproven Git ownership"))).toBe(true);
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    expect(f.remote.claim).toHaveBeenCalledOnce();
+    expect(f.store.listTasks()).toEqual([expect.objectContaining({ taskId: owner.taskId, status: "active" })]);
+    expect(f.store.getTask(owner)).toBeNull(); expect(f.worktrees.get(owner.claimId)).toEqual(worktree);
+    expect(f.events.some((event) => event.kind === "warning" || event.kind.endsWith("error"))).toBe(false);
     await expect(f.coordinator.shutdown()).resolves.toBe(true);
-    expect(f.worktrees.has(owner.claimId)).toBe(true);
+    expect(f.worktrees.get(owner.claimId)).toEqual(worktree); expect(f.git.removeWorktree).not.toHaveBeenCalled();
   });
 
-  it("reports stable unproven ownership warnings once and reports their recurrence", async () => {
+  it("ignores repeated and changed unproven markers without storing or reporting them", async () => {
     const f = await fixture(); f.candidates.splice(0);
     const owners = [700, 710].map((id) => ({ projectId: f.project.projectId, taskId: uuid(id), claimId: uuid(id + 1), worktreeId: uuid(id + 2) }));
     for (const owner of owners) f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
-    await f.coordinator.tick(); await f.coordinator.tick(); await f.coordinator.tick();
-    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
-
+    await f.coordinator.tick(); await f.coordinator.tick();
     const changed = { ...owners[0]!, worktreeId: uuid(720) };
     f.worktrees.set(changed.claimId, { owner: changed, binding: f.bind(changed) });
-    await f.coordinator.tick(); await f.coordinator.tick();
-    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(3);
-
-    const retained = [...f.worktrees]; f.worktrees.clear();
     await f.coordinator.tick();
+    const retained = [...f.worktrees]; f.worktrees.clear(); await f.coordinator.tick();
     for (const [claimId, worktree] of retained) f.worktrees.set(claimId, worktree);
-    await f.coordinator.tick(); await f.coordinator.tick();
-    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(5);
-    expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
+    await f.coordinator.tick();
+    await expect(f.coordinator.shutdown()).resolves.toBe(true);
+    expect(f.store.listTasks()).toEqual([]); expect(f.events).toEqual([]);
+    expect(f.worktrees.size).toBe(2); expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
   });
 
-  it("retains warning history when a later project makes the snapshot incomplete", async () => {
+  it("exposes a real Git observation failure beside ignored unproven markers", async () => {
     const f = await fixture(); f.candidates.splice(0);
-    const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
-    f.store.registerProject(other);
+    const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") }; f.store.registerProject(other);
     const owner = { projectId: f.project.projectId, taskId: uuid(700), claimId: uuid(701), worktreeId: uuid(702) };
-    const worktree = { owner, binding: f.bind(owner) };
-    f.worktrees.set(owner.claimId, worktree);
-    await f.coordinator.tick();
-    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(1);
-
-    f.worktrees.clear();
+    f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
     const list = vi.mocked(f.git.listWorktrees).getMockImplementation()!;
     vi.mocked(f.git.listWorktrees).mockImplementation(async (project, operation) => {
       if (project.projectId === other.projectId) throw new Error("other repository unreadable");
       return list(project, operation);
     });
     await expect(f.coordinator.tick()).rejects.toThrow("other repository unreadable");
-    vi.mocked(f.git.listWorktrees).mockImplementation(list);
-    f.worktrees.set(owner.claimId, worktree);
-    await f.coordinator.tick();
-    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(1);
+    expect(f.store.listTasks()).toEqual([]); expect(f.events).toEqual([]);
+    expect(f.worktrees.has(owner.claimId)).toBe(true); expect(f.git.removeWorktree).not.toHaveBeenCalled();
   });
 
-  it("keeps independent warning histories during project-scoped shutdown observations", async () => {
-    const f = await fixture(); f.candidates.splice(0);
-    const other = { projectId: uuid(800), repoUrl: "https://example.test/other.git", localPath: path.join(f.root, "other") };
-    f.store.registerProject(other);
-    for (const [index, project] of [f.project, other].entries()) {
-      const owner = { projectId: project.projectId, taskId: uuid(700 + index * 10), claimId: uuid(701 + index * 10), worktreeId: uuid(702 + index * 10) };
-      f.worktrees.set(owner.claimId, { owner, binding: f.bind(owner) });
-    }
-    await f.coordinator.tick();
-    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
-    await expect(f.coordinator.shutdown()).resolves.toBe(true);
-    expect(f.events.filter((event) => event.kind === "warning")).toHaveLength(2);
-    expect(f.worktrees.size).toBe(2); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  it("still rejects conflicting worktree identities for a recognized managed claim", async () => {
+    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const worktree = f.worktrees.get(row.claimId)!;
+    f.worktrees.set(row.claimId, { ...worktree, owner: { ...worktree.owner, worktreeId: uuid(730) } });
+    await expect(f.coordinator.tick()).rejects.toThrow("The same claim has conflicting resource identities");
+    expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.tasks.stopAndClose).not.toHaveBeenCalled();
   });
 
   it("scopes one source cleanup away from an unrelated Git observation failure", async () => {
@@ -697,16 +698,16 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.git.removeWorktree).toHaveBeenCalledOnce();
   });
 
-  it("does not authorize private-instance shutdown with unmapped project resources", async () => {
+  it("finishes managed shutdown silently beside unmapped project resources", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!;
     const unhandled = { projectId: uuid(900), taskId: uuid(901), claimId: uuid(902), worktreeId: uuid(903) };
     f.resources.set(unhandled.claimId, { owner: unhandled, workspaceId: "unhandled", panes: [] });
-    await expect(f.coordinator.shutdown()).resolves.toBe(false);
+    await expect(f.coordinator.shutdown()).resolves.toBe(true);
     expect(f.resources.has(unhandled.claimId)).toBe(true);
     expect(f.resources.has(row.claimId)).toBe(false);
     expect(f.worktrees.has(row.claimId)).toBe(true);
-    expect(f.events.some((event) => event.kind === "shutdown-error" && event.message.includes("unhandled Herdr resources"))).toBe(true);
+    expect(f.events.some((event) => event.kind === "shutdown-error")).toBe(false);
   });
 
 

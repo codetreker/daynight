@@ -1054,8 +1054,14 @@ saved Projects. Still-owned local active tasks are queued for fresh target
 observation and recovery before global Git discovery, so a sibling checkout's
 filesystem error does not block an already-reserved task. New pending startup
 and new claims still require complete global resource discovery. Failed or
-partial reads are errors, not an empty inventory. Resources from unqueried or
-unmapped Projects are preserved with a diagnostic.
+partial reads are errors, not an empty inventory. Discovery silently excludes
+labels and Git markers it cannot recognize in the saved Project and repository
+scope, including malformed or historical metadata and unrelated registrations.
+Unregistered directories are not adopted by their location. These resources are
+left unchanged and do not consume worker capacity or block healthy tasks. Once a
+resource is recognized as managed, its actual directory, branch, registration,
+fingerprints and pane bindings remain subject to strict validation. Repository,
+filesystem, RPC and protocol failures remain visible.
 
 Capacity is the claim-deduplicated union of active rows, actual owned resources,
 already selected cleanup responsibilities and adapter stop confirmations still
@@ -1063,7 +1069,8 @@ pending. An orphan keeps its slot and same-task barrier until all cleanup has
 finished, even without a local row or after its pane has closed. Git
 markers identify a claim rather than a worker. A Git-only resource must be tied
 to a local row, the private Herdr instance or a current own claim before this
-worker can clean it; otherwise it is reported and preserved.
+worker can manage it; otherwise it is silently excluded from scheduling and
+cleanup and preserved.
 
 An unknown claim response emits Warning and creates no resources. The worker
 finds the actual grant in a later complete inventory instead of replaying the
@@ -1165,8 +1172,9 @@ resource rule. Failed stop or deletion retains responsibility and the error.
 
 Known-target cleanup and shutdown observe that Herdr execution directly;
 worktree deletion validates only its target Git registration and directory.
-Unrelated repository or sibling-worktree registration errors are reported
-separately and do not prevent a healthy agent from stopping.
+Unrecognized sibling registrations are skipped without diagnostics. Genuine
+repository failures and integrity failures in recognized managed resources stay
+visible and do not prevent an independently observable healthy agent from stopping.
 
 After the cleanup message is successfully submitted, a subsequent patrol that
 observes idle completes the cleanup turn and proceeds to stop the agent and
@@ -1193,8 +1201,13 @@ next run uses normal inventory reconciliation to re-enter terminal cleanup for
 ended claims. External temporary resources may remain after direct interruption.
 Normal completion, release, withdrawal and manual-control cleanup retain their
 notification and removal sequence. Pending stop confirmations must settle before the private
-Herdr instance stops; stop errors remain visible, and uncertain stopping retains
-that instance and the affected resources. Before closing a verified orphan
+Herdr instance can stop; stop errors remain visible, and uncertain stopping retains
+that instance and the affected resources. Independent human workspaces in the
+private session survive task cleanup and worker exit. If any unmanaged workspace
+remains after managed stopping, the daemon stays running without a shutdown error;
+attachment remains available and the next run reconnects. A recognized managed
+workspace is a whole container: its expected single task pane and binding must
+validate before any operation, and an extra pane is a visible integrity error. Before closing a verified orphan
 workspace with no local task row, cleanup and exit save its observed native
 agent and any live session ID in the existing pending claim index. Restart can
 then remove its retained worktree and unblock a later claim for the same task.
@@ -1211,9 +1224,8 @@ the log location and attach guidance. Routine observations report the first
 connection and changes to a claim’s waiting or executing phase, terminal or native
 session. Unchanged polls stay quiet, including
 the first poll after a successful start. Claims are tracked independently.
-Resource-preservation warnings appear once while continuously observed and
-appear again if they clear and return. Actual starts, recoveries, cleanup, manual
-operations and failed attempts remain visible. This reporting state lasts for
+Unrecognized resources produce no warning or error. Actual starts, recoveries,
+cleanup, manual operations and failed attempts remain visible. This reporting state lasts for
 the current process. Logs are diagnostic only; they do not supply a second
 recovery ledger. The
 [worker requirements](../../docs/spec/daynight-worker.md) and

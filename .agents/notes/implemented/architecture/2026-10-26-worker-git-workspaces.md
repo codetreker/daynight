@@ -48,8 +48,11 @@ leaf must retain its exact regular `.git` pointer to the validated administrativ
 registration, including during terminal cleanup. Inspection also checks the
 marker and administrative backpointer; a foreign marker, symlink, ambiguous
 registration or missing/mismatched pointer blocks destructive operations.
-Matching Git creation can be discovered directly from static registration; an
-unmarked pre-add reservation remains a visible conflict.
+Matching Git creation can be discovered directly from static registration. The
+[resource recognition decision](../bug-fix/2026-10-28-worker-resource-recognition.md)
+limits discovery to positively recognized current-Project registrations; unrelated
+metadata and unregistered directories are silently skipped. A known target with
+an unmarked pre-add reservation remains a visible conflict.
 
 Branch validation invokes Git's `symbolic-ref --quiet HEAD` with the validated
 linked administrative directory explicitly selected by `--git-dir`. Git owns the
@@ -126,7 +129,8 @@ validated administration, including after the leaf is gone.
 ## Consequences
 
 The manager preserves primary files, unrelated branches and dirty task results
-on ordinary recovery. A missing original or unmarked interrupted reservation
+on ordinary recovery. Discovery leaves unrecognized entries untouched and silent.
+A known target with a missing original or unmarked interrupted reservation
 requires visible intervention; automatically adopting it would erase the proof
 boundary. The final pointer-unlink window intentionally requires operator
 inspection when a leaf remains; missing `.git` cannot be treated as ordinary

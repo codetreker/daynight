@@ -106,7 +106,7 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 → 可取消的轮询等待
 ```
 
-自有清单只使用 workerId 归属条件，不混入 ready、allowAgents 或候选平台筛选。分页、认证或项目读取失败不产生可用于缺席清理的集合。完整性只对成功查询的项目成立；Herdr 中未映射的项目资源报告错误并保留，恢复项目配置后再纳入对账。Herdr/Git 读取失败保持错误，不解释为空资源。
+自有清单只使用 workerId 归属条件，不混入 ready、allowAgents 或候选平台筛选。分页、认证或项目读取失败不产生可用于缺席清理的集合。完整性只对成功查询的项目成立。Herdr 先识别当前四项身份，再检查 projectId 是否有本机项目映射；不识别的标签和未映射项目在解码 pane 之前静默排除。Herdr/Git 读取失败保持错误，不解释为空资源。
 
 每个 task 的操作在进程内串行，不同任务的有界 RPC、恢复和清理可并行。容量按 claim 去重计算 active 行、实际归属资源、已确认的 ending 收尾责任和适配器尚待确认的停止责任的并集。即使某个孤立执行没有本机行，关闭 pane 后尚未完成 Git 删除或进程停止确认，其名额和同 task 启动屏障仍保留至清理完成。降低 maxConcurrent 不抢占已有任务。已有 pending 优先，项目内按稳定 task_id 顺序选择；新候选保持服务端 ready 顺序。Pending 启动和新领取均以一次成功的名额分配为轮转单位，每分配一个名额就从下一个项目继续选择；一个项目持续有候选时也不会一次占满所有空闲名额。
 
@@ -126,7 +126,9 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 
 清理先确认进程停止和 workspace 关闭，再删除已核对的 worktree 内容，保留 .git 指针至内容删除完成，最后移除目录与 Git 注册。中断后只根据仍存在的实际资源继续；仍存在但缺指针的路径保留并报告。分支和提交历史保留。
 
-资源发现检查未结束行、done 行和遗留资源。Git 标记只含 project/task/claim/worktree 身份及物理校验信息，不含 workerId；必须关联本机行、专用 Herdr 或当前自有 claim，才能认定由本 worker 管理。仅有 Git 标记、无法证明属于本 worker 的资源报告并保留，不因自有清单缺席就删除，也不猜测 agent 构造任务行。已知项目仓库和专用 Herdr 是扫描范围，不进行全磁盘发现。
+资源发现检查未结束行、done 行和遗留资源。Git 标记只含 project/task/claim/worktree 身份及物理校验信息，不含 workerId；必须关联本机行、专用 Herdr 或当前自有 claim，才能认定由本 worker 管理。仅有 Git 标记、无法证明属于本 worker 的资源静默排除，不进入归属、容量或清理清单，不因自有清单缺席就删除，也不猜测 agent 构造任务行。已知项目仓库和专用 Herdr 是扫描范围，不进行全磁盘发现。
+
+发现使用正向识别：Git 只枚举行政注册，只有当前格式身份、项目、仓库指纹及固定物理反向指针均属于本次范围时才进一步核验。缺失、非普通文件或符号链接形式的候选元数据不建立归属；未知格式、外来注册及未注册目录保持原样且不产生日志。已经识别的受管资源仍严格检查实际叶目录、分支、指针、指纹和重复注册；已知目标的准备、复用和删除继续拒绝冲突路径。真正的仓库、文件系统及协议读取故障继续向上传递，不以异常兜底生成空资源。归属识别与完整性校验的区别见[资源识别决策](../../.agents/notes/implemented/bug-fix/2026-10-28-worker-resource-recognition.md)。
 
 ## Workspace 名称与身份
 
@@ -138,11 +140,11 @@ Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进
 
 只有 rename RPC 或回执故障属于 `workspace-name-error`，保留原 cause，留待后续重新观察且不计入执行恢复预算。binding/身份冲突及取消仍是生命周期错误。title 不进入 prompt 或 agent 输入，因此不能改变任务指令。
 
-运行资源使用当前四项身份格式，启动和人工管理直接执行正常的配置、实例锁、资源观察与执行流程，不读取迁移清单或转换历史 label、Git marker。格式不符继续由当前资源校验暴露，所有权和物理绑定检查保持原职责。删除格式转换、备份、回滚及启动阻塞机制的决定见[迁移机制移除决策](../../.agents/notes/implemented/simplification/2026-10-28-remove-worker-workspace-migration.md)。
+运行资源使用当前四项身份格式，启动和人工管理直接执行正常的配置、实例锁、资源观察与执行流程，不读取迁移清单或转换历史 label、Git marker。发现时不识别的格式静默跳过；已识别目标的所有权和物理绑定检查保持原职责。删除格式转换、备份、回滚及启动阻塞机制的决定见[迁移机制移除决策](../../.agents/notes/implemented/simplification/2026-10-28-remove-worker-workspace-migration.md)。
 
 ## Herdr 与原生会话
 
-专用 Herdr 保持 `resume_agents_on_restore=false`，由 worker 唯一决定 agent 启动或恢复。复用私有端点、XDG 隔离、原 native 认证环境、shell history 与 attach；原 task pane 环境不会因客户端连接被改写。
+专用 Herdr 保持 `resume_agents_on_restore=false`，由 worker 唯一决定受管 agent 启动或恢复。复用私有端点、XDG 隔离、原 native 认证环境、shell history 与 attach；原 task pane 环境不会因客户端连接被改写。人工可在该私有会话创建独立 workspace。标签识别只接受经过转义的 title 和当前 canonical owner，非字符串、缺分隔符、畸形 JSON、非 canonical 身份及未映射项目均静默排除，不读取其中的 pane 或 native metadata。受管 workspace 仍是完整容器，要求唯一预期 task pane 和准确 binding；额外 pane 或重复 owner 是完整性错误，不能过滤部分 pane 后关闭整个 workspace。
 
 Fresh/resume 原生启动前，runtime preflight 通过同一私有 daemon 的 `integration.list` 获取所选 agent 的唯一有效记录。`current` 不产生安装写入；只有明确的 `not_installed` 或 `outdated` 才调用官方 `integration.install`，参数仅为 `{target: agent}`，随后重新读取并要求状态为 `current`。缺行、重复行、畸形数据或未知状态明确失败，不据此推断可以安装。官方安装器拥有 provider home 中 integration 配置与 hook asset 的更新；worker 不自行实现另一套配置写入器。
 
@@ -201,13 +203,13 @@ Codex 保留 `--no-daemon [resume <session_id>]` 前缀，在配置参数后追�
 
 清理消息成功递交后，后续巡查观察到 agent 为 idle 即确认该清理轮完成，开始实际停止进程和关闭 workspace。这个判断不依赖 stateChangeSeq/completionSeq 或 interactiveReady；通知前的观察和 submitPrompt 回执本身不完成清理。通知失败或结果未知时保留错误，继续等待本次既定期限，不自动重发。期限届满仍按既有停止确认流程收尾。这个终止清理阶段的 idle 不表示业务验收完成，worker 仍不提交业务 done。
 
-每个清理 job 的期限与进度只存在内存中，同进程轮询不重置期限。重启后按清单和剩余资源重新进入清理并重新计时，通知可以重复；已不存在的资源可完成对应步骤，失败保留责任。当前进程已确认归属结束的 job 可以在后续服务轮询失败时继续。不同任务分别有界，一个 RPC 不延误其他清理。已知目标的收尾与退出先观察对应的 Herdr 执行并推进停止；删除时只核对该目标的 Git 注册和目录。同项目其他 worktree 或其他仓库的注册问题分别报告，不阻塞可正常观察的 agent 停止或退出。
+每个清理 job 的期限与进度只存在内存中，同进程轮询不重置期限。重启后按清单和剩余资源重新进入清理并重新计时，通知可以重复；已不存在的资源可完成对应步骤，失败保留责任。当前进程已确认归属结束的 job 可以在后续服务轮询失败时继续。不同任务分别有界，一个 RPC 不延误其他清理。已知目标的收尾与退出先观察对应的 Herdr 执行并推进停止；删除时只核对该目标的 Git 注册和目录。无法识别的兄弟注册静默跳过；其他仓库或已识别受管资源的真实错误保持可见，不阻塞可独立观察的健康 agent 停止。
 
 Ctrl+C 停止新认领和调度，取消全部运行中的 job，包括已选中的终止清理 job，并等待它们全部收尾，避免清理操作与退出停止并发执行。随后直接中断并停止受管 agent、关闭 workspace，不进入清理驱动、不发送清理 prompt，也不等待 agent 的清理轮。退出只停止运行资源，保留 claim、worktree、原生 session ID 和所有未完成 active/pending 行；归属已经结束的任务也遵守这一规则，不在退出路径删除 worktree 或写 done。下次启动由正常完整清单及资源对账重新进入已结束归属的终止清理。直接中断可能留下工作区外临时资源，这是退出无需等待 agent 清理的明确代价。
 
-关闭 workspace 会移除私有 Herdr 标签，标签可能是缺失本机行的遗留执行最后一份 worker 归属证明。普通清理与退出都先在 task 串行操作内重新观察资源；若已验证归属的 claim 缺少本机行，则以观察到的原 agent 类型登记 pending，仅在 agent 存活时保存观察到的原生会话 ID，随后才允许关闭 workspace。Pending 不占用同 task 唯一 active 行；重启通过该行与 Git 标记继续终止清理，清理完成后再允许后继 claim 启动。类型无法确认时保留 workspace 并报告错误，不从当前配置推断历史类型；未知归属的 Git-only 资源仍只报告并保留。
+关闭 workspace 会移除私有 Herdr 标签，标签可能是缺失本机行的遗留执行最后一份 worker 归属证明。普通清理与退出都先在 task 串行操作内重新观察资源；若已验证归属的 claim 缺少本机行，则以观察到的原 agent 类型登记 pending，仅在 agent 存活时保存观察到的原生会话 ID，随后才允许关闭 workspace。Pending 不占用同 task 唯一 active 行；重启通过该行与 Git 标记继续终止清理，清理完成后再允许后继 claim 启动。类型无法确认时保留 workspace 并报告错误，不从当前配置推断历史类型；未知归属的 Git-only 资源仍静默排除并保留。
 
-退出还须结算适配层待确认的停止操作，再停止私有 Herdr。停止失败保留原错误与实际资源；无法确认停止时保留私有 daemon，不能以停止 daemon 掩盖未确认的 agent 停止。正常完成、release、强制撤回与人工管理仍使用原有通知及清理时序。此边界的理由见[直接退出决策](../../.agents/notes/implemented/bug-fix/2026-10-28-worker-direct-shutdown.md)。
+退出还须结算适配层待确认的停止操作，再读取实际 workspace 标签检查是否仍有未受管 workspace。没有未受管 workspace 才停止私有 Herdr；独立人工或不识别的 workspace 存在时正常保留 daemon 及其进程，不产生退出错误。Daemon 以独立进程和文件日志运行，可以在 runner 退出后继续提供 attach，下次 run 通过既有端点重连。停止失败保留原错误与实际资源；无法确认停止时保留私有 daemon，不能以停止 daemon 掩盖未确认的 agent 停止。正常完成、release、强制撤回与人工管理仍使用原有通知及清理时序。此边界的理由见[直接退出决策](../../.agents/notes/implemented/bug-fix/2026-10-28-worker-direct-shutdown.md)。
 
 ## Agent 完成与人工操作
 
@@ -233,7 +235,7 @@ Web 的“强制撤回”是独立的 owner/admin 操作，针对当前 active �
 
 诊断模块先对凭据脱敏，再统一渲染终端日志：上下文、消息及错误链中的完整连字符 GUID 仅显示首段 8 位十六进制字符，保留原大小写，非 GUID 文本原样保留。缩写只作用于终端输出，JSONL 的字段、消息和错误仍保留完整 ID，供精确检索。事件生产者、API、prompt 与持久化继续使用完整 ID。该 GUID 展示规则由[日志 GUID 缩写决策](../../.agents/notes/implemented/bug-fix/2026-10-28-worker-log-guids.md)拥有。
 
-执行驱动按 projectId/taskId/claimId 在内存保留最近一次报告的观察：等待/执行阶段、Herdr session/workspace/pane/terminal、agent、已知原生 sessionId 和延后首次输入状态。首次连接及这些信息变化时才报告，忽略 idle/working 切换和序列计数变化。实际启动始终报告并建立同一观察基线，避免下一轮重复提示重连；忘记原 claim 时一并清除基线。资源发现按完整成功观察比较保留警告，稳定警告只报告一次，确认消失后再出现则重新报告；失败或不完整观察不能确认警告消失。真实操作与失败尝试继续报告。去重在事件来源完成，stderr 与 JSONL 共用结果；状态只存在当前进程，日志不参与恢复。选择依据见[日志决策](../../.agents/notes/implemented/bug-fix/2026-10-27-worker-log-transitions.md)。
+执行驱动按 projectId/taskId/claimId 在内存保留最近一次报告的观察：等待/执行阶段、Herdr session/workspace/pane/terminal、agent、已知原生 sessionId 和延后首次输入状态。首次连接及这些信息变化时才报告，忽略 idle/working 切换和序列计数变化。实际启动始终报告并建立同一观察基线，避免下一轮重复提示重连；忘记原 claim 时一并清除基线。不识别的资源不产生警告或错误。真实操作与失败尝试继续报告。去重在事件来源完成，stderr 与 JSONL 共用结果；状态只存在当前进程，日志不参与恢复。选择依据见[日志决策](../../.agents/notes/implemented/bug-fix/2026-10-27-worker-log-transitions.md)。
 
 运行时在完整清单和私有实例就绪后提示 worker attach。该命令只连接既有私有 Herdr，不读取业务凭据或 SQLite、不持 worker 锁；detach 保留正在执行的任务。Workspace 命名失败使用 `workspace-name-error`，沿用 task/claim 和原 error cause，具体消息包含 rename 阶段、workspaceId 与 worktreeId。按具体 claim 核对日志：
 
@@ -245,6 +247,6 @@ jq 'select(.taskId == "<task-id>" and .claimId == "<claim-id>")' <worker-log.jso
 
 真实 SQLite 验证精确列数、枚举、nullable ID、历史行及唯一 active。Git 测试验证 dirty state、静态归属、遗留发现、重开与安全删除。受控 HTTP/Herdr 验证空库项目初始化、未知 claim 结果、重连、指定 ID resume、NULL 新建、idle/done 巡查 ping、未改变观察及未知输入去重、容量、清理通知后 idle 推进、清理期限和人工锁互斥。退出验证覆盖全部 job 的取消与等待收尾、终止清理中途退出、直接停止不递交清理消息、不删除 worktree 或把未完成行写 done、已结束归属重启后重新清理，以及停止错误和不确定停止时的私有实例保留。原生启动策略验证两个 provider 的 fresh/resume 完整 argv、Copilot 环境覆盖、Codex 路径编码与 Windows trust key 归一化、冲突参数拒绝及只读能力探测；真实原生会话恢复与三平台完整 Goal 验收仍需各自来源明确的运行证据。
 
-命名验证覆盖创建与活 workspace 改名、同名/长标题/中文/emoji/分隔符/终端控制字符、无变化不请求 rename、未知回执再观察、执行超限仍同步、改名与 claim 结束竞争及冷恢复；四项身份和原 native session 不得因展示变化而改变。迁移验证覆盖各阶段故障/中断、启动阻塞、持久读回、原子 marker、恢复快照、全组回滚与重入，不用成功退出码替代持久状态观察。
+命名验证覆盖创建与活 workspace 改名、同名/长标题/中文/emoji/分隔符/终端控制字符、无变化不请求 rename、未知回执再观察、执行超限仍同步、改名与 claim 结束竞争及冷恢复；四项身份和原 native session 不得因展示变化而改变。资源识别验证将健康受管资源与畸形、历史、外来或人工资源放在同一次观察中，确认后者无诊断、不占名额、不被改写，且健康任务可继续。已识别目标的目录、分支、指纹、指针、binding、重复资源及额外 pane 仍须明确失败。真实 Herdr 验证人工 workspace 和 shell 进程在受管任务清理及 runner 退出后存活，保留的 daemon 可由下一次 runner 重连。
 
 当前模型明确将清理原截止、恢复累计次数、原 model/args 和中断管理意图的跨重启保证收回到进程内。既有详细状态模型的原始理由与替代方案保存在[简化决策](../../.agents/notes/implemented/simplification/2026-10-27-worker-claim-records.md)及其前驱记录中。

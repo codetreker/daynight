@@ -15,9 +15,11 @@ without losing the state needed for the next reconciliation.
 Worker exit stops acquisition and scheduling, cancels every running job including
 terminal cleanup, and joins them before directly interrupting and stopping agents
 and closing workspaces. It sends no cleanup prompt and waits for no cleanup turn.
-Pending adapter stop confirmations settle before the private Herdr daemon stops.
-Stop failures remain visible; uncertain stopping retains the daemon and affected
-resources.
+Pending adapter stop confirmations settle before the private Herdr daemon can
+stop. The [resource recognition decision](2026-10-28-worker-resource-recognition.md)
+retains the daemon normally when independent or unrecognized workspaces remain,
+preserving their processes for attachment and the next runner. Stop failures
+remain visible; uncertain stopping retains the daemon and affected resources.
 
 Exit preserves claims, worktrees, native session IDs and unfinished local rows,
 even when ownership has already ended. The next run uses normal complete-inventory
@@ -70,3 +72,5 @@ are not reversed. Restart can issue another normal terminal-cleanup notification
 to any surviving agent; it does not reconstruct the interrupted job's deadline
 or create an agent solely for cleanup. Stop confirmation remains necessary, so
 uncertain stopping can leave the private daemon running with a visible error.
+Independent human workspaces can also keep it running after successful managed
+shutdown; that retention is a normal result and produces no shutdown error.

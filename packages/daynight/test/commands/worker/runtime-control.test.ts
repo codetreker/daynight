@@ -56,6 +56,9 @@ describe("worker synchronous management runtime ownership", () => {
     let held = false;
     mocks.submit.mockImplementationOnce(async ({ store, coordinator }: { store: WorkerStore; coordinator: unknown }) => {
       expect(coordinator).toBe(mocks.coordinator.mock.results[0]!.value);
+      const acceptsOwner = mocks.herdr.mock.calls[0]![0].acceptsOwner;
+      expect(acceptsOwner(f.task)).toBe(true);
+      expect(acceptsOwner({ projectId: uuid(100) })).toBe(false);
       let competing: Awaited<ReturnType<typeof acquireWorkerInstanceLock>> | undefined;
       try { competing = await acquireWorkerInstanceLock(f.paths); }
       catch { held = true; }

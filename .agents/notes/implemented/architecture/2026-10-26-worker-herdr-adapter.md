@@ -30,7 +30,10 @@ and identity decision](2026-10-28-worker-workspace-names.md) uses task titles as
 mutable display prefixes and four stable UUIDs as owner identity, replacing the
 original origin/project/task/claim/worktree label and whole-label name hash.
 Native environment reconnection stays read-only; a separate serialized naming
-operation may update the display prefix. The original receipts,
+operation may update the display prefix. The [resource recognition decision](../bug-fix/2026-10-28-worker-resource-recognition.md)
+silently excludes unrecognized labels and unmapped Projects before pane decoding,
+retains strict whole-container validation for recognized managed workspaces, and
+keeps the private daemon alive when independent workspaces remain at runner exit. The original receipts,
 history prerequisites, persisted PID provenance and native-consent handling below
 explain the earlier recovery design; they are historical rationale rather than
 current storage or permission requirements.
