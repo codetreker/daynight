@@ -89,7 +89,7 @@ completion operation: a real completion requires the current owner, active
 claim, in-progress task, and exact version, and retains worker history with
 `state=completed`. Omit `--claim-id` for ordinary status setting; refusal never
 causes fallback between these operations. Read the
-[managed execution reference](execute-task-in-managed.md) only when the worker
+[managed autopilot reference](autopilot-managed-task.md) only when the worker
 startup prompt explicitly selects that mode; ordinary status operations do not
 load its execution rules.
 

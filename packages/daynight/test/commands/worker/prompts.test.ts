@@ -27,11 +27,11 @@ describe("worker managed prompts", () => {
   it("passes the explicit managed entry and current assignment", async () => {
     const { task, build, packageDirectory } = await fixture(); const prompt = build(task, "linux");
     expect(prompt).toContain("environment is worker-managed");
-    expect(prompt).toContain("using-daynight skill in execute-task-in-managed mode");
+    expect(prompt).toContain("using-daynight skill in autopilot-managed-task mode");
     expect(prompt).toContain("This is a background task. Do not ask the user any questions.");
     expect(prompt).toContain("Make decisions autonomously within this assignment and its existing authorization.");
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
-    expect(prompt).toContain(JSON.stringify(path.join(packageDirectory, "dist/commands/skill/skills/using-daynight/references/execute-task-in-managed.md")));
+    expect(prompt).toContain(JSON.stringify(path.join(packageDirectory, "dist/commands/skill/skills/using-daynight/references/autopilot-managed-task.md")));
     expect(JSON.parse(prompt.split("Assignment:\n\n")[1]!)).toEqual({ serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, worktreePath: task.worktree.worktreePath, branch: task.worktree.branch, platform: "linux", nativeSessionId: null, configuration: task.configuration });
   });
   it("identifies a known native conversation when resuming", async () => {
@@ -49,8 +49,8 @@ describe("worker managed prompts", () => {
   });
   it("requires the installed managed reference", async () => {
     const { packageDirectory } = await fixture();
-    await rm(path.join(packageDirectory, "dist/commands/skill/skills/using-daynight/references/execute-task-in-managed.md"));
-    await expect(createWorkerPromptBuilder(packageDirectory)).rejects.toThrow("missing references/execute-task-in-managed.md");
+    await rm(path.join(packageDirectory, "dist/commands/skill/skills/using-daynight/references/autopilot-managed-task.md"));
+    await expect(createWorkerPromptBuilder(packageDirectory)).rejects.toThrow("missing references/autopilot-managed-task.md");
   });
   it("uses the current cleanup attempt deadline", async () => {
     const { task } = await fixture(); const deadline = 601_000; const prompt = workerCleanupPrompt(task, deadline);

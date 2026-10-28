@@ -12,8 +12,11 @@ lifecycles in the ordinary execution instructions makes every caller load
 exceptions that belong to the worker environment.
 
 The public skill also selected successive tasks through its autopilot mode.
-That responsibility overlaps the worker's scheduling boundary and prevents a
-single-task executor from having an unambiguous return point.
+That responsibility overlapped the worker's scheduling boundary and prevented a
+single-task executor from having an unambiguous return point. Within one assigned
+task, however, autonomous delivery still needs an explicit implementation,
+publication, review, repair, and authorized merge loop. Treating every unmerged
+PR as an external wait can end execution while routine CI or review is pending.
 
 ## Decision
 
@@ -21,9 +24,13 @@ The public `using-daynight` skill keeps one entrypoint and loads only the
 reference selected for the current invocation. Ordinary specified tasks use
 `references/run-task.md`. Only a worker startup prompt that explicitly names the
 `worker-managed` environment, `using-daynight` skill, and
-`execute-task-in-managed` mode selects
-`references/execute-task-in-managed.md`. Task worker properties, working
-directories, and environment variables do not establish that mode.
+`autopilot-managed-task` mode selects
+`references/autopilot-managed-task.md`. Task worker properties, working
+directories, and environment variables do not establish that mode. The managed
+mode follows the delivery flow of the separately installed `autopilot` skill
+without requiring that skill at runtime or activating its session mode. Existing
+user and repository authorization remains the source of execution, external
+communication, merge, and mainline push permission.
 
 Each execution reference owns its lifecycle. Ordinary execution handles its
 version-bound start, recovery, and completion. Managed execution validates the
@@ -40,17 +47,41 @@ The existing task-content standard and Final acceptance rules retain their
 respective ownership. Managed execution does not enter ordinary execution and
 skip selected steps.
 
-The autopilot mode and its automatic candidate-selection and continuous
-successor loop are removed. Ordinary execution returns after one specified
-task or an external wait. A user-directed Goal requirements-to-solution
+Managed autopilot drives the assigned task through implementation, relevant
+verification, focused publication, CI diagnosis, and review repair. It checks
+introduced Critical/Major findings against the original scope, records deferred
+improvements under the project's tracking rules, and handles each review thread.
+An authorized merge requires successful required checks, handled blocking
+threads, and actual approval for the current PR head. Platform-confirmed merge
+and its resulting commit establish delivery; an auto-merge request or queue
+entry does not. Post-merge mainline CI is awaited only when the user explicitly
+requires it. Required task acceptance, readable evidence, and attributable temporary-resource
+cleanup precede final claim-bound completion because the worker may stop the
+agent and remove its workspace immediately afterward.
+
+Routine pending CI or review remains ongoing execution with bounded watches or
+polls. A polling timeout is not a return condition. Demonstrated external
+blockers preserve the original assignment, actual state, minimum needed
+intervention, and next action before returning waiting to the controller. A
+background executor does not ask the user questions. Its checkpoint retains the
+original identities, workspace, authorization, scope, PR head, validation and
+review state, owned resources, and next action without copying secrets. Recovery
+refreshes the same active claim and current remote state before further writes.
+
+The original public autopilot mode's automatic candidate-selection and
+continuous successor loop are removed. Ordinary execution returns after one
+specified task or an external wait. A user-directed Goal requirements-to-solution
 discussion transition retains the Goal protocol's confirmation gates. Managed
-execution returns to its controller without advancing a task or Goal stage.
+autopilot returns to its controller after this task completes or needs external
+intervention, without selecting another task or advancing a Goal stage. The
+controller owns system-worktree, branch, and workspace cleanup; executors release
+only attributable temporary resources within their authorization.
 
 The worker runtime constructs the startup or relaunch prompt, including the
 explicit environment, skill, mode and original assignment. The Herdr adapter
 transports the caller's prompt to the corresponding native agent and reports
-actual acceptance or uncertainty. This skill change defines their input
-contract; it does not implement those runtime components. Reconnecting a live
+actual acceptance or uncertainty. The original skill separation defined their
+input contract independently of those runtime deliveries. Reconnecting a live
 agent does not itself authorize resending startup input.
 
 This decision partially supersedes the
@@ -77,22 +108,28 @@ additional installation boundary.
 files can state their own completion gates, but changes to source ownership,
 human acceptance, or PR delivery would require synchronized copies. A neutral
 shared reference preserves one owner while keeping status transitions apart.
+The managed reference supplies its autonomous delivery loop while applying those
+shared readiness and acceptance rules.
 
 ## Consequences
 
-Ordinary callers no longer load managed claim and resource instructions. Worker
+Ordinary callers do not load managed claim and resource instructions. Worker
 agents receive an explicit entrypoint, retain their original assignment, and
 leave scheduling and system-worktree cleanup to the controller. Both paths
-retain the same task-specific delivery and acceptance obligations.
+retain the same task-specific delivery and acceptance obligations. Managed
+executors continue routine CI and review waits and distinguish actual external
+blockers without expanding their authorization or task scope.
 
-The skill no longer continuously discovers or selects tasks. Automatic
-eligibility, platform qualification, and scheduling remain responsibilities of
-their service and worker consumers; public query and permission APIs are
-unchanged. Native startup, prompt transport, recovery, and complete platform
-qualification still need their corresponding runtime deliveries.
+The skill does not continuously discover or select tasks. Automatic eligibility,
+platform qualification, and scheduling remain responsibilities of their service
+and worker consumers; public query and permission APIs are unchanged. The managed
+mode's delivery instructions travel with the public bundle, so execution does
+not depend on a separately installed autopilot version.
 
-Whole-bundle installation and update carry the new references and remove the
-deleted autopilot resource. Structural and installed-package checks verify
-packaging; controlled agent scenarios verify actual instruction loading and
-observable actions within their recorded fixture boundaries. Neither replaces
-native Herdr or complete worker acceptance.
+Whole-bundle installation and update carry the managed reference and its updated
+routing and remove obsolete resource names. The original separation also removed
+the public queue-selecting autopilot resource. Structural and installed-package
+checks verify packaging; controlled agent scenarios verify actual instruction
+loading and observable actions within their recorded fixture boundaries. Neither
+replaces native Herdr or complete worker acceptance, and the original skill-only
+delivery did not establish runtime or complete platform qualification.

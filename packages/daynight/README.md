@@ -152,13 +152,20 @@ records module ownership and the preserved data layout.
 
 The public `using-daynight` skill provides task creation, handoff review and
 execution of one specified task. Ordinary execution reads `run-task.md`.
-Worker-started agents use `execute-task-in-managed` only when their startup
+Worker-started agents use `autopilot-managed-task` only when their startup
 prompt explicitly names the `worker-managed` environment, the `using-daynight`
 skill and that mode, together with their assignment. `SKILL.md` routes to the
 selected instructions; ordinary execution does not load managed task rules.
 Shared task inputs, delivery and acceptance rules retain one owner in the bundle.
 The [foreground worker](#worker-configuration-and-startup) constructs that
 explicit assignment and loads the installed managed entry before launch.
+Managed execution follows one assignment through implementation, validation,
+focused PR delivery, CI and review repair, and authorized merge. Pending CI or
+review stays in execution; demonstrated external blockers return to the worker
+with a checkpoint. Merge requires current-head approval and required checks,
+and platform confirmation; mainline CI after merge is awaited only on explicit
+request. The mode preserves existing authority, the original claim and the
+controller's ownership of worktree, branch and workspace cleanup.
 
 Install the skill through an interactive terminal:
 

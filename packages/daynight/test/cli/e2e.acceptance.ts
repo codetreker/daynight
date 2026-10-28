@@ -151,7 +151,7 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
     const publicSkillRelativeDirectory = "commands/skill/skills/using-daynight";
     const publicBundle = bundleFiles(path.join(packageDirectory, "src", publicSkillRelativeDirectory));
     expect(publicBundle["SKILL.md"]).toBeDefined();
-    for (const reference of ["handbook", "run-task", "execute-task-in-managed", "task-execution", "create-task", "handoff", "goal", "task-content"]) expect(publicBundle[`references/${reference}.md`]).toBeDefined();
+    for (const reference of ["handbook", "run-task", "autopilot-managed-task", "task-execution", "create-task", "handoff", "goal", "task-content"]) expect(publicBundle[`references/${reference}.md`]).toBeDefined();
     expect(bundleFiles(path.join(installedPackage, "dist", publicSkillRelativeDirectory))).toEqual(publicBundle);
     const installedSkillFile = path.join(installedSkillDirectory, "SKILL.md");
     const originalSkillContents = originalBundle["SKILL.md"]!.toString("utf8");

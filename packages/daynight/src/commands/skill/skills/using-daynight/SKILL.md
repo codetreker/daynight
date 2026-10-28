@@ -73,12 +73,14 @@ operations it requires. Do not load every mode by default.
 | `create-task <request>` | Preparing or registering persistent work explicitly requested by the user | [Create task](references/create-task.md) |
 | `run-task <task-id>` | Executing one specified ordinary task | [Run task](references/run-task.md) |
 | `handoff <task-id>` | Reviewing an explicitly requested task for handoff and enabling permission after it passes | [Handoff](references/handoff.md) |
-| `execute-task-in-managed <task-id>` | The worker startup prompt explicitly declares the `worker-managed` environment, this skill, and this mode | [Managed execution](references/execute-task-in-managed.md) |
+| `autopilot-managed-task <task-id>` | The worker startup prompt explicitly declares the `worker-managed` environment, this skill, and this mode | [Managed autopilot](references/autopilot-managed-task.md) |
 
 The managed execution reference is loaded only for that explicit worker launch;
 ordinary calls do not read it. Task properties, the working directory, and
 environment variables do not select the managed mode. An invocation presented
 as managed with an incomplete launch declaration waits for the missing context.
+Managed autopilot delivers only its original assignment under existing
+authorization; its name grants no additional authority or successor selection.
 
 For ordinary calls, honor the explicitly selected mode. For `using-daynight`
 without further input, infer the ordinary mode and target from the current
