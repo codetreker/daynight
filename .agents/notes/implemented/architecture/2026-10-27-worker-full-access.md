@@ -72,9 +72,13 @@ profile inspection fail visibly rather than starting with interactive
 permission confirmation.
 
 The policy changes only native invocations and task workspace environments.
-Global native configuration, authentication and organization/OS policies retain
-their existing owners. Full access does not grant business delivery authority;
-managed assignment and task authorization keep their own rules. Input readiness
+This invocation policy does not write global native configuration.
+The separate [integration preflight decision](../bug-fix/2026-10-28-worker-integration-preflight.md)
+allows the private daemon's official installer to update integration configuration
+and hook assets when missing or outdated. Authentication and organization/OS
+policies retain their existing owners. Full access does not grant business
+delivery authority; managed assignment and task authorization keep their own
+rules. Input readiness
 and supported business-composer checks remain in force, and attach supports
 business input. Missing credentials and integration failures remain errors.
 
