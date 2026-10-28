@@ -41,7 +41,6 @@ export const StandaloneList = ({ index, taskIds, allTaskIds, onSelectTask, showC
         {allTaskIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showCompleted} onChange={(event) => { onShowCompletedChange(event.currentTarget.checked); }} />{m.showCompletedCount({ count: completedCount })}</label>}
         <span className="task-view-summary" aria-label={m.summaryLabel({ visible: taskIds.length, total: allTaskIds.length })}>{m.summary({ visible: taskIds.length, total: allTaskIds.length })}</span>
       </div>
-      <p className="graph-note">{m.explanation}</p>
       {allTaskIds.length === 0 ? (
         <div className="state-box"><h3>{m.empty}</h3><p>{m.emptyDetail}</p></div>
       ) : taskIds.length === 0 ? (

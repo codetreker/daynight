@@ -135,7 +135,6 @@ export const ChainList = ({ index, representativeIds, allRepresentativeIds, open
       {allRepresentativeIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showCompleted} onChange={(event) => { onShowCompletedChange(event.currentTarget.checked); }} />{m.showCompletedCount({ count: completedCount })}</label>}
       <span className="task-view-summary" aria-label={m.chainSummaryLabel({ shown: representativeIds.length, total: allRepresentativeIds.length })}>{m.chainSummary({ shown: representativeIds.length, total: allRepresentativeIds.length })}</span>
     </div>
-    <p className="graph-note">{m.chainNote}</p>
     {allRepresentativeIds.length === 0 ? <div className="state-box"><h3>{m.emptyTitle}</h3><p>{m.emptyDescription}</p></div>
       : representativeIds.length === 0 ? <div className="state-box completed-chains-empty"><h3>{m.completedTitle}</h3><p>{m.completedDescription({ count: completedCount })}</p><button className="button" type="button" onClick={() => { checkbox.current!.focus(); onShowCompletedChange(true); }}>{m.showCompleted}</button></div>
         : <ul className="root-list">{representativeIds.map((rootId) => <ChainRow key={rootId} index={index} rootId={rootId} open={openChainId === rootId} onOpenChain={openChain} onOpenTask={onOpenTask} />)}</ul>}
