@@ -16,8 +16,8 @@ afterEach(async () => { await Promise.all(directories.splice(0).map((directory) 
 describe("worker configuration", () => {
   it("uses a separate namespace and resolves paths relative to the config file", () => {
     expect(parse({})).toEqual({
-      maxConcurrent: 1, pollIntervalMs: 5_000, recoveryLimit: 3, agent: "copilot", model: null, args: [],
-      repositories: [{ ...repo, path: "/home/worker-user/checkout", agent: "copilot", model: null, args: [], recoveryLimit: 3 }],
+      maxConcurrent: 1, pollIntervalMs: 5_000, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [],
+      repositories: [{ ...repo, path: "/home/worker-user/checkout", agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }],
     });
     expect(parseServerConfiguration(stringify({ worker: { repositories: "not validated by server commands" } }), paths)).toEqual({ serverUrl: "https://daynight.cc" });
     expect(parseWorkerConfiguration(stringify({ repositories: "review-owned", copilotModel: null, worker: { repositories: [] } }), paths).repositories).toEqual([]);
@@ -30,8 +30,8 @@ describe("worker configuration", () => {
     ] });
     expect(configuration.recoveryLimit).toBe(0);
     expect(configuration.repositories).toEqual([
-      { ...repo, path: "/home/worker-user/checkout", agent: "codex", model: "global-model", args: [], recoveryLimit: 0 },
-      { remote: "git@elsewhere.example:team/second.git", path: "/absolute/repository", agent: "codex", model: null, args: ["--search"], recoveryLimit: 0 },
+      { ...repo, path: "/home/worker-user/checkout", agent: "codex", agentControlMode: "herdr", model: "global-model", args: [], recoveryLimit: 0 },
+      { remote: "git@elsewhere.example:team/second.git", path: "/absolute/repository", agent: "codex", agentControlMode: "herdr", model: null, args: ["--search"], recoveryLimit: 0 },
     ]);
   });
 
@@ -56,7 +56,7 @@ describe("worker configuration", () => {
     { maxConcurrent: 0 }, { maxConcurrent: 1.5 }, { maxConcurrent: "1" }, { maxConcurrent: null },
     { pollIntervalMs: 0 }, { pollIntervalMs: 2_147_483_648 }, { pollIntervalMs: false },
     { recoveryLimit: -1 }, { recoveryLimit: 0.5 }, { recoveryLimit: Number.MAX_SAFE_INTEGER + 1 },
-    { agent: "claude" }, { agent: null }, { model: "" }, { model: 42 }, { args: "--allow-all" }, { args: [null] },
+    { agent: "other" }, { agent: null }, { model: "" }, { model: 42 }, { args: "--allow-all" }, { args: [null] },
     { repositories: {} }, { repositories: [null] }, { repositories: [{ ...repo, projectId: "bad" }] },
     { repositories: [{ ...repo, remote: "https://name:secret@git.example/team/r" }] },
     { repositories: [{ ...repo, path: "~/repo" }] }, { repositories: [{ ...repo, path: "" }] },
@@ -142,4 +142,30 @@ describe("worker configuration", () => {
     expect((await readWorkerConfiguration(local)).repositories).toHaveLength(2);
     expect(await readdir(directory)).toEqual([".daynight"]);
   });
+});
+
+
+describe("worker execution mode", () => {
+  it("defaults legacy configuration to herdr without changing the native agent", () => {
+    expect(parse({})).toMatchObject({ agentControlMode: "herdr", agent: "copilot", repositories: [{ agentControlMode: "herdr" }] });
+  });
+  it.each(["codex", "claude", "copilot"])("freezes web with %s in each effective repository configuration", (agent) => {
+    expect(parse({ agentControlMode: "web", agent })).toMatchObject({ agentControlMode: "web", agent, repositories: [{ agentControlMode: "web", agent }] });
+    expect(parse({ agentControlMode: "herdr", agent })).toMatchObject({ agentControlMode: "herdr", agent });
+  });
+  it.each([null, "", "remote", false])("rejects explicit invalid mode %j", (agentControlMode) => {
+    expect(() => parse({ agentControlMode, agent: "codex" })).toThrow(/agentControlMode/);
+  });
+  it("rejects repository-level mode overrides", () => {
+    expect(() => parse({ repositories: [{ ...repo, agentControlMode: "web" }] })).toThrow(/unsupported field/);
+  });
+});
+
+
+it("validates effective repository agents while retaining root defaults as inheritance only", () => {
+  const configuration = parse({ agentControlMode: "web", repositories: [{ ...repo, agent: "codex" }, { remote: "https://other.example/team/r.git", path: "/second", agent: "claude" }] });
+  expect(configuration.agent).toBe("copilot");
+  expect(parse({ agentControlMode: "web" }).repositories[0]).toMatchObject({ agent: "copilot", agentControlMode: "web", args: [] });
+  expect(configuration.repositories.map(({ agent, agentControlMode }) => ({ agent, agentControlMode }))).toEqual([{ agent: "codex", agentControlMode: "web" }, { agent: "claude", agentControlMode: "web" }]);
+  expect(parse({ agentControlMode: "web", repositories: [] }).repositories).toEqual([]);
 });

@@ -1,9 +1,11 @@
 import { randomUUID } from "node:crypto";
+import { requireImplementedWorkerBackend } from "./backend.js";
 import { ApiError } from "../../api/client.js";
 import type { Task, TaskPlatform, WorkerMachine } from "../../api/types.js";
 import type { WorkerRepositoryAssignment } from "./coordinator.js";
 import type { WorkerRemote } from "./remote.js";
 import type { WorkerStore } from "./store.js";
+import { backendResourcesClosed } from "./types.js";
 import type { ClaimIdentity, ControlIntent, LocalTask, TransferTarget } from "./types.js";
 
 export type WorkerControlRequest =
@@ -12,12 +14,12 @@ export type WorkerControlRequest =
   | { kind: "resume"; taskId: string; projectId?: string; claimId: string; version: bigint }
   | { kind: "transfer"; taskId: string; projectId?: string; claimId: string; version: bigint; target: Omit<TransferTarget, "worktreeId"> };
 
-const cleaned = (task: LocalTask): boolean => task.cleanup?.kind === "terminal" && task.cleanup.result !== null && task.cleanup.agentStopped && task.cleanup.workspaceClosed && task.cleanup.worktreeDeleted;
+const cleaned = (task: LocalTask): boolean => task.cleanup?.kind === "terminal" && task.cleanup.result !== null && task.cleanup.agentStopped && backendResourcesClosed(task.cleanup) && task.cleanup.worktreeDeleted;
 const message = (error: unknown): string => error instanceof Error ? error.message : String(error);
 const sourceActive = (task: Task, claimId: string): boolean => task.properties.worker?.claimId === claimId && task.properties.worker.state === "active";
 const applied = (task: Task, intent: ControlIntent): boolean => intent.kind === "release"
   ? task.properties.worker?.claimId === intent.sourceClaimId && task.properties.worker.state === "released"
-  : task.properties.worker?.claimId === intent.targetClaimId && task.properties.worker.state === "active" && task.properties.worker.userId === intent.target.userId && task.properties.worker.workerId === intent.target.workerId && task.properties.worker.worktreeId === intent.target.worktreeId && task.properties.worker.agent === intent.target.agent;
+  : task.properties.worker?.claimId === intent.targetClaimId && task.properties.worker.state === "active" && task.properties.worker.userId === intent.target.userId && task.properties.worker.workerId === intent.target.workerId && task.properties.worker.worktreeId === intent.target.worktreeId && task.properties.worker.agent === intent.target.agent && task.properties.worker.agentControlMode === intent.target.agentControlMode;
 
 export const createWorkerControlDriver = (options: { store: WorkerStore; remote: WorkerRemote; serverOrigin: string; now: () => number }) => ({
   advance: async (input: LocalTask, signal: AbortSignal, mode: { submit: boolean } = { submit: true }): Promise<LocalTask> => {
@@ -51,7 +53,7 @@ export const createWorkerControlDriver = (options: { store: WorkerStore; remote:
     try {
       const result = intent.kind === "release"
         ? await options.remote.release(task.projectId, task.taskId, { claimId: task.claimId, version: BigInt(intent.version), stoppedConfirmed: true }, signal)
-        : await options.remote.transfer(task.projectId, task.taskId, { claimId: task.claimId, version: BigInt(intent.version), newClaimId: intent.targetClaimId, target: { userId: intent.target.userId, workerId: intent.target.workerId, machine: intent.target.machine, platform: intent.target.platform, agent: intent.target.agent }, worktreeId: intent.target.worktreeId, stoppedConfirmed: true }, signal);
+        : await options.remote.transfer(task.projectId, task.taskId, { claimId: task.claimId, version: BigInt(intent.version), newClaimId: intent.targetClaimId, target: { userId: intent.target.userId, workerId: intent.target.workerId, machine: intent.target.machine, platform: intent.target.platform, agent: intent.target.agent, agentControlMode: intent.target.agentControlMode }, worktreeId: intent.target.worktreeId, stoppedConfirmed: true }, signal);
       return options.store.completeAppliedControl(task, intent, result.version, options.now());
     } catch (error) {
       const current = options.store.getTask(task);
@@ -64,6 +66,7 @@ export const createWorkerControlDriver = (options: { store: WorkerStore; remote:
 
 export const submitWorkerControl = async (options: {
   store: WorkerStore; remote: WorkerRemote; serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
+  verifyWebServer?: (provider: string, signal: AbortSignal) => Promise<void>;
   repositories: readonly WorkerRepositoryAssignment[]; request: WorkerControlRequest; signal: AbortSignal; now?: () => number;
 }): Promise<{ task: LocalTask | null; message: string }> => {
   const now = options.now ?? Date.now;
@@ -86,7 +89,7 @@ export const submitWorkerControl = async (options: {
     const pending = options.store.getClaimAttempt(project);
     if (pending !== null) {
       if (pending.taskId !== request.taskId || pending.expectedVersion !== request.version.toString() || pending.userId !== principal) throw new Error("An unresolved original claim request cannot be replaced.");
-      if (worker?.state === "active" && worker.claimId === pending.claimId && worker.userId === pending.userId && worker.workerId === pending.workerId && worker.worktreeId === pending.worktreeId && worker.agent === pending.configuration.agent) {
+      if (worker?.state === "active" && worker.claimId === pending.claimId && worker.userId === pending.userId && worker.workerId === pending.workerId && worker.worktreeId === pending.worktreeId && worker.agent === pending.configuration.agent && worker.agentControlMode === pending.configuration.agentControlMode) {
         const task = options.store.registerPending({ ...project, taskId: observed.id, claimId: pending.claimId, workerId: pending.workerId, worktreeId: pending.worktreeId }, { kind: "new", configuration: pending.configuration }, now(), principal);
         return { task, message: `Resume grant ${pending.claimId} recovered and committed as pending.` };
       }
@@ -95,7 +98,9 @@ export const submitWorkerControl = async (options: {
     if (observed.version !== request.version) throw new Error("The explicit task version no longer matches; make a new decision with the observed version.");
     if (worker?.state !== "released" || worker.claimId !== request.claimId) throw new Error("Resume requires the exact released previous claim.");
     await options.remote.authorizeControl(projectId, worker.userId, undefined, options.signal);
-    const descriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent };
+    requireImplementedWorkerBackend(repository.configuration);
+    if (repository.configuration.agentControlMode === "web") await options.verifyWebServer?.(repository.configuration.agent, options.signal);
+    const descriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent, agentControlMode: repository.configuration.agentControlMode };
     options.store.beginClaimAttempt(project, { taskId: request.taskId, claimId: descriptor.claimId, worktreeId: descriptor.worktreeId, workerId: options.workerId, userId: principal, expectedVersion: request.version.toString(), configuration: repository.configuration });
     let grant: Task;
     try { grant = await options.remote.resume(projectId, request.taskId, { ...descriptor, version: request.version, previousClaimId: request.claimId }, options.signal); }
@@ -112,7 +117,7 @@ export const submitWorkerControl = async (options: {
   const existing = source.control;
   if (request.kind !== "retry" && existing !== null && existing.submission !== "rejected") {
     const intent = existing.intent;
-    const sameDecision = intent.kind === request.kind && intent.version === request.version.toString() && (request.kind !== "transfer" || (intent.kind === "transfer" && intent.target.userId === request.target.userId && intent.target.workerId === request.target.workerId && intent.target.agent === request.target.agent && intent.target.platform === request.target.platform && JSON.stringify(intent.target.machine) === JSON.stringify(request.target.machine)));
+    const sameDecision = intent.kind === request.kind && intent.version === request.version.toString() && (request.kind !== "transfer" || (intent.kind === "transfer" && intent.target.userId === request.target.userId && intent.target.workerId === request.target.workerId && intent.target.agent === request.target.agent && intent.target.agentControlMode === request.target.agentControlMode && intent.target.platform === request.target.platform && JSON.stringify(intent.target.machine) === JSON.stringify(request.target.machine)));
     if (!sameDecision) throw new Error("A different source management decision is already persisted; an unknown write cannot be replaced.");
     return { task: source, message: `Existing ${intent.kind} intent retained for claim ${source.claimId}; submission=${existing.submission}.` };
   }

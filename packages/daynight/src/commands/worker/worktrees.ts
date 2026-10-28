@@ -12,7 +12,7 @@ type GitRunner = typeof runRepositoryGit;
 type Owner = { serverOrigin: string; projectId: string; taskId: string; claimId: string; worktreeId: string; leaf: string; root: string; common: string };
 type Registration = { directory: string; marker: string | null; pointer: string; common: string };
 export type WorkerRepository = { root: string; commonDirectory: string; rootIdentity: string; commonIdentity: string };
-export type WorktreeRemovalProof = { terminal: true; agentStopped: true; workspaceClosed: true };
+export type WorktreeRemovalProof = { terminal: true; agentStopped: true } & ({ workspaceClosed: true } | { backendResourcesClosed: true });
 const prefix = "daynight-worker:";
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const line = (value: string): string => value.replace(/\r?\n$/, "");
@@ -205,7 +205,7 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
       return result.binding;
     },
     removeWorktree: async (task: LocalTask, proof: WorktreeRemovalProof, operation: Operation): Promise<void> => {
-      if (proof.terminal !== true || proof.agentStopped !== true || proof.workspaceClosed !== true) throw new Error("Worktree removal requires terminal cleanup, confirmed agent stop and workspace closure.");
+      if (proof.terminal !== true || proof.agentStopped !== true || !(task.configuration?.agentControlMode === "web" ? "backendResourcesClosed" in proof && proof.backendResourcesClosed : "workspaceClosed" in proof && proof.workspaceClosed)) throw new Error("Worktree removal requires terminal cleanup, confirmed agent stop and workspace closure.");
       const repository = await inspectRepository(projectFor(task), operation);
       let result = await inspectWorktree(task, repository, operation, true);
       if (result.registration === null) return;

@@ -1,3 +1,4 @@
+import { validateWorkerAgentMode, workerAgentControlMode } from "./worker-mode.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
@@ -357,7 +358,12 @@ export const createApiClient = (options: {
     if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
   };
   const herdrMatches = (actual: WorkerHerdr | null, expected: WorkerHerdr | null): boolean => actual === null || expected === null ? actual === expected : actual.session === expected.session && actual.workspaceId === expected.workspaceId && actual.paneId === expected.paneId;
-  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.worktreeId === canonicalId(descriptor.worktreeId);
+  const normalizeWorkerDescriptor = <T extends WorkerClaimDescriptor | TransferWorkerClaimInput["target"]>(input: T) => {
+    const agentControlMode = workerAgentControlMode(input);
+    validateWorkerAgentMode(input.agent, agentControlMode);
+    return { ...input, agentControlMode };
+  };
+  const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === workerAgentControlMode(descriptor) && worker.worktreeId === canonicalId(descriptor.worktreeId);
   const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim) => boolean, sameValue = false): Promise<Task> => {
     if (Object.hasOwn(input, "continuityConfirmed")) throw new Error("continuityConfirmed is no longer accepted. New executions require fresh claim and worktree IDs.");
     const project = resourceId(projectId), task = resourceId(taskId);
@@ -458,12 +464,21 @@ export const createApiClient = (options: {
         return result;
       } }, [200], { kind: "json", value: { version: input.version, status: input.status } }, true);
     },
-    claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
+    claimWorkerTask: (projectId, taskId, input) => {
+      const normalized = normalizeWorkerDescriptor(input);
+      return workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", normalized, (task, worker) => task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, normalized));
+    },
     updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId), true),
     completeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.complete", "/status", "PUT", { ...input, status: "done" }, (task, worker) => task.status === "done" && worker.state === "completed" && worker.claimId === canonicalId(input.claimId), true),
     releaseWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.release", "/worker-claim/release", "POST", input, (task, worker) => task.status === "todo" && worker.state === "released" && worker.claimId === canonicalId(input.claimId)),
-    transferWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.transfer", "/worker-claim/transfer", "POST", input, (task, worker) => task.status === "in_progress" && worker.state === "active" && worker.userId === canonicalId(input.target.userId) && descriptorMatches(worker, { ...input.target, claimId: input.newClaimId, worktreeId: input.worktreeId })),
-    resumeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.resume", "/worker-claim/resume", "POST", input, (task, worker) => task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
+    transferWorkerClaim: (projectId, taskId, input) => {
+      const normalized = { ...input, target: normalizeWorkerDescriptor(input.target) };
+      return workerMutation(projectId, taskId, "worker.transfer", "/worker-claim/transfer", "POST", normalized, (task, worker) => task.status === "in_progress" && worker.state === "active" && worker.userId === canonicalId(input.target.userId) && descriptorMatches(worker, { ...normalized.target, claimId: input.newClaimId, worktreeId: input.worktreeId }));
+    },
+    resumeWorkerTask: (projectId, taskId, input) => {
+      const normalized = normalizeWorkerDescriptor(input);
+      return workerMutation(projectId, taskId, "worker.resume", "/worker-claim/resume", "POST", normalized, (task, worker) => task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, normalized));
+    },
     putTaskAttachment: (projectId, taskId, path, input) => {
       const project = resourceId(projectId), task = resourceId(taskId), attachmentPath = validateAttachmentPath(path);
       return exchange({ operation: "task.attachment.put", projectId: project, taskId: task }, `${attachmentPrefix(project, task)}/files/${encodeAttachmentPath(attachmentPath)}`, "PUT", { kind: "json", parse: (value) => parseTaskAttachment(value, attachmentPath) }, [200, 201], { kind: "bytes", value: input.body, contentType: input.contentType }, true);

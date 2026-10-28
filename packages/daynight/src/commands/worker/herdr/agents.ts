@@ -7,6 +7,7 @@ import type { WorkerAgent } from "../../../api/types.js";
 import { normalizeServerUrl } from "../../../config/server.js";
 import { buildHerdrAgentArguments, validateHerdrAgentArguments } from "./arguments.js";
 import type { HerdrAgentConfiguration } from "./arguments.js";
+import { claudeInputSurface } from "./claude-input.js";
 import { codexInputSurface } from "./codex-input.js";
 import { HerdrRpcError } from "./rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "./rpc.js";
@@ -67,6 +68,7 @@ const nativeInteractiveProcessEvidence = (value: RecordValue, agent: WorkerAgent
   // as `codex exec` and their descendants are not the original UI process.
   if (agent === "codex" && args[0] === "--no-daemon") args.shift();
   if (agent === "codex" && args[0] === "resume" && typeof args[1] === "string" && canonicalId(args[1]) !== null) args.splice(0, 2);
+  if (agent === "claude" && args[0] === "--resume" && typeof args[1] === "string" && canonicalId(args[1]) !== null) args.splice(0,2);
   if (agent === "copilot" && args[0]?.startsWith("--resume=") && canonicalId(args[0].slice("--resume=".length)) !== null) args.shift();
   if (args[0] === "--model" && typeof args[1] === "string" && args[1] !== "") args.splice(0, 2);
   try { validateHerdrAgentArguments(agent, args); return true; }
@@ -75,7 +77,7 @@ const nativeInteractiveProcessEvidence = (value: RecordValue, agent: WorkerAgent
 const expectedResult = (value: HerdrRpcResult, type: string): HerdrRpcResult => { if (value.type !== type) throw new TypeError(`Expected Herdr ${type} result; received ${value.type}.`); return value; };
 const sameBinding = (left: HerdrTaskBinding, right: HerdrTaskBinding): boolean => left.session === right.session && left.workspaceId === right.workspaceId && left.paneId === right.paneId && left.terminalId === right.terminalId;
 const contextIdentity = (context: HerdrExecutionContext) => {
-  if (context.agent !== "codex" && context.agent !== "copilot") throw new TypeError("Execution agent must be codex or copilot.");
+  if (context.agent !== "codex" && context.agent !== "copilot" && context.agent !== "claude") throw new TypeError("Execution agent must be codex or copilot.");
   if (!path.isAbsolute(context.cwd) || /[\r\n\0]/.test(context.cwd)) throw new TypeError("The task cwd must be an absolute path without line breaks or NUL.");
   const identifier = (value: string, label: string): string => { const result = canonicalId(value); if (result === null) throw new TypeError(`${label} must be a UUID.`); return result; };
   return { serverOrigin: normalizeServerUrl(context.serverOrigin), projectId: identifier(context.projectId, "Project ID"), taskId: identifier(context.taskId, "Task ID"), claimId: identifier(context.claimId, "Claim ID"), worktreeId: identifier(context.worktreeId, "Worktree ID") };
@@ -225,7 +227,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     // Herdr 0.9.5 reports revision zero. It is not a freshness or input receipt.
     const confirmed = await readOwned(context, binding, operation);
     if (confirmed.pane!.tab_id !== tabId) throw new Error("The original input pane changed tabs during the visible surface observation.");
-    return codexInputSurface(read.text);
+    return context.agent === "claude" ? claudeInputSurface(read.text) : codexInputSurface(read.text);
   };
   const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false): Promise<{ submission: "submitted"; observation: HerdrAgentObservation }> => {
     if (typeof prompt !== "string" || prompt.length === 0) throw new HerdrAgentActionError("The caller prompt must be nonempty text.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
@@ -238,12 +240,12 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       while (true) {
         before = await observation(context, binding, operation);
         verifyInputAgent(before);
-        if (context.agent !== "codex") break;
+        if (context.agent === "copilot") break;
         const surface = await visibleCodexSurface(context, binding, operation);
-        if (surface === "blocked") throw new Error("The original Codex input surface requires operator action; automatic input was not submitted.");
+        if (surface === "blocked") throw new Error("The original native input surface requires operator action; automatic input was not submitted.");
         before = await observation(context, binding, operation);
         verifyInputAgent(before);
-        if (surface === "composer" || (!initialPrompt && before.status === "working")) break;
+        if (surface === "composer" || (context.agent === "codex" && !initialPrompt && before.status === "working")) break;
         await wait(operation);
       }
       operation.check();
@@ -326,10 +328,10 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           if (cwd !== null && !path.isAbsolute(cwd)) throw new TypeError("The owned Herdr pane cwd must be absolute.");
           if (pane.cwd !== undefined && cwd !== null && path.normalize(text(pane.cwd, "Owned terminal cwd")) !== path.normalize(cwd)) throw new Error("The owned Herdr pane and agent cwd differ.");
           const kind = optionalText(info.agent, "Owned agent kind");
-          if (kind !== null && kind !== "codex" && kind !== "copilot") throw new Error("The owned task workspace hosts an unsupported native agent.");
+          if (kind !== null && kind !== "codex" && kind !== "copilot" && kind !== "claude") throw new Error("The owned task workspace hosts an unsupported native agent.");
           const native = info.agent_session === undefined ? null : object(info.agent_session, "Owned native session");
           const nativeAgent = native === null ? null : text(native.agent, "Owned native provider");
-          if (nativeAgent !== null && nativeAgent !== "codex" && nativeAgent !== "copilot") throw new Error("The owned native reference has an unsupported provider.");
+          if (nativeAgent !== null && nativeAgent !== "codex" && nativeAgent !== "copilot" && nativeAgent !== "claude") throw new Error("The owned native reference has an unsupported provider.");
           if (kind !== null && nativeAgent !== null && kind !== nativeAgent) throw new Error("The owned agent and native history provider differ.");
           const status = text(info.agent_status, "Owned agent status");
           if (!["idle", "working", "blocked", "done", "unknown"].includes(status)) throw new TypeError("The owned native status is invalid.");

@@ -24,7 +24,7 @@ import type { LocalTask, ProjectIdentity, WorkerProject, FrozenExecutionConfigur
 const uuid = (value: number): string => `00000000-0000-4000-8000-${value.toString().padStart(12, "0")}`;
 const origin = "https://daynight.example";
 const workerId = uuid(1);
-const configuration: FrozenExecutionConfiguration = { agent: "codex", model: "frozen-model", args: ["--search"], recoveryLimit: 2 };
+const configuration: FrozenExecutionConfiguration = { agent: "codex", agentControlMode: "herdr", model: "frozen-model", args: ["--search"], recoveryLimit: 2 };
 const roots: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => { vi.restoreAllMocks(); syncBuiltinESMExports(); for (const store of stores.splice(0)) store.close(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
@@ -216,7 +216,7 @@ describe("worker foreground coordinator", () => {
   });
   it("counts recovered executions with missing original configuration as active paused responsibility", async () => {
     const f = await fixture(1); const candidate = f.candidates.get(f.projects[0]!.projectId)![0]!;
-    const task: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(800), workerId, worktreeId: uuid(801), userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", herdr: { session: "w", workspaceId: "lost", paneId: "lost" }, nativeSessionId: uuid(802), state: "active", claimedAt: "2026-10-27T00:00:00Z" } } };
+    const task: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(800), workerId, worktreeId: uuid(801), userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "executing", herdr: { session: "w", workspaceId: "lost", paneId: "lost" }, nativeSessionId: uuid(802), state: "active", claimedAt: "2026-10-27T00:00:00Z" } } };
     f.granted.set(uuid(800), task); await f.coordinator.tick();
     expect(f.store.listTasks()[0]).toMatchObject({ status: "active", configuration: null, recovery: { pauseReason: expect.stringContaining("configuration") } });
     expect(f.remote.claim).not.toHaveBeenCalled(); expect(f.tasks.start).not.toHaveBeenCalled();
@@ -443,7 +443,7 @@ describe("worker foreground coordinator", () => {
     const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
     const identity = { serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: uuid(910), workerId, worktreeId: uuid(911) };
     f.store.registerPending(identity, { kind: "recovered", configuration }, 1000); f.store.activateTask(identity, 1000);
-    f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: identity.worktreeId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: configuration.agent, phase: "executing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: identity.worktreeId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: configuration.agent, agentControlMode: "herdr", phase: "executing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
     const binding = { repositoryPath: project.localPath, commonDirectory: path.join(project.localPath, ".git"), worktreePath: path.join(project.localPath, ".worktrees", "daynight", candidate.id), branch: `daynight/${candidate.id}` };
     if (present) f.worktrees.set(identity.claimId, binding);
     const herdrBinding = { session: "w", workspaceId: "original-workspace", paneId: "original-pane", terminalId: "original-terminal" };
@@ -610,7 +610,7 @@ describe("worker foreground coordinator", () => {
     f.store.bindWorktree(identity, worktree, 1000); f.worktrees.set(identity.claimId, worktree);
     const binding = { session: "w", workspaceId: "scope-owned-workspace", paneId: "scope-owned-pane", terminalId: "scope-owned-terminal" };
     f.resources.set(identity.claimId, { owner: { serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: identity.claimId, worktreeId: identity.worktreeId }, workspaceId: binding.workspaceId, panes: [{ binding, cwd: worktree.worktreePath, kind: "codex", status: "idle", launchPending: false, interactiveReady: true, nativeSession: { source: "herdr:codex", agent: "codex", sessionId: uuid(996) }, stateChangeSeq: 1, completionSeq: 0 }] });
-    f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: identity.worktreeId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId }, nativeSessionId: uuid(996), claimedAt: "2026-10-27T00:00:00Z" } } });
+    f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: identity.worktreeId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "executing", state: "active", herdr: { session: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId }, nativeSessionId: uuid(996), claimedAt: "2026-10-27T00:00:00Z" } } });
     await f.coordinator.tick(); expect(f.store.getTask(identity)).toMatchObject({ userId: uuid(2), resources: { worktree, nativeSession: { sessionId: uuid(996) } } });
     expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.tasks.submitPrompt).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled();
   });
@@ -619,7 +619,7 @@ describe("worker foreground coordinator", () => {
     const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
     const identity = { serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: uuid(997), workerId, worktreeId: uuid(998) };
     f.store.registerPending(identity, { kind: "recovered", configuration }, 1000); f.store.activateTask(identity, 1000); f.store.beginCleanup(identity, { kind: "terminal", deadline: 601000 }, 1000);
-    f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: identity.worktreeId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: identity.worktreeId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "executing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
     await f.coordinator.tick(); await f.coordinator.advanceCommittedCleanups(identity); await f.coordinator.cleanupTask(identity, "shutdown");
     expect(f.store.getTask(identity)).toMatchObject({ status: "active", userId: null, cleanup: { kind: "terminal", agentStopped: false, worktreeDeleted: false } });
     expect(f.tasks.forceStop).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled(); expect(f.git.findWorktree).not.toHaveBeenCalled();
@@ -647,7 +647,7 @@ describe("worker foreground coordinator", () => {
     const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
     const identity = { serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: uuid(1010), workerId, worktreeId: uuid(1011) };
     f.store.registerPending(identity, { kind: "recovered", configuration }, 1000); f.store.activateTask(identity, 1000);
-    f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: uuid(1012), userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    f.granted.set(identity.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: identity.claimId, workerId, worktreeId: uuid(1012), userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "executing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
     await f.coordinator.tick(); expect(f.store.getTask(identity)).toMatchObject({ userId: null, worktreeId: identity.worktreeId, cleanup: null });
     expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
   });
@@ -697,7 +697,7 @@ describe("worker foreground coordinator", () => {
     const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1030) }; f.store.registerProject(project);
     const frozen = { ...configuration, model: "model-for-origin-B" };
     const candidate = remoteTask(project.projectId, original.taskId);
-    const grant = (claimId: string, worktreeId: string): Task => ({ ...candidate, status: "in_progress", ready: false, version: 2n, properties: { ...candidate.properties, worker: { claimId, worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    const grant = (claimId: string, worktreeId: string): Task => ({ ...candidate, status: "in_progress", ready: false, version: 2n, properties: { ...candidate.properties, worker: { claimId, worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
     let actual = entry === "discovered" ? grant(uuid(1031), uuid(1032)) : undefined;
     const otherRemote: WorkerRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async (projects: readonly ProjectIdentity[]) => { expect(projects.every((item) => item.serverOrigin === otherOrigin)).toBe(true); return actual === undefined ? [] : [actual]; }),
       candidates: vi.fn(async function* () { if (actual === undefined) yield candidate; }),
@@ -723,7 +723,7 @@ describe("worker foreground coordinator", () => {
     await mkdir(original.resources.worktree!.worktreePath, { recursive: true });
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1040) }; f.store.registerProject(project);
     const candidate = remoteTask(project.projectId, original.taskId);
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: original.claimId, worktreeId: uuid(1041), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: original.claimId, worktreeId: uuid(1041), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
     const frozen = { ...configuration, model: "independent-origin-model" };
     const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
     const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 });
@@ -749,7 +749,7 @@ describe("worker foreground coordinator", () => {
     }
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1050), localPath }; f.store.registerProject(project);
     const candidate = remoteTask(project.projectId, original.taskId);
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1051), worktreeId: uuid(1052), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1051), worktreeId: uuid(1052), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
     const frozen = { ...configuration, model: "fresh-origin-B-config" };
     const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
     const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration: frozen }], maxConcurrent: 2 });
@@ -828,7 +828,7 @@ describe("worker foreground coordinator", () => {
     vi.mocked(f.git.findWorktree).mockRejectedValueOnce(failure);
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1060) }; f.store.registerProject(project);
     const candidate = remoteTask(project.projectId, original.taskId);
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1061), worktreeId: uuid(1062), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1061), worktreeId: uuid(1062), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
     const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
     const changedOrigin = createWorkerCoordinator({ ...f.options, serverOrigin: otherOrigin, remote: otherRemote, repositories: [{ project, configuration }], maxConcurrent: 2 });
     const identity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: uuid(1061) };
@@ -873,7 +873,7 @@ describe("worker foreground coordinator", () => {
     const before = f.store.getTask(original)!;
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1070) }; f.store.registerProject(project);
     const candidate = remoteTask(project.projectId, original.taskId);
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1071), worktreeId: uuid(1072), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1071), worktreeId: uuid(1072), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
     const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
     const frozen = { ...configuration, model: "fresh-handoff-config" };
     const cancellation = new AbortController(); const reason = new Error("normal worker shutdown");
@@ -896,7 +896,7 @@ describe("worker foreground coordinator", () => {
     const fixedPath = original.resources.worktree!.worktreePath; await mkdir(fixedPath, { recursive: true });
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1080) }; f.store.registerProject(project);
     const candidate = remoteTask(project.projectId, original.taskId);
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1081), worktreeId: uuid(1082), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(1081), worktreeId: uuid(1082), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
     const frozen = { ...configuration, model: "configuration-after-predecessor-completion" };
     const otherRemote = { ...f.remote, serverOrigin: otherOrigin, currentUserId: vi.fn(async () => uuid(2)), ownInventory: vi.fn(async () => [actual]), candidates: vi.fn(async function* () {}) };
     const resolve = filesystem.resolvePhysicalDirectory; let completedDuringObservation = false;
@@ -937,7 +937,7 @@ describe("worker foreground coordinator", () => {
       if (owner === "successor") throw new Error("The task worktree ownership marker or repository identity does not match this claim.");
       return binding;
     });
-    const successorId = uuid(1092); const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: successorId, worktreeId: original.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const successorId = uuid(1092); const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: successorId, worktreeId: original.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
     f.granted.set(successorId, actual); f.candidates.set(project.projectId, []);
     const frozen = { ...configuration, model: "new-claim-after-unbound-worktree" };
     await createWorkerCoordinator({ ...f.options, repositories: [{ project, configuration: frozen }] }).tick();
@@ -958,7 +958,7 @@ describe("worker foreground coordinator", () => {
     const fixedPath = original.resources.worktree!.worktreePath; await mkdir(fixedPath, { recursive: true }); await writeFile(path.join(fixedPath, ".git"), "gitdir: fixture-admin\n");
     const otherOrigin = "https://other-daynight.example"; const project = { ...f.projects[0]!, serverOrigin: otherOrigin, projectId: uuid(1100) }; f.store.registerProject(project);
     const candidate = remoteTask(project.projectId, original.taskId); const successorId = uuid(1101);
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: successorId, worktreeId: uuid(1102), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "preparing", state: "active", herdr: phase === "incoming-native-history" ? { session: "w", workspaceId: "existing-successor", paneId: "existing-successor-pane" } : null, nativeSessionId: phase === "incoming-native-history" ? uuid(1103) : null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: successorId, worktreeId: uuid(1102), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: phase === "incoming-native-history" ? { session: "w", workspaceId: "existing-successor", paneId: "existing-successor-pane" } : null, nativeSessionId: phase === "incoming-native-history" ? uuid(1103) : null, claimedAt: "2026-10-27T00:00:00Z" } } };
     const incomingIdentity = { serverOrigin: otherOrigin, projectId: project.projectId, taskId: original.taskId, claimId: successorId };
     if (phase === "incoming-herdr-resource") {
       const binding = { session: "w", workspaceId: "existing-current-workspace", paneId: "existing-current-pane", terminalId: "existing-current-terminal" };
@@ -1051,7 +1051,7 @@ describe("worker foreground coordinator", () => {
   it("retains the saved attempt configuration without fresh-launch provenance when a positive grant already has execution traces", async () => {
     const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
     const attempt = { taskId: candidate.id, claimId: uuid(1130), worktreeId: uuid(1131), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration: { ...configuration, model: "saved-attempt-configuration" } }; f.store.beginClaimAttempt(project, attempt);
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "previous-execution", paneId: "previous-pane" }, nativeSessionId: uuid(1132), claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "previous-execution", paneId: "previous-pane" }, nativeSessionId: uuid(1132), claimedAt: "2026-10-27T00:00:00Z" } } };
     f.granted.set(attempt.claimId, actual); await f.coordinator.tick();
     const stored = f.store.getTask({ serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: attempt.claimId })!;
     expect(f.store.getClaimAttempt(project)).toBeNull(); expect(stored).toMatchObject({ configuration: attempt.configuration, nativeExecution: null, resources: { worktree: null, herdr: null, nativeSession: null } });
@@ -1067,7 +1067,7 @@ describe("worker foreground coordinator", () => {
     const binding = { session: "w", workspaceId: "orphan-original", paneId: "orphan-pane", terminalId: "orphan-terminal" }; f.store.bindHerdrExecution(identity, binding, null, 1000); f.store.bindNativeSession(identity, { source: "herdr", sessionId: uuid(1142) }, 1000);
     const original = f.store.getTask(identity)!; const register = f.store.registerPending; let acknowledged: LocalTask | undefined;
     vi.spyOn(f.store, "registerPending").mockImplementation((claim, registration, now, verifiedUserId) => { const task = register(claim, registration, now, verifiedUserId); if (claim.claimId === attempt.claimId) acknowledged = task; return task; });
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId }, nativeSessionId: uuid(1142), claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "executing", state: "active", herdr: { session: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId }, nativeSessionId: uuid(1142), claimedAt: "2026-10-27T00:00:00Z" } } };
     f.granted.set(attempt.claimId, actual); await f.coordinator.tick();
     expect(f.store.getClaimAttempt(project)).toBeNull(); expect(acknowledged).toMatchObject({ userId: uuid(2), configuration: attempt.configuration, status: original.status, nativeExecution: original.nativeExecution, resources: original.resources, recovery: original.recovery });
     expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled(); expect(f.store.getTask(identity)?.recovery.pauseReason).toBe(original.recovery.pauseReason);
@@ -1076,7 +1076,7 @@ describe("worker foreground coordinator", () => {
   it("counts recovered known-configuration execution responsibility before applying a lowered fresh-task limit", async () => {
     const f = await fixture(); await f.coordinator.tick(); const running = f.store.listTasks()[0]!; const project = f.projects[0]!; const candidate = remoteTask(project.projectId, uuid(1150));
     const attempt = { taskId: candidate.id, claimId: uuid(1151), worktreeId: uuid(1152), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration }; f.store.beginClaimAttempt(project, attempt);
-    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "existing-unavailable", paneId: "existing-pane" }, nativeSessionId: uuid(1153), claimedAt: "2026-10-27T00:00:00Z" } } };
+    const actual: Task = { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "existing-unavailable", paneId: "existing-pane" }, nativeSessionId: uuid(1153), claimedAt: "2026-10-27T00:00:00Z" } } };
     f.granted.set(attempt.claimId, actual); await f.coordinator.tick();
     expect(f.store.listUnfinishedTasks().filter(({ status }) => status === "active")).toHaveLength(2); expect(f.store.getTask({ ...running, taskId: candidate.id, claimId: attempt.claimId })).toMatchObject({ configuration, nativeExecution: null, recovery: { pauseReason: expect.stringContaining("native session ID is missing") } });
     expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.prepareWorktree).toHaveBeenCalledOnce(); expect(f.store.getClaimAttempt(project)).toBeNull();
@@ -1085,7 +1085,7 @@ describe("worker foreground coordinator", () => {
   it("does not acknowledge an observed claim that differs from the original frozen agent", async () => {
     const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
     const attempt = { taskId: candidate.id, claimId: uuid(1160), worktreeId: uuid(1161), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration }; f.store.beginClaimAttempt(project, attempt);
-    f.granted.set(attempt.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "copilot", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    f.granted.set(attempt.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "copilot", agentControlMode: "herdr", phase: "preparing", state: "active", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
     await expect(f.coordinator.tick()).rejects.toThrow("does not match the original claim request and frozen agent"); expect(f.store.getClaimAttempt(project)).toEqual(attempt); expect(f.store.listTasks()).toEqual([]); expect(f.tasks.start).not.toHaveBeenCalled();
   });
 
@@ -1139,7 +1139,7 @@ describe("worker foreground coordinator", () => {
   it("acknowledges a runtime-reported grant with unknown native provenance before Herdr readiness fails", async () => {
     const f = await fixture(); const project = f.projects[0]!; const candidate = f.candidates.get(project.projectId)![0]!;
     const attempt = { taskId: candidate.id, claimId: uuid(1180), worktreeId: uuid(1181), workerId, userId: uuid(2), expectedVersion: candidate.version.toString(), configuration }; f.store.beginClaimAttempt(project, attempt);
-    f.granted.set(attempt.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "reported-workspace", paneId: "reported-pane" }, nativeSessionId: uuid(1182), claimedAt: "2026-10-27T00:00:00Z" } } });
+    f.granted.set(attempt.claimId, { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: attempt.claimId, worktreeId: attempt.worktreeId, workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "herdr", phase: "executing", state: "active", herdr: { session: "w", workspaceId: "reported-workspace", paneId: "reported-pane" }, nativeSessionId: uuid(1182), claimedAt: "2026-10-27T00:00:00Z" } } });
     vi.mocked(f.herdr.ensureInstance).mockRejectedValueOnce(new Error("Herdr unavailable.")); await expect(f.coordinator.tick()).rejects.toThrow("Herdr unavailable");
     expect(f.store.getClaimAttempt(project)).toBeNull(); expect(f.store.getTask({ serverOrigin: origin, projectId: project.projectId, taskId: candidate.id, claimId: attempt.claimId })).toMatchObject({ userId: uuid(2), configuration, nativeExecution: null, resources: { worktree: null, herdr: null, nativeSession: null } }); expect(f.tasks.start).not.toHaveBeenCalled(); expect(f.git.prepareWorktree).not.toHaveBeenCalled();
   });
@@ -1191,11 +1191,11 @@ describe("worker foreground coordinator", () => {
     const f = await fixture();
     const candidate = f.candidates.get(f.projects[0]!.projectId)![0]!;
     const claimId = uuid(950);
-    f.granted.set(claimId, { ...candidate, version: 5n, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId, state: "active", userId: uuid(2), workerId, machine: { id: uuid(3), name: "fixture" }, platform: "linux", agent: "copilot", worktreeId: uuid(951), phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
+    f.granted.set(claimId, { ...candidate, version: 5n, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId, state: "active", userId: uuid(2), workerId, machine: { id: uuid(3), name: "fixture" }, platform: "linux", agent: "copilot", agentControlMode: "herdr", worktreeId: uuid(951), phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } });
     f.candidates.set(f.projects[0]!.projectId, []);
     await f.coordinator.tick();
     const task = f.store.listTasks()[0]!;
-    expect(task.configuration).toEqual({ agent: "copilot", model: null, args: [], recoveryLimit: configuration.recoveryLimit });
+    expect(task.configuration).toEqual({ agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: configuration.recoveryLimit });
     expect(f.tasks.start).toHaveBeenCalledOnce();
     expect(f.tasks.start.mock.calls[0]![0].agent).toBe("copilot");
     expect(task.resources.nativeSession?.sessionId).toBe(uuid(1001));
@@ -1364,4 +1364,118 @@ describe("worker foreground coordinator", () => {
     expect(f.store.getTask(original)).toMatchObject({ nativeExecution: { stopObservation: originalProcessProof }, resources: { nativeSession: { sessionId: uuid(1200) } }, cleanup: { deadline: 601000, agentStopped: true, workspaceClosed: true, worktreeDeleted: kind === "release" } }); expect(vi.mocked(f.herdr.tasks.forceStop).mock.calls[0]![2]).toEqual(originalProcessProof); expect(f.tasks.closeWorkspace).toHaveBeenCalledOnce(); expect(gate.nativeLaunches()).toBe(1); expect(gate.managedInputs()).toBe(1);
   });
 
+});
+
+
+describe("unavailable coordinator backends", () => {
+  it.each([{ agent: "codex", agentControlMode: "web" }] as const)("refuses %j before claims or Herdr startup", async (backend) => {
+    const f = await fixture();
+    const coordinator = createWorkerCoordinator({ ...f.options, repositories: [{ project: f.projects[0]!, configuration: { ...configuration, ...backend } }] });
+    await expect(coordinator.tick()).rejects.toThrow(/not implemented/i);
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+    expect(f.remote.claim).not.toHaveBeenCalled();
+    expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+  });
+  it("retains frozen web cleanup responsibility without using Herdr", async () => {
+    const f = await fixture();
+    const identity = { ...f.projects[0]!, taskId: uuid(100), claimId: uuid(800), workerId, worktreeId: uuid(801) };
+    f.store.registerPending(identity, { kind: "new", configuration: { ...configuration, agentControlMode: "web" } }, 1, uuid(2));
+    f.store.beginCleanup(identity, { kind: "terminal", deadline: 10000 }, 2);
+    await f.coordinator.advanceCommittedCleanups(identity);
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+    expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    expect(f.store.getTask(identity)).toMatchObject({ status: "active", configuration: { agentControlMode: "web" }, cleanup: { agentStopped: false } });
+    expect(await f.coordinator.shutdown()).toBe(false);
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+  });
+});
+
+it("retains a remote web claim without opening Herdr during reconciliation or shutdown", async () => {
+  const f = await fixture();
+  const candidate = f.candidates.get(f.projects[0]!.projectId)![0]!;
+  f.granted.set(uuid(800), { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(800), worktreeId: uuid(801), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web", state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: candidate.createdAt } } });
+  await expect(f.coordinator.tick()).rejects.toThrow(/not implemented/i);
+  expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+  expect(await f.coordinator.shutdown()).toBe(false);
+  expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+  expect(f.remote.claim).not.toHaveBeenCalled();
+  expect(f.granted.size).toBe(1);
+});
+it("routes Web acquisition, observation and shutdown without accessing Herdr", async () => {
+  const f = await fixture();
+  const repositories = f.options.repositories.map(r => ({ ...r, configuration: { ...r.configuration, agentControlMode: "web" as const, args: [] } }));
+  const webBackend = {
+    advance: vi.fn(async (task: LocalTask) => f.store.initializeWebExecution(task, 1000)),
+    cleanup: vi.fn(async (task: LocalTask, kind: "terminal" | "shutdown", deadline: number) => {
+      f.store.beginCleanup(task, { kind, deadline }, 1000);
+      f.store.recordCleanupInputOutcome(task, "unavailable", 1000); f.store.recordCleanupResult(task, "unavailable", null, 1000);
+      f.store.confirmAgentStopped(task, { agentStopped: true }, 1000);
+      return f.store.confirmBackendResourcesClosed(task, { controllerStopped: true, endpointClosed: true }, 1000);
+    }),
+  };
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories, webBackend });
+  await coordinator.tick(); await coordinator.tick();
+  expect(webBackend.advance).toHaveBeenCalledTimes(2);
+  expect(f.store.listTasks()).toHaveLength(1);
+  expect(f.store.listTasks()[0]?.resources.herdr).toBeNull();
+  expect(await coordinator.shutdown()).toBe(true);
+  expect(webBackend.cleanup).toHaveBeenCalledOnce();
+  expect(f.herdr.ensureInstance).not.toHaveBeenCalled(); expect(f.tasks.listResources).not.toHaveBeenCalled();
+});
+it("retains a Web inventory claim with a lost ledger without inferring an unstarted native session", async () => {
+  const f = await fixture(); const candidate = f.candidates.get(f.projects[0]!.projectId)![0]!;
+  f.granted.set(uuid(800), { ...candidate, status: "in_progress", ready: false, properties: { ...candidate.properties, worker: { claimId: uuid(800), worktreeId: uuid(801), workerId, userId: uuid(2), machine: f.options.machine, platform: "linux", agent: "codex", agentControlMode: "web", state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: candidate.createdAt } } });
+  const webBackend = { advance: vi.fn(), cleanup: vi.fn() };
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories: f.options.repositories.map(r=>({...r,configuration:{...r.configuration,agentControlMode:"web",args:[]}})), webBackend });
+  await coordinator.tick(); await coordinator.tick();
+  expect(f.store.listTasks()).toHaveLength(1);
+  expect(f.store.listTasks()[0]).toMatchObject({ status:"active",configuration:null,resources:{mode:"web",herdr:null},webExecution:null,recovery:{pauseReason:"Original frozen execution configuration is missing."} });
+  expect(webBackend.advance).not.toHaveBeenCalled(); expect(f.herdr.ensureInstance).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
+});
+it("refuses a new Web claim before persisting its intent when the server protocol probe fails",async()=>{
+ const f=await fixture();const probe=vi.fn(async()=>{throw new Error("Session protocol unavailable");});
+ const coordinator=createWorkerCoordinator({...f.options,repositories:f.options.repositories.map(r=>({...r,configuration:{...r.configuration,agentControlMode:"web",args:[]}})),webBackend:{advance:vi.fn(),cleanup:vi.fn()},verifyWebServer:probe});
+ await expect(coordinator.tick()).rejects.toThrow("Session protocol unavailable");
+ expect(f.remote.claim).not.toHaveBeenCalled();expect(f.store.getClaimAttempt(f.projects[0]!)).toBeNull();expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+});
+
+it.each(["codex", "claude"] as const)("keeps %s Web task versions stable across native approval and turn activity", async (agent) => {
+  const f = await fixture();
+  const repositories = f.options.repositories.map(repository => ({ ...repository, configuration: { ...repository.configuration, agent, agentControlMode: "web" as const, args: [] } }));
+  const webBackend = { advance: vi.fn(async (task: LocalTask) => f.store.initializeWebExecution(task, 1000)), cleanup: vi.fn() };
+  const coordinator = createWorkerCoordinator({ ...f.options, repositories, webBackend });
+  await coordinator.tick();
+  const task = f.store.listTasks()[0]!;
+  const claimedVersion = f.granted.get(task.claimId)!.version;
+  f.store.updateWebExecution(task, { activity: "waiting_input" }, 1000);
+  await coordinator.tick();
+  expect(f.granted.get(task.claimId)).toMatchObject({ version: claimedVersion, properties: { worker: { phase: "preparing" } } });
+  expect(f.remote.update).not.toHaveBeenCalled();
+
+  f.store.updateWebExecution(task, { initialInputState: "confirmed", activity: "working" }, 1000);
+  f.store.bindNativeSession(task, { source: "controller", sessionId: uuid(1500) }, 1000);
+  await coordinator.tick();
+  const executionVersion = f.granted.get(task.claimId)!.version;
+  expect(executionVersion).toBe(claimedVersion + 1n);
+  expect(f.granted.get(task.claimId)?.properties.worker).toMatchObject({ phase: "executing", nativeSessionId: uuid(1500) });
+  for (const activity of ["waiting_input", "working", "idle", "waiting_input", "working", "unknown"] as const) {
+    // The agent may read this version before its next task write requests native approval.
+    const readVersion = f.granted.get(task.claimId)!.version;
+    f.store.updateWebExecution(task, { activity }, 1000);
+    await coordinator.tick();
+    expect(f.granted.get(task.claimId)!.version).toBe(readVersion);
+    expect(f.granted.get(task.claimId)?.properties.worker?.phase).toBe("executing");
+  }
+  expect(f.remote.update).toHaveBeenCalledOnce();
+
+  f.store.pauseTask(task, "Original controller stop could not be proven.", 1000);
+  await coordinator.tick();
+  const pausedVersion = f.granted.get(task.claimId)!.version;
+  expect(pausedVersion).toBe(executionVersion + 1n);
+  expect(f.granted.get(task.claimId)?.properties.worker?.phase).toBe("paused");
+  f.store.updateWebExecution(task, { activity: "waiting_input" }, 1000);
+  await coordinator.tick();
+  expect(f.granted.get(task.claimId)!.version).toBe(pausedVersion);
+  expect(f.remote.update).toHaveBeenCalledTimes(2);
+  expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
 });

@@ -47,8 +47,8 @@ const fixture = async () => {
   const store = openWorkerStore(paths.databaseFile); stores.add(store);
   const project = { serverOrigin: origin, projectId: uuid(1), repoUrl: "https://example.test/org/repo.git", localPath: path.join(homeDirectory, "repo") };
   store.registerProject(project);
-  const task = store.registerPending({ ...project, taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5) }, { kind: "new", configuration: { agent: "codex", model: null, args: [], recoveryLimit: 2 } }, 1, uuid(6));
-  const sibling = store.registerPending({ ...project, taskId: uuid(12), claimId: uuid(13), workerId: uuid(4), worktreeId: uuid(15) }, { kind: "new", configuration: { agent: "copilot", model: null, args: [], recoveryLimit: 2 } }, 1, uuid(6));
+  const task = store.registerPending({ ...project, taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5) }, { kind: "new", configuration: { agent: "codex", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 2 } }, 1, uuid(6));
+  const sibling = store.registerPending({ ...project, taskId: uuid(12), claimId: uuid(13), workerId: uuid(4), worktreeId: uuid(15) }, { kind: "new", configuration: { agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 2 } }, 1, uuid(6));
   const request = { kind: "release" as const, taskId: task.taskId, claimId: task.claimId, version: 5n };
   mocks.submit.mockImplementation(async ({ store: current }: { store: WorkerStore }) => ({ task: current.recordControlIntent(task, { kind: "release", sourceClaimId: task.claimId, version: "5" }, 2), message: "release persisted" }));
   return { homeDirectory, packageDirectory: path.resolve("package"), request, paths, store, task, sibling };
@@ -69,7 +69,7 @@ describe("worker management runtime ownership", () => {
     await runWorkerControl(f);
     expect(advance).toHaveBeenCalledOnce();
     expect(tick).not.toHaveBeenCalled(); expect(shutdown).not.toHaveBeenCalled();
-    expect(mocks.herdr.mock.results[0]!.value.stopInstance).not.toHaveBeenCalled();
+    expect(mocks.herdr).not.toHaveBeenCalled();
     expect(f.store.getTask(f.task)?.status).toBe("done");
     expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
     const next = await acquireWorkerInstanceLock(f.paths); await next.release();

@@ -1,3 +1,6 @@
+import { randomUUID } from "node:crypto";
+import { backendResourcesClosed, taskAgentControlMode, executionSummary } from "./types.js";
+import { validateWorkerAgentMode, workerAgentControlMode } from "../../api/worker-mode.js";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { canonicalId } from "../../api/parse.js";
@@ -5,7 +8,7 @@ import { normalizeServerUrl } from "../../config/server.js";
 import type { WorkerHerdr } from "../../api/types.js";
 import { parseHerdrExecutionLabel } from "./herdr/agents.js";
 import type { HerdrLaunchEvidence, HerdrStopObservation, HerdrTaskBinding, HerdrWorkspaceEvidence } from "./herdr/agents.js";
-import type { ClaimAttempt, ClaimIdentity, CleanupState, ControlIntent, ControlState, ExecutionResources, ExecutionSummary, FrozenExecutionConfiguration, LocalTask, NativeExecutionState, NativeSessionReference, PendingClaim, PendingConfiguration, ProjectIdentity, RecoveryState, WorkerProject, WorkerProjectRecord, WorktreeBinding } from "./types.js";
+import type { ClaimAttempt, ClaimIdentity, CleanupState, ControlIntent, ControlState, ExecutionResources, ExecutionSummary, FrozenExecutionConfiguration, LocalTask, NativeExecutionState, NativeSessionReference, PendingClaim, PendingConfiguration, ProjectIdentity, RecoveryState, WorkerProject, WorkerProjectRecord, WorktreeBinding, WebExecutionState } from "./types.js";
 
 const integer = (value: unknown, name: string, minimum = 0): number => {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum) throw new Error(`${name} must be a safe integer of at least ${minimum}.`);
@@ -50,9 +53,10 @@ const exactVersion = (value: bigint): string => {
 const projectKey = (value: ProjectIdentity): ProjectIdentity => ({ serverOrigin: normalizeServerUrl(value.serverOrigin), projectId: id(value.projectId, "Project ID") });
 const claimKey = (value: ClaimIdentity): ClaimIdentity => ({ ...projectKey(value), taskId: id(value.taskId, "Task ID"), claimId: id(value.claimId, "Claim ID") });
 const parseConfiguration = (value: unknown): FrozenExecutionConfiguration => {
-  const data = record(value, ["agent", "model", "args", "recoveryLimit"], "Frozen execution configuration");
+  const data = record(value, ["agent", "agentControlMode", "model", "args", "recoveryLimit"], "Frozen execution configuration");
   if (!Array.isArray(data.args)) throw new Error("Agent arguments must be an array.");
-  return { agent: oneOf(data.agent, ["copilot", "codex"], "Agent"), model: nullable(data.model, (entry) => text(entry, "Model")),
+  const agentControlMode = workerAgentControlMode(data);
+  return { agent: validateWorkerAgentMode(data.agent, agentControlMode), agentControlMode, model: nullable(data.model, (entry) => text(entry, "Model")),
     args: data.args.map((entry) => text(entry, "Agent argument", true)), recoveryLimit: integer(data.recoveryLimit, "Recovery limit") };
 };
 const parseClaimAttempt = (value: unknown): ClaimAttempt => {
@@ -69,11 +73,13 @@ const parseHerdr = (value: unknown): WorkerHerdr => {
 };
 const parseNative = (value: unknown): NativeSessionReference => {
   const data = record(value, ["sessionId", "source"], "Native session reference");
-  return { sessionId: text(data.sessionId, "Native session ID"), source: oneOf(data.source, ["herdr", "native-history"], "Native reference source") };
+  return { sessionId: text(data.sessionId, "Native session ID"), source: oneOf(data.source, ["herdr", "native-history", "controller"], "Native reference source") };
 };
 const parseResources = (value: unknown): ExecutionResources => {
-  const data = record(value, ["worktree", "herdr", "nativeSession"], "Execution resources");
-  return { worktree: nullable(data.worktree, parseWorktree), herdr: nullable(data.herdr, parseHerdr), nativeSession: nullable(data.nativeSession, parseNative) };
+  const web = typeof value === "object" && value !== null && "mode" in value && value.mode === "web";
+  const data = record(value, ["worktree", "herdr", "nativeSession", ...(web ? ["mode"] : [])], "Execution resources");
+  if (web && data.herdr !== null) throw new Error("Web resources cannot contain a Herdr binding.");
+  return { ...(web ? { mode: "web" as const } : {}), worktree: nullable(data.worktree, parseWorktree), herdr: nullable(data.herdr, parseHerdr), nativeSession: nullable(data.nativeSession, parseNative) };
 };
 const parseTaskBinding = (value: unknown): HerdrTaskBinding => {
   const data = record(value, ["session", "workspaceId", "paneId", "terminalId"], "Local Herdr binding");
@@ -124,6 +130,10 @@ const parseNativeExecution = (value: unknown): NativeExecutionState => {
 };
 const freshNativeExecution = (): NativeExecutionState => ({ terminalId: null, workspaceSubmission: "not-submitted", workspaceEvidence: null, launchEvidence: null, launchSubmission: "never-submitted", promptSubmission: "not-submitted", stopObservation: null, summary: null });
 const unknownNativeExecution = (): NativeExecutionState => ({ ...freshNativeExecution(), workspaceSubmission: "unknown", launchSubmission: "unknown", promptSubmission: "unknown" });
+const withExecutionSummary = (task: LocalTask, summary: ExecutionSummary | null): LocalTask => {
+  if (taskAgentControlMode(task) === "web") { if (task.webExecution == null) throw new Error("Web summary requires its durable execution identity."); return { ...task, webExecution: { ...task.webExecution, summary } }; }
+  return { ...task, nativeExecution: { ...(task.nativeExecution ?? unknownNativeExecution()), summary } };
+};
 const withUserScope = (task: LocalTask, userId: string): LocalTask => {
   const owner = id(userId, "Claim user ID");
   if (task.userId !== null && task.userId !== owner) throw new Error("The original authenticated claim owner cannot be replaced.");
@@ -131,6 +141,7 @@ const withUserScope = (task: LocalTask, userId: string): LocalTask => {
   return { ...task, userId: owner };
 };
 export const isUnstartedPendingSource = (task: LocalTask): boolean => {
+  if (task.configuration?.agentControlMode === "web") return task.status === "pending" && task.cleanup === null && task.resources.worktree === null && task.resources.herdr === null && task.resources.nativeSession === null && task.webExecution == null;
   const native = task.nativeExecution;
   return task.status === "pending" && task.cleanup === null && task.resources.worktree === null && task.resources.herdr === null && task.resources.nativeSession === null
     && native !== null && native.terminalId === null && native.workspaceSubmission === "not-submitted" && native.workspaceEvidence === null
@@ -145,15 +156,34 @@ const parseCleanupBaseline = (value: unknown): NonNullable<CleanupState["baselin
   const data = record(value, ["stateChangeSeq", "completionSeq"], "Cleanup completion baseline");
   return { stateChangeSeq: integer(data.stateChangeSeq, "Cleanup state-change sequence"), completionSeq: integer(data.completionSeq, "Cleanup completion sequence") };
 };
+const parseWebExecution = (value: unknown): WebExecutionState => {
+  const data = record(value, ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "sessionId", "executionGeneration", "initialOperationId", "initialPrompt", "launchSubmission", "controllerProcess", "nativeProcesses", "cleanupOperationId", "ticketPath", ...["summary", "initialInputState", "activity", "nativeHome", "restartAfterShutdown"].filter(key => typeof value === "object" && value !== null && Object.hasOwn(value,key))], "Web execution");
+  for (const key of ["executionId", "registrationId", "controllerId", "controllerInstanceId", "launchId", "initialOperationId"]) id(data[key], key);
+  for (const key of ["sessionId", "cleanupOperationId"]) nullable(data[key], entry => id(entry, key));
+  version(data.executionGeneration); oneOf(data.launchSubmission, ["not-submitted", "unknown", "acknowledged"], "Controller launch submission");
+  nullable(data.initialPrompt, entry => text(entry, "Initial prompt")); nullable(data.ticketPath, entry => absolutePath(entry, "Controller ticket"));
+  const proof = (value: unknown): void => { const hasJob = typeof value === "object" && value !== null && "jobObjectName" in value; const p = record(value, ["pid", "parentPid", "processGroupId", "startedAt", "commandHash", ...(hasJob ? ["jobObjectName"] : [])], "Process proof"); if (hasJob && (typeof p.jobObjectName !== "string" || !/^Local\\Daynight-[0-9a-f-]{36}$/.test(p.jobObjectName))) throw new Error("Invalid Windows job identity."); integer(p.pid, "Process ID", 1); integer(p.parentPid, "Parent ID"); nullable(p.processGroupId, entry => integer(entry, "Process group", 1)); text(p.startedAt, "Process creation"); if (typeof p.commandHash !== "string" || !/^[a-f0-9]{64}$/.test(p.commandHash)) throw new Error("Invalid process command proof."); };
+  if (data.controllerProcess !== null) proof(data.controllerProcess);
+  if (!Array.isArray(data.nativeProcesses)) throw new Error("Native process evidence must be an array."); data.nativeProcesses.forEach(proof);
+  data.restartAfterShutdown ??= false; bool(data.restartAfterShutdown, "Orderly controller restart");
+  data.nativeHome ??= null; nullable(data.nativeHome, entry => absolutePath(entry, "Native profile home"));
+  data.summary ??= null; data.initialInputState ??= "unknown"; data.activity ??= "unknown";
+  nullable(data.summary, parseExecutionSummary);
+  oneOf(data.initialInputState, ["not_submitted", "dispatching", "provider_accepted", "confirmed", "failed", "unknown"], "Initial input state");
+  oneOf(data.activity, ["initializing", "idle", "working", "waiting_input", "stopped", "unknown"], "Controller activity");
+  return data as WebExecutionState;
+};
 const parseCleanup = (value: unknown): CleanupState => {
-  const data = record(value, ["kind", "startedAt", "deadline", "input", "baseline", "result", "error", "agentStopped", "workspaceClosed", "worktreeDeleted"], "Cleanup state");
+  const web = typeof value === "object" && value !== null && "mode" in value && value.mode === "web";
+  const data = record(value, ["kind", "startedAt", "deadline", "input", "baseline", "result", "error", "agentStopped", "workspaceClosed", "worktreeDeleted", ...(web ? ["mode", "backendResourcesClosed"] : [])], "Cleanup state");
+  if (web && data.workspaceClosed !== null) throw new Error("Web cleanup cannot carry a Herdr workspace closure.");
   const result: CleanupState = { kind: oneOf(data.kind, ["terminal", "shutdown"], "Cleanup kind"), startedAt: integer(data.startedAt, "Cleanup start"), deadline: integer(data.deadline, "Cleanup deadline"),
     input: oneOf(data.input, ["not-submitted", "unknown", "submitted", "rejected", "unavailable"], "Cleanup input state"),
     baseline: nullable(data.baseline, parseCleanupBaseline),
     result: nullable(data.result, (entry) => oneOf(entry, ["completed", "timed-out", "failed", "unavailable"], "Cleanup result")), error: nullable(data.error, (entry) => text(entry, "Cleanup error")),
-    agentStopped: bool(data.agentStopped, "Agent stopped"), workspaceClosed: bool(data.workspaceClosed, "Workspace closed"), worktreeDeleted: bool(data.worktreeDeleted, "Worktree deleted") };
+    agentStopped: bool(data.agentStopped, "Agent stopped"), workspaceClosed: web && data.workspaceClosed === null ? null : bool(data.workspaceClosed, "Workspace closed"), ...(web ? { mode: "web" as const, backendResourcesClosed: bool(data.backendResourcesClosed, "Backend resources closed") } : {}), worktreeDeleted: bool(data.worktreeDeleted, "Worktree deleted") };
   if (result.deadline < result.startedAt || result.deadline - result.startedAt > 600_000) throw new Error("Cleanup deadline must be within ten minutes of its original start.");
-  if ((result.workspaceClosed && !result.agentStopped) || (result.worktreeDeleted && !result.workspaceClosed)) throw new Error("Cleanup progress is out of order.");
+  if ((backendResourcesClosed(result) && !result.agentStopped) || (result.worktreeDeleted && !backendResourcesClosed(result))) throw new Error("Cleanup progress is out of order.");
   if (result.baseline !== null && result.input !== "submitted") throw new Error("A cleanup completion baseline requires confirmed input submission.");
   return result;
 };
@@ -164,11 +194,11 @@ const parseIntent = (value: unknown): ControlIntent => {
     return { kind: "release", sourceClaimId: id(data.sourceClaimId, "Source claim ID"), version: version(data.version) };
   }
   const data = record(value, ["kind", "sourceClaimId", "version", "targetClaimId", "target"], "Transfer intent");
-  const target = record(data.target, ["userId", "workerId", "machine", "platform", "agent", "worktreeId"], "Transfer target");
+  const target = record(data.target, ["userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId"], "Transfer target");
   const machine = record(target.machine, ["id", "name"], "Transfer machine");
   return { kind: oneOf(data.kind, ["transfer"], "Control kind"), sourceClaimId: id(data.sourceClaimId, "Source claim ID"), version: version(data.version), targetClaimId: id(data.targetClaimId, "Target claim ID"),
     target: { userId: id(target.userId, "Target user ID"), workerId: id(target.workerId, "Target worker ID"), machine: { id: id(machine.id, "Machine ID"), name: text(machine.name, "Machine name") },
-      platform: oneOf(target.platform, ["linux", "windows", "macos"], "Target platform"), agent: oneOf(target.agent, ["copilot", "codex"], "Target agent"), worktreeId: id(target.worktreeId, "Target worktree ID") } };
+      platform: oneOf(target.platform, ["linux", "windows", "macos"], "Target platform"), agent: validateWorkerAgentMode(target.agent, workerAgentControlMode(target)), agentControlMode: workerAgentControlMode(target), worktreeId: id(target.worktreeId, "Target worktree ID") } };
 };
 const parseControl = (value: unknown): ControlState => {
   const data = record(value, ["intent", "requestedAt", "submission", "submittedAt", "outcome", "resultVersion", "error"], "Control state");
@@ -212,11 +242,12 @@ type ProjectRow = WorkerProject & { claimAttempt: string | null };
 const asProject = (row: ProjectRow): WorkerProjectRecord => ({ ...row, claimAttempt: row.claimAttempt === null ? null : parseClaimAttempt(JSON.parse(row.claimAttempt) as unknown) });
 const taskColumns = `server_origin AS serverOrigin, project_id AS projectId, task_id AS taskId, claim_id AS claimId,
   worker_id AS workerId, worktree_id AS worktreeId, user_id AS userId, status, repo_url AS repoUrl, repository_path AS repositoryPath,
-  configuration, resources, native_execution AS nativeExecution, recovery, cleanup, control, created_at AS createdAt, updated_at AS updatedAt`;
-type TaskRow = Omit<LocalTask, "configuration" | "resources" | "nativeExecution" | "recovery" | "cleanup" | "control"> & {
-  configuration: string | null; resources: string; nativeExecution: string | null; recovery: string; cleanup: string | null; control: string | null;
+  configuration, resources, native_execution AS nativeExecution, web_execution AS webExecution, recovery, cleanup, control, created_at AS createdAt, updated_at AS updatedAt`;
+type TaskRow = Omit<LocalTask, "configuration" | "resources" | "nativeExecution" | "webExecution" | "recovery" | "cleanup" | "control"> & {
+  configuration: string | null; resources: string; nativeExecution: string | null; webExecution: string | null; recovery: string; cleanup: string | null; control: string | null;
 };
 const asTask = (row: TaskRow): LocalTask => validateNativeExecution({ ...row,
+  webExecution: row.webExecution === null ? null : parseWebExecution(JSON.parse(row.webExecution) as unknown),
   userId: row.userId === null ? null : id(row.userId, "Claim user ID"),
   configuration: row.configuration === null ? null : parseConfiguration(JSON.parse(row.configuration) as unknown),
   nativeExecution: row.nativeExecution === null ? null : parseNativeExecution(JSON.parse(row.nativeExecution) as unknown),
@@ -234,13 +265,14 @@ const schema = `
     status TEXT NOT NULL CHECK(status IN ('pending', 'active', 'done')),
     repo_url TEXT NOT NULL, repository_path TEXT NOT NULL,
     configuration TEXT CHECK(configuration IS NULL OR json_valid(configuration)),
+    web_execution TEXT CHECK(web_execution IS NULL OR json_valid(web_execution)),
     resources TEXT NOT NULL CHECK(json_valid(resources)), native_execution TEXT CHECK(native_execution IS NULL OR json_valid(native_execution)), recovery TEXT NOT NULL CHECK(json_valid(recovery)),
     cleanup TEXT CHECK(cleanup IS NULL OR json_valid(cleanup)), control TEXT CHECK(control IS NULL OR json_valid(control)),
     created_at INTEGER NOT NULL CHECK(created_at >= 0), updated_at INTEGER NOT NULL CHECK(updated_at >= 0),
     PRIMARY KEY(server_origin, project_id, task_id, claim_id), UNIQUE(server_origin, claim_id)
   ) STRICT;
   CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(server_origin, project_id, task_id) WHERE status = 'active';
-  PRAGMA user_version = 3;
+  PRAGMA user_version = 5;
 `;
 
 export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?: number } = {}) => {
@@ -255,7 +287,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     if (db.pragma("synchronous", { simple: true }) !== 2) throw new Error("SQLite refused synchronous=FULL.");
     db.transaction(() => {
       const currentVersion = db.pragma("user_version", { simple: true }) as number;
-      if (currentVersion !== 0 && currentVersion !== 1 && currentVersion !== 2 && currentVersion !== 3) throw new Error(`Unsupported worker SQLite schema version ${currentVersion}; supported version is 3.`);
+      if (currentVersion !== 0 && currentVersion !== 1 && currentVersion !== 2 && currentVersion !== 3 && currentVersion !== 4 && currentVersion !== 5) throw new Error(`Unsupported worker SQLite schema version ${currentVersion}; supported version is 5.`);
       const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[];
       if (currentVersion === 0) {
         if (tables.length !== 0) throw new Error("An unversioned worker database must not contain existing tables.");
@@ -263,6 +295,22 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       } else if (!same(tables.map(({ name }) => name), ["projects", "tasks"])) throw new Error("The worker database does not contain its projects/tasks schema.");
       if (currentVersion === 1) db.exec("ALTER TABLE tasks ADD COLUMN native_execution TEXT CHECK(native_execution IS NULL OR json_valid(native_execution)); ALTER TABLE tasks ADD COLUMN user_id TEXT; ALTER TABLE projects ADD COLUMN claim_attempt TEXT CHECK(claim_attempt IS NULL OR json_valid(claim_attempt)); UPDATE tasks SET cleanup = json_set(cleanup, '$.baseline', json('null')) WHERE cleanup IS NOT NULL; PRAGMA user_version = 2;");
       if (currentVersion === 1 || currentVersion === 2) db.exec("UPDATE tasks SET native_execution = json_set(native_execution, '$.stopObservation.nativeProcessIds', json('null')) WHERE native_execution IS NOT NULL AND json_type(native_execution, '$.stopObservation') = 'object'; PRAGMA user_version = 3;");
+      if (currentVersion >= 1 && currentVersion <= 3) db.exec(`
+        UPDATE tasks SET configuration = json_set(configuration, '$.agentControlMode', 'herdr')
+          WHERE configuration IS NOT NULL AND json_type(configuration, '$.agentControlMode') IS NULL;
+        UPDATE projects SET claim_attempt = json_set(claim_attempt, '$.configuration.agentControlMode', 'herdr')
+          WHERE claim_attempt IS NOT NULL AND json_type(claim_attempt, '$.configuration') = 'object'
+            AND json_type(claim_attempt, '$.configuration.agentControlMode') IS NULL;
+        UPDATE tasks SET control = json_set(control, '$.intent.target.agentControlMode', 'herdr')
+          WHERE control IS NOT NULL AND json_extract(control, '$.intent.kind') = 'transfer'
+            AND json_type(control, '$.intent.target.agentControlMode') IS NULL;
+        PRAGMA user_version = 4;
+      `);
+      if (currentVersion >= 1 && currentVersion <= 4) {
+        const columns = db.prepare("PRAGMA table_info(tasks)").all() as { name: string }[];
+        if (!columns.some(column => column.name === "web_execution")) db.exec("ALTER TABLE tasks ADD COLUMN web_execution TEXT CHECK(web_execution IS NULL OR json_valid(web_execution));");
+        db.pragma("user_version = 5");
+      }
       db.prepare(`SELECT ${projectColumns} FROM projects LIMIT 0`).all();
       db.prepare(`SELECT ${taskColumns} FROM tasks LIMIT 0`).all();
     }).immediate();
@@ -286,9 +334,9 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
   };
   const writeTask = (task: LocalTask): LocalTask => {
     validateNativeExecution(task);
-    const values = { ...task, configuration: task.configuration === null ? null : JSON.stringify(parseConfiguration(task.configuration)), resources: JSON.stringify(parseResources(task.resources)), nativeExecution: task.nativeExecution === null ? null : JSON.stringify(parseNativeExecution(task.nativeExecution)), recovery: JSON.stringify(parseRecovery(task.recovery)),
+    const values = { ...task, webExecution: task.webExecution == null ? null : JSON.stringify(parseWebExecution(task.webExecution)), configuration: task.configuration === null ? null : JSON.stringify(parseConfiguration(task.configuration)), resources: JSON.stringify(parseResources(task.resources)), nativeExecution: task.nativeExecution === null ? null : JSON.stringify(parseNativeExecution(task.nativeExecution)), recovery: JSON.stringify(parseRecovery(task.recovery)),
       cleanup: task.cleanup === null ? null : JSON.stringify(parseCleanup(task.cleanup)), control: task.control === null ? null : JSON.stringify(parseControl(task.control)) };
-    db.prepare(`UPDATE tasks SET user_id = @userId, status = @status, configuration = @configuration, resources = @resources, native_execution = @nativeExecution, recovery = @recovery,
+    db.prepare(`UPDATE tasks SET user_id = @userId, status = @status, configuration = @configuration, resources = @resources, native_execution = @nativeExecution, web_execution = @webExecution, recovery = @recovery,
       cleanup = @cleanup, control = @control, updated_at = @updatedAt
       WHERE server_origin = @serverOrigin AND project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).run(values);
     return needTask(task);
@@ -309,7 +357,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
   };
   const fullyCleaned = (task: LocalTask): void => {
     const cleanup = needCleanup(task);
-    if (cleanup.kind !== "terminal" || cleanup.result === null || !cleanup.agentStopped || !cleanup.workspaceClosed || !cleanup.worktreeDeleted) throw new Error("Terminal cleanup must record its result and confirm agent stopped, workspace closed and worktree deleted.");
+    if (cleanup.kind !== "terminal" || cleanup.result === null || !cleanup.agentStopped || !backendResourcesClosed(cleanup) || !cleanup.worktreeDeleted) throw new Error("Terminal cleanup must record its result and confirm agent stopped, workspace closed and worktree deleted.");
   };
   const controlIntent = (task: LocalTask, input: ControlIntent): ControlIntent => {
     const intent = parseIntent(input);
@@ -395,6 +443,8 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       };
       const existing = getTask(key);
       if (existing !== null) {
+        if (existing.resources.mode === "web" && configuration !== null && configuration.agentControlMode !== "web") throw new Error("The original Web backend ownership cannot change.");
+        if (existing.configuration !== null && configuration !== null && existing.configuration.agentControlMode !== configuration.agentControlMode) throw new Error("The frozen execution mode cannot be replaced on the same claim.");
         if (existing.workerId !== key.workerId || existing.worktreeId !== key.worktreeId) throw new Error("The claim is already bound to a different worker or worktree identity.");
         const scoped = owner === null ? existing : withUserScope(existing, owner);
         const originalConfiguration = confirmAttempt(existing.configuration);
@@ -406,14 +456,41 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       }
       const originalConfiguration = confirmAttempt(configuration);
       const values = { ...key, userId: owner, configuration: originalConfiguration === null ? null : JSON.stringify(originalConfiguration), repoUrl: project.repoUrl, repositoryPath: project.localPath,
-        resources: JSON.stringify({ worktree: null, herdr: null, nativeSession: null }), nativeExecution: input.kind === "new" ? JSON.stringify(freshNativeExecution()) : null, recovery: JSON.stringify({ count: 0, pauseReason: originalConfiguration === null ? "Original frozen execution configuration is missing." : null, retryAuthorized: false }), now };
+        resources: JSON.stringify({ ...(originalConfiguration?.agentControlMode === "web" || input.kind === "recovered" && input.agentControlMode === "web" ? { mode: "web" } : {}), worktree: null, herdr: null, nativeSession: null }), nativeExecution: input.kind === "new" && configuration?.agentControlMode !== "web" ? JSON.stringify(freshNativeExecution()) : null, recovery: JSON.stringify({ count: 0, pauseReason: originalConfiguration === null ? "Original frozen execution configuration is missing." : null, retryAuthorized: false }), now };
       db.prepare(`INSERT INTO tasks(server_origin, project_id, task_id, claim_id, worker_id, worktree_id, user_id, status, repo_url, repository_path, configuration, resources, native_execution, recovery, created_at, updated_at)
         VALUES (@serverOrigin, @projectId, @taskId, @claimId, @workerId, @worktreeId, @userId, 'pending', @repoUrl, @repositoryPath, @configuration, @resources, @nativeExecution, @recovery, @now, @now)`).run(values);
       return needTask(key);
     }),
+    initializeWebExecution: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, task => {
+      if (task.configuration?.agentControlMode !== "web" || task.status !== "active") throw new Error("Web execution requires its active frozen claim.");
+      if (task.webExecution != null) return task;
+      return { ...task, nativeExecution: null, webExecution: { executionId: randomUUID(), registrationId: randomUUID(), controllerId: randomUUID(), controllerInstanceId: randomUUID(), launchId: randomUUID(), sessionId: null, executionGeneration: "1", initialOperationId: randomUUID(), initialPrompt: null, launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, nativeHome: null, summary: null, initialInputState: "not_submitted", activity: "initializing" } };
+    }),
+    updateWebExecution: (identity: ClaimIdentity, patch: Partial<WebExecutionState>, now: number): LocalTask => change(identity, now, task => {
+      if (task.configuration?.agentControlMode !== "web" || task.webExecution == null) throw new Error("The web execution identity is missing.");
+      const previous = task.webExecution;
+      if (patch.restartAfterShutdown !== undefined && patch.restartAfterShutdown !== previous.restartAfterShutdown) throw new Error("Orderly restart provenance requires confirmed shutdown.");
+      for (const key of ["executionGeneration", "controllerInstanceId", "launchId"] as const) if (patch[key] !== undefined && patch[key] !== previous[key]) throw new Error("A new web generation requires verified original process stop.");
+      for (const key of ["executionId", "registrationId", "controllerId", "initialOperationId"] as const) if (patch[key] !== undefined && patch[key] !== previous[key]) throw new Error("The web execution identity cannot be replaced.");
+      if (previous.nativeHome !== null && patch.nativeHome !== undefined && patch.nativeHome !== previous.nativeHome) throw new Error("The original native profile cannot change.");
+      if (previous.initialPrompt !== null && patch.initialPrompt !== undefined && patch.initialPrompt !== previous.initialPrompt) throw new Error("The original managed prompt cannot change.");
+      if (previous.sessionId !== null && patch.sessionId !== undefined && patch.sessionId !== previous.sessionId) throw new Error("The registered session cannot change.");
+      return { ...task, webExecution: parseWebExecution({ ...previous, ...patch }) };
+    }),
+    beginWebGeneration: (identity: ClaimIdentity, previous: { executionGeneration: string; controllerInstanceId: string; nativeSessionId: string | null; nativeStopped: boolean }, now: number): LocalTask => change(identity, now, task => {
+      requireOrdinary(task); const execution = task.webExecution;
+      if (execution == null || task.configuration?.agentControlMode !== "web" || previous.executionGeneration !== execution.executionGeneration || previous.controllerInstanceId !== execution.controllerInstanceId || !previous.nativeStopped || previous.nativeSessionId === null || previous.nativeSessionId !== task.resources.nativeSession?.sessionId) throw new Error("Web recovery requires the exact stopped generation and native identity.");
+      return { ...task, webExecution: { ...execution, executionGeneration: String(BigInt(execution.executionGeneration) + 1n), controllerInstanceId: randomUUID(), launchId: randomUUID(), launchSubmission: "not-submitted", controllerProcess: null, nativeProcesses: [], restartAfterShutdown: false, cleanupOperationId: null, ticketPath: null, activity: "initializing" } };
+    }),
+    confirmBackendResourcesClosed: (identity: ClaimIdentity, proof: { controllerStopped: true; endpointClosed: true }, now: number): LocalTask => change(identity, now, task => {
+      const cleanup = needCleanup(task);
+      if (cleanup.mode !== "web" || !cleanup.agentStopped || proof.controllerStopped !== true || proof.endpointClosed !== true) throw new Error("Web resource closure requires stopped original controller and endpoint.");
+      return { ...task, cleanup: { ...cleanup, backendResourcesClosed: true } };
+    }),
     bindUserScope: (identity: ClaimIdentity, userId: string, now: number): LocalTask => change(identity, now, (task) => withUserScope(task, userId)),
     restoreOriginalConfiguration: (identity: ClaimIdentity, configuration: FrozenExecutionConfiguration, now: number): LocalTask => change(identity, now, (task) => {
       const original = parseConfiguration(configuration);
+      if (task.resources.mode === "web" && original.agentControlMode !== "web") throw new Error("The original execution mode cannot change.");
       if (task.configuration !== null && !same(task.configuration, original)) throw new Error("The frozen execution configuration cannot be replaced.");
       return { ...task, configuration: original };
     }),
@@ -504,33 +581,29 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     markExecutionSummarySubmitting: (identity: ClaimIdentity, input: Omit<ExecutionSummary, "submission">, now: number): LocalTask => change(identity, now, (task) => {
       requireOrdinary(task);
       if (task.status !== "active") throw new Error("Execution summary publication requires an active execution.");
-      const state = task.nativeExecution === null ? unknownNativeExecution() : task.nativeExecution;
-      if (state.summary?.submission === "unknown") throw new Error("The original execution summary mutation is unresolved and cannot be replayed or replaced.");
+      if (executionSummary(task)?.submission === "unknown") throw new Error("The original execution summary mutation is unresolved and cannot be replayed or replaced.");
       const summary = parseExecutionSummary({ ...input, submission: "unknown" });
       if (!same(summary.herdr, task.resources.herdr) || summary.nativeSessionId !== (task.resources.nativeSession === null ? null : task.resources.nativeSession.sessionId)) throw new Error("Execution summary must describe its original actual resource bindings.");
-      return { ...task, nativeExecution: { ...state, summary } };
+      return withExecutionSummary(task, summary);
     }),
     recordExecutionSummaryOutcome: (identity: ClaimIdentity, expectedVersion: string, submission: "confirmed" | "rejected", now: number): LocalTask => change(identity, now, (task) => {
-      const state = task.nativeExecution;
-      const summary = state === null ? null : state.summary;
+      const summary = executionSummary(task);
       const outcome = oneOf(submission, ["confirmed", "rejected"], "Summary mutation outcome");
       if (summary === null || summary.version !== version(expectedVersion) || (summary.submission !== "unknown" && summary.submission !== outcome)) throw new Error("The original execution summary submission does not match this outcome.");
-      return { ...task, nativeExecution: { ...state!, summary: { ...summary, submission: outcome } } };
+      return withExecutionSummary(task, { ...summary, submission: outcome });
     }),
     recordExecutionSummaryNotSubmitted: (identity: ClaimIdentity, expectedVersion: string, proof: { notSubmitted: true }, now: number): LocalTask => change(identity, now, (task) => {
-      const state = task.nativeExecution;
-      const summary = state === null ? null : state.summary;
+      const summary = executionSummary(task);
       if (summary === null || summary.submission !== "unknown" || summary.version !== version(expectedVersion)) throw new Error("The original unresolved execution summary does not match this non-submission.");
       if (proof.notSubmitted !== true) throw new Error("Clearing an execution summary requires proven non-submission before dispatch.");
-      return { ...task, nativeExecution: { ...state!, summary: null } };
+      return withExecutionSummary(task, null);
     }),
     reconcileExecutionSummary: (identity: ClaimIdentity, input: Omit<ExecutionSummary, "submission">, now: number): LocalTask => change(identity, now, (task) => {
-      const state = task.nativeExecution;
-      const summary = state === null ? null : state.summary;
+      const summary = executionSummary(task);
       const observed = parseExecutionSummary({ ...input, submission: "confirmed" });
       if (summary === null || summary.submission !== "unknown" || BigInt(observed.version) <= BigInt(summary.version)) return task;
       const matched = same(observed.herdr, summary.herdr) && observed.nativeSessionId === summary.nativeSessionId && observed.phase === summary.phase;
-      return { ...task, nativeExecution: { ...state!, summary: matched ? { ...summary, submission: "confirmed" } : null } };
+      return withExecutionSummary(task, matched ? { ...summary, submission: "confirmed" } : null);
     }),
     rebindHerdr: (identity: ClaimIdentity, expectedPrevious: WorkerHerdr, next: WorkerHerdr, proof: { originalAgentStopped: true; oldWorkspaceClosed: true }, now: number): LocalTask => change(identity, now, (task) => {
       requireOrdinary(task);
@@ -553,7 +626,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       return { ...task, resources: { ...task.resources, herdr: { session: binding.session, workspaceId: binding.workspaceId, paneId: binding.paneId } }, nativeExecution: { ...freshNativeExecution(), terminalId: binding.terminalId, workspaceSubmission: "acknowledged", workspaceEvidence: workspaceEvidence === null ? null : parseWorkspaceEvidence(workspaceEvidence), summary: state.summary } };
     }),
     bindNativeSession: (identity: ClaimIdentity, reference: NativeSessionReference, now: number): LocalTask => change(identity, now, (task) => {
-      if (task.status !== "active" || task.resources.herdr === null) throw new Error("Native history binding requires an active Herdr workspace.");
+      if (task.status !== "active" || (task.configuration?.agentControlMode === "web" ? task.webExecution == null || reference.source !== "controller" : task.resources.herdr === null)) throw new Error("Native history binding requires its active execution backend.");
       const value = parseNative(reference);
       if (task.resources.nativeSession !== null && task.resources.nativeSession.sessionId !== value.sessionId) throw new Error("The original native session cannot be replaced.");
       return { ...task, resources: { ...task.resources, nativeSession: value } };
@@ -581,7 +654,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       const existing = task.cleanup;
       if (existing !== null) return { ...task, cleanup: { ...existing, kind: existing.kind === "terminal" ? "terminal" : input.kind } };
       if (task.control !== null && input.kind !== "terminal") throw new Error("A source control intent requires terminal cleanup.");
-      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: false, worktreeDeleted: false }) };
+      return { ...task, status: "active", cleanup: parseCleanup({ kind: input.kind, startedAt: now, deadline: input.deadline, input: "not-submitted", baseline: null, result: null, error: null, agentStopped: false, workspaceClosed: taskAgentControlMode(task) === "web" ? null : false, ...(taskAgentControlMode(task) === "web" ? { mode: "web" as const, backendResourcesClosed: false } : {}), worktreeDeleted: false }) };
     }),
     markCleanupInputSubmitting: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, (task) => {
       const cleanup = needCleanup(task);
@@ -616,18 +689,20 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     }),
     confirmWorkspaceClosed: (identity: ClaimIdentity, proof: { workspaceClosed: true }, now: number): LocalTask => change(identity, now, (task) => {
       const cleanup = needCleanup(task);
+      if (taskAgentControlMode(task) === "web") throw new Error("Web executions do not have a Herdr workspace.");
       if (!cleanup.agentStopped || proof.workspaceClosed !== true) throw new Error("Workspace closure requires confirmed original agent stop.");
       return { ...task, cleanup: { ...cleanup, workspaceClosed: true } };
     }),
     confirmWorktreeDeleted: (identity: ClaimIdentity, proof: { worktreeDeleted: true }, now: number): LocalTask => change(identity, now, (task) => {
       const cleanup = needCleanup(task);
-      if (cleanup.kind !== "terminal" || !cleanup.workspaceClosed || proof.worktreeDeleted !== true) throw new Error("Worktree deletion requires confirmed workspace closure and terminal cleanup.");
+      if (cleanup.kind !== "terminal" || !backendResourcesClosed(cleanup) || proof.worktreeDeleted !== true) throw new Error("Worktree deletion requires confirmed workspace closure and terminal cleanup.");
       return { ...task, cleanup: { ...cleanup, worktreeDeleted: true } };
     }),
     resumeAfterShutdown: (identity: ClaimIdentity, now: number): LocalTask => change(identity, now, (task) => {
       const cleanup = needCleanup(task);
-      if (cleanup.kind !== "shutdown" || cleanup.result === null || !cleanup.agentStopped || !cleanup.workspaceClosed || task.control !== null) throw new Error("Shutdown resume requires the original agent stopped, workspace closed and its cleanup result recorded.");
+      if (cleanup.kind !== "shutdown" || cleanup.result === null || !cleanup.agentStopped || !backendResourcesClosed(cleanup) || task.control !== null) throw new Error("Shutdown resume requires the original agent stopped, workspace closed and its cleanup result recorded.");
       if (task.configuration === null) throw new Error("The original frozen execution configuration is missing.");
+      if (task.configuration.agentControlMode === "web") return { ...task, cleanup: null, webExecution: task.webExecution == null ? null : { ...task.webExecution, restartAfterShutdown: task.webExecution.launchSubmission !== "not-submitted" } };
       if (task.resources.nativeSession === null && task.nativeExecution?.launchSubmission !== "never-submitted") return { ...task, cleanup: null, recovery: { ...task.recovery, pauseReason: "The original native session ID is missing; recover its exact history identity before resuming this claim." } };
       return { ...task, cleanup: null, resources: { ...task.resources, herdr: null }, nativeExecution: { ...freshNativeExecution(), summary: task.nativeExecution === null ? null : task.nativeExecution.summary } };
     }),
@@ -648,7 +723,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     confirmUnstartedControlCleanup: (identity: ClaimIdentity, proof: { completeHerdrInventory: true; noOwnedResources: true }, deadline: number, now: number): LocalTask => change(identity, now, (task) => {
       if (proof.completeHerdrInventory !== true || proof.noOwnedResources !== true) throw new Error("An unstarted source cleanup requires a complete Herdr inventory proving no original resources.");
       if (task.userId === null || task.control === null || !isUnstartedPendingSource(task)) throw new Error("Only a scoped unstarted pending source with a saved control intent can finish without activation.");
-      return { ...task, cleanup: parseCleanup({ kind: "terminal", startedAt: now, deadline, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: true }) };
+      return { ...task, cleanup: parseCleanup({ kind: "terminal", startedAt: now, deadline, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: taskAgentControlMode(task) === "web" ? null : true, ...(taskAgentControlMode(task) === "web" ? { mode: "web" as const, backendResourcesClosed: true } : {}), worktreeDeleted: true }) };
     }),
     markControlSubmitting: (identity: ClaimIdentity, expectedVersion: bigint, now: number): LocalTask => change(identity, now, (task) => {
       fullyCleaned(task);
@@ -723,7 +798,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if (proof.completeOwnClaimInventory !== true || proof.claimAbsent !== true) throw new Error("Completing an unstarted pending claim requires its absence from a successful complete own-claim inventory.");
       if (!isUnstartedPending(task)) throw new Error("Only a proven unstarted pending execution with no resources or outstanding actions can complete directly.");
       if (task.userId === null || task.userId !== id(proof.authenticatedUserId, "Authenticated user ID")) throw new Error("The complete own-claim inventory must belong to the original authenticated claim owner.");
-      const completed: LocalTask = { ...task, status: "done", cleanup: { kind: "terminal", startedAt: now, deadline: now, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: true, worktreeDeleted: true } };
+      const completed: LocalTask = { ...task, status: "done", cleanup: { kind: "terminal", startedAt: now, deadline: now, input: "unavailable", baseline: null, result: "completed", error: null, agentStopped: true, workspaceClosed: taskAgentControlMode(task) === "web" ? null : true, ...(taskAgentControlMode(task) === "web" ? { mode: "web" as const, backendResourcesClosed: true } : {}), worktreeDeleted: true } };
       fullyCleaned(completed);
       return completed;
     }),

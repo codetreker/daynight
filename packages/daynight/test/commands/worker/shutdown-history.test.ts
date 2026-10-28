@@ -12,7 +12,7 @@ import type { FrozenExecutionConfiguration } from "../../../src/commands/worker/
 
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const claim = { serverOrigin: "https://daynight.example", projectId: uuid(1), taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5) };
-const configuration: FrozenExecutionConfiguration = { agent: "codex", model: "frozen-model", args: ["--search"], recoveryLimit: 2 };
+const configuration: FrozenExecutionConfiguration = { agent: "codex", agentControlMode: "herdr", model: "frozen-model", args: ["--search"], recoveryLimit: 2 };
 const stores = new Set<WorkerStore>();
 const roots: string[] = [];
 afterEach(() => { for (const store of stores) store.close(); stores.clear(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });

@@ -16,11 +16,11 @@ const origin = "https://daynight.example";
 const owner = uuid(1), projectId = uuid(2), taskId = uuid(3), claimId = uuid(4), workerId = uuid(5), worktreeId = uuid(6);
 const time = "2026-10-27T00:00:00Z";
 const machine = { id: uuid(7), name: "source" };
-const configuration: FrozenExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 0 };
-const target: Omit<TransferTarget, "worktreeId"> = { userId: uuid(10), workerId: uuid(11), machine: { id: uuid(12), name: "target" }, platform: "macos", agent: "copilot" };
+const configuration: FrozenExecutionConfiguration = { agent: "codex", agentControlMode: "herdr", model: "current-model", args: ["--search"], recoveryLimit: 0 };
+const target: Omit<TransferTarget, "worktreeId"> = { userId: uuid(10), workerId: uuid(11), machine: { id: uuid(12), name: "target" }, platform: "macos", agent: "copilot", agentControlMode: "herdr" };
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-control-tests/", import.meta.url));
 const resources: { directory: string; store: WorkerStore }[] = [];
-const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
+const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", agentControlMode: "herdr", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
 const remoteTask = (worker: WorkerClaim = claim, version = 8n): Task => ({ id: taskId, projectId, title: "Task", description: "", status: worker.state === "active" ? "in_progress" : "todo", version, properties: { worker, pullRequests: [] }, allowAgents: true, requiredPlatform: null, startedAt: worker.state === "active" ? time : null, completedAt: null, createdAt: time, updatedAt: time, ready: worker.state !== "active", dependsOn: [], externalDependsOn: [], blockedBy: [] });
 const fixture = (local = true) => {
   mkdirSync(root, { recursive: true });
@@ -253,4 +253,26 @@ describe("worker explicit resume grants", () => {
     await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toMatchObject({ status: 403 });
     expect(f.store.getClaimAttempt(f.project)).toBeNull(); expect(f.store.listTasks()).toEqual([]);
   });
+});
+
+it.each([{ agent: "codex", agentControlMode: "web" }] as const)("refuses incompatible frozen args for fresh resume backend %j before persisting or submitting a claim", async (backend) => {
+  const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }));
+  vi.mocked(f.remote.resume).mockRejectedValue(new Error("Unexpected resume dispatch"));
+  await expect(submitWorkerControl({ ...f.options, repositories: [{ project: f.project, configuration: { ...configuration, ...backend } }], request: { kind: "resume", taskId, claimId, version: 8n } })).rejects.toThrow(/not implemented|Unsupported.*Web/i);
+  expect(f.remote.resume).not.toHaveBeenCalled();
+  expect(f.store.getClaimAttempt(f.project)).toBeNull();
+  expect(f.store.listTasks()).toEqual([]);
+  expect(f.observed().properties.worker?.state).toBe("released");
+});
+
+it("reconciles an existing unknown resume grant despite an unavailable new default backend", async () => {
+  const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }));
+  const original = vi.mocked(f.remote.resume).getMockImplementation()!;
+  vi.mocked(f.remote.resume).mockImplementationOnce(async (...args) => { await original(...args); throw new Error("Resume response lost"); });
+  const request = { kind: "resume", taskId, claimId, version: 8n } as const;
+  await expect(f.submit(request)).rejects.toThrow("Resume response lost");
+  const resumed = await submitWorkerControl({ ...f.options, repositories: [{ project: f.project, configuration: { ...configuration, agentControlMode: "web" } }], request });
+  expect(resumed.task?.configuration).toEqual(configuration);
+  expect(f.remote.resume).toHaveBeenCalledOnce();
+  expect(f.store.getClaimAttempt(f.project)).toBeNull();
 });

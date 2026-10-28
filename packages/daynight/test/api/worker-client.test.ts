@@ -15,7 +15,7 @@ const newClaimId = "88888888-8888-8888-8888-888888888888";
 const newWorktreeId = "99999999-9999-9999-9999-999999999999";
 const time = "2026-10-24T12:34:56.123456789Z";
 const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId } as const;
-const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
+const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "herdr", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
 const task = (worker: WorkerClaim | null, version = 2n): Task => ({
   id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], worker },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
@@ -79,11 +79,11 @@ describe("in-process worker task API", () => {
       ["POST", `${prefix}/worker-claim`], ["PATCH", `${prefix}/worker-claim`], ["PUT", `${prefix}/status`],
       ["POST", `${prefix}/worker-claim/release`], ["POST", `${prefix}/worker-claim/transfer`], ["POST", `${prefix}/worker-claim/resume`],
     ]);
-    expect(requests[0]!.body).toEqual(initial);
+    expect(requests[0]!.body).toEqual({ ...initial, agentControlMode: "herdr" });
     expect(requests[1]!.body).toEqual(update);
     expect(requests[2]!.body).toEqual({ version: 1n, claimId, status: "done" });
-    expect(requests[4]!.body).toEqual({ version: 1n, claimId, newClaimId, target, worktreeId: newWorktreeId, stoppedConfirmed: true });
-    expect(requests[5]!.body).toEqual({ ...descriptor, claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot", version: 1n, previousClaimId: claimId });
+    expect(requests[4]!.body).toEqual({ version: 1n, claimId, newClaimId, target: { ...target, agentControlMode: "herdr" }, worktreeId: newWorktreeId, stoppedConfirmed: true });
+    expect(requests[5]!.body).toEqual({ ...descriptor, agentControlMode: "herdr", claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot", version: 1n, previousClaimId: claimId });
   });
 
   it.each([true, false, undefined, null])("rejects deprecated continuityConfirmed=%s before any worker write", (continuityConfirmed) => {
@@ -293,4 +293,45 @@ describe("in-process worker task API", () => {
     }
     expect(fetch).not.toHaveBeenCalled();
   });
+});
+
+
+describe("worker execution mode requests", () => {
+  it.each(["claude", "copilot"] as const)("carries the frozen mode through claim, resume and transfer", async (agent) => {
+    const bodies: Record<string, unknown>[] = [];
+    const origin = await listen((_request, response, body) => {
+      bodies.push(body as Record<string, unknown>);
+      respond(response, task({ ...claim(), agent, agentControlMode: "web" } as WorkerClaim));
+    });
+    const client = api(origin);
+    const web = { ...descriptor, agent, agentControlMode: "web" } as const;
+    await client.claimWorkerTask(projectId, taskId, { ...web, version: 1n });
+    await client.resumeWorkerTask(projectId, taskId, { ...web, version: 1n, previousClaimId: newClaimId });
+    await client.transferWorkerClaim(projectId, taskId, { version: 1n, claimId: newClaimId, newClaimId: claimId, target: { userId, workerId, machine: descriptor.machine, platform: descriptor.platform, agent: web.agent, agentControlMode: web.agentControlMode }, worktreeId, stoppedConfirmed: true });
+    expect(bodies[0]).toMatchObject({ agentControlMode: "web", agent });
+    expect(bodies[1]).toMatchObject({ agentControlMode: "web", agent });
+    expect(bodies[2]).toMatchObject({ target: { agentControlMode: "web", agent } });
+  });
+  it.each([null, "other", undefined])("rejects explicit invalid mode %j before dispatch", (agentControlMode) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation(); cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, agentControlMode } as never)).toThrow(/mode/i);
+    expect(() => client.resumeWorkerTask(projectId, taskId, { ...descriptor, version: 1n, previousClaimId: newClaimId, agentControlMode } as never)).toThrow(/mode/i);
+    expect(() => client.transferWorkerClaim(projectId, taskId, { version: 1n, claimId, newClaimId, worktreeId, stoppedConfirmed: true, target: { ...descriptor, userId, agentControlMode } } as never)).toThrow(/mode/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it("rejects unsupported Web providers before dispatch", () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const operation = createOperation(); cleanups.push(() => operation.dispose());
+    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
+    expect(() => client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, agent: "unsupported", agentControlMode: "web" } as never)).toThrow(/agent/i);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+
+it("rejects a claim response whose mode differs from the frozen request", async () => {
+  const origin = await listen((_request, response) => respond(response, task(claim())));
+  await expect(api(origin).claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n, agentControlMode: "web" })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
 });

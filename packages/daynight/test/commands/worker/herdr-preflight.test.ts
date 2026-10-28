@@ -245,3 +245,14 @@ describe("Herdr native prerequisites", () => {
     expect((failure as Error).message).toContain("not valid JSON"); expect((failure as Error).message).not.toContain("secret-invalid-json");
   });
 });
+it("checks Claude root hooks and rejects local hook disabling before starting native execution", async () => {
+  const f = await fixture(); const root = path.join(f.home, ".claude"); await mkdir(path.join(root, "hooks"), { recursive: true });
+  const hook = path.join(root, "hooks", "herdr-agent-state.sh"); await writeFile(hook, "# official fixture\n");
+  await writeFile(path.join(root, "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ matcher: "^(startup|resume|clear|compact|fork)$", hooks: [{ type: "command", command: `bash ${quote(hook)} session` }] }] } }));
+  f.integrations.push({ target: "claude", available: true, state: "current" });
+  const original = f.runCommand.getMockImplementation()!; f.runCommand.mockImplementation(async command => command.file === "claude" ? { stdout: "2.1.247 (Claude Code)\n", stderr: "" } : original(command));
+  const input = { context: { cwd: f.cwd }, configuration: { agent: "claude" as const, model: null, args: [] } };
+  expect(await f.preflight.verifyStart(input, operation())).toMatchObject({ agent: "claude", version: "2.1.247", nativeHome: root });
+  await mkdir(path.join(f.cwd, ".claude")); await writeFile(path.join(f.cwd, ".claude", "settings.local.json"), JSON.stringify({ disableAllHooks: true }));
+  await expect(f.preflight.verifyStart(input, operation())).rejects.toThrow(/disabled/);
+});

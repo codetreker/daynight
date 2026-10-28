@@ -18,7 +18,7 @@ const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toStr
 const project = { serverOrigin: "https://daynight.example", projectId: uuid(1) };
 const claim: PendingClaim = { ...project, taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5) };
 const userId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const configuration: FrozenExecutionConfiguration = { agent: "codex", model: null, args: ["--search"], recoveryLimit: 2 };
+const configuration: FrozenExecutionConfiguration = { agent: "codex", agentControlMode: "herdr", model: null, args: ["--search"], recoveryLimit: 2 };
 const release: ControlIntent = { kind: "release", sourceClaimId: claim.claimId, version: "9223372036854775806" };
 const open = (file: string): WorkerStore => { const store = openWorkerStore(file); stores.add(store); return store; };
 const close = (store: WorkerStore): void => { store.close(); stores.delete(store); };
@@ -63,7 +63,7 @@ describe("worker SQLite schema and project bindings", () => {
     const pragma = vi.spyOn(Database.prototype, "pragma");
     const { file, store } = fixture();
     const sql = connect(file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(5);
     expect(sql.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
     const syncRead = pragma.mock.calls.findIndex(([statement]) => statement === "synchronous");
@@ -83,9 +83,9 @@ describe("worker SQLite schema and project bindings", () => {
     const { file, store } = fixture();
     close(store);
     const sql = connect(file);
-    sql.pragma("user_version = 4");
-    expect(() => open(file)).toThrow("Unsupported worker SQLite schema version 4");
-    expect(sql.pragma("user_version", { simple: true })).toBe(4);
+    sql.pragma("user_version = 6");
+    expect(() => open(file)).toThrow("Unsupported worker SQLite schema version 6");
+    expect(sql.pragma("user_version", { simple: true })).toBe(6);
     sql.exec("DROP TABLE projects; DROP TABLE tasks; CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES ('retained')");
     sql.pragma("user_version = 0");
     expect(() => open(file)).toThrow("must not contain existing tables");
@@ -117,7 +117,7 @@ describe("worker SQLite schema and project bindings", () => {
     const sql = connect(f.file);
     sql.exec("ALTER TABLE tasks DROP COLUMN native_execution; ALTER TABLE tasks DROP COLUMN user_id; ALTER TABLE projects DROP COLUMN claim_attempt; UPDATE tasks SET cleanup = json_remove(cleanup, '$.baseline'); PRAGMA user_version = 1;");
     const migrated = open(f.file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(5);
     expect(migrated.getTask(claim)).toEqual({ ...original, userId: null, nativeExecution: null });
     expect(migrated.getProject(project)).toEqual({ ...f.mapping, claimAttempt: null });
     expect(sql.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
@@ -154,7 +154,7 @@ describe("worker SQLite schema and project bindings", () => {
     const sql = connect(f.file);
     sql.exec("UPDATE tasks SET native_execution = json_remove(native_execution, '$.stopObservation.nativeProcessIds') WHERE json_type(native_execution, '$.stopObservation') = 'object'; PRAGMA user_version = 2;");
     const migrated = open(f.file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(5);
     expect(migrated.listTasks()).toEqual(expectedTasks); expect(migrated.listProjects()).toEqual(expectedProjects);
     expect(migrated.getTask(claim)).toMatchObject({ userId, configuration, nativeExecution: { promptSubmission, stopObservation: { processIds: [125, 124], nativeProcessIds: null } }, cleanup: { input: "submitted", deadline: 600_030, baseline: { stateChangeSeq: 10, completionSeq: 2 } }, control: { submission: "unknown" } });
     expect(migrated.getTask(orphan)?.nativeExecution).toBeNull();
@@ -188,7 +188,7 @@ describe("worker SQLite schema and project bindings", () => {
     const sql = connect(f.file);
     const originalTasks = sql.prepare("SELECT * FROM tasks").all(); const originalProjects = sql.prepare("SELECT * FROM projects").all();
     close(f.store); const reopened = open(f.file);
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(5);
     expect(sql.prepare("SELECT * FROM tasks").all()).toEqual(originalTasks); expect(sql.prepare("SELECT * FROM projects").all()).toEqual(originalProjects);
     expect(reopened.getTask(claim)?.userId).toBe(userId);
     expect(reopened.getTask(claim)?.nativeExecution?.stopObservation?.nativeProcessIds).toEqual([124]);
@@ -472,7 +472,7 @@ describe("native launch receipts and process provenance", () => {
     sql.exec("UPDATE tasks SET native_execution = json_remove(native_execution, '$.stopObservation.nativeProcessIds');");
     const reopened = open(f.file);
     expect(() => reopened.getTask(claim)).toThrow("Herdr stop observation has invalid fields");
-    expect(sql.pragma("user_version", { simple: true })).toBe(3);
+    expect(sql.pragma("user_version", { simple: true })).toBe(5);
     expect(sql.prepare("SELECT json_type(native_execution, '$.stopObservation.nativeProcessIds') AS kind FROM tasks").get()).toEqual({ kind: null });
   });
 
@@ -879,7 +879,7 @@ describe("claim history and frozen configuration", () => {
 
   it("freezes the first pending snapshot and each claim's original identities", () => {
     const f = fixture(); f.register();
-    const changed: FrozenExecutionConfiguration = { agent: "copilot", model: "new-model", args: [], recoveryLimit: 7 };
+    const changed: FrozenExecutionConfiguration = { agent: "copilot", agentControlMode: "herdr", model: "new-model", args: [], recoveryLimit: 7 };
     expect(f.store.registerPending(claim, { kind: "new", configuration: changed }, 11)).toMatchObject({ configuration, createdAt: 10, updatedAt: 10 });
     expect(() => f.store.restoreOriginalConfiguration(claim, changed, 12)).toThrow("cannot be replaced");
     expect(() => f.store.registerPending({ ...claim, workerId: uuid(90) }, { kind: "new", configuration }, 12)).toThrow("different worker or worktree");
@@ -1189,7 +1189,7 @@ describe("irreversible terminal cleanup and source control", () => {
 
   it("persists only a source transfer intent and rejects reuse of old execution identities", () => {
     const f = fixture(); f.start();
-    const transfer: ControlIntent = { kind: "transfer", sourceClaimId: claim.claimId, version: "8", targetClaimId: uuid(50), target: { userId: uuid(51), workerId: uuid(52), machine: { id: uuid(53), name: "target" }, platform: "linux", agent: "copilot", worktreeId: uuid(54) } };
+    const transfer: ControlIntent = { kind: "transfer", sourceClaimId: claim.claimId, version: "8", targetClaimId: uuid(50), target: { userId: uuid(51), workerId: uuid(52), machine: { id: uuid(53), name: "target" }, platform: "linux", agent: "copilot", agentControlMode: "herdr", worktreeId: uuid(54) } };
     expect(() => f.store.recordControlIntent(claim, { ...transfer, targetClaimId: claim.claimId }, 21)).toThrow("new claim and worktree");
     expect(() => f.store.recordControlIntent(claim, { ...transfer, target: { ...transfer.target, worktreeId: claim.worktreeId } }, 21)).toThrow("new claim and worktree");
     f.store.recordControlIntent(claim, transfer, 22);
@@ -1296,4 +1296,50 @@ const waitForMessage = (child: ChildProcess): Promise<unknown> => new Promise((r
   const failed = (error: Error): void => { clear(); reject(error); };
   const timeout = setTimeout(() => { clear(); reject(new Error("Store child did not reach its checkpoint within ten seconds.")); }, 10_000);
   child.once("message", received); child.once("exit", exited); child.once("error", failed);
+});
+
+
+describe("frozen worker mode", () => {
+  it("persists web configuration across reopen and refuses replacing it on the same claim", () => {
+    const f = fixture();
+    f.store.registerProject(f.mapping);
+    const frozen = { ...configuration, agent: "claude", agentControlMode: "web" } as const;
+    f.store.registerPending(claim, { kind: "new", configuration: frozen }, 10);
+    close(f.store);
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)?.configuration).toEqual(frozen);
+    expect(() => reopened.registerPending(claim, { kind: "new", configuration: { ...frozen, agentControlMode: "herdr" } }, 11)).toThrow();
+  });
+  it("upgrades absent modes in persisted configuration and pending claim attempts to herdr", () => {
+    const f = fixture(); f.register();
+    f.store.beginClaimAttempt(project, { taskId: uuid(20), claimId: uuid(21), worktreeId: uuid(22), workerId: claim.workerId, userId, expectedVersion: "1", configuration });
+    close(f.store);
+    const sql = connect(f.file);
+    sql.exec("UPDATE tasks SET configuration = json_remove(configuration, '$.agentControlMode'); UPDATE projects SET claim_attempt = json_remove(claim_attempt, '$.configuration.agentControlMode'); PRAGMA user_version = 3;");
+    const reopened = open(f.file);
+    expect(reopened.getTask(claim)?.configuration).toMatchObject({ agentControlMode: "herdr" });
+    expect(reopened.getClaimAttempt(project)?.configuration).toMatchObject({ agentControlMode: "herdr" });
+    expect(sql.prepare("SELECT json_extract(configuration, '$.agentControlMode') AS mode FROM tasks").get()).toEqual({ mode: "herdr" });
+  });
+});
+
+
+it("migrates a legacy transfer intent's frozen target mode without replacing its decision", () => {
+  const f = fixture(); f.start();
+  const intent: ControlIntent = { kind: "transfer", sourceClaimId: claim.claimId, version: "8", targetClaimId: uuid(50), target: { userId: uuid(51), workerId: uuid(52), machine: { id: uuid(53), name: "target" }, platform: "linux", agent: "copilot", agentControlMode: "herdr", worktreeId: uuid(54) } };
+  f.store.recordControlIntent(claim, intent, 21);
+  close(f.store);
+  const sql = connect(f.file);
+  sql.exec("UPDATE tasks SET control = json_remove(control, '$.intent.target.agentControlMode'); PRAGMA user_version = 3;");
+  expect(open(f.file).getTask(claim)?.control?.intent).toEqual(intent);
+  expect(sql.prepare("SELECT json_extract(control, '$.intent.target.agentControlMode') AS mode FROM tasks").get()).toEqual({ mode: "herdr" });
+});
+
+it.each([null, "invalid"])("does not silently migrate an explicitly invalid persisted mode %j", (mode) => {
+  const f = fixture(); f.register(); close(f.store);
+  const sql = connect(f.file);
+  sql.prepare("UPDATE tasks SET configuration = json_set(configuration, '$.agentControlMode', ?)").run(mode);
+  sql.pragma("user_version = 3");
+  const reopened = open(f.file);
+  expect(() => reopened.getTask(claim)).toThrow(/agentControlMode/);
 });

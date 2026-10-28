@@ -3,7 +3,7 @@
 The `@codetreker/daynight` package provides the `daynight` command and its `dn`
 alias. Use it to manage server-backed projects, tasks and attachments, install
 the `using-daynight` skill for coding agents, run foreground task workers through
-Herdr, and run a local GitHub PR reviewer through Copilot CLI. Both command names
+Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer through Copilot CLI. Both command names
 share configuration and behavior.
 
 See the [project overview](../../README.md) for the browser workspace and service,
@@ -760,19 +760,24 @@ records binary transport and output ownership.
 ## Worker configuration and startup
 
 `daynight worker run` is a foreground process that claims eligible ready tasks
-across configured repositories and runs Copilot or Codex in a dedicated Herdr
-instance. The agent owns task delivery, acceptance, evidence and final
+across configured repositories. Herdr mode runs Copilot, Codex or Claude in a
+dedicated instance; Web mode runs Codex, Claude or Copilot through an independent
+Controller with a task Session in the browser. The agent owns task delivery, acceptance, evidence and final
 claim-bound completion. The worker owns concurrency, resources, recovery and
 cleanup based on its current claim inventory.
 
-Install Git, Herdr 0.9.5 or newer with protocol 22 capabilities, and the selected
-native agent on PATH. Native/provider authentication and the current official
-Herdr SessionStart integration must be configured explicitly. Codex needs the
+Install Git and prepare native/provider authentication. Herdr mode requires
+Herdr 0.9.5 or newer with protocol 22 capabilities, the selected native agent on
+PATH, and its current official SessionStart integration. Codex needs the
 hooks feature and `--no-daemon`; Unix hook scripts need bash and python3, while
 Windows hooks need PowerShell. The worker reports missing capabilities or
 integration/history instead of installing or changing global native settings.
-Git transport and tools used by the task, such as authenticated GitHub CLI for
-PR delivery, must also be ready.
+Web mode does not start or probe Herdr. Codex requires its app-server-capable
+CLI; Claude uses the bundled Agent SDK CLI unless an executable is explicitly
+selected. Copilot uses the bundled SDK and its owned headless CLI runtime.
+The service must advertise the matching Session protocol and provider
+before a new claim is acquired. Git transport and tools used by the task, such
+as authenticated GitHub CLI for PR delivery, must also be ready.
 
 Run `daynight login` for Daynight authentication. Add the following mapping to
 the shared `~/.daynight/config.yml`, preserving existing connection and review
@@ -783,6 +788,7 @@ worker:
   maxConcurrent: 1
   pollIntervalMs: 5000
   recoveryLimit: 3
+  agentControlMode: herdr
   agent: copilot
   model: null
   args: []
@@ -816,7 +822,49 @@ Repository agent settings override fields independently when the type stays
 the same; explicit null model or an empty args list clears that field. Switching
 agent type clears inherited model and arguments unless the repository explicitly
 sets them. Args replace the list rather than append. The recovery limit is
-worker-wide. Configuration loads at startup, without hot reload; existing claims
+worker-wide. `agentControlMode` is also worker-wide and accepts `herdr` or `web`,
+defaulting to `herdr`; repository overrides, null and unknown values are rejected.
+The mode is frozen with each claim and returned by the service. Missing mode
+fields in older records mean `herdr`, never the current local default. Web mode
+supports Codex, Claude and Copilot. Existing Herdr responsibilities retain
+their backend when later claims use Web mode. Provider arguments are validated
+for the selected backend before acquiring work; incompatible TUI flags do not
+silently become SDK or app-server options.
+The [session contract](../../docs/design/task-session-protocol.md) describes the
+registration, relay, native identity and operation acknowledgement boundaries.
+
+To use browser Sessions, set `worker.agentControlMode: web` and select
+`worker.agent: codex`, `claude` or `copilot`, with backend-compatible `args`. Keep provider
+credentials in their native profile. Each claim freezes that profile, its
+configuration, exact native conversation and initial operation identity.
+
+For Copilot Web, Daynight bundles Copilot SDK 1.0.11 and CLI 1.0.83. The Controller
+starts its own headless platform binary and connects over token-authenticated
+loopback TCP. Keep authentication in the native profile selected by
+`COPILOT_HOME`; that profile is frozen per execution. Leave `model: null` and
+`args: []` to retain native defaults. The only Copilot Web argument is
+`--effort` with `low`, `medium`, `high` or `xhigh`, for example:
+
+```yaml
+worker:
+  agentControlMode: web
+  agent: copilot
+  model: null
+  args: [--effort, high]
+  repositories:
+    - remote: https://github.com/OWNER/REPO.git
+      path: ../code/repo
+```
+
+Copilot uses the existing Session timeline, composer and interaction cards.
+Plan approval offers exit-only, interactive or reject with optional feedback;
+autopilot and URL elicitation are unsupported. Unsupported binary resources are
+reported explicitly. Send acknowledgement loss remains unknown unless the same
+live native call later returns its exact message ID; matching text in history
+never authorizes replay. Native steer, interaction and recovery behavior requires
+provider-specific runtime acceptance, separately from component tests.
+
+Configuration loads at startup, without hot reload; existing claims
 keep their original frozen configuration after a restart, while later claims
 use the newly loaded settings.
 
@@ -833,7 +881,9 @@ daynight worker run
 
 The command generates and atomically saves a stable root `workerId` on first
 use. One foreground instance owns fixed `~/.daynight/worker/` state: its SQLite,
-instance lock, logs, temporary resources and private Herdr data. There is no
+instance lock, logs, temporary resources and optional private Herdr data. Web
+Controllers keep private launch tickets and per-execution journals under
+`~/.daynight/controller/`; these are distinct from the worker task ledger. There is no
 state-path override. Each task uses `daynight/<task-id>` and
 `<repository>/.worktrees/daynight/<task-id>`. The same valid claim retains dirty
 work, native history and configuration; a new claim has a fresh execution
@@ -864,7 +914,8 @@ it is not replayed. A pause still reserves capacity. Recovering missing original
 configuration, history or stop evidence requires inspection, without creating a
 replacement conversation to conceal the loss.
 
-For human input, copy the safe `attach` descriptor printed after the running
+For human input in Web mode, open the task Session and use its current native
+interaction. In Herdr mode, copy the safe `attach` descriptor printed after the running
 worker has completed inventory and private managed-instance readiness.
 Invoke its `executable` with its `arguments` (`herdr --session w` for the default
 executable), apply exactly its `environment` overrides and remove the names in
@@ -898,7 +949,7 @@ For started executions, a successful complete own-claim inventory from the
 original account makes the original claim's absence cause
 the same terminal cleanup for done, release and transfer: request attributable
 outside-worktree cleanup for at most the original ten-minute deadline, confirm
-the original agent stopped, close its workspace, delete its worktree and retain
+the original agent stopped, close the backend resources, delete its worktree and retain
 local history. Failures keep responsibility and resume cleanup after restart.
 A failed, incomplete or differently scoped inventory cannot authorize a new
 terminal-cleanup decision. Already persisted cleanup/control intents continue in
@@ -940,11 +991,73 @@ shutdown initialization is isolated so one bad record does not prevent known
 agents stopping. Untracked resources or unknown scope keep the private instance
 when its stop cannot be confirmed.
 
+Web worker restart first reconnects to the original Controller. An unreachable
+Controller whose processes may still run is retained. A new generation requires
+OS stop proof and the exact native session ID; a missing ID never authorizes a
+replacement conversation. The first ready Controller may obtain that ID from
+the one durable initial input. Unknown input outcomes are observed rather than
+resent. Normal shutdown preserves recovery budget; failed recovery remains
+bounded by the saved limit.
+
+Web cleanup waits for the original cleanup turn or its fixed deadline, then
+proves Controller/native stop and endpoint closure before deleting the worktree.
+POSIX proof covers the original process group and recorded native processes;
+arbitrary descendants that deliberately escape that group are outside that
+guarantee. Windows uses an independent Job Object and requires Windows runtime
+evidence for acceptance. Outbox pressure rejects new input; a durable gap marker
+survives overflow and restart until acknowledged events free space for delivery.
+
 Linux, Windows and macOS complete Goal acceptance is separate from the installed
 runtime and its component checks. The
 [worker requirements](../../docs/spec/daynight-worker.md) and
 [worker design](../../docs/design/daynight-worker.md) own the behavior and
 mechanisms, including native capability limits.
+
+The worker starts `daynight controller codex|claude|copilot --launch-id <uuid>`
+from a private immutable launch ticket. Its cwd, profile, claim, generation,
+credentials and initial operation come from that ticket. This internal mode
+cannot be combined with standalone prompt or provider options.
+
+## Standalone Controller sessions
+
+Start a Test Session in the current directory with the configured Daynight
+service:
+
+```bash
+daynight controller codex
+daynight controller claude
+daynight controller copilot
+daynight controller codex "Explain this project"
+```
+
+The optional prompt is submitted once. Without one, the browser composer accepts
+the first message after initialization and synchronization. Provider creation
+options use their native names where the adapter supports them; unsupported
+options are rejected rather than ignored. Use the provider subcommand's help
+for its supported options. These commands do not implement a native TUI or change
+`worker.agentControlMode`.
+
+The command prints the Test Session URL and remains in the foreground. Sign in
+to Daynight as the account that started it; the URL itself grants no access.
+The service's `/test-sessions` page lists that account's accessible Test Sessions,
+including archived history. Use the sidebar or the Session page's back link to
+return to the list; session IDs do not need to be copied manually.
+The page, history, resources, WebSocket and commands all enforce that ownership.
+An expired or revoked credential cannot continue authorizing access. Tokens stay
+in private local files and never appear in the URL.
+
+Task and Test pages share the same timeline, composer and interaction handling.
+Refreshing or closing a browser does not create or stop an Agent. Ctrl+C stops
+the owned execution; the service retains its archived history as read-only when
+shutdown registration succeeds. Service unavailability does not prevent local
+process cleanup, but leaves remote archival unconfirmed. The current directory
+and user files are never removed by the launcher.
+
+Standalone sessions do not create tasks, claims or worktrees, and do not provide
+a background daemon, automatic recovery scheduler or arbitrary native-session
+adoption. Worker lifecycle checks remain separate. The
+[Test Session requirements](../../docs/spec/controller-test-sessions.md) describe
+the supported behavior and verification boundary.
 
 ## Worker manual management
 
@@ -952,7 +1065,8 @@ Manual commands select one task and its exact original claim. They use the same
 fixed SQLite and singleton lock as `worker run`. With a foreground worker, that
 process remains the sole agent controller and consumes the persisted decision;
 without one, the command acquires the same lock and advances the same coordinator
-for that execution. There is no separate control service. Current configuration
+for that execution. Web Controllers own only their original native sessions; they
+do not acquire tasks or become an independent worker-management service. Current configuration
 and Daynight authentication are required, and the original service origin must
 match. Release, transfer and retry require the unfinished original local record;
 resume can use an explicit project with its configured repository.
@@ -968,7 +1082,7 @@ Release and transfer first verify project access and source owner/admin
 permission, then persist the concrete source decision before cleanup. The
 controller requests the original agent's attributable temporary-resource cleanup,
 waits for its original deadline of at most 10 minutes, confirms that agent stopped,
-closes its task workspace and deletes its worktree. Only then can it submit the
+closes its backend resources and deletes its worktree. Only then can it submit the
 remote write at the exact supplied version. Other tasks keep their shared Herdr
 instance. Failed stopping or deletion retains the source responsibility and a
 visible error. Cleanup keeps its original deadline after restart; each HTTP
@@ -988,7 +1102,7 @@ The previous claim must still be released and the task ready. The original owner
 or a current project admin may resume it, retaining the explicit manual exception
 to automatic permission and platform filters. The new claim and worktree IDs are
 generated and persisted before submission. Its actual grant commits local
-`pending` with this repository's current effective agent/model/args; `worker run`
+`pending` with this repository's current effective mode/agent/model/args; `worker run`
 then performs ordinary capacity checks and prepares a fresh native conversation.
 The deleted source worktree and native history are not required. Run
 `daynight worker run` if the foreground worker is stopped.
@@ -1000,11 +1114,14 @@ machine descriptor, actual platform and selected agent:
 daynight worker transfer <task-id> --claim-id <source-claim-id> --if-version <version> \
   --target-user-id <user-id> --target-worker-id <worker-id> \
   --target-machine-id <machine-id> --target-machine-name "target-machine" \
-  --target-platform linux --target-agent codex
+  --target-platform linux --target-agent codex --target-agent-control-mode herdr
 ```
 
 Use the intended receiver's actual descriptor and the explicitly selected new
-agent type. A trace-free new transfer grant honors that agent even when the
+agent type and mode. `--target-agent-control-mode` defaults to `herdr` and accepts
+`web` for Codex/Claude/Copilot targets; it is not inferred from the sender's configuration.
+The receiving worker must implement the selected backend before it can run the
+claim. A trace-free new transfer grant honors that agent and mode even when the
 receiver's current repository defaults select the other type. It freezes
 `model: null` and `args: []` for that type, with the current recovery limit; a
 matching type uses the current effective model/args. Existing pending snapshots

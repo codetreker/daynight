@@ -9,6 +9,11 @@ const optionSets = {
     switches: new Set(["--strict-config", "--oss", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox", "--dangerously-bypass-hook-trust", "--search", "--no-alt-screen"]),
     inline: new Set<string>(),
   },
+  claude: {
+    values: new Set(["--permission-mode", "--effort", "--add-dir", "--allowedTools", "--disallowedTools"]),
+    switches: new Set(["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--verbose"]),
+    inline: new Set<string>(),
+  },
   copilot: {
     values: new Set(["--reasoning-effort", "--context", "--auto-tier", "--agent", "--log-dir", "--log-level", "--add-dir", "--disable-mcp-server", "--enable-mcp-server", "--add-github-mcp-toolset", "--add-github-mcp-tool", "--plugin-dir", "--additional-mcp-config", "--mcp-github-auth", "--max-ai-credits"]),
     switches: new Set(["--disable-client-telemetry", "--allow-all-tools", "--allow-all-paths", "--disallow-temp-dir", "--banner", "--screen-reader", "--plain-diff", "--disable-builtin-mcps", "--enable-all-github-mcp-tools", "--allow-all-mcp-server-instructions", "--allow-all-urls", "--allow-all", "--yolo", "--experimental", "--assisted-approval", "--no-custom-instructions", "--no-auto-update", "--no-ask-user", "--no-color", "--no-experimental", "--no-bash-env", "--no-mouse", "--no-eager-powershell-resolution"]),
@@ -17,7 +22,7 @@ const optionSets = {
 } as const;
 
 export const validateHerdrAgentArguments = (agent: WorkerAgent, args: readonly string[]): void => {
-  if (agent !== "codex" && agent !== "copilot") throw new TypeError("The native agent must be codex or copilot.");
+  if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new TypeError("The native agent must be codex, claude or copilot.");
   if (!Array.isArray(args)) throw new TypeError("Native agent arguments must be an array.");
   const options = optionSets[agent];
   for (let index = 0; index < args.length; index += 1) {
@@ -47,7 +52,7 @@ export const buildHerdrAgentArguments = (configuration: HerdrAgentConfiguration,
     sessionId = canonicalId(resumeSessionId) ?? undefined;
     if (sessionId === undefined) throw new TypeError("Native recovery requires the exact original session UUID.");
   }
-  const args = configuration.agent === "codex" ? ["--no-daemon", ...(sessionId === undefined ? [] : ["resume", sessionId])] : (sessionId === undefined ? [] : [`--resume=${sessionId}`]);
+  const args = configuration.agent === "codex" ? ["--no-daemon", ...(sessionId === undefined ? [] : ["resume", sessionId])] : (sessionId === undefined ? [] : configuration.agent === "claude" ? ["--resume", sessionId] : [`--resume=${sessionId}`]);
   if (configuration.model !== null) args.push("--model", configuration.model);
   return [...args, ...configuration.args];
 };

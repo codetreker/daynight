@@ -61,9 +61,9 @@ describe("worker command", () => {
     expect(renderBashCompletion(commandTree)).toContain("dn_children=('run' 'retry' 'release' 'transfer' 'resume')");
     expect(renderZshCompletion(commandTree)).toContain("--target-agent");
     const transfer = definition.commands!.find(({ name }) => name === "transfer")!;
-    expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('codex' 'copilot')");
+    expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('codex' 'copilot' 'claude')");
     expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('windows' 'linux' 'macos')");
-    expect(renderZshCompletion(transfer)).toContain("('\\''codex'\\'' '\\''copilot'\\'')");
+    expect(renderZshCompletion(transfer)).toContain("('\\''codex'\\'' '\\''copilot'\\'' '\\''claude'\\'')");
   });
 
   it.each(["retry", "release", "resume"] as const)("passes canonical %s identity and exact int64 version to the shared controller", async (kind) => {
@@ -82,7 +82,7 @@ describe("worker command", () => {
     cli.homeDirectory = () => path.resolve("worker-home");
     const deps = dependencies();
     await runWorkerCommand(["transfer", taskId, "--claim-id", claimId, "--if-version", "9007199254740993", "--target-user-id", projectId.toUpperCase(), "--target-worker-id", taskId, "--target-machine-id", claimId, "--target-machine-name", "Target machine", "--target-platform", "windows", "--target-agent", "copilot"], cli, deps);
-    expect(deps.manage.mock.calls[0]![0].request).toEqual({ kind: "transfer", taskId, claimId, version: 9_007_199_254_740_993n, target: { userId: projectId, workerId: taskId, machine: { id: claimId, name: "Target machine" }, platform: "windows", agent: "copilot" } });
+    expect(deps.manage.mock.calls[0]![0].request).toEqual({ kind: "transfer", taskId, claimId, version: 9_007_199_254_740_993n, target: { userId: projectId, workerId: taskId, machine: { id: claimId, name: "Target machine" }, platform: "windows", agent: "copilot", agentControlMode: "herdr" } });
   });
 
   it.each([
@@ -100,4 +100,12 @@ describe("worker command", () => {
     expect(deps.run).not.toHaveBeenCalled();
     expect(deps.manage).not.toHaveBeenCalled();
   });
+});
+
+
+it.each(["codex", "claude"])("passes a %s web transfer target", async (agent) => {
+  const { cli } = context(); cli.homeDirectory = () => path.resolve("worker-home");
+  const deps = dependencies();
+  await runWorkerCommand(["transfer", taskId, "--claim-id", claimId, "--if-version", "1", "--target-user-id", projectId, "--target-worker-id", taskId, "--target-machine-id", claimId, "--target-machine-name", "Target", "--target-platform", "linux", "--target-agent", agent, "--target-agent-control-mode", "web"], cli, deps);
+  expect(deps.manage.mock.calls[0]![0].request).toMatchObject({ kind: "transfer", target: { agent, agentControlMode: "web" } });
 });

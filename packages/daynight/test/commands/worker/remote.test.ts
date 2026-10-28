@@ -12,7 +12,7 @@ const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value)
 const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
 const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
-const worker: WorkerClaim = { ...descriptor, userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
+const worker: WorkerClaim = { ...descriptor, agentControlMode: "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | null = null, project = projectId): Task => ({
   id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, version: 1n,
@@ -251,7 +251,7 @@ describe("worker remote API", () => {
     const remote = (await verifiedRemote(serverUrl));
     await expect(remote.claim(task(), descriptor, signal())).rejects.toMatchObject({ outcomeUnconfirmed: true });
     await expect(remote.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).resolves.toEqual([task(taskId, worker)]);
-    expect(requests).toEqual([{ method: "POST", body: { ...descriptor, version: 1n } }, { method: "GET", body: null }]);
+    expect(requests).toEqual([{ method: "POST", body: { ...descriptor, agentControlMode: "herdr", version: 1n } }, { method: "GET", body: null }]);
   });
 
   it("preserves exact-version summary no-ops and does not retry a confirmed refusal", async () => {

@@ -1,0 +1,18 @@
+{
+  "protocol": "daynight.session.v1",
+  "requestId": "request-1",
+  "operationId": "00000009-1111-4111-8111-111111111111",
+  "sessionId": "00000006-1111-4111-8111-111111111111",
+  "claimId": "00000003-1111-4111-8111-111111111111",
+  "executionGeneration": "9007199254740993",
+  "kind": "interaction_response",
+  "payload": {
+    "interactionId": "00000011-1111-4111-8111-111111111111",
+    "interactionRevision": "2",
+    "submissionId": "00000010-1111-4111-8111-111111111111",
+    "response": {
+      "kind": "approval",
+      "action": "allow_once"
+    }
+  }
+}

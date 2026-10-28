@@ -1,0 +1,27 @@
+{
+  "protocol": "daynight.session.v1",
+  "sessionId": "00000006-1111-4111-8111-111111111111",
+  "claimId": "00000003-1111-4111-8111-111111111111",
+  "executionGeneration": "9007199254740993",
+  "connectionEpoch": "3",
+  "eventSeq": "22",
+  "historyEpoch": "history-1",
+  "kind": "timeline_upsert",
+  "payload": {
+    "entryId": "00000012-1111-4111-8111-111111111111",
+    "entrySeq": "9",
+    "revision": "2",
+    "kind": "assistant_message",
+    "content": [
+      {
+        "type": "text",
+        "text": "The test passed."
+      },
+      {
+        "type": "resource",
+        "resourceId": "00000013-1111-4111-8111-111111111111",
+        "label": "Test report"
+      }
+    ]
+  }
+}

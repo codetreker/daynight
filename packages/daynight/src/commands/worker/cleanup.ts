@@ -1,3 +1,4 @@
+import { requireImplementedWorkerBackend } from "./backend.js";
 import type { WorkerAgent } from "../../api/types.js";
 import { HerdrAgentActionError } from "./herdr.js";
 import { workerCleanupPrompt } from "./prompts.js";
@@ -23,6 +24,7 @@ export const createCleanupDriver = (deps: ExecutionDependencies) => {
   };
   return {
     advance: async (input: LocalTask, resources: readonly HerdrOwnedWorkspace[], kind: CleanupState["kind"], deadline: number, signal?: AbortSignal): Promise<LocalTask> => {
+      requireImplementedWorkerBackend(refresh(input).configuration);
       let task = deps.store.beginCleanup(input, { kind, deadline }, deps.now());
       try {
         let pane = actualTaskPane(task, resources);

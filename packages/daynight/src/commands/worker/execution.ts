@@ -1,3 +1,4 @@
+import { requireImplementedWorkerBackend } from "./backend.js";
 import path from "node:path";
 import { createOperation, OperationError } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
@@ -163,6 +164,7 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
   return {
     advance: async (input: LocalTask, resources: readonly HerdrOwnedWorkspace[], signal?: AbortSignal): Promise<LocalTask> => {
       let task = refresh(input);
+      requireImplementedWorkerBackend(task.configuration);
       if (task.cleanup !== null || task.control !== null) throw new Error("Cleanup or source management prevents ordinary execution.");
       if (task.configuration === null) throw new Error("The original frozen execution configuration is missing; restore it before retrying.");
       if (task.recovery.pauseReason !== null && !task.recovery.retryAuthorized && (task.resources.worktree === null || task.resources.herdr === null)) return task;

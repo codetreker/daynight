@@ -1,10 +1,11 @@
+import { validateWorkerAgentMode, workerAgentControlMode } from "../../api/worker-mode.js";
 import { UsageError } from "../../cli/context.js";
 import type { CliContext } from "../../cli/context.js";
 import { parseCommand, renderCommandHelp } from "../../cli/schema.js";
 import { canonicalId } from "../../api/parse.js";
 import { parseVersionArgument } from "../../api/json.js";
 import { isNonemptyText } from "../../platform/text.js";
-import type { TaskPlatform, WorkerAgent } from "../../api/types.js";
+import type { TaskPlatform } from "../../api/types.js";
 import type { WorkerControlRequest } from "./control.js";
 import { workerDefinition } from "./definition.js";
 
@@ -47,10 +48,12 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
     if (command.command.name === "transfer") {
       const machineName = option("--target-machine-name");
       if (!isNonemptyText(machineName)) throw new UsageError("Target machine name must be valid nonempty text.", help);
+      const agentControlMode = workerAgentControlMode({ agentControlMode: command.options.get("--target-agent-control-mode") ?? "herdr" });
+      const agent = validateWorkerAgentMode(option("--target-agent"), agentControlMode);
       request = { ...original, kind: "transfer", version, target: {
         userId: uuid(option("--target-user-id"), "Target user ID"), workerId: uuid(option("--target-worker-id"), "Target worker ID"),
         machine: { id: uuid(option("--target-machine-id"), "Target machine ID"), name: machineName },
-        platform: option("--target-platform") as TaskPlatform, agent: option("--target-agent") as WorkerAgent,
+        platform: option("--target-platform") as TaskPlatform, agent, agentControlMode,
       } };
     } else request = { ...original, kind: command.command.name as "release" | "resume", version };
   }

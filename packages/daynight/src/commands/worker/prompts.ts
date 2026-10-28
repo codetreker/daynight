@@ -3,6 +3,7 @@ import { canonicalId } from "../../api/parse.js";
 import type { TaskPlatform } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { captureInstalledSkill } from "../skill/install.js";
+import { parseProviderArguments } from "../controller/providers/projection.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { LocalTask } from "./types.js";
 
@@ -23,7 +24,8 @@ export const createWorkerPromptBuilder = async (packageDirectory: string) => {
     const worktree = task.resources.worktree;
     if (configuration === null || worktree === null) throw new Error("Managed execution requires the original frozen configuration and worktree binding.");
     if (!path.isAbsolute(task.repositoryPath) || worktree.repositoryPath !== task.repositoryPath || worktree.worktreePath !== path.join(task.repositoryPath, ".worktrees", "daynight", task.taskId) || worktree.branch !== `daynight/${task.taskId}`) throw new Error("The managed assignment does not match its original fixed worktree and branch.");
-    validateHerdrAgentArguments(configuration.agent, configuration.args);
+    if (configuration.agentControlMode === "herdr") validateHerdrAgentArguments(configuration.agent, configuration.args);
+    else parseProviderArguments(configuration.agent, configuration.args);
     if ((configuration.model !== null && (typeof configuration.model !== "string" || configuration.model.trim() === "")) || !Number.isSafeInteger(configuration.recoveryLimit) || configuration.recoveryLimit < 0) throw new Error("The managed assignment has an invalid frozen execution configuration.");
     const native = task.resources.nativeSession;
     if (native !== null && canonicalId(native.sessionId) !== native.sessionId) throw new Error("The original native reference must be an exact session UUID.");

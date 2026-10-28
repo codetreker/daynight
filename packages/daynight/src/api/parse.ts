@@ -1,3 +1,4 @@
+import { validateWorkerAgentMode, workerAgentControlMode } from "./worker-mode.js";
 import { isNonemptyText, isText } from "../platform/text.js";
 import type { ErrorDetails, GraphTask, Page, Project, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, User, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
 
@@ -120,14 +121,18 @@ const workerHerdr = (value: unknown): WorkerHerdr | null => {
 };
 const parseWorkerClaim = (value: unknown): WorkerClaim | null => {
   if (value === null) return null;
-  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
+  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
   const machine = fields(data.machine, ["id", "name"]);
   const platform = requiredPlatform(data.platform);
   if (platform === null) return malformed();
+  let agentControlMode;
+  let agent;
+  try { agentControlMode = workerAgentControlMode(data); agent = validateWorkerAgentMode(data.agent, agentControlMode); } catch { return malformed(); }
+  if (agentControlMode === "web" && data.herdr !== null) return malformed();
   return {
     claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
     userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: text(machine.name, true) }, platform,
-    agent: data.agent === "codex" || data.agent === "copilot" ? data.agent : malformed(), worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
+    agent, agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
     herdr: workerHerdr(data.herdr), nativeSessionId: data.nativeSessionId === null ? null : text(data.nativeSessionId, true), claimedAt: timestamp(data.claimedAt),
   };
 };

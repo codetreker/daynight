@@ -42,7 +42,11 @@ export const createWorkerHerdr = (options: {
     environment: nativeEnvironment,
     homeDirectory: options.homeDirectory,
   });
-  const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight, workspaceEnvironment });
+  const tasks = createHerdrAgentManager({ rpc: instance.rpc, session: "w", preflight: {
+    verifyStart: (input, operation) => {
+      return preflight.verifyStart({ ...input, configuration: { ...input.configuration, agent: input.configuration.agent } }, operation);
+    },
+  }, workspaceEnvironment });
   return {
     ensureInstance: instance.ensure,
     stopInstance: instance.stop,

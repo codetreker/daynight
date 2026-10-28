@@ -37,7 +37,8 @@ export const workerDefinition: CommandDefinition = {
       { names: ["--target-machine-id"], description: "Target machine UUID", value: { name: "machine-id", kind: "text" }, required: true },
       { names: ["--target-machine-name"], description: "Target machine's reported name", value: { name: "machine-name", kind: "text" }, required: true },
       { names: ["--target-platform"], description: "Target worker's actual platform", value: { name: "platform", kind: "text", choices: ["windows", "linux", "macos"] }, required: true },
-      { names: ["--target-agent"], description: "Agent type for the target's new execution", value: { name: "agent", kind: "text", choices: ["codex", "copilot"] }, required: true },
+      { names: ["--target-agent-control-mode"], description: "Frozen control mode for the new target execution (default: herdr)", value: { name: "mode", kind: "text", choices: ["herdr", "web"] } },
+      { names: ["--target-agent"], description: "Agent type for the target's new execution", value: { name: "agent", kind: "text", choices: ["codex", "copilot", "claude"] }, required: true },
       project, help],
     details: `${controlDetails}\nThe target must remain a project member and satisfy automatic permission, platform and dependency requirements. A fresh claim and worktree identity are saved before submission. The target starts normally after receiving the grant; no source files or native history are transported.`,
   }, {
