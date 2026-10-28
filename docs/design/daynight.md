@@ -112,7 +112,7 @@ src/
         SKILL.md
         references/handbook.md
         references/run-task.md
-        references/execute-task-in-managed.md
+        references/autopilot-managed-task.md
         references/task-execution.md
         references/create-task.md
         references/goal.md
