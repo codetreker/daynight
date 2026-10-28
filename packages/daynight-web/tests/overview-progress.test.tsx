@@ -51,8 +51,8 @@ describe("overview progress counting", () => {
   it("keeps unfinished components whole and counts every shared member once without external prerequisites", () => {
     const value = mixed(); const { chainIds, standaloneIds } = categories(value);
     const result = overviewProgress(value.index, chainIds, standaloneIds, overviewTimestamp(observedAt));
-    expect(result.chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: true, done: 1, total: 4, percent: 25 }]);
-    expect(result.standalone).toEqual({ done: 2, total: 5, percent: 40 });
+    expect(result.chains).toEqual([{ taskId: "root", title: "Title root", titleTruncated: true, done: 1, total: 4, percent: 25, status: "in_progress" }]);
+    expect(result.standalone).toEqual({ done: 2, total: 5, percent: 40, status: "in_progress" });
     expect(result.nextUpdateAt).toBe(overviewTimestamp(observedAt) + 1n);
   });
 
@@ -61,9 +61,9 @@ describe("overview progress counting", () => {
       { id: "old", status: "done", completedAt: "2026-10-19T12:00:00.123456788Z" },
       { id: "future", status: "done", completedAt: "2026-10-26T12:00:00.123456790Z" }, { id: "unknown", status: "done" }]);
     const { chainIds, standaloneIds } = categories(value); const now = overviewTimestamp(observedAt);
-    expect(overviewProgress(value.index, chainIds, standaloneIds, now).standalone).toEqual({ done: 1, total: 2, percent: 50 });
+    expect(overviewProgress(value.index, chainIds, standaloneIds, now).standalone).toEqual({ done: 1, total: 2, percent: 50, status: "in_progress" });
     expect(overviewProgress(value.index, chainIds, standaloneIds, now).nextUpdateAt).toBe(now + 1n);
-    expect(overviewProgress(value.index, chainIds, standaloneIds, now + 1n).standalone).toEqual({ done: 1, total: 2, percent: 50 });
+    expect(overviewProgress(value.index, chainIds, standaloneIds, now + 1n).standalone).toEqual({ done: 1, total: 2, percent: 50, status: "in_progress" });
     expect(overviewTimestamp("2026-10-26T12:00:00Z")).toBe(overviewTimestamp("2026-10-26T12:00:00.000000000Z"));
     expect(overviewTimestamp("2026-10-26T12:00:00.1Z")).toBe(overviewTimestamp("2026-10-26T12:00:00.100000000Z"));
   });
@@ -72,6 +72,20 @@ describe("overview progress counting", () => {
     const value = snapshot([{ id: "done", status: "done", completedAt: observedAt }]); const { chainIds, standaloneIds } = categories(value);
     expect(overviewProgress(value.index, chainIds, standaloneIds, overviewTimestamp(observedAt)))
       .toEqual({ chains: [], standalone: null, nextUpdateAt: null });
+  });
+
+  it("derives standalone status only from the displayed window and unfinished tasks", () => {
+    const seeds: Seed[] = [{ id: "todo", status: "todo" },
+      { id: "old", status: "done", completedAt: "2026-10-18T12:00:00Z" },
+      { id: "future", status: "done", completedAt: "2026-10-27T12:00:00Z" },
+      { id: "unknown", status: "done" }];
+    const status = (items: readonly Seed[]) => {
+      const value = snapshot(items); const ids = categories(value);
+      return overviewProgress(value.index, ids.chainIds, ids.standaloneIds, overviewTimestamp(observedAt)).standalone?.status;
+    };
+    expect(status(seeds)).toBe("todo");
+    expect(status([...seeds, { id: "running", status: "in_progress" }])).toBe("in_progress");
+    expect(status([...seeds, { id: "recent", status: "done", completedAt: cutoff }])).toBe("in_progress");
   });
 
   it("floors partial percentages and keeps task chain ordering supplied by the task list", () => {
@@ -93,11 +107,11 @@ describe("overview rolling completion window", () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2055-01-01T00:00:00Z"));
     const value = expiring(); const { chainIds, standaloneIds } = categories(value);
     const { result, unmount } = renderHook(() => useOverviewProgress(value, chainIds, standaloneIds, true));
-    expect(result.current.standalone).toEqual({ done: 1, total: 2, percent: 50 });
+    expect(result.current.standalone).toEqual({ done: 1, total: 2, percent: 50, status: "in_progress" });
     act(() => { monotonic = 1; vi.advanceTimersByTime(1); });
     expect(result.current.standalone?.done).toBe(1);
     act(() => { monotonic = 2; vi.advanceTimersByTime(1); });
-    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0 });
+    expect(result.current.standalone).toEqual({ done: 0, total: 1, percent: 0, status: "todo" });
     expect(vi.getTimerCount()).toBe(0);
     unmount();
   });
@@ -143,6 +157,8 @@ describe("project overview progress presentation", () => {
     const region = screen.getByRole("region", { name: "整体进度" });
     const buttons = within(region).getAllByRole("button");
     expect(buttons).toHaveLength(2); expect(buttons[0]).toHaveTextContent("Title root…");
+    expect(buttons[0]).toHaveAttribute("data-task-status", "in_progress");
+    expect(buttons[1]).toHaveAttribute("data-task-status", "in_progress");
     expect(buttons[1]).toHaveTextContent("未完成任务 + 最近 7 天完成的任务");
     expect(buttons[1]).toHaveTextContent("2 / 5"); expect(buttons[1]).toHaveTextContent("40%");
     fireEvent.click(buttons[0]!); fireEvent.click(buttons[1]!);

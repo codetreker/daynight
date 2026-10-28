@@ -109,6 +109,8 @@ describe("task execution presentation", () => {
     const completed = document.getElementById("standalone-task-completed")!;
     const unknown = document.getElementById("standalone-task-unknown")!;
     const completedTime = completed.querySelector(".task-duration")!;
+    expect(running).toHaveAttribute("data-task-status", "in_progress");
+    expect(completed).toHaveAttribute("data-task-status", "done");
     expect(running.querySelector(".task-duration")).toHaveTextContent(locale === "en" ? "< 1 min" : "不足 1 分钟");
     expect(completedTime).toHaveTextContent(locale === "en" ? "2d 3h 4min" : "2 天 3 小时 4 分钟");
     expect(completedTime).toHaveAttribute("datetime", "PT183840.000S");

@@ -1,0 +1,59 @@
+[data-task-status="todo"] {
+  --row-background: #f1f3f6;
+  --row-hover: #e8ecf1;
+  --row-border: #d8dfe8;
+  --row-status: #596579;
+}
+
+[data-task-status="in_progress"] {
+  --row-background: #ebf2ff;
+  --row-hover: #dfeaff;
+  --row-border: #bbcff2;
+  --row-status: #305fa8;
+}
+
+[data-task-status="done"] {
+  --row-background: #eaf6ef;
+  --row-hover: #ddefe5;
+  --row-border: #bfdcc9;
+  --row-status: #246d4a;
+}
+
+.task-status-surface[data-task-status] {
+  background: var(--row-background);
+  border-color: var(--row-border);
+  color: #172132;
+}
+
+.task-status-surface[data-task-status]:hover {
+  background: var(--row-hover);
+  border-color: var(--row-border);
+}
+
+.goal-row[data-task-status] { border-color: var(--row-border); }
+.goal-header.task-status-surface > .goal-toggle { background: transparent; }
+.task-status-surface[data-task-status]:focus-visible { outline-offset: -3px; }
+
+.task-status-surface .root-meta,
+.task-status-surface .root-progress-label,
+.task-status-surface .goal-eyebrow,
+.task-status-surface .overview-progress-scope,
+.task-status-surface .overview-progress-metric,
+.task-status-surface .task-platform,
+.task-status-surface .task-agent-permission:not(.task-agent-permission-on),
+.task-status-surface .task-duration {
+  color: #5c687b;
+}
+
+.task-status-surface .root-status { color: var(--row-status); }
+
+.task-status-surface.standalone-row-stuck[data-task-status] {
+  --row-background: #fff7e8;
+  --row-hover: #fff0d6;
+  --row-border: #d4a04a;
+  background: var(--row-background);
+  border-color: var(--row-border);
+}
+
+.task-status-surface.standalone-row-stuck[data-task-status]:hover { background: var(--row-hover); }
+.task-status-surface.standalone-row-stuck .task-duration { color: #805b27; }
