@@ -11,7 +11,7 @@ const paths = resolveWorkerPaths("/home/worker-user", path.posix);
 const remote = "https://git.example/team/project.git";
 const repo = { remote, path: "../checkout" };
 const parse = (worker: Record<string, unknown>) => parseWorkerConfiguration(stringify({ worker: { repositories: [repo], ...worker } }), paths, path.posix);
-const defaults = { repositoryRoot: "~/daynights", maxConcurrent: 1, pollIntervalMs: 5_000, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [], repositories: [] };
+const defaults = { repositoryRoot: "~/daynights", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [], repositories: [] };
 const directories: string[] = [];
 const fixture = async (prefix: string) => {
   const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
@@ -28,7 +28,7 @@ afterEach(async () => {
 describe("worker configuration", () => {
   it("uses a separate namespace and resolves paths relative to the config file", () => {
     expect(parse({})).toEqual({
-      repositoryRoot: "~/daynights", maxConcurrent: 1, pollIntervalMs: 5_000, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [],
+      repositoryRoot: "~/daynights", maxConcurrent: 1, pollIntervalMs: 60_000, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [],
       repositories: [{ ...repo, path: "/home/worker-user/checkout", agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }],
     });
     expect(parseServerConfiguration(stringify({ worker: { repositories: "not validated by server commands" } }), paths)).toEqual({ serverUrl: "https://daynight.cc" });
@@ -46,6 +46,10 @@ describe("worker configuration", () => {
   it("validates known worker fields alongside unknown fields", () => {
     expect(() => parse({ future: true, maxConcurrent: 0 })).toThrow("worker.maxConcurrent");
     expect(() => parse({ future: true, repositories: [{ ...repo, path: null, future: true }] })).toThrow("worker.repositories[0].path");
+  });
+
+  it.each([1, 5_000, 12_345, 2_147_483_647])("preserves the explicit polling interval %i", (pollIntervalMs) => {
+    expect(parse({ pollIntervalMs }).pollIntervalMs).toBe(pollIntervalMs);
   });
 
   it("merges same-kind overrides field by field and permits explicit reset to native model defaults", () => {
@@ -160,6 +164,7 @@ describe("worker configuration", () => {
     ["# Connection settings\nserverUrl: https://daynight.example\n", {}],
     ["# Explicit defaults\nworker: {}\n", {}],
     ["# Partial worker settings\nworker:\n  maxConcurrent: 4\n", { maxConcurrent: 4 }],
+    ["# Explicit polling interval\nworker:\n  pollIntervalMs: 5000\n", { pollIntervalMs: 5_000 }],
   ] as const)("reads an existing partial configuration without changing its bytes: %s", async (source, configured) => {
     const { directory, local } = await fixture("partial");
     await mkdir(local.stateDirectory);

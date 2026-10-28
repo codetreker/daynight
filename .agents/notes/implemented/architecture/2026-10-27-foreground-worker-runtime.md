@@ -281,6 +281,9 @@ requires original process stop and exact native identity. Initial input can
 establish a lazy native ID, but an unknown dispatch never becomes permission
 to resend. See the [Session contract](../../../../docs/design/task-session-protocol.md).
 
+The [poll-interval decision](../feature/2026-10-28-worker-default-poll-interval.md)
+owns the sixty-second default and explicit-interval compatibility.
+
 ## Alternatives
 
 **Require an explicit worker mapping and repositories field.** The original

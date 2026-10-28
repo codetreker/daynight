@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWorkerControl } from "../../../src/commands/worker/runtime.js";
 import { acquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
-import { workspaceMigrationFile } from "../../../src/commands/worker/migration-state.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
@@ -52,15 +51,6 @@ const fixture = async () => {
 };
 
 describe("worker synchronous management runtime ownership", () => {
-  it("blocks incomplete workspace migration before management reads or task mutation", async () => {
-    const f = await fixture();
-    await writeFile(workspaceMigrationFile(f.paths), "{}\n");
-    await expect(runWorkerControl(f)).rejects.toThrow("workspace migration is incomplete");
-    for (const factory of [mocks.submit, mocks.coordinator, mocks.herdr, mocks.git, mocks.remote, mocks.prompt]) expect(factory).not.toHaveBeenCalled();
-    expect(f.store.getTask(f.task)).toEqual(f.task); expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
-    const lock = await acquireWorkerInstanceLock(f.paths); await lock.release();
-  });
-
   it("submits once under the instance lock and leaves sibling resources and shared Herdr intact", async () => {
     const f = await fixture();
     let held = false;

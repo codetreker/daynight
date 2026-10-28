@@ -22,7 +22,6 @@ GitHub CLI and Copilot CLI on `PATH`.
 - [Task deletion](#task-deletion)
 - [Task attachments](#task-attachments)
 - [Worker configuration and startup](#worker-configuration-and-startup)
-- [Worker workspace upgrade](#worker-workspace-upgrade)
 - [Worker manual management](#worker-manual-management)
 - [Review configuration and startup](#review-configuration-and-startup)
 - [Review status listing](#review-status-listing)
@@ -102,7 +101,6 @@ daynight worker                     # Show worker help
 daynight worker setup               # Check prerequisites and choose an agent and Projects
 daynight worker run                 # Run until interrupted
 daynight worker attach              # Open the worker Herdr session
-daynight worker migrate-workspaces [--rollback]
 daynight worker repo list [--json]
 daynight worker repo add [--project <project-id>]
 daynight worker repo remove [--project <project-id>]
@@ -942,7 +940,7 @@ settings and configure worker directly:
 worker:
   repositoryRoot: ~/daynights
   maxConcurrent: 1
-  pollIntervalMs: 5000
+  pollIntervalMs: 60000
   recoveryLimit: 3
   agentControlMode: herdr
   agent: copilot
@@ -978,7 +976,9 @@ Entry paths are absolute or relative to the configuration directory, never the
 launch directory. They do not expand tilde or accept Windows drive-relative
 paths. Duplicate repositories/Projects and overlapping repository/state paths
 are errors. maxConcurrent is positive, recoveryLimit is nonnegative, and
-pollIntervalMs is a positive safe integer within the timer range.
+pollIntervalMs is a positive safe integer within the timer range. After each
+reconciliation round completes, the worker waits this interval (60 seconds by
+default). Explicit values, including 5000 for a 5-second wait, remain unchanged.
 
 Repository agent settings override fields independently for the same type.
 Explicit null model or [] args clears that field; switching type clears omitted
@@ -1046,7 +1046,7 @@ Mappings with unfinished tasks or actual managed resources cannot be rebound.
 The state directory belongs to the configured single service, Daynight account
 and workerId. Finish old executions before changing those identities and
 rebuilding local state. The running process pins its startup authenticated user;
-the six-column database does not retain prior-service or prior-account recovery
+the claim-index database does not retain prior-service or prior-account recovery
 scopes. Existing detailed worker databases are not migrated: stop the old worker,
 remove its old SQLite database yourself, and let the next run create the new
 schema. The CLI never deletes it automatically. Keep workerId and native history.
@@ -1265,68 +1265,6 @@ The worker starts `daynight controller codex|claude|copilot --launch-id <uuid>`
 from a private immutable launch ticket. Its cwd, profile, claim, generation,
 credentials and initial operation come from that ticket. This internal mode
 cannot be combined with standalone prompt or provider options.
-
-## Worker workspace upgrade
-
-Stop `daynight worker run` and confirm that its private Herdr and native agents
-have stopped before changing an existing workspace identity format. Normal
-execution accepts the current four-ID format and reports old labels or Git
-markers with a migration instruction. It does not interpret legacy ownership
-while running tasks.
-
-```bash
-daynight worker migrate-workspaces
-```
-
-This explicit local operation uses the worker instance lock. It validates the old
-service identity against the configured service, canonical owner IDs, task and
-native-session records, actual workspace directories and Git administrative
-ownership fingerprints. Configured project paths keep their logical spelling;
-ancestor-directory aliases are accepted when Git registration pointers and saved
-and restored pane working directories resolve to the same physical task path,
-while the worktree leaf must remain an ordinary directory with matching physical
-fingerprints. It preserves the SQLite claim/session index, task
-branches, dirty worktrees and original native conversations. An unfinished
-execution with legacy resources must have its recorded native session ID;
-a fresh pending claim without resources does not block migration. Unknown
-formats, conflicting identities and missing original resources are errors,
-with the original resources retained. A current-format or resource-free state
-needs no conversion, and the command returns without starting a daemon.
-
-Before mutation, migration backs up its affected files below
-`~/.daynight/worker/workspace-migration-backups/<UUID>/` and persists
-`~/.daynight/worker/workspace-migration.json`. Run and manual management refuse
-to proceed while that blocking manifest remains. The backup retains its original
-manifest, file hashes, private Herdr tree and completion outcome.
-A maintenance Herdr keeps automatic native-agent restoration disabled and closes
-only verified legacy task workspaces. Migration waits for its shutdown and reads
-back the saved layout before rewriting the Git administration `locked` markers
-with four IDs and their original physical fingerprints. Old automatic recovery
-snapshots stay with the migration backup so they cannot restore legacy labels.
-Herdr owns its snapshot and terminal-history writes; the operation does not edit
-its history fingerprint.
-
-After successful migration, start `daynight worker run`. It creates task-title
-workspaces and resumes the original SQLite native session IDs. Workspace/pane
-IDs and the closed Herdr terminal scrollback are replaced; the native conversation
-history and task work remain. The operation changes local resource representation,
-not remote claims or business task status.
-
-A failed or interrupted migration keeps normal startup blocked. Restore and verify
-the complete saved state through the same command before retrying the migration:
-
-```bash
-daynight worker migrate-workspaces --rollback
-```
-
-Rollback requires an incomplete blocking manifest; it cannot revert a completed
-migration or later execution state. It restores the backed-up Herdr state,
-database and Git markers as one verified old-format set. It leaves an error and
-the startup block when restoration cannot be verified. A normal migration request
-with an incomplete manifest directs the operator to rollback before retrying.
-Resume an old-format runner only after a successful rollback;
-use the new runner after migration completes. The [workspace naming decision](../../.agents/notes/implemented/architecture/2026-10-28-worker-workspace-names.md)
-records the format and the costs of rebuilding the Herdr workspace.
 
 ## Standalone Controller sessions
 

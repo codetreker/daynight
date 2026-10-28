@@ -16,7 +16,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 - `daynight worker setup` 要求 stdin/stderr 为交互终端，先汇总环境缺项与修复指引，再单选 Copilot/Codex 并多选一个或多个既有可访问 Project。重复配置预选当前项目；最终确认前展示所选 agent、Project、目录、移除范围及不兼容参数重置。所选 agent 应用于全部选中 Project；匹配注册保留传输 URL/路径，同类型 model/args 保留，切换类型清除不兼容值。
 - Setup 将 agent/model/args 与完整 Project 选择一次原子保存，相关字段或服务/凭据变动时拒绝旧选择；无关配置、原 root 拼写、注释和安全 alias 保留。取消、空选、认证/API/保存失败均无部分保存。已有 claim、worktree 和 native history 保留；重新启动的 native 进程使用当前适用配置。
 - Setup 只做有界只读环境探测，不启动 daemon/native agent/worker，不 clone、打开 SQLite、claim、安装或登录。探测验证所选 agent 的固定 full access 参数能力；Codex 至少为 0.135。缺原生依赖允许保存并明确要求修复；只读版本、参数及 hook 检查不证明 provider 登录、真实 hook 执行、live 协议或完整任务验收。取消等待已启动探测收尾，未确认清理故障保留原错误链并使 setup 明确失败。
-- 独立 worker mapping 支持 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agentControlMode、agent、model、args 和 repositories，默认值为 ~/daynights、1、5000、3、herdr、copilot、null、[] 和 []。省略配置文件、worker 或可选字段使用这些默认值；repositories 不从 review 推断。
+- 独立 worker mapping 支持 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agentControlMode、agent、model、args 和 repositories，默认值为 ~/daynights、1、60000、3、herdr、copilot、null、[] 和 []。省略配置文件、worker 或可选字段使用这些默认值；repositories 不从 review 推断。pollIntervalMs 单位为毫秒；每轮检查完成后再等待该间隔，默认等待 60 秒。显式合法间隔（包括 5000）保持原值，读取配置不重写。
 - 配置读取不创建或重写文件。只有确实缺失的文件按缺省处理；已知非 nullable 字段显式 null、已知字段类型或值错误、YAML 结构和重复键、读取故障及取消均明确失败。根节点、review、worker 及其仓库条目的未知字段在运行时忽略，CLI 编辑保留其原节点。model:null 保留清除语义。仓库 remote/path 必填，可有 projectId 与 agent/model/args 覆盖；路径相对 config.yml 目录或为绝对路径，不展开 tilde，拒绝 drive-relative Windows 路径和重叠仓库/状态目录。
 - 同 agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，不允许覆盖 worker 拥有的 cwd/session/model/mode 位置或固定 full access 策略；冲突参数在启动前明确拒绝。配置在启动/重启读取，不热重载；已认领执行保留 agent 和原生 session ID，重新启动使用当前适用的 model/args，不把另一工具的参数套到原工具。
 - `worker repo list [--json]` 读取本地选择；add/remove 选择远端现存可访问 Project。省略 --project 时多选显示名称、完整 UUID、repoUrl，至少选一项；显式 --project 支持非交互。新增保存 projectId、原 repoUrl、绝对 path；匹配既有注册保留传输 URL、路径和覆盖，remote-only 项只补 projectId。Remove 只改变后续领取范围，保留 clone、claim、worktree 和原生历史。
@@ -112,8 +112,6 @@ Web 人工输入通过 Task Session，Herdr 使用 attach。Retry/release/resume
 - Herdr 的配置、启动/输入回执、PID 观察、恢复次数、清理进度、原期限和管理意图不持久保存或转存其他台账。日志不作为恢复输入。恢复使用当前适用设置；计数和超限等待只在当前进程内，重启清零。
 - Ctrl+C 停止新领取和调度，取消所有运行中的 job（包括终止清理 job），等待它们全部收尾后直接中断并停止受管 agent、关闭 workspace。进程退出不发送清理 prompt，也不等待 agent 清理轮；工作区外临时资源可能遗留。保留 claim、worktree、原生 session ID 与所有未完成 active/pending 行，包括归属已经结束的任务；退出不删除 worktree、不把未完成行置 done。重启后按正常完整清单对账，为已结束归属的剩余资源重新进入终止清理。待确认的停止操作收尾后才停止私有实例；停止错误保持可见，无法确认停止时保留私有 Herdr 与相关资源。正常完成、release、强制撤回和人工管理仍使用原有通知及清理时序。
 - 最小索引 schema 的升级保留原记录并补充默认 herdr 模式；不迁移旧详细状态库，不自动删除真实数据库。操作者停止旧 worker 后删除旧 SQLite，再启动重建。原生历史与 workerId 保留原有位置。
-- 资源身份格式升级通过显式 `worker migrate-workspaces [--rollback]` 完成，保留当前认领索引 schema。停止 runner 和原生执行后，命令取得实例锁，核验旧服务/四项身份、实际 cwd、Git 注册与物理指纹以及原生 session ID。未结束且具有旧格式资源的执行必须保存原 native session ID；新 pending 尚无资源时不阻塞，当前格式或无旧资源时不启动维护 daemon。持久备份和启动阻塞清单后才修改：维护 Herdr 不恢复原生 agent，关闭旧 workspace、退出并读回布局后，原子改写 Git administration 的 locked 标记；旧 recovery snapshots 不可被新 runner 自动恢复。保留 claim、原 worktree/branch、原生历史和 SQLite session_id，新 runner 重建带标题的 workspace 并恢复原会话；临时 Herdr ID 和终端 scrollback 不保留。未知、冲突、缺失原资源或无法证明原生连续性的输入明确失败并保留。
-- 迁移失败或进程中断时阻止 run 和人工管理；普通迁移请求要求先 `--rollback` 验证全组恢复，再重做。回滚只接受仍存在的未完成清单，不回退已完成迁移及后续执行。只有完成全组迁移或验证回滚后才解除阻塞，不能接受混合格式。持久迁移备份与阻塞清单只承担一次性升级恢复，不保存业务执行进度。正常运行只接受新格式，不新增旧数据兼容分支。
 
 ### W-10：Agent 完成与资源清理
 
@@ -144,7 +142,6 @@ Web 与 Herdr 共用 claim 结束和工作区删除门槛。下述按 native idl
 | W-08 | 人工操作与 run 互斥；远端拒绝保留 worktree；成功后本机删除失败可由下次对账收尾；未知结果不重放；Web 强制撤回不声明远端已停，原 worker 下次对账收尾。 |
 | W-09 | 主索引字段及冻结模式正确，三态/唯一 active；退出取消并等待所有 job 收尾，含正在等待通知、清理轮或停止确认的终止清理 job，随后直接停止并关闭 workspace，不发送清理 prompt、不等待清理轮、不删除 worktree、不把未完成行置 done；归属已结束及原本缺失本机行的任务也保留 worktree、有效 session ID 与未完成行，重启按完整清单重新进入终止清理并解除同 task 后继的启动屏障；停止错误可见，停止不确定时私有 Herdr 保留。 |
 | W-10 | 正常完整清单缺席统一清理，正常完成、release、强制撤回及人工管理的清理语义不变；清理消息成功递交后的巡查观察到 idle 即推进关闭，缺失或不变计数不阻塞；本次十分钟上限、失败保留责任及重启重新计时成立。 |
-| W-09 | 旧格式迁移成功、各阶段中断、重入及回滚均保留原 claim/worktree/native session；启动阻塞、完整备份与恢复快照处理成立，混合或未知格式不能继续运行。 |
 | W-11 | 关联日志、Warning、原错误链和脱敏成立；终端上下文、消息及错误链中的完整连字符 GUID 在脱敏后显示首段 8 位，保留大小写且不改变非 GUID 文本，JSONL 各字段、消息与错误仍含完整 ID；attach 只连接并保持既有执行；验证关联实际源码、平台和环境。 |
 
 完整平台运行验收要求其实际门禁与端到端结果，组件检查和 schema 验证不能替代。

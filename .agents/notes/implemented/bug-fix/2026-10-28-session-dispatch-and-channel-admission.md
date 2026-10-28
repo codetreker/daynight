@@ -20,6 +20,10 @@ An offered operation whose permission or state changed is persisted as rejected
 and returned through its own receipt. The Controller settles the matching journal
 operation and rejects dispatch authorization without closing the connection.
 Late receipts and reconnect reconciliation retain the same operation identity.
+Reconciliation envelopes use the current connection fence, while durable
+receipts retain their original execution generation. The parser accepts only
+the same binding and a generation no later than the current one; direct
+receipts and dispatch authorization retain exact current-generation checks.
 Already-dispatching operations keep their uncertainty rules; internal failures
 and invalid Controller authority still fail conservatively.
 

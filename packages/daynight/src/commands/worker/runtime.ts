@@ -18,7 +18,6 @@ import type { WorkerRepositoryAssignment } from "./coordinator.js";
 import { submitWorkerControl } from "./control.js";
 import type { WorkerControlRequest } from "./control.js";
 import { createWorkerDiagnostics } from "./diagnostics.js";
-import { assertWorkerWorkspaceMigrationReady } from "./migration-state.js";
 import { isWorkerCancellation } from "./execution.js";
 import { createWorkerHerdr } from "./herdr.js";
 import { ensureWorkerIdentity } from "./identity.js";
@@ -129,7 +128,6 @@ export const runWorker = async (options: {
     };
     if (configuration.repositories.length === 0 && options.prepareRepositories !== undefined && !await hasWorkerDatabase(paths.databaseFile)) await prepareRepositories();
     lock = await acquireWorkerInstanceLock(paths);
-    await assertWorkerWorkspaceMigrationReady(paths);
     signal.throwIfAborted();
     const workerId = await ensureWorkerIdentity(paths, signal);
     store = openWorkerStore(paths.databaseFile);
@@ -226,7 +224,6 @@ export const runWorkerControl = async (options: {
     signal.throwIfAborted();
     lock = await tryAcquireWorkerInstanceLock(paths);
     if (lock === null) throw new Error("Stop daynight worker run before running a worker management command.");
-    await assertWorkerWorkspaceMigrationReady(paths);
     const configuration = await readWorkerConfiguration(paths, signal);
     const { serverUrl, serverToken } = await loadServerConfiguration(paths, signal);
     if (serverToken === undefined) throw new Error("You are not logged in. Run daynight login to authenticate.");

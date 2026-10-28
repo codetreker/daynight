@@ -41,7 +41,7 @@ flowchart TB
 
 每个用户环境一个 worker。Run 和人工管理命令使用同一个实例锁，以同一 SQLite 作为取得/释放锁时的 gate；不添加锁表。失效 worker 锁可回收，但不能据此认定原生进程已停。
 
-独立的 worker mapping 包含 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories。默认值依次为 `~/daynights`、1、5000、3、copilot、null、[] 和 []。省略配置文件、worker 或可选字段使用这些默认值；显式 null 只对 model 有清除语义。根节点、review、worker 及其仓库条目的未知字段在运行时忽略，CLI 编辑保留其原 YAML 节点；已知字段的类型和值、YAML 结构、重复键、读取故障和取消继续严格校验。stateDirectory 等未知字段不能改变固定状态根。读取配置不重写文件。
+独立的 worker mapping 包含 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agentControlMode、agent、model、args 和 repositories。默认值依次为 `~/daynights`、1、60000、3、herdr、copilot、null、[] 和 []。省略配置文件、worker 或可选字段使用这些默认值；显式 null 只对 model 有清除语义。根节点、review、worker 及其仓库条目的未知字段在运行时忽略，CLI 编辑保留其原 YAML 节点；已知字段的类型和值、YAML 结构、重复键、读取故障和取消继续严格校验。stateDirectory 等未知字段不能改变固定状态根。读取配置不重写文件。pollIntervalMs 的单一默认值由 workerConfigurationDefaults 提供；runtime 在每轮检查完成后按配置间隔等待，默认 60 秒。显式合法值直接保留，不迁移已有的 5000 配置。
 
 Repository entry 需要 remote/path，可提供 projectId、agent/model/args 覆盖。路径相对 config.yml 目录或为绝对路径，不依赖启动 cwd，不展开 tilde；重复项目、重叠仓库和与状态根重叠均拒绝。相同 agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，不能覆盖 worker 拥有的 cwd/session/model/mode 参数或固定 full access 策略。普通 model、reasoning、日志和附加配置参数仍由原生工具解释。
 
@@ -57,7 +57,7 @@ Setup 复用 Herdr preflight 的原生版本、目录、运行时、hook asset�
 
 配置在启动或重启时加载，不热重载。同一 claim 保留 agent 类型、模式和 session_id；Herdr 需要重新启动时使用当前适用于该 agent 的 model/args，Web 恢复沿用已冻结的执行配置。另一工具的配置不会套到原工具。移出配置的项目仍由已有 projects 映射参与对账，使用当前全局适用设置。
 
-一个状态目录属于当前配置的单一服务、账号和 workerId。切换这些身份前先结束旧执行，再重建本机状态；六列记录不承担跨服务或跨账号的旧执行自动接续。
+一个状态目录属于当前配置的单一服务、账号和 workerId。切换这些身份前先结束旧执行，再重建本机状态；认领索引不承担跨服务或跨账号的旧执行自动接续。
 
 ## SQLite：项目映射与认领索引
 
@@ -129,7 +129,7 @@ Projects 在远端认领前保存仓库映射。有未结束任务或实际受�
 
 资源发现检查未结束行、done 行和遗留资源。Git 标记只含 project/task/claim/worktree 身份及物理校验信息，不含 workerId；必须关联本机行、专用 Herdr 或当前自有 claim，才能认定由本 worker 管理。仅有 Git 标记、无法证明属于本 worker 的资源报告并保留，不因自有清单缺席就删除，也不猜测 agent 构造任务行。已知项目仓库和专用 Herdr 是扫描范围，不进行全磁盘发现。
 
-## Workspace 名称与格式升级
+## Workspace 名称与身份
 
 Herdr 的 label 同时承担 workspace 显示名称。名称以经过终端安全转义的完整 title 开头，随后是 ` | daynight:` 与四字段 canonical JSON。解析器只读取最后一个分隔符之后的严格身份 JSON；标题可包含相同分隔符或 JSON 片段，不参与归属比较。Unicode Cc、行分隔符和双向显示控制字符转为字面量 `\u{hex}`；其余文本包括 emoji 的 ZWJ 保留。完整 title 和身份不在 CLI 中截断，Herdr 决定当前终端宽度内的显示。
 
@@ -139,11 +139,7 @@ Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进
 
 只有 rename RPC 或回执故障属于 `workspace-name-error`，保留原 cause，留待后续重新观察且不计入执行恢复预算。binding/身份冲突及取消仍是生命周期错误。title 不进入 prompt 或 agent 输入，因此不能改变任务指令。
 
-旧五字段资源格式只由显式 `worker migrate-workspaces [--rollback]` 处理。迁移要求停止 runner 与原生执行，持实例锁完整核验旧 origin 等于当前服务、身份投影无冲突、SQLite 原生 ID、实际 cwd 与 Git 注册指纹。配置中的逻辑项目路径保留原拼写；Git 注册指针与保存及恢复后的 pane cwd 解析到同一物理任务路径时，允许祖先目录别名，但 worktree leaf 仍须是指纹匹配的普通目录。未结束且具有旧格式资源的执行必须有原生 session ID，尚无资源的新 pending 不阻塞迁移；当前格式或没有旧资源时直接完成，不启动维护 daemon。未知版本、缺失原资源或无法证明连续性时保留并报错。
-
-迁移先将全组 SQLite、Herdr session/recovery snapshots 与 Git administration locked 文件备份到 `worker/workspace-migration-backups/<UUID>/`，记录原始 manifest、文件 hash、Herdr tree 与 outcome，并持久写入 `worker/workspace-migration.json` 作为启动阻塞清单。随后维护 Herdr 在 `resume_agents_on_restore=false` 下只关闭已核验的旧 workspace。退出维护 daemon 后读回 session.json，证实旧 workspace 消失，再原子写入四字段 Git marker，保留 leaf/root/common 指纹及原 worktree/branch/claim/session_id。旧恢复快照移入备份位置，避免重新引入旧 label。
-
-迁移成功后正常 runner 创建带 title 的新 workspace，按原 SQLite native session 继续。Herdr workspace/pane ID 和 terminal scrollback 不保留；原生历史和任务成果保留。这延续既有 cold restore 的重建语义，并避免直接编辑 Herdr 名称导致 session-history 的 layout_fingerprint 失配。迁移中断时 run 与人工管理保持阻塞；普通迁移请求要求先执行 `--rollback` 从备份清单进行全组恢复并验证，再重做。回滚只接受仍存在的未完成清单，不能回退已完成迁移或其后产生的执行状态。只有完整成功或验证回滚后删除阻塞清单，不接受混合格式。该一次性维护状态不成为执行业务台账，当前正常运行只识别新格式。
+运行资源使用当前四项身份格式，启动和人工管理直接执行正常的配置、实例锁、资源观察与执行流程，不读取迁移清单或转换历史 label、Git marker。格式不符继续由当前资源校验暴露，所有权和物理绑定检查保持原职责。删除格式转换、备份、回滚及启动阻塞机制的决定见[迁移机制移除决策](../../.agents/notes/implemented/simplification/2026-10-28-remove-worker-workspace-migration.md)。
 
 ## Web backend 与执行证据
 
