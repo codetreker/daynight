@@ -243,4 +243,5 @@ it("selects Web globally while preserving defaults and ignoring unrelated future
   expect(value).toMatchObject({ agent: "claude", agentControlMode: "web", maxConcurrent: 1 });
   expect(value.repositories[0]?.agentControlMode).toBe("web");
   expect(() => parse({ agentControlMode: "both" })).toThrow("agentControlMode");
+  expect(() => parse({ agentControlMode: null })).toThrow("agentControlMode");
 });

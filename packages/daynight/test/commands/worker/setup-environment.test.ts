@@ -225,3 +225,12 @@ describe("worker setup environment inspection", () => {
     expect(settled).toBe(true);
   });
 });
+
+
+it("Web setup does not require Herdr, native hooks, or private Herdr endpoints", async () => {
+  const f = await fixture();
+  const checks = await inspectWorkerEnvironment({ ...f.options, agentControlMode: "web" }, f.dependencies);
+  expect(f.runCommand.mock.calls.some(([command]) => command.file === "herdr")).toBe(false);
+  expect(checks.some(check => check.label.includes("Herdr") || check.label.includes("hook"))).toBe(false);
+  expect(checks.filter(check => check.status === "missing")).toEqual([]);
+});

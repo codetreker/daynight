@@ -75,7 +75,7 @@ export const submitWorkerControl = async (options: {
     requireImplementedWorkerBackend(repository.configuration);
     if (repository.configuration.agentControlMode === "web") { if (!options.verifyWebServer) throw new Error("Web backend capabilities are unavailable."); await options.verifyWebServer(repository.configuration.agent, signal); }
     await remote.authorizeControl(projectId, worker.userId, signal);
-    const descriptor: WorkerClaimDescriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent, agentControlMode: repository.configuration.agentControlMode ?? "herdr" };
+    const descriptor: WorkerClaimDescriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}) };
     options.emit({ kind: "management-request", message: `Resume ${projectId}/${request.taskId}: previousClaimId=${request.claimId}, claimId=${descriptor.claimId}, worktreeId=${descriptor.worktreeId}.` });
     const granted = await confirmMutation(
       () => remote.resume(projectId, request.taskId, { ...descriptor, version: request.version, previousClaimId: request.claimId }, signal),

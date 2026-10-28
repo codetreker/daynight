@@ -116,6 +116,7 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     await eventually(() => expect(f.store.listTasks()[0]!.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!;
+    expect(vi.mocked(f.remote.claim).mock.calls[0]![1]).not.toHaveProperty("agentControlMode");
     expect(Object.keys(row).sort()).toEqual(["agent", "agentControlMode", "claimId", "projectId", "sessionId", "status", "taskId"]);
     expect(f.events).toContainEqual({ kind: "info", task: { ...row, sessionId: null }, message: "Starting a new native conversation in the task worktree." });
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
@@ -1026,7 +1027,7 @@ it("missing Web execution evidence never permits replacing or deleting an existi
     expect(cleanup).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
     expect(f.store.getTask(row)?.status).toBe("active");
     f.grants.clear();
-    await expect(coordinator.tick()).rejects.toThrow("resource evidence");
+    await expect(coordinator.tick()).rejects.toBe(refusal);
     expect(f.store.getTask(row)?.status).toBe("active");
     expect(await coordinator.shutdown()).toBe(false);
   } finally { webStore.close(); }

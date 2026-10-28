@@ -58,6 +58,7 @@ test.each([null, "hello 中文"])("foreground Test lifecycle preserves registrat
   expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(prompt === null ? 0 : 1);
   expect(v.requests.filter(r => r.url.endsWith("/test-sessions"))).toHaveLength(1);
   expect(v.requests.some(r => r.url.includes("/tasks") || r.url.includes("/workers"))).toBe(false);
+  expect(v.requests.filter(r => r.url.endsWith("controller-grant")).map(r => r.body.kind)).toEqual(["bootstrap", "reconnect"]);
   expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
   const launch = (await readdir(path.join(v.home, ".daynight", "controller", "launches")))[0]!;
   const ticket = JSON.parse(await readFile(path.join(v.home, ".daynight", "controller", "launches", launch), "utf8"));

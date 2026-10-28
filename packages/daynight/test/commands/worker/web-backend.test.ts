@@ -85,3 +85,16 @@ it("registers the frozen Copilot identity only after service capability support"
  fetch.mockResolvedValueOnce(Response.json({ session: { ...snapshot, identity: { ...snapshot.identity, provider: "claude" } } }));
  await expect(api.register(task, execution, signal)).rejects.toThrow("frozen execution");
 });
+
+
+it("requires a matching unregistered server claim before recovering missing launch evidence", async () => {
+  const f = await fixture(), api = createWorkerSessionApi("https://daynight.example", "test-token"), signal = new AbortController().signal;
+  const fetch = vi.fn<typeof globalThis.fetch>(); vi.stubGlobal("fetch", fetch);
+  fetch.mockResolvedValueOnce(Response.json({ status: "not_registered", agentControlMode: "web", claimId: f.identity.claimId }));
+  await api.verifyUnregistered(f.identity, signal);
+  expect(fetch.mock.calls[0]![1]).toMatchObject({ method: "GET" });
+  fetch.mockResolvedValueOnce(Response.json({ status: "not_registered", agentControlMode: "web", claimId: randomUUID() }));
+  await expect(api.verifyUnregistered(f.identity, signal)).rejects.toThrow("provenance");
+  fetch.mockResolvedValueOnce(new Response("", { status: 503 }));
+  await expect(api.verifyUnregistered(f.identity, signal)).rejects.toThrow("503");
+});

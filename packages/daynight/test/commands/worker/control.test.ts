@@ -182,6 +182,7 @@ describe("worker explicit resume grants", () => {
       return original(...args);
     });
     const result = await f.submit({ kind: "resume", taskId, claimId, version: 8n });
+    expect(vi.mocked(f.remote.resume).mock.calls[0]![2]).not.toHaveProperty("agentControlMode");
     expect(result.task).toMatchObject({ projectId, taskId, status: "pending", agent: "codex", sessionId: null });
     expect(f.current()).toMatchObject({ status: "done", sessionId: uuid(50), agent: "copilot" });
     expect(f.store.listTasks()).toHaveLength(2); expect(f.coordinator.cleanupSource).not.toHaveBeenCalled();

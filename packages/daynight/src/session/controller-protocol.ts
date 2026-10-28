@@ -145,7 +145,15 @@ export const parseRelayMessage = (x: unknown): RelayMessage => {
     case "operation_offer": { const command = parseSessionCommand(o.command); assertSessionFence(command, sessionFence(base)); return { ...base, type: "operation_offer", operationSeq: seq(o.operationSeq), command }; }
     case "operation_authorized": return { ...base, type: "operation_authorized", operationId: id(o.operationId) };
     case "receipt_ack": { const operation = parseSessionOperation(o.operation); assertSessionFence(operation, sessionFence(base)); return { ...base, type: "receipt_ack", operation }; }
-    case "reconcile_result": { const operations = list(o.operations, parseSessionOperation, 200); for (const operation of operations) assertSessionFence(operation, sessionFence(base)); return { ...base, type: "reconcile_result", operations }; }
+    case "reconcile_result": {
+      const operations = list(o.operations, parseSessionOperation, 200);
+      for (const operation of operations) {
+        // Durable receipts retain their original generation across controller recovery.
+        if (BigInt(operation.executionGeneration) > BigInt(base.executionGeneration)) return fail();
+        assertSessionFence(operation, { ...sessionFence(base), executionGeneration: operation.executionGeneration });
+      }
+      return { ...base, type: "reconcile_result", operations };
+    }
     case "heartbeat_ack": return { ...base, type: "heartbeat_ack" };
     case "error": return { ...base, type: "error", code: str(o.code), message: str(o.message, 1_048_576) };
   }

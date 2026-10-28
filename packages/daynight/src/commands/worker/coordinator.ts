@@ -295,7 +295,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       const owner = resources.owners.get(key(local));
       if (owner !== undefined) ending.set(key(local), owner);
       else if (!jobs.has(key(local))) {
-        if (local.agentControlMode === "web") throw new Error("The ended Web claim has no original resource evidence; its ownership record is retained.");
+        if (local.agentControlMode === "web") {
+          if (!options.verifyWebUnregistered || local.sessionId !== null) throw new Error("The ended Web claim has no original resource evidence; its ownership record is retained.");
+          await options.verifyWebUnregistered(local, normalSignal);
+        }
         options.store.completeTask(local);
       }
     }
@@ -343,7 +346,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (repository.configuration.agentControlMode === "web") await options.verifyWebServer?.(repository.configuration.agent, normalSignal);
         const claimId = randomUUID();
         try {
-          const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, agentControlMode: repository.configuration.agentControlMode ?? "herdr", worktreeId: randomUUID() }, normalSignal);
+          const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
           const owner = remoteOwner(granted);
           const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: granted.properties.worker!.agent, agentControlMode: granted.properties.worker!.agentControlMode });
           if (!blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
@@ -395,6 +398,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await Promise.all(jobs.values());
       let complete = true;
       for (const task of options.store.listUnfinishedTasks()) if (task.agentControlMode === "web" && options.webStore?.getTask(task) == null) {
+        if (task.status === "pending" && task.sessionId === null && options.verifyWebUnregistered) {
+          try { await options.verifyWebUnregistered(task, new AbortController().signal); continue; }
+          catch { /* Missing launch evidence must not be interpreted as a confirmed native stop. */ }
+        }
         complete = false;
         options.emit({ kind: "shutdown-error", task, message: "The original Web execution evidence is missing; complete native stop cannot be confirmed." });
       }
