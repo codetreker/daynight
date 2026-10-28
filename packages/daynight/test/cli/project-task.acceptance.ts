@@ -411,7 +411,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
     const packagedBrief = /```markdown\r?\n([\s\S]*?)\r?\n```/.exec(installedAuthoring)?.[1];
     expect(packagedBrief).toBeDefined();
     const brief = packagedBrief!;
-    for (const content of ["## 问题与行动", "## 范围与交付", "## 完成条件", "[方案与验收](plan.md)", "[交互原型](mockui/index.html)"]) expect(brief).toContain(content);
+    for (const content of ["## 问题与要求", "## 范围与交付", "## 输入", "## 完成条件", "[交互原型](mockui/index.html)"]) expect(brief).toContain(content);
     const briefCreateAt = requests.length;
     expect((await invoke(["task", "create", "--title", "Packaged Markdown brief", "--description", brief, ...explicit], outside, 0, true, "node-entry")).stdout).toContain("Status: todo");
     expect(requests.slice(briefCreateAt).map(({ method }) => method)).toEqual(["GET", "POST"]);
