@@ -3,15 +3,13 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWorkerControl } from "../../../src/commands/worker/runtime.js";
 import { acquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
+import { workspaceMigrationFile } from "../../../src/commands/worker/migration-state.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
-import type { LocalTask } from "../../../src/commands/worker/types.js";
 
-const mocks = vi.hoisted(() => ({
-  submit: vi.fn(), controlDriver: vi.fn(), coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(),
-}));
-vi.mock("../../../src/commands/worker/control.js", () => ({ submitWorkerControl: mocks.submit, createWorkerControlDriver: mocks.controlDriver }));
+const mocks = vi.hoisted(() => ({ submit: vi.fn(), coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn() }));
+vi.mock("../../../src/commands/worker/control.js", () => ({ submitWorkerControl: mocks.submit }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitManager: mocks.git }));
@@ -25,17 +23,16 @@ const stores = new Set<WorkerStore>();
 const resources: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const release of resources.splice(0)) await release();
-  for (const store of stores) store.close();
-  stores.clear();
+  for (const store of stores) store.close(); stores.clear();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)) });
-  mocks.git.mockReturnValue({ dispose: vi.fn(async () => {}) });
+  mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async () => ({ id: uuid(1) })) });
+  mocks.git.mockReturnValue({ prepareRepository: vi.fn(), dispose: vi.fn(async () => {}) });
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn() });
   mocks.prompt.mockResolvedValue(() => "prompt");
-  mocks.controlDriver.mockImplementation(({ store }: { store: WorkerStore }) => ({ advance: vi.fn(async (task: LocalTask) => store.getTask(task)) }));
+  mocks.coordinator.mockReturnValue({ tick: vi.fn(), shutdown: vi.fn() });
 });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-control-runtime-tests");
@@ -45,100 +42,78 @@ const fixture = async () => {
   await mkdir(paths.workerDirectory, { recursive: true });
   await writeFile(paths.configFile, `serverUrl: ${origin}\nserverToken: dn_pat_abcdefghijklmnopqrstuvwxyz1234567890\nworkerId: ${uuid(4)}\nworker:\n  repositories: []\n`);
   const store = openWorkerStore(paths.databaseFile); stores.add(store);
-  const project = { serverOrigin: origin, projectId: uuid(1), repoUrl: "https://example.test/org/repo.git", localPath: path.join(homeDirectory, "repo") };
+  const project = { projectId: uuid(1), repoUrl: "https://example.test/org/repo.git", localPath: path.join(homeDirectory, "repo") };
   store.registerProject(project);
-  const task = store.registerPending({ ...project, taskId: uuid(2), claimId: uuid(3), workerId: uuid(4), worktreeId: uuid(5) }, { kind: "new", configuration: { agent: "codex", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 2 } }, 1, uuid(6));
-  const sibling = store.registerPending({ ...project, taskId: uuid(12), claimId: uuid(13), workerId: uuid(4), worktreeId: uuid(15) }, { kind: "new", configuration: { agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 2 } }, 1, uuid(6));
+  const task = store.activateTask(store.registerPending({ projectId: project.projectId, taskId: uuid(2), claimId: uuid(3), agent: "codex" }));
+  const sibling = store.registerPending({ projectId: project.projectId, taskId: uuid(12), claimId: uuid(13), agent: "copilot" });
   const request = { kind: "release" as const, taskId: task.taskId, claimId: task.claimId, version: 5n };
-  mocks.submit.mockImplementation(async ({ store: current }: { store: WorkerStore }) => ({ task: current.recordControlIntent(task, { kind: "release", sourceClaimId: task.claimId, version: "5" }, 2), message: "release persisted" }));
-  return { homeDirectory, packageDirectory: path.resolve("package"), request, paths, store, task, sibling };
-};
-const complete = (store: WorkerStore, task: LocalTask) => {
-  store.confirmUnstartedControlCleanup(task, { completeHerdrInventory: true, noOwnedResources: true }, 600_002, 2);
-  store.markControlSubmitting(task, 5n, 3);
-  store.confirmControlApplied(task, 6n, 4);
-  store.completeTask(task, 5);
+  mocks.submit.mockImplementation(async ({ store: current }: { store: WorkerStore }) => ({ task: current.completeTask(task), message: "release completed" }));
+  return { homeDirectory, packageDirectory: path.resolve("package"), request, paths, store, project, task, sibling };
 };
 
-describe("worker management runtime ownership", () => {
-  it("advances only the target through the locked coordinator and leaves sibling resources and shared Herdr intact", async () => {
+describe("worker synchronous management runtime ownership", () => {
+  it("blocks incomplete workspace migration before management reads or task mutation", async () => {
     const f = await fixture();
-    const advance = vi.fn(async (identity: LocalTask) => { expect(identity.claimId).toBe(f.task.claimId); complete(f.store, f.task); });
-    const shutdown = vi.fn(); const tick = vi.fn();
-    mocks.coordinator.mockReturnValue({ advanceCommittedCleanups: advance, shutdown, tick });
+    await writeFile(workspaceMigrationFile(f.paths), "{}\n");
+    await expect(runWorkerControl(f)).rejects.toThrow("workspace migration is incomplete");
+    for (const factory of [mocks.submit, mocks.coordinator, mocks.herdr, mocks.git, mocks.remote, mocks.prompt]) expect(factory).not.toHaveBeenCalled();
+    expect(f.store.getTask(f.task)).toEqual(f.task); expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
+    const lock = await acquireWorkerInstanceLock(f.paths); await lock.release();
+  });
+
+  it("submits once under the instance lock and leaves sibling resources and shared Herdr intact", async () => {
+    const f = await fixture();
+    let held = false;
+    mocks.submit.mockImplementationOnce(async ({ store, coordinator }: { store: WorkerStore; coordinator: unknown }) => {
+      expect(coordinator).toBe(mocks.coordinator.mock.results[0]!.value);
+      let competing: Awaited<ReturnType<typeof acquireWorkerInstanceLock>> | undefined;
+      try { competing = await acquireWorkerInstanceLock(f.paths); }
+      catch { held = true; }
+      finally { await competing?.release(); }
+      expect(held).toBe(true);
+      return { task: store.completeTask(f.task), message: "release completed" };
+    });
     await runWorkerControl(f);
-    expect(advance).toHaveBeenCalledOnce();
-    expect(tick).not.toHaveBeenCalled(); expect(shutdown).not.toHaveBeenCalled();
-    expect(mocks.herdr).not.toHaveBeenCalled();
-    expect(f.store.getTask(f.task)?.status).toBe("done");
-    expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
+    expect(mocks.submit).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce();
+    expect(mocks.coordinator.mock.results[0]!.value.tick).not.toHaveBeenCalled();
+    expect(mocks.coordinator.mock.results[0]!.value.shutdown).not.toHaveBeenCalled();
+    for (const result of mocks.herdr.mock.results) expect(result.value.stopInstance).not.toHaveBeenCalled();
+    expect(f.store.getTask(f.task)?.status).toBe("done"); expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
     const next = await acquireWorkerInstanceLock(f.paths); await next.release();
   });
 
-  it("persists a foreground request without creating a second native controller and retains it after interruption", async () => {
+  it("rejects management while run owns the lock before submission or native controller construction", async () => {
     const f = await fixture(); const live = await acquireWorkerInstanceLock(f.paths); resources.push(live.release);
-    const cancellation = new AbortController();
-    mocks.submit.mockImplementationOnce(async ({ store }: { store: WorkerStore }) => {
-      const task = store.recordControlIntent(f.task, { kind: "release", sourceClaimId: f.task.claimId, version: "5" }, 2);
-      setTimeout(() => cancellation.abort(new Error("test interruption")), 10);
-      return { task, message: "persisted for foreground" };
-    });
-    await expect(runWorkerControl({ ...f, signal: cancellation.signal })).rejects.toThrow();
-    expect(f.store.getTask(f.task)?.control?.submission).toBe("not-submitted");
-    expect(mocks.herdr).not.toHaveBeenCalled(); expect(mocks.git).not.toHaveBeenCalled(); expect(mocks.coordinator).not.toHaveBeenCalled();
-    expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
+    await expect(runWorkerControl(f)).rejects.toThrow(/stop.*worker run|worker.*already running/i);
+    expect(mocks.submit).not.toHaveBeenCalled(); expect(mocks.remote).not.toHaveBeenCalled();
+    expect(mocks.coordinator).not.toHaveBeenCalled(); expect(mocks.herdr).not.toHaveBeenCalled(); expect(mocks.git).not.toHaveBeenCalled();
+    expect(f.store.getTask(f.task)).toEqual(f.task); expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
   });
 
-  it("takes the same lock after the foreground exits and continues the persisted target without a business tick", async () => {
-    const f = await fixture(); const live = await acquireWorkerInstanceLock(f.paths);
-    mocks.submit.mockImplementationOnce(async ({ store }: { store: WorkerStore }) => {
-      const task = store.recordControlIntent(f.task, { kind: "release", sourceClaimId: f.task.claimId, version: "5" }, 2);
-      await live.release();
-      return { task, message: "persisted before foreground exit" };
-    });
-    const advance = vi.fn(async () => complete(f.store, f.task));
-    mocks.coordinator.mockReturnValue({ advanceCommittedCleanups: advance });
-    await runWorkerControl(f);
-    expect(advance).toHaveBeenCalledOnce(); expect(f.store.getTask(f.task)?.status).toBe("done");
-    expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
-  });
-
-  it("surfaces an unknown remote outcome with its original claim and releases only command ownership", async () => {
-    const f = await fixture();
-    mocks.coordinator.mockReturnValue({ advanceCommittedCleanups: vi.fn(async () => {
-      f.store.confirmUnstartedControlCleanup(f.task, { completeHerdrInventory: true, noOwnedResources: true }, 600_002, 2);
-      f.store.markControlSubmitting(f.task, 5n, 3);
-    }) });
-    await expect(runWorkerControl(f)).rejects.toThrow(`unknown for claim ${f.task.claimId}`);
-    expect(f.store.getTask(f.task)?.control?.submission).toBe("unknown");
+  it("returns the original management failure without retaining an intent or replaying submission", async () => {
+    const f = await fixture(); const unknown = new Error(`Unknown remote result for claim ${f.task.claimId}; reconcile before restarting run.`);
+    mocks.submit.mockRejectedValueOnce(unknown);
+    await expect(runWorkerControl(f)).rejects.toBe(unknown);
+    expect(mocks.submit).toHaveBeenCalledOnce(); expect(f.store.getTask(f.task)).toEqual(f.task);
     expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
     const next = await acquireWorkerInstanceLock(f.paths); await next.release();
   });
 
-  it("reconciles an already cleaned unknown outcome without constructing any native controller", async () => {
+  it("lets a successful one-shot retry leave its managed agent for the next run to connect", async () => {
     const f = await fixture();
-    mocks.submit.mockImplementationOnce(async ({ store }: { store: WorkerStore }) => {
-      store.recordControlIntent(f.task, { kind: "release", sourceClaimId: f.task.claimId, version: "5" }, 2);
-      store.confirmUnstartedControlCleanup(f.task, { completeHerdrInventory: true, noOwnedResources: true }, 600_002, 2);
-      const task = store.markControlSubmitting(f.task, 5n, 3);
-      return { task, message: "unknown original write" };
-    });
-    const reconcile = vi.fn(async () => {
-      f.store.confirmControlApplied(f.task, 6n, 4);
-      return f.store.completeTask(f.task, 5);
-    });
-    mocks.controlDriver.mockReturnValueOnce({ advance: reconcile });
-    await runWorkerControl(f);
-    expect(reconcile).toHaveBeenCalledOnce(); expect(f.store.getTask(f.task)?.status).toBe("done");
-    expect(mocks.herdr).not.toHaveBeenCalled(); expect(mocks.git).not.toHaveBeenCalled(); expect(mocks.coordinator).not.toHaveBeenCalled();
+    mocks.submit.mockImplementationOnce(async ({ store }: { store: WorkerStore }) => ({ task: store.setSessionId(f.task, uuid(21)), message: "retry completed" }));
+    await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
+    expect(mocks.submit).toHaveBeenCalledOnce(); expect(f.store.getTask(f.task)).toMatchObject({ status: "active", sessionId: uuid(21) });
+    for (const result of mocks.herdr.mock.results) expect(result.value.stopInstance).not.toHaveBeenCalled();
+    expect(mocks.coordinator.mock.results[0]!.value.shutdown).not.toHaveBeenCalled();
+    expect(mocks.coordinator.mock.results[0]!.value.tick).not.toHaveBeenCalled();
+    const next = await acquireWorkerInstanceLock(f.paths); await next.release();
   });
 
-  it("does not construct resource controllers after permission failure and preserves the original error", async () => {
-    const f = await fixture(); const denied = new Error("administrator permission required");
-    mocks.submit.mockRejectedValueOnce(denied);
-    await expect(runWorkerControl(f)).rejects.toBe(denied);
-    expect(mocks.herdr).not.toHaveBeenCalled(); expect(mocks.git).not.toHaveBeenCalled();
-    expect(f.store.getTask(f.task)?.control).toBeNull();
-    const next = await acquireWorkerInstanceLock(f.paths); await next.release();
+  it("does not submit a pre-cancelled command and retains the original records", async () => {
+    const f = await fixture(); const controller = new AbortController(); controller.abort(new Error("Management cancelled."));
+    await expect(runWorkerControl({ ...f, signal: controller.signal })).rejects.toBe(controller.signal.reason);
+    expect(mocks.submit).not.toHaveBeenCalled(); expect(mocks.coordinator).not.toHaveBeenCalled(); expect(mocks.herdr).not.toHaveBeenCalled();
+    expect(f.store.getTask(f.task)).toEqual(f.task);
   });
 });

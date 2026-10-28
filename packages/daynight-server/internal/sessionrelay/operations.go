@@ -447,7 +447,20 @@ func (s *Service) begin(ctx context.Context, tx pgx.Tx, r *record, t task, id st
 		return nil, conflict()
 	}
 	if err = s.operationAuthorized(ctx, tx, r, t, o); err != nil {
-		return nil, err
+		var refusal *service.Fault
+		if o.Receipt.State != "offered" || !errors.As(err, &refusal) || (refusal.Code != "forbidden" && refusal.Code != "unauthenticated" && refusal.Code != "session_conflict") {
+			return nil, err
+		}
+		// A stale offer has not crossed the native dispatch boundary. Reject only
+		// that operation so unrelated work can continue on the same channel.
+		o.Receipt.State = "rejected"
+		o.Receipt.Error = &sp.OperationError{Code: "permission_or_state_changed", Message: "Operation no longer has current permission or state."}
+		if err = s.updateReceipt(ctx, tx, r, o.Receipt); err != nil {
+			return nil, err
+		}
+		out := envelope(r, "receipt_ack")
+		out["operation"] = o.Receipt
+		return out, nil
 	}
 	if o.Receipt.State == "offered" {
 		o.Receipt.State = "dispatching"

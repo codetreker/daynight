@@ -76,7 +76,9 @@ Project/task sessions retain operation identity independently of dialog lifetime
 
 The bounded original actions avoided reopening policy while approval was part of
 the product. That restriction is intentionally superseded; ownership, release,
-transfer, bulk changes and immutable attempt history remain separate designs.
+withdrawal, bulk changes and immutable attempt history have separate contracts.
+The later [force-withdrawal decision](../architecture/2026-10-27-worker-force-withdrawal.md)
+owns the worker reset; ordinary status setting does not perform it.
 Authentication continues to use current project members after acquiring the
 project lock, with identical member/admin task-write rights and exact Cookie
 Origin/no-store handling. The successor preserves those boundaries.

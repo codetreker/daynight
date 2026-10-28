@@ -117,7 +117,7 @@ export const openCopilotProvider = async (options: ProviderOptions): Promise<Nat
     const snapshot = await call(native.rpc.metadata.snapshot(), "Copilot session identity");
     if (native.sessionId !== nativeId || snapshot.sessionId !== nativeId || snapshot.isRemote || snapshot.alreadyInUse || !snapshot.workingDirectory || await realpath(snapshot.workingDirectory) !== cwd) throw new Error("Native Copilot session identity or working directory mismatch.");
     controls = new CopilotControls(native, state, options.onControlConfirmed, options.controlsRevisionFloor, skillDiscoveryError);
-    await controls.initialize(options.resumeNativeSessionId !== null);
+    await controls.initialize(options.resumeNativeSessionId !== null, options.unattended);
     const history = await call(native.getEvents(), "Copilot native history");
     const { processing } = await call(native.rpc.metadata.isProcessing(), "Copilot foreground activity");
     // Callbacks must bind immediately, but timeline replay precedes queued live

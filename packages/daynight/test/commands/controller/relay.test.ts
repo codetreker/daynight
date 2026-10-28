@@ -73,3 +73,63 @@ test("closing while the credential read is pending cannot create a socket or acc
   await new Promise(resolve => setImmediate(resolve));
   expect(transport.sockets).toHaveLength(0); expect(getLastAcknowledgedSequence).not.toHaveBeenCalled();
 });
+
+test.each(["rejected", "expired"] as const)("%s authorization receipt persists refusal without closing the channel", async state => {
+  const { relay, journal, emit, frame, ticket, callbacks } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  const operation = { operationId: randomUUID(), executionGeneration: ticket.executionGeneration, kind: "send_message", state: "accepted", result: null, error: null } as ControllerOperation;
+  Object.assign(journal, { getOperation: vi.fn(() => operation), recordOperation: vi.fn() });
+  const pending = relay.authorize(operation.operationId);
+  const assertion = expect(pending).rejects.toThrow("Permission or state changed");
+  emit(frame("receipt_ack", { operation: { ...publicOperation(ticket, operation), state, error: { code: "permission_or_state_changed", message: "Permission or state changed" } } }));
+  await assertion;
+  expect(journal.recordOperation).toHaveBeenCalledWith(operation.operationId, state, null, "Permission or state changed");
+  expect(journal.markOperationAcknowledged).toHaveBeenCalledWith(operation.operationId);
+  expect(relay.connected()).toBe(true);
+  const next = randomUUID(), allowed = relay.authorize(next);
+  emit(frame("operation_authorized", { operationId: next }));
+  await allowed;
+  expect(callbacks.onError).not.toHaveBeenCalled();
+});
+
+test("authorization refusal with mismatching operation identity cannot settle the journal", async () => {
+  const { relay, journal, emit, frame, ticket } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  const operation = { operationId: randomUUID(), executionGeneration: ticket.executionGeneration, kind: "send_message", state: "accepted", result: null, error: null } as ControllerOperation;
+  Object.assign(journal, { getOperation: vi.fn(() => operation), recordOperation: vi.fn() });
+  const pending = relay.authorize(operation.operationId);
+  const assertion = expect(pending).rejects.toThrow("disconnected");
+  emit(frame("receipt_ack", { operation: { ...publicOperation(ticket, operation), kind: "cancel", state: "rejected", error: null } }));
+  await assertion;
+  expect(journal.recordOperation).not.toHaveBeenCalled();
+  expect(journal.markOperationAcknowledged).not.toHaveBeenCalled();
+});
+
+test("a refusal arriving after its authorization waiter is gone still settles undispatched intent", async () => {
+  const { relay, journal, emit, frame, ticket } = await setup();
+  emit(frame("reconcile_result", { operations: [] }));
+  const operation = { operationId: randomUUID(), executionGeneration: ticket.executionGeneration, kind: "send_message", state: "accepted", result: null, error: null } as ControllerOperation;
+  Object.assign(journal, { getOperation: vi.fn(() => operation), recordOperation: vi.fn() });
+  emit(frame("receipt_ack", { operation: { ...publicOperation(ticket, operation), state: "rejected", error: null } }));
+  expect(journal.recordOperation).toHaveBeenCalledWith(operation.operationId, "rejected", null, "Operation no longer has current permission or state.");
+  expect(journal.markOperationAcknowledged).toHaveBeenCalledWith(operation.operationId);
+  expect(relay.connected()).toBe(true);
+});
+
+test.each(["rejected", "expired"] as const)("reconciliation settles %s intent after its receipt ACK was lost", async state => {
+  const operation = { operationId: randomUUID(), kind: "send_message", state: "accepted", result: null, error: null } as ControllerOperation;
+  const { relay, journal, emit, frame, ticket, socket, callbacks } = await setup([operation]);
+  const pendingOperations = [operation];
+  Object.assign(journal, {
+    getOperation: vi.fn(() => operation),
+    recordOperation: vi.fn((_id, nextState, _result, error) => { operation.state = nextState; operation.error = error; }),
+    markOperationAcknowledged: vi.fn(() => { if (["rejected", "expired"].includes(operation.state)) pendingOperations.splice(0); }),
+    listUnacknowledgedOperations: vi.fn(() => pendingOperations),
+  });
+  expect(socket.sent.find(m => m.type === "reconcile")).toMatchObject({ operations: [{ operationId: operation.operationId, state: "not_submitted" }] });
+  emit(frame("reconcile_result", { operations: [{ ...publicOperation(ticket, operation), state, error: { code: "permission_or_state_changed", message: "Refused before native dispatch" } }] }));
+  expect(journal.recordOperation).toHaveBeenCalledWith(operation.operationId, state, null, "Refused before native dispatch");
+  expect(pendingOperations).toEqual([]);
+  expect(callbacks.onCommand).not.toHaveBeenCalled();
+  expect(relay.connected()).toBe(true);
+});

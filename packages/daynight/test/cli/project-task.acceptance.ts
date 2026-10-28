@@ -63,7 +63,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
   let readyPage: { items: readonly Task[]; nextCursor: string | null } | undefined;
   let listResponseTask: Task | undefined;
   let received: (() => void) | undefined;
-  const configure = async (serverUrl: string): Promise<void> => { await mkdir(state, { recursive: true }); await writeFile(path.join(state, "config.yml"), `serverUrl: ${serverUrl}\nserverToken: fixture-token\nrepositories: invalid-for-review\n`); };
+  const configure = async (serverUrl: string): Promise<void> => { await mkdir(state, { recursive: true }); await writeFile(path.join(state, "config.yml"), `serverUrl: ${serverUrl}\nserverToken: fixture-token\nreview:\n  repositories: invalid-for-review\n`); };
   const listen = async (): Promise<string> => {
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];

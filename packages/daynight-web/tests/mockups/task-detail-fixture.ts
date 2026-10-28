@@ -1,4 +1,4 @@
-import type { TaskDetail, TaskGraph } from '../../src/api/types';
+import type { TaskDetail, TaskGraph, WorkerClaim } from '../../src/api/types';
 import { stringifyApiJson } from '../../src/api/json';
 import type { GraphSnapshot } from '../../src/features/projects/useTaskGraph';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
@@ -18,10 +18,22 @@ const task = (id: string, title: string, status: TaskDetail['status']): TaskDeta
   createdAt: timestamp, updatedAt: timestamp,
 });
 
-export const createTaskDetailFixture = (options: { readonly initialStatus?: TaskDetail['status'] } = {}) => {
+export type ClaimScenario = 'owner' | 'other' | 'admin' | 'released' | 'former' | 'completed';
+export const createTaskDetailFixture = (options: { readonly initialStatus?: TaskDetail['status']; readonly claim?: ClaimScenario; readonly longClaim?: boolean } = {}) => {
   const priorId = '00000000-0000-4000-8000-000000000002';
   const nextId = '00000000-0000-4000-8000-000000000003';
-  const first = { ...task(detailTaskId, 'Markdown 流程图与完整任务详情', options.initialStatus ?? 'todo'),
+  const otherOwnerId = '00000000-0000-4000-8000-000000000910';
+  const claimOwner = options.claim === 'other' || options.claim === 'admin' || options.claim === 'former' ? otherOwnerId : TEST_VIEWER_ID;
+  const viewerRole = options.claim === 'admin' ? 'admin' : 'member';
+  const worker: WorkerClaim | null = options.claim === undefined ? null : {
+    claimId: '00000000-0000-4000-8000-000000000901', state: options.claim === 'released' ? 'released' : options.claim === 'completed' ? 'completed' : 'active',
+    userId: claimOwner, workerId: '00000000-0000-4000-8000-000000000902', machine: { id: '00000000-0000-4000-8000-000000000903', name: options.longClaim ? 'Machine-'.repeat(24) + 'complete' : 'macmini.local' },
+    platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: '00000000-0000-4000-8000-000000000904', phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: timestamp,
+  };
+  const member = (userId: string, name: string, role: string) => ({ projectId: detailProjectId, userId, name: options.longClaim ? 'Claim owner '.repeat(16) + 'complete' : name, email: `${options.longClaim ? 'account'.repeat(24) : userId === TEST_VIEWER_ID ? 'jianjun' : 'teammate'}@example.com`, avatarUrl: null, role, version: 1, createdAt: timestamp, updatedAt: timestamp });
+  const members = [member(TEST_VIEWER_ID, 'Jianjun', viewerRole), ...(claimOwner === otherOwnerId && options.claim !== 'former' ? [member(otherOwnerId, 'Alex Chen', 'member')] : [])];
+  const firstBase = task(detailTaskId, 'Markdown 流程图与完整任务详情', options.claim === undefined ? options.initialStatus ?? 'todo' : worker!.state === 'active' ? 'in_progress' : worker!.state === 'completed' ? 'done' : 'todo');
+  const first: TaskDetail = { ...firstBase, properties: { ...firstBase.properties, worker }, allowAgents: options.claim !== undefined, startedAt: worker?.state === 'active' ? timestamp : null,
     description: `${flowcharts.replaceAll('(../', '(').replace('(guide.md)', '(docs/guide.md)')}\n\n[在附件页阅读相同内容](docs/flowcharts.md)` };
   const prior = task(priorId, '完成资料准备与需求确认', 'done');
   const next = task(nextId, '验证任务详情与附件交互', 'todo');
@@ -71,13 +83,21 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin);
     if (url.origin !== location.origin || !url.pathname.startsWith('/api/v1/')) return originalFetch(input, options);
     await ready;
-    const match = /^\/api\/v1\/projects\/[^/]+\/tasks\/([^/]+)(?:\/(status))?$/.exec(url.pathname);
+    if (url.pathname === `/api/v1/projects/${detailProjectId}/members`) return json({ items: members });
+    const match = /^\/api\/v1\/projects\/[^/]+\/tasks\/([^/]+)(?:\/(status|worker-claim\/withdraw))?$/.exec(url.pathname);
     const current = match === null ? undefined : tasks.get(match[1]!);
     if (current === undefined) return json({ error: { code: 'not_found', message: 'Fixture task unavailable.', requestId: 'fixture-task' } }, 404);
-    if (options?.method === 'PUT' || options?.method === 'PATCH') {
+    if (options?.method === 'PUT' || options?.method === 'PATCH' || options?.method === 'POST') {
       if (failWrite) { failWrite = false; readFailures = 1; throw new TypeError('Fixture connection interrupted before a write response.'); }
       const patch = JSON.parse(String(options.body));
       if (BigInt(patch.version) !== current.version) return json({ error: { code: 'version_conflict', message: 'Fixture version changed.', requestId: 'fixture-version' } }, 409);
+      if (match![2] === 'worker-claim/withdraw') {
+        if (current.properties.worker === null || current.properties.worker.state === 'completed' || patch.claimId !== current.properties.worker.claimId) return json({ error: { code: 'claim_conflict', message: 'Fixture claim changed.', requestId: 'fixture-claim' } }, 409);
+        if (current.properties.worker.userId !== TEST_VIEWER_ID && viewerRole !== 'admin') return json({ error: { code: 'forbidden', message: 'Fixture withdrawal refused.', requestId: 'fixture-permission' } }, 403);
+        const updated: TaskDetail = { ...current, status: 'todo', allowAgents: false, startedAt: null, completedAt: null, properties: { ...current.properties, worker: null }, version: current.version + 1n, updatedAt: new Date().toISOString() };
+        tasks.set(current.id, updated); await refresh();
+        return json(tasks.get(current.id)!);
+      }
       const status = patch.status as TaskDetail['status'];
       const changedStatus = match![2] === 'status' && status !== current.status;
       if (changedStatus && (status !== 'todo' && current.dependsOn.some((id) => tasks.get(id)!.status !== 'done') || current.status === 'done' && [...tasks.values()].some((item) => item.dependsOn.includes(current.id) && item.status !== 'todo'))) return json({ error: { code: 'dependency_unsatisfied', message: 'Fixture dependencies prevent this status.', requestId: 'fixture-dependencies' } }, 409);

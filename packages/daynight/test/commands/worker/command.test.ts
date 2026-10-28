@@ -23,31 +23,63 @@ const context = () => {
 const taskId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const claimId = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
 const projectId = "cccccccc-cccc-cccc-cccc-cccccccccccc";
-const dependencies = () => ({ run: vi.fn<WorkerCommandDependencies["run"]>(async () => {}), manage: vi.fn<WorkerCommandDependencies["manage"]>(async () => {}) });
+const dependencies = () => ({
+  setup: vi.fn<WorkerCommandDependencies["setup"]>(async () => {}),
+  attach: vi.fn<WorkerCommandDependencies["attach"]>(async () => {}),
+  migrateWorkspaces: vi.fn<WorkerCommandDependencies["migrateWorkspaces"]>(async () => {}),
+  prepareRepositories: vi.fn<WorkerCommandDependencies["prepareRepositories"]>(async () => {}),
+  repository: vi.fn<WorkerCommandDependencies["repository"]>(async () => {}),
+  run: vi.fn<WorkerCommandDependencies["run"]>(async () => {}),
+  manage: vi.fn<WorkerCommandDependencies["manage"]>(async () => {}),
+});
 
 describe("worker command", () => {
-  it.each([[], ["--help"], ["-h"], ...["run", "retry", "release", "transfer", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
+  it.each([[], ["--help"], ["-h"], ...["setup", "run", "attach", "migrate-workspaces", "repo", "retry", "release", "resume"].flatMap((name) => [[name, "--help"], [name, "-h"]]),
+    ...["list", "add", "remove"].flatMap((name) => [["repo", name, "--help"], ["repo", name, "-h"]])])("prints help without loading worker runtime or reading home %j", async (...args) => {
     const { cli, output } = context();
-    const run = vi.fn(async () => { throw new Error("Help must not run a worker."); });
-    await runWorkerCommand(args, cli, { ...dependencies(), run });
+    const deps = dependencies();
+    await runWorkerCommand(args, cli, deps);
     expect(output.join("")).toContain("Usage: daynight worker");
-    expect(run).not.toHaveBeenCalled();
+    for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
-  it.each([["run", "extra"], ["run", "--config", "elsewhere"], ["run", "--platform", "linux"], ["run", "--state-directory", "elsewhere"], ["run", "--version"], ["other"]])("rejects invalid syntax before runtime startup %j", async (...args) => {
+  it.each([["migrate-workspaces", "extra"], ["migrate-workspaces", "--claim-id", claimId], ["migrate-workspaces", "--project", projectId], ["setup", "extra"], ["setup", "--agent", "codex"], ["attach", "extra"], ["attach", "--session", "w"], ["attach", "--claim-id", claimId], ["run", "extra"], ["run", "--config", "elsewhere"], ["run", "--platform", "linux"], ["run", "--state-directory", "elsewhere"], ["run", "--version"], ["other"]])("rejects invalid syntax before runtime startup %j", async (...args) => {
     const { cli } = context();
     const run = vi.fn(async () => {});
     await expect(runWorkerCommand(args, cli, { ...dependencies(), run })).rejects.toThrow();
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("passes startup home, installed package and frontend output to the foreground runtime", async () => {
+  it("passes startup context and defers repository preparation to the foreground runtime's signal", async () => {
     const { cli, errors } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
     const run = vi.fn<WorkerCommandDependencies["run"]>(async (options) => { options.log?.("worker started\n"); });
-    await runWorkerCommand(["run"], cli, { ...dependencies(), run });
-    expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function) });
+    const deps = { ...dependencies(), run };
+    await runWorkerCommand(["run"], cli, deps);
+    expect(deps.prepareRepositories).not.toHaveBeenCalled();
+    expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function), prepareRepositories: expect.any(Function) });
     expect(errors).toEqual(["worker started\n"]);
+    const signal = new AbortController().signal;
+    await run.mock.calls[0]![0].prepareRepositories!(signal);
+    expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli, signal);
+  });
+
+  it("routes setup without inspecting home or loading a worker controller", async () => {
+    const { cli } = context();
+    const deps = dependencies();
+    await runWorkerCommand(["setup"], cli, deps);
+    expect(deps.setup).toHaveBeenCalledExactlyOnceWith(cli);
+    for (const [name, action] of Object.entries(deps)) if (name !== "setup") expect(action).not.toHaveBeenCalled();
+  });
+
+  it("attaches using only the current home without loading the task controller", async () => {
+    const { cli } = context();
+    cli.homeDirectory = () => path.resolve("worker-home");
+    const deps = dependencies();
+    await runWorkerCommand(["attach"], cli, deps);
+    expect(deps.attach).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory() });
+    expect(deps.run).not.toHaveBeenCalled();
+    expect(deps.manage).not.toHaveBeenCalled();
   });
 
   it("registers public help and both shell completions through the shared command tree", async () => {
@@ -55,15 +87,70 @@ describe("worker command", () => {
     expect(await runCli(["--help"], cli)).toBe(0);
     expect(output.join("")).toContain("worker");
     const definition = commandTree.commands!.find(({ name }) => name === "worker")!;
-    expect(definition.commands!.map(({ name }) => name)).toEqual(["run", "retry", "release", "transfer", "resume"]);
+    expect(definition.commands!.map(({ name }) => name)).toEqual(["setup", "run", "attach", "migrate-workspaces", "repo", "retry", "release", "resume"]);
     expect(renderBashCompletion(commandTree)).toContain("'worker'");
     expect(renderZshCompletion(commandTree)).toContain("worker:Run automatically claimed tasks");
-    expect(renderBashCompletion(commandTree)).toContain("dn_children=('run' 'retry' 'release' 'transfer' 'resume')");
-    expect(renderZshCompletion(commandTree)).toContain("--target-agent");
-    const transfer = definition.commands!.find(({ name }) => name === "transfer")!;
-    expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('codex' 'copilot' 'claude')");
-    expect(renderBashCompletion(transfer)).toContain("dn_value_choices=('windows' 'linux' 'macos')");
-    expect(renderZshCompletion(transfer)).toContain("('\\''codex'\\'' '\\''copilot'\\'' '\\''claude'\\'')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('setup' 'run' 'attach' 'migrate-workspaces' 'repo' 'retry' 'release' 'resume')");
+    expect(renderBashCompletion(commandTree)).toContain("dn_children=('list' 'add' 'remove')");
+    expect(renderZshCompletion(commandTree)).toContain("repo:Manage repositories selected from existing Daynight Projects");
+    expect(renderBashCompletion(commandTree)).not.toContain("--target-agent");
+    expect(renderZshCompletion(commandTree)).not.toContain("--target-agent");
+  });
+
+  it.each([false, true])("routes explicit workspace migration without task execution (rollback=%s)", async (rollback) => {
+    const { cli, errors } = context();
+    cli.homeDirectory = () => path.resolve("worker-home");
+    const deps = dependencies();
+    deps.migrateWorkspaces.mockImplementation(async ({ log }) => { log("migration complete\n"); });
+    await runWorkerCommand(["migrate-workspaces", ...(rollback ? ["--rollback"] : [])], cli, deps);
+    expect(deps.migrateWorkspaces).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), rollback, log: expect.any(Function) });
+    expect(errors).toEqual(["migration complete\n"]);
+    for (const [name, action] of Object.entries(deps)) if (name !== "migrateWorkspaces") expect(action).not.toHaveBeenCalled();
+  });
+
+  it("preserves a repository preparation failure returned through the runtime callback", async () => {
+    const { cli } = context();
+    cli.homeDirectory = () => path.resolve("worker-home");
+    const deps = dependencies();
+    const failure = new Error("Project selection cancelled.");
+    const signal = new AbortController().signal;
+    deps.prepareRepositories.mockRejectedValueOnce(failure);
+    deps.run.mockImplementation(async ({ prepareRepositories }) => { await prepareRepositories!(signal); });
+    await expect(runWorkerCommand(["run"], cli, deps)).rejects.toBe(failure);
+    expect(deps.run).toHaveBeenCalledOnce();
+    expect(deps.prepareRepositories).toHaveBeenCalledExactlyOnceWith(cli, signal);
+    expect(deps.manage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { args: ["repo", "list"], request: { kind: "list", json: false } },
+    { args: ["repo", "list", "--json"], request: { kind: "list", json: true } },
+    { args: ["repo", "add"], request: { kind: "add" } },
+    { args: ["repo", "remove"], request: { kind: "remove" } },
+    { args: ["repo", "add", "--project", projectId.toUpperCase()], request: { kind: "add", projectId } },
+    { args: ["repo", "remove", `--project=${projectId.toUpperCase()}`], request: { kind: "remove", projectId } },
+  ])("routes worker repository commands without loading execution: $args", async ({ args, request }) => {
+    const { cli } = context();
+    const deps = dependencies();
+    await runWorkerCommand(args, cli, deps);
+    expect(deps.repository).toHaveBeenCalledExactlyOnceWith(request, cli);
+    expect(deps.prepareRepositories).not.toHaveBeenCalled();
+    expect(deps.run).not.toHaveBeenCalled();
+    expect(deps.manage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["repo", "add", "https://github.com/example/repo"],
+    ["repo", "remove", "https://github.com/example/repo"],
+    ["repo", "add", "--project", "invalid"],
+    ["repo", "remove", "--project", "invalid"],
+    ["repo", "list", "--project", projectId],
+    ["repo", "add", "--project", projectId, "--path", "/arbitrary"],
+  ])("rejects unsafe repository command syntax before accessing configuration %j", async (...args) => {
+    const { cli } = context();
+    const deps = dependencies();
+    await expect(runWorkerCommand(args, cli, deps)).rejects.toThrow();
+    for (const action of Object.values(deps)) expect(action).not.toHaveBeenCalled();
   });
 
   it.each(["retry", "release", "resume"] as const)("passes canonical %s identity and exact int64 version to the shared controller", async (kind) => {
@@ -74,16 +161,10 @@ describe("worker command", () => {
     await runWorkerCommand([kind, taskId.toUpperCase(), `--claim-id=${claimId.toUpperCase()}`, "--project", projectId.toUpperCase(), ...(kind === "retry" ? [] : ["--if-version", "9223372036854775807"])], cli, deps);
     expect(deps.manage).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function), request: { kind, taskId, claimId, projectId, ...(kind === "retry" ? {} : { version: 9_223_372_036_854_775_807n }) } });
     expect(deps.run).not.toHaveBeenCalled();
+    expect(deps.prepareRepositories).not.toHaveBeenCalled();
     expect(errors).toEqual([`claim=${claimId} waiting\n`]);
   });
 
-  it("passes a separately identified fresh transfer target without inventing target resources", async () => {
-    const { cli } = context();
-    cli.homeDirectory = () => path.resolve("worker-home");
-    const deps = dependencies();
-    await runWorkerCommand(["transfer", taskId, "--claim-id", claimId, "--if-version", "9007199254740993", "--target-user-id", projectId.toUpperCase(), "--target-worker-id", taskId, "--target-machine-id", claimId, "--target-machine-name", "Target machine", "--target-platform", "windows", "--target-agent", "copilot"], cli, deps);
-    expect(deps.manage.mock.calls[0]![0].request).toEqual({ kind: "transfer", taskId, claimId, version: 9_007_199_254_740_993n, target: { userId: projectId, workerId: taskId, machine: { id: claimId, name: "Target machine" }, platform: "windows", agent: "copilot", agentControlMode: "herdr" } });
-  });
 
   it.each([
     ["retry", taskId], ["retry", "invalid", "--claim-id", claimId], ["retry", taskId, "--claim-id", "invalid"],
@@ -100,12 +181,4 @@ describe("worker command", () => {
     expect(deps.run).not.toHaveBeenCalled();
     expect(deps.manage).not.toHaveBeenCalled();
   });
-});
-
-
-it.each(["codex", "claude"])("passes a %s web transfer target", async (agent) => {
-  const { cli } = context(); cli.homeDirectory = () => path.resolve("worker-home");
-  const deps = dependencies();
-  await runWorkerCommand(["transfer", taskId, "--claim-id", claimId, "--if-version", "1", "--target-user-id", projectId, "--target-worker-id", taskId, "--target-machine-id", claimId, "--target-machine-name", "Target", "--target-platform", "linux", "--target-agent", agent, "--target-agent-control-mode", "web"], cli, deps);
-  expect(deps.manage.mock.calls[0]![0].request).toMatchObject({ kind: "transfer", target: { agent, agentControlMode: "web" } });
 });

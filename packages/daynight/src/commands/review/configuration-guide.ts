@@ -1,9 +1,10 @@
+import { isDeepStrictEqual } from "node:util";
 import type { CliContext } from "../../cli/context.js";
 import { CliCancelledError, withCliCancellation } from "../../cli/cancellation.js";
 import { parseConfigurationDocument } from "../../config/document.js";
 import { MissingConfigurationFileError, isMissingConfiguration } from "../../config/errors.js";
 import { readConfigurationSource, updateConfigurationFile } from "../../config/files.js";
-import { remoteIdentity, validateRegistrationConfigurationSource } from "./config.js";
+import { remoteIdentity, reviewConfigurationMapping, validateRegistrationConfigurationSource } from "./config.js";
 import { resolveReviewPaths } from "./paths.js";
 import { updateRepositoryConfiguration } from "./repositories.js";
 
@@ -16,7 +17,7 @@ export const configureReview = async (
     let source: string | undefined;
     try { source = await readConfigurationSource(paths, signal); }
     catch (cause) { if (!(cause instanceof MissingConfigurationFileError)) throw cause; }
-    const baseline = source === undefined ? {} : parseConfigurationDocument(source, paths).mapping;
+    const baseline = source === undefined ? {} : reviewConfigurationMapping(parseConfigurationDocument(source, paths).mapping);
     const options = { homeDirectory: context.homeDirectory(), workingDirectory: context.workingDirectory() };
     if (source !== undefined) await validateRegistrationConfigurationSource(source, paths);
     const ask = async (question: string): Promise<string> => {
@@ -43,13 +44,12 @@ export const configureReview = async (
       await updateRepositoryConfiguration(source, candidate, paths, options);
       return candidate;
     });
-    const fingerprint = (mapping: Record<string, unknown>): string => JSON.stringify(
-      ["repositoryRoot", "repositories"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]),
-    );
+    const selectionBaseline = (mapping: Record<string, unknown>): readonly unknown[] =>
+      ["repositoryRoot", "repositories"].map((field) => [field, Object.hasOwn(mapping, field), mapping[field]]);
     signal.throwIfAborted();
     await updateConfigurationFile(paths, async (currentSource) => {
-      const current = currentSource === undefined ? {} : parseConfigurationDocument(currentSource, paths).mapping;
-      if (fingerprint(current) !== fingerprint(baseline)) {
+      const current = currentSource === undefined ? {} : reviewConfigurationMapping(parseConfigurationDocument(currentSource, paths).mapping);
+      if (!isDeepStrictEqual(selectionBaseline(current), selectionBaseline(baseline))) {
         throw new Error("Review configuration changed while prompting. Run the review command again to review the current values.");
       }
       return updateRepositoryConfiguration(currentSource, repository, paths, options);
@@ -70,7 +70,7 @@ export const guideReviewConfiguration = async <Result>(
 ): Promise<Result> => {
   try { return await load(); }
   catch (cause) {
-    if (!isMissingConfiguration(cause, "repositories")) throw cause;
+    if (!isMissingConfiguration(cause, "review.repositories")) throw cause;
     if (context.prompt?.isInteractive !== true) {
       throw new Error(`${cause instanceof Error ? cause.message : String(cause)} Run daynight review add-repo <remote> to configure it.`, { cause: cause instanceof MissingConfigurationFileError ? cause.cause : cause });
     }

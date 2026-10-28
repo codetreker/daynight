@@ -37,12 +37,15 @@ it('renders the shared session after authentication and removes it on sign-out',
     if (url.endsWith('/commands')) throw new Error('lost acknowledgement');
     if (url === '/api/v1/auth/logout') return new Response(null, { status: 204 });
     if (url === '/api/v1/auth/providers') return json({ providers: ['github'] });
-    if (url === '/api/v1/projects') return json({ items: [], nextCursor: null });
+    if (url === '/api/v1/projects?limit=50') return json({ items: [{ id: '00000020-1111-4111-8111-111111111111', name: 'Session test project', repoUrl: 'https://github.com/example/session-test', settings: { version: 1, executionWarningMinutes: 60 }, createdAt: '2026-10-28T01:00:00Z', updatedAt: '2026-10-28T01:00:00Z' }], nextCursor: null });
     throw new Error(`Unexpected request ${url}`);
   }));
   render(<AuthenticatedApp />);
   expect(await screen.findByRole('heading', { name: 'Test Session' })).toBeVisible();
   expect(await screen.findByText('Private test conversation')).toBeVisible();
+  expect(await screen.findByRole('link', { name: 'Session test project' })).toHaveAttribute('href', '/projects/00000020-1111-4111-8111-111111111111');
+  expect(screen.getByRole('link', { name: 'Test Sessions' })).toHaveAttribute('aria-current', 'page');
+  expect(screen.getByRole('link', { name: 'My projects' })).not.toHaveAttribute('aria-current');
   expect(screen.getByRole('textbox', { name: 'Message' })).toBeVisible();
   fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'Uncertain input' } });
   fireEvent.click(screen.getByRole('button', { name: 'Send' }));
@@ -90,7 +93,7 @@ function focusSession() {
     if (url === `/api/v1/test-sessions/${sessionId}`) return principal === owner ? response({ session: snapshot }) : response({ error: { code: 'forbidden', message: 'Unavailable', requestId: 'request' } }, 403);
     if (url.includes('/timeline?')) return response({ sessionId, historyEpoch: snapshot.historyEpoch, items: [{ kind: 'assistant_message', entryId: '00000012-1111-4111-8111-111111111111', entrySeq: '1', revision: '1', content: [{ type: 'text', text: 'Private focus conversation' }] }], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' });
     if (url === '/api/v1/auth/providers') return response({ providers: ['github'] });
-    if (url === '/api/v1/projects') return response({ items: [], nextCursor: null });
+    if (url === '/api/v1/projects?limit=50') return response({ items: [], nextCursor: null });
     throw new Error(`Unexpected request ${url}`);
   });
   vi.stubGlobal('fetch', fetcher);

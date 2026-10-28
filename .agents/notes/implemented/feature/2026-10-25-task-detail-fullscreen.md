@@ -37,8 +37,14 @@ header keeps path/metadata context and actions in one row; context may ellipsize
 with its full DOM/title strings preserved, Download retains text, and Open in
 new tab retains its icon and accessible name. These
 fullscreen-only rules preserve nonzero readable Overview and native-preview
-bodies at 320×240 with the original scroll owners. No outer body scroller or
-arbitrary reader minimum height takes space from those owners.
+bodies at 320×240 with the original scroll owners. Claim metadata uses a separate
+bounded, focusable heading scroller in both ordinary and fullscreen views; short
+claimed views also hide the static footer and reuse compact tabs, attachment
+padding and preview metadata layout. Complete identities and controls remain
+accessible without taking all panel space. The
+[force-withdrawal decision](../architecture/2026-10-27-worker-force-withdrawal.md)
+owns that extension. No outer body scroller or arbitrary reader minimum height
+takes space from the reading owners.
 
 Controllers, file inputs, drafts and
 `TaskDetailSession` retain their existing lifetimes, including pending writes.

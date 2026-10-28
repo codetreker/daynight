@@ -13,6 +13,10 @@ would make these decisions depend on conflicting persistent facts.
 
 ## Decision
 
+The local store now follows the claim and native-session index in the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Identity, instance exclusion and static resource ownership retain their original owners. The following records the original detailed storage decision and why its stronger restart guarantees were adopted.
+
+### Original implementation and rationale
+
 The [worker design](../../../../docs/design/daynight-worker.md#配置与目录) fixes
 worker resources under `~/.daynight/worker/` and stores a random stable root
 `workerId` in shared `~/.daynight/config.yml`. Identity creation uses the
@@ -44,8 +48,7 @@ supply new provenance for matching preparing metadata; failed resource
 observation is never an empty-snapshot proof. Known configuration does not
 manufacture native history: later phase/runtime metadata materializes recovered
 unknown launch provenance. Unknown requests remain fenced; absence alone does
-not clear them. Transfer still persists its target identity in source control
-intent. The two business tables and actual-claim-only task rows remain.
+not clear them. The two business tables and actual-claim-only task rows remain.
 
 registerPending takes an explicit fourth verifiedUserId argument. Omitting it or
 passing null means unknown scope for that call, including orphan evidence; it
@@ -74,13 +77,22 @@ First pending materialization freezes effective control mode, agent, model, args
 and recovery limit. The [session mode contract](2026-10-27-task-session-mode-contract.md)
 normalizes older missing modes to Herdr instead of using new machine settings.
 A recovered execution missing its original snapshot pauses until that original
-configuration is explicitly restored. Resource bindings follow committed active
-state and retain worktree and native identity. Replacing a Herdr binding
-requires confirmation that the original agent stopped and old workspace closed.
+configuration is explicitly restored. Ordinary resource creation follows committed
+active state. A pending row with committed cleanup may atomically bind a verified
+original worktree and become active so the existing Herdr/native binding rules
+can finish its resource responsibility. The same one-active unique index guards
+that transaction; a conflict rolls back both promotion and binding. Claim identity,
+cleanup deadline/progress and claimEnded remain unchanged, and no agent is
+launched. A resource-free pending cleanup does not reserve active status. Replacing
+a Herdr binding requires confirmation that the original agent stopped and old
+workspace closed.
 
 Concrete cleanup operations retain the first deadline, input uncertainty,
 result/error and ordered stop/close/delete confirmations. Local done requires
-full terminal cleanup. Release/transfer intent prevents ordinary recovery;
+full terminal cleanup and persisted claimEnded=true. Complete original-account
+inventory absence or a confirmed explicit release supplies that proof; starting
+local cleanup does not. Once known, it survives restart and permits offline
+cleanup completion. Release intent prevents ordinary recovery;
 remote submission requires full cleanup and the original exact version. Unknown
 writes cannot be replayed. A definitely rejected intent can be replaced only by
 a new explicit decision whose exact supplied version matches a freshly read
@@ -137,12 +149,16 @@ protocol, task queue or second local ledger.
 
 **Use SQLite snapshots and retain source resources for transfer.** That approach
 would require source/target preparation, original native history and continuity
-of unpublished files. An ended claim is terminal locally: it receives the same
-stop/close/delete sequence regardless of done, release or transfer. A target
-materializes only an actually granted new claim and starts a fresh execution;
-file transport and target pre-staging are outside the store.
+of unpublished files. The original decision instead made every ownership exit
+terminal locally and allowed only actual new grants to materialize. The later
+force-withdrawal decision removes transfer; the same stop/close/delete lifecycle
+continues for done, release and withdrawal.
 
 ## Consequences
+
+The [current simplification](../simplification/2026-10-27-worker-claim-records.md) owns the delivered storage and restart trade-offs. The original consequences below belong to the detailed model retained here as decision history.
+
+### Original consequences
 
 Real SQLite transactions preserve committed responsibility, immutable snapshots,
 fixed cleanup deadlines and exact control decisions across process interruption.
@@ -163,9 +179,11 @@ identity/storage operations and concrete native facts. The [Git workspace
 manager](2026-10-26-worker-git-workspaces.md) supplies concrete worktree
 observations and returns bindings to this same store. The [manual-control
 decision](2026-10-27-worker-manual-control.md) composes these facts with fresh
-resume/transfer identities and concrete management commands. The local schema
+resume identities and concrete management commands. The
+[force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes transfer
+control and keeps source cleanup responsibility during schema migration. The local schema
 alone does not establish native-agent recovery or Windows/macOS runtime
-acceptance. Current worker schema is 5. Schema 1 first performs the original schema 2
+acceptance. Current schema is 4. Schema 1 first performs the original schema 2
 migration inside the same immediate transaction; original userId remains unknown
 rather than becoming current login. Schema 2 stopObservation objects gain
 required nullable nativeProcessIds with null legacy value; null nativeExecution
@@ -180,4 +198,13 @@ proof nor changes submitted/unknown input into unsent or first launch. Unknown
 terminal/control scope cannot be granted retrospectively; ordinary/shutdown
 scope needs the actual fully matching own claim. Strict unstarted pending state
 remains pending on normal exit, with no resource cleanup or active promotion.
-Unsupported or inconsistent schemas fail visibly.
+Schema 3 to 4 adds required cleanup.claimEnded. Existing terminal cleanup without
+a control, or with a confirmed control, retains its prior ownership-ended fact;
+pending controls and shutdown cleanup start false. It clears old transfer control
+shapes. Unfinished sources preserve
+existing terminal cleanup; if absent, cleanup starts at the old requestedAt with
+a requestedAt+600000 deadline. Ordinary recovery is paused and retry
+authorization is cleared. Migration sends no remote write and never replays an
+unknown transfer. Complete inventory can establish that the original claim ended;
+otherwise the operator must withdraw it in Web. Completed rows only discard the
+obsolete control. Unsupported or inconsistent schemas fail visibly.

@@ -86,6 +86,8 @@ export const runIndependentController = async (input: IndependentControllerInput
     const nativeHome = resume?.ticket.nativeHome ?? (input.provider === "codex" ? process.env.CODEX_HOME ?? path.join(home, ".codex") : input.provider === "claude" ? process.env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude") : process.env.COPILOT_HOME ?? path.join(home, ".copilot"));
     ticket = { schemaVersion: 1, launchId, executionId, controllerId, controllerInstanceId, sessionId: session.sessionId, executionGeneration: session.executionGeneration, testExecutionId: executionId, ownerUserId: session.identity.ownerUserId, initialInput: registration.initialInput, serverOrigin: config.serverUrl, provider: input.provider, cwd, nativeHome, configuration: { agent: input.provider, agentControlMode: "web", model: resume ? null : input.model, args: resume?.ticket.configuration.args ?? input.args, recoveryLimit: 0 }, initialOperationId: randomUUID(), initialPrompt: input.prompt ?? "", resumeNativeSessionId: resume?.nativeSessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() };
     await writeLaunchTicket(home, ticket);
+    // Reconnect grants are valid for the first hello and survive a lost first connection.
+    credential = await grant("reconnect"); await writeControllerCredential(credentialFile, credential);
     context.stdout(`Provider: ${input.provider}; starting in ${cwd}\nPress Ctrl+C to stop this Test Session.\n`);
     cancellation.signal.throwIfAborted();
     const log = await open(path.join(directory, "controller.log"), "a", 0o600);

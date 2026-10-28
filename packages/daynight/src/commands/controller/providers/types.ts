@@ -5,6 +5,7 @@ export type ProviderEntry = TimelineEntry extends infer T ? T extends TimelineEn
 export type ProviderState = { nativeSessionId: string | null; activity: SessionSnapshot["activity"]; currentTurnId: string | null; capabilities: SessionCapabilities; controls?: SessionControls; turnStartedAt?: string | null };
 export type ProviderOptions = {
   cwd: string; model: string | null; args: readonly string[]; resumeNativeSessionId: string | null;
+  unattended?: boolean;
   env?: NodeJS.ProcessEnv; executable?: string; controlsRevisionFloor?: string;
   onTimeline(entry: ProviderEntry): void;
   onState(state: ProviderState): void;

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState, type MouseEvent, type RefObject } from "react";
 import { tabbable } from "tabbable";
 import { useI18n } from "../i18n/LocaleProvider";
+import { useProjectList } from "../features/projects/ProjectsProvider";
 import { navigate } from "./router";
 import { useBodyScrollLock } from "./useBodyScrollLock";
 import "../styles/sidebar.css";
@@ -15,14 +16,16 @@ type WorkspaceSidebarProps = {
   readonly routeKey: string;
   readonly projectsActive: boolean;
   readonly accountActive: boolean;
+  readonly activeProjectId: string | null;
   readonly testSessionsActive?: boolean;
   readonly identityChecking: boolean;
   readonly workspaceRef: RefObject<HTMLDivElement | null>;
   readonly onNavigate: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, accountActive, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
-  const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, accountActive, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
+  const { messages: { auth: { shell: m }, workspace: { app, projects: p } } } = useI18n();
+  const projects = useProjectList();
   const testMessages = useTestSessionListMessages();
   const [media] = useState(() => window.matchMedia(SIDEBAR_NARROW_QUERY));
   const [narrow, setNarrow] = useState(media.matches);
@@ -111,6 +114,18 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
         <nav aria-label={app.mainNavigation}>
           <p className="nav-label">{app.workspace}</p>
           <a className="nav-button" href="/projects" onClick={follow} aria-label={m.myProjects} title={m.myProjects} aria-current={projectsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▦</span><span className="nav-text">{m.myProjects}</span></a>
+          <div className="sidebar-projects" hidden={!expanded}>
+            {projects.status === "loading" && <p className="sidebar-project-state" role="status">{p.loading}</p>}
+            {projects.status === "error" && <div className="sidebar-project-state" role="alert"><p>{p.loadingFailed}</p><button className="sidebar-project-action" type="button" onClick={projects.refresh}>{p.retry}</button></div>}
+            {projects.status === "ready" && projects.items.length === 0 && <p className="sidebar-project-state">{p.empty}</p>}
+            {projects.items.length > 0 && <ul className="sidebar-project-list" aria-label={p.list}>
+              {projects.items.map((project) => <li key={project.id}><a className="sidebar-project-link" href={`/projects/${project.id}`} title={project.name} onClick={follow} aria-current={activeProjectId === project.id ? "true" : undefined}><span className="sidebar-project-marker" aria-hidden="true" /><span className="sidebar-project-name">{project.name}</span></a></li>)}
+            </ul>}
+            {projects.status === "ready" && projects.nextCursor !== null && <div className="sidebar-project-state">
+              {projects.moreError !== null && <p role="alert">{p.moreFailed}</p>}
+              <button className="sidebar-project-action" type="button" onClick={projects.loadMore} disabled={projects.loadingMore}>{projects.loadingMore ? p.loadingMore : projects.moreError !== null ? p.retryMore : p.loadMore}</button>
+            </div>}
+          </div>
           <a className="nav-button" href="/test-sessions" onClick={follow} aria-label={testMessages.title} title={testMessages.title} aria-current={testSessionsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▷</span><span className="nav-text">{testMessages.title}</span></a>
         </nav>
       </div>

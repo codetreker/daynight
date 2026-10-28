@@ -1,6 +1,24 @@
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  claim: {
+    controls: "Task settings and claim",
+    active: "Claimed by", released: "Released claim", machine: "Machine", agent: "Agent",
+    phase: { preparing: "Preparing", executing: "Executing", verifying: "Verifying", completing: "Completing", waiting: "Waiting", paused: "Paused" },
+    membersLoading: "Loading claim owner and permissions…", membersError: "Claim owner details and withdrawal permissions could not be loaded.", retryMembers: "Retry member details", formerMember: "Former project member",
+    withdraw: "Force withdraw", title: "Force withdraw this task?", question: "Clear this execution claim and return the task to To do?",
+    explanation: "This clears the claim and execution times and disables automatic execution. The worker starts cleaning up the previous execution after its next successful sync. The remote agent may continue running until that cleanup stops it; this action cannot guarantee an immediate stop.",
+    pending: "Withdrawing the execution claim. You can close these details while the request completes.",
+    confirmed: "Claim withdrawn. The task is To do and automatic execution is disabled.",
+    conflict: "The task changed. Review the current claim before confirming another withdrawal.",
+    unknown: "The withdrawal outcome is unknown. Check the current task before another operation.",
+    reconciled: "The current task has been read. Review its claim and automatic execution setting before another operation.",
+    checking: "Checking the current task…", checkState: "Check current task", checkFailed: "The current task could not be read. Changes remain disabled until it can be checked.",
+    networkError: "No confirmed withdrawal response was received.", protocolError: "The service response could not confirm the withdrawal result.",
+    versionConflict: "The task version changed before withdrawal could be applied.", claimConflict: "This execution claim is no longer current.",
+    refused: "The service refused withdrawal. Only the claim owner or a project administrator can withdraw a current claim.", requestFailed: "The withdrawal request failed.",
+  },
+
   mermaid: {
     loading: "Rendering flowchart…", diagram: "Flowchart", source: "View Mermaid source",
     failed: "Unable to render this flowchart. Check the Mermaid source below.",

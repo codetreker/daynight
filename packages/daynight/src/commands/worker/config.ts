@@ -1,43 +1,48 @@
+import { parseProviderArguments } from "../controller/providers/projection.js";
 import path from "node:path";
-import { validateWorkerAgentMode, workerAgentControlMode } from "../../api/worker-mode.js";
 import { canonicalId } from "../../api/parse.js";
 import { parseConfigurationDocument } from "../../config/document.js";
+import { MissingConfigurationFileError } from "../../config/errors.js";
 import { readConfigurationSource } from "../../config/files.js";
+import { parseServerConfiguration } from "../../config/server.js";
+import type { ServerConfiguration } from "../../config/server.js";
 import { ancestorIdentities, missingPathsReferToSameDirectory, pathsOverlap, resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { PathApi, PhysicalDirectory } from "../../platform/filesystem.js";
 import { repositoryIdentity } from "../../repository/identity.js";
-import { parseProviderArguments } from "../controller/providers/projection.js";
+import { defaultRepositoryRoot, validateRepositoryRoot } from "../../repository/location.js";
 import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { WorkerPaths } from "./paths.js";
-import type { FrozenExecutionConfiguration } from "./types.js";
+import type { ExecutionConfiguration } from "./types.js";
 
-export type WorkerRepositoryConfiguration = FrozenExecutionConfiguration & {
+export type WorkerRepositoryConfiguration = ExecutionConfiguration & {
   remote: string;
   path: string;
   projectId?: string;
 };
 
-export type WorkerConfiguration = FrozenExecutionConfiguration & {
+export type WorkerConfiguration = ExecutionConfiguration & {
+  repositoryRoot: string;
   maxConcurrent: number;
   pollIntervalMs: number;
   repositories: readonly WorkerRepositoryConfiguration[];
 };
 
+export type WorkerConfigurationSnapshot = ServerConfiguration & {
+  readonly source: string | undefined;
+  readonly configuration: WorkerConfiguration;
+};
+
 export const workerConfigurationDefaults = Object.freeze({
+  repositoryRoot: defaultRepositoryRoot,
   maxConcurrent: 1,
   pollIntervalMs: 5_000,
   recoveryLimit: 3,
   agent: "copilot" as const,
-  agentControlMode: "herdr" as const,
 });
 
 const mapping = (value: unknown, field: string): Record<string, unknown> => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw new TypeError(`${field} must be a mapping.`);
   return value as Record<string, unknown>;
-};
-
-const keys = (value: Record<string, unknown>, accepted: readonly string[], field: string): void => {
-  if (Object.keys(value).some((key) => !accepted.includes(key))) throw new TypeError(`${field} contains an unsupported field.`);
 };
 
 const text = (value: unknown, field: string): string => {
@@ -55,9 +60,9 @@ const number = (value: Record<string, unknown>, field: keyof Pick<WorkerConfigur
   return result;
 };
 
-const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: FrozenExecutionConfiguration): FrozenExecutionConfiguration => {
+const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration): ExecutionConfiguration => {
   const agent = Object.hasOwn(value, "agent") ? value.agent : inherited.agent;
-  if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new TypeError(`${field}.agent must be codex, copilot or claude.`);
+  if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new TypeError(`${field}.agent must be codex, claude or copilot.`);
   const sameKind = agent === inherited.agent;
   const model = Object.hasOwn(value, "model") ? value.model === null ? null : text(value.model, `${field}.model`) : sameKind ? inherited.model : null;
   let args: readonly string[];
@@ -65,9 +70,9 @@ const agentConfiguration = (value: Record<string, unknown>, field: string, inher
     if (!Array.isArray(value.args)) throw new TypeError(`${field}.args must be a sequence of native arguments.`);
     args = value.args.map((argument: unknown) => text(argument, `${field}.args`));
   } else args = sameKind ? [...inherited.args] : [];
-  if (inherited.agentControlMode === "herdr") validateHerdrAgentArguments(agent, args);
-  else parseProviderArguments(agent, args);
-  return { agent, agentControlMode: inherited.agentControlMode, model, args, recoveryLimit: inherited.recoveryLimit };
+  if (inherited.agentControlMode === "web") parseProviderArguments(agent, args);
+  else validateHerdrAgentArguments(agent, args);
+  return { agent, agentControlMode: inherited.agentControlMode ?? "herdr", model, args, recoveryLimit: inherited.recoveryLimit };
 };
 
 const repositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathApi: PathApi): string => {
@@ -79,20 +84,23 @@ const repositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathA
 
 export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pathApi: PathApi = path): WorkerConfiguration => {
   const { mapping: root } = parseConfigurationDocument(source, paths);
-  if (!Object.hasOwn(root, "worker")) throw new Error("Worker configuration is missing; configure worker.repositories in ~/.daynight/config.yml.");
-  const worker = mapping(root.worker, "worker");
-  keys(worker, ["maxConcurrent", "pollIntervalMs", "recoveryLimit", "agent", "agentControlMode", "model", "args", "repositories"], "worker");
+  const worker = Object.hasOwn(root, "worker") ? mapping(root.worker, "worker") : {};
+  const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
+    ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
+    : workerConfigurationDefaults.repositoryRoot;
+  const agentControlMode = worker.agentControlMode ?? "herdr";
+  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
   const effective = agentConfiguration(worker, "worker", {
-    agent: workerConfigurationDefaults.agent, agentControlMode: workerAgentControlMode(worker), model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
+    agent: workerConfigurationDefaults.agent, agentControlMode, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
   });
-  if (!Array.isArray(worker.repositories)) throw new TypeError("worker.repositories must be a sequence.");
+  const configuredRepositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
+  if (!Array.isArray(configuredRepositories)) throw new TypeError("worker.repositories must be a sequence.");
   const identities = new Set<string>();
   const projects = new Set<string>();
   const locations: string[] = [];
-  const repositories = worker.repositories.map((entry: unknown, index: number): WorkerRepositoryConfiguration => {
+  const repositories = configuredRepositories.map((entry: unknown, index: number): WorkerRepositoryConfiguration => {
     const field = `worker.repositories[${index}]`;
     const repository = mapping(entry, field);
-    keys(repository, ["remote", "path", "projectId", "agent", "model", "args"], field);
     const remote = text(repository.remote, `${field}.remote`);
     const identity = repositoryIdentity(remote);
     if (identities.has(identity)) throw new TypeError(`${field}.remote duplicates a repository identity.`);
@@ -108,15 +116,41 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
       if (projects.has(projectId)) throw new TypeError(`${field}.projectId duplicates another worker repository.`);
       projects.add(projectId);
     }
-    const execution = agentConfiguration(repository, field, effective);
-    validateWorkerAgentMode(execution.agent, execution.agentControlMode);
-    return { ...execution, remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
+    return { ...agentConfiguration(repository, field, effective), remote, path: localPath, ...(projectId === undefined ? {} : { projectId }) };
   });
-  return { ...effective, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
+  return { ...effective, repositoryRoot, maxConcurrent: number(worker, "maxConcurrent"), pollIntervalMs: number(worker, "pollIntervalMs"), repositories };
+};
+
+const readWorkerConfigurationSource = async (paths: WorkerPaths, signal?: AbortSignal): Promise<string | undefined> => {
+  signal?.throwIfAborted();
+  try { return await readConfigurationSource(paths, signal); }
+  catch (cause) {
+    if (!(cause instanceof MissingConfigurationFileError)) throw cause;
+    return undefined;
+  }
 };
 
 export const readWorkerConfiguration = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
-  const configuration = parseWorkerConfiguration(await readConfigurationSource(paths, signal), paths);
+  const source = await readWorkerConfigurationSource(paths, signal);
+  return validateWorkerConfigurationSource(source === undefined ? "{}" : source, paths, signal);
+};
+
+export const validateWorkerConfigurationSnapshotSource = async (
+  source: string | undefined,
+  paths: WorkerPaths,
+  signal?: AbortSignal,
+): Promise<WorkerConfigurationSnapshot> => {
+  const content = source === undefined ? "{}" : source;
+  const configuration = await validateWorkerConfigurationSource(content, paths, signal);
+  return { source, configuration, ...parseServerConfiguration(content, paths) };
+};
+
+export const readWorkerConfigurationSnapshot = async (paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfigurationSnapshot> =>
+  validateWorkerConfigurationSnapshotSource(await readWorkerConfigurationSource(paths, signal), paths, signal);
+
+export const validateWorkerConfigurationSource = async (source: string, paths: WorkerPaths, signal?: AbortSignal): Promise<WorkerConfiguration> => {
+  signal?.throwIfAborted();
+  const configuration = parseWorkerConfiguration(source, paths);
   const physicalPaths: PhysicalDirectory[] = [];
   const physicalState = await resolvePhysicalDirectory(paths.stateDirectory);
   const ancestors = new Map<string, Promise<Set<string>>>();

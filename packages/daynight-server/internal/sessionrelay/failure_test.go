@@ -54,9 +54,7 @@ func TestReadOnlyMembersAndRevokedActorsCannotDispatch(t *testing.T) {
 	if _, err = f.s.DB.Pool.Exec(ctx, `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: command.OperationID}); err == nil {
-		t.Fatal("revoked admin passed native call fence")
-	}
+	assertRejectedBegin(t, f, v, command.OperationID)
 	if _, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM personal_access_tokens WHERE id=$1`, admin.CredentialID); err != nil {
 		t.Fatal(err)
 	}

@@ -151,7 +151,7 @@ export const openClaudeProvider = async (options: ProviderOptions): Promise<Nati
     ...(!options.resumeNativeSessionId && options.model ? { model: options.model } : {}), ...(!options.resumeNativeSessionId && config.effort ? { effort: config.effort } : {}),
     ...(config.additionalDirectories ? { additionalDirectories: config.additionalDirectories } : {}),
     ...(options.executable ? { pathToClaudeCodeExecutable: options.executable } : {}), env: options.env ?? process.env,
-    allowDangerouslySkipPermissions: true, persistSession: true, includePartialMessages: true, settingSources: ["user", "project", "local"], ...(!options.resumeNativeSessionId ? { permissionMode: config.permissionMode ?? "default" } : {}),
+    allowDangerouslySkipPermissions: true, persistSession: true, includePartialMessages: true, settingSources: ["user", "project", "local"], ...(!options.resumeNativeSessionId ? { permissionMode: options.unattended ? "bypassPermissions" : config.permissionMode ?? "default", ...(options.unattended ? { sandbox: { enabled: false } } : {}) } : {}),
     hooks: { SessionStart: [{ hooks: [async event => { verify(event.session_id); return {}; }] }] },
     spawnClaudeCodeProcess: args => { const child = spawn(args.command, args.args, { cwd: args.cwd ?? options.cwd, env: args.env, signal: args.signal, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: false }); children.push(child); options.onSpawn(child); child.stderr.on("data", chunk => options.onDiagnostic?.(String(chunk))); return child; },
     canUseTool: async (name, toolInput, context): Promise<PermissionResult> => {

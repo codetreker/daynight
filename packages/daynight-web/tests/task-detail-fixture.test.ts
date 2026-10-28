@@ -1,9 +1,28 @@
 import { describe, expect, it } from 'vitest';
 import { parseApiJson } from '../src/api/json';
+import { listMembers } from '../src/api/auth';
+import { withdrawWorkerClaim } from '../src/api/client';
+import { TEST_VIEWER_ID } from './helpers/taskSync';
 import type { TaskDetail, TaskStatus } from '../src/api/types';
 import { createTaskDetailFixture, detailProjectId, detailTaskId } from './mockups/task-detail-fixture';
 
 describe('full-detail production component fixture', () => {
+  it('serves actual member DTOs and atomically withdraws the displayed claim through the production client', async () => {
+    const fixture = createTaskDetailFixture({ claim: 'owner' });
+    const signal = new AbortController().signal;
+    const admission = { userId: TEST_VIEWER_ID, onPrincipalMismatch: () => { throw new Error('Unexpected fixture principal.'); } };
+    try {
+      await fixture.ready;
+      const members = await listMembers(detailProjectId, signal, admission);
+      expect(members[0]?.name).toBe('Jianjun');
+      expect(members[0]?.version).toBe(1n);
+      const url = `/api/v1/projects/${detailProjectId}/tasks/${detailTaskId}`;
+      const initial = parseApiJson(await (await window.fetch(url)).text()) as TaskDetail;
+      const withdrawn = await withdrawWorkerClaim(detailProjectId, detailTaskId, initial.properties.worker!.claimId, initial.version, signal, admission);
+      expect(withdrawn).toMatchObject({ status: 'todo', allowAgents: false, startedAt: null, completedAt: null, properties: { worker: null, pullRequests: initial.properties.pullRequests } });
+    } finally { fixture.dispose(); }
+  });
+
   it('models current status writes, exact-version no-ops, execution timing and dependent readiness', async () => {
     const fixture = createTaskDetailFixture();
     const url = `/api/v1/projects/${detailProjectId}/tasks/${detailTaskId}`;

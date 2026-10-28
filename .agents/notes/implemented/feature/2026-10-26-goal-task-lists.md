@@ -14,7 +14,11 @@ and keep external prerequisite context separate from actual chain members.
 ## Decision
 
 Each existing chain representative supplies a top-level Goal row with its
-original title, aggregate status and progress. Goal is a browsing label; task
+original title, aggregate status and progress. The original Goal browsing label
+helped distinguish the new disclosure hierarchy; the
+[compact-list decision](../simplification/2026-10-28-compact-task-list.md) removes
+that extra header label and summary while showing the actual in-progress member
+count. Task
 classification, representative selection and membership continue to come from
 the ordinary-dependency component. A singleton remains a standalone task even
 if its title contains `[Goal]`.
@@ -22,13 +26,15 @@ if its title contains `[Goal]`.
 The row body toggles a compact task list with `aria-expanded` and an associated
 `aria-controls` target. The list contains every component member except the
 representative exactly once, ordered by status: `in_progress`, then `todo`,
-then `done`. Equal-status tasks retain complete snapshot order. This priority
-applies only to children; top-level Goals retain their existing newest-first
-ordering. Other starting tasks and merged descendants are included;
+then `done`. Equal-status tasks retain complete snapshot order. The [status ordering decision](../bug-fix/2026-10-28-project-status-order.md)
+applies the same priority to top-level Goals using their complete aggregate
+status, with exact newest-first ties; children retain snapshot-order ties. Other starting tasks and merged descendants are included;
 chain-external context remains in the graph. The list retains `done`, `in_progress` and `todo` children, including
-completed tasks. The chain-level Show completed control hides or reveals whole
-completed Goals only; it never filters child rows. Standalone completion
-filtering retains its existing individual-task behavior. Child rows show
+completed tasks. The chain-level Show all control changes whole-Goal visibility; it never filters
+child rows by status or completion date. The [recent browsing and pagination
+decision](2026-10-27-recent-task-pages.md) owns the shared local-calendar default
+while the compact-list decision sets 15-Goal pages. Expanded children remain complete and do not consume separate
+parent-page entries; standalone rows apply the same recent policy individually. Child rows show
 individual task status, applicable ready or blocked markers and known execution
 duration immediately after the title. They open the existing task-detail dialog,
 and the list heading offers the representative task's own details. Aggregate
@@ -53,8 +59,8 @@ Each mounted row owns an initially collapsed disclosure choice. Several rows
 can be expanded together. Same-row refreshes update the member list while
 preserving disclosure, as do task-detail and graph round trips. The retained
 outer Task list subtree preserves those choices while Overview is visible.
-Inner category departure, filtering or representative replacement can unmount
-a row; its next mount starts collapsed. Disclosure has no browser storage record.
+Inner category departure, paging, filtering or representative replacement can
+unmount a row; its next mount starts collapsed. Disclosure has no browser storage record.
 
 A sibling View dependencies / 查看依赖关系 button opens the existing
 `TaskChainDialog` without changing disclosure. The disclosure and graph actions
@@ -69,7 +75,7 @@ This partially supersedes the whole-row entry in the
 [graph-dialog decision](2026-10-26-task-chain-graph-dialog.md). That decision
 continues to own dialog geometry, graph witness reconciliation, fullscreen,
 focus containment, layered Escape and scroll locks. The
-ordering, completion filtering and compact readable text chosen in the
+ordering and compact readable text chosen in the
 [presentation decision](../../archived/feature/2026-10-21-task-chain-presentation.md) remain, as do the
 independent project records chosen in the
 [browsing-preference decision](../../archived/feature/2026-10-21-task-browsing-preferences.md). The

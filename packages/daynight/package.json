@@ -1,6 +1,6 @@
 {
   "name": "@codetreker/daynight",
-  "version": "0.22.0",
+  "version": "0.26.0",
   "description": "A client command toolkit for development workflows",
   "repository": {
     "type": "git",
@@ -13,7 +13,8 @@
     "dn": "dist/main.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "config.example.yml"
   ],
   "engines": {
     "node": ">=22"
@@ -36,6 +37,7 @@
     "mime": "4.1.1",
     "read-cmd-shim": "6.0.0",
     "semver": "7.8.5",
+    "smol-toml": "1.9.1",
     "which": "6.0.1",
     "ws": "8.22.0",
     "yaml": "2.9.1"

@@ -357,27 +357,51 @@ func (s *Service) Grant(ctx context.Context, p core.Principal, project, taskID, 
 	})
 	return out, err
 }
+
+// AuthenticateController checks grant and parent authority before allocating a channel.
+// Connect repeats these checks atomically with hello validation and grant consumption.
+func (s *Service) AuthenticateController(ctx context.Context, token string) error {
+	hash := sha256.Sum256([]byte(token))
+	return transact(ctx, s.DB, func(tx pgx.Tx) error {
+		_, err := s.controllerGrant(ctx, tx, hash[:])
+		return err
+	})
+}
+func (s *Service) controllerGrant(ctx context.Context, tx pgx.Tx, hash []byte) (*record, error) {
+	var project, taskID, id string
+	if err := tx.QueryRow(ctx, `SELECT COALESCE(project_id::text,''),COALESCE(task_id::text,''),id::text FROM task_sessions WHERE grant_hash=$1`, hash).Scan(&project, &taskID, &id); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, denied()
+		}
+		return nil, err
+	}
+	t, err := scopeTask(ctx, tx, project, taskID)
+	if err != nil {
+		return nil, err
+	}
+	r, err := load(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = s.scopePermission(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, r); err != nil {
+		return nil, err
+	}
+	if !bytes.Equal(hash, r.GrantHash) || r.GrantExpiry == nil || !s.now().Before(*r.GrantExpiry) || r.Consumed && r.GrantKind == "bootstrap" || !active(t, r) {
+		return nil, denied()
+	}
+	return r, nil
+}
 func (s *Service) Connect(ctx context.Context, token string, h sp.ControllerMessage, instance string) (sp.Snapshot, error) {
 	var out sp.Snapshot
 	hash := sha256.Sum256([]byte(token))
 	err := transact(ctx, s.DB, func(tx pgx.Tx) error {
-		var project, taskID, id string
-		if err := tx.QueryRow(ctx, `SELECT COALESCE(project_id::text,''),COALESCE(task_id::text,''),id::text FROM task_sessions WHERE grant_hash=$1`, hash[:]).Scan(&project, &taskID, &id); err != nil {
-			return err
-		}
-		t, err := scopeTask(ctx, tx, project, taskID)
+		r, err := s.controllerGrant(ctx, tx, hash[:])
 		if err != nil {
-			return err
-		}
-		r, err := load(ctx, tx, id)
-		if err != nil {
-			return err
-		}
-		if _, err = s.scopePermission(ctx, tx, core.Principal{Kind: core.PATCredential, UserID: r.Owner, CredentialID: r.Parent}, r); err != nil {
 			return err
 		}
 		v := &r.Snapshot
-		if !bytes.Equal(hash[:], r.GrantHash) || r.GrantExpiry == nil || !s.now().Before(*r.GrantExpiry) || r.Consumed && r.GrantKind == "bootstrap" || !active(t, r) || h.SessionID != id || h.ClaimID != v.ClaimID || h.TestExecutionID != v.TestExecutionID || h.ExecutionGeneration != v.ExecutionGeneration || h.ControllerID != v.Identity.ControllerID || h.ControllerInstanceID != v.Identity.ControllerInstanceID || h.Provider != v.Identity.Provider || h.SchemaVersion != 1 || h.ProjectionVersion != 1 {
+		id := v.SessionID
+		if h.SessionID != id || h.ClaimID != v.ClaimID || h.TestExecutionID != v.TestExecutionID || h.ExecutionGeneration != v.ExecutionGeneration || h.ControllerID != v.Identity.ControllerID || h.ControllerInstanceID != v.Identity.ControllerInstanceID || h.Provider != v.Identity.Provider || h.SchemaVersion != 1 || h.ProjectionVersion != 1 {
 			return conflict()
 		}
 		if r.SourceEpoch == nil {

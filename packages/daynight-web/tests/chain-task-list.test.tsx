@@ -40,7 +40,7 @@ const indexOf = (items = seeds): GraphIndex => {
 };
 const noop = () => {};
 const list = (index: GraphIndex, onOpenTask = noop) => <ChainList index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
-  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showCompleted={true} onShowCompletedChange={noop} />;
+  openChainId={null} onOpenChain={noop} onCloseChain={noop} onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
 const disclosure = () => document.getElementById('task-root-Goal')!;
 const children = () => document.getElementById('goal-children-Goal')!;
 
@@ -55,12 +55,31 @@ describe('Goal task lists', () => {
     const rows = within(children()).getAllByRole('button', { name: /已完成|进行中|待处理/ });
     expect(rows.map((row) => row.querySelector('.root-title')!.textContent)).toEqual(['Implementation', 'Acceptance', 'Other root']);
     expect(rows.map((row) => row.querySelector('.root-status')!.textContent)).toEqual(['进行中', '待处理', '已完成']);
+    expect(rows.map((row) => row.getAttribute('data-task-status'))).toEqual(['in_progress', 'todo', 'done']);
+    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'in_progress');
     expect(rows[1]).toHaveTextContent('被阻塞');
     expect(within(children()).queryByText('External')).toBeNull();
     expect(within(children()).queryByText('Standalone')).toBeNull();
     expect(disclosure().querySelector('.root-progress-label')).toHaveTextContent('2/4 已完成');
     expect(children()).toHaveTextContent('子任务 · 3');
     expect(document.querySelector('button button')).toBeNull();
+  });
+
+  it('counts only in-progress ordinary members including the representative and updates the collapsed header', () => {
+    const items = [task('Goal', 'in_progress'), task('Second root', 'in_progress'),
+      task('Join', 'todo', ['Goal', 'Second root', 'External'], ['External']), task('External', 'in_progress')];
+    const view = render(list(indexOf(items)));
+    expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^2 进行中$/);
+    expect(disclosure().querySelector('.goal-eyebrow, .root-meta')).toBeNull();
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false');
+    const remaining = items.map((item) => item.id === 'Second root' ? { ...item, status: 'done' as const } : item);
+    view.rerender(list(indexOf(remaining)));
+    expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^1 进行中$/);
+    view.rerender(list(indexOf(remaining.map((item) => item.id === 'Goal' ? { ...item, status: 'done' as const } : item))));
+    expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 进行中$/);
+    expect(disclosure().querySelector('.root-status')).toHaveTextContent('进行中');
+    view.setLocale('en');
+    expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 in progress$/);
   });
 
   it('orders children by status while retaining snapshot order within each status', () => {
@@ -78,6 +97,16 @@ describe('Goal task lists', () => {
     expect([...index.nodes.keys()]).toEqual(snapshotOrder);
   });
 
+  it('keeps a partly completed chain in progress without any executing member', () => {
+    const view = render(list(indexOf([task('Goal', 'done'), task('Waiting', 'todo', ['Goal'])])));
+    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'in_progress');
+    expect(disclosure()).toHaveTextContent('进行中');
+    view.rerender(list(indexOf([task('Goal', 'todo'), task('Waiting', 'todo', ['Goal'])])));
+    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'todo');
+    view.rerender(list(indexOf([task('Goal', 'done'), task('Waiting', 'done', ['Goal'])])));
+    expect(disclosure().parentElement).toHaveAttribute('data-task-status', 'done');
+  });
+
   it('opens graphs independently from keyboard disclosure and passes the correct task and trigger to details', async () => {
     const user = userEvent.setup();
     const onOpenTask = vi.fn();
@@ -86,7 +115,7 @@ describe('Goal task lists', () => {
       const [openChainId, setOpenChainId] = useState<string | null>(null);
       return <ChainList index={index} representativeIds={['Goal']} allRepresentativeIds={['Goal']}
         openChainId={openChainId} onOpenChain={setOpenChainId} onCloseChain={() => setOpenChainId(null)}
-        onOpenTask={onOpenTask} showCompleted={true} onShowCompletedChange={noop} />;
+        onOpenTask={onOpenTask} showAll={true} onShowAllChange={noop} />;
     };
     render(<Wrapper />);
     const graph = screen.getByRole('button', { name: 'Goal，查看依赖关系' });

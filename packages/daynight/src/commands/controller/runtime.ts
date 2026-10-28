@@ -196,7 +196,7 @@ export const runController = async (options: { homeDirectory: string; provider: 
     else env.COPILOT_HOME = ticket.nativeHome;
     const nativeOptions: ProviderOptions = {
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
-      cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, env,
+      cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
       onDiagnostic: diagnostic,
       onFatalError: error => {
         if (providerFailure) return;

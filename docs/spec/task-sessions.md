@@ -15,7 +15,7 @@
 
 ## 执行身份与页面入口
 
-服务端保存 claim 的实际模式；新响应显式返回它，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能使用新配置；resume/transfer 沿用停止证明和新身份规则。
+服务端保存 claim 的实际模式；新响应显式返回它，旧数据缺字段按 `herdr` 读取。模式与 Provider、worktree、worker、claim 一起冻结，普通摘要或属性 PATCH 不允许改写。新 claim 才能选择新模式；released task 的人工 resume 创建新 claim，强制撤回沿用归属清除规则。Web 同 claim 的原生恢复保留已冻结配置与停止证明，Herdr 原生重启使用其当前适用设置。
 
 页面只根据服务端当前执行决定 Session 入口。Herdr、尚未认领和旧记录不显示 Session；Web 正在初始化或离线时显示真实状态，不因此改回 Herdr。重新领取为另一模式后，旧页面不能继续写入原会话。已有同步历史应保持执行归属，不将不同 claim 混成一段。
 

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"strings"
 	"unicode/utf8"
 
@@ -39,22 +38,9 @@ type ReleaseWorker struct {
 	StoppedConfirmed bool
 }
 
-type WorkerTarget struct {
-	UserID           string
-	WorkerID         string
-	Machine          core.WorkerMachine
-	Platform         core.TaskPlatform
-	Agent            core.WorkerAgent
-	AgentControlMode core.WorkerAgentControlMode
-}
-
-type TransferWorker struct {
-	Version          int64
-	ClaimID          string
-	NewClaimID       string
-	Target           WorkerTarget
-	WorktreeID       string
-	StoppedConfirmed bool
+type WithdrawWorker struct {
+	Version int64
+	ClaimID string
 }
 
 type ResumeWorker struct {
@@ -182,45 +168,22 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal core.Principal, pro
 	})
 }
 
-func (s *Tasks) TransferWorker(ctx context.Context, principal core.Principal, projectID, id string, input TransferWorker) (core.Task, error) {
+func (s *Tasks) WithdrawWorker(ctx context.Context, principal core.Principal, projectID, id string, input WithdrawWorker) (core.Task, error) {
 	claimID, err := CanonicalID(input.ClaimID)
 	if err != nil {
 		return core.Task{}, err
 	}
-	userID, err := CanonicalID(input.Target.UserID)
-	if err != nil {
-		return core.Task{}, err
-	}
-	descriptor, err := canonicalWorkerDescriptor(WorkerDescriptor{ClaimID: input.NewClaimID, WorkerID: input.Target.WorkerID, Machine: input.Target.Machine, Platform: input.Target.Platform, Agent: input.Target.Agent, AgentControlMode: input.Target.AgentControlMode, WorktreeID: input.WorktreeID})
-	if err != nil {
-		return core.Task{}, err
-	}
-	if !input.StoppedConfirmed {
-		return core.Task{}, invalidInput("Stopped execution must be explicitly confirmed.")
-	}
 	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
-		worker, err := activeWorker(current, claimID)
-		if err != nil {
-			return taskMutation{}, err
+		worker := current.Properties.Worker
+		if worker == nil || worker.ClaimID != claimID || (worker.State != core.WorkerActive && worker.State != core.WorkerReleased) {
+			return taskMutation{}, claimConflict()
 		}
 		if err := requireWorkerOperator(ctx, tx, principal, worker); err != nil {
 			return taskMutation{}, err
 		}
-		if _, err := tx.Member(ctx, userID); errors.Is(err, core.ErrNotFound) {
-			return taskMutation{}, invalidInput("Target user must be a current project member.")
-		} else if err != nil {
-			return taskMutation{}, err
-		}
-		if !current.AllowAgents || !core.PlatformCompatible(current.RequiredPlatform, descriptor.Platform) {
-			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task does not permit automatic execution on the target platform."}
-		}
-		if err := freshWorkerExecution(worker, descriptor); err != nil {
-			return taskMutation{}, err
-		}
-		if len(current.BlockedBy) > 0 {
-			return taskMutation{}, &Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
-		}
-		return acquireWorker(ctx, tx, current, userID, descriptor)
+		values := currentTaskWrite(current)
+		values.Status, values.AllowAgents, values.Properties.Worker = core.TaskTodo, false, nil
+		return taskMutation{id: current.ID, current: current, values: values, changed: true}, nil
 	})
 }
 

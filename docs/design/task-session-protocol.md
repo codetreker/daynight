@@ -12,7 +12,9 @@ worker 根据冻结模式选择 backend。Herdr backend 负责 Codex、Claude、
 
 `worker.agentControlMode` 只接受 `herdr|web`，省略为 `herdr`。repository 继承根模式但不可覆盖；`agent/model/args` 保持原继承规则。Codex、Claude、Copilot 均支持两种模式。
 
-有效模式进入冻结配置、未决 claim attempt、transfer target 和服务端 WorkerClaim。数据库与本地旧记录缺字段按 Herdr 迁移；没有执行证据不能补造进程、会话或已停止事实。请求显式 null、未知值或 Web 非空 Herdr binding 均拒绝。
+有效模式进入服务端 WorkerClaim 和本机认领索引，Web 另将配置冻结到独立执行记录和 launch ticket。服务端旧记录缺字段按 Herdr 迁移；本机最小索引按明确 schema 升级补充模式，旧详细 worker 数据库继续明确拒绝，不静默转换。没有执行证据不能补造进程、会话或已停止事实。请求显式 null、未知值或 Web 非空 Herdr binding 均拒绝。
+
+worker 主索引保存 project/task/claim、status、agent、session_id 和 agent_control_mode。Herdr 延续当前资源对账及进程内计时；Web 的配置、恢复预算、初始输入回执、清理期限及进程证据保存在独立 web-executions.sqlite 中，由 Web backend 负责解释，不成为 Herdr 的恢复来源。Controller 自身 journal 仍是原生调用与 outbox 的所有者。强制撤回清除 claim 的同时使对应 Session 失去普通写能力；不宣称已停止远端进程，也不提供 transfer。
 
 Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task 的 worker.phase。Task summary 保留 preparing/executing/paused 等执行阶段，避免审批期间的高频版本更新使 Agent 刚读到的 task version 立即失效。模式不可通过 worker summary 或普通 properties 更新。服务端当前 claim 是页面模式的唯一依据，nativeSessionId、是否在线或用户 YAML 均不能替代它。[认领设计](daynight-worker-claims.md)拥有实际 HTTP 路径和事务约束。
 
@@ -20,11 +22,12 @@ Web 的每次 waiting_input/working 变化只写 Session 事件，不切换 Task
 
 协议主版本为 `daynight.session.v1`。sessionId 与严格互斥的绑定字段标识持久归属：Task 使用 claimId，Test 使用 testExecutionId。Test identity 使用 ownerUserId，不携带 projectId、taskId、workerId、worktreeId；Task identity 保持这些真实字段。缺失绑定、两种绑定混合及身份与绑定不符均拒绝。executionGeneration 标识原生运行实例，connectionEpoch 标识当前网络连接。代次用规范正 int64 十进制字符串，避免 JavaScript number 舍入和不同编码的等价值。重连不改变执行代次。
 
-浏览器操作包含 requestId、operationId、sessionId、对应绑定、executionGeneration、kind 和 payload。浏览器操作不绑定某次 Controller 网络连接；实际投递和回执由服务端连接代次约束。操作仅包括：
+浏览器操作包含 requestId、operationId、sessionId、对应绑定、executionGeneration、kind 和 payload。浏览器操作不绑定某次 Controller 网络连接；实际投递和回执由服务端连接代次约束。操作包括：
 
 - `send_message`：typed text content 与 expectedTurnId，空闲发送或受原生能力限制的 steer。
 - `cancel`：精确的活动 expectedTurnId。
 - `interaction_response`：当前交互身份、修订、submissionId 及 typed response。
+- `update_setting`、`execute_command`、`refresh_controls`：原生设置修改、命令执行和能力目录刷新；目录修订与活动 turn 的绑定见[会话设置与原生命令](#会话设置与原生命令)。
 
 解析拒绝错误版本、未知字段、缺字段、不合法身份及超限内容，不能把未知操作降级为文本。typed content 为资源扩展保留位置，当前输入不接受附件。Timeline、operation receipt、资源描述与状态使用相同会话归属，不信任任意 URL 或本地路径作为资源授权。
 
@@ -62,7 +65,7 @@ Test 快照、历史、操作、资源和浏览器 channel 位于 `/api/v1/test-
 
 worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、投影修订及 outbox。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
 
-Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并分页读取原生 items。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。原生设置和认证继承现有配置，不通过 remote view 静默改变权限模式。
+Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并分页读取原生 items。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
 Codex/Claude 原生 user message 的 clientId 或 UUID 可证明某条持久输入已被接收。仅匹配已记录的输入 operationId 时，才把 dispatching/unknown 提升为 provider_accepted；空闲、文件出现或连接成功均不能证明输入受理。恢复不重放结果未知的操作。原生 turn 结果、Task 完成和 cleanup 完成具有各自独立的确认条件。
 
@@ -100,9 +103,9 @@ Web 将 setting intent 按用户、执行与 operationId 保存，展示 pending
 
 ## Relay 与恢复
 
-Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限建立另一条 WebSocket；命令和历史也有 HTTP 接口。bootstrap grant 有效期 120 秒，reconnect grant 为 15 分钟；grant 冻结签发凭据归属，撤销父凭据会使现有连接失效。服务端每次操作核验项目权限、claim、executionGeneration 和连接 fencing，不将浏览器传入的 native ID 当作授权。
+Controller 以短期 grant 建立 WebSocket，浏览器通过项目会话权限建立另一条 WebSocket；命令和历史也有 HTTP 接口。bootstrap grant 有效期 120 秒，reconnect grant 为 15 分钟；launcher 在首次 spawn 前将 bootstrap 换成可复连凭据，避免首次连接后短暂断网必须等待续签；grant 冻结签发凭据归属，撤销父凭据会使现有连接失效。服务端每次操作核验项目权限、claim、executionGeneration 和连接 fencing，不将浏览器传入的 native ID 当作授权。Controller 在 WebSocket 升级前先验证 grant、父凭据与 active scope，收到 hello 后在 Connect 事务中重复验证并消费凭据；握手预检不能替代原子 fence 校验。连接配额包含正在升级的请求，失败升级释放预留名额，伪造或失效 token 不能先占用 WebSocket。
 
-原生调用前，Controller 先持久记录操作，再请求服务端 operation_begin 授权，获准后写 dispatching 并调用原生。数据库保存服务端命令和 receipt，Controller 保存本地调用证据。重连以最多 100 条一批对账，最后一批带 final；只有整个对账完成才启用新命令。重复 operationId 必须保持相同内容，断线或超时不能触发自动重发原生输入。
+原生调用前，Controller 先持久记录操作，再请求服务端 operation_begin 授权，获准后写 dispatching 并调用原生。数据库保存服务端命令和 receipt，Controller 保存本地调用证据。已 offered 但尚未 dispatch 的操作如果因状态或权限变化失去授权，服务端持久化 rejected 并返回 receipt_ack，只拒绝该操作，保留当前连接。Controller 记录拒绝并拒绝对应 authorization 等待，不调用原生；迟到回执与重连对账仍按同 operation 身份收敛。已 dispatching 的不确定结果、内部错误或失效 Controller fence 不走这个拒绝捷径。重连以最多 100 条一批对账，最后一批带 final；只有整个对账完成才启用新命令。重复 operationId 必须保持相同内容，断线或超时不能触发自动重发原生输入。
 
 事件以执行级 sourceEpoch 和整数 sourceSeq 持久补传，服务端 ACK 后才删除本机 outbox。事件排序使用整数，不按十进制字符串的字典序排序。本机 outbox 限制为 64 MiB，达到 80% 时暂停新增输入；取消仍可执行。容量或持久化失败会停止原生执行并保留独立的持久 gap 标记，已提交的旧事件不会被丢弃。连接恢复并有空间后补发 gap，原生恢复再读取历史；不能将缺失内容伪装成完整 Timeline。Timeline entryId 源于原生条目身份，revision 由 journal 单调维护；历史重读不会制造新的消息行。executionGeneration 隔离原生实例，connectionEpoch 仅隔离网络连接，刷新和重连不改变原生会话。
 

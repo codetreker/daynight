@@ -6,7 +6,7 @@ import { parse as parseYaml } from "yaml";
 
 const requiredSkillResources = [
   "SKILL.md", "references/handbook.md", "references/create-task.md", "references/handoff.md",
-  "references/run-task.md", "references/execute-task-in-managed.md", "references/task-execution.md",
+  "references/run-task.md", "references/autopilot-managed-task.md", "references/task-execution.md",
   "references/goal.md", "references/task-content.md",
 ] as const;
 
@@ -64,6 +64,7 @@ export const inspectInstalledSkill = async (directory: string): Promise<Installe
   resources.sort((left, right) => left.path.localeCompare(right.path));
   for (const resource of requiredSkillResources) assert.ok(documents.has(resource), `The installed bundle contains ${resource}.`);
   assert.equal(documents.has("references/autopilot.md"), false, "The removed automatic execution mode is not packaged.");
+  assert.equal(documents.has("references/execute-task-in-managed.md"), false, "The renamed managed entrypoint is not packaged under its old name.");
   const entrypoint = documents.get("SKILL.md");
   const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(entrypoint!);
   assert.notEqual(frontmatter, null, "The installed skill has YAML frontmatter.");
@@ -84,13 +85,13 @@ export const verifyExecutionResourceSeparation = (bundle: InstalledSkillContract
       .map((match) => path.posix.basename(match[1]!.split("#")[0]!));
   };
   const ordinary = "references/run-task.md";
-  const managed = "references/execute-task-in-managed.md";
+  const managed = "references/autopilot-managed-task.md";
   const shared = "references/task-execution.md";
   assert.ok(links(ordinary).includes("task-execution.md"), "Ordinary execution loads shared delivery guidance.");
   assert.ok(links(managed).includes("task-execution.md"), "Managed execution loads the same shared delivery guidance.");
-  assert.ok(!links(ordinary).includes("execute-task-in-managed.md"), "Ordinary execution does not load the managed entrypoint.");
+  assert.ok(!links(ordinary).includes("autopilot-managed-task.md"), "Ordinary execution does not load the managed entrypoint.");
   assert.ok(!links(managed).includes("run-task.md"), "Managed execution does not load the ordinary lifecycle.");
-  for (const entrypoint of ["run-task.md", "execute-task-in-managed.md"]) {
+  for (const entrypoint of ["run-task.md", "autopilot-managed-task.md"]) {
     assert.ok(!links(shared).includes(entrypoint), `Shared delivery guidance does not load ${entrypoint}.`);
   }
   assert.doesNotMatch(bundle.documents.get(ordinary)!, /--claim-id\b|properties\.worker|claimId/);
@@ -111,9 +112,9 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "The worker startup prompt explicitly supplies managed environment, skill, mode and an assignment, or its context is incomplete or mismatched.",
     obligation: "Route only explicit worker startup assignments to managed instructions and verify the original claim without an ordinary fallback.",
     propositions: [
-      { resource: "SKILL.md", section: "## Select a mode", requires: [/worker-managed/, /using-daynight/, /execute-task-in-managed/, /startup prompt/, /ordinary/i] },
-      { resource: "references/execute-task-in-managed.md", section: "## Establish the assignment", requires: [/projectId/, /taskId/, /claimId/, /worktreeId/, /branch/, /frozen/, /missing|incomplete/, /mismatch/, /return waiting without task or business writes/, /Do not.*(?:infer|guess)|not.*(?:infer|guess)/] },
-      { resource: "references/execute-task-in-managed.md", section: "## Verify the existing execution", requires: [/in_progress/, /active/, /with the supplied `claimId` and `worktreeId`/, /branch/, /frozen/, /never substitute/] },
+      { resource: "SKILL.md", section: "## Select a mode", requires: [/worker-managed/, /using-daynight/, /autopilot-managed-task/, /startup prompt/, /ordinary/i] },
+      { resource: "references/autopilot-managed-task.md", section: "## Establish the assignment", requires: [/projectId/, /taskId/, /claimId/, /worktreeId/, /branch/, /configuration selected for this invocation/, /missing|incomplete/, /mismatch/, /return waiting without task or business writes/, /Do not.*(?:infer|guess)|not.*(?:infer|guess)/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Verify the existing execution", requires: [/in_progress/, /active/, /with the supplied `claimId` and `worktreeId`/, /branch/, /configuration supplied for this invocation/, /current settings appropriate to the recorded agent/, /never substitute/] },
     ],
   },
   {
@@ -121,8 +122,25 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "An already-active controller assignment resumes with its original worktree, or a matching completed claim is encountered.",
     obligation: "Resume only its existing execution and retain controller ownership of system resources.",
     propositions: [
-      { resource: "references/execute-task-in-managed.md", section: "## Verify the existing execution", requires: [/completed/, /done/, /without reexecuting|without executing|do not reexecute/, /Do not claim it, set it to `in_progress`, select candidates/, /refresh|reread/, /task writes|mutation/, /same active claim/] },
-      { resource: "references/execute-task-in-managed.md", section: "## Execute within controller-owned resources", requires: [/Do not create, switch, or remove/, /worktree/, /branch/, /--delete-branch/, /worker owns resource cleanup/, /do not delete its worktree or close its workspace/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Verify the existing execution", requires: [/completed/, /done/, /without reexecuting|without executing|do not reexecute/, /Do not claim it, set it to `in_progress`, select candidates/, /refresh|reread/, /task writes|mutation/, /same active claim/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Execute within controller-owned resources", requires: [/Do not create, switch, or remove/, /worktree/, /branch/, /--delete-branch/, /worker owns resource cleanup/, /do not delete its worktree or close its workspace/] },
+    ],
+  },
+  {
+    id: "worker-managed-authorized-delivery",
+    input: "A valid worker-managed assignment has a delivery PR whose current-head checks, approvals, blocking threads and mergeability satisfy the repository rules.",
+    obligation: "Use the assignment's sufficient prior delivery authorization to merge immediately after verifying all gates, honoring explicit user restrictions without another permission request or an invented post-merge CI gate.",
+    propositions: [
+      { resource: "references/autopilot-managed-task.md", section: "## Establish the assignment", requires: [/A valid worker-managed assignment already carries sufficient authorization for its in-scope delivery, including PR merge/, /Do not request additional permission for those steps/, /Honor explicit user restrictions, pause requests, and revocation/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Deliver the assigned task", requires: [/required checks, current-head approvals, blocking-thread resolution, and mergeability all satisfy the repository's rules/, /merge immediately without requesting additional permission/, /successful required checks/, /handled blocking review threads/, /actual reviewer approval for the current head/, /Do not wait for post-merge mainline CI unless the user explicitly requires that verification/] },
+    ],
+  },
+  {
+    id: "worker-managed-pending-delivery",
+    input: "A required PR is still open because CI or review is pending, or a bounded poll times out.",
+    obligation: "Keep executing the same assignment through ordinary delivery waits; a poll timeout does not establish an external blocker or completion.",
+    propositions: [
+      { resource: "references/autopilot-managed-task.md", section: "## Wait for delivery results", requires: [/Pending PR CI or review is ongoing execution, not external intervention/, /A polling timeout ends only that poll; keep waiting and inspecting results/, /Do not return merely because a required PR remains unmerged while its CI or review is pending/] },
     ],
   },
   {
@@ -130,16 +148,17 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "The assigned claim has met acceptance and delivery gates, or its final write is refused or loses its response.",
     obligation: "Make the explicit claim-bound final mutation with the observed version and reconcile only that claim without fallback or replay.",
     propositions: [
-      { resource: "references/execute-task-in-managed.md", section: "## Complete the original claim", requires: [/reread/, /active claim/, /daynight task set-status <task-id> done --project <project-id> --claim-id <claim-id> --if-version <observed-version>/, /final task mutation/, /properties\.worker\.state=completed/, /original claim/, /never falls back to ordinary completion or automatic replay/, /reconcile only the original claim/, /An unreadable result remains unconfirmed/, /observed claim change stops further business writes/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Complete the original claim", requires: [/reread/, /active claim/, /daynight task set-status <task-id> done --project <project-id> --claim-id <claim-id> --if-version <observed-version>/, /final task mutation/, /properties\.worker\.state=completed/, /original claim/, /never falls back to ordinary completion or automatic replay/, /reconcile only the original claim/, /An unreadable result remains unconfirmed/, /observed claim change stops further business writes/] },
       { resource: "references/handbook.md", section: "**Task status.**", requires: [/task set-status <task-id> done --claim-id <claim-id> --if-version <version>/, /valid only with `done`/, /never infers it from task data or the environment/, /Omit `--claim-id` for ordinary status setting/, /refusal never causes fallback between these operations/, /checks the exact version before a same-status no-op/] },
     ],
   },
   {
     id: "worker-managed-bounded-wait",
-    input: "An assigned task reaches completion, a human gate, an unmerged PR, or unmet acceptance.",
-    obligation: "Preserve the assigned task through waiting and return to the controller without another task or Goal transition.",
+    input: "An assigned task reaches completion or cannot progress because a demonstrated external blocker requires intervention.",
+    obligation: "Return concrete intervention needs to the controller, preserving unfinished execution without selecting another task or Goal stage.",
     propositions: [
-      { resource: "references/execute-task-in-managed.md", section: "## Return to the controller", requires: [/completion|completes/, /wait|intervention/, /does not select a successor or advance a Goal stage/, /worker|controller/, /human|user/, /PR/, /acceptance/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Wait for delivery results", requires: [/A demonstrated blocker/, /requires external intervention/, /minimum needed intervention/, /then return waiting to the controller/, /Preserve the assignment in `in_progress`/] },
+      { resource: "references/autopilot-managed-task.md", section: "## Return to the controller", requires: [/completion|completes/, /wait|intervention/, /does not select a successor or advance a Goal stage/, /worker|controller/, /human|user/, /PR/, /acceptance/] },
       { resource: "references/task-execution.md", section: "## Confirm acceptance readiness", requires: [/every necessary delivery PR/, /is merged/, /human|user/, /in progress/] },
     ],
   },
@@ -341,7 +360,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "Handoff encounters a running task, a completed task, or active/released worker ownership.",
     obligation: "Respect running permission locks, completed-task mode policy, active resource ownership and separately authorized fresh execution after release.",
     propositions: [
-      { resource: "references/handoff.md", section: "## State and ownership rules", requires: [/`in_progress`, permission false/, /Report the permission lock; do not newly enable or reset status to evade it/, /Review does not pause, stop, release, or transfer execution/, /Report completion and no handoff needed; do not reopen or update permission/, /This is mode policy, not an API prohibition/, /Preserve ownership and execution history/, /An active execution keeps its original resources/, /A released task starts a fresh claim\/worktree\/native session only through an authorized management decision/, /enabling permission neither resumes it nor restores deleted source resources/] },
+      { resource: "references/handoff.md", section: "## State and ownership rules", requires: [/`in_progress`, permission false/, /Report the permission lock; do not newly enable or reset status to evade it/, /Review does not pause, stop, release, or withdraw execution/, /Report completion and no handoff needed; do not reopen or update permission/, /This is mode policy, not an API prohibition/, /Preserve ownership and execution history/, /An active execution keeps its original resources/, /A released task starts a fresh claim\/worktree\/native session only through an authorized management decision/, /enabling permission neither resumes it nor restores deleted source resources/] },
     ],
   },
   {

@@ -2,24 +2,24 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, expect, it, vi } from "vitest";
-import { openWorkerStore } from "../../../src/commands/worker/store.js";
+import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 import { createWorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 import { createWebExecutionBackend } from "../../../src/commands/worker/backends/web.js";
 import type { WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { LocalTask } from "../../../src/commands/worker/types.js";
+import type { LocalTask } from "../../../src/commands/worker/backends/web-types.js";
 import * as lifecycle from "../../../src/commands/controller/lifecycle-store.js";
 import * as processProof from "../../../src/commands/controller/process-proof.js";
 import type { ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import type { requestController } from "../../../src/commands/controller/local-client.js";
-const roots:string[]=[];const stores:ReturnType<typeof openWorkerStore>[]=[];
+const roots:string[]=[];const stores:ReturnType<typeof openWebExecutionStore>[]=[];
 afterEach(async()=>{vi.restoreAllMocks();vi.unstubAllGlobals();for(const store of stores.splice(0))store.close();for(const root of roots.splice(0))await rm(root,{recursive:true,force:true});});
 const fixture=async(agent: "codex" | "claude" | "copilot" = "codex")=>{
  const base=path.resolve(import.meta.dirname,"../../../../../.tmp/web-backend-tests");await mkdir(base,{recursive:true});const home=await mkdtemp(path.join(base,"h-"));roots.push(home);
- const store=openWorkerStore(path.join(home,"worker.sqlite"));stores.push(store);
- const project={serverOrigin:"https://daynight.example",projectId:randomUUID(),repoUrl:"https://example.test/repo.git",localPath:home};store.registerProject(project);
+ const store=openWebExecutionStore(path.join(home,"worker.sqlite"));stores.push(store);
+ const project={serverOrigin:"https://daynight.example",projectId:randomUUID(),repoUrl:"https://example.test/repo.git",localPath:home};
  const identity={...project,taskId:randomUUID(),claimId:randomUUID(),workerId:randomUUID(),worktreeId:randomUUID()};
- store.registerPending(identity,{kind:"new",configuration:{agent,agentControlMode:"web",model:null,args:[],recoveryLimit:2}},1,randomUUID());store.activateTask(identity,2);
+ store.register({ ...identity, project, configuration: {agent,agentControlMode:"web",model:null,args:[],recoveryLimit:2}, userId: randomUUID() }, 1);
  const binding={repositoryPath:home,commonDirectory:path.join(home,".git"),worktreePath:path.join(home,".worktrees","daynight",identity.taskId),branch:`daynight/${identity.taskId}`};
  const git={prepareWorktree:vi.fn(async()=>binding),verifyWorktree:vi.fn(async()=>binding),findWorktree:vi.fn(async()=>null),removeWorktree:vi.fn(async()=>{}),prepareRepository:vi.fn(),dispose:vi.fn()} as unknown as WorkerGitManager;
  return {home,store,identity,git};
@@ -46,17 +46,17 @@ it("closes a provably unlaunched Web execution with backend proof rather than a 
  const backend=createWebExecutionBackend({homeDirectory:f.home,store:f.store,git:f.git,launcher,platform:"macos",buildPrompt:()=>"managed",emit:()=>{},now:()=>5});
  const result=await backend.cleanup(f.store.getTask(f.identity)!,"terminal",100);
  expect(result.cleanup).toMatchObject({workspaceClosed:null,backendResourcesClosed:true,agentStopped:true,worktreeDeleted:true});
- expect(vi.mocked(f.git.removeWorktree).mock.calls[0]?.[1]).toEqual({terminal:true,agentStopped:true,backendResourcesClosed:true});
+ expect(vi.mocked(f.git.removeWorktree).mock.calls[0]?.[1]).toMatchObject({ claimId: f.identity.claimId, worktreeId: f.identity.worktreeId });
  expect(launcher.launch).not.toHaveBeenCalled();
 });
 
 it.each([false,true])("only an orderly shutdown can resume at an exhausted recovery budget (shutdown=%s)",async(orderly)=>{
- const f=await fixture();let task=f.store.bindWorktree(f.identity,await f.git.prepareWorktree(f.store.getTask(f.identity)!,{} as never),3);
+ const f=await fixture();let task=f.store.bindWorktree(f.identity,await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity,{} as never),3);
  task=f.store.initializeWebExecution(task,4);const nativeId=randomUUID();
  task=f.store.updateWebExecution(task,{sessionId:randomUUID(),initialPrompt:"managed",launchSubmission:"acknowledged",controllerProcess:{pid:123,parentPid:1,processGroupId:123,startedAt:"birth",commandHash:"a".repeat(64)}},5);
  task=f.store.bindNativeSession(task,{source:"controller",sessionId:nativeId},6);
  f.store.beginRecovery(task,7);task=f.store.beginRecovery(task,8);
- if(orderly){f.store.beginCleanup(task,{kind:"shutdown",deadline:100},9);f.store.recordCleanupResult(task,"completed",null,10);f.store.confirmAgentStopped(task,{agentStopped:true},11);f.store.confirmBackendResourcesClosed(task,{controllerStopped:true,endpointClosed:true},12);task=f.store.resumeAfterShutdown(task,13);}
+ if(orderly){f.store.beginCleanup(task,{kind:"shutdown",deadline:100},9);f.store.recordCleanupResult(task,"completed",null,10);f.store.confirmAgentStopped(task,{agentStopped:true},11);f.store.confirmBackendResourcesClosed(task,{controllerStopped:true,endpointClosed:true},12);task=f.store.clearShutdown(task,13);}
  const e=task.webExecution!;const stopped:ControllerSnapshot={executionId:e.executionId,claimId:task.claimId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,controllerInstanceId:e.controllerInstanceId,lifecycle:"stopped",nativeSessionId:nativeId,initialInputState:"confirmed",activity:"stopped",currentTurnId:null,capabilities:{send:true,steer:true,cancel:true,respond:true},controllerProcess:e.controllerProcess,nativeProcesses:[],nativeStopped:true,stoppedAt:new Date(0).toISOString(),error:null};
  vi.spyOn(lifecycle,"readControllerSnapshot").mockReturnValue(stopped);vi.spyOn(lifecycle,"recordStoppedControllerGeneration").mockResolvedValue(stopped);vi.spyOn(processProof,"confirmControllerProcessesStopped").mockResolvedValue(true);
  const launcher={prepare:vi.fn(async(task:LocalTask):Promise<ControllerLaunchTicket>=>{const e=task.webExecution!;return {schemaVersion:1,launchId:e.launchId,executionId:e.executionId,controllerId:e.controllerId,controllerInstanceId:e.controllerInstanceId,sessionId:e.sessionId!,executionGeneration:e.executionGeneration,serverOrigin:task.serverOrigin,projectId:task.projectId,taskId:task.taskId,claimId:task.claimId,workerId:task.workerId,worktreeId:task.worktreeId,userId:task.userId!,provider:"codex",cwd:task.resources.worktree!.worktreePath,nativeHome:path.join(f.home,".codex"),configuration:task.configuration!,initialOperationId:e.initialOperationId,initialPrompt:"managed",resumeNativeSessionId:nativeId,credentialFile:path.join(f.home,"grant.json"),ipcEndpoint:path.join(f.home,"c.sock"),ipcSecret:"a".repeat(64),createdAt:new Date(0).toISOString()};}),launch:vi.fn(async()=>{}),refreshGrant:vi.fn(async()=>{})};

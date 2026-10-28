@@ -70,5 +70,7 @@ and cannot stop a process or transfer ownership.
 
 Production acceptance proves actual service persistence, version races, refusal
 and uncertain outcomes separately from frontend-only appearance and interaction.
-Bulk mutations, execution cancellation and ownership transfer remain independent
-state/permission decisions with their own observable guarantees.
+Bulk mutations and process cancellation remain independent state/permission
+decisions. The later [worker force-withdrawal decision](../architecture/2026-10-27-worker-force-withdrawal.md)
+provides a separate claim reset and automatic-permission change with an explicit
+delayed-stop boundary.

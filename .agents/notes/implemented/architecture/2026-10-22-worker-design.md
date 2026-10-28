@@ -13,6 +13,15 @@ recovery dependent on unrelated execution behavior.
 
 ## Decision
 
+The worker retains the responsibility split defined here: service ownership,
+worker scheduling and resources, Herdr terminal control, and agent business
+delivery. Current local records and restart behavior are owned by the
+[six-column simplification](../simplification/2026-10-27-worker-claim-records.md).
+The following preserves the original state-root and checkpoint design, including
+why those stronger persistence guarantees were initially selected.
+
+### Original implementation and rationale
+
 The adopted [requirements](../../../../docs/spec/daynight-worker.md) and
 [architecture](../../../../docs/design/daynight-worker.md) define a foreground
 worker with four responsibilities: the service owns eligibility and exclusive
@@ -25,7 +34,7 @@ superseded by the agent-owned completion and claim-inventory reconciliation
 boundaries. The [managed execution decision](2026-10-26-managed-task-skill.md)
 separates the ordinary and managed skill instructions. The worker constructs
 startup and same-claim relaunch prompts with an explicit worker-managed
-environment, using-daynight skill, execute-task-in-managed mode and original
+environment, using-daynight skill, autopilot-managed-task mode and original
 assignment; the Herdr adapter transports that prompt to the selected native
 agent. The [foreground runtime](2026-10-27-foreground-worker-runtime.md)
 implements that composition; this note owns the responsibility decision. The [claim foundation
@@ -138,6 +147,13 @@ schema on these different lifecycles.
 
 ## Consequences
 
+The original consequences below apply to the initial worker_state/executions
+checkpoint model. The current simplification replaces those storage details;
+the service, native integration and independent platform-verification boundaries
+remain in force.
+
+### Original consequences
+
 The design keeps exclusive ownership and crash recovery explicit without a
 second agent reporting protocol. Lost external responses cannot justify another
 agent or repeated input. Worker death does not expire ownership automatically.
@@ -146,7 +162,10 @@ local-records decision replaces that continuity assumption with terminal source
 cleanup and a fresh target execution. The
 [manual-control decision](2026-10-27-worker-manual-control.md) replaces the
 service continuity checks with fresh claim/worktree identities and strict
-rejection of the obsolete confirmation input.
+rejection of the obsolete confirmation input. The
+[force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) then removes
+transfer and uses an atomic manual-control reset, with original worker cleanup
+triggered by complete inventory absence.
 
 Herdr idle/done is only an execution observation. The agent performs task
 acceptance, records evidence and submits final claim-bound done. Conflicting or

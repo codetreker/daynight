@@ -19,5 +19,5 @@ export const updateCredential = async (
   const document = current?.document ?? new Document({});
   if (token === undefined) document.delete("serverToken");
   else document.set("serverToken", token);
-  return { result: undefined, source: document.toString() };
+  return { kind: "write", result: undefined, source: document.toString(), ownership: { fields: ["serverToken"] } };
 }, signal);

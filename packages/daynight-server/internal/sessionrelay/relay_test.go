@@ -339,3 +339,32 @@ func TestReconnectNeverReplaysAnOfferWithoutJournalEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestForcedWorkerWithdrawalFreezesWebSessionWithoutStopClaim(t *testing.T) {
+	f, v := connectFixture(t)
+	ctx := context.Background()
+	publishState(t, f, v, idleState())
+	command := submitText(t, f, v)
+	task, err := service.NewTasks(f.s.DB).WithdrawWorker(ctx, f.p, f.project, f.task, service.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
+	if err != nil || task.Properties.Worker != nil || task.AllowAgents || task.Status != core.TaskTodo {
+		t.Fatal("withdrawal retained ownership", task, err)
+	}
+	var raw []byte
+	if err = f.s.DB.Pool.QueryRow(ctx, `SELECT snapshot FROM task_sessions WHERE id=$1`, v.SessionID).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := sp.DecodeSnapshot(raw)
+	if err != nil || snapshot.Lifecycle != "draining" || snapshot.Activity == "stopped" {
+		t.Fatal("withdrawal did not fence without claiming stop", snapshot, err)
+	}
+	var receiptState string
+	if err = f.s.DB.Pool.QueryRow(ctx, `SELECT receipt->>'state' FROM session_operations WHERE session_id=$1 AND operation_id=$2`, v.SessionID, command.OperationID).Scan(&receiptState); err != nil || receiptState != "rejected" {
+		t.Fatal("undispatched operation survived withdrawal", receiptState, err)
+	}
+	if _, err = f.s.Submit(ctx, f.p, f.project, f.task, v.SessionID, command); err == nil {
+		t.Fatal("withdrawn claim accepted input")
+	}
+	if _, err = f.s.Handle(ctx, sp.ControllerMessage{Type: "heartbeat", ControllerFence: v.ControllerFence}); err != nil {
+		t.Fatal("withdrawal discarded final observation window", err)
+	}
+}

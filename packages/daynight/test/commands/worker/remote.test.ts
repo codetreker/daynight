@@ -12,7 +12,7 @@ const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value)
 const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
 const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
-const worker: WorkerClaim = { ...descriptor, agentControlMode: "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
+const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | null = null, project = projectId): Task => ({
   id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, version: 1n,
@@ -83,8 +83,8 @@ describe("worker remote API", () => {
     const second = createWorkerRemote({ serverUrl, serverToken: "test-account-b" });
     await expect(first.currentUserId(signal())).resolves.toBe(worker.userId);
     await expect(second.currentUserId(signal())).resolves.toBe(uuid(80));
-    await expect(first.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).resolves.toEqual([]);
-    await expect(second.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).resolves.toEqual([]);
+    await expect(first.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual([]);
+    await expect(second.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual([]);
     expect(headers).toEqual(["Bearer test-account-a", "Bearer test-account-b", "Bearer test-account-a", "Bearer test-account-b"]);
   });
 
@@ -95,7 +95,7 @@ describe("worker remote API", () => {
       respond(response, { items: [], nextCursor: null });
     });
     const remote = await verifiedRemote(serverUrl);
-    await expect(remote.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
+    await expect(remote.ownInventory([{ projectId }], workerId, signal())).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
     await expect(remote.currentUserId(signal())).resolves.toBe(worker.userId);
   });
 
@@ -104,7 +104,7 @@ describe("worker remote API", () => {
     const serverUrl = await listen((request, response) => { urls.push(request.url!); respond(response, { id: worker.userId }); }, { identity: false });
     const remote = createWorkerRemote({ serverUrl });
     await expect(remote.currentUserId(signal())).rejects.toMatchObject({ operation: "auth.me", phase: "protocol" });
-    await expect(remote.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).rejects.toThrow("verify its authenticated user");
+    await expect(remote.ownInventory([{ projectId }], workerId, signal())).rejects.toThrow("verify its authenticated user");
     expect(urls).toEqual(["/api/v1/me"]);
   });
 
@@ -115,13 +115,13 @@ describe("worker remote API", () => {
       respond(response, { items: later ? [] : [task(taskId, worker)], nextCursor: later ? null : "next" });
     });
     const remote = await verifiedRemote(serverUrl);
-    await expect(remote.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
+    await expect(remote.ownInventory([{ projectId }], workerId, signal())).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
 
   it("rejects a mismatched claim owner even when response provenance matches", async () => {
     const serverUrl = await listen((_request, response) => respond(response, { items: [task(taskId, { ...worker, userId: uuid(80) })], nextCursor: null }));
     const remote = await verifiedRemote(serverUrl);
-    await expect(remote.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).rejects.toThrow("different authenticated user");
+    await expect(remote.ownInventory([{ projectId }], workerId, signal())).rejects.toThrow("different authenticated user");
   });
 
   it("freezes credentials, caches their verified identity and never forwards a principal assertion", async () => {
@@ -137,7 +137,7 @@ describe("worker remote API", () => {
     await remote.currentUserId(signal());
     options.serverToken = "test-account-b";
     await remote.currentUserId(signal());
-    await remote.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal());
+    await remote.ownInventory([{ projectId }], workerId, signal());
     expect(identityQueries).toBe(1);
     expect(requests).toEqual([{ authorization: "Bearer test-account-a", principal: undefined }, { authorization: "Bearer test-account-a", principal: undefined }]);
   });
@@ -191,7 +191,7 @@ describe("worker remote API", () => {
       respond(response, { items: [item], nextCursor: second || later ? null : "inventory cursor+/=" });
     });
     const remote = (await verifiedRemote(serverUrl));
-    const result = await remote.ownInventory([{ serverOrigin: serverUrl, projectId }, { serverOrigin: `${serverUrl}/`, projectId }, { serverOrigin: serverUrl, projectId: secondProject }], workerId, signal());
+    const result = await remote.ownInventory([{ projectId }, { projectId }, { projectId: secondProject }], workerId, signal());
     expect(result.map(({ id }) => id)).toEqual([taskId, uuid(10), uuid(9)]);
     expect(calls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([
       { workerId, limit: "100" }, { workerId, limit: "100", cursor: "inventory cursor+/=" }, { workerId, limit: "100" },
@@ -201,12 +201,6 @@ describe("worker remote API", () => {
     for (const operation of opened) expect(() => operation.check()).toThrow("disposed");
   });
 
-  it("refuses a different-origin inventory scope before any network request", async () => {
-    let requests = 0;
-    const serverUrl = await listen((_request, response) => { requests++; respond(response, { items: [], nextCursor: null }); });
-    await expect((await verifiedRemote(serverUrl)).ownInventory([{ serverOrigin: serverUrl, projectId }, { serverOrigin: "https://different.example", projectId: uuid(8) }], workerId, signal())).rejects.toThrow("different service origin");
-    expect(requests).toBe(0);
-  });
 
   it.each(["later failure", "duplicate", "cursor loop", "wrong worker"])("rejects a whole inventory after %s", async (kind) => {
     const serverUrl = await listen((request, response) => {
@@ -215,7 +209,7 @@ describe("worker remote API", () => {
       const item = task(later && kind !== "duplicate" ? uuid(8) : taskId, later && kind === "wrong worker" ? { ...worker, workerId: uuid(9) } : worker);
       respond(response, { items: [item], nextCursor: !later || kind === "cursor loop" ? "next" : null });
     });
-    await expect((await verifiedRemote(serverUrl)).ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).rejects.toBeInstanceOf(Error);
+    await expect((await verifiedRemote(serverUrl)).ownInventory([{ projectId }], workerId, signal())).rejects.toBeInstanceOf(Error);
   });
 
   it("does not return earlier project inventory when a later project fails", async () => {
@@ -223,7 +217,7 @@ describe("worker remote API", () => {
       if (request.url!.includes(uuid(8))) { respond(response, { error: { code: "forbidden", message: "no access", requestId: "later" } }, 403); return; }
       respond(response, { items: [task(taskId, worker)], nextCursor: null });
     });
-    await expect((await verifiedRemote(serverUrl)).ownInventory([{ serverOrigin: serverUrl, projectId }, { serverOrigin: serverUrl, projectId: uuid(8) }], workerId, signal())).rejects.toMatchObject({ status: 403 });
+    await expect((await verifiedRemote(serverUrl)).ownInventory([{ projectId }, { projectId: uuid(8) }], workerId, signal())).rejects.toMatchObject({ status: 403 });
   });
 
   it("skips released candidates through later pages while preserving service order", async () => {
@@ -250,8 +244,8 @@ describe("worker remote API", () => {
     });
     const remote = (await verifiedRemote(serverUrl));
     await expect(remote.claim(task(), descriptor, signal())).rejects.toMatchObject({ outcomeUnconfirmed: true });
-    await expect(remote.ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, signal())).resolves.toEqual([task(taskId, worker)]);
-    expect(requests).toEqual([{ method: "POST", body: { ...descriptor, agentControlMode: "herdr", version: 1n } }, { method: "GET", body: null }]);
+    await expect(remote.ownInventory([{ projectId }], workerId, signal())).resolves.toEqual([task(taskId, worker)]);
+    expect(requests).toEqual([{ method: "POST", body: { ...descriptor, version: 1n } }, { method: "GET", body: null }]);
   });
 
   it("preserves exact-version summary no-ops and does not retry a confirmed refusal", async () => {
@@ -305,7 +299,7 @@ describe("worker remote API", () => {
       if (++operationsOpened === 3) controller.abort();
       return original(options);
     });
-    await expect((await verifiedRemote(serverUrl)).ownInventory([{ serverOrigin: serverUrl, projectId }], workerId, controller.signal)).rejects.toMatchObject({ outcomeUnconfirmed: false });
+    await expect((await verifiedRemote(serverUrl)).ownInventory([{ projectId }], workerId, controller.signal)).rejects.toMatchObject({ outcomeUnconfirmed: false });
     expect(requests).toBe(1);
   });
 });

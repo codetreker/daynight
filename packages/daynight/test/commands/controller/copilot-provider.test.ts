@@ -223,3 +223,31 @@ test("Copilot unrecoverable transport failure requests owner shutdown without wa
   expect(onFatalError).toHaveBeenCalledOnce(); expect(onFatalError.mock.calls[0]?.[0]).toMatchObject({ message: "Native Copilot connection lost; operation results are unknown." });
   expect(fixture.states.at(-1)?.activity).toBe("unknown"); await provider.close();
 });
+
+test.each([false, true])("Copilot Worker permissions are native-confirmed and isolated from Test Sessions (worker=%s)", async unattended => {
+  const setApproveAll = vi.fn(async () => ({ success: true }));
+  Object.assign(fixture.native.rpc.permissions, { setApproveAll });
+  const provider = await openCopilotProvider({ ...fixture.options, unattended });
+  try {
+    const args = processMock.spawn.mock.calls[0]![1] as string[];
+    expect(args.includes("--allow-all")).toBe(unattended);
+    expect(args.includes("--no-ask-user")).toBe(unattended);
+    expect(args.includes("--no-sandbox")).toBe(unattended);
+    expect(setApproveAll).toHaveBeenCalledWith({ enabled: unattended });
+  } finally { await provider.close(); }
+});
+
+test("Copilot fails Worker initialization when native full access cannot be confirmed", async () => {
+  Object.assign(fixture.native.rpc.permissions, { setApproveAll: vi.fn(async () => ({ success: false })) });
+  await expect(openCopilotProvider({ ...fixture.options, unattended: true })).rejects.toThrow("permissions");
+});
+
+test("Copilot Worker resume does not overwrite persisted permissions", async () => {
+  const setApproveAll = vi.fn(async () => ({ success: true }));
+  Object.assign(fixture.native.rpc.permissions, { setApproveAll });
+  const provider = await openCopilotProvider({ ...fixture.options, unattended: true, resumeNativeSessionId: randomUUID() });
+  try {
+    expect(setApproveAll).not.toHaveBeenCalled();
+    expect(processMock.spawn.mock.calls[0]![1]).not.toContain("--allow-all");
+  } finally { await provider.close(); }
+});

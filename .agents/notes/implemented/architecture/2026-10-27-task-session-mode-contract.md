@@ -12,7 +12,7 @@ need a durable source for deciding whether a task has a Web session.
 ## Decision
 
 The worker configuration and claim carry `agentControlMode: herdr | web`, with
-missing legacy values normalized to `herdr`. Mode is frozen with the execution
+missing legacy values normalized to `herdr`. Mode is frozen with the claim; Web also freezes execution
 configuration and protected from summary and general task-property updates.
 Provider and mode are validated together. The
 [claim design](../../../../docs/design/daynight-worker-claims.md) owns storage and
@@ -54,6 +54,9 @@ version compatibility for a contract whose consumers live in one repository.
 Pure source reuse preserves one definition without that publication dependency.
 
 ## Consequences
+
+The [Web evidence decision](2026-10-28-web-execution-evidence.md) separates
+Controller persistence from Herdr’s minimal claim index and process-local jobs.
 
 The [independent Controller testing decision](2026-10-28-controller-test-session-ownership.md)
 extends the shared session implementation with explicit Test ownership. It does

@@ -15,8 +15,8 @@ A path or task ID alone cannot authorize reuse or deletion.
 
 The [worker Git manager](../../../../packages/daynight/src/commands/worker/worktrees.ts)
 provides repository preparation, task worktree creation/verification and terminal
-removal. It consumes the original project/task/claim/worktree identity and returns
-actual bindings to the existing [local store](2026-10-26-worker-local-records.md).
+removal. It consumes the project mapping and static task/claim/worktree owner and returns
+actual bindings to its caller. The [six-column record decision](../simplification/2026-10-27-worker-claim-records.md) removes saved resource bindings from the local task row.
 It does not add a second database, registry or recovery coordinator.
 
 Repository preparation clones only missing paths. Existing non-bare repositories
@@ -37,14 +37,18 @@ repoUrl, including worktree-specific configuration.
 Creation exclusively reserves the empty leaf directory, captures its device/inode
 and uses Git's native `worktree add --lock --reason` to persist a
 `daynight-worker:` JSON owner marker in the linked administrative registration.
-The marker contains origin/project/task/claim/worktree identity plus fingerprints
-of the leaf, repository root and common directory. Those fingerprints corroborate
+The marker contains project/task/claim/worktree identity plus fingerprints
+of the leaf, repository root and common directory. The [workspace naming and
+identity decision](2026-10-28-worker-workspace-names.md) removes the original
+service-origin coordinate under the retained state root's single-service rule;
+explicit migration preserves the four coordinates and physical fingerprints.
+Those fingerprints corroborate
 ownership; they do not prove an immutable directory incarnation. Every present
 leaf must retain its exact regular `.git` pointer to the validated administrative
 registration, including during terminal cleanup. Inspection also checks the
 marker and administrative backpointer; a foreign marker, symlink, ambiguous
 registration or missing/mismatched pointer blocks destructive operations.
-Matching Git creation can be recovered before SQLite binding is saved; an
+Matching Git creation can be discovered directly from static registration; an
 unmarked pre-add reservation remains a visible conflict.
 
 Branch validation invokes Git's `symbolic-ref --quiet HEAD` with the validated
@@ -61,7 +65,9 @@ owner marker so a later attempt can revalidate and continue. Only after other
 content is gone does it unlink `.git` and remove the leaf nonrecursively. Once
 the leaf is absent, targeted locked-worktree removal discards its administrative
 registration. Repeating a completed removal succeeds when both are absent.
-Branch and task history remain; done/release/transfer share this terminal rule.
+Branch and task history remain; done/release/withdrawal share this terminal rule.
+The [force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes
+transfer while retaining the same inventory-driven terminal resource cleanup.
 
 An interruption between final pointer unlink and leaf removal leaves a present
 but ambiguous directory. Even an empty leaf with matching inode is refused and
@@ -130,7 +136,7 @@ explicit management action.
 
 Git operations return resource facts, not ownership eligibility. The coordinator
 still obtains complete current claim inventory, supplies stop/closure proof,
-serializes each execution and saves successful bindings/cleanup. Failed deletion
+serializes each execution and retains call-local stop and cleanup observations. Failed deletion
 must retain local responsibility. These primitives do not establish the foreground
 scheduler, native Herdr execution, service management-protocol revisions or
 cross-platform whole-Goal acceptance.

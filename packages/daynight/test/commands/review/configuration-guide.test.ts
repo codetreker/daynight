@@ -7,6 +7,8 @@ import { CliCancelledError } from "../../../src/cli/cancellation.js";
 import { runCli } from "../../../src/cli/application.js";
 import { MissingConfigurationFileError, MissingConfigurationFieldError } from "../../../src/config/errors.js";
 import { resolveConfigurationPaths } from "../../../src/config/paths.js";
+import { loadConfiguration } from "../../../src/commands/review/config.js";
+import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 import { configureReview, guideReviewConfiguration } from "../../../src/commands/review/configuration-guide.js";
 import { runServerCommand } from "../../../src/commands/server/runtime.js";
 
@@ -38,7 +40,7 @@ describe("review configuration guide", () => {
     const ask = answers(context, ["https://github.com/Owner/Repo.git", ""]);
     await configureReview(context);
     expect(ask.mock.calls.map(([question]) => question)).toEqual(["Review repository (HTTPS or SSH GitHub address): ", "Review clone path (blank for configured default): "]);
-    expect(parse(await readFile(paths.configFile, "utf8"))).toEqual({ repositoryRoot: "~/daynights", repositories: [{ remote: "https://github.com/Owner/Repo.git", path: path.join(directory, "daynights", "github.com", "owner", "repo") }] });
+    expect(parse(await readFile(paths.configFile, "utf8"))).toEqual({ review: { repositoryRoot: "~/daynights", repositories: [{ remote: "https://github.com/Owner/Repo.git", path: path.join(directory, "daynights", "github.com", "owner", "repo") }] } });
     expect(context.stdout).not.toHaveBeenCalled();
   });
 
@@ -55,15 +57,15 @@ describe("review configuration guide", () => {
     const { context, paths } = await fixture("serverUrl: null\nserverToken: false\n");
     answers(context, ["https://github.com/o/r", ""]);
     await configureReview(context);
-    expect(parse(await readFile(paths.configFile, "utf8"))).toMatchObject({ serverUrl: null, serverToken: false, repositories: [{ remote: "https://github.com/o/r" }] });
+    expect(parse(await readFile(paths.configFile, "utf8"))).toMatchObject({ serverUrl: null, serverToken: false, review: { repositories: [{ remote: "https://github.com/o/r" }] } });
   });
 
   it.each(["copilotModel", "copilotReasoningEffort"])("rejects invalid selected review settings before prompting: %s", async (field) => {
-    const { context, paths } = await fixture(`${field}: null\n`);
+    const { context, paths } = await fixture(`review:\n  ${field}: null\n`);
     const ask = answers(context, []);
     await expect(configureReview(context)).rejects.toThrow(`${field} must be`);
     expect(ask).not.toHaveBeenCalled();
-    expect(await readFile(paths.configFile, "utf8")).toBe(`${field}: null\n`);
+    expect(await readFile(paths.configFile, "utf8")).toBe(`review:\n  ${field}: null\n`);
   });
 
   it("preserves concurrent credentials during review setup", async () => {
@@ -76,18 +78,54 @@ describe("review configuration guide", () => {
     await configureReview(context);
     const source = await readFile(paths.configFile, "utf8");
     expect(source).toContain("# concurrent credential update");
-    expect(parse(source)).toMatchObject({ serverToken: "concurrent-secret", repositories: [{ remote: "https://github.com/owner/repo.git" }] });
+    expect(parse(source)).toMatchObject({ serverToken: "concurrent-secret", review: { repositories: [{ remote: "https://github.com/owner/repo.git" }] } });
+  });
+
+  it("preserves concurrent worker and unselected review settings", async () => {
+    const { context, paths } = await fixture("review: { pollIntervalMs: 60000 }\nworker: { repositories: [] }\n");
+    answers(context, []);
+    context.prompt!.ask = vi.fn().mockImplementationOnce(async () => {
+      await writeFile(paths.configFile, "review: { pollIntervalMs: 2000, copilotModel: auto }\nworker: { repositories: [], maxConcurrent: 4 }\n");
+      return "https://github.com/owner/repo.git";
+    }).mockResolvedValueOnce("");
+    await configureReview(context);
+    expect(parse(await readFile(paths.configFile, "utf8"))).toMatchObject({
+      review: { pollIntervalMs: 2000, copilotModel: "auto", repositories: [{ remote: "https://github.com/owner/repo.git" }] },
+      worker: { repositories: [], maxConcurrent: 4 },
+    });
+  });
+
+  it("refuses an alias introduced during prompting that would change an unknown setting", async () => {
+    const original = "review:\n  repositories: &repos\n    - remote: https://github.com/o/old\n      path: ../old\n";
+    const concurrent = `${original}future: *repos\n`;
+    const { context, paths } = await fixture(original);
+    answers(context, []);
+    context.prompt!.ask = vi.fn().mockResolvedValueOnce("https://github.com/o/new").mockImplementationOnce(async () => {
+      await writeFile(paths.configFile, concurrent);
+      return "";
+    });
+    await expect(configureReview(context)).rejects.toThrow("shared YAML aliases that would change unrelated settings");
+    expect(await readFile(paths.configFile, "utf8")).toBe(concurrent);
+    expect(await readdir(paths.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it.each(["review: null", "review: []", "review: false"])("rejects malformed review configuration without prompting: %s", async (source) => {
+    const { context, paths } = await fixture(source);
+    const ask = answers(context, []);
+    await expect(guideReviewConfiguration(context, () => loadConfiguration(resolveReviewPaths(context.homeDirectory())))).rejects.toThrow();
+    expect(ask).not.toHaveBeenCalled();
+    expect(await readFile(paths.configFile, "utf8")).toBe(source);
   });
 
   it("rejects concurrent selected review changes", async () => {
-    const { context, paths } = await fixture("repositoryRoot: ~/original\n");
+    const { context, paths } = await fixture("review:\n  repositoryRoot: ~/original\n");
     answers(context, []);
     context.prompt!.ask = vi.fn().mockImplementationOnce(async () => {
-      await writeFile(paths.configFile, "repositoryRoot: ~/concurrent\n");
+      await writeFile(paths.configFile, "review:\n  repositoryRoot: ~/concurrent\n");
       return "https://github.com/owner/repo.git";
     }).mockResolvedValueOnce("");
     await expect(configureReview(context)).rejects.toThrow("Review configuration changed while prompting");
-    expect(await readFile(paths.configFile, "utf8")).toBe("repositoryRoot: ~/concurrent\n");
+    expect(await readFile(paths.configFile, "utf8")).toBe("review:\n  repositoryRoot: ~/concurrent\n");
   });
 
   it.each([["setup"], ["setup", "--help"], ["setup", "--server-url", "http://localhost:8787"]])("rejects the removed top-level command without accessing configuration %j", async (...args) => {
@@ -197,11 +235,11 @@ describe("missing review configuration", () => {
   it.each(["file", "field"])("guides a missing %s and reloads once", async (kind) => {
     const { context, paths } = await fixture();
     answers(context, ["https://github.com/o/r", ""]);
-    const failure = kind === "file" ? new MissingConfigurationFileError(paths.configFile, new Error("missing")) : new MissingConfigurationFieldError("repositories", "missing repositories");
+    const failure = kind === "file" ? new MissingConfigurationFileError(paths.configFile, new Error("missing")) : new MissingConfigurationFieldError("review.repositories", "missing repositories");
     const load = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce("loaded");
     expect(await guideReviewConfiguration(context, load)).toBe("loaded");
     expect(load).toHaveBeenCalledTimes(2);
-    expect(parse(await readFile(paths.configFile, "utf8"))).toMatchObject({ repositories: [{ remote: "https://github.com/o/r" }] });
+    expect(parse(await readFile(paths.configFile, "utf8"))).toMatchObject({ review: { repositories: [{ remote: "https://github.com/o/r" }] } });
   });
 
   it("points noninteractive callers to review add-repo without creating configuration", async () => {
@@ -225,7 +263,7 @@ describe("missing review configuration", () => {
   it("propagates a failed reload without prompting a second time", async () => {
     const { context } = await fixture();
     const ask = answers(context, ["https://github.com/o/r", ""]);
-    const failure = new MissingConfigurationFieldError("repositories", "still missing");
+    const failure = new MissingConfigurationFieldError("review.repositories", "still missing");
     const load = vi.fn(async () => { throw failure; });
     await expect(guideReviewConfiguration(context, load)).rejects.toBe(failure);
     expect(load).toHaveBeenCalledTimes(2);

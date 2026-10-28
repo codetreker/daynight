@@ -12,7 +12,10 @@ become stale, while absent settings must preserve Copilot's own choices.
 ## Decision
 
 The review projection of the shared YAML configuration accepts independent
-optional top-level `copilotModel` and `copilotReasoningEffort` strings. Both use
+optional `review.copilotModel` and `review.copilotReasoningEffort` strings.
+The options originally used root fields; the
+[review configuration section decision](../architecture/2026-10-27-review-configuration-section.md)
+owns their current YAML placement. Both use
 the existing nonempty-string validator, rejecting nonstrings, null, empty or
 whitespace-only values and NUL while preserving accepted strings exactly. The
 values are opaque to Daynight. Copilot owns model availability, effort levels
@@ -26,8 +29,8 @@ explains that only some models support reasoning effort.
 
 The [configuration decision](../../archived/architecture/2026-10-16-user-home-review-configuration.md)
 records the startup-loading, command-specific projection and YAML-update choices
-retained here. The shared parser recognizes both keys, while the server projection
-validates only its own fields. Setup and repository registration preserve the
+retained here. The shared parser recognizes the `review` section, while the server
+projection validates only its own fields. Setup and repository registration preserve the
 settings and comments. Invalid review values remain errors rather than triggering
 configuration guidance. The values apply to every review repository in that
 process and change only after restart.

@@ -33,6 +33,7 @@ type sessionRoutes struct {
 	instance    string
 	mutex       sync.Mutex
 	closing     bool
+	reserved    int
 	connections map[*websocket.Conn]context.CancelFunc
 	active      sync.WaitGroup
 }
@@ -302,15 +303,19 @@ func (h *sessionRoutes) origin(r *http.Request, cookie bool) error {
 }
 func (h *sessionRoutes) accept(w http.ResponseWriter, r *http.Request) (*websocket.Conn, context.Context, func(), error) {
 	h.mutex.Lock()
-	if h.closing || len(h.connections) >= relayMaxConnections {
+	if h.closing || h.reserved >= relayMaxConnections {
 		h.mutex.Unlock()
 		return nil, nil, nil, &service.Fault{Code: "rate_limited", Message: "Session channel capacity is unavailable."}
 	}
+	h.reserved++
 	h.active.Add(1)
 	h.mutex.Unlock()
 	// Exact Origin was already checked; library host matching is intentionally bypassed.
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled})
 	if err != nil {
+		h.mutex.Lock()
+		h.reserved--
+		h.mutex.Unlock()
 		h.active.Done()
 		return nil, nil, nil, err
 	}
@@ -329,6 +334,7 @@ func (h *sessionRoutes) accept(w http.ResponseWriter, r *http.Request) (*websock
 		_ = conn.CloseNow()
 		h.mutex.Lock()
 		delete(h.connections, conn)
+		h.reserved--
 		h.mutex.Unlock()
 		h.active.Done()
 	}
@@ -406,6 +412,10 @@ func (h *sessionRoutes) controllerChannel(w http.ResponseWriter, r *http.Request
 		return
 	}
 	if err = h.origin(r, false); err != nil {
+		h.failure(w, r, err)
+		return
+	}
+	if err = h.service.AuthenticateController(r.Context(), token); err != nil {
 		h.failure(w, r, err)
 		return
 	}

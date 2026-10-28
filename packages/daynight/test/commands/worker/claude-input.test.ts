@@ -10,6 +10,6 @@ it("requires an empty Claude composer between its borders and a current footer",
 });
 it("owns Claude resume and model arguments while refusing print, prompt, and settings overrides", () => {
   const id = "12345678-1234-4234-8234-123456789abc";
-  expect(buildHerdrAgentArguments({ agent: "claude", model: "sonnet", args: ["--permission-mode", "default"] }, id)).toEqual(["--resume", id, "--model", "sonnet", "--permission-mode", "default"]);
+  expect(buildHerdrAgentArguments({ agent: "claude", model: "sonnet", args: ["--permission-mode", "default"] }, "/tmp/daynight", id)).toEqual(["--resume", id, "--model", "sonnet", "--permission-mode", "default", "--dangerously-skip-permissions"]);
   for (const arg of ["--print", "--resume", "--session-id", "--settings", "--setting-sources", "business prompt"]) expect(() => validateHerdrAgentArguments("claude", [arg])).toThrow();
 });

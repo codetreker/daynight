@@ -4,6 +4,10 @@ let waiting = null, holdResponse = false;
 for await (const line of createInterface({input:process.stdin})) {
  const m=JSON.parse(line);
  if(m.method==='initialize')out({id:m.id,result:{}});
+ if(process.env.EXPECT_WORKER_PERMISSIONS && (m.method==='thread/start'||m.method==='thread/resume')) {
+  const expected=process.env.EXPECT_WORKER_PERMISSIONS==='yes';
+  if((m.params.sandbox==='danger-full-access')!==expected || (m.params.approvalPolicy==='never')!==expected) {out({id:m.id,error:{code:-32602,message:'Unexpected native permissions'}});continue;}
+ }
  if(m.method==='thread/start'||m.method==='thread/resume')out({id:m.id,result:{thread:{id:'native-thread',cwd:process.cwd()}}});
  if(m.method==='thread/items/list')out({id:m.id,result:{data:[{type:'userMessage',id:'history-user',clientId:'persisted-operation',content:[{type:'text',text:'previous'}]}],nextCursor:null}});
  if(m.method==='thread/read')out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});

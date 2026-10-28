@@ -22,7 +22,7 @@ func workerRoutes(mux *http.ServeMux, handler *taskHandler, auth *Authentication
 		handler AuthenticatedHandler
 	}{
 		{"release", handler.releaseWorker},
-		{"transfer", handler.transferWorker},
+		{"withdraw", handler.withdrawWorker},
 		{"resume", handler.resumeWorker},
 	} {
 		mux.HandleFunc("POST "+path+"/"+operation.path, auth.Require(operation.handler))
@@ -54,14 +54,22 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 		writeError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
+	claimID, err := requiredString(fields, "claimId")
+	if err != nil {
+		writeError(w, request, logger, "worker_claim", phase, err)
+		return
+	}
 	task, err := apply(request.Context(), principal, projectID, id, input)
 	if err != nil {
 		writeError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
-	worker := task.Properties.Worker
+	logger = logger.With("claim_id", claimID)
+	if worker := task.Properties.Worker; worker != nil {
+		logger = logger.With("worker_id", worker.WorkerID, "state", worker.State)
+	}
 	logger.InfoContext(request.Context(), "worker claim operation applied", "type", "resource", "component", "worker_claim", "phase", phase,
-		"claim_id", worker.ClaimID, "worker_id", worker.WorkerID, "state", worker.State, "request_id", RequestID(request.Context()))
+		"request_id", RequestID(request.Context()))
 	writeJSON(w, request, logger, http.StatusOK, taskResponse(task))
 }
 
@@ -77,8 +85,8 @@ func (h *taskHandler) releaseWorker(w http.ResponseWriter, request *http.Request
 	workerMutation(h, w, request, principal, "release", []string{"version", "claimId", "stoppedConfirmed"}, releaseWorkerInput, h.tasks.ReleaseWorker)
 }
 
-func (h *taskHandler) transferWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "transfer", []string{"version", "claimId", "newClaimId", "target", "worktreeId", "stoppedConfirmed"}, transferWorkerInput, h.tasks.TransferWorker)
+func (h *taskHandler) withdrawWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
+	workerMutation(h, w, request, principal, "withdraw", []string{"version", "claimId"}, withdrawWorkerInput, h.tasks.WithdrawWorker)
 }
 
 func (h *taskHandler) resumeWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -243,51 +251,13 @@ func releaseWorkerInput(fields map[string]json.RawMessage) (service.ReleaseWorke
 	return input, err
 }
 
-func transferWorkerInput(fields map[string]json.RawMessage) (service.TransferWorker, error) {
-	var input service.TransferWorker
-	var err error
-	input.Version, err = versionInput(fields)
+func withdrawWorkerInput(fields map[string]json.RawMessage) (service.WithdrawWorker, error) {
+	version, err := versionInput(fields)
 	if err != nil {
-		return service.TransferWorker{}, err
+		return service.WithdrawWorker{}, err
 	}
-	for key, destination := range map[string]*string{"claimId": &input.ClaimID, "newClaimId": &input.NewClaimID, "worktreeId": &input.WorktreeID} {
-		*destination, err = requiredString(fields, key)
-		if err != nil {
-			return service.TransferWorker{}, err
-		}
-	}
-	target, err := jsonobject.Decode(fields["target"], "target", "userId", "workerId", "machine", "platform", "agent", "agentControlMode")
-	if err != nil {
-		return service.TransferWorker{}, invalidInput(err.Error())
-	}
-	input.Target.UserID, err = requiredString(target, "userId")
-	if err != nil {
-		return service.TransferWorker{}, err
-	}
-	input.Target.WorkerID, err = requiredString(target, "workerId")
-	if err != nil {
-		return service.TransferWorker{}, err
-	}
-	input.Target.Machine, err = workerMachineInput(target["machine"])
-	if err != nil {
-		return service.TransferWorker{}, err
-	}
-	platform, err := requiredString(target, "platform")
-	if err != nil {
-		return service.TransferWorker{}, err
-	}
-	input.Target.Platform = core.TaskPlatform(platform)
-	agent, err := requiredString(target, "agent")
-	if err != nil {
-		return service.TransferWorker{}, err
-	}
-	input.Target.Agent = core.WorkerAgent(agent)
-	input.Target.AgentControlMode, err = workerAgentControlModeInput(target)
-	if err != nil {
-		return service.TransferWorker{}, err
-	}
-	input.StoppedConfirmed, err = requiredWorkerConfirmation(fields, "stoppedConfirmed")
-	return input, err
+	claimID, err := requiredString(fields, "claimId")
+	return service.WithdrawWorker{Version: version, ClaimID: claimID}, err
 }
 
 func resumeWorkerInput(fields map[string]json.RawMessage) (service.ResumeWorker, error) {

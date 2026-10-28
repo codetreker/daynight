@@ -6,11 +6,11 @@ import { controllerExecutionDirectory, controllerTicketPath, readLaunchTicket, w
 import { readControllerSnapshot } from "../../controller/lifecycle-store.js";
 import { requestController } from "../../controller/local-client.js";
 import { captureProcessProof } from "../../controller/process-proof.js";
-import type { WorkerStore } from "../store.js";
-import type { LocalTask } from "../types.js";
+import type { WebExecutionStore } from "./web-store.js";
+import type { LocalTask } from "./web-types.js";
 import type { WorkerSessionApi } from "./session-api.js";
 import { writeControllerCredential } from "./session-api.js";
-export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WorkerStore; sessionApi: WorkerSessionApi; now: () => number }) => {
+export const createWebControllerLauncher = (options: { homeDirectory: string; packageDirectory: string; store: WebExecutionStore; sessionApi: WorkerSessionApi; now: () => number }) => {
   const current = (task: LocalTask) => { const latest = options.store.getTask(task); if (latest?.webExecution == null) throw new Error("The web execution identity disappeared."); return latest; };
   return {
     prepare: async (input: LocalTask, prompt: string, signal: AbortSignal): Promise<ControllerLaunchTicket> => {
@@ -46,11 +46,13 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
     },
     launch: async (input: LocalTask, ticket: ControllerLaunchTicket, signal: AbortSignal): Promise<void> => {
       let task = current(input); if (task.webExecution!.launchSubmission !== "not-submitted") return;
-      options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now());
+      // A reusable grant also supports the first hello, including a lost bootstrap handshake.
+      await writeControllerCredential(ticket.credentialFile, await options.sessionApi.grant(task, { ...task.webExecution!, launchSubmission: "unknown" }, signal));
       const directory = controllerExecutionDirectory(options.homeDirectory, ticket.executionId);
       const log = await open(path.join(directory, "controller.log"), "a", 0o600);
       try {
         signal.throwIfAborted();
+        task = options.store.updateWebExecution(task, { launchSubmission: "unknown" }, options.now());
         const child = spawn(process.execPath, [path.join(options.packageDirectory, "dist", "main.js"), "controller", ticket.provider, "--launch-id", ticket.launchId], { cwd: ticket.cwd, env: { ...process.env, HOME: options.homeDirectory, USERPROFILE: options.homeDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
         await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
         child.unref();

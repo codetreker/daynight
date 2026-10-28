@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { ApiError } from "../../src/api/client";
+import { ProjectsProvider } from "../../src/features/projects/ProjectsProvider";
 import { WorkspaceSidebar } from "../../src/app/WorkspaceSidebar";
 import { useSidebarPreference } from "../../src/app/useSidebarPreference";
 import type { PersonalAccessToken } from "../../src/api/auth-types";
@@ -82,7 +83,7 @@ const TokensMockup = () => {
   const reset = (next: Scenario) => { connectionRestored.current = false; setScenario(next); setRevision((value) => value + 1); };
   return <>
     <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}`}>
-      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey="account" projectsActive={false} accountActive identityChecking={false} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
+      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey="account" projectsActive={false} activeProjectId={null} accountActive identityChecking={false} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
@@ -109,5 +110,9 @@ const TokensMockup = () => {
 const container = document.getElementById("root");
 if (container === null) throw new Error("The token management fixture root is required.");
 const root = createRoot(container);
-root.render(<LocaleProvider initial={resolveInitialLocale()}><TokensMockup /></LocaleProvider>);
+window.fetch = async (input) => {
+  if (input === "/api/v1/projects?limit=50") return new Response(JSON.stringify({ items: [], nextCursor: null }), { headers: { "Content-Type": "application/json" } });
+  throw new Error(`Unexpected token mockup request: ${String(input)}`);
+};
+root.render(<LocaleProvider initial={resolveInitialLocale()}><ProjectsProvider><TokensMockup /></ProjectsProvider></LocaleProvider>);
 import.meta.hot?.dispose(() => root.unmount());

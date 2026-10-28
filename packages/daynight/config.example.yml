@@ -1,0 +1,74 @@
+# Shared CLI configuration: ~/.daynight/config.yml.
+# Select the sections needed for your commands and replace the example repositories
+# and local paths. Merge settings into an existing file to retain credentials and
+# other configuration; this file is a reference, not an automatically loaded config.
+
+# Service origin only: no API path, query, credentials or fragment.
+serverUrl: https://daynight.cc
+# Prefer daynight login, which saves the credential for the selected service.
+# For unattended provisioning, replace this placeholder with that origin's secret.
+# serverToken: REPLACE_WITH_CREDENTIAL_FOR_THIS_ORIGIN
+# Remove or replace an old token before changing serverUrl manually. Keep secrets
+# out of repositories and logs; files containing a token need POSIX mode 0600.
+
+# Review configuration. The numeric values below are the defaults; all are positive
+# integers, and fields ending in Ms use milliseconds.
+# Only repositoryRoot expands ~. It selects paths for future review add-repo calls
+# without --path and does not relocate repositories already registered below.
+review:
+  repositoryRoot: ~/daynights
+  pollIntervalMs: 60000
+  maxConcurrentWorker: 1
+  agentTimeoutMs: 1800000
+  maxAttempts: 3
+  retryDelayMs: 30000
+  # Optional review overrides, not defaults. Omission preserves Copilot's choices.
+  # Copilot owns supported model names, effort levels and their compatibility.
+  # copilotModel: auto
+  # copilotReasoningEffort: high
+  repositories:
+    - remote: https://github.com/OWNER/REPO.git
+      # Repository paths are absolute or relative to ~/.daynight/, never the launch
+      # directory, and do not expand ~. Keep review clones outside ~/.daynight/.
+      path: ../daynights/github.com/owner/repo
+
+# Worker configuration. Run daynight worker setup to inspect prerequisites,
+# choose a native agent and select existing Projects before worker run.
+# Omitted values use these defaults; an empty selection also makes interactive
+# worker run guide Project registration. Native credentials and the official
+# Herdr integration must be configured explicitly. Every fresh/resumed native
+# agent uses fixed full access and task-folder trust; args cannot lower that
+# policy or re-enable permission prompts. Global native configuration is unchanged.
+worker:
+  # Used only for new worker repo registrations; independent of review's root.
+  repositoryRoot: ~/daynights
+  maxConcurrent: 1
+  pollIntervalMs: 5000
+  recoveryLimit: 3
+  # Choose herdr for terminal control or web for the Task Session page.
+  # The service freezes this mode per claim.
+  agentControlMode: herdr
+  agent: copilot
+  model: null
+  args: []
+  # maxConcurrent and pollIntervalMs are positive integers; pollIntervalMs uses
+  # milliseconds. recoveryLimit is nonnegative; automatic recovery counts are
+  # process-local and reset when the worker restarts. Restarted agents use current
+  # settings for their recorded agent type, while native session IDs remain saved.
+  repositories:
+    - remote: https://github.com/OWNER/REPO.git
+      # Paths follow the same config-directory-relative rule as review paths.
+      # Worker repository paths must not overlap each other or ~/.daynight/.
+      path: ../code/repo
+      # The matching Daynight project must exist. Set its actual UUID when remote
+      # discovery matches more than one project.
+      # projectId: REPLACE_WITH_MATCHING_PROJECT_UUID
+      # Repository overrides inherit fields independently for the same agent.
+      # Switching agent clears inherited model and args unless set here. Explicit
+      # null model or [] args clears that field; args replaces the entire list.
+      # agent: codex
+      # model: null
+      # args: []
+
+# workerId is generated and saved by the CLI. Keep its existing value for this
+# worker; do not copy another machine's identity into this configuration.

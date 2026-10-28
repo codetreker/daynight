@@ -4,29 +4,37 @@ import type { TaskGraph } from "../../api/types";
 import type { GraphIndex } from "../task-graph/model";
 import { useTaskCacheScope } from "../task-cache/TaskCacheProvider";
 import { taskCacheFailureDiagnostic } from "../task-cache/diagnostics";
-import type { CachedProject, SyncTicket } from "../task-cache/project-cache";
+import type { CachedProject, SyncTicket, TaskCacheScope } from "../task-cache/project-cache";
 
 export type GraphSnapshot = {
   readonly graph: TaskGraph;
   readonly index: GraphIndex;
+} & ({
   readonly observedAt: string;
   readonly receivedMonotonic: number;
   readonly receivedAt: number;
   readonly revision: number;
-};
+} | {
+  readonly observedAt: null;
+  readonly receivedMonotonic: number;
+  readonly receivedAt: null;
+  readonly revision: 0;
+  readonly localTime: number;
+});
 
 type GraphState = {
   readonly projectId: string;
+  readonly scope: TaskCacheScope;
   readonly snapshot: GraphSnapshot | null;
   readonly status: "loading" | "ready" | "error";
   readonly refreshing: boolean;
   readonly error: unknown;
 };
-const initialState = (projectId: string): GraphState => ({ projectId, snapshot: null, status: "loading", refreshing: false, error: null });
+const initialState = (projectId: string, scope: TaskCacheScope): GraphState => ({ projectId, scope, snapshot: null, status: "loading", refreshing: false, error: null });
 
 export const useTaskGraph = (projectId: string) => {
   const scope = useTaskCacheScope();
-  const [state, setState] = useState<GraphState>(() => initialState(projectId));
+  const [state, setState] = useState<GraphState>(() => initialState(projectId, scope));
   const generation = useRef(0);
   const active = useRef<AbortController | null>(null);
   const liveAccess = useRef(false);
@@ -34,8 +42,8 @@ export const useTaskGraph = (projectId: string) => {
   const publish = useCallback((project: CachedProject) => {
     const sample = receipt.current;
     if (!liveAccess.current || sample === null) return;
-    setState({ projectId, snapshot: { graph: project.graph, index: project.index, ...sample }, status: "ready", refreshing: false, error: null });
-  }, [projectId]);
+    setState({ projectId, scope, snapshot: { graph: project.graph, index: project.index, ...sample }, status: "ready", refreshing: false, error: null });
+  }, [projectId, scope]);
   const request = useCallback(async (automatic = false) => {
     if (automatic && active.current !== null) return;
     active.current?.abort();
@@ -45,13 +53,29 @@ export const useTaskGraph = (projectId: string) => {
     const revision = ++generation.current;
     const cycleId = crypto.randomUUID();
     setState((previous) => {
-      const snapshot = previous.projectId === projectId ? previous.snapshot : null;
-      const error = previous.projectId === projectId && (automatic || snapshot !== null) ? previous.error : null;
-      return { projectId, snapshot, status: snapshot !== null ? "ready" : error === null ? "loading" : "error", refreshing: snapshot !== null && !automatic, error };
+      const current = previous.projectId === projectId && previous.scope === scope;
+      const snapshot = current ? previous.snapshot : null;
+      const error = current && (automatic || snapshot !== null) ? previous.error : null;
+      return { projectId, scope, snapshot, status: snapshot !== null ? "ready" : error === null ? "loading" : "error", refreshing: snapshot !== null && !automatic, error };
     });
     let ticket: SyncTicket | null = null;
     try {
       ticket = await scope.beginSync(projectId, signal);
+      if (receipt.current === null && ticket.epoch !== null && scope.canPreviewProject(projectId)) {
+        const project = await scope.readProject(projectId, signal);
+        if (signal.aborted || revision !== generation.current) return;
+        if (project !== null && scope.canPreviewProject(projectId)) {
+          const localTime = Date.now();
+          const receivedMonotonic = performance.now();
+          const snapshot: GraphSnapshot = { graph: project.graph, index: project.index, observedAt: null,
+            receivedMonotonic, receivedAt: null, revision: 0, localTime };
+          setState((previous) => {
+            const current = previous.projectId === projectId && previous.scope === scope;
+            return { projectId, scope, snapshot: current && previous.snapshot?.graph === project.graph ? previous.snapshot : snapshot,
+              status: "ready", refreshing: current && previous.refreshing, error: current ? previous.error : null };
+          });
+        }
+      }
       const query = ticket.epoch === null ? {} : ticket.maxUpdatedAt === null ? { epoch: ticket.epoch } : { epoch: ticket.epoch, since: ticket.maxUpdatedAt };
       const response = await getTaskSync(projectId, query, scope.userId, signal, scope.principalMismatch);
       // The monotonic anchor belongs to this response and cannot come from disk or another tab.
@@ -75,12 +99,12 @@ export const useTaskGraph = (projectId: string) => {
         try { if (ticket !== null && !await scope.revokeProject(ticket, signal, true, error as ApiError)) return; }
         catch (storageError) { if (!isAbortError(storageError)) error = storageError; }
         liveAccess.current = false; receipt.current = null;
-        setState({ projectId, snapshot: null, status: "error", refreshing: false, error });
+        setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error });
       }
       if (signal.aborted || revision !== generation.current) return;
       setState((previous) => {
-        const snapshot = missing ? null : previous.projectId === projectId ? previous.snapshot : null;
-        return { projectId, snapshot, status: snapshot === null ? "error" : "ready", refreshing: false, error };
+        const snapshot = missing ? null : previous.projectId === projectId && previous.scope === scope ? previous.snapshot : null;
+        return { projectId, scope, snapshot, status: snapshot === null ? "error" : "ready", refreshing: false, error };
       });
     } finally { if (revision === generation.current) active.current = null; }
   }, [projectId, scope, publish]);
@@ -93,7 +117,7 @@ export const useTaskGraph = (projectId: string) => {
       if (event.projectId !== projectId) return;
       if (event.accessRevoked === true) {
         liveAccess.current = false; receipt.current = null;
-        setState({ projectId, snapshot: null, status: "error", refreshing: false, error: event.error });
+        setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error: event.error });
         return;
       }
       if (!liveAccess.current) return;
@@ -107,7 +131,7 @@ export const useTaskGraph = (projectId: string) => {
         if (project !== null) publish(project);
         else {
           liveAccess.current = false; receipt.current = null;
-          setState({ projectId, snapshot: null, status: "error", refreshing: false, error: new ApiError("server", 404, "not_found") });
+          setState({ projectId, scope, snapshot: null, status: "error", refreshing: false, error: new ApiError("server", 404, "not_found") });
         }
       }).catch((error: unknown) => { if (!lifetime.signal.aborted && !isAbortError(error)) setState((previous) => ({ ...previous, error, refreshing: false })); });
     });
@@ -124,6 +148,6 @@ export const useTaskGraph = (projectId: string) => {
     };
   }, [projectId, scope, request, publish]);
   const refresh = useCallback(() => { void request(); }, [request]);
-  const visible = state.projectId === projectId ? state : initialState(projectId);
+  const visible = state.projectId === projectId && state.scope === scope ? state : initialState(projectId, scope);
   return { snapshot: visible.snapshot, status: visible.status, refreshing: visible.refreshing, error: visible.error, refresh };
 };

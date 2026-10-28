@@ -3,16 +3,15 @@ import type { AriaLabelConfig } from '@xyflow/react';
 export type GraphMessages = {
   readonly chainList: string;
   readonly rootSummary: (args: { total: number; remaining: number }) => string;
+  readonly inProgressCount: (args: { count: number }) => string;
   readonly progress: (args: { done: number; total: number }) => string;
   readonly chainTitle: string;
-  readonly goalTitle: string;
   readonly childTasks: (args: { count: number }) => string;
   readonly goalDetails: string;
   readonly goalDetailsLabel: (args: { title: string }) => string;
   readonly viewDependencies: string;
   readonly viewDependenciesLabel: (args: { title: string }) => string;
   readonly closeDialog: string;
-  readonly showCompletedCount: (args: { count: number }) => string;
   readonly chainSummary: (args: { shown: number; total: number }) => string;
   readonly chainSummaryLabel: (args: { shown: number; total: number }) => string;
   readonly chainNote: string;
@@ -20,7 +19,7 @@ export type GraphMessages = {
   readonly emptyDescription: string;
   readonly completedTitle: string;
   readonly completedDescription: (args: { count: number }) => string;
-  readonly showCompleted: string;
+  readonly showAll: string;
   readonly blocked: string;
   readonly external: string;
   readonly nodeLabel: (args: { title: string; status: string; blocked: boolean; external: boolean }) => string;

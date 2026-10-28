@@ -2,11 +2,11 @@ import { chmod, mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { SESSION_PROTOCOL } from "../../../session/protocol.js";
-import { parseRegistrationResponse, parseControllerGrantResponse, type RegistrationRequest, type ControllerGrantRequest, type ControllerGrantResponse } from "../../../session/controller-protocol.js";
-import type { LocalTask, WebExecutionState } from "../types.js";
+import { parseRegistrationResponse, parseControllerGrantResponse, parseCurrentSessionResponse, type RegistrationRequest, type ControllerGrantRequest, type ControllerGrantResponse } from "../../../session/controller-protocol.js";
+import type { LocalTask, WebExecutionState } from "./web-types.js";
 export const createWorkerSessionApi = (serverOrigin: string, serverToken: string) => {
-  const request = async (target: string, body: unknown, signal: AbortSignal): Promise<unknown> => {
-    const response = await fetch(`${serverOrigin}${target}`, { method: "POST", headers: { authorization: `Bearer ${serverToken}`, "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]) });
+  const request = async (target: string, body: unknown, signal: AbortSignal, method = "POST"): Promise<unknown> => {
+    const response = await fetch(`${serverOrigin}${target}`, { method, headers: { authorization: `Bearer ${serverToken}`, "content-type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]) });
     const chunks: Uint8Array[] = []; let size = 0;
     if (response.body !== null) { const reader = response.body.getReader(); try { while (true) { const { done, value } = await reader.read(); if (done) break; size += value.byteLength; if (size > 2 * 1024 * 1024) { await reader.cancel(); throw new Error("Session registration response exceeds its limit."); } chunks.push(value); } } finally { reader.releaseLock(); } }
     const raw = Buffer.concat(chunks).toString("utf8");
@@ -15,6 +15,10 @@ export const createWorkerSessionApi = (serverOrigin: string, serverToken: string
   };
   const prefix = (task: LocalTask): string => `/api/v1/projects/${task.projectId}/tasks/${task.taskId}/sessions`;
   return {
+    verifyUnregistered: async (identity: { projectId: string; taskId: string; claimId: string }, signal: AbortSignal): Promise<void> => {
+      const result = parseCurrentSessionResponse(await request(`/api/v1/projects/${identity.projectId}/tasks/${identity.taskId}/sessions/current`, undefined, signal, "GET"));
+      if (result.status !== "not_registered" || result.claimId !== identity.claimId) throw new Error("The original Web launch provenance is missing; an existing or superseded Session cannot be recreated or deleted. Restore its execution evidence.");
+    },
     verifySupport: async (provider: string, signal: AbortSignal): Promise<void> => {
       const response = await fetch(`${serverOrigin}/api/v1/session-capabilities`, { headers: { authorization: `Bearer ${serverToken}` }, signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]) });
       if (!response.ok) throw new Error("This service has not confirmed Web session protocol support; no claim was submitted.");

@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
+import * as configurationFiles from "../../../src/config/files.js";
 import { parseServerConfiguration } from "../../../src/config/server.js";
 import { parseWorkerConfiguration, readWorkerConfiguration } from "../../../src/commands/worker/config.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -10,21 +11,45 @@ const paths = resolveWorkerPaths("/home/worker-user", path.posix);
 const remote = "https://git.example/team/project.git";
 const repo = { remote, path: "../checkout" };
 const parse = (worker: Record<string, unknown>) => parseWorkerConfiguration(stringify({ worker: { repositories: [repo], ...worker } }), paths, path.posix);
+const defaults = { repositoryRoot: "~/daynights", maxConcurrent: 1, pollIntervalMs: 5_000, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [], repositories: [] };
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true }))); });
+const fixture = async (prefix: string) => {
+  const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
+  await mkdir(temporary, { recursive: true });
+  const directory = await mkdtemp(path.join(temporary, `${prefix} `));
+  directories.push(directory);
+  return { directory, local: resolveWorkerPaths(directory) };
+};
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
 
 describe("worker configuration", () => {
   it("uses a separate namespace and resolves paths relative to the config file", () => {
     expect(parse({})).toEqual({
-      maxConcurrent: 1, pollIntervalMs: 5_000, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [],
+      repositoryRoot: "~/daynights", maxConcurrent: 1, pollIntervalMs: 5_000, recoveryLimit: 3, agent: "copilot", agentControlMode: "herdr", model: null, args: [],
       repositories: [{ ...repo, path: "/home/worker-user/checkout", agent: "copilot", agentControlMode: "herdr", model: null, args: [], recoveryLimit: 3 }],
     });
     expect(parseServerConfiguration(stringify({ worker: { repositories: "not validated by server commands" } }), paths)).toEqual({ serverUrl: "https://daynight.cc" });
-    expect(parseWorkerConfiguration(stringify({ repositories: "review-owned", copilotModel: null, worker: { repositories: [] } }), paths).repositories).toEqual([]);
+    expect(parseWorkerConfiguration(stringify({ review: { repositories: "review-owned", copilotModel: null }, worker: { repositories: [] } }), paths).repositories).toEqual([]);
+  });
+
+  it("ignores unknown root, worker and repository fields in runtime configuration", () => {
+    expect(parseWorkerConfiguration(stringify({
+      future: { nested: true },
+      worker: { stateDirectory: "/unused", platform: "windows", timeoutMs: 1, repositories: [{ ...repo, platform: "windows", future: { enabled: true } }] },
+    }), paths, path.posix)).toEqual(parse({}));
+    expect(parseWorkerConfiguration("unsupported: true\nworker: {unsupported: true}", paths)).toEqual(defaults);
+  });
+
+  it("validates known worker fields alongside unknown fields", () => {
+    expect(() => parse({ future: true, maxConcurrent: 0 })).toThrow("worker.maxConcurrent");
+    expect(() => parse({ future: true, repositories: [{ ...repo, path: null, future: true }] })).toThrow("worker.repositories[0].path");
   });
 
   it("merges same-kind overrides field by field and permits explicit reset to native model defaults", () => {
-    const configuration = parse({ agent: "codex", model: "global-model", args: ["--search"], recoveryLimit: 0, repositories: [
+    const configuration = parse({ agent: "codex", agentControlMode: "herdr", model: "global-model", args: ["--search"], recoveryLimit: 0, repositories: [
       { ...repo, agent: "codex", args: [] },
       { remote: "git@elsewhere.example:team/second.git", path: "/absolute/repository", model: null },
     ] });
@@ -36,14 +61,14 @@ describe("worker configuration", () => {
   });
 
   it("drops model and args inheritance when the repository switches native agent kind", () => {
-    const configuration = parse({ agent: "codex", model: "codex-model", args: ["--search"], repositories: [
+    const configuration = parse({ agent: "codex", agentControlMode: "herdr", model: "codex-model", args: ["--search"], repositories: [
       { ...repo, agent: "copilot" },
-      { remote: "ssh://git@other.example/team/r", path: "/second", agent: "copilot", model: "copilot-model", args: ["--reasoning-effort", "high"] },
+      { remote: "ssh://git@other.example/team/r", path: "/second", agent: "copilot", agentControlMode: "herdr", model: "copilot-model", args: ["--reasoning-effort", "high"] },
     ] });
-    expect(configuration.repositories[0]).toMatchObject({ agent: "copilot", model: null, args: [] });
-    expect(configuration.repositories[1]).toMatchObject({ agent: "copilot", model: "copilot-model", args: ["--reasoning-effort", "high"] });
-    expect(parse({ agent: "copilot", model: "copilot-model", args: ["--allow-all"], repositories: [{ ...repo, agent: "codex" }] }).repositories[0])
-      .toMatchObject({ agent: "codex", model: null, args: [] });
+    expect(configuration.repositories[0]).toMatchObject({ agent: "copilot", agentControlMode: "herdr", model: null, args: [] });
+    expect(configuration.repositories[1]).toMatchObject({ agent: "copilot", agentControlMode: "herdr", model: "copilot-model", args: ["--reasoning-effort", "high"] });
+    expect(parse({ agent: "copilot", agentControlMode: "herdr", model: "copilot-model", args: ["--allow-all"], repositories: [{ ...repo, agent: "codex" }] }).repositories[0])
+      .toMatchObject({ agent: "codex", agentControlMode: "herdr", model: null, args: [] });
   });
 
   it("normalizes configured project IDs and preserves generic SSH repository identities", () => {
@@ -56,12 +81,10 @@ describe("worker configuration", () => {
     { maxConcurrent: 0 }, { maxConcurrent: 1.5 }, { maxConcurrent: "1" }, { maxConcurrent: null },
     { pollIntervalMs: 0 }, { pollIntervalMs: 2_147_483_648 }, { pollIntervalMs: false },
     { recoveryLimit: -1 }, { recoveryLimit: 0.5 }, { recoveryLimit: Number.MAX_SAFE_INTEGER + 1 },
-    { agent: "other" }, { agent: null }, { model: "" }, { model: 42 }, { args: "--allow-all" }, { args: [null] },
-    { repositories: {} }, { repositories: [null] }, { repositories: [{ ...repo, projectId: "bad" }] },
+    { agent: "unsupported" }, { agent: null }, { model: "" }, { model: 42 }, { args: "--allow-all" }, { args: [null] },
+    { repositories: null }, { repositories: {} }, { repositories: [null] }, { repositories: [{ ...repo, projectId: "bad" }] },
     { repositories: [{ ...repo, remote: "https://name:secret@git.example/team/r" }] },
     { repositories: [{ ...repo, path: "~/repo" }] }, { repositories: [{ ...repo, path: "" }] },
-    { stateDirectory: "/tmp/state" }, { platform: "windows" }, { timeoutMs: 1 },
-    { repositories: [{ ...repo, platform: "windows" }] },
   ])("rejects invalid settings %j", (worker) => { expect(() => parse(worker)).toThrow(); });
 
   it.each([
@@ -80,11 +103,30 @@ describe("worker configuration", () => {
     [{ ...repo, path: "." }], [{ ...repo, path: "worker/repository" }], [{ ...repo, path: ".." }],
   ])("rejects duplicate or overlapping repository settings %j", (...repositories) => { expect(() => parse({ repositories })).toThrow(); });
 
-  it("requires worker and repositories but supports an empty list for reconciliation of retained claims", () => {
-    expect(() => parseWorkerConfiguration("{}", paths)).toThrow("Worker configuration is missing");
-    expect(() => parseWorkerConfiguration("worker: {}", paths)).toThrow("worker.repositories");
-    expect(() => parseWorkerConfiguration("worker: null", paths)).toThrow("worker must be a mapping");
-    expect(parse({ repositories: [] }).repositories).toEqual([]);
+  it.each([
+    {},
+    { serverUrl: "https://daynight.example" },
+    { review: { repositories: [{ remote: "review-owned", path: "/review-owned" }], copilotModel: "review-model" } },
+    { worker: {} },
+    { worker: { repositories: [] } },
+  ])("uses defaults without implicit repository discovery for %j", (configuration) => {
+    expect(parseWorkerConfiguration(stringify(configuration), paths)).toEqual(defaults);
+  });
+
+  it("preserves configured worker fields when repositories are omitted", () => {
+    expect(parseWorkerConfiguration(stringify({ worker: {
+      agent: "codex", agentControlMode: "herdr", model: "configured-model", args: ["--search"], maxConcurrent: 4, recoveryLimit: 0,
+    } }), paths)).toEqual({
+      ...defaults, agent: "codex", agentControlMode: "herdr", model: "configured-model", args: ["--search"], maxConcurrent: 4, recoveryLimit: 0,
+    });
+  });
+
+  it.each([null, [], false, "worker"])("rejects explicitly invalid worker mappings %j", (worker) => {
+    expect(() => parseWorkerConfiguration(stringify({ worker }), paths)).toThrow("worker must be a mapping");
+  });
+
+  it.each(["", "worker: [", "worker: {}\nworker: {}"])("rejects invalid configuration documents %j", (source) => {
+    expect(() => parseWorkerConfiguration(source, paths)).toThrow();
   });
 
   it("handles Windows absolute and config-relative paths without a runtime-platform override", () => {
@@ -95,11 +137,7 @@ describe("worker configuration", () => {
   });
 
   it("reads once without modifying configuration, cloning repositories or creating worker state", async () => {
-    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
-    await mkdir(temporary, { recursive: true });
-    const directory = await mkdtemp(path.join(temporary, "config "));
-    directories.push(directory);
-    const local = resolveWorkerPaths(directory);
+    const { directory, local } = await fixture("config");
     await mkdir(local.stateDirectory);
     const source = stringify({ worker: { repositories: [{ ...repo, path: "../missing-repo" }] } });
     await writeFile(local.configFile, source);
@@ -110,12 +148,72 @@ describe("worker configuration", () => {
     expect((await readWorkerConfiguration(local)).maxConcurrent).toBe(4);
   });
 
+  it.each([false, true])("uses defaults when configuration is absent without creating files (state directory exists: %j)", async (stateExists) => {
+    const { directory, local } = await fixture("missing");
+    if (stateExists) await mkdir(local.stateDirectory);
+    expect(await readWorkerConfiguration(local)).toEqual(defaults);
+    expect(await readdir(directory)).toEqual(stateExists ? [".daynight"] : []);
+    if (stateExists) expect(await readdir(local.stateDirectory)).toEqual([]);
+  });
+
+  it.each([
+    ["# Connection settings\nserverUrl: https://daynight.example\n", {}],
+    ["# Explicit defaults\nworker: {}\n", {}],
+    ["# Partial worker settings\nworker:\n  maxConcurrent: 4\n", { maxConcurrent: 4 }],
+  ] as const)("reads an existing partial configuration without changing its bytes: %s", async (source, configured) => {
+    const { directory, local } = await fixture("partial");
+    await mkdir(local.stateDirectory);
+    await writeFile(local.configFile, source);
+    expect(await readWorkerConfiguration(local)).toEqual({ ...defaults, ...configured });
+    expect(await readFile(local.configFile, "utf8")).toBe(source);
+    expect(await readdir(local.stateDirectory)).toEqual(["config.yml"]);
+    expect(await readdir(directory)).toEqual([".daynight"]);
+  });
+
+  it("propagates unreadable configuration errors without substituting defaults", async () => {
+    const { directory, local } = await fixture("unreadable");
+    const failure = new Error("Configuration read denied.", { cause: Object.assign(new Error("Permission denied."), { code: "EACCES" }) });
+    vi.spyOn(configurationFiles, "readConfigurationSource").mockRejectedValueOnce(failure);
+    await expect(readWorkerConfiguration(local)).rejects.toBe(failure);
+    expect(await readdir(directory)).toEqual([]);
+  });
+
+  it("rejects invalid filesystem locations without treating them as missing configuration", async () => {
+    const { directory, local } = await fixture("invalid-path");
+    await writeFile(local.stateDirectory, "not a directory");
+    await expect(readWorkerConfiguration(local)).rejects.toThrow("Cannot read configuration file");
+    await rm(local.stateDirectory);
+    await mkdir(local.configFile, { recursive: true });
+    await expect(readWorkerConfiguration(local)).rejects.toThrow("Cannot read configuration file");
+    expect(await readdir(directory)).toEqual([".daynight"]);
+    expect(await readdir(local.stateDirectory)).toEqual(["config.yml"]);
+  });
+
+  it.skipIf(process.platform === "win32")("rejects dangling configuration and ancestor symlinks", async () => {
+    const { directory, local } = await fixture("dangling-link");
+    await mkdir(local.stateDirectory);
+    await symlink(path.join(directory, "missing-config"), local.configFile);
+    await expect(readWorkerConfiguration(local)).rejects.toThrow("Cannot read configuration file");
+    await rm(local.stateDirectory, { recursive: true });
+    await symlink(path.join(directory, "missing-state"), local.stateDirectory);
+    await expect(readWorkerConfiguration(local)).rejects.toThrow("Cannot read configuration file");
+    expect(await readdir(directory)).toEqual([".daynight"]);
+  });
+
+  it.each([false, true])("preserves cancellation before reading configuration (file exists: %j)", async (fileExists) => {
+    const { directory, local } = await fixture("cancelled");
+    const source = "worker: {}\n";
+    if (fileExists) { await mkdir(local.stateDirectory); await writeFile(local.configFile, source); }
+    const controller = new AbortController();
+    const reason = new Error("Configuration read cancelled.");
+    controller.abort(reason);
+    await expect(readWorkerConfiguration(local, controller.signal)).rejects.toBe(reason);
+    expect(await readdir(directory)).toEqual(fileExists ? [".daynight"] : []);
+    if (fileExists) expect(await readFile(local.configFile, "utf8")).toBe(source);
+  });
+
   it("rejects physical aliases between repositories or into state", async () => {
-    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
-    await mkdir(temporary, { recursive: true });
-    const directory = await mkdtemp(path.join(temporary, "aliases "));
-    directories.push(directory);
-    const local = resolveWorkerPaths(directory);
+    const { directory, local } = await fixture("aliases");
     await mkdir(local.stateDirectory);
     const target = path.join(directory, "repository");
     const alias = path.join(directory, "alias");
@@ -130,11 +228,7 @@ describe("worker configuration", () => {
   });
 
   it("distinguishes missing repository destinations with native filesystem rules and removes comparison probes", async () => {
-    const temporary = path.resolve(import.meta.dirname, "../../../../../.tmp/worker-config-tests");
-    await mkdir(temporary, { recursive: true });
-    const directory = await mkdtemp(path.join(temporary, "destinations "));
-    directories.push(directory);
-    const local = resolveWorkerPaths(directory);
+    const { directory, local } = await fixture("destinations");
     await mkdir(local.stateDirectory);
     await writeFile(local.configFile, stringify({ worker: { repositories: [
       { ...repo, path: "../first" }, { remote: "https://other.example/team/r", path: "../second" },
@@ -144,28 +238,9 @@ describe("worker configuration", () => {
   });
 });
 
-
-describe("worker execution mode", () => {
-  it("defaults legacy configuration to herdr without changing the native agent", () => {
-    expect(parse({})).toMatchObject({ agentControlMode: "herdr", agent: "copilot", repositories: [{ agentControlMode: "herdr" }] });
-  });
-  it.each(["codex", "claude", "copilot"])("freezes web with %s in each effective repository configuration", (agent) => {
-    expect(parse({ agentControlMode: "web", agent })).toMatchObject({ agentControlMode: "web", agent, repositories: [{ agentControlMode: "web", agent }] });
-    expect(parse({ agentControlMode: "herdr", agent })).toMatchObject({ agentControlMode: "herdr", agent });
-  });
-  it.each([null, "", "remote", false])("rejects explicit invalid mode %j", (agentControlMode) => {
-    expect(() => parse({ agentControlMode, agent: "codex" })).toThrow(/agentControlMode/);
-  });
-  it("rejects repository-level mode overrides", () => {
-    expect(() => parse({ repositories: [{ ...repo, agentControlMode: "web" }] })).toThrow(/unsupported field/);
-  });
-});
-
-
-it("validates effective repository agents while retaining root defaults as inheritance only", () => {
-  const configuration = parse({ agentControlMode: "web", repositories: [{ ...repo, agent: "codex" }, { remote: "https://other.example/team/r.git", path: "/second", agent: "claude" }] });
-  expect(configuration.agent).toBe("copilot");
-  expect(parse({ agentControlMode: "web" }).repositories[0]).toMatchObject({ agent: "copilot", agentControlMode: "web", args: [] });
-  expect(configuration.repositories.map(({ agent, agentControlMode }) => ({ agent, agentControlMode }))).toEqual([{ agent: "codex", agentControlMode: "web" }, { agent: "claude", agentControlMode: "web" }]);
-  expect(parse({ agentControlMode: "web", repositories: [] }).repositories).toEqual([]);
+it("selects Web globally while preserving defaults and ignoring unrelated future fields", () => {
+  const value = parse({ agentControlMode: "web", agent: "claude", future: true, repositories: [{ ...repo, agentControlMode: "herdr" }] });
+  expect(value).toMatchObject({ agent: "claude", agentControlMode: "web", maxConcurrent: 1 });
+  expect(value.repositories[0]?.agentControlMode).toBe("web");
+  expect(() => parse({ agentControlMode: "both" })).toThrow("agentControlMode");
 });

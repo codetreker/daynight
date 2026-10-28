@@ -8,11 +8,12 @@ export class CopilotControls {
   private pollTimer: ReturnType<typeof setInterval> | undefined; private polling = false; private closed = false;
   constructor(private readonly native: CopilotSession, changed: () => void, private readonly confirmed?: (operationId: string) => void, revisionFloor = "0", private readonly skillDiscoveryError: string | null = null) { this.store = new ProviderControls(changed, revisionFloor); }
   private permissions(): SessionSetting { return { id: "tool_approval", category: "permission", label: "Tool approvals", value: this.toolApproval, mutable: typeof this.native.rpc.permissions.setApproveAll === "function", scope: "session", description: "Native tool approval policy. Existing grants, path and network permissions are independent.", options: [{ value: "ask", label: "Ask for approval" }, { value: "allow", label: "Allow tools" }] }; }
-  async initialize(resume: boolean) {
+  async initialize(resume: boolean, unattended = false) {
     if (!resume && typeof this.native.rpc.permissions.setApproveAll === "function") {
-      try { const result = await controlDeadline(this.native.rpc.permissions.setApproveAll({ enabled: false }), "Copilot permission initialization"); if (!result.success) throw new Error("Copilot did not confirm default tool permissions."); this.toolApproval = "ask"; }
-      catch (error) { this.store.update({ settingsError: controlError(error) }); }
+      try { const result = await controlDeadline(this.native.rpc.permissions.setApproveAll({ enabled: unattended }), "Copilot permission initialization"); if (!result.success) throw new Error("Copilot did not confirm default tool permissions."); this.toolApproval = unattended ? "allow" : "ask"; }
+      catch (error) { this.store.update({ settingsError: controlError(error) }); if (unattended) throw error; }
     }
+    if (!resume && unattended && this.toolApproval !== "allow") throw new Error("Native Copilot cannot confirm unattended tool permissions.");
     await this.refresh();
   }
   async refresh(includeCommands = true) {

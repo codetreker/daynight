@@ -274,3 +274,21 @@ test("Claude does not infer user interruption from aborted result without the ex
     expect(entries.filter(e => e.kind === "error").at(-1)).toMatchObject({ code: "native_result_error" });
   } finally { await provider.close(); }
 });
+
+test.each([false, true])("Claude only gives a new unattended Worker session full access (worker=%s)", async unattended => {
+  const fixture = nativeFixture();
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: null, unattended, onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  try {
+    expect(fixture.options().permissionMode).toBe(unattended ? "bypassPermissions" : "default");
+    expect(fixture.options().sandbox).toEqual(unattended ? { enabled: false } : undefined);
+  } finally { await provider.close(); }
+});
+
+
+test("Claude Worker resume preserves native permission and sandbox settings", async () => {
+  const fixture = nativeFixture(), nativeId = randomUUID();
+  sdk.getSessionInfo.mockResolvedValue({ sessionId: nativeId, cwd: process.cwd() }); sdk.getSessionMessages.mockResolvedValue([]);
+  const provider = await openClaudeProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId: nativeId, unattended: true, onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
+  try { expect(fixture.options().permissionMode).toBeUndefined(); expect(fixture.options().sandbox).toBeUndefined(); }
+  finally { await provider.close(); }
+});

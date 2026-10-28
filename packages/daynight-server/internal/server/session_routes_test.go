@@ -613,9 +613,13 @@ func TestSessionRoutesControllerRejectsInvalidHandshakesAndFences(t *testing.T) 
 	fence.ConnectionEpoch = "1"
 	sessionWSWrite(t, wrongFirst, sp.ControllerMessage{Type: "heartbeat", Protocol: sp.Protocol, ControllerFence: fence})
 	assertClosed(wrongFirst)
-	invalidToken := sessionDial(t, f.server.URL, "/api/v1/controller-channel", "dncontroller_invalid", nil)
-	sessionWSWrite(t, invalidToken, sp.ControllerMessage{Type: "hello", Protocol: sp.Protocol, ControllerFence: f.snapshot.ControllerFence, SchemaVersion: 1, ProjectionVersion: 1, ControllerID: f.registration.ControllerID, ControllerInstanceID: f.registration.ControllerInstanceID, Provider: "codex", SourceEpoch: uuid.NewString(), LastAckedSourceSeq: "0"})
-	assertClosed(invalidToken)
+	invalidToken := httptest.NewRequest(http.MethodGet, "/api/v1/controller-channel", nil)
+	invalidToken.Header.Set("Authorization", "Bearer dncontroller_invalid")
+	invalidResponse := httptest.NewRecorder()
+	f.application.ServeHTTP(invalidResponse, invalidToken)
+	if invalidResponse.Code != http.StatusForbidden {
+		t.Fatal("invalid controller grant was not refused before upgrade", invalidResponse.Code)
+	}
 	epoch := uuid.NewString()
 	controller, snapshot := f.controller(t, epoch)
 	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "events", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "2", Kind: "gap", Payload: json.RawMessage(`{"reason":"Skipped source sequence"}`)}}})

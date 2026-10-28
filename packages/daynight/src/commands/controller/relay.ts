@@ -20,6 +20,12 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
   let reconciliation: ControllerOperation[][] = [];
   let pendingBatch: { id: string; through: string } | null = null, currentToken = "", lastHeartbeat = 0, reconnectAt = 0, connecting = false;
   const authorization = new Map<string, { resolve(): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
+  const settleDispatchRefusal = (operation: SessionOperation, required = false, currentConnection = false): void => {
+    const local = journal.getOperation(operation.operationId);
+    if (!required && local?.state !== "accepted") return;
+    if (!local || local.state !== "accepted" || operation.kind !== local.kind || operation.sessionId !== ticket.sessionId || operation.claimId !== ticket.claimId || operation.testExecutionId !== ticket.testExecutionId || (local.executionGeneration ?? ticket.executionGeneration) !== operation.executionGeneration || currentConnection && operation.executionGeneration !== fence?.executionGeneration || (operation.state !== "rejected" && operation.state !== "expired")) throw new Error("Invalid dispatch refusal receipt.");
+    journal.recordOperation(operation.operationId, operation.state, null, operation.error?.message ?? "Operation no longer has current permission or state.");
+  };
   const clearConnection = () => { fence = null; synchronized = false; pendingBatch = null; callbacks.onConnection(false); for (const waiter of authorization.values()) { clearTimeout(waiter.timer); waiter.reject(new Error("Relay disconnected before native dispatch authorization.")); } authorization.clear(); };
   const send = (message: ControllerMessage) => { if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error("Session relay is offline."); const text = JSON.stringify(message); if (Buffer.byteLength(text) > RELAY_LIMITS.maxFrameBytes) throw new Error("Controller frame exceeds relay limit."); socket.send(text); };
   const prefix = () => { if (!fence) throw new Error("Session relay is not synchronized."); return { protocol: SESSION_PROTOCOL, ...fence }; };
@@ -55,9 +61,21 @@ export const createControllerRelay = (ticket: ControllerLaunchTicket, journal: C
           }
           if (!fence || message.sessionId !== fence.sessionId || message.claimId !== fence.claimId || message.testExecutionId !== fence.testExecutionId || message.executionGeneration !== fence.executionGeneration || message.connectionEpoch !== fence.connectionEpoch) throw new Error("Stale relay frame.");
           if (message.type === "reconcile_result") {
-            for (const operation of message.operations) if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) journal.markOperationAcknowledged(operation.operationId);
+            for (const operation of message.operations) if (["confirmed", "failed", "rejected", "expired"].includes(operation.state)) {
+              if (operation.state === "rejected" || operation.state === "expired") settleDispatchRefusal(operation);
+              journal.markOperationAcknowledged(operation.operationId);
+            }
             if (reconciliation.length) sendReconciliation(); else { synchronized = true; callbacks.onConnection(true); }
-          } else if (message.type === "receipt_ack") journal.markOperationAcknowledged(message.operation.operationId);
+          } else if (message.type === "receipt_ack") {
+            const operation = message.operation;
+            const waiter = authorization.get(operation.operationId);
+            if (waiter || operation.state === "rejected" || operation.state === "expired") settleDispatchRefusal(operation, waiter !== undefined, true);
+            journal.markOperationAcknowledged(operation.operationId);
+            if (waiter) {
+              authorization.delete(operation.operationId); clearTimeout(waiter.timer);
+              waiter.reject(new Error(operation.error?.message ?? "Operation no longer has current permission or state."));
+            }
+          }
           else if (message.type === "events_ack") { if (message.sourceEpoch !== ticket.executionId || !pendingBatch || message.batchId !== pendingBatch.id || BigInt(message.lastAckedSourceSeq) < BigInt(pendingBatch.through)) throw new Error("Invalid event ACK."); journal.acknowledgeEvents(message.lastAckedSourceSeq); pendingBatch = null; }
           else if (message.type === "operation_offer") { if (!synchronized) throw new Error("Operation offered before reconciliation."); void callbacks.onCommand(message.command).catch(error => callbacks.onError(String(error))); }
           else if (message.type === "operation_authorized") { const waiter = authorization.get(message.operationId); if (waiter) { authorization.delete(message.operationId); clearTimeout(waiter.timer); waiter.resolve(); } }

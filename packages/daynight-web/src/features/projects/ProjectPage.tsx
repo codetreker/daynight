@@ -6,11 +6,14 @@ import { TaskDetailSessionBoundary, useTaskDetailSessions } from "../task-detail
 import { TaskDetailDialog } from "../task-detail/TaskDetailDialog";
 import { ProjectOverview } from "./ProjectOverview";
 import type { OverviewTaskTarget } from "./overview-progress";
+import { useOverviewProgress } from "./useOverviewProgress";
+import { taskPageSize, usePagination } from "./usePagination";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
-import { useCompletedChainVisibility, useProjectSection, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
+import { useChainVisibility, useProjectSection, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
+import { compareTaskStatus } from "./task-order";
 import "../../styles/project.css";
 
 const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
@@ -18,6 +21,8 @@ const backToProjects = (event: MouseEvent<HTMLAnchorElement>) => {
   event.preventDefault();
   navigate("/projects");
 };
+
+const emptyIds: readonly string[] = [];
 
 type ProjectNotice = { readonly kind: "selected-task-removed" | "overview-target-unavailable" };
 
@@ -36,6 +41,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const [tasksMounted, setTasksMounted] = useState(false);
   const [detailSelection, setDetailSelection] = useState<{ readonly id: string; readonly revision: number } | null>(null);
   const [notice, setNotice] = useState<ProjectNotice | null>(null);
+  const [pageNavigation, setPageNavigation] = useState<"overview" | TaskView | null>(null);
   const [overviewTarget, setOverviewTarget] = useState<OverviewTaskTarget | null>(null);
   const highlightedTarget = useRef<{ readonly element: HTMLElement; readonly timer: ReturnType<typeof setTimeout> } | null>(null);
   const heading = useRef<HTMLHeadingElement>(null);
@@ -59,13 +65,15 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     window.scrollTo({ top: overviewPosition.current, behavior: "instant" });
   }, [section, snapshotReady]);
   currentView.current = activeView;
-  const { showCompleted, onShowCompletedChange, issue: visibilityIssue } = useCompletedChainVisibility(projectId);
-  const { showCompleted: showCompletedStandalone, onShowCompletedChange: onStandaloneVisibilityChange, issue: standaloneIssue } = useStandaloneVisibility(projectId);
-  // Database timestamp precision is retained by reversing the server's exact order.
+  const { showAll, onShowAllChange, issue: visibilityIssue } = useChainVisibility(projectId);
+  const { showAll: showAllStandalone, onShowAllChange: onStandaloneVisibilityChange, issue: standaloneIssue } = useStandaloneVisibility(projectId);
   const categories = useMemo(() => {
     if (snapshot === null) return null;
-    const chains = snapshot.index.representativeIds.toReversed().filter((id) => snapshot.index.components.get(id)!.memberIds.size > 1);
-    const standalone = snapshot.index.representativeIds.toReversed().filter((id) => snapshot.index.components.get(id)!.memberIds.size === 1);
+    // Stable status sorting preserves the reversed server order's timestamp precision.
+    const ordered = snapshot.index.representativeIds.toReversed().sort((left, right) => compareTaskStatus(
+      snapshot.index.components.get(left)!.progress.status, snapshot.index.components.get(right)!.progress.status));
+    const chains = ordered.filter((id) => snapshot.index.components.get(id)!.memberIds.size > 1);
+    const standalone = ordered.filter((id) => snapshot.index.components.get(id)!.memberIds.size === 1);
     let unfinishedChainTaskCount = 0;
     let unfinishedStandaloneTaskCount = 0;
     for (const task of snapshot.index.nodes.values()) {
@@ -75,14 +83,32 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     }
     return { chains, standalone, unfinishedChainTaskCount, unfinishedStandaloneTaskCount };
   }, [snapshot]);
-  const rootIds = useMemo(() => snapshot === null || categories === null ? null : categories.chains.filter((id) => {
-    const progress = snapshot.index.components.get(id)!.progress;
-    return showCompleted || progress.status !== "done";
-  }), [snapshot, categories, showCompleted]);
-  const standaloneIds = useMemo(() => snapshot === null || categories === null ? [] : categories.standalone.filter((id) =>
-    showCompletedStandalone || snapshot.index.nodes.get(id)!.status !== "done"), [snapshot, categories, showCompletedStandalone]);
+  const progress = useOverviewProgress(snapshot, categories?.chains ?? emptyIds, categories?.standalone ?? emptyIds, snapshotReady);
+  const rootIds = showAll ? categories?.chains ?? emptyIds : progress.chains.map((chain) => chain.taskId);
+  const standaloneIds = showAllStandalone ? categories?.standalone ?? emptyIds : progress.recentStandaloneIds;
+  const chainPagination = usePagination(rootIds.length);
+  const standalonePagination = usePagination(standaloneIds.length);
+  const overviewPagination = usePagination(progress.chains.length + (progress.standalone === null ? 0 : 1), 20);
+  const pageRootIds = rootIds.slice(chainPagination.start - 1, chainPagination.end);
+  const pageStandaloneIds = standaloneIds.slice(standalonePagination.start - 1, standalonePagination.end);
+  const selectChainPage = (page: number) => { chainPagination.onPageChange(page); setPageNavigation("chains"); };
+  const selectStandalonePage = (page: number) => { standalonePagination.onPageChange(page); setPageNavigation("standalone"); };
+  const selectOverviewPage = (page: number) => { overviewPagination.onPageChange(page); setPageNavigation("overview"); };
+  const changeChainVisibility = (show: boolean) => { chainPagination.onPageChange(1); onShowAllChange(show); };
+  const changeStandaloneVisibility = (show: boolean) => { standalonePagination.onPageChange(1); onStandaloneVisibilityChange(show); };
+  useLayoutEffect(() => {
+    if (pageNavigation === null) return;
+    const id = pageNavigation === "overview" ? "project-overview-progress" : pageNavigation === "chains" ? "project-chain-list" : "project-standalone-list";
+    const target = document.getElementById(id);
+    if (target !== null && target.closest('[hidden], [inert]') === null) {
+      target.scrollIntoView({ block: "start", behavior: "instant" });
+      target.focus({ preventScroll: true });
+      savePosition();
+    }
+    setPageNavigation(null);
+  }, [pageNavigation, chainPagination.page, standalonePagination.page, overviewPagination.page, savePosition]);
   const representative = openChainWitness === null ? undefined : snapshot?.index.componentByTask.get(openChainWitness);
-  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && rootIds?.includes(representative) ? representative : null;
+  const openChainId = section === "tasks" && activeView === "chains" && representative !== undefined && pageRootIds.includes(representative) ? representative : null;
   openChain.current = openChainId;
   useLayoutEffect(() => {
     if (openChainWitness === null || openChainId !== null) return;
@@ -158,11 +184,18 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     if (overviewTarget === null || section !== "tasks") return;
     const view = overviewTarget.kind === "chain" ? "chains" : "standalone";
     if (activeView !== view) return;
+    const representative = overviewTarget.kind === "chain" ? snapshot?.index.componentByTask.get(overviewTarget.taskId) : undefined;
+    const position = representative === undefined ? -1 : rootIds.indexOf(representative);
+    const destinationPage = overviewTarget.kind === "standalone" ? 1 : Math.floor(position / taskPageSize) + 1;
+    const pagination = overviewTarget.kind === "standalone" ? standalonePagination : chainPagination;
+    if (destinationPage > 0 && pagination.page !== destinationPage) {
+      pagination.onPageChange(destinationPage);
+      return;
+    }
     setOverviewTarget(null);
     clearTargetHighlight();
-    const representative = overviewTarget.kind === "chain" ? snapshot?.index.componentByTask.get(overviewTarget.taskId) : undefined;
     const target = overviewTarget.kind === "standalone" ? document.getElementById("project-task-panel-standalone")
-      : representative !== undefined && rootIds?.includes(representative)
+      : representative !== undefined && position >= 0
         ? document.getElementById(`task-root-${representative}`) : null;
     if (target === null) {
       setNotice({ kind: "overview-target-unavailable" });
@@ -175,21 +208,23 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
     savePosition();
     target.classList.add("overview-progress-target");
     highlightedTarget.current = { element: target, timer: setTimeout(clearTargetHighlight, 2_200) };
-  }, [overviewTarget, section, activeView, snapshot, rootIds, savePosition, clearTargetHighlight]);
+  }, [overviewTarget, section, activeView, snapshot, rootIds, chainPagination, standalonePagination, savePosition, clearTargetHighlight]);
 
   return (
     <>
       <div className="project-navigation">
         <a className="back-link" href="/projects" onClick={backToProjects}>{m.back}</a>
-        {snapshot !== null && (
+        {snapshot !== null && snapshot.receivedAt !== null && (
           <p className="snapshot-time"><time dateTime={new Date(snapshot.receivedAt).toISOString()}>{m.lastRefreshed({ time: format.time(snapshot.receivedAt) })}</time></p>
         )}
       </div>
       <div className="page-heading project-heading">
         <div>
           <p className="eyebrow">{app.projectTasks}</p>
-          <h1 ref={heading} tabIndex={-1}>{snapshot === null ? app.projectTasks : snapshot.graph.project.name}</h1>
-          {snapshot !== null && <p className="project-repository">{snapshot.graph.project.repoUrl}</p>}
+          <div className="project-title-line">
+            <h1 ref={heading} tabIndex={-1}>{snapshot === null ? app.projectTasks : snapshot.graph.project.name}</h1>
+            {snapshot !== null && <p className="project-repository">{snapshot.graph.project.repoUrl}</p>}
+          </div>
         </div>
         <div className="project-title-actions">{snapshot !== null && renderActions?.(snapshot.graph.project)}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button></div>
       </div>
@@ -218,21 +253,27 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
               <button className="button" type="button" onClick={graph.refresh}>{m.retryRefresh}</button>
             </section>
           )}
-          {snapshot !== null && notice !== null && <p className="snapshot-notice" role="status">{notice.kind === "selected-task-removed" ? m.selectedTaskRemoved : overview.targetUnavailable}</p>}
+          {snapshot !== null && notice?.kind === "selected-task-removed" && <div className="snapshot-notice snapshot-notice-dismissible" role="status">
+            <span className="snapshot-notice-message">{m.selectedTaskRemoved}</span>
+            <button className="snapshot-notice-dismiss" type="button" aria-label={m.dismissNotice} title={m.dismissNotice}
+              onClick={() => { setNotice(null); heading.current?.focus({ preventScroll: true }); }}><span aria-hidden="true">×</span></button>
+          </div>}
+          {snapshot !== null && notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
-            {snapshot !== null && <ProjectOverview snapshot={snapshot} chainIds={categories!.chains} standaloneIds={categories!.standalone}
-              active={section === "overview"} onNavigate={onOverviewNavigate} />}
+            {snapshot !== null && <ProjectOverview snapshot={snapshot} progress={progress} pagination={{ ...overviewPagination, onPageChange: selectOverviewPage }} onNavigate={onOverviewNavigate} />}
           </section>
           <section className="project-section-panel project-tasks" id="project-section-panel-tasks" role="tabpanel"
             aria-labelledby="project-section-tab-tasks" hidden={section !== "tasks"} inert={section !== "tasks"} tabIndex={0}>
             {snapshot !== null && (tasksMounted || section === "tasks") && <ProjectTaskWorkspace projectId={projectId} snapshot={snapshot}
               activeView={activeView} unfinishedStandaloneTaskCount={categories!.unfinishedStandaloneTaskCount}
               unfinishedChainTaskCount={categories!.unfinishedChainTaskCount} onViewChange={selectView}
-              chains={{ representativeIds: rootIds!, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain,
-                onOpenTask, showCompleted, onShowCompletedChange }}
-              standalone={{ taskIds: standaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
-                showCompleted: showCompletedStandalone, onShowCompletedChange: onStandaloneVisibilityChange }} />}
+              chains={{ representativeIds: pageRootIds, allRepresentativeIds: categories!.chains, openChainId, onOpenChain, onCloseChain,
+                onOpenTask, showAll, onShowAllChange: changeChainVisibility,
+                pagination: { ...chainPagination, onPageChange: selectChainPage } }}
+              standalone={{ taskIds: pageStandaloneIds, allTaskIds: categories!.standalone, onSelectTask: onOpenTask,
+                showAll: showAllStandalone, onShowAllChange: changeStandaloneVisibility,
+                pagination: { ...standalonePagination, onPageChange: selectStandalonePage } }} />}
           </section>
         </div>
       </div>

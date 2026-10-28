@@ -22,7 +22,7 @@ export const startCopilotRuntime = (options: ProviderOptions, lost: (error: Erro
   const token = randomBytes(32).toString("hex"), executable = options.executable ?? copilotExecutable();
   const env: NodeJS.ProcessEnv = { ...(options.env ?? process.env), COPILOT_CONNECTION_TOKEN: token }; delete env.NODE_DEBUG;
   const js = /\.[cm]?js$/i.test(executable);
-  const child = spawn(js ? process.execPath : executable, [...(js ? [executable] : []), "--headless", "--no-auto-update"], { cwd: options.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
+  const child = spawn(js ? process.execPath : executable, [...(js ? [executable] : []), "--headless", "--no-auto-update", ...(options.unattended && !options.resumeNativeSessionId ? ["--allow-all", "--no-ask-user", "--no-sandbox"] : [])], { cwd: options.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: false, windowsHide: true });
   let closing = false, client: CopilotClient | undefined, closePromise: Promise<void> | undefined;
   let stopped = false;
   const exited = new Promise<void>(resolve => child.once("exit", () => { stopped = true; resolve(); }));

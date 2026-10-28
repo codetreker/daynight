@@ -4,13 +4,13 @@ Status: implemented
 
 ## Problem
 
-An operator must be able to retry a paused execution or release, transfer and
+An operator must be able to retry a paused execution or release and
 resume a task without racing the worker's automatic recovery. A process can die
 between source cleanup, a remote ownership change and local acknowledgement.
 Treating that gap as ordinary recovery can restart an already-cleaned source or
-submit the same ownership mutation twice. Source authorization and target
-membership also have different meanings, especially when an administrator
-manages a claim owned by another user.
+submit the same ownership mutation twice. An administrator managing another
+user's claim must retain the execution identity while proving current project
+authority.
 
 The original claim protocol required the source worktree and agent to continue
 after release or transfer. That preserved unpublished work while ownership
@@ -19,6 +19,22 @@ all end the source execution and delete its worktree. A new execution cannot
 require deleted resources or claim the old native conversation as its own.
 
 ## Decision
+
+Manual retry/release/resume commands require a stopped runner and its exclusive
+instance lock, with no persistent management intent, under the
+[simplification decision](../simplification/2026-10-27-worker-claim-records.md).
+Release stops and closes before its remote operation and deletes the worktree
+only after confirmed ownership exit. The
+[force-withdrawal decision](2026-10-27-worker-force-withdrawal.md) removes transfer
+and adds a Web owner/admin reset without a physical-stop guarantee. Fresh and
+resumed agents use the fixed [full-access
+policy](2026-10-27-worker-full-access.md), including task-folder trust; attach
+remains available for business input. The following preserves the original
+transfer/concurrent-controller design, native-consent handling and durability
+rationale as history, not current commands, local storage or permission
+requirements.
+
+### Original implementation and rationale
 
 The public `worker retry/release/transfer/resume` commands use the existing
 [foreground coordinator](2026-10-27-foreground-worker-runtime.md),
@@ -155,6 +171,10 @@ mechanism. One count-bound permit adds the requested attempt while keeping
 fault history and original execution identity.
 
 ## Consequences
+
+The [current simplification](../simplification/2026-10-27-worker-claim-records.md) owns the delivered storage and restart trade-offs. The original consequences below belong to the detailed model retained here as decision history.
+
+### Original consequences
 
 Source cleanup survives CLI or worker interruption and cannot be undone by
 ordinary recovery. Unknown remote outcomes remain explicit, and other tasks

@@ -13,7 +13,7 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 [方案决策](../../.agents/notes/archived/architecture/2026-10-20-project-task-cli-design.md)。
 
 [预定义属性需求](daynight-task-properties.md)的 server 接口、CLI PR 引用参数和
-完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建/更新输入只提供可写 PR 字段。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有；worker 人工管理命令由 [Worker 需求](daynight-worker.md#w-08人工介入与显式移交)定义。
+完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建/更新输入只提供可写 PR 字段。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有；worker 人工管理命令由 [Worker 需求](daynight-worker.md#w-08人工介入与强制撤回)定义。
 
 [附件需求](daynight-task-attachments.md)定义的 `task attachment put/list/read/remove`
 及原始字节读取已实现，复用本文的服务配置和 project 选择。
@@ -71,9 +71,10 @@ serverUrl: http://127.0.0.1:8787
 核对 origin 与令牌。配置锁、并发比较、POSIX `0600` 和 YAML 诊断的完整要求由[客户端 C6](daynight.md#c6-按需配置引导)拥有。
 
 project/task 不要求 `repositories`、review 路径、SQLite、GitHub CLI 或 Copilot。
-共享层严格读取 YAML 并识别已登记顶层字段，各能力只校验自己的业务投影。
-project/task 不因无关 review 值而失败，review 也不要求服务配置；语法错误、重复键、未知字段和
-读取错误仍须暴露。review 配置、状态格式和路径保持原有语义。
+共享层严格读取 YAML 并要求根节点为 mapping，各能力只校验自己的业务投影。
+未知字段在运行时忽略，配置编辑保留原字段。project/task 不因无关 review 值而失败，
+review 也不要求服务配置；语法错误、重复键、已知字段的非法值和读取错误仍须暴露。
+review 配置、状态格式和路径保持原有语义。
 
 ## PT3. 仓库地址正规化
 

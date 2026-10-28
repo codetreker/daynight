@@ -205,8 +205,8 @@ func TestControlRevisionRecheckedAtOfferAndDispatch(t *testing.T) {
 				if err != nil || got.State != "rejected" {
 					t.Fatal(got, err)
 				}
-			} else if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: c.OperationID}); err == nil {
-				t.Fatal("stale revision authorized at native boundary")
+			} else {
+				assertRejectedBegin(t, f, v, c.OperationID)
 			}
 		})
 	}
@@ -318,9 +318,7 @@ func TestControlReaderProjectionAndRevokedWriterAtDispatch(t *testing.T) {
 	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, admin.UserID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: c.OperationID}); err == nil {
-		t.Fatal("revoked writer authorized")
-	}
+	assertRejectedBegin(t, f, v, c.OperationID)
 }
 
 func TestControlCommandAcceptsAdvertisedArguments(t *testing.T) {
@@ -368,9 +366,23 @@ func TestControlActivityRecheckedAtDispatch(t *testing.T) {
 			}
 			state.Activity = "unknown"
 			publishState(t, f, v, state)
-			if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: c.OperationID}); err == nil {
-				t.Fatal("unavailable native activity authorized after offer")
-			}
+			assertRejectedBegin(t, f, v, c.OperationID)
 		})
+	}
+}
+
+func assertRejectedBegin(t *testing.T, f fixture, v sp.Snapshot, id string) {
+	t.Helper()
+	reply, err := f.s.Handle(context.Background(), sp.ControllerMessage{Type: "operation_begin", ControllerFence: v.ControllerFence, OperationID: id})
+	if err != nil || reply["type"] != "receipt_ack" {
+		t.Fatal("stale operation closed channel", reply, err)
+	}
+	operation, ok := reply["operation"].(sp.Operation)
+	if !ok || operation.OperationID != id || operation.State != "rejected" {
+		t.Fatal("stale operation was authorized", reply)
+	}
+	stored, err := f.s.Operation(context.Background(), f.p, f.project, f.task, v.SessionID, id)
+	if err != nil || stored.State != "rejected" {
+		t.Fatal("rejection not durable", stored, err)
 	}
 }

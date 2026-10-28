@@ -26,7 +26,7 @@ const dependencies = (coordinate: RuntimeDependencies["coordinate"]): RuntimeDep
 });
 const input = (name: string) => {
   const paths = resolveReviewPaths(path.join(directory, name));
-  return { paths, configuration: parseConfiguration("repositories: [{remote: https://github.com/o/r, path: ../repo}]", paths) };
+  return { paths, configuration: parseConfiguration("review:\n  repositories: [{remote: https://github.com/o/r, path: ../repo}]", paths) };
 };
 
 describe("foreground runtime ownership", () => {
@@ -159,7 +159,7 @@ describe("foreground runtime ownership", () => {
     const state = path.join(home, ".daynight");
     const emptyPath = path.join(home, "empty-path");
     await mkdir(state, { recursive: true }); await mkdir(emptyPath);
-    await writeFile(path.join(state, "config.yml"), "pollIntervalMs: 50\nrepositories: [{remote: https://github.com/o/r, path: ../repository}]\n");
+    await writeFile(path.join(state, "config.yml"), "review:\n  pollIntervalMs: 50\n  repositories: [{remote: https://github.com/o/r, path: ../repository}]\n");
     const harness = path.join(home, "control.mjs");
     await writeFile(harness, "process.on('message', (message) => { if (message === 'shutdown') { process.emit('SIGINT'); process.disconnect(); } });\n");
     const executable = fileURLToPath(new URL("../../../dist/main.js", import.meta.url));

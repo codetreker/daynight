@@ -8,13 +8,12 @@ export type {
   HerdrExecutionOwner,
   HerdrOwnedWorkspace,
   HerdrTaskBinding,
-  HerdrWorkspaceEvidence,
-  HerdrPreparedWorkspace,
+  HerdrPendingStop,
   HerdrAgentConfiguration,
   HerdrAgentObservation,
+  HerdrAgentStartInput,
+  HerdrPromptReceipt,
   HerdrNativeReference,
-  HerdrStopObservation,
-  HerdrLaunchEvidence,
 } from "./herdr/agents.js";
 export { HerdrAgentActionError, validateHerdrAgentArguments } from "./herdr/agents.js";
 export { HerdrRpcError } from "./herdr/rpc.js";
@@ -39,6 +38,7 @@ export const createWorkerHerdr = (options: {
   }
   const preflight = createHerdrPreflight({
     rpc: instance.rpc,
+    assertIntegrationEnvironment: instance.assertIntegrationEnvironment,
     environment: nativeEnvironment,
     homeDirectory: options.homeDirectory,
   });

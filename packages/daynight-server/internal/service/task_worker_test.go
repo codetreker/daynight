@@ -210,6 +210,8 @@ func TestWorkerReleaseAndManualResumeCreateFreshExecution(t *testing.T) {
 	requireFault(t, err, "claim_conflict")
 	_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: resumed.Version, Status: core.TaskDone, ClaimID: &descriptor.ClaimID})
 	requireFault(t, err, "claim_conflict")
+	_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: resumed.Version, ClaimID: descriptor.ClaimID})
+	requireFault(t, err, "claim_conflict")
 	manual := createTask(t, tasks, admin, project.ID, "Ordinary manual task")
 	manual = updateTask(t, tasks, admin, manual, UpdateTask{RequiredPlatform: platformChange(pointer(core.PlatformWindows))})
 	manual = startTask(t, tasks, owner, manual)
@@ -219,79 +221,78 @@ func TestWorkerReleaseAndManualResumeCreateFreshExecution(t *testing.T) {
 	}
 }
 
-func TestWorkerTransferReplacesOwnerAndRetainsExecutionInterval(t *testing.T) {
-	tasks, database, project, _, admin := taskService(t)
+func TestWorkerWithdrawalResetsClaimAndDisablesAutomation(t *testing.T) {
+	for _, state := range []core.WorkerState{core.WorkerActive, core.WorkerReleased} {
+		for _, operator := range []string{"owner", "administrator"} {
+			t.Run(string(state)+"/"+operator, func(t *testing.T) {
+				tasks, database, project, _, admin := taskService(t)
+				ctx := context.Background()
+				owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
+				descriptor := workerDescriptor()
+				dependency := finishTask(t, tasks, admin, startTask(t, tasks, admin, createTask(t, tasks, admin, project.ID, "Prerequisite")))
+				candidate := updateTask(t, tasks, admin, claimableTask(t, tasks, admin, project.ID), UpdateTask{RequiredPlatform: platformChange(pointer(core.PlatformLinux)), DependsOn: pointer([]string{dependency.ID}), ExternalDependsOn: pointer([]string{dependency.ID}), Properties: propertyPatch(core.PullRequestProperty{URL: "opaque\x00", Title: "Evidence"})})
+				task := claimWorkerTask(t, tasks, owner, candidate, descriptor)
+				if state == core.WorkerReleased {
+					var err error
+					task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+				input := WithdrawWorker{Version: task.Version, ClaimID: descriptor.ClaimID}
+				_, err := tasks.WithdrawWorker(ctx, other, project.ID, task.ID, input)
+				requireFault(t, err, "forbidden")
+				_, err = tasks.WithdrawWorker(ctx, servicePrincipal(t, database), project.ID, task.ID, input)
+				requireFault(t, err, "not_found")
+				_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version - 1, ClaimID: descriptor.ClaimID})
+				requireFault(t, err, "version_conflict")
+				_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: uuid.NewString()})
+				requireFault(t, err, "claim_conflict")
+				assertTaskUnchanged(t, tasks, admin, task)
+				caller := owner
+				if operator == "administrator" {
+					caller = admin
+				}
+				withdrawn, err := tasks.WithdrawWorker(ctx, caller, project.ID, task.ID, input)
+				if err != nil || withdrawn.Status != core.TaskTodo || withdrawn.AllowAgents || withdrawn.Properties.Worker != nil || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil || withdrawn.Version != task.Version+1 || !withdrawn.UpdatedAt.After(task.UpdatedAt) {
+					t.Fatalf("withdrawal did not atomically reset execution: %#v, %v", withdrawn, err)
+				}
+				preserved := withdrawn
+				preserved.Status, preserved.AllowAgents, preserved.Properties.Worker = task.Status, task.AllowAgents, task.Properties.Worker
+				preserved.StartedAt, preserved.CompletedAt, preserved.UpdatedAt, preserved.Version, preserved.Ready = task.StartedAt, task.CompletedAt, task.UpdatedAt, task.Version, task.Ready
+				if !reflect.DeepEqual(preserved, task) {
+					t.Fatal("withdrawal changed unrelated task data")
+				}
+				_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: withdrawn.Version, ClaimID: descriptor.ClaimID, Phase: pointer(core.WorkerExecuting)})
+				requireFault(t, err, "claim_conflict")
+				_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: withdrawn.Version, Status: core.TaskDone, ClaimID: &descriptor.ClaimID})
+				requireFault(t, err, "claim_conflict")
+				_, err = tasks.ClaimWorker(ctx, owner, project.ID, task.ID, ClaimWorker{Version: withdrawn.Version, WorkerDescriptor: workerDescriptor()})
+				requireFault(t, err, "invalid_transition")
+				started := startTask(t, tasks, owner, withdrawn)
+				if started.Properties.Worker != nil {
+					t.Fatal("manual execution retained withdrawn ownership")
+				}
+			})
+		}
+	}
+}
+
+func TestWorkerWithdrawalRequiresAnUnfinishedClaim(t *testing.T) {
+	tasks, _, project, _, owner := taskService(t)
 	ctx := context.Background()
-	owner, target, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	descriptor := workerDescriptor()
-	candidate := updateTask(t, tasks, admin, claimableTask(t, tasks, admin, project.ID), UpdateTask{RequiredPlatform: platformChange(pointer(core.PlatformLinux))})
-	task := claimWorkerTask(t, tasks, owner, candidate, descriptor)
-	resource := &core.WorkerHerdr{Session: "w", WorkspaceID: "source-workspace", PaneID: "source-pane"}
-	task, err := tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: task.Version, ClaimID: descriptor.ClaimID, Herdr: &resource, NativeSessionID: pointer(pointer("source-native"))})
+	task := claimableTask(t, tasks, owner, project.ID)
+	_, err := tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: uuid.NewString()})
+	requireFault(t, err, "claim_conflict")
+	task = claimWorkerTask(t, tasks, owner, task, workerDescriptor())
+	claimID := task.Properties.Worker.ClaimID
+	task, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &claimID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	next := workerDescriptor()
-	next.Agent = core.AgentCopilot
-	input := TransferWorker{Version: task.Version, ClaimID: descriptor.ClaimID, NewClaimID: next.ClaimID, Target: WorkerTarget{UserID: target.UserID, WorkerID: next.WorkerID, Machine: next.Machine, Platform: next.Platform, Agent: next.Agent}, WorktreeID: next.WorktreeID, StoppedConfirmed: true}
-	_, err = tasks.TransferWorker(ctx, target, project.ID, task.ID, input)
-	requireFault(t, err, "forbidden")
-	_, err = tasks.TransferWorker(ctx, other, project.ID, task.ID, input)
-	requireFault(t, err, "forbidden")
-	for name, change := range map[string]func(*TransferWorker){
-		"unknown target": func(value *TransferWorker) { value.Target.UserID = uuid.NewString() },
-		"worktree":       func(value *TransferWorker) { value.WorktreeID = descriptor.WorktreeID },
-		"reused ID":      func(value *TransferWorker) { value.NewClaimID = descriptor.ClaimID },
-	} {
-		t.Run(name, func(t *testing.T) {
-			invalid := input
-			change(&invalid)
-			_, err := tasks.TransferWorker(ctx, owner, project.ID, task.ID, invalid)
-			if name == "unknown target" {
-				requireFault(t, err, "invalid_input")
-			} else if name == "reused ID" {
-				requireFault(t, err, "claim_conflict")
-			} else {
-				requireFault(t, err, "invalid_transition")
-			}
-			assertTaskUnchanged(t, tasks, admin, task)
-		})
-	}
-	for name, change := range map[string]func(*TransferWorker){
-		"invalid target UUID":    func(value *TransferWorker) { value.Target.UserID = "invalid" },
-		"invalid new claim UUID": func(value *TransferWorker) { value.NewClaimID = "invalid" },
-		"unconfirmed stop":       func(value *TransferWorker) { value.StoppedConfirmed = false },
-		"different claim":        func(value *TransferWorker) { value.ClaimID = uuid.NewString() },
-		"incompatible platform":  func(value *TransferWorker) { value.Target.Platform = core.PlatformWindows },
-	} {
-		t.Run(name, func(t *testing.T) {
-			invalid := input
-			change(&invalid)
-			_, err := tasks.TransferWorker(ctx, owner, project.ID, task.ID, invalid)
-			switch name {
-			case "different claim":
-				requireFault(t, err, "claim_conflict")
-			case "incompatible platform":
-				requireFault(t, err, "invalid_transition")
-			default:
-				requireFault(t, err, "invalid_input")
-			}
-			assertTaskUnchanged(t, tasks, admin, task)
-		})
-	}
-	transferred, err := tasks.TransferWorker(ctx, owner, project.ID, task.ID, input)
-	if err != nil || transferred.Status != core.TaskInProgress || !reflect.DeepEqual(transferred.StartedAt, task.StartedAt) || transferred.CompletedAt != nil || transferred.Properties.Worker.ClaimID != next.ClaimID || transferred.Properties.Worker.UserID != target.UserID || transferred.Properties.Worker.WorktreeID != next.WorktreeID || transferred.Properties.Worker.Agent != core.AgentCopilot || transferred.Properties.Worker.Herdr != nil || transferred.Properties.Worker.NativeSessionID != nil || !transferred.Properties.Worker.ClaimedAt.After(task.Properties.Worker.ClaimedAt) {
-		t.Fatalf("transfer: %#v, %v", transferred, err)
-	}
-	_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: transferred.Version, ClaimID: descriptor.ClaimID, Phase: pointer(core.WorkerExecuting)})
+	_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: claimID})
 	requireFault(t, err, "claim_conflict")
-	_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: transferred.Version, ClaimID: next.ClaimID, Phase: pointer(core.WorkerExecuting)})
-	requireFault(t, err, "forbidden")
-	input.Version, input.ClaimID, input.NewClaimID, input.WorktreeID = transferred.Version, next.ClaimID, uuid.NewString(), uuid.NewString()
-	input.Target.UserID = admin.UserID
-	if _, err := tasks.TransferWorker(ctx, admin, project.ID, task.ID, input); err != nil {
-		t.Fatalf("administrator could not transfer current execution: %v", err)
-	}
+	assertTaskUnchanged(t, tasks, owner, task)
 }
 
 func TestWorkerOperationsRejectInvalidInputsAndMissingResources(t *testing.T) {
@@ -354,7 +355,7 @@ func TestWorkerOperationsRejectInvalidInputsAndMissingResources(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, err := tasks.TransferWorker(ctx, admin, project.ID, task.ID, TransferWorker{Version: task.Version, ClaimID: "bad"})
+			_, err := tasks.WithdrawWorker(ctx, admin, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: "bad"})
 			return err
 		},
 		func() error {
@@ -449,6 +450,8 @@ func TestWorkerAutomaticReclaimCreatesFreshResourcesAndKeepsEligibility(t *testi
 	requireFault(t, err, "claim_conflict")
 	_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: resumed.Version, Status: core.TaskDone, ClaimID: &descriptor.ClaimID})
 	requireFault(t, err, "claim_conflict")
+	_, err = tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: resumed.Version, ClaimID: descriptor.ClaimID})
+	requireFault(t, err, "claim_conflict")
 	released, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: resumed.Version, ClaimID: next.ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
@@ -461,28 +464,25 @@ func TestWorkerAutomaticReclaimCreatesFreshResourcesAndKeepsEligibility(t *testi
 	}
 }
 
-func TestWorkerManagementRacesKeepOneFreshExecution(t *testing.T) {
+func TestWorkerManagementRacesKeepOneDecision(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
 	ctx := context.Background()
-	owner, target := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
+	owner := workerMember(t, database, project.ID)
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
-	source := *task.Properties.Worker
-	transfer := func(descriptor WorkerDescriptor) func(context.Context) (core.Task, error) {
-		return func(ctx context.Context) (core.Task, error) {
-			return tasks.TransferWorker(ctx, owner, project.ID, task.ID, TransferWorker{Version: task.Version, ClaimID: source.ClaimID, NewClaimID: descriptor.ClaimID, Target: WorkerTarget{UserID: target.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent}, WorktreeID: descriptor.WorktreeID, StoppedConfirmed: true})
-		}
+	claimID := task.Properties.Worker.ClaimID
+	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID,
+		func(ctx context.Context) (core.Task, error) {
+			return tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: claimID})
+		},
+		func(ctx context.Context) (core.Task, error) {
+			return tasks.WithdrawWorker(ctx, admin, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: claimID})
+		}), "version_conflict")
+	withdrawn, err := tasks.Get(ctx, admin, project.ID, task.ID)
+	if err != nil || withdrawn.Properties.Worker != nil || withdrawn.AllowAgents || withdrawn.Status != core.TaskTodo || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil {
+		t.Fatalf("withdrawal race left partial execution state: %#v, %v", withdrawn, err)
 	}
-	first, second := workerDescriptor(), workerDescriptor()
-	second.Agent = core.AgentCopilot
-	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID, transfer(first), transfer(second)), "version_conflict")
-	transferred, err := tasks.Get(ctx, admin, project.ID, task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if transferred.Properties.Worker.UserID != target.UserID || transferred.Properties.Worker.WorktreeID == source.WorktreeID || !reflect.DeepEqual(transferred.StartedAt, task.StartedAt) {
-		t.Fatal("transfer race lost fresh ownership or timing")
-	}
-	released, err := tasks.ReleaseWorker(ctx, target, project.ID, task.ID, ReleaseWorker{Version: transferred.Version, ClaimID: transferred.Properties.Worker.ClaimID, StoppedConfirmed: true})
+	task = claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
+	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +493,7 @@ func TestWorkerManagementRacesKeepOneFreshExecution(t *testing.T) {
 	}
 	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID, resume(workerDescriptor()), resume(workerDescriptor())), "version_conflict")
 	resumed, err := tasks.Get(ctx, admin, project.ID, task.ID)
-	if err != nil || resumed.Properties.Worker.UserID != admin.UserID || resumed.Properties.Worker.WorktreeID == released.Properties.Worker.WorktreeID || resumed.StartedAt == nil || !resumed.StartedAt.After(*transferred.StartedAt) {
+	if err != nil || resumed.Properties.Worker.UserID != admin.UserID || resumed.Properties.Worker.WorktreeID == released.Properties.Worker.WorktreeID || resumed.StartedAt == nil || !resumed.StartedAt.After(*task.StartedAt) {
 		t.Fatalf("resume race lost caller ownership, new resources or timing: %#v %v", resumed, err)
 	}
 }
@@ -502,7 +502,7 @@ func TestWorkerManagementRollsBackCanceledWrites(t *testing.T) {
 	tasks, _, project, databaseURL, owner := taskService(t)
 	ctx := context.Background()
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
-	for _, operation := range []string{"release", "transfer", "resume"} {
+	for _, operation := range []string{"release", "withdraw", "resume"} {
 		if operation == "resume" {
 			var err error
 			task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
@@ -511,7 +511,7 @@ func TestWorkerManagementRollsBackCanceledWrites(t *testing.T) {
 			}
 		}
 		for _, fragment := range []string{"SELECT statement_timestamp()", "UPDATE tasks SET"} {
-			if operation == "release" && fragment == "SELECT statement_timestamp()" {
+			if operation != "resume" && fragment == "SELECT statement_timestamp()" {
 				continue
 			}
 			t.Run(operation+"/"+fragment, func(t *testing.T) {
@@ -523,8 +523,8 @@ func TestWorkerManagementRollsBackCanceledWrites(t *testing.T) {
 				switch operation {
 				case "release":
 					_, err = traced.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
-				case "transfer":
-					_, err = traced.TransferWorker(ctx, owner, project.ID, task.ID, TransferWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, NewClaimID: descriptor.ClaimID, Target: WorkerTarget{UserID: owner.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent}, WorktreeID: descriptor.WorktreeID, StoppedConfirmed: true})
+				case "withdraw":
+					_, err = traced.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID})
 				case "resume":
 					_, err = traced.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor}, PreviousClaimID: task.Properties.Worker.ClaimID})
 				}
@@ -538,16 +538,13 @@ func TestWorkerManagementRollsBackCanceledWrites(t *testing.T) {
 	}
 }
 
-func TestWorkerManagementRechecksOperatorAndTargetMembership(t *testing.T) {
-	for _, operation := range []string{"release", "transfer", "resume"} {
-		for _, permission := range []string{"removed owner", "demoted administrator", "removed target"} {
-			if permission == "removed target" && operation != "transfer" {
-				continue
-			}
+func TestWorkerManagementRechecksOperatorMembership(t *testing.T) {
+	for _, operation := range []string{"release", "withdraw", "resume"} {
+		for _, permission := range []string{"removed owner", "demoted administrator"} {
 			t.Run(operation+"/"+permission, func(t *testing.T) {
 				tasks, database, project, _, admin := taskService(t)
 				ctx := context.Background()
-				owner, target, manager := workerMember(t, database, project.ID), workerMember(t, database, project.ID), workerMember(t, database, project.ID)
+				owner, manager := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 				if err := database.WriteProject(ctx, project.ID, func(tx *store.ProjectTx) error {
 					_, err := tx.SetMemberRole(ctx, manager.UserID, core.ProjectAdmin)
 					return err
@@ -577,8 +574,8 @@ func TestWorkerManagementRechecksOperatorAndTargetMembership(t *testing.T) {
 						switch operation {
 						case "release":
 							actual, err = tasks.ReleaseWorker(lockContext, caller, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
-						case "transfer":
-							actual, err = tasks.TransferWorker(lockContext, caller, project.ID, task.ID, TransferWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, NewClaimID: descriptor.ClaimID, Target: WorkerTarget{UserID: target.UserID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent}, WorktreeID: descriptor.WorktreeID, StoppedConfirmed: true})
+						case "withdraw":
+							actual, err = tasks.WithdrawWorker(lockContext, caller, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID})
 						case "resume":
 							actual, err = tasks.ResumeWorker(lockContext, caller, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor}, PreviousClaimID: task.Properties.Worker.ClaimID})
 						}
@@ -588,8 +585,6 @@ func TestWorkerManagementRechecksOperatorAndTargetMembership(t *testing.T) {
 					switch permission {
 					case "removed owner":
 						return tx.RemoveMember(lockContext, owner.UserID)
-					case "removed target":
-						return tx.RemoveMember(lockContext, target.UserID)
 					default:
 						_, err := tx.SetMemberRole(lockContext, manager.UserID, core.ProjectMemberRole)
 						return err
@@ -597,7 +592,7 @@ func TestWorkerManagementRechecksOperatorAndTargetMembership(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				want := map[string]string{"removed owner": "not_found", "removed target": "invalid_input", "demoted administrator": "forbidden"}[permission]
+				want := map[string]string{"removed owner": "not_found", "demoted administrator": "forbidden"}[permission]
 				requireFault(t, receiveTaskResult(t, lockContext, result).err, want)
 				assertTaskUnchanged(t, tasks, admin, task)
 			})
@@ -623,4 +618,47 @@ func TestWorkerManualResumeRetainsDependencyProtection(t *testing.T) {
 	_, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()}, PreviousClaimID: released.Properties.Worker.ClaimID})
 	requireFault(t, err, "dependency_unsatisfied")
 	assertTaskUnchanged(t, tasks, owner, released)
+}
+
+func TestWorkerWithdrawalRollsBackPartialDatabaseFailure(t *testing.T) {
+	tasks, database, project, _, owner := taskService(t)
+	ctx := context.Background()
+	prerequisite := finishTask(t, tasks, owner, createTask(t, tasks, owner, project.ID, "Completed prerequisite"))
+	task := updateTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), UpdateTask{DependsOn: pointer([]string{prerequisite.ID})})
+	task = claimWorkerTask(t, tasks, owner, task, workerDescriptor())
+	if _, err := database.Pool.Exec(ctx, `CREATE FUNCTION reject_withdrawal_edge() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN RAISE EXCEPTION 'private withdrawal edge diagnostic'; END $$;
+		CREATE TRIGGER reject_withdrawal_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_withdrawal_edge()`); err != nil {
+		t.Fatal(err)
+	}
+	_, err := tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID})
+	assertOperational(t, err)
+	if errors.Unwrap(err) == nil || strings.Contains(err.Error(), "private withdrawal edge") {
+		t.Fatalf("withdrawal lost its error chain or exposed private diagnostics: %v", err)
+	}
+	assertTaskUnchanged(t, tasks, owner, task)
+}
+
+func TestWorkerWithdrawalAndCompletionRaceKeepsOneOutcome(t *testing.T) {
+	tasks, database, project, _, owner := taskService(t)
+	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
+	claimID := task.Properties.Worker.ClaimID
+	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID,
+		func(ctx context.Context) (core.Task, error) {
+			return tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: claimID})
+		},
+		func(ctx context.Context) (core.Task, error) {
+			return tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &claimID})
+		}), "version_conflict")
+	actual, err := tasks.Get(context.Background(), owner, project.ID, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if actual.Status == core.TaskTodo {
+		if actual.Properties.Worker != nil || actual.AllowAgents || actual.StartedAt != nil || actual.CompletedAt != nil {
+			t.Fatal("withdrawal committed a partial reset")
+		}
+	} else if actual.Status != core.TaskDone || actual.Properties.Worker == nil || actual.Properties.Worker.State != core.WorkerCompleted || !actual.AllowAgents || actual.StartedAt == nil || actual.CompletedAt == nil {
+		t.Fatalf("completion race committed mixed outcomes: %#v", actual)
+	}
 }
