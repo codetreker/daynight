@@ -18,8 +18,8 @@ design](../../../../docs/design/daynight-worker.md) owns the mechanisms; the
 [user
 guide](../../../../packages/daynight/README.md#worker-configuration-and-startup)
 owns configuration and operation. Review keeps its own database, coordinator and
-lifecycle. Worker composes existing typed HTTP, identity/lock, Git, Herdr and
-managed-skill modules instead of introducing another delivery engine.
+lifecycle. Worker composes existing typed HTTP, identity/lock, Git, frozen Herdr
+or Web execution backends and managed-skill modules instead of introducing another delivery engine.
 
 A single coordinator owns repository rotation, capacity and per-task serial
 advancement. Every inventory/acquisition round reads complete current own-claim
@@ -250,6 +250,15 @@ native XDG or private HISTFILE. It exposes required paths and identity removals,
 without copying credentials. Diagnostics correlate original IDs, local state,
 recovery and cleanup errors; neither diagnostics nor terminal idle/done
 authorize task completion.
+
+Backend routing follows each saved claim. The Herdr adapter is constructed
+lazily, so a pure Web run, cleanup or shutdown neither probes nor starts Herdr.
+Old Herdr responsibilities still use their original instance when new work is
+configured for Web. Session capability/version/provider preflight precedes new
+Web acquisition. A Controller surviving worker exit is reobserved; replacing it
+requires original process stop and exact native identity. Initial input can
+establish a lazy native ID, but an unknown dispatch never becomes permission
+to resend. See the [Session contract](../../../../docs/design/task-session-protocol.md).
 
 ## Alternatives
 

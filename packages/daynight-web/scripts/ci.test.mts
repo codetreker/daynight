@@ -111,6 +111,46 @@ const withDirectory = async (run: (directory: string) => Promise<void>): Promise
   try { await run(directory); } finally { await rm(directory, { recursive: true, force: true }); }
 };
 
+const waitForGroupStopped = async (pid: number): Promise<void> => {
+  const deadline = performance.now() + 3_000;
+  while (performance.now() < deadline) {
+    try { if (isGroupStopped(pid)) return; }
+    catch (error) {
+      // macOS may report EPERM while the last group member exits; only ESRCH proves absence.
+      if (!(error instanceof Error && 'code' in error && error.code === 'EPERM')) throw error;
+    }
+    await delay(10);
+  }
+  requireGroupStopped(pid);
+};
+
+test('CI cleanup waits through transient EPERM until the group is absent', { skip: !['linux', 'darwin'].includes(process.platform) }, async (context) => {
+  const results = ['EPERM', 'alive', 'ESRCH'];
+  let observedAbsent = false;
+  context.mock.method(process, 'kill', () => {
+    const result = results.shift() ?? 'ESRCH';
+    if (result === 'alive') return true;
+    if (result === 'ESRCH') observedAbsent = true;
+    throw Object.assign(new Error(`kill ${result}`), { code: result });
+  });
+  await waitForGroupStopped(42);
+  assert.equal(observedAbsent, true);
+});
+
+test('CI cleanup fails persistent EPERM at its original deadline', { skip: !['linux', 'darwin'].includes(process.platform), timeout: 15_000 }, async (context) => {
+  const failure = Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+  context.mock.method(process, 'kill', () => { throw failure; });
+  const started = performance.now();
+  await assert.rejects(waitForGroupStopped(42), (error) => error === failure);
+  assert.ok(performance.now() - started >= 3_000, 'EPERM must remain unresolved until the cleanup deadline.');
+});
+
+test('CI cleanup preserves errors other than EPERM', { skip: !['linux', 'darwin'].includes(process.platform) }, async (context) => {
+  const failure = Object.assign(new Error('kill EINVAL'), { code: 'EINVAL' });
+  context.mock.method(process, 'kill', () => { throw failure; });
+  await assert.rejects(waitForGroupStopped(42), (error) => error === failure);
+});
+
 test('CI import is inert and its entrypoint rejects missing or unknown modes before commands', { skip: !['linux', 'darwin'].includes(process.platform) }, async () => {
   await withDirectory(async (cwd) => {
     const bin = join(cwd, 'bin');
@@ -190,9 +230,7 @@ test('CI commands reject a successful leader with a surviving redirected child a
       } finally {
         if (child?.pid !== undefined && !isGroupStopped(child.pid)) {
           terminateGroup(child, 'SIGTERM');
-          const deadline = performance.now() + 3_000;
-          while (!isGroupStopped(child.pid) && performance.now() < deadline) await delay(10);
-          requireGroupStopped(child.pid);
+          await waitForGroupStopped(child.pid);
         }
       }
     }

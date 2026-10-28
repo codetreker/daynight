@@ -16,8 +16,8 @@ recovery dependent on unrelated execution behavior.
 The adopted [requirements](../../../../docs/spec/daynight-worker.md) and
 [architecture](../../../../docs/design/daynight-worker.md) define a foreground
 worker with four responsibilities: the service owns eligibility and exclusive
-claims; the worker owns scheduling, resources and recovery; Herdr owns agent
-terminals and sessions; the agent owns task delivery, acceptance and final
+claims; the worker owns scheduling, resources and recovery; Herdr owns terminals
+in Herdr mode and an independent Controller owns native sessions in Web mode; the agent owns task delivery, acceptance and final
 claim-bound completion under the [explicit completion
 decision](2026-10-26-worker-managed-completion.md). The original design assigned
 an independent completion-verification step to the worker; that portion is
@@ -34,6 +34,15 @@ ownership, status fencing and protected-property operations; it does not
 establish resource startup or recovery. Automatic-execution permission and
 optional platform persistence, filtering and service/CLI/Web controls are
 implemented under their decisions below.
+
+The [session mode contract](2026-10-27-task-session-mode-contract.md) makes the
+execution mode explicit in configuration and claims. It preserves the original
+Herdr responsibility while defining separate Web identity and protocol. The
+implemented Web backend uses Codex app-server or Claude Agent SDK through a
+per-execution Controller. Copilot remains Herdr-only; unsupported mode/provider
+combinations fail before acquiring new work. The original report-free business
+completion decision still applies: Session event projection is native interaction
+evidence, not a second task acceptance engine.
 
 Eligibility combines `allowAgents=true`, ready state, optional platform
 compatibility and the absence of an active claim. The service checks these

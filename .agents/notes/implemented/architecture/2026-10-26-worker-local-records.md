@@ -21,7 +21,8 @@ YAML without replacing other configuration. An existing valid identity is reused
 without rewriting; an invalid identity is exposed as an error.
 
 The worker instance lock uses the same worker `state.sqlite` as its SQLite gate.
-It adds no lock table or second database. The narrow platform lock primitive is
+It adds no lock table or second worker database. Per-execution Controller
+journals are separate native/protocol records, not another task ledger. The narrow platform lock primitive is
 shared with review, whose existing paths and database remain separate. A stale
 worker PID permits lock reclamation but does not prove that native agents or
 their processes stopped.
@@ -69,7 +70,9 @@ meaning. This does not add fields, states or an observation ledger. Unknown
 provenance must retain capacity responsibility and use read-only original Git
 resource discovery rather than authorize creation.
 
-First pending materialization freezes effective agent/model/args/recovery limit.
+First pending materialization freezes effective control mode, agent, model, args
+and recovery limit. The [session mode contract](2026-10-27-task-session-mode-contract.md)
+normalizes older missing modes to Herdr instead of using new machine settings.
 A recovered execution missing its original snapshot pauses until that original
 configuration is explicitly restored. Resource bindings follow committed active
 state and retain worktree and native identity. Replacing a Herdr binding
@@ -106,6 +109,17 @@ worker singleton row or generic action engine. The [current-claim
 inventory](2026-10-26-worker-claim-inventory.md) and [agent
 completion](2026-10-26-worker-managed-completion.md) decisions continue to own
 discovery and final business completion.
+
+Worker schema 5 adds nullable web_execution. Web rows retain their native
+profile, immutable initial operation and prompt, Controller generation and
+process proof without inventing Herdr resources. Orderly shutdown provenance
+survives worker reopen and is consumed by a new stopped generation without
+spending failure recovery budget. A remote Web claim whose ledger is lost keeps
+its mode and pauses even if its phase is preparing and native ID is null. The
+Controller journal owns operation tombstones, projection/outbox/ACK state and
+a gap marker outside the bounded outbox; these survive Controller generations.
+The [Session contract](../../../../docs/design/task-session-protocol.md) owns
+the complete wire and persistence boundaries.
 
 ## Alternatives
 
@@ -151,7 +165,7 @@ observations and returns bindings to this same store. The [manual-control
 decision](2026-10-27-worker-manual-control.md) composes these facts with fresh
 resume/transfer identities and concrete management commands. The local schema
 alone does not establish native-agent recovery or Windows/macOS runtime
-acceptance. Current schema is 3. Schema 1 first performs the original schema 2
+acceptance. Current worker schema is 5. Schema 1 first performs the original schema 2
 migration inside the same immediate transaction; original userId remains unknown
 rather than becoming current login. Schema 2 stopObservation objects gain
 required nullable nativeProcessIds with null legacy value; null nativeExecution

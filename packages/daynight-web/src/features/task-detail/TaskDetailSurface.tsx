@@ -14,6 +14,8 @@ import { useTaskDetail } from './useTaskDetail';
 import { TaskStatusFeedback, TaskStatusMenu } from './TaskStatus';
 import { matchesAgentPermissionReview, TaskAgentPermissionConfirmation, TaskAgentPermissionFeedback, TaskAgentPermissionSwitch, type AgentPermissionConfirmation } from './TaskAgentPermission';
 import { matchesStatusReview, TaskStatusConfirmation, type StatusConfirmation } from './TaskStatusConfirmation';
+import { useSessionMessages } from '../task-agent-session/messages';
+import { TaskAgentSession } from '../task-agent-session/TaskAgentSession';
 import { TaskDetailReading } from './TaskDetailReading';
 import { TaskDetailActions } from './TaskDetailActions';
 import { matchesPlatformReview, TaskPlatformConfirmation, TaskPlatformFeedback, TaskPlatformSelect, type PlatformConfirmation } from './TaskPlatform';
@@ -75,6 +77,7 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
 };
 
 export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen }: TaskDetailSurfaceProps) => {
+  const sessionMessages = useSessionMessages();
   const modal = presentation === 'dialog';
   const scope = `${projectId}/${taskId}`;
   const [localNavigation, setLocalNavigation] = useState<{ readonly scope: string; readonly value: TaskDetailNavigation }>({ scope, value: { tab: 'overview', path: null } });
@@ -251,13 +254,14 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                       <TaskPlatformSelect detail={detail} disabled={!task.canSetRequiredPlatform} describedBy={platformFeedbackId}
                         onReview={(requiredPlatform) => requestConfirmation({ kind: 'requiredPlatform', detail, requiredPlatform })} />
                     </div>
+                    {detail.properties.worker !== null && <span className="task-detail-execution-mode">{detail.properties.worker.agentControlMode === 'web' ? sessionMessages.web : sessionMessages.herdr}</span>}
                     {detail.status === 'todo' && <span className={detail.ready ? 'task-detail-ready' : 'task-detail-blocked'}>{detail.ready ? m.ready : m.blocked}</span>}
                   </div>
                   <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />
                 </div>
               </div>
-              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
+              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} {...(detail.properties.worker?.agentControlMode === 'web' ? { session: (active: boolean) => <TaskAgentSession key={detail.properties.worker!.claimId} projectId={projectId} taskId={taskId} claimId={detail.properties.worker!.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
                 <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className="task-detail-section" aria-label={m.description}>

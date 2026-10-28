@@ -4,9 +4,9 @@
 
 ## 目标与范围
 
-Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓库中可由 Agent 执行的 ready task，使用专用 Herdr 服务运行 Copilot 或 Codex，持续完成任务交付。同一有效 claim 保留自己的 worktree，进程或机器重启后继续原工作；原 claim 结束后统一清理，新 claim 使用新工作区与原生会话。
+Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓库中可由 Agent 执行的 ready task，按冻结模式通过专用 Herdr 运行 Copilot/Codex/Claude，或独立 Controller 运行 Web Codex/Claude/Copilot，持续完成任务交付。同一有效 claim 保留自己的 worktree，进程或机器重启后继续原工作；原 claim 结束后统一清理，新 claim 使用新工作区与原生会话。
 
-服务端拥有任务资格、身份权限及唯一 claim；worker 拥有调度、执行资源、恢复和按自有 claim 清单对账清理；agent 完成任务要求的交付、验收并最后提交 claim-bound done；Herdr 拥有 agent 终端和会话。认证与三状态设置是独立前置，不由 worker 再实现一套。
+服务端拥有任务资格、身份权限及唯一 claim；worker 拥有调度、执行资源、恢复和按自有 claim 清单对账清理；agent 完成任务要求的交付、验收并最后提交 claim-bound done；Herdr 拥有 Herdr 模式的终端和会话，Controller 拥有 Web 模式的原生写入及真实 Session 投影。认证与三状态设置是独立前置，不由 worker 再实现一套。
 
 ## 必须满足的行为
 
@@ -14,10 +14,11 @@ Worker 作为前台常驻进程，通过 Daynight HTTP REST API 领取配置仓�
 
 - `daynight worker run` 与现有 `review run` 一样在前台运行，支持 Linux、macOS 和 Windows。
 - 配置支持多个仓库的地址与本地路径；路径不存在时由系统克隆准备，已存在路径须核对仓库身份并保留已有工作。冲突或身份不明确时显示错误。
-- worker mapping 使用 maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories；可选字段默认值分别为 1、5000、3、copilot、null、[]。repositories 的 remote/path 必填，可给 projectId 和 agent/model/args 覆盖。未知字段、错误类型、重复/重叠仓库与状态路径拒绝；相对路径以 config.yml 目录解析，不展开 tilde。
+- worker mapping 使用 maxConcurrent、pollIntervalMs、recoveryLimit、agentControlMode、agent、model、args 和 repositories；可选字段默认值分别为 1、5000、3、herdr、copilot、null、[]。repositories 的 remote/path 必填，可给 projectId 和 agent/model/args 覆盖。未知字段、错误类型、重复/重叠仓库与状态路径拒绝；相对路径以 config.yml 目录解析，不展开 tilde。
+- agentControlMode 仅为 worker 根配置，支持 herdr/web，旧记录或缺省为 herdr，null、未知值及仓库覆盖拒绝。模式在 claim 创建时冻结，服务端返回实际模式；同 claim 不允许模式变更或故障降级。模式/Provider 组合须先校验，Codex、Claude、Copilot 均支持 herdr/web；Web 认领前还须核验服务公布的 provider 能力。会话模式及 Web 能力要求见[Task Session 需求](task-sessions.md)。
 - 配置包含覆盖全部仓库的最大并发，以及全局默认 agent、模型、参数和仓库覆盖值。Worker 在启动或重启时加载配置，不进行热重载。实际取得 claim 后，首次 pending 物化时持久冻结有效执行配置；继续、重试及重启恢复沿用该配置，重新加载的配置作用于后续新 claim。已开始执行却缺原配置时暂停核对，不替换为新默认值。
 - 首次启动随机生成稳定 `workerId`，使用共享配置锁与原子替换保存至 `~/.daynight/config.yml`；已有合法身份重启复用，非法值明确拒绝。身份持久化后才允许 claim。
-- 每个用户环境一个 worker，固定 `~/.daynight/worker/` 保存独立 SQLite、实例锁、日志、Herdr 数据和临时资源，不提供状态根覆盖入口。存活的第二实例明确拒绝；失效 worker 锁不证明原生 agent 已停。启动前校验实际 Herdr 端点，路径等条件不满足时明确报告。
+- 每个用户环境一个 worker，固定 `~/.daynight/worker/` 保存独立 SQLite、实例锁、日志、Herdr 数据和临时资源，不提供状态根覆盖入口。存活的第二实例明确拒绝；失效 worker 锁不证明原生 agent 已停。存在 Herdr 责任时校验实际 Herdr 端点，纯 Web 不构造或探测 Herdr，路径等条件不满足时明确报告。
 - 实际平台使用 `windows`、`linux`、`macos`。WSL 中的 Linux worker、Herdr 和 agent 属于 `linux`，不允许通过配置冒充其他平台。
 
 ### W-02：Agent 自动执行许可
@@ -73,24 +74,26 @@ AND no active claim
 - 创建成功但绑定结果未保存时，只接回匹配原标记和精确 `.git` 指针的资源；已知原成果缺失、无标记预留目录或路径替换均保留现场并报错。Device/inode 只作辅助核对，仍存在的目录缺精确原指针时必须拒绝破坏性操作。分支通过 Git 的 refs backend 核对，支持 reftable，不假设 HEAD 为 loose 文件。
 - 终止删除需原 agent 停止和 workspace 关闭；保留原标记及 `.git` 指针删除其余内容，失败可重新核对后续清理，最后删除指针并非递归移除空目录。若中断留下仍存在但缺指针的目录，即使为空且 inode 匹配也保留 active/错误，等待人工检查；目录经核实移除后再完成注册清理。删除成功结果未保存可据实际目录/注册缺席核对，不能误删同路径无原指针的新目录。
 
-### W-07：专用 Herdr 与 agent 执行
+### W-07：执行模式与 agent 执行
 
-- 每个 worker 自动启动和管理一个专用 Herdr 实例，每 task 使用其中独立的 workspace/pane/agent，通过 Herdr API 启动、输入和观察 Copilot / Codex；不干扰人工或其他 worker 的实例。私有 `[session] resume_agents_on_restore=false`，worker 是原生 agent 唯一启动/恢复者。
+- Herdr 模式的 worker 自动启动和管理一个专用 Herdr 实例，每 task 使用其中独立的 workspace/pane/agent，通过 Herdr API 启动、输入和观察 Copilot / Codex / Claude；不干扰人工或其他 worker 的实例。私有 `[session] resume_agents_on_restore=false`，worker 是原生 agent 唯一启动/恢复者。
 - Herdr 与原生 agent 的会话关联可持久化，重启时核对并继续原执行，不要求人工重复输入已取得的标识。Daemon 的 XDG 与 endpoint 私有；native/workspace 保留调用方原 XDG 的 set/unset 语义及认证目录，仅传所需两字段环境覆盖。遵守 HISTFILE 的 Bash/Zsh 历史写私有文件，自定义 rc 和其他 shell 不在通用隔离保证内。
 - 协调循环组装首次启动及同 claim 确需重新启动的完整 prompt，先确认所需技能可用，显式指定 `worker-managed` 环境、`using-daynight` 技能和 `execute-task-in-managed` 模式，传入原 projectId/taskId/claimId/worktreeId、实际工作区路径/branch、原会话关联及冻结配置。Herdr 适配层按原内容递交不透明文本，返回受理、拒绝或未知结果，不选择任务/模式或组装业务指令；仅重连存活 agent 不重发启动输入，未知结果先观察原资源。
 - 单一 `using-daynight` 技能按显式模式选择指令：普通指定任务读取 run-task，managed 执行读取 references/execute-task-in-managed.md，SKILL.md 只保留简短路由。普通执行不加载 managed 详细指令；不能从 properties.worker、cwd 或环境变量推断模式。显式 managed 上下文缺失或不匹配时等待，不回落普通执行。两种入口共享任务输入、范围、交付、验收和证据规则，各自拥有普通或原 claim 的生命周期动作。
-- 启动和恢复前以 task cwd 校验官方 Herdr/native agent 集成及所需原生历史，feature/config 检查保留冻结的相关配置、feature 与 profile 参数及顺序。当前 Codex 0.164.0 的只读 features 命令无法检查 profile 时明确拒绝并保留原因，不能丢弃参数后查默认值。不满足时显示修正方法并暂停；不自动全局安装/修改集成，也不另建配置解析、MCP 或 SDK 引擎。
+- 启动和恢复前以 task cwd 校验官方 Herdr/native agent 集成及所需原生历史，feature/config 检查保留冻结的相关配置、feature 与 profile 参数及顺序。当前 Codex 0.164.0 的只读 features 命令无法检查 profile 时明确拒绝并保留原因，不能丢弃参数后查默认值。不满足时显示修正方法并暂停；不自动全局安装/修改集成，不在 Herdr 模式另建配置解析、MCP 或 SDK 引擎。
 - 新 workspace 只有核验的创建 ACK 能取得绑定当前 terminal、owner 和确切 XDG 的环境 receipt；adoption/丢失 ACK 为 null。冷恢复不保留 workspace.env，旧 terminal 的 receipt 不能授权新 native 启动，即使 pane 为空且从未取得 native ID；缺失或不匹配时先返回 rebind-required，不预检、启动或输入。已存活 agent 重连不修改环境。
 - 首条输入不能依赖尚需首个 turn 才产生的官方 native ID。新启动核对原目标、冻结 argv/config 及当前业务 composer 可输入 surface 后只提交一次原 prompt；resume 还核对持久原 ID、必要 history 和确切 resume argv，输入后须取得并核对官方 ID。Codex 的 idle/interactiveReady 不足以独立证明正文可输入；当前 same binding 识别到的 Folder access、信任或授权/选择 blocking 不允许自动输入或 Enter，明确保持 not-submitted 和原 launchEvidence。未识别界面在原 Operation 内有界观察，不把超时或空 composer 外观当成已提交/未消费的证明。
 - 已确认原 native 启动、首 prompt 明确未提交且原 worktree/binding/receipt、冻结 argv 与原 native 进程证据匹配的执行，在普通 missing-ID 恢复/rebind 之前保留原会话接续路径。操作者通过原 attach 明确处理原生信任/授权，使业务 composer 可输入后可用 worker retry 授权一次接续；只读核对同 shell 和所有原 native 关键 PID 后，发送前消费一次许可、累计 count 加一而不清零。普通 children 变化不要求覆盖原证明；不重新 agent.start、不更换 conversation 或冻结配置，控制/终止意图仍优先。旧 submitted/unknown 或来源不明的缺 ID 状态仍禁止重放。
 - 对 native 从未提交的准备窗口，协调循环必须在任何可能启动前为具体 claim/workspace 持久记录 never 事实，并在调用启动前持久转为已尝试/未知。结合唯一启动者和实际 owned 普通空 shell、无 pending/native/前台工作，可确认没有原 agent 后关闭/rebind；null 引用或本次 not-submitted 不产生该事实。先前未知 launch 必须取得原停止证明或暂停。
 - 未活动的恢复 pane 若保留旧 native reference，应先确认旧停止/关闭再换新 pane，保留 worktree/native ID/config；不能把旧引用冒充新报告。冷恢复若改变 terminal/shell，原停止观察保持不可变，须分别核对实际 restored 资源、原 native PIDs/旧 shell 已不执行及当前没有原生/前台工作；新空 shell 本身不构成原 agent 停止证明。
 - 开发 task 的 agent 负责实现、验证、提交、工作分支推送、PR、CI/review 反馈、授权合并和合并后验收，并遵守仓库权限、门禁与授权要求。其他允许 Agent 自动执行的 task 遵守其阶段和验收条件。
-- Worker 使用 Herdr 最新状态观察运行、等待和结束，不需要公开 report 命令、结构化报告协议或结果文件。Herdr idle/done 或 agent 一轮结束不等于 task 完成。
+- Web 模式支持 Codex app-server、Claude Agent SDK 与 Copilot SDK，启动前验证服务 capability 和 provider；由独立 Controller 持有原生会话，浏览器只通过服务 relay 交互，不能直接取得原生凭据或跨 claim 写入。
+- Web 初始输入使用持久 operationId；ready 且明确 not_submitted 时允许首输入触发真实 native ID，dispatching/unknown 不能重发。恢复保留原 profile、exact native ID 和初始 operation；只有原 controller/native 停止证明成立才允许新 generation。纯 Web 不依赖 Herdr，旧责任依原冻结模式执行。
+- Worker 使用冻结 backend 最新状态观察运行、等待和结束，不需要公开 report 命令、结构化报告协议或结果文件。Herdr idle/done 或 agent 一轮结束不等于 task 完成。
 
 ### W-08：人工介入与显式移交
 
-- 需要人工输入或授权时保留自动执行许可、平台、claim、worktree、原会话和并发名额，前台显示等待原因及原会话入口；人工通过 Herdr 处理后继续。
+- 需要人工输入或授权时保留自动执行许可、平台、claim、worktree、原会话和并发名额，前台显示等待原因及原会话入口；Herdr 模式通过原 Herdr 会话，Web 模式通过任务 Session 处理后继续。
 - 原执行用户或项目管理员可显式 release/transfer，并受项目访问权限约束。授权提交者与目标分别校验，目标必须是当前项目成员；接收者身份不自动授予替换原归属的权限。
 - `daynight worker retry/release/transfer/resume` 提供显式人工入口。Release/transfer 在任何破坏性清理前核验当前项目访问及原 owner/admin 权限；原执行账号与当前管理员分别处理，不以当前登录身份推断管理权限。
 - 主动管理先在 source 行持久保存具体意图，抑制普通恢复，由前台唯一 coordinator 串行完成原 agent 临时资源清理、真实停止、workspace 关闭和 worktree 删除后，才绑定用户决定的精确版本提交远端变更。没有前台时先取得相同实例锁并执行同一处理函数。单任务管理不停止共享 Herdr 或其他 task。停止或删除失败保留原责任；未知远端结果先核对，不重放、不重建旧业务资源。
@@ -102,18 +105,18 @@ AND no active claim
 
 ### W-09：SQLite、退出与恢复
 
-- 固定状态根仅有一份 SQLite，业务表仅为 projects 与 tasks。Projects 保存 origin/project/repo/path 与单个未决 claimAttempt；tasks 每行对应一个实际 claim，保存 pending/active/done、冻结配置、实际资源绑定、nativeExecution 启动/输入/停止事实、恢复次数/暂停/授权、原清理截止与输入/结果、source 管理意图及远端提交结果。schema 3 显式迁移旧记录，旧 stopObservation 的 nativeProcessIds 填 null，不推测原 native 角色；完整 processIds 停止证明、原 scope、配置、预算、deadline 和提交事实保持。结束行保留，不另建任务台账或通用动作引擎。
+- Worker 的任务台账仅有一份 SQLite，业务表仅为 projects 与 tasks；每 execution 的 Controller journal 独立保存协议与原生生命周期事实，不复制任务调度台账。Projects 保存 origin/project/repo/path 与单个未决 claimAttempt；tasks 每行对应一个实际 claim，保存 pending/active/done、冻结配置、实际资源绑定、nativeExecution 启动/输入/停止事实、恢复次数/暂停/授权、原清理截止与输入/结果、source 管理意图及远端提交结果。schema 5 增加可空 webExecution 并保留模式、初始 operation、generation 与原生 profile；schema 4 显式迁移旧记录，缺失控制模式的冻结配置、未决认领与移交目标补为 herdr；原 schema 3 迁移中的旧 stopObservation 的 nativeProcessIds 填 null，不推测原 native 角色；完整 processIds 停止证明、原 scope、配置、预算、deadline 和提交事实保持。结束行保留，不另建任务台账或通用动作引擎。
 - 每条实际 claim 保留原认证 userId，claimAttempt 同时保存该 userId；已知账号值不可替换。项目映射在远端 claim 前保存；取得实际 claim 后先 pending，确认启动条件并提交 active 后才创建资源。同一 origin/project/task 至多一条 active，未收尾执行期间项目绑定不变；服务范围与当次仓库路径随任务保留，不能因换服或改映射而误认资源。
 - 启动和持续对账通过既有 task list 的 workerId 筛选，成功汇总当前认证用户/worker 全部项目与分页的有效 active claim；不附加候选资格条件，不把失败或部分清单当成空集合。原 claimId 不在完整清单就触发相同本地清理，不按 task 状态或单 task GET 分类原因。同 task 新 claim 不保护旧 claim，完成本轮对账后才登记新领取。
 - Worker 复用既有 GET /api/v1/me 核验启动凭据的 UID，项目和清单请求前固定该 principal，并对后续成功响应（包括空页）核对 Daynight-User-ID。新缺席清理和恢复必须属于原 userId；同 OS 换成另一个账号的空清单不能结束旧账号工作，须保留/暂停。旧范围未知的 terminal/control 意图不可由当前登录补授权；ordinary/shutdown 只可由完整身份匹配的实际自有 claim 学得未知 UID。
 - 原生启动、初始 prompt 和远端摘要更新在外部调用前持久记录可能提交的责任。确定未派发的同一次尝试可以恢复其未提交事实以便后续明确决定；实际未知结果只观察，不自动重放，也不覆盖成 never。
 - 服务清单、新缺席判断、普通恢复和认领只使用当前 origin；已提交 cleanup/source control 与正常退出则覆盖同 workerId 各原 origin 的本地责任。切换 serverUrl 不抛弃旧截止，不请求旧服务或向新服务查询旧记录，不增加多服务凭据/认领注册。
-- 同一仍归属执行的恢复核对 SQLite、Git 和 Herdr 的原资源与冻结配置；新发现 claim 先登记 pending。显式写入的版本和未知结果仍可按 taskId 读取核对，不确定的外部动作不能按“未发生”重做。
+- 同一仍归属执行的恢复核对 SQLite、Git 和冻结 backend 的原资源与冻结配置；新发现 claim 先登记 pending。显式写入的版本和未知结果仍可按 taskId 读取核对，不确定的外部动作不能按“未发生”重做。
 - 已持久保存的 cleanup/source control 意图由前台轻量发现循环交给每完整 claim 至多一个瞬时异步 job。各 job 按自己的原截止独立推进，定时等待最多 1000ms，并受最近原截止缩短；一个 task 的 RPC 等待不能阻塞其他 task 的下一次推进。同 task 仍串行，且与 /me、服务轮询和启动仓库请求分离；只有原账号范围已知的已提交意图可继续，未知范围保留。它只续原责任，不因读取失败新增缺席或终止决定；新的自动终止和认领仍要求成功完整的自有 claim 清单，不增加持久队列或 OS daemon。
 - 跨 origin 的规范路径冲突仅以只读 Git 原所有权核对前驱；当前服务实际新 claim 冻结新配置，在同 worker 任一 origin 的同 task UUID active 前驱结束前保持 pending，不采纳旧 native 会话。完整 origin/project/task/claim scope 仍分开。
 - Worker 崩溃或机器失联不自动释放 claim，由原 worker 恢复或人工结束/移交。Worker 死亡不证明 agent 或工具已停止；无法确认原执行是否停止时暂停，避免重复 agent。
 - Ctrl+C 停止新领取和普通输入，先取消并等待常规收尾发现循环及全部 per-claim job，再以独立且受原截止约束的清理范围记录 shutdown 并给原 agent 清理外部资源的机会，确认 agent 停止和 workspace 关闭后关闭专用实例，保留 claim/worktree/native/config。正常重启不消耗故障恢复预算，不清除原暂停或重试授权；旧 shutdown 的停止确认不能应用于新启动的 agent。
-- 消费中断的 shutdown 后，普通执行前必须刷新 Herdr 实际资源。若 native 可能已启动但未报告确切原 ID，完成停止/关闭也不允许清空原绑定及启动/PID 证据后开启首次会话；保留并暂停，等待恢复原身份。已证明未启动或已知原 ID 的正常路径继续保留原成果和预算。
+- 消费中断的 shutdown 后，普通执行前必须重新核对冻结 backend 实际资源；Web 的正常停止来源跨重启保留，不消耗故障预算。若 native 可能已启动但未报告确切原 ID，完成停止/关闭也不允许清空原绑定及启动/PID 证据后开启首次会话；保留并暂停，等待恢复原身份。已证明未启动或已知原 ID 的正常路径继续保留原成果和预算。
 - 严格证明资源与 native 均从未启动的 pending 后继在正常退出时保持 pending，不提升 active 或制造清理意图。它的原 userId 与成功完整清单 principal 匹配且原 claim 缺席时，可直接 pending→done，不扫描/删除旧固定路径。其余任务的退出初始化故障分别隔离；无法确认的资源或账号范围使私有实例保留。
 - 沿当前 worker 取消原因或其 cause 链确认的正常中断向退出传播，不制造新故障暂停；已有真实暂停、预算和未知动作记录不被覆盖。仅 signal 已取消不足以把任意错误解释为正常取消。
 - 异常退出或基础设施故障在原 worktree/会话上按配置上限恢复；计数、原因及暂停状态持久化，重启不清零。超限保留资源与名额，等待人工处理或明确恢复操作。已存在 cleanup/control 意图时只推进其收尾，不进行普通恢复。
@@ -124,6 +127,7 @@ AND no active claim
 - Agent 负责执行并记录任务验收；其验收文字是执行方声明，不是任意自然语言条件的独立证明。证据缺失、相互冲突或任务明确要求人工验收时保持 task 未完成，在原会话请求处理；不要求通用 Markdown 验收解析器或形式化证明。
 - 原 claim 从自己成功完整清单退出后，统一持久保存最多十分钟的固定截止，通知原 agent 清理 worktree 外明确归属的临时文件/进程；清理结束或原截止到达后，确认 agent 停止、关闭任务 workspace/pane、删除 worktree，最后置本机 done。Done/release/transfer 不保留源 worktree。历史、分支、task 交付引用及 claim/session 标识保留。
 - 清理请求和 /exit 也经过相同自动输入边界，不能以 Enter 默认接受原生信任/授权。Blocking 或无法证明可输入时保留真实未提交/不可用结果，按原截止及原进程证明安全停止资源，不为清理新建 agent 或自动配置 trust。
+- Web 清理的 provider_accepted 不是 turn 完成；等待对应原 turn 结束或期限届满，再核实原 controller/native 停止及 endpoint 关闭。Web 不伪造 Herdr workspaceClosed，使用 backendResourcesClosed 才能删除 worktree。POSIX 保证原进程组和记录 PID，主动逃逸工具后代不在该 OS 证明内；Windows Job 停止必须有实机验收。
 - 清理重启沿用原截止和提交结果，不重发未知输入，不创建新清理 agent；pollIntervalMs 只控制服务对账/认领轮询，不延后原清理截止。清理期间继续占并发名额。完成后修改自动执行许可或平台不能改写历史归属和实际平台。
 - 删除失败记录具体错误和待清理状态，重启后只继续清理，不能重新执行已完成任务。清理不能影响其他任务或人工 Herdr。
 
@@ -137,12 +141,12 @@ AND no active claim
 
 | 范围 | 必须观察到的结果 |
 |---|---|
-| W-01、W-07 | Linux/macOS/Windows 的安装入口可启动前台 worker；分别运行 Copilot/Codex；实际首次/重新启动 prompt 明确环境、技能、managed 模式和原 assignment，普通执行不加载 managed 详细规则；仓库缺失自动准备；原有仓库错误与配置错误可见；领取后的配置修改不影响原执行。 |
+| W-01、W-07 | Linux/macOS/Windows 的安装入口可启动前台 worker；分别核验 Herdr Copilot/Codex/Claude 和 Web Codex/Claude/Copilot，未知 provider 或服务未公布的能力明确拒绝；实际首次/重新启动 prompt 明确环境、技能、managed 模式和原 assignment，普通执行不加载 managed 详细规则；仓库缺失自动准备；原有仓库错误与配置错误可见；领取后的配置修改不影响原执行。 |
 | W-02、W-03 | 验证旧任务迁移、新任务默认值、开关双向确认及取消/失败/未知结果、平台清除；覆盖自动执行许可、ready 与全部要求平台/worker 平台组合；不合格任务不会遮住后续合格候选或启动资源。 |
 | W-04 | 多用户/机器/worker 竞争只出现一个有效 claim；覆盖查询后资格变化、旧版本、未知结果及旧 claim 更新；任务属性保留 PR 和实际会话关联。 |
 | W-05 | 多仓库持续有任务时轮流获得机会；空与不兼容仓库被跳过；CI/review、人工等待及超限暂停均计入全局上限。 |
 | W-06、W-08 | 继续和恢复使用原 worktree；人工进入原会话后继续；显式结束统一删除旧 worktree，新 claim 创建新工作区；越权、平台不合格或有效 claim 的资源缺失保持拒绝或暂停。 |
-| W-09 | Ctrl+C、强制结束 worker、Herdr 重启及机器重启后不产生第二个执行 agent；在外部动作结果落库前后注入中断，正确核对实际结果；恢复预算和暂停跨重启保持。 |
+| W-09 | Ctrl+C、强制结束 worker、Herdr/Controller 重启及机器重启后不产生第二个执行 agent；在外部动作结果落库前后注入中断，正确核对实际结果；恢复预算和暂停跨重启保持。 |
 | W-10 | 已核验的开发任务合并并完成合并后验收，原 claim 退出自己清单后删除 worktree 且历史仍在；agent 交付证据不足时不完成；清理失败跨重启只重试清理。 |
 | W-11 | 前台和自动执行许可/平台 UI 展示与真实状态一致；错误、未知结果和人工处理入口可观察；各验收结果能关联到实际源代码、平台与运行环境。 |
 

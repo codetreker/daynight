@@ -188,13 +188,16 @@ const workerText = (value: unknown): string => {
 const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
 const workerClaim = (value: unknown): WorkerClaim | null => {
   if (value === null) return null;
-  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
+  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
   const machine = fields(data.machine, ["id", "name"]);
   const herdr = data.herdr === null ? null : fields(data.herdr, ["session", "workspaceId", "paneId"]);
+  const agentControlMode = !Object.hasOwn(data, "agentControlMode") ? "herdr" : data.agentControlMode;
+  if (agentControlMode !== "herdr" && agentControlMode !== "web") return malformed();
+  if (agentControlMode === "web" && herdr !== null) return malformed();
   return {
     claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
     userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: workerText(machine.name) }, platform: executionPlatform(data.platform),
-    agent: data.agent === "codex" || data.agent === "copilot" ? data.agent : malformed(), worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
+    agent: data.agent === "codex" || data.agent === "copilot" || data.agent === "claude" ? data.agent : malformed(), agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
     herdr: herdr === null ? null : { session: workerText(herdr.session), workspaceId: workerText(herdr.workspaceId), paneId: workerText(herdr.paneId) },
     nativeSessionId: data.nativeSessionId === null ? null : workerText(data.nativeSessionId), claimedAt: timestamp(data.claimedAt),
   };
@@ -276,3 +279,8 @@ export const parseAttachmentPage = (value: unknown): AttachmentPage => {
   if (new Set(items.map((item) => item.path)).size !== items.length) return malformed();
   return { items, nextCursor: data.nextCursor === null ? null : nonemptyString(data.nextCursor) };
 };
+
+export {
+  parseSessionCommand, parseSessionSnapshot, parseSessionOperation, parseSessionResource,
+  parseSessionInteraction, parseInteractionResponse, parseTimelineEntry, parseSessionEvent,
+} from "../../../daynight/src/session/protocol.js";

@@ -4,6 +4,7 @@ import { useI18n } from "../i18n/LocaleProvider";
 import { navigate } from "./router";
 import { useBodyScrollLock } from "./useBodyScrollLock";
 import "../styles/sidebar.css";
+import { useTestSessionListMessages } from "../features/task-agent-session/test-session-list-messages";
 
 // Keep the media query identical to sidebar.css so layout and modal ownership change together.
 export const SIDEBAR_NARROW_QUERY = "(max-width: 740px)";
@@ -14,13 +15,15 @@ type WorkspaceSidebarProps = {
   readonly routeKey: string;
   readonly projectsActive: boolean;
   readonly accountActive: boolean;
+  readonly testSessionsActive?: boolean;
   readonly identityChecking: boolean;
   readonly workspaceRef: RefObject<HTMLDivElement | null>;
   readonly onNavigate: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, accountActive, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, accountActive, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app } } } = useI18n();
+  const testMessages = useTestSessionListMessages();
   const [media] = useState(() => window.matchMedia(SIDEBAR_NARROW_QUERY));
   const [narrow, setNarrow] = useState(media.matches);
   const [drawer, setDrawer] = useState<{ readonly route: string } | null>(null);
@@ -108,6 +111,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
         <nav aria-label={app.mainNavigation}>
           <p className="nav-label">{app.workspace}</p>
           <a className="nav-button" href="/projects" onClick={follow} aria-label={m.myProjects} title={m.myProjects} aria-current={projectsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▦</span><span className="nav-text">{m.myProjects}</span></a>
+          <a className="nav-button" href="/test-sessions" onClick={follow} aria-label={testMessages.title} title={testMessages.title} aria-current={testSessionsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▷</span><span className="nav-text">{testMessages.title}</span></a>
         </nav>
       </div>
       <div className="sidebar-bottom">

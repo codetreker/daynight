@@ -1,6 +1,6 @@
 # Worker 任务认领与执行归属
 
-状态：服务端认领、归属更新、释放、移交、人工接续及 CLI/Web 读取模型已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
+状态：服务端认领、归属更新、释放、移交、人工接续及 CLI/Web 读取模型已实现。本文拥有认领基础能力的协议和事务；[Worker 需求](../spec/daynight-worker.md)拥有产品行为，[整体架构](daynight-worker.md)拥有调度、资源和恢复的职责划分。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-worker-claim-foundation.md)保存选型及限制。本机身份、实例锁与 projects/tasks SQLite 记录已由[本机记录模块](../../packages/daynight/src/commands/worker/store.ts)提供，[工作区模块](../../packages/daynight/src/commands/worker/worktrees.ts)负责实际 Git 仓库与 task worktree，[Herdr 适配](../../packages/daynight/src/commands/worker/herdr.ts)提供私有实例及原生资源操作，Web backend 由每 execution 的 Controller 管理原生会话；前台 [worker run 与人工管理命令](daynight-worker.md#agent-完成与人工操作)组合这些能力；完整三平台运行时验收保留独立证据边界。
 
 ## 资源和属性所有权
 
@@ -15,6 +15,7 @@
   "machine": {"id": "3475decc-e9e4-4615-857f-c5f31a2259e1", "name": "build-machine"},
   "platform": "linux",
   "agent": "codex",
+  "agentControlMode": "herdr",
   "worktreeId": "45dd8ec8-a8ea-4ac9-a72d-c2ed98fc66f5",
   "phase": "preparing",
   "herdr": null,
@@ -23,11 +24,19 @@
 }
 ```
 
-`platform` 为 windows/linux/macos，`agent` 为 codex/copilot。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
+`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 为 herdr/web，是 claim 创建时冻结的执行模式；Codex、Claude、Copilot 均可使用任一模式，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
 
 初始认领和人工接续的 userId 来自服务端认证用户；移交的目标 userId 由服务端校验为当前项目成员。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。released/completed 保留最后身份、工作区及会话信息作为历史，不自动过期；字段存在不证明原资源仍存活，也不要求新执行复用它们。
 
 存储/读取 codec 与公共属性写入 codec 分开。普通 create/PATCH 提供 worker 字段时，即使为 null 或与现值相同也返回 invalid_input。PR 列表修改保留 worker，worker 操作保留 PR 及其他任务资料。016_task_worker.sql 在规范 JSON 文本末尾插入 worker:null 并调整默认值，保留版本和时间；不经过 PostgreSQL JSON/JSONB 转换，以保留既有 PR 字符串中的 NUL 转义和 Unicode 语义。
+
+## 执行模式兼容
+
+旧请求与旧记录缺少 agentControlMode 时规范化为 herdr；显式 null、空串或未知枚举拒绝。新响应总是返回实际模式，配置重载不能改变既有 claim。Transfer/resume 的新 claim 可以指定另一模式，沿用停止证明与新执行身份要求。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
+
+迁移为非 null worker 文档补充 herdr，保留 null worker、任务版本、时间及 PR 字符串原文。客户端与服务端共同校验 mode/provider 组合。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
+
+Web 认领前通过认证 session-capabilities 请求核验协议、schema/projection 版本和 provider。Claim 的 herdr 始终为 null，phase/nativeSessionId 是执行摘要，不能证明在线或允许换 writer。Session registration 与 controller grant 另受当前 claim、owner 和 generation fence 约束，完整契约见[Task Session](task-session-protocol.md)。丢失 ledger 的 Web claim 不因 preparing 或 nativeSessionId=null 变成首次启动；保留原模式并暂停，等待原执行来源证明。
 
 ## HTTP 操作
 
@@ -35,26 +44,26 @@
 
 | 方法和后缀 | 输入与结果 |
 |---|---|
-| POST `/worker-claim` | version、claimId、workerId、machine、platform、agent、worktreeId；自动认领，终止后重新认领使用新 claimId/worktreeId。 |
+| POST `/worker-claim` | version、claimId、workerId、machine、platform、agent、agentControlMode、worktreeId；自动认领，终止后重新认领使用新 claimId/worktreeId。 |
 | PATCH `/worker-claim` | version、claimId，及 phase/herdr/nativeSessionId 中至少一个字段；只更新当前执行摘要。 |
 | PUT `/status` | version、status；只有 done 目标可附带 claimId，以完成当前 active 归属。 |
 | POST `/worker-claim/release` | version、claimId、stoppedConfirmed:true；释放已停止的执行，返回 todo。 |
 | POST `/worker-claim/transfer` | version、claimId、newClaimId、target、worktreeId、stoppedConfirmed:true；以目标的新执行原子移交并保持 in_progress。 |
 | POST `/worker-claim/resume` | 自动认领的身份字段，加 previousClaimId；显式人工安排已释放 task 的新执行。 |
 
-Transfer 的 target 必须包含 userId、workerId、machine、platform、agent。调用者是原 owner 或项目管理员；目标成员不因被指定为接收者而获得提交移交的权限。Source 完成原 agent/workspace/worktree 清理后，授权调用者提交目标新执行描述；目标执行方确认服务端实际新归属后，按普通 pending→active 创建新的工作区与原生会话。授权方与目标可以是同一用户。
+Transfer 的 target 必须包含 userId、workerId、machine、platform、agent、agentControlMode。调用者是原 owner 或项目管理员；目标成员不因被指定为接收者而获得提交移交的权限。Source 完成原 agent/backend 资源/worktree 清理后，授权调用者提交目标新执行描述；目标执行方确认服务端实际新归属后，按普通 pending→active 创建新的工作区与原生会话。授权方与目标可以是同一用户。
 
 ### 自动认领和终止后新执行
 
 项目写事务取得锁后重新核验当前成员、精确版本、todo、全部前置完成、allowAgents=true、平台兼容和无 active 归属。成功同时进入 in_progress 并安装 active 记录，只增加一次任务版本。候选快照不替代事务校验。
 
-没有记录时创建初始归属。存在 released/completed 历史时，新的 claimId 与 worktreeId 均须区别于最后执行；completed task 仍须先合法重开。Agent 可明确选择为 codex/copilot，与 source 类型独立。接口严格拒绝已废弃的 continuityConfirmed，不兼容忽略。服务端校验新身份及资格；仍有效同一 claim 的原 worktree/native history 恢复由运行时核对，终止后新执行不依赖这些源资料。
+没有记录时创建初始归属。存在 released/completed 历史时，新的 claimId 与 worktreeId 均须区别于最后执行；completed task 仍须先合法重开。Agent 可明确选择为 codex/copilot/claude，与 source 类型独立。接口严格拒绝已废弃的 continuityConfirmed，不兼容忽略。服务端校验新身份及资格；仍有效同一 claim 的原 worktree/native history 恢复由运行时核对，终止后新执行不依赖这些源资料。
 
 人工 resume 只处理 released、todo 且全部前置完成的任务。调用者必须仍是项目成员，并是原 owner 或管理员；previousClaimId 必须匹配保留记录，claimId/worktreeId 必须为新的执行身份。它创建归属于认证调用者的新 active claim，允许本次明确 agent，保留普通人工安排不受自动许可/平台过滤限制的语义。自动调度不能失败后退入该入口；普通 daemon 跳过 released 候选并继续后续分页。公开 resume 命令使用本次有效配置，实际取得 claim 后才登记 pending。
 
 ### 更新、完成和状态保护
 
-执行摘要更新要求 active 记录及匹配 claimId，且认证用户为当前 owner。身份、平台、agent、工作区、状态和认领时间不可通过该入口改写。精确版本同值更新保留版本、更新时间和执行时间；旧版本同值请求仍冲突。
+执行摘要更新要求 active 记录及匹配 claimId，且认证用户为当前 owner。身份、平台、agent、agentControlMode、工作区、状态和认领时间不可通过该入口改写。精确版本同值更新保留版本、更新时间和执行时间；旧版本同值请求仍冲突。
 
 普通从未由 worker 管理的任务继续使用九种三状态组合。状态设置先核验成员和精确版本，再处理同状态 no-op；no-op 不释放归属或改变计时。实际转换遵循以下保护：
 
@@ -72,7 +81,7 @@ Release 要求当前 active claim、原 owner/admin 权限和停止确认。它�
 
 Transfer 要求原 owner/admin 和当前目标成员，重新核验自动许可、目标平台和全部前置；newClaimId 与目标 worktreeId 必须区别于当前记录，目标 agent 可明确变更。它保持 task 的 in_progress 和起止时间，安装目标 active 记录，以数据库时间记录新的 claimedAt，阶段恢复为 preparing、会话为 null。旧执行方的 claim 写入失效。
 
-stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代表服务端远程停止了进程。主动管理命令先持久保存 source 意图，完成原 agent 有界清理、停止、关闭 workspace 和删除 worktree，才提交远端；未知结果保留原意图，不能重建 source。Daynight fencing 只能拒绝旧的业务写入，不能撤销 Git 凭据或终止原 agent。不确定原执行是否已停时保留原归属，不提交 release/transfer。
+stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代表服务端远程停止了进程。主动管理命令先持久保存 source 意图，完成原 agent 有界清理、停止、关闭对应 backend 资源和删除 worktree，才提交远端；未知结果保留原意图，不能重建 source。Daynight fencing 只能拒绝旧的业务写入，不能撤销 Git 凭据或终止原 agent。不确定原执行是否已停时保留原归属，不提交 release/transfer。
 
 ## 事务、错误和身份范围
 
