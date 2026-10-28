@@ -6,6 +6,8 @@ import type { LocalTask } from "./types.js";
 
 export type WorkerDiagnostic = { kind: string; message: string; task?: LocalTask; error?: unknown };
 
+const abbreviateGuids = (value: string): string => value.replace(/\b([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "$1");
+
 export const createWorkerDiagnostics = async (options: {
   paths: WorkerPaths; workerId: string; platform: TaskPlatform;
   log?: (message: string) => void; secrets?: readonly string[];
@@ -42,7 +44,7 @@ export const createWorkerDiagnostics = async (options: {
     };
     const serialized = JSON.stringify(record, (_key, value: unknown) => typeof value === "string" ? redact(value) : value);
     if (failed === undefined) pending = pending.then(() => appendFile(filename, `${serialized}\n`, { mode: 0o600 })).catch((cause: unknown) => { failed = cause; });
-    try { options.log?.(`${record.timestamp} ${record.kind}${task === undefined ? "" : ` ${task.projectId}/${task.taskId}/${task.claimId} ${task.status}`} ${record.message}${event.error === undefined ? "" : ` ${JSON.stringify(describeError(event.error))}`}\n`); }
+    try { options.log?.(abbreviateGuids(redact(`${record.timestamp} ${record.kind}${task === undefined ? "" : ` ${task.projectId}/${task.taskId}/${task.claimId} ${task.status}`} ${record.message}${record.error === undefined ? "" : ` ${JSON.stringify(record.error)}`}\n`))); }
     catch (cause) { if (failed === undefined) failed = cause; }
   };
   return {

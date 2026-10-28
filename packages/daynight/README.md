@@ -1143,9 +1143,13 @@ current configuration does not establish that historical type. Unproven Git-only
 resources remain untouched.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
-known session ID. Startup prints the log location and attach guidance. Routine
-observations report the first connection and changes to a claim’s waiting or
-executing phase, terminal or native session. Unchanged polls stay quiet, including
+known session ID. After credential redaction, the terminal renderer shortens each
+full hyphenated GUID in context, messages and error chains to its first eight
+hexadecimal characters, preserving case. Other text stays unchanged. JSONL keeps
+complete IDs in fields, messages and errors for precise lookup. Startup prints
+the log location and attach guidance. Routine observations report the first
+connection and changes to a claim’s waiting or executing phase, terminal or native
+session. Unchanged polls stay quiet, including
 the first poll after a successful start. Claims are tracked independently.
 Resource-preservation warnings appear once while continuously observed and
 appear again if they clear and return. Actual starts, recoveries, cleanup, manual
