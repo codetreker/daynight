@@ -25,7 +25,9 @@ hook-asset writes in the daemon's provider home to that installer. It does not
 copy the shell's status or configuration into the private daemon.
 
 Each launch makes its own list, conditional installation and readback requests
-to the private daemon. The official handler owns installation; each preflight
+to the private daemon. Its [event loop](https://github.com/herdrdev/herdr/blob/2ecf19a92fc3a7fff75b6ce3655ef04f4625ec01/src/server/headless.rs#L2871-L2881)
+processes official handlers synchronously, one request at a time. This orders
+individual daemon requests, not an entire preflight sequence; each preflight
 uses its caller's cancellation and deadline.
 
 Before `agent.start`, each launch still verifies native prerequisites and the
