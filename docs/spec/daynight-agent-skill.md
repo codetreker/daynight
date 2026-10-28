@@ -1,7 +1,7 @@
 # Agent 项目任务管理 Skill 需求
 
 公开入口为随 `@codetreker/daynight` 发布的 `using-daynight` skill，包含 `handbook`、
-`create-task`、`handoff`、`run-task` 和 worker 专用 `execute-task-in-managed` 模式。本文拥有使用、安装与覆盖的可观察
+`create-task`、`handoff`、`run-task` 和 worker 专用 `autopilot-managed-task` 模式。本文拥有使用、安装与覆盖的可观察
 要求；机制由[设计](../design/daynight-agent-skill.md)拥有。既有
 [客户端需求](daynight-project-task.md)与[附件需求](daynight-task-attachments.md)
 继续拥有命令、项目发现、版本和附件操作语义。
@@ -15,7 +15,7 @@
 
 产品只发布一个公开 `using-daynight` skill。英文 `SKILL.md` 使用标准 frontmatter，
 与 `references/handbook.md`、`references/create-task.md`、`references/run-task.md`、
-`references/execute-task-in-managed.md`、`references/handoff.md`，以及共享
+`references/autopilot-managed-task.md`、`references/handoff.md`，以及共享
 `references/task-execution.md`、`references/task-content.md` 和 `references/goal.md`
 一起包含在 npm 安装产物中。Codex、Copilot CLI、Claude Code 使用相同内容。
 安装后不依赖源码仓库、仓库内部工作流 skill、未发布文档或包外临时文件；npm 包移动、
@@ -30,11 +30,11 @@
 | `create-task` | 在明确创建许可内复用或登记具体工作；Goal 首先只登记需求讨论任务。仅登记请求核验后返回，明确开始讨论时按 Goal 协议进入当前阶段。 |
 | `handoff <task-id>` | 在明确移交授权内读取任务和必需资料并审查，通过后按精确版本启用许可；结果核对后返回，不开始执行。完整要求见 AS11。 |
 | `run-task <task-id>` | 普通指定任务的开始、恢复和完成；讨论按用户确认与阶段验收，交付按其实际条件完成。Goal 的明确用户转场由共享协议处理。 |
-| `execute-task-in-managed` | 仅供 worker 启动 prompt 显式指定的 managed 环境使用；复用提供的已认领执行，只完成原任务及 claim，然后返回 controller。 |
+| `autopilot-managed-task` | 仅供 worker 启动 prompt 显式指定的 managed 环境使用；复用提供的已认领执行，只完成原任务及 claim，然后返回 controller。 |
 
 Worker 首次启动或为同一 claim 重新启动 agent 时，在 prompt 中明确指定运行环境
-`worker-managed`、技能 `using-daynight`、模式 `execute-task-in-managed`，并提供原
-assignment。只有该显式入口加载 `references/execute-task-in-managed.md`；普通指定
+`worker-managed`、技能 `using-daynight`、模式 `autopilot-managed-task`，并提供原
+assignment。只有该显式入口加载 `references/autopilot-managed-task.md`；普通指定
 任务加载 `references/run-task.md`。不能根据 `properties.worker`、工作目录、环境变量、
 任务标题或普通请求推断 managed 模式。显式 managed 请求缺少或不匹配上下文时等待，
 不能回落普通执行。SKILL.md 保留简短互斥路由，详细生命周期由各自引用拥有。
@@ -252,12 +252,16 @@ CI、review、合并等待及 subagent 协作仍属于当前任务。外部介�
 
 ## AS6. Worker managed 指定执行
 
-`references/execute-task-in-managed.md` 是独立执行入口，消费 worker 启动 prompt 中
+`references/autopilot-managed-task.md` 是独立执行入口，消费 worker 启动 prompt 中
 显式指定的运行环境、技能、模式和 assignment。它不先执行普通 run-task 再跳过步骤。
 Assignment 包括 projectId、taskId、claimId、worktreeId、实际 worktree 路径和 branch，
 以及本次启动或恢复所用的有效配置。先读完整任务并核对 project/task、in_progress、active
 worker claim 及 worktreeId，再核对真实工作目录、分支与给定配置。上下文缺失或不匹配
 时等待，不降级普通认领、开始或任务选择；模式声明不能替代服务端权限和精确版本保护。
+有效的 worker-managed assignment 已有完成当前任务所需的充分授权，包含实现、
+分支交付、评审回复与 PR 合并；达到检查和评审条件后直接合并，无需再次请求确认。
+用户明确的暂停、限制或撤回授权继续生效；该授权只覆盖原任务，后台任务在此范围内
+自主决定，真实外部阻塞交还 controller。
 
 同 claim 已 completed 且 task done 时报告已有结果，不重新执行。恢复及任务写入前刷新
 原 claim；claim 变化立即停止业务写入，不用后来读到的 claim 替换 worker 给定身份。
@@ -270,8 +274,26 @@ worker claim 及 worktreeId，再核对真实工作目录、分支与给定配�
 拥有系统资源收尾和后继调度；明确清理请求只处理其范围内可归属的 worktree 外临时资源。
 仅重连存活 agent 不意味着重新发送启动 prompt；确需重新启动时沿用原模式、assignment
 和工作区，由 worker 根据记录的 agent/session_id 和当前适用配置选择原生恢复；session_id
-为空时 Warning 后新建会话。实际 prompt 组装、递交与原生恢复由 worker 运行时和 Herdr
+为空时记录普通 info 后新建会话。实际 prompt 组装、递交与原生恢复由 worker 运行时和 Herdr
 接入承担，技能文档和模拟检查不能替代这些运行结果。
+
+按当前任务完成实现、相关文档同步及行为验证，及时提交、推送工作分支并维护聚焦的
+交付 PR。每次 push 后刷新真实远端 head、检查和 review。失败先查明原因；只有确认
+是临时基础设施问题才重跑原样失败。评审逐项区分修复、延后和不成立，修复本次引入的
+Critical/Major 及影响约定交付正确性的缺陷，逐线程回应并处理阻塞。最终评审没有新的
+Critical/Major，且满足实际远端评审与合并条件后，立即使用已有充分授权合并。
+
+合并前刷新当前 head、必需检查、实际 reviewer approval、阻塞线程和可合并状态；
+approval 必须对应当前 head。遵守保护规则和线性历史，平台支持时绑定核验过的 head，
+head 或前提改变后重新核验。平台明确确认 merged 并取得 merge commit 才算合并完成；
+自动合并受理或进入 merge queue 均不足。平台确认后继续验收和关闭，默认不等待合并
+触发的主线 CI，只有用户明确要求时才增加该验证。无 PR 交付路径的任务按实际验收
+处理，不增加 PR 或 approval 门槛。
+
+CI/review 正常 pending 属于持续执行，使用有界 watch 或合理间隔的轮询自行检查，
+watch 超时只结束该次观察；不能仅因 PR 打开、检查运行或评审已请求而返回。
+中断、长等待与恢复检查点保留原 assignment、有效授权和范围、工作区/分支、PR/head、
+验证和评审状态、阻塞、资源及下一动作，不保存凭据；恢复前重新核对任务与远端状态。
 
 完成全部共同交付准备后，重读完整任务并核对原 active claim，最后使用显式
 `--claim-id` 与观察 `--if-version` 提交 done。这是最终 task mutation，确认服务结果的
@@ -279,7 +301,9 @@ done、worker.state=completed 和原 claimId。拒绝或未知结果只读核对
 不回退普通 done；读取失败保持未确认，claim 变化停止后续业务写入。公开 CLI 的
 `--claim-id` 及 owner、claim、版本保护保持不变。
 
-等待人工、必要 PR 未合并或验收未满足时保持未完成；完成或等待后交还 controller。
+只有明确的人类确认门槛、授权被撤回或受到明确限制、缺少凭据、reviewer 不可用等实际外部阻塞才保留
+检查点并返回等待，不向用户提问；验收未满足且仍有可执行的授权动作时继续处理。
+全部验收通过并确认原 claim 完成后交还 controller。
 该入口不选择后继、不推进 Goal 阶段，也不删除系统工作区。普通入口和 managed 入口
 共用交付与验收要求，分别拥有自身的状态和资源生命周期。
 

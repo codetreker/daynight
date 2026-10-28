@@ -152,13 +152,24 @@ records module ownership and the preserved data layout.
 
 The public `using-daynight` skill provides task creation, handoff review and
 execution of one specified task. Ordinary execution reads `run-task.md`.
-Worker-started agents use `execute-task-in-managed` only when their startup
+Worker-started agents use `autopilot-managed-task` only when their startup
 prompt explicitly names the `worker-managed` environment, the `using-daynight`
 skill and that mode, together with their assignment. `SKILL.md` routes to the
 selected instructions; ordinary execution does not load managed task rules.
 Shared task inputs, delivery and acceptance rules retain one owner in the bundle.
 The [foreground worker](#worker-configuration-and-startup) constructs that
 explicit assignment and loads the installed managed entry before launch.
+Managed execution follows one assignment through implementation, validation,
+focused PR delivery, CI and review repair, and merge. A valid worker-managed
+assignment already has sufficient authorization for that delivery and PR merge;
+merge as soon as the checks and review conditions are satisfied without asking
+for additional confirmation. Explicit user restrictions, pauses and revocation
+remain binding. Pending CI or
+review stays in execution; demonstrated external blockers return to the worker
+with a checkpoint. Merge requires current-head approval and required checks,
+and platform confirmation; mainline CI after merge is awaited only on explicit
+request. The mode preserves the assigned scope, the original claim and the
+controller's ownership of worktree, branch and workspace cleanup.
 
 Install the skill through an interactive terminal:
 
@@ -1011,7 +1022,7 @@ Native recovery uses current resources and the recorded session ID:
 |---|---|
 | Matching agent is alive | Reconnect and observe without resending the startup prompt. |
 | Agent needs starting, session_id is present | Resume that native session using the recorded agent type. |
-| Agent needs starting, session_id is NULL | Emit Warning, start a fresh native conversation, and save its ID in the same row. |
+| Agent needs starting, session_id is NULL | Emit `info`, start a fresh native conversation, and save its ID in the same row. |
 
 When a native process must restart, the worker stops/closes an existing
 inactive workspace and creates a new one with the current native environment
@@ -1087,10 +1098,10 @@ integration failures and launch errors stay visible. Use attach for business
 input. Reconnecting an already alive agent does not promise to resend an input
 lost across a process interruption.
 
-When the original claim is absent from a successful complete inventory, the
-worker asks its agent to release attributable temporary files, services and
-processes outside the worktree. It waits at most ten minutes for this cleanup
-attempt, stops the agent, closes its workspace, removes the matching worktree
+During normal reconciliation, when the original claim is absent from a
+successful complete inventory, the worker asks its agent to release attributable
+temporary files, services and processes outside the worktree. It waits at most
+ten minutes for this cleanup attempt, stops the agent, closes its workspace, removes the matching worktree
 and marks the local row done. Done, release and force withdrawal have the same terminal
 resource rule. Failed stop or deletion retains responsibility and the error.
 
@@ -1105,8 +1116,8 @@ close its workspace. Sequence counters and interactive readiness are not
 required. A pre-notification observation or the submission receipt itself
 cannot finish cleanup. Failed or unknown notification results retain their error
 and the current bounded wait, without automatic replay. Reaching the deadline
-still proceeds through actual stop confirmation. Idle in this exit phase does
-not complete the business task.
+still proceeds through actual stop confirmation. Idle in this terminal cleanup
+phase does not complete the business task.
 
 Cleanup timing and progress are in memory. Polls do not extend the current
 attempt's deadline; after a crash, the next successful reconciliation observes
@@ -1115,15 +1126,32 @@ may repeat. Separate tasks have independent bounded jobs, so one held RPC does
 not postpone another task's cleanup. A cleanup already selected in the current
 process can continue during later service-read failures.
 
-Ctrl+C stops acquisition and ordinary scheduling, then gives agents bounded
-outside-worktree cleanup, stops them and closes their workspaces. Valid claims,
-worktrees, session IDs and active/pending rows remain for the next run. The
-private instance stops last; exit failures remain visible.
+Ctrl+C stops acquisition and scheduling, cancels all running jobs including
+terminal cleanup, and joins them before directly stopping agents and closing
+their workspaces. Process exit sends no cleanup prompt and does not wait for a
+cleanup turn. It preserves claims, worktrees, native session IDs and all
+unfinished active/pending rows, including those whose ownership has ended. The
+next run uses normal inventory reconciliation to re-enter terminal cleanup for
+ended claims. External temporary resources may remain after direct interruption.
+Normal completion, release, withdrawal and manual-control cleanup retain their
+notification and removal sequence. Pending stop confirmations must settle before the private
+Herdr instance stops; stop errors remain visible, and uncertain stopping retains
+that instance and the affected resources. Before closing a verified orphan
+workspace with no local task row, cleanup and exit save its observed native
+agent and any live session ID in the existing pending claim index. Restart can
+then remove its retained worktree and unblock a later claim for the same task.
+An unknown original agent type retains the workspace with a visible error;
+current configuration does not establish that historical type. Unproven Git-only
+resources remain untouched.
 
 stderr and JSONL logs identify worker, platform, Project/task/claim, agent and
-known session ID. Startup prints the log location and attach guidance. Routine
-observations report the first connection and changes to a claim’s waiting or
-executing phase, terminal or native session. Unchanged polls stay quiet, including
+known session ID. After credential redaction, the terminal renderer shortens each
+full hyphenated GUID in context, messages and error chains to its first eight
+hexadecimal characters, preserving case. Other text stays unchanged. JSONL keeps
+complete IDs in fields, messages and errors for precise lookup. Startup prints
+the log location and attach guidance. Routine observations report the first
+connection and changes to a claim’s waiting or executing phase, terminal or native
+session. Unchanged polls stay quiet, including
 the first poll after a successful start. Claims are tracked independently.
 Resource-preservation warnings appear once while continuously observed and
 appear again if they clear and return. Actual starts, recoveries, cleanup, manual
@@ -1146,10 +1174,10 @@ Retry performs one attempt for an active claim still owned by this worker:
 daynight worker retry <task-id> --claim-id <claim-id> --project <project-id>
 ```
 
-It connects the live agent or resumes its recorded native session. NULL emits
-Warning and starts a fresh conversation in the same task worktree. The claim
-and agent type remain; pending rows are started through normal run scheduling.
-After the attempt, run connects to the actual surviving resource. Retry does not
+It connects the live agent or resumes its recorded native session. A NULL ID
+starts a fresh conversation in the same task worktree with an `info` event. The
+claim and agent type remain; pending rows are started through normal run
+scheduling. After the attempt, run connects to the actual surviving resource. Retry does not
 persist a permit or a cumulative cross-restart budget.
 
 Release validates current Project access, source owner/admin, original claim

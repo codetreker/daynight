@@ -33,7 +33,12 @@ they do not store dynamic execution progress. Existing Git markers have no
 workerId, so a Git-only claim requires a matching local row, private Herdr
 resource or current own claim before this worker can clean it. Unproven
 resources are reported and preserved, including in repositories shared with
-another worker.
+another worker. Before cleanup or exit removes a verified private Herdr label,
+a missing local claim is recorded as pending with its observed native agent and
+any live session ID. The [direct shutdown decision](../bug-fix/2026-10-28-worker-direct-shutdown.md)
+owns this use of the existing index to preserve orphan cleanup responsibility
+after workspace closure. An unavailable original agent type remains a visible
+error that preserves the workspace; no configuration-derived type is invented.
 
 Herdr snapshots from polling drive scheduling and capacity only. Startup or
 recovery reads Herdr again inside the task's serialized operation before choosing
@@ -44,10 +49,13 @@ needed fact without another state field or persistent receipt.
 
 A live agent is reconnected without replaying its startup prompt. A native
 process that needs starting resumes the recorded ID when present. A NULL ID
-emits Warning and starts a fresh native conversation in the same task, claim and
-worktree, then saves its ID. It has no history-search, pause or approval gate.
-Known-ID native resume errors remain visible. A non-NULL saved ID is also
-validated against every reported native reference before binding it or sending
+starts a fresh native conversation in the same task, claim and worktree, then
+saves its ID. It has no history-search, pause or approval gate. This decision
+originally classified that event as Warning to expose the fresh-conversation
+choice during recovery. The [fresh-session logging decision](../bug-fix/2026-10-28-worker-fresh-session-info.md)
+uses `info` because NULL is also the normal state of a new claim. Known-ID native
+resume errors remain visible. A non-NULL saved ID is also validated against every
+reported native reference before binding it or sending
 deferred input. A mismatch remains an error and retains the original ID, so a
 later live reconnect cannot turn a failed resume into another conversation.
 A genuine live observation may fill a NULL row; inactive retained references
@@ -91,7 +99,14 @@ counting an old business turn as the requested cleanup. The
 that criterion: successful notification followed by a fresh idle observation
 allows stopping, without requiring counters or interactive readiness. Notification
 failures and unknown results retain the bounded deadline and visible error.
-Input observations and cleanup progress remain process-local.
+Input observations and cleanup progress remain process-local. This criterion
+applies to normal terminal cleanup. The
+[direct shutdown decision](../bug-fix/2026-10-28-worker-direct-shutdown.md)
+owns worker process exit: cancel and join all jobs, including terminal cleanup,
+then directly stop agents and close workspaces without a cleanup prompt or turn.
+Claims, worktrees, native session IDs and unfinished rows remain even for ended
+owners; the next normal inventory re-enters their terminal cleanup. Stop errors
+remain visible and uncertain stopping retains the private daemon.
 
 Configuration and recovery/cleanup state are process-local. A restarted process
 uses the current applicable model/args for the recorded agent type. Cleanup has
@@ -161,10 +176,10 @@ Old claim resources still block the same task's new execution and retain
 capacity until actual cleanup completes.
 
 Restart does not preserve the first cleanup deadline, accumulated recovery
-budget, old model/args or an interrupted management decision. NULL native IDs can
-lose old conversation continuity, with a Warning and fresh conversation as the
-explicit behavior. Management takes the runner offline. The state directory is
-for one configured service/account/worker identity; changes require completing
+budget, old model/args or an interrupted management decision. A NULL native ID
+starts a fresh conversation with an `info` event; if a prior conversation existed,
+its continuity can be lost. Management takes the runner offline. The state
+directory is for one configured service/account/worker identity; changes require completing
 old executions and rebuilding local state.
 
 There is no old-schema migration or automatic deletion. An operator stops the

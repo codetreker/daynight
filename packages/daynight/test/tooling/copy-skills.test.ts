@@ -71,8 +71,8 @@ describe("packaged skill resource copy", () => {
     expect(copied.status, copied.stderr).toBe(0);
     const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
     for (const { resource, addition } of [
-      { resource: "references/run-task.md", addition: "\n[Managed lifecycle](execute-task-in-managed.md)\n" },
-      { resource: "references/execute-task-in-managed.md", addition: "\n[Ordinary lifecycle](run-task.md)\n" },
+      { resource: "references/run-task.md", addition: "\n[Managed lifecycle](autopilot-managed-task.md)\n" },
+      { resource: "references/autopilot-managed-task.md", addition: "\n[Ordinary lifecycle](run-task.md)\n" },
       { resource: "references/task-execution.md", addition: "\n[Ordinary lifecycle](run-task.md)\n" },
       { resource: "references/task-execution.md", addition: "\ntask set-status <task-id> done\n" },
     ]) {
@@ -111,12 +111,13 @@ describe("packaged skill resource copy", () => {
     expect(copied.status, copied.stderr).toBe(0);
     const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
     const mutations = [
-      { scenario: "worker-managed-context", resource: "references/execute-task-in-managed.md", before: "missing, incomplete, or mismatched, return waiting without task or business writes", after: "context is missing or mismatched, use ordinary task selection" },
-      { scenario: "worker-managed-context", resource: "references/execute-task-in-managed.md", before: "`properties.worker.state=active` with the supplied `claimId`", after: "`properties.worker.state=active` with any available `claimId`" },
-      { scenario: "worker-managed-existing-execution", resource: "references/execute-task-in-managed.md", before: "Do not create, switch, or remove the system-managed worktree or branch", after: "Create a fresh worktree and branch for the task" },
-      { scenario: "worker-managed-claim-completion", resource: "references/execute-task-in-managed.md", before: "--project <project-id> --claim-id <claim-id> --if-version <observed-version>", after: "--project <project-id> --if-version <observed-version>" },
-      { scenario: "worker-managed-claim-completion", resource: "references/execute-task-in-managed.md", before: "never falls back to ordinary completion or automatic replay", after: "falls back to ordinary completion after a refusal" },
-      { scenario: "worker-managed-bounded-wait", resource: "references/execute-task-in-managed.md", before: "this mode does not select a successor or advance a Goal stage", after: "this mode selects the next ready successor" },
+      { scenario: "worker-managed-context", resource: "references/autopilot-managed-task.md", before: "missing, incomplete, or mismatched, return waiting without task or business writes", after: "context is missing or mismatched, use ordinary task selection" },
+      { scenario: "worker-managed-context", resource: "references/autopilot-managed-task.md", before: "`properties.worker.state=active` with the supplied `claimId`", after: "`properties.worker.state=active` with any available `claimId`" },
+      { scenario: "worker-managed-existing-execution", resource: "references/autopilot-managed-task.md", before: "Do not create, switch, or remove the system-managed worktree or branch", after: "Create a fresh worktree and branch for the task" },
+      { scenario: "worker-managed-existing-execution", resource: "references/autopilot-managed-task.md", before: "do not delete its worktree or close its workspace", after: "delete its worktree and close its workspace" },
+      { scenario: "worker-managed-claim-completion", resource: "references/autopilot-managed-task.md", before: "--project <project-id> --claim-id <claim-id> --if-version <observed-version>", after: "--project <project-id> --if-version <observed-version>" },
+      { scenario: "worker-managed-claim-completion", resource: "references/autopilot-managed-task.md", before: "never falls back to ordinary completion or automatic replay", after: "falls back to ordinary completion after a refusal" },
+      { scenario: "worker-managed-bounded-wait", resource: "references/autopilot-managed-task.md", before: "this mode does not select a successor or advance a Goal stage", after: "this mode selects the next ready successor" },
     ];
     for (const mutation of mutations) {
       const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
@@ -126,6 +127,45 @@ describe("packaged skill resource copy", () => {
       documents.set(mutation.resource, documents.get(mutation.resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
       expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario), `${mutation.scenario}: ${mutation.before}`).toThrow();
     }
+  });
+
+  it("detects premature managed returns and weakened delivery gates in copied instructions", async () => {
+    const f = fixture();
+    const copied = f.run();
+    expect(copied.status, copied.stderr).toBe(0);
+    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
+    const resource = "references/autopilot-managed-task.md";
+    const mutations = [
+      { scenario: "worker-managed-authorized-delivery", before: "A valid worker-managed assignment already carries sufficient authorization for its in-scope delivery, including PR merge", after: "A valid worker-managed assignment requires additional permission before PR merge" },
+      { scenario: "worker-managed-authorized-delivery", before: "Do not request additional permission for those steps", after: "Request additional permission for each delivery step" },
+      { scenario: "worker-managed-authorized-delivery", before: "Honor explicit user restrictions, pause requests, and revocation", after: "Ignore subsequent restrictions, pause requests, and revocation" },
+      { scenario: "worker-managed-authorized-delivery", before: "merge immediately without requesting additional permission", after: "request user confirmation before merging" },
+      { scenario: "worker-managed-authorized-delivery", before: "successful required checks", after: "checks that appear unrelated may be bypassed" },
+      { scenario: "worker-managed-authorized-delivery", before: "handled blocking review threads", after: "unresolved blocking review threads" },
+      { scenario: "worker-managed-authorized-delivery", before: "actual reviewer approval for the current head", after: "approval from any earlier head" },
+      { scenario: "worker-managed-authorized-delivery", before: "Do not wait for post-merge mainline CI unless the user explicitly requires that verification", after: "Always wait for post-merge mainline CI before completing the claim" },
+      { scenario: "worker-managed-pending-delivery", before: "Pending PR CI or review is ongoing execution, not external intervention", after: "Pending PR CI or review requires returning to the controller" },
+      { scenario: "worker-managed-pending-delivery", before: "A polling timeout ends only that poll; keep waiting and inspecting results", after: "A polling timeout ends execution and returns waiting" },
+      { scenario: "worker-managed-bounded-wait", before: "A demonstrated blocker", after: "Any delay" },
+      { scenario: "worker-managed-bounded-wait", before: "Preserve the assignment in `in_progress`", after: "Mark the assignment done while intervention is pending" },
+    ];
+    for (const mutation of mutations) {
+      const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
+      const documents = new Map(bundle.documents);
+      const original = documents.get(resource)!.replaceAll(/\s+/g, " ");
+      expect(original).toContain(mutation.before);
+      documents.set(resource, documents.get(resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
+      expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario), `${mutation.scenario}: ${mutation.before}`).toThrow();
+    }
+  });
+
+  it("rejects packaging the renamed managed reference under its old name", async () => {
+    const f = fixture();
+    const source = f.source(bundles[1]);
+    writeFileSync(path.join(source, "references/execute-task-in-managed.md"), "Obsolete managed entrypoint.\n");
+    const copied = f.run();
+    expect(copied.status, copied.stderr).toBe(0);
+    await expect(inspectInstalledSkill(f.destination(bundles[1]))).rejects.toThrow("The renamed managed entrypoint is not packaged under its old name");
   });
 
   it("copies the two complete allowlisted bundles byte-for-byte from an unrelated cwd", () => {
@@ -200,7 +240,7 @@ describe("packaged skill resource copy", () => {
     const create = readFileSync(path.join(destination, "references/create-task.md"), "utf8");
     const run = readFileSync(path.join(destination, "references/run-task.md"), "utf8");
     const shared = readFileSync(path.join(destination, "references/task-execution.md"), "utf8");
-    const managed = readFileSync(path.join(destination, "references/execute-task-in-managed.md"), "utf8");
+    const managed = readFileSync(path.join(destination, "references/autopilot-managed-task.md"), "utf8");
     expect(create).toContain("Create new tasks in `todo`");
     expect(create).toContain("Registration leaves work todo and does not execute it");
     expect(shared).toContain("every necessary delivery PR");

@@ -34,7 +34,7 @@ packages/daynight/
       references/
         handbook.md
         run-task.md
-        execute-task-in-managed.md
+        autopilot-managed-task.md
         task-execution.md
         create-task.md
         goal.md
@@ -46,7 +46,7 @@ packages/daynight/
     references/
       handbook.md
       run-task.md
-      execute-task-in-managed.md
+      autopilot-managed-task.md
       task-execution.md
       create-task.md
       goal.md
@@ -60,7 +60,7 @@ packages/daynight/
 查询 ready/list 是管理操作，不自动开始任何任务。
 
 Worker 的启动 prompt 必须显式指定运行环境 worker-managed、使用 using-daynight 技能
-和 execute-task-in-managed 模式，并给出原 assignment。入口据此只读取 managed 引用；
+和 autopilot-managed-task 模式，并给出原 assignment。入口据此只读取 managed 引用；
 不能从 properties.worker、cwd、环境变量或普通请求推断模式。显式 managed 请求缺失
 或不匹配上下文时等待，不降级到普通执行。这条路由只描述应读什么；claim 核验、资源
 约束和完成写入留在专属引用中，不成为普通路径的例外集合。
@@ -81,7 +81,7 @@ Worker 的启动 prompt 必须显式指定运行环境 worker-managed、使用 u
 ```mermaid
 flowchart TD
     A[using-daynight] --> B{worker 启动 prompt 显式指定 managed 环境/技能/模式}
-    B -->|是| M[execute-task-in-managed]
+    B -->|是| M[autopilot-managed-task]
     B -->|否| C{普通请求意图}
     C -->|使用或管理| H[handbook]
     C -->|明确许可登记| N[create-task]
@@ -110,7 +110,7 @@ controller。Skill、task、附件和完成规则均不授予合并等额外交�
 | `handbook.md` | 命令用途索引与项目定位、查询范围、精确版本、替换和附件独立性等背景 |
 | `create-task.md` | 明确创建许可、具体成果边界、已有任务匹配、资料准备与登记完整性 |
 | `run-task.md` | 普通指定任务的开始、恢复、重开、普通 done 与返回；普通 Goal 的明确讨论转场 |
-| `execute-task-in-managed.md` | 显式 assignment 核验、原 active claim、指定工作区和本次调用配置、等待、claim-bound done 与交还 controller |
+| `autopilot-managed-task.md` | 显式 assignment 核验、原 active claim、指定工作区和本次调用配置、单任务自主交付循环、持续等待与真实阻塞、claim-bound done 与交还 controller |
 | `task-execution.md` | 两种执行入口共用的真实任务输入、阶段资料、范围、交付、验收准备、证据与等待检查点；不拥有开始或最终状态写入 |
 | `goal.md` | Goal 判断、顺序讨论与用户确认、阶段开始授权、确认后实际拆分、恢复和整体验收 |
 | `task-content.md` | 六项内容标准、唯一内容所有者、引用读取、阶段适用性与任务证据位置 |
@@ -261,6 +261,22 @@ controller 管理，agent 在原工作区完成授权工作，避免会切换或
 prompt 的实际组装、Herdr 递交与原生恢复由独立运行时负责；文档路由不证明原生注入
 已实现。仅重连存活 agent 不重新发送启动输入，受理未知先观察原资源。
 
+`autopilot-managed-task` 的有效原 assignment 已有充分的单任务交付授权：实现与
+验证、提交和分支推送、聚焦 PR、CI 与 review 修复、合并和关闭。普通 pending
+CI/review 持续使用有界 watch 或轮询，超时只结束一次观察。失败先诊断，原样重跑限于
+已确认的临时基础设施原因。评审保留修复、延后、不成立三种处置，只在当前范围处理
+Critical/Major 和影响约定交付正确性的缺陷，逐线程回应并处理阻塞；最终一轮无新增
+Critical/Major 且远端评审满足才推进。合并前按当前远端 head 核对必需检查、实际
+approval、线程和可合并状态，保留保护规则及线性历史；平台确认 merged 并取得结果
+commit 后继续关闭，默认不增加合并后主线 CI 等待。该循环由随包引用完整提供，
+运行时无需系统安装另一份 autopilot skill。
+
+恢复检查点保存原 assignment、授权与范围、配置、工作区、PR/head、验证、评审、
+资源和下一动作，不保存凭据；恢复写入前刷新任务及远端状态。后台执行在已有范围内
+自行决定，只有实际的人类确认、授权撤回或明确限制、缺少凭据、不可用 reviewer 等
+外部阻塞才保存检查点并返回 controller。合并已有充分授权，检查与评审条件满足后
+直接执行，不再请求确认；用户明确的暂停和限制继续生效，授权范围始终是原 assignment。
+
 Goal 讨论以用户确认和自身阶段验收作为共同完成准备。独立代码、文档、原型交付以及
 用户明确纳入讨论验收的 PR，仍须所有必要 PR 平台确认合并并满足验收。没有合并权限、
 PR 未合并或人工/验收门槛未满足时保持未完成；CI、review 和合并等待留在当前任务。
@@ -274,7 +290,7 @@ PR 未合并或人工/验收门槛未满足时保持未完成；CI、review 和�
 共同资料不向普通任务添加 claim 要求。
 
 普通完成或需要外部介入后返回；只有普通 Goal 中用户明确确认需求并要求指定方案
-讨论时，才按阶段协议进行指定转场。Managed 完成或等待始终交还 controller，不推进
+讨论时，才按阶段协议进行指定转场。Managed 完成或需要外部介入时交还 controller，不推进
 Goal 阶段或选择后继。系统调度持续处理 ready task 的能力归 worker，公开 skill 没有
 候选选择循环。
 
