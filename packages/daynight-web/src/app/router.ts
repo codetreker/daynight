@@ -1,7 +1,7 @@
 import { ApiError, attachmentPageUrl } from "../api/client";
 import { canonicalId, isAttachmentPath } from "../api/parse";
 
-export type TaskDetailTab = "overview" | "attachments";
+export type TaskDetailTab = "overview" | "attachments" | "session";
 export type TaskDetailNavigation = { readonly tab: TaskDetailTab; readonly path: string | null };
 
 export type Route =
@@ -12,6 +12,8 @@ export type Route =
   | { readonly kind: "notFound" };
 
 export type ProtectedRoute = Route
+  | { readonly kind: "testSessions" }
+  | { readonly kind: "testSession"; readonly sessionId: string }
   | { readonly kind: "account" | "invitations" }
   | { readonly kind: "device"; readonly userCode: string | null }
   | { readonly kind: "members" | "settings"; readonly projectId: string };
@@ -20,7 +22,7 @@ export type AuthRoute = ProtectedRoute | { readonly kind: "login"; readonly retu
 const detailTab = (search: string, defaultTab: TaskDetailTab): TaskDetailTab | null => {
   const values = new URLSearchParams(search).getAll("tab");
   if (values.length === 0) return defaultTab;
-  return values.length === 1 && (values[0] === "overview" || values[0] === "attachments") ? values[0] : null;
+  return values.length === 1 && (values[0] === "overview" || values[0] === "attachments" || values[0] === "session") ? values[0] : null;
 };
 
 export const parseRoute = (pathname: string, search = ""): Route => {
@@ -55,6 +57,12 @@ export const parseRoute = (pathname: string, search = ""): Route => {
 };
 
 const parseProtectedRoute = (pathname: string, search = ""): ProtectedRoute => {
+  if (pathname === "/test-sessions") return { kind: "testSessions" };
+  const test = /^\/test-sessions\/([^/]+)$/.exec(pathname);
+  if (test !== null) {
+    try { const sessionId = canonicalId(decodeURIComponent(test[1]!)); return sessionId === null ? { kind: "notFound" } : { kind: "testSession", sessionId }; }
+    catch { return { kind: "notFound" }; }
+  }
   if (pathname === "/account") return { kind: "account" };
   if (pathname === "/invitations") return { kind: "invitations" };
   if (pathname === "/device") {

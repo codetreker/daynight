@@ -53,6 +53,9 @@ func (s *Tasks) SetStatus(ctx context.Context, principal core.Principal, project
 		if current.Version != input.Version {
 			return taskMutation{}, &Fault{Code: "version_conflict", Message: "Task version does not match."}
 		}
+		if err := requireCompatibleWorker(ctx, current.Properties.Worker); err != nil {
+			return taskMutation{}, err
+		}
 		if current.Status == input.Status {
 			return taskMutation{current: current}, nil
 		}

@@ -217,7 +217,7 @@ describe("task parameter boundaries", () => {
     const f = fixture();
     f.api.getTask.mockResolvedValue({
       ...task, status: "in_progress", ready: false, startedAt: time,
-      properties: { ...task.properties, worker: { claimId, state: "active", userId: projectId, workerId: dependencyId, machine: { id: otherDependencyId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId: taskId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time } },
+      properties: { ...task.properties, worker: { claimId, state: "active", userId: projectId, workerId: dependencyId, machine: { id: otherDependencyId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: taskId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time } },
     });
 
     await runTaskCommand(["set-status", taskId, "done", "--project", projectId], f.context, f.dependencies);

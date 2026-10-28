@@ -31,9 +31,10 @@ const fixture = async () => {
   await writeFile(path.join(codex, "hooks.json"), JSON.stringify(hooks));
   const copilotHooks = { sessionStart: [{ type: "command", bash: `bash ${quote(copilotAsset)}` }] };
   const runCommand = vi.fn(async (command: HerdrCommand) => {
+    if (command.file === "claude") return { stdout: "2.1.247 (Claude Code)\n", stderr: "" };
     let stdout: string;
     if (command.file === "git") stdout = "git version 2.43.0\n";
-    else if (command.file === "herdr") stdout = command.args[0] === "--version" ? "herdr 0.9.5\n" : `codex: current (v10) (${codexAsset})\ncopilot: current (v4) (${copilotAsset})\n`;
+    else if (command.file === "herdr") stdout = command.args[0] === "--version" ? "herdr 0.9.5\n" : `claude: current\ncodex: current (v10) (${codexAsset})\ncopilot: current (v4) (${copilotAsset})\n`;
     else if (command.file === "bash") stdout = "GNU bash, version 5.2.0\n";
     else if (command.file === "python3") stdout = "Python 3.12.3\n";
     else if (command.file === "powershell") stdout = "5.1.0\n";
@@ -66,6 +67,8 @@ describe("worker setup environment inspection", () => {
       { label: "codex Herdr integration", agent: "codex", status: "passed" },
       { label: "copilot executable", agent: "copilot", status: "passed" },
       { label: "copilot Herdr integration", agent: "copilot", status: "passed" },
+      { label: "claude executable", agent: "claude", status: "passed" },
+      { label: "claude Herdr integration", agent: "claude", status: "passed" },
     ]);
     expect(f.runCommand.mock.calls.filter(([command]) => command.file === "herdr").map(([command]) => command.args)).toEqual([["--version"], ["integration", "status"]]);
     expect(f.runCommand.mock.calls.some(([command]) => command.args.some((argument) => ["start", "install", "login", "run"].includes(argument)))).toBe(false);
@@ -79,7 +82,7 @@ describe("worker setup environment inspection", () => {
     const f = await fixture(); const original = f.runCommand.getMockImplementation()!;
     f.runCommand.mockImplementation(async (command) => {
       if (["git", "python3", "copilot"].includes(command.file)) throw new Error(`${command.file} unavailable`);
-      if (command.file === "herdr" && command.args[0] === "integration") return { stdout: "codex: outdated (v9)\ncopilot: not_installed\n", stderr: "" };
+      if (command.file === "herdr" && command.args[0] === "integration") return { stdout: "codex: outdated (v9)\ncopilot: not_installed\nclaude: current\n", stderr: "" };
       return original(command);
     });
     const checks = await inspectWorkerEnvironment(f.options, f.dependencies);
@@ -221,4 +224,13 @@ describe("worker setup environment inspection", () => {
     await expect(inspection).rejects.toMatchObject({ name: "OperationError", kind: "cancelled" });
     expect(settled).toBe(true);
   });
+});
+
+
+it("Web setup does not require Herdr, native hooks, or private Herdr endpoints", async () => {
+  const f = await fixture();
+  const checks = await inspectWorkerEnvironment({ ...f.options, agentControlMode: "web" }, f.dependencies);
+  expect(f.runCommand.mock.calls.some(([command]) => command.file === "herdr")).toBe(false);
+  expect(checks.some(check => check.label.includes("Herdr") || check.label.includes("hook"))).toBe(false);
+  expect(checks.filter(check => check.status === "missing")).toEqual([]);
 });

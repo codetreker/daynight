@@ -1,3 +1,11 @@
+import path from "node:path";
+import { maintainWorkerControllerGrants } from "./backends/grant-renewal.js";
+import { openWebExecutionStore } from "./backends/web-store.js";
+import { createWebExecutionBackend } from "./backends/web.js";
+import { createWebControllerLauncher } from "./backends/web-process.js";
+import { createWorkerSessionApi } from "./backends/session-api.js";
+import type { WorkerEvent } from "./execution.js";
+import type { WorkerPaths } from "./paths.js";
 import { createHash } from "node:crypto";
 import { lstat, mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
@@ -70,6 +78,24 @@ const throwFailures = (failures: readonly unknown[]): void => {
   if (failures.length > 1) throw new AggregateError(failures, "Worker operation and resource cleanup failed.");
 };
 
+
+const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void) => {
+  const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"));
+  try {
+    const buildPrompt = await createWorkerPromptBuilder(options.packageDirectory);
+    const api = createWorkerSessionApi(serverUrl, serverToken);
+    const launcher = createWebControllerLauncher({ ...options, store: webStore, sessionApi: api, now: Date.now });
+    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now,
+      buildPrompt: (task, actualPlatform) => {
+        if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
+        return buildPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
+      },
+      emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
+    });
+    return { webStore, webBackend, launcher, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
+  } catch (error) { webStore.close(); throw error; }
+};
+
 export const runWorker = async (options: {
   homeDirectory: string; packageDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
@@ -81,11 +107,13 @@ export const runWorker = async (options: {
   const signal = cancellation.controller.signal;
   let lock: Awaited<ReturnType<typeof acquireWorkerInstanceLock>> | undefined;
   let store: ReturnType<typeof openWorkerStore> | undefined;
+  let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let coordinator: ReturnType<typeof createWorkerCoordinator> | undefined;
   let herdr: ReturnType<typeof createWorkerHerdr> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   const failures: unknown[] = [];
+  let renewal: Promise<void> | undefined;
   try {
     signal.throwIfAborted();
     let configuration = await readWorkerConfiguration(paths, signal);
@@ -111,7 +139,13 @@ export const runWorker = async (options: {
     const remote = createWorkerRemote({ serverUrl, serverToken });
     await remote.currentUserId(signal);
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
-    herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory });
+    const lazyHerdr = new Proxy({} as ReturnType<typeof createWorkerHerdr>, { get: (_target, property) => {
+      herdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory }); return Reflect.get(herdr, property);
+    } });
+    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
+    renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
+      onError: message => diagnostics?.emit({ kind: "credential-renewal-error", message }),
+    }).catch(error => { failures.push(error); cancellation.controller.abort(error); });
     const repositories: WorkerRepositoryAssignment[] = [];
     for (const repository of configuration.repositories) {
       const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
@@ -126,10 +160,10 @@ export const runWorker = async (options: {
       const operation = createOperation({ signal });
       try { await git.prepareRepository(binding, operation); }
       finally { operation.dispose(); }
-      repositories.push({ project: binding, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
+      repositories.push({ project: binding, configuration: { agent: repository.agent, agentControlMode: repository.agentControlMode ?? "herdr", model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
     }
     coordinator = createWorkerCoordinator({
-      store, git, herdr, remote, serverOrigin: serverUrl, workerId, platform,
+      store, git, herdr: lazyHerdr, ...web, remote, serverOrigin: serverUrl, workerId, platform,
       machine: machineDescription(platform), repositories,
       maxConcurrent: configuration.maxConcurrent, globalConfiguration: configuration,
       buildPrompt: await createWorkerPromptBuilder(options.packageDirectory),
@@ -140,7 +174,7 @@ export const runWorker = async (options: {
     while (!signal.aborted) {
       try {
         await coordinator.tick();
-        if (!attachmentShown) {
+        if (!attachmentShown && herdr !== undefined) {
           diagnostics.emit({ kind: "attach", message: "Run daynight worker attach in another terminal for native input." });
           attachmentShown = true;
         }
@@ -158,16 +192,18 @@ export const runWorker = async (options: {
     if (!isWorkerCancellation(error, signal)) failures.push(error);
   } finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
-    if (coordinator !== undefined && herdr !== undefined) {
+    await renewal;
+    if (coordinator !== undefined) {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });
         if (!await coordinator.shutdown()) throw new Error("Some task agents could not stop; the private Herdr instance was retained.");
         const operation = createOperation({ limits: { totalMs: 30_000 } });
-        try { await herdr.stopInstance(operation); }
+        try { await herdr?.stopInstance(operation); }
         finally { operation.dispose(); }
       } catch (error) { failures.push(error); }
     }
     try { await git?.dispose(); } catch (error) { failures.push(error); }
+    try { web?.webStore.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }
@@ -186,6 +222,7 @@ export const runWorkerControl = async (options: {
   const signal = cancellation.controller.signal;
   let lock: Awaited<ReturnType<typeof tryAcquireWorkerInstanceLock>> | undefined;
   let store: ReturnType<typeof openWorkerStore> | undefined;
+  let web: Awaited<ReturnType<typeof createWebRuntime>> | undefined;
   let git: ReturnType<typeof createWorkerGitManager> | undefined;
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   const failures: unknown[] = [];
@@ -205,26 +242,29 @@ export const runWorkerControl = async (options: {
     for (const repository of configuration.repositories) {
       const project = await remote.resolveProject({ repoUrl: repository.remote, ...(repository.projectId === undefined ? {} : { projectId: repository.projectId }) }, signal);
       const binding = store.registerProject({ projectId: project.id, repoUrl: repository.remote, localPath: repository.path });
-      repositories.push({ project: binding, configuration: { agent: repository.agent, model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
+      repositories.push({ project: binding, configuration: { agent: repository.agent, agentControlMode: repository.agentControlMode ?? "herdr", model: repository.model, args: repository.args, recoveryLimit: repository.recoveryLimit } });
     }
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
-    const herdr = createWorkerHerdr({ paths, homeDirectory: options.homeDirectory });
+    let actualHerdr: ReturnType<typeof createWorkerHerdr> | undefined;
+    const herdr = new Proxy({} as ReturnType<typeof createWorkerHerdr>, { get: (_target, property) => { actualHerdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory }); return Reflect.get(actualHerdr, property); } });
+    web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
     const machine = machineDescription(platform);
     const coordinator = createWorkerCoordinator({
-      store, git, herdr, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories,
+      store, git, herdr, ...web, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories,
       maxConcurrent: configuration.maxConcurrent, globalConfiguration: configuration,
       buildPrompt: await createWorkerPromptBuilder(options.packageDirectory), emit: diagnostics.emit, signal,
     });
     const result = await submitWorkerControl({
       store, remote, serverOrigin: serverUrl, workerId, platform, machine, repositories,
-      request: options.request, signal, coordinator,
+      request: options.request, signal, coordinator, verifyWebServer: web.verifyWebServer,
       emit: diagnostics.emit,
     });
     diagnostics.emit({ kind: "management", ...(result.task === null ? {} : { task: result.task }), message: result.message });
   } catch (error) { failures.push(error); }
   finally {
     try { await git?.dispose(); } catch (error) { failures.push(error); }
+    try { web?.webStore.close(); } catch (error) { failures.push(error); }
     try { store?.close(); } catch (error) { failures.push(error); }
     try { await diagnostics?.flush(); } catch (error) { failures.push(error); }
     try { await lock?.release(); } catch (error) { failures.push(error); }

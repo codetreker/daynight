@@ -1,0 +1,13 @@
+diff --git a/dist/types.d.ts b/dist/types.d.ts
+index a5a2d90c15590860097fd215de5b684b30c33ec4..e801a8a21358e549f8c985789a3ff0a748684503 100644
+--- a/dist/types.d.ts
++++ b/dist/types.d.ts
+@@ -2880,7 +2880,7 @@ export interface SessionCreatedEvent extends SessionLifecycleEventBase {
+ /** Emitted when a session is deleted. The metadata field is omitted. */
+ export interface SessionDeletedEvent extends SessionLifecycleEventBase {
+     type: "session.deleted";
+-    metadata?: undefined;
++    metadata?: never;
+ }
+ /** Emitted when a session's metadata is updated. */
+ export interface SessionUpdatedEvent extends SessionLifecycleEventBase {

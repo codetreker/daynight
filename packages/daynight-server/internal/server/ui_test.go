@@ -282,3 +282,61 @@ func (w *countFailedUIWriter) Write([]byte) (int, error) {
 	w.writes++
 	return 0, errors.New("private-connection-error")
 }
+
+func TestUITestSessionDeepLinkLoadsShellWithoutAuthorizingData(t *testing.T) {
+	handler := uiTestHandler(t, io.Discard)
+	request := func(method, path string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, path, nil))
+		return response
+	}
+	index := request(http.MethodGet, "/")
+	path := "/test-sessions/10000000-0000-0000-0000-000000000001"
+	for range 2 {
+		response := request(http.MethodGet, path)
+		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), index.Body.Bytes()) || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("direct load/reload failed: %d %s", response.Code, response.Body.String())
+		}
+	}
+	head := request(http.MethodHead, path)
+	if head.Code != http.StatusOK || head.Body.Len() != 0 {
+		t.Fatal("HEAD shell", head.Code)
+	}
+	if response := request(http.MethodPost, path); response.Code != http.StatusMethodNotAllowed {
+		t.Fatal("unsupported method", response.Code)
+	}
+	for _, unknown := range []string{"/test-sessions/id/extra", "/test-sessions/id/assets/missing.js", "/assets/missing-test-session.js"} {
+		response := request(http.MethodGet, unknown)
+		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "<html") {
+			t.Fatal("unknown route became SPA", unknown, response.Code)
+		}
+	}
+	// Public shell loading leaves the authenticated Test Session API protected.
+	if response := request(http.MethodGet, "/api/v1/test-sessions/10000000-0000-0000-0000-000000000001"); response.Code != http.StatusUnauthorized {
+		t.Fatal("anonymous data access", response.Code)
+	}
+}
+
+func TestTestSessionListShellKeepsAPIProtected(t *testing.T) {
+	handler := uiTestHandler(t, io.Discard)
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(method, "/test-sessions", nil))
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-store" {
+			t.Fatal(method, response.Code)
+		}
+		if method == http.MethodHead && response.Body.Len() != 0 {
+			t.Fatal("HEAD body")
+		}
+	}
+	for _, target := range []struct {
+		method, path string
+		status       int
+	}{{http.MethodPost, "/test-sessions", http.StatusMethodNotAllowed}, {http.MethodGet, "/api/v1/test-sessions", http.StatusUnauthorized}} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(target.method, target.path, nil))
+		if response.Code != target.status {
+			t.Fatal(target, response.Code)
+		}
+	}
+}

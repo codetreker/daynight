@@ -20,6 +20,11 @@ worker even when its value is unchanged, while PR and worker updates preserve
 each other. The text migration inserts explicit null without JSON/JSONB
 conversion, preserving opaque PR strings, task versions and timestamps.
 
+The [session mode contract](2026-10-27-task-session-mode-contract.md) extends the
+protected claim with its frozen execution mode. Legacy records retain Herdr
+semantics, and Web claims reject Herdr resource bindings. Mode metadata does not
+establish controller startup or native session availability.
+
 Automatic acquisition rechecks member access, the exact task version, readiness,
 permission, platform and existing ownership before installing one active claim.
 Claim-bound done uses the existing status resource; ordinary status changes

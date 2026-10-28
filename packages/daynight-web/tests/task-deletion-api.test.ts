@@ -19,7 +19,7 @@ describe('versioned task soft-delete transport', () => {
     await expect(deleteTask(project.toUpperCase(), task.toUpperCase(), version, undefined, abortSignal, { userId: TEST_VIEWER_ID, onPrincipalMismatch: mismatch, onWriteConfirmed: confirmed })).resolves.toBeUndefined();
     expect(fetcher).toHaveBeenCalledExactlyOnceWith(`/api/v1/projects/${project}/tasks/${task}`, {
       method: 'DELETE', redirect: 'error', signal: abortSignal, cache: 'no-store', credentials: 'same-origin',
-      headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: `{"version":${version}}`,
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'Daynight-Worker-Protocol': '2' }, body: `{"version":${version}}`,
     });
     expect(confirmed).toHaveBeenCalledOnce(); expect(mismatch).not.toHaveBeenCalled();
   });

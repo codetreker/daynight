@@ -4,7 +4,8 @@ Daynight is a project and task workspace for people and coding agents. It keeps
 work, dependencies, required inputs and resulting artifacts together, with a
 browser dashboard for understanding progress and a command-line client for
 managing tasks. A foreground worker runs automatically claimed tasks through
-Copilot or Codex in private Herdr workspaces. The CLI also provides automated
+Codex, Claude Code or Copilot in private Herdr workspaces or browser-controlled
+Task Sessions. The CLI also provides automated
 GitHub pull request review through Copilot CLI.
 
 Explore Daynight and its interactive example at **[daynight.cc](https://daynight.cc)**.
@@ -35,6 +36,9 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
   tasks across configured repositories, preserve ongoing work through restarts
   and clean resources when the original claim leaves the worker's inventory.
+- **Control a task session in the browser.** With `worker.agentControlMode: web`,
+  view native messages, reasoning and tool results, send text, stop a turn, and
+  answer supported approvals, questions and forms in the task’s Session tab.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
@@ -105,9 +109,30 @@ Run `daynight completion setup` to install Bash or zsh completion. The
 [completion guide](packages/daynight/README.md#shell-completion) covers shell
 selection, startup files and activation.
 
+## Standalone Session testing
+
+Run a provider in the current directory and open the printed Daynight URL:
+
+```bash
+daynight controller codex
+daynight controller claude
+daynight controller copilot "Explain this project"
+```
+
+These foreground commands create an independent Test Session using the configured
+Daynight service and native provider credentials. The page requires Daynight
+sign-in as its creator and uses the same timeline and chat controls as a Task
+Session. Open `/test-sessions` on that service to find your accessible Test
+Sessions that are online, without retaining their URLs. Archived history remains
+accessible through its original URL and the Controller resume command. No task,
+worker configuration or new worktree is required. Closing the
+browser leaves the Agent running; Ctrl+C stops the owned execution and preserves
+the user's working directory. See the [Controller guide](packages/daynight/README.md#standalone-controller-sessions)
+for input, authentication and lifecycle limits.
+
 ## Worker configuration and startup
 
-Use interactive setup to inspect prerequisites, choose Copilot or Codex, and
+Use interactive setup to inspect prerequisites, choose a provider, and
 select one or more existing Daynight Projects:
 
 ```bash
@@ -122,7 +147,7 @@ the agent and complete selection together. Existing Projects are preselected on
 repeat setup. Missing native prerequisites can be repaired after saving; the
 command explicitly reports when the environment still needs attention.
 
-Worker execution requires Git, Herdr 0.9.5 or newer with the supported API, and
+The default `herdr` execution mode requires Git, Herdr 0.9.5 or newer with the supported API, and
 the selected native CLI. Configure provider credentials before execution. Before
 starting a native agent, runtime preflight installs or updates its official Herdr
 integration through the private daemon when needed, then verifies the current
@@ -130,6 +155,12 @@ integration and effective hook configuration. Codex installation first checks
 that the supported Herdr installer preserves configuration semantics; unsafe
 layouts fail before installation. Setup remains read-only. Local setup checks do
 not qualify real native execution, provider login or task delivery.
+
+Set `worker.agentControlMode: web` in `~/.daynight/config.yml` to use Daynight's
+Task Session page with Codex, Claude Code or Copilot. Web execution uses a private
+Controller and the Daynight relay, with no Herdr dependency. Each claim retains
+its original mode; a configuration change applies only to new claims. Herdr
+continues to own terminal sessions in the default mode.
 
 `repo add` lists accessible Projects for multiselection. Use `--project
 PROJECT_UUID` for an explicit noninteractive registration; `worker repo list`
@@ -144,7 +175,7 @@ independent. Projects must already exist, and their tasks need automatic
 execution permission before the worker can acquire them.
 
 The worker runs in the foreground with one execution slot by default. It uses
-fixed state under `~/.daynight/worker/`. Run `daynight worker attach` in another
+fixed state under `~/.daynight/worker/`. In Herdr mode, run `daynight worker attach` in another
 terminal to open its private Herdr session for human input. Each task workspace
 starts with its current task title, followed by its stable Project/task/claim/worktree
 identity. The next successful inventory updates changed titles without replacing
@@ -158,10 +189,10 @@ Herdr instance when stopping is uncertain. External temporary resources may
 remain. The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 covers defaults, repository overrides, recovery, attachment and manual management.
 
-Fresh and resumed Copilot/Codex processes use fixed full access and task-folder
+Herdr fresh and resumed Copilot/Codex processes use fixed full access and task-folder
 trust settings without native permission prompts. Business input remains
 available through `daynight worker attach`. The local task record retains only
-Project/task/claim, pending/active/done, agent type and native
+Project/task/claim, pending/active/done, frozen mode, agent type and native
 session ID. A NULL session ID produces an informational message and a fresh
 conversation in the same worktree; a known ID uses native resume. Cleanup timers
 and recovery counts are process-local, and restarted agents use current applicable

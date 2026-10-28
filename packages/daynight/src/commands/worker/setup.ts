@@ -25,7 +25,7 @@ const defaultDependencies: WorkerSetupDependencies = {
   save: saveWorkerSetup,
 };
 
-const agentName = (agent: WorkerAgent): string => agent === "codex" ? "Codex" : "Copilot";
+const agentName = (agent: WorkerAgent): string => agent === "codex" ? "Codex" : agent === "claude" ? "Claude" : "Copilot";
 
 const renderChecks = (checks: readonly WorkerEnvironmentCheck[], context: CliContext): void => {
   for (const check of checks) {
@@ -46,7 +46,7 @@ export const runWorkerSetup = async (
   const workingDirectory = context.workingDirectory();
   const paths = resolveWorkerPaths(homeDirectory);
   const snapshot = await dependencies.readSnapshot(paths, signal);
-  const environment = { homeDirectory, workingDirectory, packageDirectory: context.packageDirectory, paths, signal };
+  const environment = { homeDirectory, workingDirectory, packageDirectory: context.packageDirectory, paths, signal, agentControlMode: snapshot.configuration.agentControlMode ?? "herdr" };
   context.stderr("Worker environment checks\n");
   const commonChecks = await dependencies.inspectEnvironment(environment);
   renderChecks(commonChecks, context);
@@ -57,11 +57,11 @@ export const runWorkerSetup = async (
   if (snapshot.serverToken === undefined) throw new Error("You are not logged in. Run daynight login, then daynight worker setup.");
   const agent = await prompt.select<WorkerAgent>({
     message: "Which agent should execute tasks?",
-    choices: [{ name: "Copilot", value: "copilot" }, { name: "Codex", value: "codex" }],
+    choices: [{ name: "Copilot", value: "copilot" }, { name: "Codex", value: "codex" }, { name: "Claude", value: "claude" }],
     default: snapshot.configuration.agent,
   }, signal);
   signal.throwIfAborted();
-  if (agent !== "copilot" && agent !== "codex") throw new Error("Choose Codex or Copilot from the available agents.");
+  if (agent !== "copilot" && agent !== "codex" && agent !== "claude") throw new Error("Choose Codex, Claude or Copilot from the available agents.");
   const projects = await dependencies.readProjects(snapshot, signal);
   signal.throwIfAborted();
   context.stderr("[passed] Daynight login: Accessible Projects loaded from the configured service.\n");

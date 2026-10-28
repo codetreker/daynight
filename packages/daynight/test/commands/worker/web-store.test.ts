@@ -1,0 +1,45 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import path from "node:path";
+import { afterEach, expect, it } from "vitest";
+import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
+const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
+const roots: string[] = []; afterEach(() => roots.splice(0).forEach((root) => rmSync(root, { recursive: true, force: true })));
+it("persists a distinct web execution without inventing Herdr resources or workspace closure", () => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/web-store-tests"); mkdirSync(base, { recursive: true }); const root = mkdtempSync(path.join(base, "s-")); roots.push(root);
+  const file = path.join(root, "state.sqlite"); let store = openWebExecutionStore(file);
+  const project = { serverOrigin: "https://daynight.example", projectId: id(1), repoUrl: "https://example.test/p.git", localPath: root };
+  const claim = { ...project, taskId: id(2), claimId: id(3), workerId: id(4), worktreeId: id(5) };
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  const started = store.initializeWebExecution(claim, 3);
+  expect(started.nativeExecution).toBeNull(); expect(started.resources.herdr).toBeNull();
+  const operationId = started.webExecution!.initialOperationId;
+  store.close(); store = openWebExecutionStore(file);
+  expect(store.initializeWebExecution(claim, 4).webExecution!.initialOperationId).toBe(operationId);
+  const cleaning = store.beginCleanup(claim, { kind: "shutdown", deadline: 100 }, 5);
+  expect(cleaning.cleanup).toMatchObject({ mode: "web", workspaceClosed: null, backendResourcesClosed: false });
+  store.confirmAgentStopped(claim, { agentStopped: true }, 6);
+  store.confirmBackendResourcesClosed(claim, { controllerStopped: true, endpointClosed: true }, 7);
+  expect(store.getTask(claim)?.cleanup).toMatchObject({ workspaceClosed: null, backendResourcesClosed: true });
+  store.close();
+});
+
+it("retains shutdown provenance across worker reopen without resetting recovery state", () => {
+  const base = path.resolve(import.meta.dirname, "../../../../../.tmp/web-store-tests"); mkdirSync(base, { recursive: true }); const root = mkdtempSync(path.join(base, "s-")); roots.push(root);
+  const file = path.join(root, "state.sqlite"); let store = openWebExecutionStore(file);
+  const project = { serverOrigin: "https://daynight.example", projectId: id(1), repoUrl: "https://example.test/p.git", localPath: root };
+  const claim = { ...project, taskId: id(2), claimId: id(3), workerId: id(4), worktreeId: id(5) };
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 0 }, userId: id(6) }, 1); store.initializeWebExecution(claim, 3);
+  store.updateWebExecution(claim, {launchSubmission:"acknowledged"}, 4);
+  store.bindNativeSession(claim, {source:"controller",sessionId:id(7)}, 5);
+  store.beginCleanup(claim, {kind:"shutdown",deadline:100}, 6);
+  store.recordCleanupResult(claim, "completed", null, 7);
+  store.confirmAgentStopped(claim, {agentStopped:true}, 8);
+  store.confirmBackendResourcesClosed(claim, {controllerStopped:true,endpointClosed:true}, 9);
+  store.clearShutdown(claim, 10); store.close(); store=openWebExecutionStore(file);
+  const task=store.getTask(claim)!;
+  expect(task.webExecution).toHaveProperty("restartAfterShutdown",true);
+  const next=store.beginWebGeneration(claim,{executionGeneration:task.webExecution!.executionGeneration,controllerInstanceId:task.webExecution!.controllerInstanceId,nativeSessionId:id(7),nativeStopped:true},11);
+  expect(next.webExecution).toHaveProperty("restartAfterShutdown",false);
+  expect(next.recovery).toEqual(task.recovery);
+  store.close();
+});

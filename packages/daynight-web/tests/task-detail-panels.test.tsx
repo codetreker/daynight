@@ -100,3 +100,18 @@ describe('task detail panels', () => {
     expect(api.list).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('task session panel availability', () => {
+  it('adds a keyboard reachable session only when supplied and falls back when removed', () => {
+    const view = render(<TaskDetailPanels overview={<p>Overview content</p>} attachments={<p>Attachments content</p>} session={<textarea aria-label="Session draft" />} />);
+    fireEvent.keyDown(screen.getByRole('tab', { name: '概览' }), { key: 'End' });
+    expect(screen.getByRole('tab', { name: 'Session' })).toHaveAttribute('aria-selected', 'true');
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'draft' } });
+    fireEvent.click(screen.getByRole('tab', { name: '概览' }));
+    fireEvent.click(screen.getByRole('tab', { name: 'Session' }));
+    expect(screen.getByRole('textbox')).toHaveValue('draft');
+    view.rerender(<TaskDetailPanels overview={<p>Overview content</p>} attachments={<p>Attachments content</p>} />);
+    expect(screen.queryByRole('tab', { name: 'Session' })).toBeNull();
+    expect(screen.getByRole('tab', { name: '概览' })).toHaveAttribute('aria-selected', 'true');
+  });
+});

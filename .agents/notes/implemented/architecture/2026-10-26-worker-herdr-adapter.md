@@ -39,7 +39,7 @@ current storage or permission requirements.
 
 The [adapter entry](../../../../packages/daynight/src/commands/worker/herdr.ts)
 composes private-instance lifecycle, bounded IPC, native preflight and concrete
-task operations. One worker uses one private named session `w`, with independent
+task operations for Herdr mode. One worker with Herdr responsibilities uses one private named session `w`, with independent
 task workspaces/panes. The [foreground
 coordinator](2026-10-27-foreground-worker-runtime.md) retains scheduling,
 claims, recovery budget and cleanup deadline; the agent retains business
@@ -284,6 +284,15 @@ This implements the Herdr resource side of the worker design without changing
 the [local-store](2026-10-26-worker-local-records.md) or
 [Git-workspace](2026-10-26-worker-git-workspaces.md) ownership decisions. Git
 removal still follows confirmed original-agent stop and workspace closure.
+
+Claude is supported in Herdr mode using its native TUI and exact --resume ID.
+Preflight requires the current official SessionStart hook, its documented
+matcher, effective settings that permit hooks and exact transcript history.
+Automatic input requires the positive Claude composer, never idle alone;
+onboarding, trust and approval surfaces retain not-submitted provenance. Parent
+CLAUDECODE and CLAUDE_CODE_ENTRYPOINT identities are removed with inherited
+Herdr/Codex routing identities. Web Claude uses a separate SDK backend and does
+not pass through this terminal adapter.
 
 ## Alternatives
 

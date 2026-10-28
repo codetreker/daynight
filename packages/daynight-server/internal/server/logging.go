@@ -76,7 +76,7 @@ func knownFault(err error) (*service.Fault, bool) {
 	var fault *service.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
-		case "rate_limited", "unauthenticated", "forbidden", "last_admin", "invitation_unavailable", "task_deleted", "invalid_input", "not_found", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded":
+		case "controller_offline", "relay_instance_unavailable", "content_unavailable", "rate_limited", "unauthenticated", "forbidden", "last_admin", "invitation_unavailable", "task_deleted", "invalid_input", "not_found", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict", "payload_too_large":
 			return fault, true
 		}
 	}

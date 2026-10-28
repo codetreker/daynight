@@ -135,6 +135,13 @@ func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite
 	if result.RowsAffected() == 0 {
 		return core.Task{}, queryError("update task", core.ErrNotFound)
 	}
+	var activeClaim *string
+	if worker := values.Properties.Worker; values.Status == core.TaskInProgress && worker != nil && worker.State == core.WorkerActive && worker.AgentControlMode == core.AgentControlModeWeb {
+		activeClaim = &worker.ClaimID
+	}
+	if err := tx.freezeTaskSessions(ctx, id, activeClaim); err != nil {
+		return core.Task{}, err
+	}
 	if _, err := tx.tx.Exec(ctx, `DELETE FROM task_dependencies WHERE project_id = $1 AND task_id = $2`, tx.projectID, id); err != nil {
 		return core.Task{}, queryError("replace dependencies", err)
 	}
@@ -197,8 +204,33 @@ func (tx *ProjectTx) DeleteTask(ctx context.Context, id string, removeDepends bo
 	if result.RowsAffected() == 0 {
 		return queryError("delete task", core.ErrNotFound)
 	}
+	if err := tx.freezeTaskSessions(ctx, id, nil); err != nil {
+		return err
+	}
 	if _, err := tx.tx.Exec(ctx, `UPDATE projects SET task_cache_epoch = gen_random_uuid() WHERE id = $1`, tx.projectID); err != nil {
 		return queryError("invalidate deleted task cache", err)
+	}
+	return nil
+}
+
+// Claim transitions and relay freezing share the task transaction. Stream
+// writes lock the task before the session, so no command can cross this fence.
+func (tx *ProjectTx) freezeTaskSessions(ctx context.Context, taskID string, activeClaim *string) error {
+	_, err := tx.tx.Exec(ctx, `UPDATE task_sessions SET draining_until=statement_timestamp()+interval '60 seconds',
+ draining_timeline_seq=(snapshot->>'lastTimelineSeq')::bigint,
+ snapshot=(snapshot - 'cleanupInteractionIds' - 'controls' - 'turnStartedAt' - 'currentTurnId') || jsonb_build_object('lifecycle','draining','synchronized',false,'connectionState','disconnected','activity','unknown')
+ WHERE project_id=$1 AND task_id=$2 AND snapshot->>'lifecycle'='active'
+ AND ($3::uuid IS NULL OR claim_id<>$3::uuid)`, tx.projectID, taskID, activeClaim)
+	if err != nil {
+		return queryError("freeze task sessions", err)
+	}
+	// The controller owns display history. Claim transitions only fence the
+	// durable control ledger; browsers observe the lifecycle through the relay.
+	_, err = tx.tx.Exec(ctx, `UPDATE session_operations SET receipt=(receipt - 'error') || jsonb_build_object('state','rejected')
+ WHERE receipt->>'state'='accepted' AND session_id IN
+ (SELECT id FROM task_sessions WHERE project_id=$1 AND task_id=$2 AND snapshot->>'lifecycle'='draining')`, tx.projectID, taskID)
+	if err != nil {
+		return queryError("reject undispatched session operations", err)
 	}
 	return nil
 }

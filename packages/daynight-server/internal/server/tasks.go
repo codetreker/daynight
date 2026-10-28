@@ -35,11 +35,19 @@ func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, 
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 }
 
-func taskResponse(task core.Task) api.Task {
-	return api.Task{ID: task.ID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
+func taskResponse(task core.Task, request *http.Request) api.Task {
+	result := api.Task{ID: task.ID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
 		Properties: propertiesResponse(task.Properties), Status: string(task.Status), Version: task.Version, CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(),
 		StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
 		DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), BlockedBy: append([]string{}, task.BlockedBy...), Ready: task.Ready, AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform)}
+	if !extendedWorkerProtocol(request) {
+		if !legacyWorkerCompatible(task.Properties.Worker) {
+			result.Properties.Worker = nil
+		} else if result.Properties.Worker != nil {
+			result.Properties.Worker.AgentControlMode = ""
+		}
+	}
+	return result
 }
 
 func propertiesResponse(properties core.TaskProperties) api.TaskProperties {
@@ -50,7 +58,7 @@ func propertiesResponse(properties core.TaskProperties) api.TaskProperties {
 	if worker := properties.Worker; worker != nil {
 		result.Worker = &api.WorkerClaim{ClaimID: worker.ClaimID, State: string(worker.State), UserID: worker.UserID,
 			WorkerID: worker.WorkerID, Machine: api.WorkerMachine{ID: worker.Machine.ID, Name: worker.Machine.Name},
-			Platform: string(worker.Platform), Agent: string(worker.Agent), WorktreeID: worker.WorktreeID,
+			Platform: string(worker.Platform), Agent: string(worker.Agent), AgentControlMode: string(worker.AgentControlMode), WorktreeID: worker.WorktreeID,
 			Phase: string(worker.Phase), NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC()}
 		if worker.Herdr != nil {
 			result.Worker.Herdr = &api.WorkerHerdr{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}
@@ -253,7 +261,7 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 	}
 	logger = logger.With("task_id", task.ID)
 	logger.InfoContext(request.Context(), "task created", "type", "resource", "component", "task", "phase", "create", "request_id", RequestID(request.Context()))
-	writeCreated(w, request, logger, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, taskResponse(task))
+	writeCreated(w, request, logger, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, taskResponse(task, request))
 }
 
 func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -268,14 +276,18 @@ func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, princip
 		writeError(w, request, logger, "task", "list", err)
 		return
 	}
-	page, err := h.tasks.List(request.Context(), principal, projectID, input)
+	page, err := h.listWorkerCompatibleTasks(request, principal, projectID, input)
 	if err != nil {
 		writeError(w, request, logger, "task", "list", err)
 		return
 	}
 	response := api.TaskPage{Items: make([]api.Task, 0, len(page.Items)), NextCursor: page.NextCursor}
 	for _, task := range page.Items {
-		response.Items = append(response.Items, taskResponse(task))
+		if input.WorkerID != nil && !extendedWorkerProtocol(request) && !legacyWorkerCompatible(task.Properties.Worker) {
+			writeError(w, request, logger, "task", "list", workerProtocolRequired())
+			return
+		}
+		response.Items = append(response.Items, taskResponse(task, request))
 	}
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
@@ -293,7 +305,7 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 		return
 	}
 	logger.InfoContext(request.Context(), "task read", "type", "resource", "component", "task", "phase", "get", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task))
+	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
 }
 
 func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -318,13 +330,14 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		properties := propertyValues(api.TaskWritableProperties{PullRequests: *input.Properties.PullRequests})
 		values.Properties.PullRequests = &properties.PullRequests
 	}
-	task, err := h.tasks.Update(request.Context(), principal, projectID, id, values)
+
+	task, err := h.tasks.Update(workerProtocolContext(request), principal, projectID, id, values)
 	if err != nil {
 		writeError(w, request, logger, "task", "update", err)
 		return
 	}
 	logger.InfoContext(request.Context(), "task updated", "type", "resource", "component", "task", "phase", "update", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task))
+	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
 }
 
 func timestampResponse(value *time.Time) *time.Time {

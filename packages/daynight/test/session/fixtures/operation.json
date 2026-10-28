@@ -1,0 +1,11 @@
+{
+  "protocol": "daynight.session.v1",
+  "sessionId": "00000006-1111-4111-8111-111111111111",
+  "claimId": "00000003-1111-4111-8111-111111111111",
+  "executionGeneration": "9007199254740993",
+  "operationId": "00000009-1111-4111-8111-111111111111",
+  "kind": "send_message",
+  "state": "provider_accepted",
+  "providerResult": "started",
+  "error": null
+}

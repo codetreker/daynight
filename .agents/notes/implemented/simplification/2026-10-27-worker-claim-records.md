@@ -18,11 +18,15 @@ index is project, task, claim, status and native conversation identity.
 
 ## Decision
 
-The [worker design](../../../../docs/design/daynight-worker.md) uses exactly
+The [worker design](../../../../docs/design/daynight-worker.md) uses
 projects(project_id, repo_url, local_path) and tasks(project_id, task_id, claim_id,
-status, agent, session_id). Task rows represent actual claims, retain history,
+status, agent, session_id, agent_control_mode). Task rows represent actual claims, retain history,
 and use pending/active/done. One Project/task can have at most one active claim.
-Agent is copilot or codex; session_id is a nullable native conversation ID.
+Agent is copilot, codex or claude; session_id is a nullable native conversation ID.
+The [Web execution evidence decision](../architecture/2026-10-28-web-execution-evidence.md)
+adds claim-frozen mode routing and a separate Web-only evidence store. The
+resource-derived recovery and process-local execution rules below apply to Herdr;
+they do not replace the Controller journal or authorize uncertain Web replay.
 
 The service supplies complete current own-claim inventory. Git and the private
 Herdr instance supply actual resources. Startup resolves configured Projects and

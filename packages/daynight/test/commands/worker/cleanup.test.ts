@@ -91,7 +91,7 @@ describe("cleanup polling after notification", () => {
     expect(await f.advance(f.observation("working", 10, 4))).toBe(false);
     expect(await f.advance(f.observation("idle", stateChangeSeq, completionSeq, false))).toBe(true);
     expect(f.order).toEqual(["stop-close", "delete"]);
-    expect(Object.keys(f.store.getTask(f.task)!).sort()).toEqual(["agent", "claimId", "projectId", "sessionId", "status", "taskId"]);
+    expect(Object.keys(f.store.getTask(f.task)!).sort()).toEqual(["agent", "agentControlMode", "claimId", "projectId", "sessionId", "status", "taskId"]);
   });
 
   it("stops an already inactive pane without sending a cleanup prompt", async () => {

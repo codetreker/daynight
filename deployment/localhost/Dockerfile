@@ -9,6 +9,7 @@ COPY packages/daynight/package.json ./packages/daynight/package.json
 COPY packages/daynight-web/package.json ./packages/daynight-web/package.json
 RUN pnpm install --registry="$DAYNIGHT_NPM_REGISTRY" --frozen-lockfile --filter @codetreker/daynight-web...
 COPY packages/daynight-web ./packages/daynight-web
+COPY packages/daynight/src/session ./packages/daynight/src/session
 RUN pnpm web:build
 
 FROM golang:1.27.2-bookworm AS build

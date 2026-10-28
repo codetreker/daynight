@@ -43,7 +43,7 @@ describe("minimal worker SQLite schema", () => {
     const database = connect(file);
     expect(database.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
     expect((database.pragma("table_info(projects)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "repo_url", "local_path"]);
-    expect((database.pragma("table_info(tasks)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id"]);
+    expect((database.pragma("table_info(tasks)") as { name: string }[]).map(({ name }) => name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
     expect((database.pragma("table_list") as { name: string; strict: number }[]).filter(({ name }) => name === "projects" || name === "tasks").every(({ strict }) => strict === 1)).toBe(true);
     expect(database.pragma("journal_mode", { simple: true })).toBe("wal");
     expect(pragma).toHaveBeenCalledWith("synchronous = FULL");
@@ -142,17 +142,17 @@ describe("worker project mappings", () => {
 describe("worker claim and native session index", () => {
   it("materializes a pending claim without a session and preserves repeated registration", () => {
     const { store, register } = fixture();
-    expect(register()).toEqual({ ...claim, status: "pending", agent: "codex", sessionId: null });
+    expect(register()).toEqual({ ...claim, status: "pending", agent: "codex", agentControlMode: "herdr" as const, sessionId: null });
     store.activateTask(claim);
     store.setSessionId(claim, uuid(8));
-    expect(store.registerPending({ ...claim, agent: "codex", sessionId: uuid(9) })).toEqual({ ...claim, status: "active", agent: "codex", sessionId: uuid(8) });
+    expect(store.registerPending({ ...claim, agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(9) })).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(8) });
     expect(() => store.registerPending({ ...claim, agent: "copilot" })).toThrow("different agent");
   });
 
   it("retains a known native identity and rejects a different observed session", () => {
     const { file, store, project } = fixture();
     store.registerProject(project);
-    expect(store.registerPending({ ...claim, agent: "copilot", sessionId: uuid(8) }).sessionId).toBe(uuid(8));
+    expect(store.registerPending({ ...claim, agent: "copilot", agentControlMode: "herdr" as const, sessionId: uuid(8) }).sessionId).toBe(uuid(8));
     const concurrent = open(file);
     expect(store.setSessionId(claim, uuid(8)).sessionId).toBe(uuid(8));
     expect(() => concurrent.setSessionId(claim, uuid(9))).toThrow("different native session");
@@ -173,8 +173,8 @@ describe("worker claim and native session index", () => {
     store.completeTask(claim);
     expect(concurrent.activateTask(newer).status).toBe("active");
     expect(store.listTasks()).toEqual([
-      { ...claim, status: "done", agent: "codex", sessionId: null },
-      { ...newer, status: "active", sessionId: null },
+      { ...claim, status: "done", agent: "codex", agentControlMode: "herdr" as const, sessionId: null },
+      { ...newer, status: "active", agentControlMode: "herdr", sessionId: null },
     ]);
   });
 
@@ -210,8 +210,8 @@ describe("worker claim and native session index", () => {
     close(store);
     const recovered = open(file);
     expect(recovered.getProject(project)).toEqual(project);
-    expect(recovered.getTask(claim)).toEqual({ ...claim, status: "active", agent: "codex", sessionId: uuid(8) });
-    expect(Object.keys(recovered.getTask(claim)!)).toEqual(["projectId", "taskId", "claimId", "status", "agent", "sessionId"]);
+    expect(recovered.getTask(claim)).toEqual({ ...claim, status: "active", agent: "codex", agentControlMode: "herdr" as const, sessionId: uuid(8) });
+    expect(Object.keys(recovered.getTask(claim)!)).toEqual(["projectId", "taskId", "claimId", "status", "agent", "agentControlMode", "sessionId"]);
   });
 
   it("reports missing or malformed task identities", () => {
@@ -223,6 +223,25 @@ describe("worker claim and native session index", () => {
     register();
     expect(() => store.getTask({ ...claim, taskId: "bad" })).toThrow("UUID");
     expect(() => store.registerPending({ ...claim, claimId: "bad", agent: "codex" })).toThrow("UUID");
-    expect(() => store.registerPending({ ...claim, agent: "codex", sessionId: "bad" })).toThrow("UUID");
+    expect(() => store.registerPending({ ...claim, agent: "codex", agentControlMode: "herdr" as const, sessionId: "bad" })).toThrow("UUID");
   });
+});
+
+it("migrates the previous minimal index to frozen Herdr mode without reinterpreting rich schemas", () => {
+  const f = fixture(); close(f.store);
+  const legacy = connect(f.file);
+  legacy.exec("DROP TABLE tasks; CREATE TABLE tasks (project_id TEXT NOT NULL, task_id TEXT NOT NULL, claim_id TEXT NOT NULL, status TEXT NOT NULL, agent TEXT NOT NULL, session_id TEXT, PRIMARY KEY(project_id,task_id,claim_id)) STRICT; CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(project_id,task_id) WHERE status='active';");
+  legacy.prepare("INSERT INTO tasks VALUES (?,?,?,?,?,?)").run(claim.projectId, claim.taskId, claim.claimId, "active", "codex", uuid(30));
+  legacy.close(); connections.delete(legacy);
+  const migrated = open(f.file);
+  expect(migrated.getTask(claim)).toMatchObject({ status: "active", agent: "codex", agentControlMode: "herdr", sessionId: uuid(30) });
+  expect(() => migrated.registerPending({ ...claim, agent: "codex", agentControlMode: "web" })).toThrow();
+});
+
+it("freezes the selected Web routing mode across reopen and later configuration changes", () => {
+  const f = fixture(); f.store.registerProject(f.project);
+  f.store.registerPending({ ...claim, agent: "claude", agentControlMode: "web" }); close(f.store);
+  const reopened = open(f.file);
+  expect(reopened.getTask(claim)).toMatchObject({ agent: "claude", agentControlMode: "web" });
+  expect(() => reopened.registerPending({ ...claim, agent: "claude", agentControlMode: "herdr" })).toThrow();
 });

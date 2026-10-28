@@ -1,7 +1,7 @@
 import path from "node:path";
 import Database from "better-sqlite3";
 import { canonicalId } from "../../api/parse.js";
-import type { WorkerAgent } from "../../api/types.js";
+import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
 import type { ClaimIdentity, LocalTask, ProjectIdentity, WorkerProject } from "./types.js";
 
 const text = (value: unknown, name: string): string => {
@@ -19,17 +19,18 @@ const absolutePath = (value: unknown, name: string): string => {
   return result;
 };
 const agent = (value: unknown): WorkerAgent => {
-  if (value !== "copilot" && value !== "codex") throw new TypeError("Worker agent must be copilot or codex.");
+  if (value !== "copilot" && value !== "codex" && value !== "claude") throw new TypeError("Worker agent must be copilot, codex or claude.");
   return value;
 };
+const mode = (value: unknown): AgentControlMode => { if (value === undefined || value === "herdr") return "herdr"; if (value === "web") return "web"; throw new TypeError("Worker control mode must be herdr or web."); };
 const projectKey = (value: ProjectIdentity): ProjectIdentity => ({ projectId: id(value.projectId, "Project ID") });
 const claimKey = (value: ClaimIdentity): ClaimIdentity => ({ ...projectKey(value), taskId: id(value.taskId, "Task ID"), claimId: id(value.claimId, "Claim ID") });
 const projectColumns = "project_id AS projectId, repo_url AS repoUrl, local_path AS localPath";
-const taskColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, status, agent, session_id AS sessionId";
+const taskColumns = "project_id AS projectId, task_id AS taskId, claim_id AS claimId, status, agent, session_id AS sessionId, agent_control_mode AS agentControlMode";
 const asProject = (row: WorkerProject): WorkerProject => ({ ...projectKey(row), repoUrl: text(row.repoUrl, "Repository URL"), localPath: absolutePath(row.localPath, "Project local path") });
 const asTask = (row: LocalTask): LocalTask => {
   if (row.status !== "pending" && row.status !== "active" && row.status !== "done") throw new TypeError("Worker task status must be pending, active or done.");
-  return { ...claimKey(row), status: row.status, agent: agent(row.agent), sessionId: row.sessionId === null ? null : id(row.sessionId, "Native session ID") };
+  return { ...claimKey(row), status: row.status, agent: agent(row.agent), agentControlMode: mode(row.agentControlMode), sessionId: row.sessionId === null ? null : id(row.sessionId, "Native session ID") };
 };
 const schema = `
   CREATE TABLE projects (
@@ -42,15 +43,16 @@ const schema = `
     task_id TEXT NOT NULL,
     claim_id TEXT NOT NULL,
     status TEXT NOT NULL CHECK(status IN ('pending', 'active', 'done')),
-    agent TEXT NOT NULL CHECK(agent IN ('copilot', 'codex')),
+    agent TEXT NOT NULL CHECK(agent IN ('copilot', 'codex', 'claude')),
     session_id TEXT,
+    agent_control_mode TEXT NOT NULL DEFAULT 'herdr' CHECK(agent_control_mode IN ('herdr', 'web')),
     PRIMARY KEY(project_id, task_id, claim_id)
   ) STRICT;
   CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(project_id, task_id) WHERE status = 'active';
 `;
 const expectedColumns = {
   projects: ["project_id", "repo_url", "local_path"],
-  tasks: ["project_id", "task_id", "claim_id", "status", "agent", "session_id"],
+  tasks: ["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"],
 };
 const unsupportedSchema = (): Error => new Error("The worker SQLite schema is incompatible. Stop the worker and delete its old state.sqlite before starting this version.");
 
@@ -68,6 +70,12 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       if (tables.length === 0) db.exec(schema);
       else {
         if (tables.length !== 2 || tables[0]!.name !== "projects" || tables[1]!.name !== "tasks") throw unsupportedSchema();
+        const taskColumns = db.pragma("table_info(tasks)") as { name: string }[];
+        if (taskColumns.map(column => column.name).join(",") === "project_id,task_id,claim_id,status,agent,session_id") {
+          db.exec("ALTER TABLE tasks RENAME TO legacy_tasks; DROP INDEX tasks_one_active_per_task;");
+          db.exec(schema.slice(schema.indexOf("CREATE TABLE tasks")));
+          db.exec("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id) SELECT project_id, task_id, claim_id, status, agent, session_id FROM legacy_tasks; DROP TABLE legacy_tasks;");
+        }
         for (const [table, expected] of Object.entries(expectedColumns)) {
           const columns = db.pragma(`table_info(${table})`) as { name: string }[];
           if (columns.length !== expected.length || columns.some((column, index) => column.name !== expected[index])) throw unsupportedSchema();
@@ -112,18 +120,18 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
     getTask,
     listTasks: (): LocalTask[] => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask),
     listUnfinishedTasks: (): LocalTask[] => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE status <> 'done' ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask),
-    registerPending: (input: ClaimIdentity & { agent: WorkerAgent; sessionId?: string | null }): LocalTask => atomic(() => {
+    registerPending: (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: AgentControlMode; sessionId?: string | null }): LocalTask => atomic(() => {
       const key = claimKey(input);
       const tool = agent(input.agent);
       const sessionId = input.sessionId === undefined || input.sessionId === null ? null : id(input.sessionId, "Native session ID");
       if (getProject(key) === null) throw new Error("The project repository binding must be registered before its claimed tasks.");
       const existing = getTask(key);
       if (existing !== null) {
-        if (existing.agent !== tool) throw new Error("The claimed task is already registered for a different agent.");
+        if (existing.agent !== tool || (input.agentControlMode !== undefined && existing.agentControlMode !== mode(input.agentControlMode))) throw new Error("The claimed task is already registered for a different agent.");
         return existing;
       }
-      db.prepare(`INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id)
-        VALUES (@projectId, @taskId, @claimId, 'pending', @agent, @sessionId)`).run({ ...key, agent: tool, sessionId });
+      db.prepare(`INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode)
+        VALUES (@projectId, @taskId, @claimId, 'pending', @agent, @sessionId, @agentControlMode)`).run({ ...key, agent: tool, sessionId, agentControlMode: mode(input.agentControlMode) });
       return needTask(key);
     }),
     activateTask: (identity: ClaimIdentity): LocalTask => atomic(() => {

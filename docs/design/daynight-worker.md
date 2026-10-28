@@ -1,6 +1,6 @@
 # Worker 架构设计
 
-`daynight worker run` 是持续对账的前台进程：领取配置仓库中的合格任务，在稳定 Git worktree 中通过专用 Herdr 运行 Copilot 或 Codex，并在原 claim 结束后清理本机资源。[需求](../spec/daynight-worker.md)拥有产品行为，[认领架构](daynight-worker-claims.md)拥有服务端归属协议，[本机记录决策](../../.agents/notes/implemented/simplification/2026-10-27-worker-claim-records.md)记录存储简化的理由与代价。完整平台验收仍需独立的运行证据。
+`daynight worker run` 是持续对账的前台进程：领取配置仓库中的合格任务，在稳定 Git worktree 中按冻结的 herdr/web 模式运行 Copilot、Codex 或 Claude，并在原 claim 结束后清理本机资源。[需求](../spec/daynight-worker.md)拥有产品行为，[认领架构](daynight-worker-claims.md)拥有服务端归属协议，[本机记录决策](../../.agents/notes/implemented/simplification/2026-10-27-worker-claim-records.md)记录存储简化的理由与代价。完整平台验收仍需独立的运行证据。
 
 ## 总体结构
 
@@ -41,7 +41,7 @@ flowchart TB
 
 每个用户环境一个 worker。Run 和人工管理命令使用同一个实例锁，以同一 SQLite 作为取得/释放锁时的 gate；不添加锁表。失效 worker 锁可回收，但不能据此认定原生进程已停。
 
-独立的 worker mapping 包含 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agent、model、args 和 repositories。默认值依次为 `~/daynights`、1、60000、3、copilot、null、[] 和 []。省略配置文件、worker 或可选字段使用这些默认值；显式 null 只对 model 有清除语义。根节点、review、worker 及其仓库条目的未知字段在运行时忽略，CLI 编辑保留其原 YAML 节点；已知字段的类型和值、YAML 结构、重复键、读取故障和取消继续严格校验。stateDirectory 等未知字段不能改变固定状态根。读取配置不重写文件。pollIntervalMs 的单一默认值由 workerConfigurationDefaults 提供；runtime 在每轮检查完成后按配置间隔等待，默认 60 秒。显式合法值直接保留，不迁移已有的 5000 配置。
+独立的 worker mapping 包含 repositoryRoot、maxConcurrent、pollIntervalMs、recoveryLimit、agentControlMode、agent、model、args 和 repositories。默认值依次为 `~/daynights`、1、60000、3、herdr、copilot、null、[] 和 []。省略配置文件、worker 或可选字段使用这些默认值；显式 null 只对 model 有清除语义。根节点、review、worker 及其仓库条目的未知字段在运行时忽略，CLI 编辑保留其原 YAML 节点；已知字段的类型和值、YAML 结构、重复键、读取故障和取消继续严格校验。stateDirectory 等未知字段不能改变固定状态根。读取配置不重写文件。pollIntervalMs 的单一默认值由 workerConfigurationDefaults 提供；runtime 在每轮检查完成后按配置间隔等待，默认 60 秒。显式合法值直接保留，不迁移已有的 5000 配置。
 
 Repository entry 需要 remote/path，可提供 projectId、agent/model/args 覆盖。路径相对 config.yml 目录或为绝对路径，不依赖启动 cwd，不展开 tilde；重复项目、重叠仓库和与状态根重叠均拒绝。相同 agent 类型逐字段继承；切换类型清除未显式给出的 model/args。Args 整体替换，不能覆盖 worker 拥有的 cwd/session/model/mode 参数或固定 full access 策略。普通 model、reasoning、日志和附加配置参数仍由原生工具解释。
 
@@ -55,11 +55,11 @@ Setup 复用 Herdr preflight 的原生版本、目录、运行时、hook asset�
 
 独立环境探测返回通过、缺项或未验证的结构化结果，所有已启动探测用 allSettled 等待收尾。普通缺项可给修复指引并保存配置；命令清理的 AggregateError 及其 cause 链始终优先于普通缺项或取消，未确认进程收尾使 setup 明确失败。Setup 不安装、登录、clone、打开 worker SQLite、取得 claim 或启动 worker/Herdr/native agent。
 
-配置在启动或重启时加载，不热重载。同一 claim 保留 agent 类型和 session_id；需要重新启动时使用当前适用于该 agent 的 model/args。另一工具的配置不会套到原工具。移出配置的项目仍由已有 projects 映射参与对账，使用当前全局适用设置。
+配置在启动或重启时加载，不热重载。同一 claim 保留 agent 类型、模式和 session_id；Herdr 需要重新启动时使用当前适用于该 agent 的 model/args，Web 恢复沿用已冻结的执行配置。另一工具的配置不会套到原工具。移出配置的项目仍由已有 projects 映射参与对账，使用当前全局适用设置。
 
-一个状态目录属于当前配置的单一服务、账号和 workerId。切换这些身份前先结束旧执行，再重建本机状态；六列记录不承担跨服务或跨账号的旧执行自动接续。
+一个状态目录属于当前配置的单一服务、账号和 workerId。切换这些身份前先结束旧执行，再重建本机状态；认领索引不承担跨服务或跨账号的旧执行自动接续。
 
-## SQLite：项目映射与六列任务记录
+## SQLite：项目映射与认领索引
 
 ```sql
 CREATE TABLE projects (
@@ -73,8 +73,9 @@ CREATE TABLE tasks (
   task_id TEXT NOT NULL,
   claim_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'done')),
-  agent TEXT NOT NULL CHECK (agent IN ('copilot', 'codex')),
+  agent TEXT NOT NULL CHECK (agent IN ('copilot', 'codex', 'claude')),
   session_id TEXT,
+  agent_control_mode TEXT NOT NULL DEFAULT 'herdr' CHECK (agent_control_mode IN ('herdr', 'web')),
   PRIMARY KEY (project_id, task_id, claim_id)
 ) STRICT;
 
@@ -88,11 +89,11 @@ CREATE UNIQUE INDEX tasks_one_active_per_task
 | active | 承担启动、运行、恢复或收尾责任，占用名额 |
 | done | 原 claim 已结束，其本机资源已收尾 |
 
-`agent` 来自实际取得的 claim；`session_id` 是 Codex/Copilot 原生会话 ID，尚未取得时为 NULL。Herdr workspace/pane/terminal ID 每次从资源观察取得。启动资源前先提交 active，终止清理全部完成后才提交 done；失败保留责任，结束行保留。
+`agent` 来自实际取得的 claim；`agent_control_mode` 是服务端冻结的模式；`session_id` 是原生会话 ID，尚未取得时为 NULL。Herdr workspace/pane/terminal ID 每次从资源观察取得。启动资源前先提交 active，终止清理全部完成后才提交 done；失败保留责任，结束行保留。
 
-Projects 在远端认领前保存仓库映射。有未结束任务或实际受管资源时不能改变该项目绑定。存储使用实际 SQLite 事务、STRICT 表和唯一约束；没有配置快照、启动回执、PID、恢复次数、清理进度、管理意图或时间列，也不把这些信息转存其他台账。日志只用于诊断。
+Projects 在远端认领前保存仓库映射。有未结束任务或实际受管资源时不能改变该项目绑定。存储使用实际 SQLite 事务、STRICT 表和唯一约束；主索引没有配置快照、启动回执、PID、恢复次数、清理进度、管理意图或时间列。Herdr 不持久化这些运行进度。Web 的执行证据由独立 backend 保存，不能当作 Herdr 的恢复来源；日志只用于诊断。
 
-数据库按此 schema 新建。遇到旧的详细执行 schema 时明确要求停止 worker 并删除旧 SQLite；程序不迁移或自动删除旧库。workerId 与原生历史保持各自原有位置。
+数据库按此 schema 新建；既有最小索引增加冻结模式列并保留原记录。遇到旧的详细执行 schema 时明确要求停止 worker 并删除旧 SQLite；程序不迁移或自动删除旧库。workerId 与原生历史保持各自原有位置。
 
 ## 启动、发现与周期对账
 
@@ -139,6 +140,14 @@ Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进
 只有 rename RPC 或回执故障属于 `workspace-name-error`，保留原 cause，留待后续重新观察且不计入执行恢复预算。binding/身份冲突及取消仍是生命周期错误。title 不进入 prompt 或 agent 输入，因此不能改变任务指令。
 
 运行资源使用当前四项身份格式，启动和人工管理直接执行正常的配置、实例锁、资源观察与执行流程，不读取迁移清单或转换历史 label、Git marker。发现时跳过格式不符的候选；针对明确目标的所有权和物理绑定检查保持严格。删除格式转换、备份、回滚及启动阻塞机制的决定见[迁移机制移除决策](../../.agents/notes/implemented/simplification/2026-10-28-remove-worker-workspace-migration.md)。
+
+## Web backend 与执行证据
+
+配置的 `worker.agentControlMode` 省略为 herdr，只影响新 claim。同 claim 始终沿用服务端模式；普通 summary 与 properties 更新不可改写。Web 运行 Codex stdio app-server、Claude Agent SDK 或 Copilot SDK 私有 runtime；其初始输入、原生控制、停止和恢复契约由 [Task Session 设计](task-session-protocol.md)拥有。
+
+主协调器仍从完整自有 claim 清单和实际资源对账，为两种模式合并计算容量与同 task 启动屏障。Herdr 保持当前最小索引和进程内 jobs；Web 在 `worker/web-executions.sqlite` 保存自己的冻结配置、初始输入回执、恢复预算和清理期限，在 `controller/` 保存 ticket 与原生 journal。原始 Web 执行证据缺失时保留责任并报错，不能使用 Herdr 的 NULL ID 新建语义代替连续性。
+
+Web 普通终止清理使用持久化的同一 cleanup 操作与期限，确认 Controller 和原生进程停止后才删除 Git worktree。worker 退出直接停止拥有的执行并保留未完成责任。强制撤回先在服务端冻结原 Session 的普通写权限，worker 后续完整清单再收尾；没有立即停止的保证。
 
 ## Herdr 与原生会话
 

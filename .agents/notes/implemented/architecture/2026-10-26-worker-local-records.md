@@ -13,7 +13,7 @@ would make these decisions depend on conflicting persistent facts.
 
 ## Decision
 
-The local store now follows the six-column claim and native-session index in the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Identity, instance exclusion and static resource ownership retain their original owners. The following records the original detailed storage decision and why its stronger restart guarantees were adopted.
+The local store now follows the claim and native-session index in the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Identity, instance exclusion and static resource ownership retain their original owners. The following records the original detailed storage decision and why its stronger restart guarantees were adopted.
 
 ### Original implementation and rationale
 
@@ -25,7 +25,8 @@ YAML without replacing other configuration. An existing valid identity is reused
 without rewriting; an invalid identity is exposed as an error.
 
 The worker instance lock uses the same worker `state.sqlite` as its SQLite gate.
-It adds no lock table or second database. The narrow platform lock primitive is
+It adds no lock table or second worker database. Per-execution Controller
+journals are separate native/protocol records, not another task ledger. The narrow platform lock primitive is
 shared with review, whose existing paths and database remain separate. A stale
 worker PID permits lock reclamation but does not prove that native agents or
 their processes stopped.
@@ -72,7 +73,9 @@ meaning. This does not add fields, states or an observation ledger. Unknown
 provenance must retain capacity responsibility and use read-only original Git
 resource discovery rather than authorize creation.
 
-First pending materialization freezes effective agent/model/args/recovery limit.
+First pending materialization freezes effective control mode, agent, model, args
+and recovery limit. The [session mode contract](2026-10-27-task-session-mode-contract.md)
+normalizes older missing modes to Herdr instead of using new machine settings.
 A recovered execution missing its original snapshot pauses until that original
 configuration is explicitly restored. Ordinary resource creation follows committed
 active state. A pending row with committed cleanup may atomically bind a verified
@@ -118,6 +121,17 @@ worker singleton row or generic action engine. The [current-claim
 inventory](2026-10-26-worker-claim-inventory.md) and [agent
 completion](2026-10-26-worker-managed-completion.md) decisions continue to own
 discovery and final business completion.
+
+Worker schema 5 adds nullable web_execution. Web rows retain their native
+profile, immutable initial operation and prompt, Controller generation and
+process proof without inventing Herdr resources. Orderly shutdown provenance
+survives worker reopen and is consumed by a new stopped generation without
+spending failure recovery budget. A remote Web claim whose ledger is lost keeps
+its mode and pauses even if its phase is preparing and native ID is null. The
+Controller journal owns operation tombstones, projection/outbox/ACK state and
+a gap marker outside the bounded outbox; these survive Controller generations.
+The [Session contract](../../../../docs/design/task-session-protocol.md) owns
+the complete wire and persistence boundaries.
 
 ## Alternatives
 

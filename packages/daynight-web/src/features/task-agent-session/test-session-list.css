@@ -1,0 +1,22 @@
+.test-session-list { min-width: 0; }
+.test-session-list-rows { list-style: none; margin: 20px 0 0; padding: 0; border: 1px solid #e2e6ee; border-radius: 10px; background: #fafbfd; overflow: hidden; }
+.test-session-list-rows li + li { border-top: 1px solid #e2e6ee; }
+.test-session-list-link { display: grid; grid-template-columns: minmax(110px, 1fr) minmax(150px, 1fr) minmax(210px, 1.5fr) 16px; align-items: center; gap: 20px; padding: 16px 20px; color: #29364b; text-decoration: none; }
+.test-session-list-link:hover { background: #f0f1f8; }
+.test-session-list-link:focus-visible { outline: 2px solid #6262ba; outline-offset: -3px; }
+.test-session-list-identity, .test-session-list-dates { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.test-session-list-identity code, .test-session-list-dates small, .test-session-list-end { color: #68758a; font-size: 12px; }
+.test-session-list-status { display: flex; gap: 6px 12px; flex-wrap: wrap; font-size: 12px; }
+.test-session-connection.connected { color: #37694e; }
+.test-session-connection.disconnected { color: #68758a; }
+.test-session-list-dates { font-size: 12px; overflow-wrap: anywhere; }
+.test-session-list-arrow { font-size: 22px; color: #68758a; }
+.test-session-list-more { margin-top: 18px; }
+.test-session-list-end { margin-top: 18px; }
+.test-session-back { margin-bottom: 10px; display: inline-flex; align-self: flex-start; color: #5b5baa; font-size: 12px; text-decoration: none; }
+.test-session-back:hover { text-decoration: underline; }
+@media (max-width: 900px) {
+  .test-session-list-link { grid-template-columns: minmax(70px, 1fr) minmax(120px, 1fr) 12px; gap: 12px; padding: 14px; }
+  .test-session-list-dates { grid-column: 1 / 3; grid-row: 2; }
+  .test-session-list-arrow { grid-column: 3; grid-row: 1 / 3; }
+}

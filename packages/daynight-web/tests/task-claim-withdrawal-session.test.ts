@@ -16,7 +16,7 @@ const workerId = '40000000-0000-4000-8000-000000000001';
 const time = '2026-10-24T00:00:00Z';
 const worker: WorkerClaim = {
   claimId, state: 'active', userId: TEST_VIEWER_ID, workerId, machine: { id: workerId, name: 'Machine' },
-  platform: 'macos', agent: 'codex', worktreeId: projectId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time,
+  platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: projectId, phase: 'executing', herdr: null, nativeSessionId: null, claimedAt: time,
 };
 const initial: TaskDetail = {
   id: taskId, projectId, title: 'Keep the delivery', description: 'Existing task materials', status: 'in_progress', version: 9_007_199_254_740_993n,

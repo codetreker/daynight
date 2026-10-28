@@ -457,3 +457,22 @@ func TestIdentityHTTPUserDisappearsAfterCredentialAdmission(t *testing.T) {
 	h.auth.me(response, request, principal)
 	decodeResponse[api.ErrorResponse](t, response, 401)
 }
+
+func TestIdentityHTTPLoginReturnsToTestSessionDeepLink(t *testing.T) {
+	h := authTestHarness(t)
+	destination := "/test-sessions/10000000-0000-0000-0000-000000000001"
+	state, binding := h.start(t, destination)
+	response := h.request(http.MethodGet, "/api/v1/auth/callback?"+url.Values{"state": {state}, "code": {"test-session-owner"}}.Encode(), "", []*http.Cookie{binding}, nil, "")
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != destination {
+		t.Fatalf("login lost Test Session destination: %d %s", response.Code, response.Header().Get("Location"))
+	}
+	found := false
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == h.auth.SessionCookieName() {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("successful callback omitted login session")
+	}
+}

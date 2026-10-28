@@ -170,7 +170,7 @@ func TestIdentityStartLoginValidation(t *testing.T) {
 		_, err := fixture.identity.StartLogin(context.Background(), "microsoft", path)
 		requireFault(t, err, "invalid_input")
 	}
-	for _, path := range []string{"/", "/projects", "/projects/abc?view=graph#tasks", "/%E4%B8%AD%E6%96%87", "/login-help"} {
+	for _, path := range []string{"/", "/projects", "/test-sessions/10000000-0000-0000-0000-000000000001", "/projects/abc?view=graph#tasks", "/%E4%B8%AD%E6%96%87", "/login-help"} {
 		if _, err := fixture.identity.StartLogin(context.Background(), "microsoft", path); err != nil {
 			t.Fatalf("valid return path %q: %v", path, err)
 		}

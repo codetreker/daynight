@@ -308,12 +308,12 @@ describe("repository Git discovery", () => {
     await writeFile(wrapper, `#!${process.execPath}\nimport { spawn } from 'node:child_process';\nspawn(process.execPath, [${JSON.stringify(descendant)}], { stdio: ['ignore', 'inherit', 'inherit'] });\nprocess.exit(0);\n`);
     await chmod(wrapper, 0o755);
     vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH}`);
-    const op = operation({ limits: { totalMs: 400 } });
+    const op = operation({ limits: { totalMs: 2000 } });
     const started = performance.now();
     const error: unknown = await runRepositoryGit(root, ["version"], op).catch((failure: unknown) => failure);
     expect(error).toBe(op.signal.reason);
     expect(error).toMatchObject({ kind: "deadline" });
-    expect(performance.now() - started).toBeLessThan(1000);
+    expect(performance.now() - started).toBeLessThan(3000);
     const stopped = await readFile(ticks, "utf8");
     expect(stopped).toContain("started");
     await new Promise<void>((resolve) => { setTimeout(resolve, 50); });

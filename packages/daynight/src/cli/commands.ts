@@ -1,3 +1,4 @@
+import { controllerDefinition } from "../commands/controller/definition.js";
 import type { CliCommand } from "./context.js";
 import type { CommandDefinition } from "./schema.js";
 import { completionDefinition } from "../commands/completion/definition.js";
@@ -14,6 +15,7 @@ export type CommandRegistration = CommandDefinition & {
 };
 
 export const commands: readonly CommandRegistration[] = [
+  { ...controllerDefinition, load: async () => ({ run: (await import("../commands/controller/index.js")).runControllerCommand }) },
   { ...workerDefinition, load: async () => ({ run: (await import("../commands/worker/index.js")).runWorkerCommand }) },
   { ...loginDefinition, load: async () => ({ run: (await import("../commands/auth/command.js")).runLoginCommand }) },
   { ...logoutDefinition, load: async () => ({ run: (await import("../commands/auth/command.js")).runLogoutCommand }) },

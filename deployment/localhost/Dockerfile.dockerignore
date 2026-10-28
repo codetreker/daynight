@@ -7,6 +7,9 @@
 !packages/
 !packages/daynight/
 !packages/daynight/package.json
+!packages/daynight/src/
+!packages/daynight/src/session/
+!packages/daynight/src/session/**
 !packages/daynight-web/
 !packages/daynight-web/package.json
 !packages/daynight-web/index.html

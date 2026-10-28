@@ -1,0 +1,41 @@
+import type { InitialInputState } from "../../../session/protocol.js";
+import type { ControllerSnapshot } from "../../controller/lifecycle-store.js";
+import type { ProcessProof } from "../../controller/process-proof.js";
+import type { WorkerPhase } from "../../../api/types.js";
+import type { ClaimIdentity, ExecutionConfiguration, ResourceOwner, WorktreeBinding } from "../types.js";
+export type ExecutionSummary = { version: string; herdr: null; nativeSessionId: string | null; phase: WorkerPhase; submission: "unknown" | "confirmed" | "rejected" };
+export type RecoveryState = { count: number; pauseReason: string | null; retryAuthorized: boolean };
+export type CleanupState = {
+  kind: "terminal" | "shutdown";
+  startedAt: number;
+  deadline: number;
+  input: "not-submitted" | "unknown" | "submitted" | "rejected" | "unavailable";
+  baseline: { stateChangeSeq: number; completionSeq: number } | null;
+  result: "completed" | "timed-out" | "failed" | "unavailable" | null;
+  error: string | null;
+  agentStopped: boolean;
+  workspaceClosed: boolean | null;
+  mode?: "web";
+  backendResourcesClosed?: boolean;
+  worktreeDeleted: boolean;
+};
+export type WebExecutionState = {
+  executionId: string; registrationId: string; controllerId: string; controllerInstanceId: string; launchId: string;
+  sessionId: string | null; executionGeneration: string; initialOperationId: string; initialPrompt: string | null;
+  launchSubmission: "not-submitted" | "unknown" | "acknowledged";
+  controllerProcess: ProcessProof | null; nativeProcesses: readonly ProcessProof[];
+  restartAfterShutdown: boolean; cleanupOperationId: string | null; ticketPath: string | null; nativeHome: string | null;
+  summary: ExecutionSummary | null; initialInputState: InitialInputState; activity: ControllerSnapshot["activity"];
+};
+export type LocalTask = ResourceOwner & {
+  serverOrigin: string; workerId: string; userId: string | null;
+  status: "pending" | "active" | "done"; repoUrl: string; repositoryPath: string;
+  configuration: ExecutionConfiguration | null;
+  resources: { mode: "web"; worktree: WorktreeBinding | null; herdr: null; nativeSession: { source: "controller"; sessionId: string } | null };
+  recovery: RecoveryState; cleanup: CleanupState | null; control: null;
+  webExecution: WebExecutionState | null; nativeExecution: null;
+  createdAt: number; updatedAt: number;
+};
+export type { ClaimIdentity, WorktreeBinding };
+export const taskAgentControlMode = (_task: LocalTask): "web" => "web";
+export const backendResourcesClosed = (cleanup: CleanupState): boolean => cleanup.backendResourcesClosed === true;

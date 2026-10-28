@@ -67,7 +67,7 @@ describe("worker synchronous management runtime ownership", () => {
     expect(mocks.submit).toHaveBeenCalledOnce(); expect(mocks.coordinator).toHaveBeenCalledOnce();
     expect(mocks.coordinator.mock.results[0]!.value.tick).not.toHaveBeenCalled();
     expect(mocks.coordinator.mock.results[0]!.value.shutdown).not.toHaveBeenCalled();
-    expect(mocks.herdr.mock.results[0]!.value.stopInstance).not.toHaveBeenCalled();
+    for (const result of mocks.herdr.mock.results) expect(result.value.stopInstance).not.toHaveBeenCalled();
     expect(f.store.getTask(f.task)?.status).toBe("done"); expect(f.store.getTask(f.sibling)).toEqual(f.sibling);
     const next = await acquireWorkerInstanceLock(f.paths); await next.release();
   });
@@ -94,7 +94,7 @@ describe("worker synchronous management runtime ownership", () => {
     mocks.submit.mockImplementationOnce(async ({ store }: { store: WorkerStore }) => ({ task: store.setSessionId(f.task, uuid(21)), message: "retry completed" }));
     await runWorkerControl({ ...f, request: { kind: "retry", taskId: f.task.taskId, claimId: f.task.claimId } });
     expect(mocks.submit).toHaveBeenCalledOnce(); expect(f.store.getTask(f.task)).toMatchObject({ status: "active", sessionId: uuid(21) });
-    expect(mocks.herdr.mock.results[0]!.value.stopInstance).not.toHaveBeenCalled();
+    for (const result of mocks.herdr.mock.results) expect(result.value.stopInstance).not.toHaveBeenCalled();
     expect(mocks.coordinator.mock.results[0]!.value.shutdown).not.toHaveBeenCalled();
     expect(mocks.coordinator.mock.results[0]!.value.tick).not.toHaveBeenCalled();
     const next = await acquireWorkerInstanceLock(f.paths); await next.release();

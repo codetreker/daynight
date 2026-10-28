@@ -129,6 +129,9 @@ func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID,
 		if current.Version != input.Version {
 			return taskMutation{}, &Fault{Code: "version_conflict", Message: "Task version does not match."}
 		}
+		if err := requireCompatibleWorker(ctx, current.Properties.Worker); err != nil {
+			return taskMutation{}, err
+		}
 		values, err := taskCandidate(current, input)
 		if err != nil {
 			return taskMutation{}, err
@@ -216,6 +219,9 @@ func (s *Tasks) versionedWrite(ctx context.Context, principal core.Principal, pr
 		}
 		if current.Version != version {
 			return taskMutation{}, &Fault{Code: "version_conflict", Message: "Task version does not match."}
+		}
+		if err := requireCompatibleWorker(ctx, current.Properties.Worker); err != nil {
+			return taskMutation{}, err
 		}
 		return prepare(tx, current)
 	})

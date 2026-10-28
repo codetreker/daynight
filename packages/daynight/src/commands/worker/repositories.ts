@@ -144,7 +144,7 @@ const prepareSetupSource = async (source: string | undefined, options: WorkerSet
   const { paths, signal } = options;
   signal?.throwIfAborted();
   if (!path.isAbsolute(options.homeDirectory)) throw new Error("The current user's home directory must be an absolute path.");
-  if (options.agent !== "codex" && options.agent !== "copilot") throw new Error("Choose Codex or Copilot as the worker agent.");
+  if (options.agent !== "codex" && options.agent !== "copilot" && options.agent !== "claude") throw new Error("Choose Codex, Claude or Copilot as the worker agent.");
   if (new Set(options.projectIds).size !== options.projectIds.length) throw new Error("Select distinct Projects for worker setup.");
   const projects = selectedProjects(options.projectIds, options.projects);
   const current = await snapshotFromSource(source, paths, signal);

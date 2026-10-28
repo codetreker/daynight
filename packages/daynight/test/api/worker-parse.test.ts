@@ -8,7 +8,7 @@ const claimId = "33333333-3333-3333-3333-333333333333";
 const time = "2026-10-24T12:34:56.123456789Z";
 const worker: WorkerClaim = {
   claimId, state: "active", userId: projectId, workerId: taskId, machine: { id: claimId, name: "Machine" },
-  platform: "linux", agent: "codex", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", claimedAt: time,
+  platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", claimedAt: time,
 };
 const task: Task = {
   id: taskId, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null,
@@ -22,7 +22,7 @@ const malformedWorkers: unknown[] = [
   { ...worker, platform: null }, { ...worker, platform: "win32" }, { ...worker, agent: "other" }, { ...worker, phase: "done" },
   { ...worker, herdr: {} }, { ...worker, herdr: { session: "w", workspaceId: "ws", paneId: "" } },
   { ...worker, nativeSessionId: "" }, { ...worker, claimedAt: "2026-02-30T00:00:00Z" }, { ...worker, unexpected: true },
-  ...Object.keys(worker).map((key) => Object.fromEntries(Object.entries(worker).filter(([field]) => field !== key))),
+  ...Object.keys(worker).filter((key) => key !== "agentControlMode").map((key) => Object.fromEntries(Object.entries(worker).filter(([field]) => field !== key))),
 ];
 
 describe("worker ownership read DTO", () => {
@@ -49,5 +49,24 @@ describe("worker ownership read DTO", () => {
   it("rejects active ownership outside in_progress and released ownership outside todo", () => {
     expect(() => parseTask({ ...task, status: "done" }, projectId, taskId)).toThrow("invalid response");
     expect(() => parseTask({ ...task, properties: { ...task.properties, worker: { ...worker, state: "released" } } }, projectId, taskId)).toThrow("invalid response");
+  });
+});
+
+
+describe("worker execution mode read compatibility", () => {
+  const read = (value: unknown) => parseTask({ ...task, properties: { ...task.properties, worker: value } }, projectId, taskId).properties.worker;
+  it("normalizes only absent legacy mode to herdr", () => {
+    const { agentControlMode: _mode, ...legacy } = worker as WorkerClaim & { agentControlMode?: string };
+    expect(read(legacy)).toMatchObject({ agentControlMode: "herdr" });
+  });
+  it.each(["codex", "claude", "copilot"])("reads %s web claims with no Herdr binding", (agent) => {
+    expect(read({ ...worker, agentControlMode: "web", agent, herdr: null })).toMatchObject({ agentControlMode: "web", agent, herdr: null });
+  });
+  it.each([null, "", "other", undefined])("rejects explicit invalid mode %j", (agentControlMode) => {
+    expect(() => read({ ...worker, agentControlMode })).toThrow("invalid response");
+  });
+  it("rejects a web claim with an unsupported agent or Herdr resource", () => {
+    expect(() => read({ ...worker, agentControlMode: "web", agent: "unsupported", herdr: null })).toThrow();
+    expect(() => read({ ...worker, agentControlMode: "web" })).toThrow();
   });
 });

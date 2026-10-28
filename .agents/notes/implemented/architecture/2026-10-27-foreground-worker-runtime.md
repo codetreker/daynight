@@ -12,7 +12,7 @@ sharing a global execution limit across repositories.
 
 ## Decision
 
-The foreground worker now uses current service/Git/Herdr facts and process-local jobs under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). The following records the original durable execution controller, including the uncertainty guarantees that motivated its checkpoints. Those persistent mechanisms are historical, not requirements on the current six-column store.
+The foreground worker now uses current service/Git/Herdr facts and process-local jobs under the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). The following records the original durable execution controller, including the uncertainty guarantees that motivated its checkpoints. Those persistent mechanisms are historical, not requirements on the current claim index.
 
 ### Original implementation and rationale
 
@@ -22,8 +22,8 @@ design](../../../../docs/design/daynight-worker.md) owns the mechanisms; the
 [user
 guide](../../../../packages/daynight/README.md#worker-configuration-and-startup)
 owns configuration and operation. Review keeps its own database, coordinator and
-lifecycle. Worker composes existing typed HTTP, identity/lock, Git, Herdr and
-managed-skill modules instead of introducing another delivery engine.
+lifecycle. Worker composes existing typed HTTP, identity/lock, Git, frozen Herdr
+or Web execution backends and managed-skill modules instead of introducing another delivery engine.
 
 Configuration presence does not determine whether runtime defaults apply. A
 missing file, an omitted worker mapping and omitted optional fields use the
@@ -271,6 +271,15 @@ the client, and leaves each existing task pane's native XDG and private HISTFILE
 unchanged. It does not load worker business state or server credentials.
 Diagnostics correlate original IDs, local state, recovery and cleanup errors;
 neither diagnostics nor terminal idle/done authorize task completion.
+
+Backend routing follows each saved claim. The Herdr adapter is constructed
+lazily, so a pure Web run, cleanup or shutdown neither probes nor starts Herdr.
+Old Herdr responsibilities still use their original instance when new work is
+configured for Web. Session capability/version/provider preflight precedes new
+Web acquisition. A Controller surviving worker exit is reobserved; replacing it
+requires original process stop and exact native identity. Initial input can
+establish a lazy native ID, but an unknown dispatch never becomes permission
+to resend. See the [Session contract](../../../../docs/design/task-session-protocol.md).
 
 The [poll-interval decision](../feature/2026-10-28-worker-default-poll-interval.md)
 owns the sixty-second default and explicit-interval compatibility.

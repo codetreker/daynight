@@ -15,6 +15,7 @@
   "machine": {"id": "3475decc-e9e4-4615-857f-c5f31a2259e1", "name": "build-machine"},
   "platform": "linux",
   "agent": "codex",
+  "agentControlMode": "herdr",
   "worktreeId": "45dd8ec8-a8ea-4ac9-a72d-c2ed98fc66f5",
   "phase": "preparing",
   "herdr": null,
@@ -23,11 +24,19 @@
 }
 ```
 
-`platform` 为 windows/linux/macos，`agent` 为 codex/copilot。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
+`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 为 herdr/web，是 claim 创建时冻结的执行模式；Codex、Claude、Copilot 均可使用任一模式，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
 
 初始认领和人工接续的 userId 来自服务端认证用户。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。released/completed 保留最后身份、工作区及会话信息作为历史，不自动过期；字段存在不证明原资源仍存活，也不要求新执行复用它们。
 
 存储/读取 codec 与公共属性写入 codec 分开。普通 create/PATCH 提供 worker 字段时，即使为 null 或与现值相同也返回 invalid_input。PR 列表修改保留 worker，worker 操作保留 PR 及其他任务资料。016_task_worker.sql 在规范 JSON 文本末尾插入 worker:null 并调整默认值，保留版本和时间；不经过 PostgreSQL JSON/JSONB 转换，以保留既有 PR 字符串中的 NUL 转义和 Unicode 语义。
+
+## 执行模式兼容
+
+旧请求与旧记录缺少 agentControlMode 时规范化为 herdr；显式 null、空串或未知枚举拒绝。新响应总是返回实际模式，配置重载不能改变既有 claim。人工 resume 的新 claim 可以指定另一模式；强制撤回不创建目标执行，后续认领使用新身份。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
+
+迁移为非 null worker 文档补充 herdr，保留 null worker、任务版本、时间及 PR 字符串原文。客户端与服务端共同校验 mode/provider 组合。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
+
+Web 认领前通过认证 session-capabilities 请求核验协议、schema/projection 版本和 provider。Claim 的 herdr 始终为 null，phase/nativeSessionId 是执行摘要，不能证明在线或允许换 writer。Session registration 与 controller grant 另受当前 claim、owner 和 generation fence 约束，完整契约见[Task Session](task-session-protocol.md)。丢失 Web 执行证据的 claim 不因 preparing 或 nativeSessionId=null 变成首次启动；保留原模式并暂停，等待原执行来源证明。
 
 ## HTTP 操作
 
@@ -35,7 +44,7 @@
 
 | 方法和后缀 | 输入与结果 |
 |---|---|
-| POST `/worker-claim` | version、claimId、workerId、machine、platform、agent、worktreeId；自动认领，终止后重新认领使用新 claimId/worktreeId。 |
+| POST `/worker-claim` | version、claimId、workerId、machine、platform、agent、agentControlMode、worktreeId；自动认领，终止后重新认领使用新 claimId/worktreeId。 |
 | PATCH `/worker-claim` | version、claimId，及 phase/herdr/nativeSessionId 中至少一个字段；只更新当前执行摘要。 |
 | PUT `/status` | version、status；只有 done 目标可附带 claimId，以完成当前 active 归属。 |
 | POST `/worker-claim/release` | version、claimId、stoppedConfirmed:true；释放已停止的执行，返回 todo。 |
@@ -48,13 +57,13 @@
 
 项目写事务取得锁后重新核验当前成员、精确版本、todo、全部前置完成、allowAgents=true、平台兼容和无 active 归属。成功同时进入 in_progress 并安装 active 记录，只增加一次任务版本。候选快照不替代事务校验。
 
-没有记录时创建初始归属。存在 released/completed 历史时，新的 claimId 与 worktreeId 均须区别于最后执行；completed task 仍须先合法重开。Agent 可明确选择为 codex/copilot，与 source 类型独立。接口严格拒绝已废弃的 continuityConfirmed，不兼容忽略。服务端校验新身份及资格；仍有效同一 claim 的原 worktree/native history 恢复由运行时核对，终止后新执行不依赖这些源资料。
+没有记录时创建初始归属。存在 released/completed 历史时，新的 claimId 与 worktreeId 均须区别于最后执行；completed task 仍须先合法重开。Agent 可明确选择为 codex/copilot/claude，与 source 类型独立。接口严格拒绝已废弃的 continuityConfirmed，不兼容忽略。服务端校验新身份及资格；仍有效同一 claim 的原 worktree/native history 恢复由运行时核对，终止后新执行不依赖这些源资料。
 
 人工 resume 只处理 released、todo 且全部前置完成的任务。调用者必须仍是项目成员，并是原 owner 或管理员；previousClaimId 必须匹配保留记录，claimId/worktreeId 必须为新的执行身份。它创建归属于认证调用者的新 active claim，允许本次明确 agent，保留普通人工安排不受自动许可/平台过滤限制的语义。自动调度不能失败后退入该入口；普通 daemon 跳过 released 候选并继续后续分页。公开 resume 命令使用本次有效配置，实际取得 claim 后才登记 pending。
 
 ### 更新、完成和状态保护
 
-执行摘要更新要求 active 记录及匹配 claimId，且认证用户为当前 owner。身份、平台、agent、工作区、状态和认领时间不可通过该入口改写。精确版本同值更新保留版本、更新时间和执行时间；旧版本同值请求仍冲突。
+执行摘要更新要求 active 记录及匹配 claimId，且认证用户为当前 owner。身份、平台、agent、agentControlMode、工作区、状态和认领时间不可通过该入口改写。精确版本同值更新保留版本、更新时间和执行时间；旧版本同值请求仍冲突。
 
 普通从未由 worker 管理的任务继续使用九种三状态组合。状态设置先核验成员和精确版本，再处理同状态 no-op；no-op 不释放归属或改变计时。实际转换遵循以下保护：
 
@@ -84,13 +93,13 @@ stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代�
 
 沿用 invalid_input、认证/forbidden/not_found、version_conflict、dependency_unsatisfied、invalid_transition，并用 claim_conflict 表达非当前归属。非成员读取和写入按现有规则隐藏任务。错误保持原有链和诊断，不转换为空候选或成功。
 
-归属记录保留期间，服务端拒绝再次使用其 claimId；强制撤回会清除这条服务端记录。调用方 SQLite 保留结束 claim 的六列索引行。任务版本保护每次写入，新 ID 由调用方按从不复用的规则生成。该模型不建立历史 claim ID 注册表、另一个版本计数器或秘密执行凭据。
+归属记录保留期间，服务端拒绝再次使用其 claimId；强制撤回会清除这条服务端记录。调用方 SQLite 保留结束 claim 的索引行。任务版本保护每次写入，新 ID 由调用方按从不复用的规则生成。该模型不建立历史 claim ID 注册表、另一个版本计数器或秘密执行凭据。
 
 ## 进程内客户端、候选和恢复
 
 Worker 直接调用 CLI 进程内 typed ApiClient。claimWorkerTask、updateWorkerClaim、releaseWorkerClaim、withdrawWorkerClaim、resumeWorkerTask 和 completeWorkerTask 使用各自明确的 200 响应校验；completeWorkerTask 通过现有 PUT status 提交 done 与 claimId。普通 setTaskStatus 保持 version/status 输入。公开 CLI 的 task set-status done --claim-id <claim-id> 显式选择 completeWorkerTask，并保留精确 --if-version 和同一结果校验；不从 task/environment 推断 claim，不在失败后回退普通 setter。Worker 自身调用 typed API，不启动 daynight 子进程；原生 agent 可使用这一公开完成入口。
 
-Typed ApiClient 的 `getCurrentUser()` 复用既有 GET /api/v1/me，解码 User 的 id、email、emailVerified、name、avatarUrl 五字段；它不增加服务端 API。可选 expectedUserId 在成功响应正文准入前核对既有 Daynight-User-ID，空分页同样受约束。Worker 在读取项目/清单前固定启动凭据的认证 UID，当前进程后续请求保持该身份。六列本机记录不保存旧账号或服务范围；切换前先结束旧执行，再重建本机状态。具体启动和查询覆盖规则由[运行时设计](daynight-worker.md#启动发现与周期对账)拥有。
+Typed ApiClient 的 `getCurrentUser()` 复用既有 GET /api/v1/me，解码 User 的 id、email、emailVerified、name、avatarUrl 五字段；它不增加服务端 API。可选 expectedUserId 在成功响应正文准入前核对既有 Daynight-User-ID，空分页同样受约束。Worker 在读取项目/清单前固定启动凭据的认证 UID，当前进程后续请求保持该身份。本机认领索引不保存旧账号或服务范围；切换前先结束旧执行，再重建本机状态。具体启动和查询覆盖规则由[运行时设计](daynight-worker.md#启动发现与周期对账)拥有。
 
 listTaskPage 保留 nextCursor，供运行时有界推进候选；许可、ready 和实际平台在服务端排序和分页前组合。active 记录对应 in_progress，天然不属于 ready todo。普通 daemon 跳过 released 候选并继续后续游标，不能据此把仓库判为空。
 

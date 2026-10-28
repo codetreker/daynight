@@ -1,0 +1,30 @@
+.session-composer.session-composer-adaptive textarea { box-sizing: border-box; resize: none; min-height: 48px; max-height: 180px; overflow-y: auto; }
+@media (max-width: 600px) {
+  .session-composer.session-composer-adaptive { padding-bottom: max(10px, env(safe-area-inset-bottom)); }
+  .session-composer.session-composer-adaptive textarea { min-height: 44px; max-height: 120px; }
+}
+.session-controls-toolbar { display: flex; align-items: center; gap: 4px; min-width: 0; flex-wrap: wrap; }
+.session-control-trigger { border: 0; background: transparent; color: inherit; padding: 6px 8px; border-radius: 6px; font: inherit; font-size: 12px; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.session-control-trigger:hover, .session-control-trigger[aria-expanded="true"] { background: var(--surface-muted, #eeedf8); }
+.session-controls-panel, .session-command-menu { border: 1px solid var(--border, #dddde7); border-radius: 9px; background: var(--surface, #fff); padding: 12px; margin-bottom: 10px; max-height: min(420px, 50vh); overflow: auto; }
+.session-controls-heading, .session-command-heading, .session-controls-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.session-controls-heading, .session-command-heading { margin-bottom: 10px; }
+.session-control-setting { display: grid; gap: 5px; margin: 12px 0; }
+.session-control-setting label { font-weight: 600; font-size: 12px; }
+.session-control-setting select { width: 100%; min-height: 36px; padding: 6px 8px; color: inherit; background: var(--surface, white); border: 1px solid var(--border, #dddde7); border-radius: 6px; }
+.session-control-setting[data-setting-state="pending"] select { border-color: #a77f34; }
+.session-control-note, .session-controls-foot, .session-composer-keyboard { font-size: 11px; color: var(--muted, #72717e); margin: 0; }
+.session-command-menu [role="listbox"] { display: grid; gap: 3px; }
+.session-command-menu [role="option"] { display: grid; grid-template-columns: minmax(90px, auto) 1fr; text-align: left; gap: 4px 12px; border: 0; padding: 8px; background: transparent; border-radius: 5px; color: inherit; font: inherit; }
+.session-command-menu [role="option"][aria-selected="true"] { background: var(--surface-muted, #eeedf8); }
+.session-command-menu [role="option"] span, .session-command-menu [role="option"] small { overflow-wrap: anywhere; font-size: 12px; }
+.session-command-menu [role="option"] small { grid-column: 1/-1; color: var(--muted, #72717e); }
+.session-composer-activity { display: flex; align-items: center; gap: 7px; padding: 8px 0 2px; font-size: 12px; }
+.session-composer-activity time { font-variant-numeric: tabular-nums; color: var(--muted, #72717e); }
+.session-activity-dot { width: 7px; height: 7px; border-radius: 50%; background: #81818b; flex: none; }
+.session-activity-dot.working { background: #7764ca; box-shadow: 0 0 0 3px #7764ca18; }
+.session-interrupt { margin-left: auto; border: 1px solid var(--border, #dddde7); border-radius: 6px; padding: 4px 8px; background: transparent; color: inherit; cursor: pointer; }
+.session-composer-keyboard { display: block; margin-top: 5px; }
+@media (max-width: 600px) { .session-control-trigger { max-width: 140px; padding: 6px; } .session-controls-foot { flex-wrap: wrap; } .session-command-menu [role="option"] { grid-template-columns: 1fr; } }
+.session-control-trigger[data-pending="true"] { text-decoration: underline dotted; text-underline-offset: 4px; }
+.session-composer-activity { flex-wrap: wrap; }

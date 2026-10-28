@@ -9,6 +9,7 @@ import type { ResourceOwner } from "../types.js";
 import { parseResourceOwner, resourceOwnerKey, sameResourceOwner } from "../resource-owner.js";
 import { buildHerdrAgentArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
 import type { HerdrAgentConfiguration } from "./arguments.js";
+import { claudeInputSurface } from "./claude-input.js";
 import { codexInputSurface } from "./codex-input.js";
 import { HerdrRpcError } from "./rpc.js";
 import type { HerdrRpcClient, HerdrRpcResult } from "./rpc.js";
@@ -214,7 +215,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     // Herdr 0.9.5 reports revision zero. It is not a freshness or input receipt.
     const confirmed = await readOwned(context, binding, operation);
     if (confirmed.pane!.tab_id !== tabId) throw new Error("The original input pane changed tabs during the visible surface observation.");
-    return codexInputSurface(read.text);
+    return context.agent === "claude" ? claudeInputSurface(read.text) : codexInputSurface(read.text);
   };
   const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false): Promise<HerdrPromptReceipt> => {
     if (typeof prompt !== "string" || prompt.length === 0) throw new HerdrAgentActionError("The caller prompt must be nonempty text.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
@@ -227,7 +228,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       while (true) {
         before = await observation(context, binding, operation);
         verifyInputAgent(before);
-        if (context.agent !== "codex") break;
+        if (context.agent !== "codex" && context.agent !== "claude") break;
         const surface = await visibleCodexSurface(context, binding, operation);
         if (surface === "blocked") throw new Error("The original Codex input surface requires operator action; automatic input was not submitted.");
         before = await observation(context, binding, operation);
@@ -273,10 +274,10 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
           if (cwd !== null && !path.isAbsolute(cwd)) throw new TypeError("The owned Herdr pane cwd must be absolute.");
           if (pane.cwd !== undefined && cwd !== null && path.normalize(text(pane.cwd, "Owned terminal cwd")) !== path.normalize(cwd)) throw new Error("The owned Herdr pane and agent cwd differ.");
           const kind = optionalText(info.agent, "Owned agent kind");
-          if (kind !== null && kind !== "codex" && kind !== "copilot") throw new Error("The owned task workspace hosts an unsupported native agent.");
+          if (kind !== null && kind !== "codex" && kind !== "copilot" && kind !== "claude") throw new Error("The owned task workspace hosts an unsupported native agent.");
           const native = info.agent_session === undefined ? null : object(info.agent_session, "Owned native session");
           const nativeAgent = native === null ? null : text(native.agent, "Owned native provider");
-          if (nativeAgent !== null && nativeAgent !== "codex" && nativeAgent !== "copilot") throw new Error("The owned native reference has an unsupported provider.");
+          if (nativeAgent !== null && nativeAgent !== "codex" && nativeAgent !== "copilot" && nativeAgent !== "claude") throw new Error("The owned native reference has an unsupported provider.");
           if (kind !== null && nativeAgent !== null && kind !== nativeAgent) throw new Error("The owned agent and native history provider differ.");
           const status = text(info.agent_status, "Owned agent status");
           if (!["idle", "working", "blocked", "done", "unknown"].includes(status)) throw new TypeError("The owned native status is invalid.");

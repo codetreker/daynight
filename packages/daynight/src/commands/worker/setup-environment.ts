@@ -1,7 +1,7 @@
 import { valid, gte } from "semver";
 import { createOperation } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
-import type { WorkerAgent } from "../../api/types.js";
+import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
 import { runHerdrCommand } from "./herdr/command.js";
 import { resolveHerdrInstancePaths } from "./herdr/instance.js";
 import { createNativePrerequisiteChecks, hasNativePrerequisiteCleanupFailure, nativeHookRuntimeChecks } from "./herdr/preflight.js";
@@ -23,6 +23,7 @@ export type WorkerEnvironmentOptions = {
   paths: WorkerPaths;
   signal: AbortSignal;
   packageDirectory?: string;
+  agentControlMode?: AgentControlMode;
   configuration?: { agent: WorkerAgent; model: string | null; args: readonly string[] };
 };
 
@@ -82,6 +83,11 @@ export const inspectWorkerEnvironment = async (
   const command = async (file: string, args: readonly string[], scope: Operation): Promise<string> =>
     (await runCommand({ file, args, environment, cwd: options.workingDirectory }, scope)).stdout;
   try {
+    if (options.configuration !== undefined && options.agentControlMode === "web") {
+      return [{ label: `${options.configuration.agent} Web session runtime`, status: "unverified", agent: options.configuration.agent,
+        detail: "The Controller verifies native authentication, capabilities and working-directory identity before dispatching task input.",
+        remedy: `Authenticate ${options.configuration.agent} before starting the Web worker.` }];
+    }
     if (options.configuration !== undefined) {
       const { agent } = options.configuration;
       const probes = createNativePrerequisiteChecks({ homeDirectory: options.homeDirectory, environment, platform, runCommand }, {
@@ -143,7 +149,7 @@ export const inspectWorkerEnvironment = async (
         return "The installed bundle includes the managed execution references.";
       },
     }];
-    for (const agent of ["codex", "copilot"] as const) {
+    for (const agent of ["codex", "copilot", "claude"] as const) {
       const [, version] = createNativePrerequisiteChecks({ homeDirectory: options.homeDirectory, environment, platform, runCommand }, {
         context: { cwd: options.workingDirectory }, configuration: { agent, model: null, args: [] },
       });
@@ -153,7 +159,8 @@ export const inspectWorkerEnvironment = async (
         verify: async (scope) => integrationState(await readIntegrations(scope), agent),
       });
     }
-    const checks = await inspectProbes(probes, operation);
+    const selected = options.agentControlMode === "web" ? probes.filter(probe => ["Operating system", "Node.js", "Git", "Bundled using-daynight skill"].includes(probe.label)) : probes;
+    const checks = await inspectProbes(selected, operation);
     operation.check();
     const bundleChecks = options.packageDirectory === undefined
       ? checks.map((check) => check.label === "Bundled using-daynight skill" ? { ...check, status: "unverified" as const } : check)
@@ -163,8 +170,8 @@ export const inspectWorkerEnvironment = async (
       detail: "Project Git access and task-specific tools are checked when the actual task uses them.",
       remedy: "Prepare Git credentials and task tools, including an authenticated GitHub CLI when PR delivery requires it.",
     }, {
-      label: "Live Herdr protocol and native execution", status: "unverified",
-      detail: "The private daemon protocol, capabilities and real native startup are verified by worker run.",
+      label: options.agentControlMode === "web" ? "Web Controller and native execution" : "Live Herdr protocol and native execution", status: "unverified",
+      detail: options.agentControlMode === "web" ? "The Daynight relay and native Controller capabilities are verified by worker run." : "The private daemon protocol, capabilities and real native startup are verified by worker run.",
     }];
   } finally { operation.dispose(); }
 };

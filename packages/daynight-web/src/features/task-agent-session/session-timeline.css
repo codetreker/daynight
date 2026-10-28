@@ -1,0 +1,20 @@
+.session-tool pre.session-tool-input, .session-tool pre.session-tool-output { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 2; }
+.session-tool { padding: 8px 10px; }
+.session-tool summary { align-items: center; flex-wrap: nowrap; gap: 8px; min-height: 22px; list-style: none; }
+.session-tool summary::-webkit-details-marker { display: none; }
+.session-tool-chevron { flex: none; color: #68758a; }
+.session-tool[open] > summary .session-tool-chevron { transform: rotate(90deg); }
+.session-tool summary .session-tool-name { flex: 0 1 auto; max-width: 28%; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-weight: 600; }
+.session-tool-summary { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #68758a; font-size: 11px; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.session-tool-status { flex: none; white-space: nowrap; font-size: 11px; }
+.session-tool.session-tool-failed { border-color: #bf6471; }
+.session-tool-failed .session-tool-status { color: #9c3d48; font-weight: 600; }
+.session-tool-running .session-tool-status { color: #795b27; }
+.session-tool-completed .session-tool-status { color: #37694e; }
+.session-tool pre:focus-visible, .session-markdown .markdown-table:focus-visible { outline: 2px solid #6262ba; outline-offset: 2px; }
+.session-markdown { min-width: 0; }
+.session-markdown .footnotes { font-size: 11px; }
+.session-markdown .footnotes .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.session-entry .session-error p, .session-compaction p { white-space: pre-wrap; }
+
+.session-cancellation { margin: 8px 12px; color: var(--text-muted, #737680); font-size: 12px; }

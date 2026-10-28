@@ -59,7 +59,7 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 		writeError(w, request, logger, "worker_claim", phase, err)
 		return
 	}
-	task, err := apply(request.Context(), principal, projectID, id, input)
+	task, err := apply(workerProtocolContext(request), principal, projectID, id, input)
 	if err != nil {
 		writeError(w, request, logger, "worker_claim", phase, err)
 		return
@@ -70,11 +70,11 @@ func workerMutation[T any](h *taskHandler, w http.ResponseWriter, request *http.
 	}
 	logger.InfoContext(request.Context(), "worker claim operation applied", "type", "resource", "component", "worker_claim", "phase", phase,
 		"request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task))
+	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
 }
 
 func (h *taskHandler) claimWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "worktreeId"}, claimWorkerInput, h.tasks.ClaimWorker)
+	workerMutation(h, w, request, principal, "claim", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId"}, claimWorkerInput, h.tasks.ClaimWorker)
 }
 
 func (h *taskHandler) updateWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -90,7 +90,7 @@ func (h *taskHandler) withdrawWorker(w http.ResponseWriter, request *http.Reques
 }
 
 func (h *taskHandler) resumeWorker(w http.ResponseWriter, request *http.Request, principal core.Principal) {
-	workerMutation(h, w, request, principal, "resume", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "worktreeId", "previousClaimId"}, resumeWorkerInput, h.tasks.ResumeWorker)
+	workerMutation(h, w, request, principal, "resume", []string{"version", "claimId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "previousClaimId"}, resumeWorkerInput, h.tasks.ResumeWorker)
 }
 
 func workerMachineInput(raw json.RawMessage) (core.WorkerMachine, error) {
@@ -130,7 +130,22 @@ func workerDescriptorInput(fields map[string]json.RawMessage) (service.WorkerDes
 		return service.WorkerDescriptor{}, err
 	}
 	input.Agent = core.WorkerAgent(agent)
-	return input, nil
+	input.AgentControlMode, err = workerAgentControlModeInput(fields)
+	return input, err
+}
+
+func workerAgentControlModeInput(fields map[string]json.RawMessage) (core.WorkerAgentControlMode, error) {
+	if _, exists := fields["agentControlMode"]; !exists {
+		return core.AgentControlModeHerdr, nil
+	}
+	mode, err := requiredString(fields, "agentControlMode")
+	if err != nil {
+		return "", err
+	}
+	if mode != string(core.AgentControlModeHerdr) && mode != string(core.AgentControlModeWeb) {
+		return "", invalidInput("agentControlMode must be herdr or web.")
+	}
+	return core.WorkerAgentControlMode(mode), nil
 }
 
 func claimWorkerInput(fields map[string]json.RawMessage) (service.ClaimWorker, error) {

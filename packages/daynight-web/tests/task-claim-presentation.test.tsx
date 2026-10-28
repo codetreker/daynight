@@ -11,7 +11,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const timestamp = '2026-10-27T00:00:00Z';
-const worker: WorkerClaim = { claimId: id(2), state: 'active', userId: id(3), workerId: id(4), machine: { id: id(5), name: 'macmini.local' }, platform: 'macos', agent: 'codex', worktreeId: id(6), phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: timestamp };
+const worker: WorkerClaim = { claimId: id(2), state: 'active', userId: id(3), workerId: id(4), machine: { id: id(5), name: 'macmini.local' }, platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: timestamp };
 const member = (userId = worker.userId, role: ProjectMember['role'] = 'member'): ProjectMember => ({ projectId: id(100), userId, name: 'Jianjun', email: 'jianjun@example.com', avatarUrl: null, role, version: 1n, createdAt: timestamp, updatedAt: timestamp });
 const detail: TaskDetail = { id: id(1), projectId: id(100), title: 'Claimed task', description: '', status: 'in_progress', version: 4n, allowAgents: true, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: timestamp, completedAt: null, properties: { worker, pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };
@@ -43,11 +43,11 @@ describe('claim ownership presentation', () => {
     expect(screen.getByRole('button', { name: '强制撤回' })).toBeVisible();
   });
 
-  it('represents released claims and former owners by their actual identity', () => {
-    renderWithLocale(<TaskClaimSummary worker={{ ...worker, state: 'released', agent: 'copilot' }} members={[]} membershipStatus="ready" membershipError={null} onRetryMembers={vi.fn()} canWithdraw={false} />, { locale: 'en' });
+  it.each([['copilot', 'Copilot'], ['claude', 'Claude Code']] as const)('represents released %s claims and former owners by their actual identity', (agent, label) => {
+    renderWithLocale(<TaskClaimSummary worker={{ ...worker, state: 'released', agent }} members={[]} membershipStatus="ready" membershipError={null} onRetryMembers={vi.fn()} canWithdraw={false} />, { locale: 'en' });
     expect(screen.getByRole('region', { name: 'Released claim' })).toHaveTextContent(worker.userId);
     expect(screen.getByText('Former project member')).toBeVisible();
-    expect(screen.getByText(/Copilot/)).toBeVisible();
+    expect(screen.getByRole('region', { name: 'Released claim' })).toHaveTextContent(label);
     expect(screen.queryByRole('button', { name: 'Force withdraw' })).toBeNull();
   });
 

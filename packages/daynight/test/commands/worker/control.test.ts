@@ -20,7 +20,7 @@ const machine = { id: uuid(7), name: "source" };
 const configuration: ExecutionConfiguration = { agent: "codex", model: "current-model", args: ["--search"], recoveryLimit: 0 };
 const root = fileURLToPath(new URL("../../../../../.tmp/worker-control-tests/", import.meta.url));
 const resources: { directory: string; store: WorkerStore }[] = [];
-const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
+const claim: WorkerClaim = { claimId, userId: owner, workerId, worktreeId, machine, platform: "linux", agent: "copilot", agentControlMode: "herdr", state: "active", phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time };
 const remoteTask = (worker: WorkerClaim = claim, version = 8n): Task => ({ id: taskId, projectId, title: "Task", description: "", status: worker.state === "active" ? "in_progress" : "todo", version, properties: { worker, pullRequests: [] }, allowAgents: true, requiredPlatform: null, startedAt: worker.state === "active" ? time : null, completedAt: null, createdAt: time, updatedAt: time, ready: worker.state !== "active", dependsOn: [], externalDependsOn: [], blockedBy: [] });
 const fixture = (local = true) => {
   mkdirSync(root, { recursive: true });
@@ -42,7 +42,7 @@ const fixture = (local = true) => {
   const remote: WorkerRemote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => owner), readTask: vi.fn(async () => observed), authorizeControl: vi.fn(async () => {}),
     release: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.status).toBe("active"); order.push("release"); observed = remoteTask({ ...claim, state: "released" }, input.version + 1n); return observed; }),
-    resume: vi.fn(async (_projectId, _taskId, input) => { order.push("resume"); observed = remoteTask({ ...claim, ...input, userId: owner, state: "active", phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
+    resume: vi.fn(async (_projectId, _taskId, input) => { order.push("resume"); observed = remoteTask({ ...claim, ...input, agentControlMode: input.agentControlMode ?? "herdr", userId: owner, state: "active", phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
     resolveProject: vi.fn(), ownInventory: vi.fn(), candidates: vi.fn(), claim: vi.fn(), update: vi.fn(),
   };
   const options = { store, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine, repositories: [{ project, configuration }], signal: new AbortController().signal, coordinator, emit: (event: WorkerEvent) => { events.push(event); order.push(event.kind); } };
@@ -182,6 +182,7 @@ describe("worker explicit resume grants", () => {
       return original(...args);
     });
     const result = await f.submit({ kind: "resume", taskId, claimId, version: 8n });
+    expect(vi.mocked(f.remote.resume).mock.calls[0]![2]).not.toHaveProperty("agentControlMode");
     expect(result.task).toMatchObject({ projectId, taskId, status: "pending", agent: "codex", sessionId: null });
     expect(f.current()).toMatchObject({ status: "done", sessionId: uuid(50), agent: "copilot" });
     expect(f.store.listTasks()).toHaveLength(2); expect(f.coordinator.cleanupSource).not.toHaveBeenCalled();

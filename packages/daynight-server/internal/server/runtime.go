@@ -28,6 +28,7 @@ type Runtime struct {
 	logger          *slog.Logger
 	shutdownTimeout time.Duration
 	cancelRequests  context.CancelFunc
+	shutdownHandler func(context.Context) error
 }
 
 type runtimeError struct {
@@ -77,6 +78,9 @@ func Start(ctx context.Context, config Config, logger *slog.Logger, handler func
 			BaseContext:       func(net.Listener) context.Context { return requests },
 		},
 	}
+	if graceful, ok := application.(interface{ Shutdown(context.Context) error }); ok {
+		runtime.shutdownHandler = graceful.Shutdown
+	}
 	return runtime, nil
 }
 
@@ -107,6 +111,12 @@ func (r *Runtime) Run(ctx context.Context) error {
 	}
 	if !errors.Is(serveError, http.ErrServerClosed) {
 		err = errors.Join(err, serveError)
+	}
+	// net/http does not wait for hijacked WebSocket connections. Stop the
+	// relay and await its database work before closing shared dependencies.
+	r.cancelRequests()
+	if r.shutdownHandler != nil {
+		err = errors.Join(err, r.shutdownHandler(shutdown))
 	}
 	err = errors.Join(err, r.files.Close())
 	if err != nil {

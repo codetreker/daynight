@@ -60,7 +60,8 @@ export type PullRequestProperty = {
 };
 
 export type WorkerState = "active" | "released" | "completed";
-export type WorkerAgent = "codex" | "copilot";
+export type WorkerAgent = "codex" | "copilot" | "claude";
+export type WorkerAgentControlMode = "herdr" | "web";
 export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
 export type WorkerClaim = {
   readonly claimId: string;
@@ -70,6 +71,7 @@ export type WorkerClaim = {
   readonly machine: { readonly id: string; readonly name: string };
   readonly platform: ExecutionPlatform;
   readonly agent: WorkerAgent;
+  readonly agentControlMode: WorkerAgentControlMode;
   readonly worktreeId: string;
   readonly phase: WorkerPhase;
   readonly herdr: { readonly session: string; readonly workspaceId: string; readonly paneId: string } | null;
@@ -135,3 +137,9 @@ export type TaskSync = {
   readonly observedAt: string;
   readonly tasks: readonly TaskSummary[];
 };
+
+export type {
+  SessionProvider, SessionFence, ControllerFence, InitialInputState, SessionSnapshot,
+  SessionCapabilities, SessionOperations, MessagePart, SessionCommand, SessionOperation,
+  SessionResource, SessionInteraction, InteractionResponse, TimelineEntry, SessionEvent,
+} from "../../../daynight/src/session/protocol.js";

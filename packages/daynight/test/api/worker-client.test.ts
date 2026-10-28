@@ -15,7 +15,7 @@ const newClaimId = "88888888-8888-8888-8888-888888888888";
 const newWorktreeId = "99999999-9999-9999-9999-999999999999";
 const time = "2026-10-24T12:34:56.123456789Z";
 const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId } as const;
-const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
+const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "herdr", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
 const task = (worker: WorkerClaim | null, version = 2n): Task => ({
   id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], worker },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
@@ -51,6 +51,22 @@ const respond = (response: ServerResponse, value: unknown, status = 200): void =
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
   vi.restoreAllMocks();
+});
+
+describe("worker protocol negotiation", () => {
+  it("advertises the extended schema while accepting legacy Herdr read and claim responses", async () => {
+    const headers: (string | string[] | undefined)[] = [];
+    const legacyWorker = { ...claim() };
+    delete (legacyWorker as { agentControlMode?: string }).agentControlMode;
+    const origin = await listen((request, response) => {
+      headers.push(request.headers["daynight-worker-protocol"]);
+      respond(response, task(legacyWorker));
+    });
+    const client = api(origin);
+    await expect(client.getTask(projectId, taskId)).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
+    await expect(client.claimWorkerTask(projectId, taskId, { ...descriptor, version: 1n })).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
+    expect(headers).toEqual(["2", "2"]);
+  });
 });
 
 describe("in-process worker task API", () => {

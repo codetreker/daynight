@@ -8,7 +8,7 @@ import type { HerdrCommand, HerdrCommandResult } from "./command.js";
 import type { HerdrRpcClient } from "./rpc.js";
 import { assertCodexInstallConfigurationSafe } from "./codex-install-safety.js";
 
-type NativeAgent = "codex" | "copilot";
+type NativeAgent = "codex" | "copilot" | "claude";
 export type HerdrNativeStart = {
   context: { cwd: string };
   configuration: { agent: NativeAgent; model: string | null; args: readonly string[] };
@@ -74,7 +74,7 @@ const absolute = (value: string, label: string): string => {
   return path.normalize(value);
 };
 const nativeHome = (agent: NativeAgent, environment: NodeJS.ProcessEnv, home: string): string => {
-  const key = agent === "codex" ? "CODEX_HOME" : "COPILOT_HOME";
+  const key = agent === "codex" ? "CODEX_HOME" : agent === "claude" ? "CLAUDE_CONFIG_DIR" : "COPILOT_HOME";
   const value = environment[key];
   return value === undefined ? path.join(home, `.${agent}`) : absolute(value, key);
 };
@@ -101,20 +101,20 @@ const readMetadata = async (file: string, operation: Operation, preserveBom = fa
 };
 const hookCommand = (file: string, agent: NativeAgent, platform: NodeJS.Platform): string => {
   const command = platform === "win32" ? `powershell -NoProfile -ExecutionPolicy Bypass -File "${file.replaceAll('"', '\\"')}"` : `bash '${file.replaceAll("'", "'\"'\"'")}'`;
-  return agent === "codex" ? `${command} session` : command;
+  return agent !== "copilot" ? `${command} session` : command;
 };
 const configuredHook = (hooks: Record<string, unknown>, expected: string, agent: NativeAgent, platform: NodeJS.Platform): boolean => {
-  const entries = hooks[agent === "codex" ? "SessionStart" : "sessionStart"];
+  const entries = hooks[agent !== "copilot" ? "SessionStart" : "sessionStart"];
   if (!Array.isArray(entries)) return false;
   return entries.some((value: unknown) => {
     if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
     const entry = value as Record<string, unknown>;
-    if (entry.matcher !== undefined && entry.matcher !== "") return false;
-    const commands = agent === "codex" ? entry.hooks : [entry];
+    if (entry.matcher !== undefined && entry.matcher !== "" && !(agent === "claude" && ["*", "^(startup|resume|clear|compact|fork)$"].includes(String(entry.matcher)))) return false;
+    const commands = agent !== "copilot" ? entry.hooks : [entry];
     return Array.isArray(commands) && commands.some((item: unknown) => {
       if (typeof item !== "object" || item === null || Array.isArray(item)) return false;
       const hook = item as Record<string, unknown>;
-      return hook.type === "command" && hook.enabled !== false && hook[agent === "codex" ? "command" : platform === "win32" ? "powershell" : "bash"] === expected;
+      return hook.type === "command" && hook.enabled !== false && hook[agent !== "copilot" ? "command" : platform === "win32" ? "powershell" : "bash"] === expected;
     });
   });
 };
@@ -171,12 +171,12 @@ export const createNativePrerequisiteChecks = (options: {
   const platform = options.platform === undefined ? process.platform : options.platform;
   const runCommand = options.runCommand === undefined ? runHerdrCommand : options.runCommand;
   const agent = input.configuration.agent;
-  if (agent !== "codex" && agent !== "copilot") throw new Error("The native agent must be codex or copilot.");
+  if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new Error("The native agent must be codex, claude or copilot.");
   const environment = { ...options.environment, ...nativeAgentPermissionEnvironment(agent) };
   const cwd = absolute(input.context.cwd, "Native working directory");
   validateHerdrAgentArguments(agent, input.configuration.args);
   const root = (): string => nativeHome(agent, environment, home);
-  const asset = (): string => path.join(root(), ...(agent === "copilot" ? ["hooks"] : []), platform === "win32" ? "herdr-agent-state.ps1" : "herdr-agent-state.sh");
+  const asset = (): string => path.join(root(), ...(agent !== "codex" ? ["hooks"] : []), platform === "win32" ? "herdr-agent-state.ps1" : "herdr-agent-state.sh");
   const checks: [NativePrerequisiteCheck, NativePrerequisiteCheck, ...NativePrerequisiteCheck[]] = [{
     kind: "home", label: `${agent} native directories`,
     remedy: `Set ${agent === "codex" ? "CODEX_HOME and CODEX_SQLITE_HOME" : "COPILOT_HOME"} to absolute paths, or unset the overrides to use their native defaults.`,
@@ -191,7 +191,7 @@ export const createNativePrerequisiteChecks = (options: {
     remedy: `Install or update the ${agent} CLI and make it available on PATH.`,
     verify: async (operation) => {
       const output = (await runCommand({ file: agent, args: ["--version"], environment, cwd }, operation)).stdout;
-      const match = agent === "codex" ? /^codex-cli (\d+\.\d+\.\d+)(?:\s|$)/m.exec(output) : /^GitHub Copilot CLI (\d+\.\d+\.\d+)(?:[.\s]|$)/m.exec(output);
+      const match = agent === "codex" ? /^codex-cli (\d+\.\d+\.\d+)(?:\s|$)/m.exec(output) : agent === "claude" ? /^(\d+\.\d+\.\d+) \(Claude Code\)(?:\s|$)/m.exec(output) : /^GitHub Copilot CLI (\d+\.\d+\.\d+)(?:[.\s]|$)/m.exec(output);
       if (match === null) throw new Error(`Cannot identify the installed ${agent} executable version.`);
       // Earlier releases expose the bypass flag while still showing an interactive startup hook review.
       // https://github.com/openai/codex/commit/5fb5e47767ac4910f7c208481c23bf4d2fe5cf62
@@ -242,6 +242,17 @@ export const createNativePrerequisiteChecks = (options: {
       if (agent === "codex") {
         const file = json(await readMetadata(path.join(root(), "hooks.json"), operation), "Codex hooks configuration");
         if (!configuredHook(mapping(file.hooks, "Codex hooks configuration hooks"), expected, agent, platform)) throw new Error("Codex SessionStart does not invoke the installed official Herdr hook; configure that hook explicitly.");
+      } else if (agent === "claude") {
+        let configured = false;
+        const managedRoot = platform === "win32" ? path.join(environment.ProgramFiles ?? "C:\\Program Files", "ClaudeCode") : platform === "darwin" ? "/Library/Application Support/ClaudeCode" : "/etc/claude-code";
+        for (const file of [path.join(root(), "settings.json"), path.join(cwd, ".claude", "settings.json"), path.join(cwd, ".claude", "settings.local.json"), path.join(managedRoot, "managed-settings.json")]) {
+          let settings: Record<string, unknown>;
+          try { settings = json(await readMetadata(file, operation), "Claude settings"); }
+          catch (error) { if (error instanceof Error && "code" in error && error.code === "ENOENT") continue; throw error; }
+          if (settings.disableAllHooks === true || settings.allowManagedHooksOnly === true) throw new Error("Claude hooks are disabled or restricted by effective settings; configure the official integration explicitly.");
+          if (settings.hooks !== undefined) configured ||= configuredHook(mapping(settings.hooks, "Claude hooks"), expected, agent, platform);
+        }
+        if (!configured) throw new Error("Claude SessionStart does not invoke the official Herdr hook in this working directory.");
       } else {
         const effective = json((await runCommand({ file: agent, args: ["config", "hooks"], environment, cwd }, operation)).stdout, "Copilot effective hooks configuration");
         if (!configuredHook(effective, expected, agent, platform)) throw new Error("Copilot SessionStart does not invoke the installed official Herdr hook; configure it explicitly.");

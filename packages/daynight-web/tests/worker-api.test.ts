@@ -8,7 +8,7 @@ const claimId = "33333333-3333-3333-3333-333333333333";
 const time = "2026-10-24T12:34:56.123456789Z";
 const worker: WorkerClaim = {
   claimId, state: "active", userId: projectId, workerId: taskId, machine: { id: claimId, name: "Machine" },
-  platform: "linux", agent: "codex", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", claimedAt: time,
+  platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", claimedAt: time,
 };
 const task: TaskDetail = {
   id: taskId, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null,
@@ -22,10 +22,33 @@ const invalidWorkers: unknown[] = [
   { ...worker, platform: null }, { ...worker, platform: "win32" }, { ...worker, agent: "other" }, { ...worker, phase: "done" },
   { ...worker, herdr: {} }, { ...worker, herdr: { session: "w", workspaceId: "ws", paneId: "" } },
   { ...worker, nativeSessionId: "" }, { ...worker, claimedAt: "2026-02-30T00:00:00Z" }, { ...worker, unexpected: true },
-  ...Object.keys(worker).map((key) => Object.fromEntries(Object.entries(worker).filter(([field]) => field !== key))),
+  ...Object.keys(worker).filter((key) => key !== "agentControlMode").map((key) => Object.fromEntries(Object.entries(worker).filter(([field]) => field !== key))),
 ];
 
 describe("worker ownership detail reads", () => {
+  it("normalizes missing legacy claim mode without guessing from native identity", () => {
+    const { agentControlMode: _mode, ...legacy } = worker;
+    const parsed = parseTaskDetail({ ...task, properties: { ...task.properties, worker: legacy } }, projectId, taskId);
+    expect(parsed.properties.worker).toEqual(worker);
+  });
+  it.each(["codex", "claude", "copilot"])("accepts explicit Web claims for %s", (agent) => {
+    const value = { ...task, properties: { ...task.properties, worker: { ...worker, agent, agentControlMode: "web", herdr: null } } };
+    expect(parseTaskDetail(value, projectId, taskId)).toEqual(value);
+  });
+  it("retains Claude Herdr and existing Copilot Herdr claims", () => {
+    for (const agent of ["claude", "copilot"]) {
+      const value = { ...task, properties: { ...task.properties, worker: { ...worker, agent } } };
+      expect(parseTaskDetail(value, projectId, taskId)).toEqual(value);
+    }
+  });
+  it.each([null, "", "WEB", "observer", 1])("rejects malformed control modes %j", (agentControlMode) => {
+    expect(() => parseTaskDetail({ ...task, properties: { ...task.properties, worker: { ...worker, agentControlMode } } }, projectId, taskId)).toThrow("invalid response");
+  });
+  it("rejects conflicting Herdr resources for every Web provider", () => {
+    for (const patch of ["codex", "claude", "copilot"].map((agent) => ({ agent, herdr: worker.herdr }))) {
+      expect(() => parseTaskDetail({ ...task, properties: { ...task.properties, worker: { ...worker, ...patch, agentControlMode: "web" } } }, projectId, taskId)).toThrow("invalid response");
+    }
+  });
   it("preserves every protected execution field alongside opaque PR values", () => {
     expect(parseTaskDetail(task, projectId, taskId)).toEqual(task);
     const preparing = { ...task, properties: { ...task.properties, worker: { ...worker, herdr: null, nativeSessionId: null } } };

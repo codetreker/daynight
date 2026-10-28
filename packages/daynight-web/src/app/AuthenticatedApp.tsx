@@ -1,3 +1,7 @@
+import { clearSessionDrafts } from '../features/task-agent-session/client';
+import { TestSessionPage } from '../features/task-agent-session/TestSessionPage';
+import { TestSessionListPage } from '../features/task-agent-session/TestSessionListPage';
+import { useTestSessionListMessages } from '../features/task-agent-session/test-session-list-messages';
 import { flushSync } from "react-dom";
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from "../features/task-cache/TaskCacheProvider";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
@@ -61,14 +65,15 @@ const ProjectManagementNav = ({ projectId, current }: { readonly projectId: stri
 
 const Workspace = ({ user, children, route, onSignOut, blocked, identityChecking }: { readonly user: CurrentUser; readonly children: ReactNode; readonly route: AuthRoute; readonly onSignOut: () => void; readonly blocked: boolean; readonly identityChecking: boolean }) => {
   const { messages: { auth: { shell: m }, workspace: { app }, setup } } = useI18n();
+  const testMessages = useTestSessionListMessages();
   const content = useRef<HTMLElement>(null);
   const workspace = useRef<HTMLDivElement>(null);
   const sidebar = useSidebarPreference();
-  const label = route.kind === "projects" ? m.myProjects : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
+  const label = route.kind === "testSessions" ? testMessages.title : route.kind === "testSession" ? testMessages.session : route.kind === "projects" ? m.myProjects : route.kind === "account" ? m.accountSettings : route.kind === "members" ? m.members : route.kind === "settings" ? m.projectSettings : route.kind === "project" ? app.projectTasks : app.notFound;
   useLayoutEffect(() => { content.current?.focus(); }, [route.kind, "projectId" in route ? route.projectId : null]);
   return (
-    <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}`} aria-hidden={blocked} inert={blocked}>
-      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + ("projectId" in route ? `:${route.projectId}` : "")} projectsActive={route.kind === "projects"} activeProjectId={"projectId" in route ? route.projectId : null} accountActive={route.kind === "account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
+    <div className={`shell auth-shell${sidebar.collapsed ? " sidebar-collapsed" : ""}${route.kind === "testSession" ? " test-session-shell" : ""}`} aria-hidden={blocked} inert={blocked}>
+      <WorkspaceSidebar collapsed={sidebar.collapsed} onToggle={sidebar.toggle} routeKey={route.kind + ("projectId" in route ? `:${route.projectId}` : "")} projectsActive={route.kind === "projects"} activeProjectId={"projectId" in route ? route.projectId : null} accountActive={route.kind === "account"} testSessionsActive={route.kind === "testSessions" || route.kind === "testSession"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={() => queueMicrotask(() => content.current?.focus())} />
       <div className="workspace" ref={workspace}>
         <a className="skip-link" href="#main-content">{app.skipToContent}</a>
         <header className="topbar">
@@ -95,7 +100,7 @@ const WorkspaceRoutes = ({ user, route, onSignOut, onIdentityMismatch, blocked, 
   const [creating, setCreating] = useState(false);
   const [projectName, setProjectName] = useState<string | null>(null);
   return <Workspace user={user} route={route} onSignOut={onSignOut} blocked={blocked} identityChecking={identityChecking}>
-    {children}{route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <ProjectMembersProvider key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /></ProjectMembersProvider> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={user} onRemoved={() => { projects.refresh(); navigate("/projects"); }} onUnavailable={projects.refresh} /></> : route.kind === "account" ? <AccountPage user={user} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
+    {children}{route.kind === "testSessions" ? <TestSessionListPage /> : route.kind === "testSession" ? <TestSessionPage key={route.sessionId} sessionId={route.sessionId} /> : route.kind === "projects" ? <ProjectsPage onCreate={() => setCreating(true)} /> : route.kind === "project" ? <ProjectMembersProvider key={route.projectId} projectId={route.projectId}><AuthorizedProject projectId={route.projectId} user={user} onOpenMembers={(project) => { setProjectName(project.name); navigate(`/projects/${project.id}/members`); }} /></ProjectMembersProvider> : route.kind === "settings" ? <><ProjectManagementNav projectId={route.projectId} current="settings" /><ProjectSettingsPanel key={route.projectId} projectId={route.projectId} user={user} /></> : route.kind === "members" ? <><ProjectManagementNav projectId={route.projectId} current="members" /><MembersPanel key={route.projectId} projectId={route.projectId} projectName={projectName ?? m.genericProject} user={user} onRemoved={() => { projects.refresh(); navigate("/projects"); }} onUnavailable={projects.refresh} /></> : route.kind === "account" ? <AccountPage user={user} onSignOut={onSignOut} onIdentityMismatch={onIdentityMismatch} /> : <section className="state-box"><h1>{app.notFound}</h1><a className="button primary" href="/projects" onClick={followLink}>{app.returnToProjects}</a></section>}
     {creating && <CreateProjectDialog onClose={() => setCreating(false)} onCreated={(project) => { setCreating(false); projects.refresh(); navigate(`/projects/${project.id}`); }} />}
   </Workspace>;
 };
@@ -121,6 +126,7 @@ const assignLogin = (url: string) => window.location.assign(url);
 
 export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly navigateToLogin?: (url: string) => void }) => {
   const { locale, messages: { auth: { shell: m }, workspace: { app, projects } } } = useI18n();
+  const testMessages = useTestSessionListMessages();
   const [invitation, setInvitation] = useState(captureInvitation);
   const [location, setLocation] = useState(() => ({ pathname: window.location.pathname, search: window.location.search }));
   const { pathname, search } = location;
@@ -152,8 +158,8 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
   useLayoutEffect(() => {
     document.documentElement.lang = locale;
     const page = session.status === "authenticated" ? route.kind : session.status === "anonymous" ? "login" : session.status;
-    document.title = (page === "attachment" || page === "task") ? app.documentTitle.task : m.documentTitle[page];
-  }, [locale, m.documentTitle, app.documentTitle.task, route.kind, session.status]);
+    document.title = page === "testSessions" ? `${testMessages.title} · Daynight` : page === "testSession" ? `${testMessages.session} · Daynight` : (page === "attachment" || page === "task") ? app.documentTitle.task : m.documentTitle[page];
+  }, [locale, m.documentTitle, app.documentTitle.task, route.kind, session.status, testMessages.title, testMessages.session]);
   const [loginError] = useState(() => {
     const parameters = new URLSearchParams(window.location.search);
     const failed = parameters.get("authError") === "login_failed";
@@ -161,6 +167,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     return failed;
   });
   const clearSession = useCallback((notice?: SessionNotice) => {
+    if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests(); ++generation.current; active.current?.abort(); active.current = null;
     setRevalidation("idle"); setSession({ status: "anonymous", ...(notice === undefined ? {} : { notice }) });
@@ -195,6 +202,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
       if (previous.status === "authenticated" && previous.user.id === user.id && !cacheScope.current?.isInvalidated) {
         setSession({ ...previous, user });
       } else {
+        if (previous.status === "authenticated") clearSessionDrafts(previous.user.id);
         void cacheScope.current?.invalidateScope();
         cacheScope.current = createTaskCacheScope({ userId: user.id, onIdentityMismatch: () => identityRecheck.current() });
         invalidateAuthRequests();
@@ -248,6 +256,7 @@ export const AuthenticatedApp = ({ navigateToLogin = assignLogin }: { readonly n
     setAttempt((value) => value + 1);
   }, [pauseIdentity]);
   const invalidateIdentity = useCallback(() => {
+    if (sessionRef.current.status === "authenticated") clearSessionDrafts(sessionRef.current.user.id);
     void cacheScope.current?.invalidateScope(); cacheScope.current = null;
     invalidateAuthRequests();
     pauseIdentity();

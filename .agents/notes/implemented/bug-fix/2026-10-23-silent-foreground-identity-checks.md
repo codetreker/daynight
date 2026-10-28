@@ -46,7 +46,9 @@ A failed identity check preserves component state behind the existing blocking
 error overlay. Explicit retry and subsequent external returns retain that block
 until verification succeeds. Initial identity loading continues to use its
 loading page. Graph polling and resource authorization keep their existing
-owners and behavior.
+owners and behavior. [Session connection reuse](2026-10-28-session-focus-connection-reuse.md)
+extends this policy with bounded transport retention and buffered publication
+while identity is unconfirmed.
 
 This partially replaces the concealment policy of the
 [authenticated workspace decision](../feature/2026-10-22-web-auth-workspace.md).

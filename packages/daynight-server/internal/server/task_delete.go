@@ -33,8 +33,9 @@ func (h *taskHandler) delete(w http.ResponseWriter, request *http.Request, princ
 		writeError(w, request, logger, "task", "delete", err)
 		return
 	}
+
 	input := service.DeleteTask{Version: version, RemoveDepends: removeDepends != nil && *removeDepends}
-	if err := h.tasks.Delete(request.Context(), principal, projectID, id, input); err != nil {
+	if err := h.tasks.Delete(workerProtocolContext(request), principal, projectID, id, input); err != nil {
 		writeError(w, request, logger, "task", "delete", err)
 		return
 	}

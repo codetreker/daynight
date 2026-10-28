@@ -4,6 +4,7 @@ engineStrict: true
 storeDir: .tmp/pnpm-store
 allowBuilds:
   better-sqlite3: false
+  koffi@3.3.4: false
   node-pty@1.1.0: true
 packageExtensions:
   mermaid@12.2.0:
@@ -11,5 +12,7 @@ packageExtensions:
       type-fest: 4.41.0
 patchedDependencies:
   '@dagrejs/dagre@3.1.1': patches/@dagrejs__dagre@3.1.1.patch
+  '@github/copilot-sdk@1.0.11': patches/@github__copilot-sdk@1.0.11.patch
   '@xyflow/system@0.0.83': patches/@xyflow__system@0.0.83.patch
   node-pty@1.1.0: patches/node-pty@1.1.0.patch
+  vscode-jsonrpc@8.2.1: patches/vscode-jsonrpc@8.2.1.patch

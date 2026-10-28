@@ -67,7 +67,7 @@ export const canWithdrawClaim = (state: DetailState): boolean => canMutate(state
 const sameIds = (left: readonly string[], right: readonly string[]): boolean => left.length === right.length && left.every((id) => right.includes(id));
 const workerDescriptor = (worker: TaskDetail["properties"]["worker"]): string => JSON.stringify(worker === null ? null : [
   worker.claimId, worker.state, worker.userId, worker.workerId, worker.machine.id, worker.machine.name,
-  worker.platform, worker.agent, worker.worktreeId, worker.phase,
+  worker.platform, worker.agent, worker.agentControlMode, worker.worktreeId, worker.phase,
   worker.herdr === null ? null : [worker.herdr.session, worker.herdr.workspaceId, worker.herdr.paneId], worker.nativeSessionId, worker.claimedAt,
 ]);
 const preservesMaterials = (before: TaskDetail, after: TaskDetail, preserveWorker = true): boolean => before.title === after.title && before.description === after.description &&

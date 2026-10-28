@@ -234,7 +234,10 @@ describe("project dashboard", () => {
     expect(number("已完成")).toBe("1");
   });
 
-  it("preserves the original node focus across relation navigation and allows unknown snapshot references", async () => {
+  it("preserves the original node focus when closing a pending unknown relation after relation navigation", async () => {
+    const unknown = deferred<TaskDetail>();
+    const resolveDetail = detailRequest.getMockImplementation()!;
+    detailRequest.mockImplementation((...args) => args[1] === X ? unknown.promise : resolveDetail(...args));
     graphRequest.mockResolvedValue(graph());
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("已完成根");
@@ -246,9 +249,11 @@ describe("project dashboard", () => {
     expect(screen.getByTestId("selected-task").textContent).toBe(C);
     fireEvent.click(screen.getByRole("button", { name: "未知关系" }));
     await waitFor(() => expect(detailRequest.mock.calls.at(-1)?.[1]).toBe(X));
+    expect(screen.getByTestId("selected-task")).toHaveTextContent(X);
     expect(screen.getByTestId("detail-title")).toBeEmptyDOMElement();
     fireEvent.click(screen.getByRole("button", { name: "关闭详情" }));
     expect(document.activeElement).toBe(trigger);
+    await act(async () => { unknown.resolve(await resolveDetail(...detailRequest.mock.calls.at(-1)!)); });
   });
 
   it("falls back to the task section tab when the selected chain disappears into an empty snapshot", async () => {

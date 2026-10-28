@@ -3,6 +3,7 @@ module github.com/codetreker/daynight/packages/daynight-server
 go 1.27.2
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/codetreker/uniauth/sdk/go v0.0.0-20261022095215-0978963813fc
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.11.0

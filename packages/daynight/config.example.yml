@@ -45,6 +45,9 @@ worker:
   maxConcurrent: 1
   pollIntervalMs: 60000
   recoveryLimit: 3
+  # Choose herdr for terminal control or web for the Task Session page.
+  # The service freezes this mode per claim.
+  agentControlMode: herdr
   agent: copilot
   model: null
   args: []

@@ -1,3 +1,5 @@
+import { requireImplementedWorkerBackend } from "./backend.js";
+import type { WorkerSessionApi } from "./backends/session-api.js";
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../../api/client.js";
 import type { Task, TaskPlatform, WorkerClaimDescriptor, WorkerMachine } from "../../api/types.js";
@@ -22,13 +24,14 @@ const matchesGrant = (task: Task, identity: { projectId: string; taskId: string 
   const worker = task.properties.worker;
   return matchesTask(task, identity) && task.status === "in_progress" && worker !== null && worker.state === "active"
     && worker.claimId === descriptor.claimId && worker.workerId === descriptor.workerId && worker.worktreeId === descriptor.worktreeId
-    && worker.userId === userId && worker.agent === descriptor.agent && worker.platform === descriptor.platform
+    && worker.userId === userId && worker.agent === descriptor.agent && worker.agentControlMode === (descriptor.agentControlMode ?? "herdr") && worker.platform === descriptor.platform
     && worker.machine.id === descriptor.machine.id && worker.machine.name === descriptor.machine.name;
 };
 
 export const submitWorkerControl = async (options: {
   store: WorkerStore; remote: WorkerRemote; serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
   repositories: readonly WorkerRepositoryAssignment[]; request: WorkerControlRequest; signal: AbortSignal;
+  verifyWebServer?: WorkerSessionApi["verifySupport"];
   coordinator: ControlCoordinator; emit: (event: WorkerEvent) => void;
 }): Promise<{ task: LocalTask | null; message: string }> => {
   const { store, remote, request, signal, coordinator } = options;
@@ -69,18 +72,20 @@ export const submitWorkerControl = async (options: {
     const project = store.getProject(identity);
     const repository = options.repositories.find((entry) => entry.project.projectId === projectId);
     if (project === null || repository === undefined) throw new Error("Resume requires a configured repository and its current agent settings.");
+    requireImplementedWorkerBackend(repository.configuration);
+    if (repository.configuration.agentControlMode === "web") { if (!options.verifyWebServer) throw new Error("Web backend capabilities are unavailable."); await options.verifyWebServer(repository.configuration.agent, signal); }
     await remote.authorizeControl(projectId, worker.userId, signal);
-    const descriptor: WorkerClaimDescriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent };
+    const descriptor: WorkerClaimDescriptor = { claimId: randomUUID(), workerId: options.workerId, worktreeId: randomUUID(), machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}) };
     options.emit({ kind: "management-request", message: `Resume ${projectId}/${request.taskId}: previousClaimId=${request.claimId}, claimId=${descriptor.claimId}, worktreeId=${descriptor.worktreeId}.` });
     const granted = await confirmMutation(
       () => remote.resume(projectId, request.taskId, { ...descriptor, version: request.version, previousClaimId: request.claimId }, signal),
       (task) => matchesGrant(task, identity, descriptor, principal), "resume",
     );
-    const task = store.registerPending({ projectId, taskId: granted.id, claimId: descriptor.claimId, agent: descriptor.agent });
+    const task = store.registerPending({ projectId, taskId: granted.id, claimId: descriptor.claimId, agent: descriptor.agent, agentControlMode: descriptor.agentControlMode ?? "herdr" });
     return { task, message: `New resume claim ${task.claimId} committed as pending; worker run will start its new execution.` };
   }
   if (source === undefined || source.status === "done") throw new Error("Management requires the original unfinished local execution.");
-  if (worker === null || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent) throw new Error("The source claim is no longer the exact active execution on this worker.");
+  if (worker === null || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent || worker.agentControlMode !== (source.agentControlMode ?? "herdr")) throw new Error("The source claim is no longer the exact active execution on this worker.");
   await remote.authorizeControl(projectId, worker.userId, signal);
   if (request.kind === "retry") {
     if (principal !== worker.userId) throw new Error("Retry requires the original authenticated execution owner.");

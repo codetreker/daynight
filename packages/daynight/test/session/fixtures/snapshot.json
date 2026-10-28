@@ -1,0 +1,41 @@
+{
+  "protocol": "daynight.session.v1",
+  "schemaVersion": 1,
+  "projectionVersion": 1,
+  "sessionId": "00000006-1111-4111-8111-111111111111",
+  "claimId": "00000003-1111-4111-8111-111111111111",
+  "executionGeneration": "9007199254740993",
+  "connectionEpoch": "3",
+  "identity": {
+    "projectId": "00000001-1111-4111-8111-111111111111",
+    "taskId": "00000002-1111-4111-8111-111111111111",
+    "workerId": "00000004-1111-4111-8111-111111111111",
+    "worktreeId": "00000005-1111-4111-8111-111111111111",
+    "controllerId": "00000007-1111-4111-8111-111111111111",
+    "controllerInstanceId": "00000008-1111-4111-8111-111111111111",
+    "agentControlMode": "web",
+    "provider": "codex",
+    "nativeSessionId": "native-thread-1"
+  },
+  "sessionRevision": "12",
+  "historyEpoch": "history-1",
+  "lastEventSeq": "22",
+  "lastTimelineSeq": "9",
+  "initialInputState": "confirmed",
+  "synchronized": true,
+  "lifecycle": "active",
+  "connectionState": "connected",
+  "activity": "idle",
+  "currentTurnId": null,
+  "capabilities": {
+    "send": true,
+    "steer": true,
+    "cancel": true,
+    "respond": true
+  },
+  "operations": {
+    "canSend": true,
+    "canCancel": false,
+    "canRespond": false
+  }
+}

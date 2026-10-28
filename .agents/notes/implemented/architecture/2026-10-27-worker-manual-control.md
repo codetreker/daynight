@@ -61,8 +61,9 @@ claim, exact supplied version and, for transfer, generated target claim/worktree
 IDs plus the explicit target descriptor. A foreground singleton polls this same
 SQLite and serializes target resource actions. If no foreground controller owns
 the instance lock, the command acquires that same lock and runs the same
-coordinator for the selected execution. No IPC service, second task registry or
-persistent action queue is added.
+coordinator for the selected execution. No separate worker-management service, second task registry or persistent action
+queue is added. Web Controllers expose authenticated local IPC for their native
+execution only; manual decisions still belong to this worker coordinator.
 
 The source uses the existing terminal cleanup: ask its original agent to release
 attributable outside-worktree temporary resources, keep the first deadline of at
@@ -135,6 +136,14 @@ before that input. Ordinary children may change without replacing original
 evidence. Retry does not create another agent or permit replay of
 submitted/unknown input, infer loss from an empty-looking composer or replace a
 lost original conversation.
+
+For Web claims the same source intent closes the original Controller/native
+resources and endpoint instead of a Herdr workspace. Cleanup waits for the
+original cleanup turn or fixed deadline; provider acceptance alone is not
+completion. OS stop proof precedes worktree deletion and the remote source
+mutation. POSIX proof covers the original process group and recorded native
+PIDs, not arbitrary tools that deliberately escape that group. Windows Job
+Object behavior requires separate native Windows evidence.
 
 ## Alternatives
 

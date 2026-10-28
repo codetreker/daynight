@@ -25,7 +25,7 @@ const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a
 const composerScreen = "  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1 Sol default · /task\n";
 const trustScreen = "  Folder access\n  /task\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
 
-const fixture = async (kind: "codex" | "copilot" = "codex", workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
+const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
   const cwd = await mkdtemp(path.join(scratch, "task-")); directories.push(cwd);
   const context: HerdrExecutionContext = { projectId, taskId, claimId, worktreeId, cwd, agent: kind };
@@ -562,4 +562,20 @@ describe("direct task resource management", () => {
     const f = await fixture(); await rm(f.context.cwd, { recursive: true });
     await expect(f.manager.prepareWorkspace(f.context, taskTitle, operation())).rejects.toMatchObject({ submission: "not-submitted", cause: { code: "ENOENT" } }); expect(f.calls).toEqual([]);
   });
+});
+
+it("launches and resumes Claude only with its original hook identity and visible composer", async () => {
+  const f = await fixture("claude"); const prepared = await f.manager.prepareWorkspace(f.context,taskTitle,operation());
+  f.hook(async method => method === "agent.read" ? { type: "pane_read", read: { pane_id:prepared.paneId,workspace_id:prepared.workspaceId,tab_id:f.panes[0]!.tab_id,source:"visible",format:"text",text:"─────────────────\n❯\n─────────────────\n? for shortcuts",revision:0,truncated:false } } : undefined);
+  const config = { agent:"claude" as const, model:"sonnet", args:[] };
+  const result = await f.manager.start(f.context,prepared,{ ...prepared,configuration:config,prompt:"managed task",resumeSessionId:nativeId },operation());
+  expect(result.kind).toBe("claude"); expect(result.nativeSession?.sessionId).toBe(nativeId);
+  expect(f.calls.find(call=>call.method==="agent.start")?.params.args).toEqual(["--resume",nativeId,"--model","sonnet","--dangerously-skip-permissions"]);
+  expect(f.prompts).toEqual(["managed task"]);
+});
+it("does not type into Claude trust even when its native hook and OSC state say ready", async () => {
+  const f = await fixture("claude"); const prepared = await f.manager.prepareWorkspace(f.context,taskTitle,operation());
+  f.hook(async method => method === "agent.read" ? { type:"pane_read",read:{pane_id:prepared.paneId,workspace_id:prepared.workspaceId,tab_id:f.panes[0]!.tab_id,source:"visible",format:"text",text:"Do you trust the files in this folder?\n❯ 1. Yes\nEnter to confirm · Esc to cancel",revision:0,truncated:false} } : undefined);
+  await expect(f.manager.start(f.context,prepared,{...prepared,configuration:{agent:"claude",model:null,args:[]},prompt:"business"},operation())).rejects.toMatchObject({promptSubmission:"not-submitted"});
+  expect(f.prompts).toEqual([]);
 });

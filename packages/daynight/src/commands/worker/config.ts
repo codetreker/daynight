@@ -1,3 +1,4 @@
+import { parseProviderArguments } from "../controller/providers/projection.js";
 import path from "node:path";
 import { canonicalId } from "../../api/parse.js";
 import { parseConfigurationDocument } from "../../config/document.js";
@@ -61,7 +62,7 @@ const number = (value: Record<string, unknown>, field: keyof Pick<WorkerConfigur
 
 const agentConfiguration = (value: Record<string, unknown>, field: string, inherited: ExecutionConfiguration): ExecutionConfiguration => {
   const agent = Object.hasOwn(value, "agent") ? value.agent : inherited.agent;
-  if (agent !== "codex" && agent !== "copilot") throw new TypeError(`${field}.agent must be codex or copilot.`);
+  if (agent !== "codex" && agent !== "copilot" && agent !== "claude") throw new TypeError(`${field}.agent must be codex, claude or copilot.`);
   const sameKind = agent === inherited.agent;
   const model = Object.hasOwn(value, "model") ? value.model === null ? null : text(value.model, `${field}.model`) : sameKind ? inherited.model : null;
   let args: readonly string[];
@@ -69,8 +70,9 @@ const agentConfiguration = (value: Record<string, unknown>, field: string, inher
     if (!Array.isArray(value.args)) throw new TypeError(`${field}.args must be a sequence of native arguments.`);
     args = value.args.map((argument: unknown) => text(argument, `${field}.args`));
   } else args = sameKind ? [...inherited.args] : [];
-  validateHerdrAgentArguments(agent, args);
-  return { agent, model, args, recoveryLimit: inherited.recoveryLimit };
+  if (inherited.agentControlMode === "web") parseProviderArguments(agent, args);
+  else validateHerdrAgentArguments(agent, args);
+  return { agent, agentControlMode: inherited.agentControlMode ?? "herdr", model, args, recoveryLimit: inherited.recoveryLimit };
 };
 
 const repositoryPath = (value: unknown, field: string, paths: WorkerPaths, pathApi: PathApi): string => {
@@ -86,8 +88,10 @@ export const parseWorkerConfiguration = (source: string, paths: WorkerPaths, pat
   const repositoryRoot = Object.hasOwn(worker, "repositoryRoot")
     ? validateRepositoryRoot(text(worker.repositoryRoot, "worker.repositoryRoot"), "worker.repositoryRoot", pathApi)
     : workerConfigurationDefaults.repositoryRoot;
+  const agentControlMode = Object.hasOwn(worker, "agentControlMode") ? worker.agentControlMode : "herdr";
+  if (agentControlMode !== "herdr" && agentControlMode !== "web") throw new TypeError("worker.agentControlMode must be herdr or web.");
   const effective = agentConfiguration(worker, "worker", {
-    agent: workerConfigurationDefaults.agent, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
+    agent: workerConfigurationDefaults.agent, agentControlMode, model: null, args: [], recoveryLimit: number(worker, "recoveryLimit"),
   });
   const configuredRepositories = Object.hasOwn(worker, "repositories") ? worker.repositories : [];
   if (!Array.isArray(configuredRepositories)) throw new TypeError("worker.repositories must be a sequence.");

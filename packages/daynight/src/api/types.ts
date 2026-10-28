@@ -56,7 +56,8 @@ export type PullRequestProperty = {
 };
 
 export type WorkerState = "active" | "released" | "completed";
-export type WorkerAgent = "codex" | "copilot";
+export type WorkerAgent = "codex" | "copilot" | "claude";
+export type AgentControlMode = "herdr" | "web";
 export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
 export type WorkerMachine = { readonly id: string; readonly name: string };
 export type WorkerHerdr = { readonly session: string; readonly workspaceId: string; readonly paneId: string };
@@ -68,6 +69,7 @@ export type WorkerClaim = {
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
   readonly agent: WorkerAgent;
+  readonly agentControlMode: AgentControlMode;
   readonly worktreeId: string;
   readonly phase: WorkerPhase;
   readonly herdr: WorkerHerdr | null;
@@ -146,6 +148,7 @@ export type WorkerClaimDescriptor = {
   readonly machine: WorkerMachine;
   readonly platform: TaskPlatform;
   readonly agent: WorkerAgent;
+  readonly agentControlMode?: AgentControlMode;
   readonly worktreeId: string;
 };
 export type ClaimWorkerTaskInput = WorkerClaimDescriptor & { readonly version: bigint };

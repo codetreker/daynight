@@ -9,6 +9,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/sessionrelay"
 )
 
 func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Handler, error) {
@@ -31,13 +32,15 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	taskRoutes(mux, service.NewTasks(dependencies.Store), auth, logger)
 	taskSyncRoutes(mux, service.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
 	attachmentRoutes(mux, service.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
+	relay := newSessionRoutes(sessionrelay.New(dependencies.Store), auth, logger)
+	relay.register(mux)
 	healthRoutes(mux, dependencies.Store, logger)
 	uiRoutes(mux, logger)
 	mux.HandleFunc("/", func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		writeError(w, request, logger, "server", "route", &service.Fault{Code: "not_found", Message: "resource not found"})
 	})
-	return attachmentPathGuard(mux, logger), nil
+	return &sessionApplication{Handler: attachmentPathGuard(mux, logger), relay: relay}, nil
 }
 
 func healthRoutes(mux *http.ServeMux, database *store.Store, logger *slog.Logger) {
