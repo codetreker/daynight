@@ -523,12 +523,24 @@ describe("direct task resource management", () => {
     expect(f.calls.filter((call) => call.method === "workspace.close")).toHaveLength(1);
   });
 
-  it.each(["human", "human | daynight:{", "human | daynight:{}", ` | daynight:${JSON.stringify({ projectId, taskId, claimId, worktreeId })}`, `bad\nname | daynight:${JSON.stringify({ projectId, taskId, claimId, worktreeId })}`])("ignores unrecognized workspace label %j during discovery and stop", async (label) => {
+  it.each(["human", "human | daynight:{", "human | daynight:{}"])("ignores unrecognized workspace label %j during discovery and stop", async (label) => {
     const f = await fixture(); const binding = await launch(f);
     f.workspaces.push({ workspace_id: "human", label });
     expect((await f.manager.listResources(operation())).map((workspace) => workspace.workspaceId)).toEqual([binding.workspaceId]);
     await f.manager.stopAndClose(f.context, binding, operation()); expect(f.workspaces).toEqual([{ workspace_id: "human", label }]);
     expect(f.calls.find((call) => call.method === "workspace.close")!.params).toEqual({ workspace_id: binding.workspaceId, close_group: false });
+  });
+
+  it.each(["", "bad\nname"])("keeps live owned resources discoverable and stoppable with display title %j", async (title) => {
+    const f = await fixture(); const binding = await launch(f);
+    f.agents[0]!.agent_status = "working";
+    f.workspaces[0]!.label = `${title} | daynight:${JSON.stringify({ projectId, taskId, claimId, worktreeId })}`;
+    const resources = await f.manager.listResources(operation());
+    expect(resources.map((workspace) => workspace.workspaceId)).toEqual([binding.workspaceId]);
+    expect(resources[0]!.panes[0]!.status).toBe("working");
+    await f.manager.stopAndClose(f.context, binding, operation());
+    expect(f.workspaces).toEqual([]);
+    expect(f.executing.has(200)).toBe(false);
   });
 
   it("refuses to stop a replacement terminal or workspace", async () => {

@@ -60,8 +60,6 @@ export const herdrExecutionAgentName = (context: HerdrExecutionOwner): string =>
 export const parseHerdrExecutionLabel = (label: string): HerdrExecutionOwner | null => {
   const separator = label.lastIndexOf(labelSeparator);
   if (separator === -1) return null;
-  const title = label.slice(0, separator);
-  if (title.trim().length === 0 || unsafeTitleCharacter.test(title)) return null;
   try { return parseResourceOwner(label.slice(separator + labelSeparator.length)); }
   catch { return null; }
 };
