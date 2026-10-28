@@ -115,7 +115,8 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.store.listTasks()[0]!.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!;
     expect(Object.keys(row).sort()).toEqual(["agent", "claimId", "projectId", "sessionId", "status", "taskId"]);
-    expect(f.events.some((event) => event.kind === "warning" && event.message.includes("session ID"))).toBe(true);
+    expect(f.events).toContainEqual({ kind: "info", task: { ...row, sessionId: null }, message: "Starting a new native conversation in the task worktree." });
+    expect(f.events.some((event) => event.kind === "warning")).toBe(false);
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.observe).toHaveBeenCalled());
     expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.options.buildPrompt).toHaveBeenCalledOnce();
   });
@@ -155,10 +156,12 @@ describe("minimal worker resource reconciliation", () => {
   it("starts fresh after an interrupted active NULL-session launch", async () => {
     const f = await fixture(); f.candidates.splice(0);
     const granted = f.grant(task(f.project.projectId, uuid(200)), { claimId: uuid(201), workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(202) });
-    f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(201), agent: "codex" }); f.store.activateTask({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(201) });
+    f.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(201), agent: "codex" });
+    const active = f.store.activateTask({ projectId: granted.projectId, taskId: granted.id, claimId: uuid(201) });
     await f.coordinator.tick(); await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
     expect(f.tasks.start.mock.calls[0]![2]).not.toHaveProperty("resumeSessionId");
-    expect(f.events.some((event) => event.kind === "warning")).toBe(true);
+    expect(f.events).toContainEqual({ kind: "info", task: active, message: "Starting a new native conversation in the task worktree." });
+    expect(f.events.some((event) => event.kind === "warning")).toBe(false);
   });
 
   it("cleans an ended claim in stop/close/delete order and retains history", async () => {

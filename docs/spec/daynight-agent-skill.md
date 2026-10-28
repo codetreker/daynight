@@ -274,7 +274,7 @@ worker claim 及 worktreeId，再核对真实工作目录、分支与给定配�
 拥有系统资源收尾和后继调度；明确清理请求只处理其范围内可归属的 worktree 外临时资源。
 仅重连存活 agent 不意味着重新发送启动 prompt；确需重新启动时沿用原模式、assignment
 和工作区，由 worker 根据记录的 agent/session_id 和当前适用配置选择原生恢复；session_id
-为空时 Warning 后新建会话。实际 prompt 组装、递交与原生恢复由 worker 运行时和 Herdr
+为空时记录普通 info 后新建会话。实际 prompt 组装、递交与原生恢复由 worker 运行时和 Herdr
 接入承担，技能文档和模拟检查不能替代这些运行结果。
 
 按当前任务完成实现、相关文档同步及行为验证，及时提交、推送工作分支并维护聚焦的
