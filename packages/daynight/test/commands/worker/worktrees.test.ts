@@ -116,37 +116,50 @@ describe("worker repositories and task worktrees", () => {
     expect(await adapter.listWorktrees(otherProject, operation())).toEqual([{ owner: otherOwner, binding }]);
   });
 
-  it("keeps healthy worktrees usable beside unknown marker formats and repository identities", async () => {
+  it.each<{ name: string; marker: (original: ResourceOwner & Record<string, string>) => string }>([
+    { name: "invalid JSON", marker: () => "daynight-worker:{" },
+    { name: "a null marker", marker: () => "daynight-worker:null" },
+    { name: "an array marker", marker: () => "daynight-worker:[]" },
+    { name: "missing marker fields", marker: () => "daynight-worker:{}" },
+    { name: "a human marker", marker: () => "human workspace" },
+    { name: "extra marker fields", marker: (original) => `daynight-worker:${JSON.stringify({ ...original, serverOrigin: "https://example.com" })}` },
+    { name: "a noncanonical task ID", marker: (original) => `daynight-worker:${JSON.stringify({ ...original, taskId: original.taskId.toUpperCase() })}` },
+    { name: "an invalid leaf fingerprint", marker: (original) => `daynight-worker:${JSON.stringify({ ...original, leaf: "invalid" })}` },
+    { name: "a foreign root identity", marker: (original) => `daynight-worker:${JSON.stringify({ ...original, root: "1:2" })}` },
+    { name: "a foreign common-directory identity", marker: (original) => `daynight-worker:${JSON.stringify({ ...original, common: "1:2" })}` },
+  ])("keeps healthy worktrees usable beside $name", async ({ marker: serialize }) => {
     const f = await fixture(); const adapter = manager(f.root);
     const healthy = await adapter.prepareWorktree(f.project, f.owner, operation());
     const unknownOwner = { ...f.owner, taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
     const unknown = await adapter.prepareWorktree(f.project, unknownOwner, operation());
     const admin = administrativeDirectory(unknown.worktreePath); const locked = path.join(admin, "locked");
     const original = JSON.parse((await readFile(locked, "utf8")).slice("daynight-worker:".length));
-    const formats = [
-      "daynight-worker:{", "daynight-worker:null", "daynight-worker:[]", "daynight-worker:{}", "human workspace",
-      `daynight-worker:${JSON.stringify({ ...original, serverOrigin: "https://example.com" })}`,
-      `daynight-worker:${JSON.stringify({ ...original, taskId: unknownOwner.taskId.toUpperCase() })}`,
-      `daynight-worker:${JSON.stringify({ ...original, leaf: "invalid" })}`,
-      `daynight-worker:${JSON.stringify({ ...original, root: "1:2" })}`,
-      `daynight-worker:${JSON.stringify({ ...original, common: "1:2" })}`,
-    ];
+    const marker = serialize(original);
     const pointer = await readFile(path.join(admin, "gitdir"), "utf8");
-    for (const marker of formats) {
-      await writeFile(locked, marker);
-      expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: healthy }]);
-      expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(healthy);
-      expect(await readFile(locked, "utf8")).toBe(marker);
-      expect(await readFile(path.join(admin, "gitdir"), "utf8")).toBe(pointer);
-    }
+    await writeFile(locked, marker);
+    expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: healthy }]);
+    expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(healthy);
+    await adapter.removeWorktree(f.project, f.owner, operation());
+    expect(await readFile(locked, "utf8")).toBe(marker);
+    expect(await readFile(path.join(admin, "gitdir"), "utf8")).toBe(pointer);
+    expect(await readFile(path.join(unknown.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
+  });
+
+  it("keeps healthy worktrees usable beside a foreign registration pointer", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const healthy = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const unknownOwner = { ...f.owner, taskId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" };
+    const unknown = await adapter.prepareWorktree(f.project, unknownOwner, operation());
+    const admin = administrativeDirectory(unknown.worktreePath); const locked = path.join(admin, "locked");
+    const marker = await readFile(locked, "utf8");
     const foreignPointer = path.join(f.root, "foreign", ".git");
-    await writeFile(locked, `daynight-worker:${JSON.stringify(original)}`); await writeFile(path.join(admin, "gitdir"), foreignPointer);
+    await writeFile(path.join(admin, "gitdir"), foreignPointer);
     expect(await adapter.listWorktrees(f.project, operation())).toEqual([{ owner: f.owner, binding: healthy }]);
     expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(healthy);
     await adapter.removeWorktree(f.project, f.owner, operation());
     expect(await readFile(path.join(unknown.worktreePath, "tracked.txt"), "utf8")).toBe("original\n");
     expect(await readFile(path.join(admin, "gitdir"), "utf8")).toBe(foreignPointer);
-    expect(await readFile(locked, "utf8")).toBe(`daynight-worker:${JSON.stringify(original)}`);
+    expect(await readFile(locked, "utf8")).toBe(marker);
   });
 
   it("filters foreign projects before inspecting their worktree integrity", async () => {
