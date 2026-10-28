@@ -52,6 +52,13 @@ same explicit error placeholder in live delivery and history, preserving entry
 identity and revision. Applying that projection to existing outbox rows as well
 as new entries prevents an old unsendable event from blocking synchronization.
 
+Operation offers use the final wire encoder for both individual and aggregate
+poll budgets. An offer that exceeds the frame limit by itself receives a terminal
+`payload_too_large` rejection, releasing its transient body and allowing later
+operations to proceed. A batch that is merely full defers the next offer to the
+next poll. Request admission alone cannot prove deliverability because the offer
+adds its own envelope; command bodies are never truncated to fit.
+
 ## Alternatives
 
 **Keep full PostgreSQL history with retention.** Retention could bound some

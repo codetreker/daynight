@@ -127,6 +127,9 @@ export const runIndependentController = async (input: IndependentControllerInput
       if (observed) {
         if (ipcUnavailable) { context.stderr("Controller IPC observation recovered for the original native execution.\n"); ipcUnavailable = false; }
         if (["paused", "failed", "stopping", "stopped"].includes(observed.snapshot.lifecycle)) throw new Error("Test controller is unavailable; its native outcome is retained in the private journal.");
+        // A lost reply may settle as a definitive rejection in the journal while
+        // the provider remains ready. Reconcile that outcome without resubmission.
+        if (input.prompt !== null && observed.snapshot.initialInputState === "failed") throw new Error("Initial input failed; the same operation remains recorded.");
         if (observed.snapshot.lifecycle === "ready" && !connected) { connected = true; context.stdout(`Provider ready: ${input.provider}; native session ${observed.snapshot.nativeSessionId ?? "awaiting first input confirmation"}\n`); }
         if (!connected && Date.now() >= startupDeadline) throw new Error("Test controller startup timed out; its original execution is retained.");
         if (!submitted && observed.snapshot.lifecycle === "ready") {

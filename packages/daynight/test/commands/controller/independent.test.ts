@@ -245,7 +245,7 @@ test("a definitive authorization response is not retried when its error body fai
 });
 
 
-test("an initial IPC transport loss keeps supervision alive without replaying input", async () => {
+test.each(["confirmed", "failed"] as const)("an initial IPC transport loss reconciles %s without replaying input", async finalState => {
   const v = await setup("initial exactly once");
   const { requestController: realRequest } = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
   const { createServer } = await import("node:net");
@@ -264,10 +264,10 @@ test("an initial IPC transport loss keeps supervision alive without replaying in
         expect(f.stop).not.toHaveBeenCalled(); expect(v.child.exitCode).toBeNull();
         observations++;
         if (observations === 1) return realRequest({ ...ticket, ipcEndpoint: endpoint }, action, options);
-        if (observations === 3) process.emit("SIGINT", "SIGINT");
+        if (observations === (finalState === "failed" ? 4 : 3)) process.emit("SIGINT", "SIGINT");
       }
       // A stale snapshot is not evidence that the input was never submitted.
-      return { snapshot: { lifecycle: "ready", initialInputState: observations > 2 ? "confirmed" : "not_submitted", nativeSessionId: "same-native" } };
+      return { snapshot: { lifecycle: "ready", initialInputState: observations > 2 ? finalState : "not_submitted", nativeSessionId: "same-native" } };
     }
     return original(ticket, action, options);
   });
@@ -276,7 +276,9 @@ test("an initial IPC transport loss keeps supervision alive without replaying in
       server.once("error", reject);
       server.listen(endpoint, () => { server.off("error", reject); resolve(); });
     });
-    await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context);
+    const running = runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context);
+    if (finalState === "failed") await expect(running).rejects.toThrow("Initial input failed; the same operation remains recorded.");
+    else await running;
   } finally {
     for (const socket of sockets) socket.destroy();
     if (server.listening) await new Promise<void>(resolve => server.close(() => resolve()));
@@ -293,4 +295,40 @@ test("a definitive initial IPC rejection still stops its supervised controller",
   f.request.mockImplementation(async (ticket, action, options) => action.kind === "submit_initial" ? Promise.reject(new Error("Controller IPC authentication or identity mismatch.")) : original(ticket, action, options));
   await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial once" }, v.context)).rejects.toThrow("authentication");
   expect(f.stop).toHaveBeenCalledOnce();
+});
+
+test.each(["lost-response", "unknown-receipt"] as const)("reconciles terminal initial failure after %s and preserves all nonterminal or successful states", async outcome => {
+  const { ControllerIpcOutcomeUnknownError } = await vi.importActual<typeof import("../../../src/commands/controller/local-client.js")>("../../../src/commands/controller/local-client.js");
+  for (const state of ["failed", "not_submitted", "dispatching", "unknown", "provider_accepted", "confirmed"] as const) {
+    vi.clearAllMocks();
+    const v = await setup("one initial operation"), original = f.request.getMockImplementation()!;
+    let attempted = false, observations = 0;
+    f.request.mockImplementation(async (ticket, action, options) => {
+      if (action.kind === "submit_initial") {
+        attempted = true;
+        if (outcome === "lost-response") throw new ControllerIpcOutcomeUnknownError("Controller IPC outcome is unknown after its deadline.");
+        return { snapshot: {}, operation: { state: "unknown" } };
+      }
+      if (action.kind === "observe") {
+        if (attempted) {
+          expect(f.stop).not.toHaveBeenCalled(); expect(v.child.exitCode).toBeNull();
+          observations++;
+          // Bound the failing pre-fix case without waiting for a test timeout.
+          if (observations === 2) process.emit("SIGINT", "SIGINT");
+        }
+        return { snapshot: { lifecycle: "ready", initialInputState: attempted ? state : "not_submitted", nativeSessionId: "same-native" } };
+      }
+      return original(ticket, action, options);
+    });
+    const running = runIndependentController({ provider: "codex", model: null, args: [], prompt: "one initial operation" }, v.context);
+    if (state === "failed") {
+      await expect(running).rejects.toThrow("Initial input failed; the same operation remains recorded.");
+      expect(observations).toBe(1);
+    } else {
+      await expect(running).resolves.toBeUndefined();
+      expect(observations).toBe(2);
+    }
+    expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
+    expect(f.spawn).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
+  }
 });

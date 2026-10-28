@@ -454,15 +454,26 @@ func (s *Service) Poll(ctx context.Context, f sp.ControllerFence) ([]map[string]
 				msg := envelope(r, "operation_offer")
 				msg["operationSeq"] = decimal(o.Seq)
 				msg["command"] = o.Command
-				size := len(encode(msg))
-				if total+size > sp.MaxFrameBytes {
-					break
-				}
-				total += size
-				o.Receipt.State = "offered"
-				out = append(out, msg)
-				if _, err = tx.Exec(ctx, `UPDATE session_operations SET dispatch_epoch=$3 WHERE session_id=$1 AND operation_id=$2`, f.SessionID, id, number(f.ConnectionEpoch)); err != nil {
+				raw, err := sp.MarshalWire(msg)
+				if err != nil {
 					return err
+				}
+				size := len(raw)
+				if size > sp.MaxFrameBytes {
+					// A valid request can exceed the frame once wrapped as an offer.
+					// Refuse that intent without withholding subsequent operations.
+					o.Receipt.State = "rejected"
+					o.Receipt.Error = &sp.OperationError{Code: "payload_too_large", Message: "Operation offer exceeds the 2 MiB session frame limit."}
+				} else {
+					if total+size > sp.MaxFrameBytes {
+						break
+					}
+					total += size
+					o.Receipt.State = "offered"
+					out = append(out, msg)
+					if _, err = tx.Exec(ctx, `UPDATE session_operations SET dispatch_epoch=$3 WHERE session_id=$1 AND operation_id=$2`, f.SessionID, id, number(f.ConnectionEpoch)); err != nil {
+						return err
+					}
 				}
 			}
 			if err = s.updateReceipt(ctx, tx, r, o.Receipt); err != nil {

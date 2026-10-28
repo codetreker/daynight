@@ -94,3 +94,16 @@ test("duplicate authenticated waiters are bounded without blocking observe or ex
     await outcomes;
   } finally { accepted?.(); if (!f.close.mock.calls.length) await v.stop(); await outcomes; }
 });
+
+test("a lost initial response exposes a later definitive native rejection through the original journal", async () => {
+  const { NativeRpcError } = await import("../../../src/commands/controller/providers/native-rpc.js");
+  let rejectInput!: () => void;
+  f.send.mockImplementation(() => new Promise((_resolve, reject) => { rejectInput = () => reject(new NativeRpcError(-32602, "Initial native input was rejected.")); }));
+  const v = await setup();
+  try {
+    await expect(requestController(v.ticket, { kind: "submit_initial", operationId: v.ticket.initialOperationId }, { timeoutMs: 50 })).rejects.toThrow("outcome is unknown");
+    rejectInput();
+    await vi.waitFor(async () => expect((await requestController(v.ticket, { kind: "observe" })).snapshot).toMatchObject({ initialInputState: "failed", lifecycle: "ready" }));
+    expect(f.send).toHaveBeenCalledOnce(); expect(f.close).not.toHaveBeenCalled();
+  } finally { rejectInput?.(); await v.stop(); }
+});

@@ -53,8 +53,11 @@ does not authorize further native calls while renewal is unavailable.
 Local IPC distinguishes transport uncertainty from explicit rejection or invalid
 response identity. After an uncertain initial-input response, supervision keeps
 the original operation identity and observes the Controller without resubmitting
-that input, even if a later snapshot says `not_submitted`. Transient observation
-failures after startup do not prevent credential renewal. Actual child exit,
+that input, even if a later snapshot says `not_submitted`. For a prompted launch,
+a later `initialInputState: failed` follows the same failure and stop path as a
+direct rejection, even while the provider remains `ready`. Provider readiness
+does not establish initial-input success. Transient observation failures after
+startup do not prevent credential renewal. Actual child exit,
 definitive rejection and user cancellation still follow the bounded stop path.
 Frame admission ends after a complete authenticated request; native acceptance
 uses a separate bounded response wait. Releasing that waiter cannot cancel the

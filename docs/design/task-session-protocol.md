@@ -65,7 +65,7 @@ Test 快照、历史、操作、资源和浏览器 channel 位于 `/api/v1/test-
 
 本机 IPC 在收到完整且通过身份验证的请求后结束 30 秒 admission 超时，并释放请求缓冲。初始输入响应最多等待 65 秒，清理响应最多等待 30 秒且不超过清理 deadline；这些等待只控制调用者连接，不取消已经 dispatch 的原生操作。每个本机 IPC dispatch 共享一次完成通知，连接断开或响应截止时移除对应等待者。未完成的本机 IPC dispatch 和操作等待者分别最多 32 个；observe 与 stop 不占操作等待配额，保持观察与显式停止可达。
 
-IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，与服务明确拒绝、错误身份或无效协议响应分开。独立 launcher 在已启动执行的观察失败时继续监督和续签；初始输入响应未知后只观察原执行，不再提交初始输入，即使后续快照仍为 not_submitted。该快照不能证明先前请求未到达；显式取消和真实执行失败仍保留停止路径。
+IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，与服务明确拒绝、错误身份或无效协议响应分开。独立 launcher 在已启动执行的观察失败时继续监督和续签；初始输入响应未知后只观察原执行，不再提交初始输入，即使后续快照仍为 not_submitted。该快照不能证明先前请求未到达。带 prompt 的执行若后续观察到 initialInputState 为 failed，即使 lifecycle 仍为 ready，也按直接收到初始输入失败的路径报告错误并清理原执行；不带 prompt 的会话不适用该判断。未知、派发中与成功状态继续监督；显式取消和真实执行失败仍保留停止路径。
 
 注册后尚未尝试 spawn 的失败可提交 `kind: never_started` 停止记录。服务端只在 grant 未消费、connectionEpoch 为零且没有 sourceEpoch 或 nativeSessionId 时接受；曾经连接再断开不满足条件。尝试过 spawn 却无法证明进程停止时保留未确认状态，不能冒称从未启动。
 
@@ -130,6 +130,8 @@ Controller 每次连接先分批 reconcile，排空剩余 outbox，再发送 syn
 历史 HTTP 请求经过权限校验后，经 Controller WebSocket 转发 content_request。Controller 按本机稳定条目序列分页，返回内容捕获时的 sourceThrough；该点之前的事件先获 ACK，随后发送 content_response，再发送较新的事件。服务端在处理响应的同一有序事务中捕获 lastEventSeq，不能改用等待结束后的较晚水位。分页游标绑定 Session 与 historyEpoch。每页最多 200 条，并按 WS 帧大小进一步截断，前后游标表示实际返回边界。
 
 Session 的 HTTP、WebSocket、嵌套 timeline/content 编码与展示缓存统一使用不转义 HTML 字符的 JSON 表示。内容只作为 JSON 或 WebSocket 文本提供，不嵌入 HTML。Controller 预算还计入 Go 对 U+2028/U+2029 的转义；持久操作和源事件的哈希仍保留原编码，避免重试同一操作时改变内容指纹。
+
+Poll 使用相同的 MarshalWire 编码计算 operation_offer 的完整封装字节数。单个 offer 超过 2 MiB 时，以 payload_too_large 终态拒绝原操作，释放暂存正文并继续后续队列；若仅当前批次累计超限，则将该操作留到下一次 Poll。HTTP 请求体通过入站上限不代表增加 offer 封装后仍可发送；不得截断输入或让永远无法发送的单个 offer 阻塞后续操作。
 
 单条非交互展示投影的传输预算为 1,400,000 字节，给分页及帧封装留出空间。超过预算时，本机 journal 保留完整投影，实时发送与历史读取统一返回 display_budget_exceeded 错误条目，保留原 entryId、entrySeq 和 revision。旧 outbox 也在发送前执行同一投影，并保留 sourceSeq，使源水位可以继续确认；不是跳过事件后宣称完整回放。带权限语义的 interaction 不采用此替换，完整交互和 controls 仍受总帧及内存容量约束，超限明确失败，不通过截断审批内容或自动批准获得同步。
 

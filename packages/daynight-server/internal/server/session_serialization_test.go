@@ -106,3 +106,53 @@ func TestSessionResultHandlesCancellationEncodingAndWriteFailure(t *testing.T) {
 	}
 	routes.result(&failingResponseWriter{header: make(http.Header)}, request, http.StatusOK, map[string]string{"text": "<>&"}, nil)
 }
+
+func TestSessionNativeHTMLCommandReachesControllerAndDoesNotStarveFollowingOffer(t *testing.T) {
+	f := sessionHTTPSetup(t)
+	controller, snapshot := f.controller(t, uuid.NewString())
+	controller.SetReadLimit(sp.MaxFrameBytes)
+	native := "offer-session"
+	state := sp.State{NativeSessionID: &native, InitialInputState: "provider_accepted", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true, Cancel: true, Respond: true}}
+	sessionWSWrite(t, controller, sp.ControllerMessage{Type: "sync_state", Protocol: sp.Protocol, ControllerFence: snapshot.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}})
+	sessionWSKind(t, controller, "sync_ack")
+	path := f.base + "/" + snapshot.SessionID
+	command := func(text string) sp.Command {
+		payload, err := sp.MarshalWire(sp.SendMessage{Content: []sp.TextPart{{Type: "text", Text: text}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sp.Command{Fence: snapshot.Fence, Protocol: sp.Protocol, RequestID: "offer-wire", OperationID: uuid.NewString(), Kind: "send_message", Payload: payload}
+	}
+	commands := []sp.Command{command(strings.Repeat("<", 400000)), command("following operation")}
+	for _, c := range commands {
+		response := projectRequest(f.handler, http.MethodPost, path+"/commands", string(sessionNativeJSON(t, c)))
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("command submission status=%d", response.Code)
+		}
+	}
+	for _, expected := range commands {
+		frame := sessionWSKind(t, controller, "operation_offer")
+		actual, err := sp.DecodeCommand(frame["command"])
+		if err != nil || actual.OperationID != expected.OperationID || string(actual.Payload) != string(expected.Payload) {
+			t.Fatalf("controller did not receive original offered intent: %v", err)
+		}
+		if len(frame["command"]) > 500000 {
+			t.Fatal("controller command expanded during transport")
+		}
+	}
+	tooLarge := command(strings.Repeat("x", sp.MaxFrameBytes))
+	refused := projectRequest(f.handler, http.MethodPost, path+"/commands", string(sessionNativeJSON(t, tooLarge)))
+	if refused.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized HTTP command status=%d", refused.Code)
+	}
+	following := command("after size refusal")
+	accepted := projectRequest(f.handler, http.MethodPost, path+"/commands", string(sessionNativeJSON(t, following)))
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("following command submission status=%d", accepted.Code)
+	}
+	frame := sessionWSKind(t, controller, "operation_offer")
+	actual, err := sp.DecodeCommand(frame["command"])
+	if err != nil || actual.OperationID != following.OperationID {
+		t.Fatal("refused request blocked following offer", err)
+	}
+}
