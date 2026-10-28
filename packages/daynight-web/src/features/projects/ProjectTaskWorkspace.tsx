@@ -19,7 +19,7 @@ export const ProjectTaskWorkspace = ({ projectId, snapshot, activeView, unfinish
 }) => {
   const { messages: { workspace: { project: m, sections } } } = useI18n();
   return <>
-    <div className="project-section-heading"><h2>{sections.tasks}</h2><p title={sections.tasksDescription}>{sections.tasksDescription}</p></div>
+    <div className="project-section-heading"><h2>{sections.tasks}</h2></div>
     {snapshot.graph.summary.total === 0 ? <section className="state-box"><h2>{m.empty}</h2><p>{m.emptyDetail}</p></section> : (
       <TaskExecutionClockProvider projectId={projectId} snapshot={snapshot}>
         <ProjectTaskTabs activeView={activeView} unfinishedStandaloneTaskCount={unfinishedStandaloneTaskCount}

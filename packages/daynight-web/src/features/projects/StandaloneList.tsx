@@ -44,7 +44,6 @@ export const StandaloneList = ({ index, taskIds, allTaskIds, onSelectTask, showA
         {allTaskIds.length > 0 && <label className="completed-chain-control"><input ref={checkbox} type="checkbox" checked={showAll} onChange={(event) => { onShowAllChange(event.currentTarget.checked); }} />{m.showAll}</label>}
         <span className="task-view-summary" aria-label={m.summaryLabel({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}>{m.summary({ visible: pagination === undefined ? taskIds.length : pagination.total, total: allTaskIds.length })}</span>
       </div>
-      <p className="graph-note">{m.explanation}</p>
       {allTaskIds.length === 0 ? (
         <div className="state-box"><h3>{m.empty}</h3><p>{m.emptyDetail}</p></div>
       ) : taskIds.length === 0 ? (

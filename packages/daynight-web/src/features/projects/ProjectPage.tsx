@@ -221,8 +221,10 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       <div className="page-heading project-heading">
         <div>
           <p className="eyebrow">{app.projectTasks}</p>
-          <h1 ref={heading} tabIndex={-1}>{snapshot === null ? app.projectTasks : snapshot.graph.project.name}</h1>
-          {snapshot !== null && <p className="project-repository">{snapshot.graph.project.repoUrl}</p>}
+          <div className="project-title-line">
+            <h1 ref={heading} tabIndex={-1}>{snapshot === null ? app.projectTasks : snapshot.graph.project.name}</h1>
+            {snapshot !== null && <p className="project-repository">{snapshot.graph.project.repoUrl}</p>}
+          </div>
         </div>
         <div className="project-title-actions">{snapshot !== null && renderActions?.(snapshot.graph.project)}<button className="button" type="button" onClick={graph.refresh} disabled={graph.refreshing}>{graph.refreshing ? m.refreshing : projects.refresh}</button></div>
       </div>
