@@ -43,7 +43,7 @@ worker:
   # Used only for new worker repo registrations; independent of review's root.
   repositoryRoot: ~/daynights
   maxConcurrent: 1
-  pollIntervalMs: 5000
+  pollIntervalMs: 60000
   recoveryLimit: 3
   agent: copilot
   model: null

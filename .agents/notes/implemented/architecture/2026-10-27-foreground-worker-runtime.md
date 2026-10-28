@@ -272,6 +272,9 @@ unchanged. It does not load worker business state or server credentials.
 Diagnostics correlate original IDs, local state, recovery and cleanup errors;
 neither diagnostics nor terminal idle/done authorize task completion.
 
+The [poll-interval decision](../feature/2026-10-28-worker-default-poll-interval.md)
+owns the sixty-second default and explicit-interval compatibility.
+
 ## Alternatives
 
 **Require an explicit worker mapping and repositories field.** The original
