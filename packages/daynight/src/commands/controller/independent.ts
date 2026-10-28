@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, realpath, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 import type { CliContext } from "../../cli/context.js";
 import { resolveConfigurationPaths } from "../../config/paths.js";
 import { loadServerConfiguration } from "../../config/server.js";
@@ -14,6 +15,10 @@ import { captureProcessProof, stopControllerProcesses, type ProcessProof } from 
 import { requestController } from "./local-client.js";
 import type { ResumeLease } from "./resume.js";
 import type { IndependentControllerInput } from "./index.js";
+
+class TestSessionRequestError extends Error {
+  constructor(message: string, readonly retryable: boolean, options?: ErrorOptions) { super(message, options); }
+}
 
 const waitForExit = async (exited: Promise<void> | undefined, milliseconds: number): Promise<void> => {
   if (!exited) return;
@@ -40,14 +45,21 @@ export const runIndependentController = async (input: IndependentControllerInput
   let childExit: Promise<void> | undefined;
   const request = async (target: string, body?: unknown, independent = false): Promise<unknown> => {
     if (!independent) cancellation.signal.throwIfAborted();
-    const response = await fetch(`${config.serverUrl}${target}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${config.serverToken}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: independent ? AbortSignal.timeout(10_000) : AbortSignal.any([cancellation.signal, AbortSignal.timeout(15_000)]) });
+    let response: Response;
+    try { response = await fetch(`${config.serverUrl}${target}`, { method: body === undefined ? "GET" : "POST", headers: { authorization: `Bearer ${config.serverToken}`, ...(body === undefined ? {} : { "content-type": "application/json" }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: independent ? AbortSignal.timeout(10_000) : AbortSignal.any([cancellation.signal, AbortSignal.timeout(15_000)]) }); }
+    catch (cause) { throw new TestSessionRequestError("Test Session connection failed; its original execution identity is retained.", true, { cause }); }
+    if (!response.ok) {
+      // The status is authoritative even if a gateway error body is truncated.
+      try { await response.body?.cancel(); } catch { /* Error bodies are not used. */ }
+      throw new TestSessionRequestError(`Test Session request failed with HTTP ${response.status}; its original execution identity is retained.`, response.status === 408 || response.status === 429 || response.status >= 500);
+    }
     const chunks: Uint8Array[] = []; let size = 0;
     if (response.body) {
       const reader = response.body.getReader();
-      try { for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.byteLength; if (size > 2_097_152) { await reader.cancel(); throw new Error("Test Session response exceeds its limit; the result is unconfirmed."); } chunks.push(value); } }
+      try { for (;;) { const { done, value } = await reader.read(); if (done) break; size += value.byteLength; if (size > 2_097_152) { try { await reader.cancel(); } catch { /* Preserve the response limit failure. */ } throw new TestSessionRequestError("Test Session response exceeds its limit; the result is unconfirmed.", false); } chunks.push(value); } }
+      catch (cause) { if (cause instanceof TestSessionRequestError) throw cause; throw new TestSessionRequestError("Test Session response was interrupted; its original execution identity is retained.", true, { cause }); }
       finally { reader.releaseLock(); }
     }
-    if (!response.ok) throw new Error(`Test Session request failed with HTTP ${response.status}; its original execution identity is retained.`);
     try { return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown; } catch { throw new Error("Test Session response is invalid; its result is unconfirmed."); }
   };
   const persist = async (name: string, value: unknown) => { if (!directory) throw new Error("Test registration directory is unavailable."); await writeFile(path.join(directory, name), `${JSON.stringify(value)}\n`, { flag: "wx", mode: 0o600 }); };
@@ -101,6 +113,7 @@ export const runIndependentController = async (input: IndependentControllerInput
     processProof = await captureProcessProof(child.pid);
     await persist("process.json", processProof);
     let submitted = input.prompt === null, connected = false;
+    let renewalFailures = 0, nextRenewalAt = 0;
     const startupDeadline = Date.now() + 60_000;
     while (!requestedStop) {
       if (child.exitCode !== null || child.signalCode !== null) throw new Error("Test controller exited; inspect its private controller.log. No replacement native session was created.");
@@ -118,8 +131,19 @@ export const runIndependentController = async (input: IndependentControllerInput
           if (["failed", "rejected", "expired"].includes(initial.operation.state)) throw new Error("Initial input failed; the same operation remains recorded.");
         }
       }
-      if (Date.parse(credential.expiresAt) - Date.now() <= 60_000) { credential = await grant("reconnect"); await writeControllerCredential(credentialFile, credential); }
-      await new Promise(resolve => setTimeout(resolve, 250));
+      if (Date.parse(credential.expiresAt) - Date.now() <= 60_000 && Date.now() >= nextRenewalAt) {
+        try {
+          const renewed = await grant("reconnect"); await writeControllerCredential(credentialFile, renewed); credential = renewed;
+          if (renewalFailures) context.stderr(`Test Session ${session.sessionId} credential renewal recovered; its original native execution continues.\n`);
+          renewalFailures = 0; nextRenewalAt = 0;
+        } catch (error) {
+          if (requestedStop || !(error instanceof TestSessionRequestError) || !error.retryable) throw error;
+          renewalFailures = Math.min(renewalFailures + 1, 6);
+          const retryMs = Math.min(30_000, 1_000 * 2 ** (renewalFailures - 1)); nextRenewalAt = Date.now() + retryMs;
+          context.stderr(`Test Session ${session.sessionId} credential renewal is temporarily unavailable; retry in ${retryMs / 1000}s. The original native execution continues; remote writes still require valid relay authorization. ${error.message}\n`);
+        }
+      }
+      await delay(250, undefined, { signal: cancellation.signal });
     }
   } catch (error) { if (!requestedStop) failed = error; }
   finally {

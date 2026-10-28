@@ -14,7 +14,7 @@ import { SESSION_PROTOCOL } from "../../../src/session/protocol.js";
 import type { CliContext } from "../../../src/cli/context.js";
 const id = "11111111-1111-4111-8111-111111111111";
 const roots: string[] = [];
-afterEach(async () => { vi.unstubAllGlobals(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 beforeEach(() => vi.clearAllMocks());
 const setup = async (prompt: string | null, archiveFailure = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/ct"); await mkdir(base, { recursive: true });
@@ -77,7 +77,7 @@ test("an uncertain registration never spawns a native writer or invents a second
   const v = await setup(null);
   const fetch = vi.mocked(globalThis.fetch), original = fetch.getMockImplementation()!;
   fetch.mockImplementation(async (...args) => { if (String(args[0]).endsWith("/test-sessions")) throw new Error("response lost"); return original(...args); });
-  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toThrow("response lost");
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context)).rejects.toThrow("connection failed");
   expect(f.spawn).not.toHaveBeenCalled();
   const directories = await readdir(path.join(v.home, ".daynight", "controller", "executions"));
   const saved = JSON.parse(await readFile(path.join(v.home, ".daynight", "controller", "executions", directories[0]!, "registration.json"), "utf8"));
@@ -150,4 +150,95 @@ test('cancellation after writing a resume ticket retires its never-started launc
   const retired = JSON.parse(await readFile(path.join(v.home, '.daynight', 'controller', 'executions', execution, 'unstarted-launch.json'), 'utf8'));
   expect(retired.resumeNativeSessionId).toBe(id);
   expect(v.requests.find(r => r.url.endsWith('/stop'))?.body.stopProof.kind).toBe('never_started');
+});
+
+const renewalSetup = async (failure: number | "reset" | "timeout" | "body-reset", failures = 1, clockStep = 1_000) => {
+  const v = await setup("initial exactly once");
+  let clock = Date.now(), renewals = 0, restored = false, stopped = false;
+  const attempts: number[] = [];
+  vi.spyOn(Date, "now").mockImplementation(() => clock);
+  const fetch = vi.mocked(globalThis.fetch), originalFetch = fetch.getMockImplementation()!;
+  const originalIpc = f.request.getMockImplementation()!;
+  fetch.mockImplementation(async (...args) => {
+    if (!String(args[0]).endsWith("controller-grant")) return originalFetch(...args);
+    const requestNumber = v.requests.filter(request => request.url.endsWith("controller-grant")).length;
+    if (requestNumber >= 2) {
+      attempts.push(clock); renewals++;
+      if (renewals <= failures) {
+        if (failure === "reset") throw new TypeError("fetch failed: connection reset");
+        if (failure === "timeout") throw new DOMException("Request timed out", "TimeoutError");
+        if (failure === "body-reset") return new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("body connection reset")); } }));
+        return new Response("Service unavailable", { status: failure });
+      }
+      restored = true;
+    }
+    const response = await originalFetch(...args), body = await response.json() as Record<string, unknown>;
+    return Response.json({ ...body, expiresAt: new Date(clock + (requestNumber === 1 ? 1_000 : 900_000)).toISOString() });
+  });
+  f.request.mockImplementation(async (...args) => {
+    const action = args[1];
+    if (action.kind === "observe") {
+      clock += clockStep;
+      if (restored) {
+        expect(f.spawn).toHaveBeenCalledOnce(); expect(f.stop).not.toHaveBeenCalled();
+        expect(v.child.exitCode).toBeNull(); process.emit("SIGINT", "SIGINT"); stopped = true;
+      }
+      return { snapshot: { lifecycle: "ready", nativeSessionId: "original-native" } };
+    }
+    if (action.kind === "submit_initial") return { snapshot: {}, operation: { state: "confirmed" } };
+    return originalIpc(...args);
+  });
+  return { ...v, attempts, wasRestored: () => restored, requestedStop: () => stopped };
+};
+
+test.each([503, 429, 408, "reset", "timeout", "body-reset"] as const)("keeps the original native session and input across transient grant renewal failure %s", async failure => {
+  const v = await renewalSetup(failure);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context);
+  expect(v.wasRestored()).toBe(true); expect(v.requestedStop()).toBe(true);
+  expect(v.attempts).toHaveLength(2); expect(v.attempts[1]! - v.attempts[0]!).toBeGreaterThanOrEqual(1_000);
+  expect(f.spawn).toHaveBeenCalledOnce(); expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
+  expect(v.requests.filter(request => request.url.endsWith("/test-sessions"))).toHaveLength(1);
+  expect(v.err.join("")).toContain("retry"); expect(v.err.join("")).not.toContain("private-token");
+});
+
+test.each([401, 403])("stops the original native session on definitive renewal rejection HTTP %s", async status => {
+  const v = await renewalSetup(status);
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context)).rejects.toThrow(`HTTP ${status}`);
+  expect(v.attempts).toHaveLength(1); expect(f.stop).toHaveBeenCalledOnce(); expect(v.wasRestored()).toBe(false);
+});
+
+test("keeps retrying beyond expired local credentials with bounded backoff and no new execution", async () => {
+  const v = await renewalSetup(503, 8, 30_000);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context);
+  expect(v.wasRestored()).toBe(true); expect(v.attempts).toHaveLength(9);
+  expect(v.attempts.at(-1)! - v.attempts[0]!).toBeGreaterThanOrEqual(240_000);
+  const diagnostics = v.err.join("");
+  expect(diagnostics).toContain("retry in 1s"); expect(diagnostics).toContain("retry in 30s"); expect(diagnostics).not.toContain("retry in 60s");
+  expect(f.spawn).toHaveBeenCalledOnce(); expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
+  expect(v.requests.filter(request => request.url.endsWith("/test-sessions"))).toHaveLength(1);
+});
+
+test("Ctrl+C aborts a pending renewal request and stops without waiting for its network timeout", async () => {
+  const v = await renewalSetup(503), fetch = vi.mocked(globalThis.fetch), original = fetch.getMockImplementation()!;
+  let renewalAborted = false;
+  fetch.mockImplementation(async (...args) => {
+    if (String(args[0]).endsWith("controller-grant") && v.requests.filter(request => request.url.endsWith("controller-grant")).length >= 2) {
+      const signal = args[1]!.signal!;
+      const pending = new Promise<Response>((_resolve, reject) => signal.addEventListener("abort", () => { renewalAborted = true; reject(signal.reason); }, { once: true }));
+      queueMicrotask(() => process.emit("SIGINT", "SIGINT"));
+      return pending;
+    }
+    return original(...args);
+  });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context);
+  expect(renewalAborted).toBe(true); expect(f.stop).toHaveBeenCalledOnce(); expect(f.spawn).toHaveBeenCalledOnce();
+});
+
+test("a definitive authorization response is not retried when its error body fails", async () => {
+  const v = await renewalSetup(401), fetch = vi.mocked(globalThis.fetch), original = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (...args) => String(args[0]).endsWith("controller-grant") && v.requests.filter(request => request.url.endsWith("controller-grant")).length >= 2
+    ? new Response(new ReadableStream({ start(controller) { controller.error(new TypeError("error body interrupted")); } }), { status: 401 }) : original(...args));
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: "initial exactly once" }, v.context)).rejects.toThrow("HTTP 401");
+  expect(f.stop).toHaveBeenCalledOnce();
+  expect(v.err.join("")).not.toContain("retry in");
 });

@@ -8,7 +8,9 @@ Repeated Session View testing needs a real local Agent and a reachable browser
 view without preparing a scheduled task. A separate demo UI would not exercise
 the product's interaction, receipt and recovery behavior. Existing session
 identity and authorization assume a task claim, so bypassing that assumption
-would weaken task isolation or invent ownership that does not exist.
+would weaken task isolation or invent ownership that does not exist. A temporary
+grant-renewal transport failure also says nothing about the health of the native
+process; unwinding supervision on that failure can stop an otherwise valid loop.
 
 ## Decision
 
@@ -37,6 +39,14 @@ shutdown with process proof. Closing the browser does not stop the native loop.
 The user owns the current directory, which the launcher never removes. Test
 execution does not add a background daemon, automatic recovery scheduler or
 arbitrary native-session adoption.
+
+After native startup, transient renewal failures remain within supervision and
+retry with exponential delay capped at 30 seconds. HTTP 408, 429 and 5xx or a
+transport failure retain the execution, initial operation and current credential;
+a successful renewal replaces only that credential. Explicit shutdown and
+definitive authorization or protocol failures retain the bounded stop path. The
+relay requires a current connection grant before native dispatch, so expiration
+does not authorize further native calls while renewal is unavailable.
 
 An unstarted registration can be archived with `never_started` only before any
 spawn attempt. The service also requires an unused grant and no connection or
@@ -73,6 +83,11 @@ behavior. The independent page therefore adapts identity and API binding only.
 **Require a native ID before the first no-prompt input.** That would deadlock an
 empty Claude session. The limited Test initialization rule keeps native identity
 honest without pretending that initialization accepted a prompt.
+
+**Let every renewal error unwind supervision.** A temporary service failure
+then executes local stopping even while the original grant and native process
+remain healthy. Retrying credential acquisition under the same identity avoids
+that interruption without adding process replacement or input replay.
 
 ## Consequences
 
