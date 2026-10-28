@@ -6,6 +6,7 @@ import { createOperation } from "../../api/operation.js";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import { loadServerConfiguration, normalizeServerUrl } from "../../config/server.js";
+import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import { runRepositoryGit } from "../../repository/git.js";
 import { repositoryIdentity } from "../../repository/identity.js";
 import { createHerdrInstance, resolveHerdrInstancePaths } from "./herdr/instance.js";
@@ -161,7 +162,11 @@ const markerPlans = async (inventory: Inventory, serverOrigin: string, operation
       const pointer = (await readMigrationFile(path.join(leaf, ".git"))).toString("utf8").trimEnd();
       const registered = (await readMigrationFile(path.join(admin, "gitdir"))).toString("utf8").trimEnd();
       const parent = (await readMigrationFile(path.join(admin, "commondir"))).toString("utf8").trimEnd();
-      if (!pointer.startsWith("gitdir: ") || path.resolve(leaf, pointer.slice(8)) !== admin || path.resolve(admin, registered) !== path.join(leaf, ".git") || path.resolve(admin, parent) !== common) throw new Error("The legacy worktree Git registration does not point to the original task path.");
+      const physicalParent = await resolvePhysicalDirectory(path.dirname(leaf));
+      const expectedPointer = path.join(physicalParent.ancestorPath, ...physicalParent.missingComponents, path.basename(leaf), ".git");
+      if (!pointer.startsWith("gitdir: ") || await realpath(path.resolve(leaf, pointer.slice(8))) !== admin
+        || await realpath(path.resolve(admin, registered)) !== expectedPointer
+        || await realpath(path.resolve(admin, parent)) !== common) throw new Error("The legacy worktree Git registration does not point to the original task path.");
       if (await git(leaf, ["symbolic-ref", "HEAD"], operation) !== `refs/heads/daynight/${owner.taskId}`) throw new Error("The legacy worktree no longer uses its original task branch.");
       plans.push({ file, before, owner, after: `${markerPrefix}${JSON.stringify({ ...owner, leaf: marker.leaf, root: marker.root, common: marker.common })}\n` });
     }
@@ -193,7 +198,8 @@ const workspacePlans = async (sessionFile: string, inventory: Inventory, markers
     const panes = Object.values(object(object(tabs[0], "Legacy tab").panes, "Legacy saved panes"));
     if (panes.length !== 1) throw new Error("A legacy workspace has ambiguous panes; retain it for inspection.");
     const pane = object(panes[0], "Legacy pane");
-    if (path.normalize(string(pane.cwd, "Legacy pane cwd")) !== path.normalize(cwd)) throw new Error("A legacy Herdr pane no longer points at its original worktree.");
+    const savedCwd = string(pane.cwd, "Legacy pane cwd");
+    if (!path.isAbsolute(savedCwd) || await realpath(savedCwd) !== await realpath(cwd)) throw new Error("A legacy Herdr pane no longer points at its original worktree.");
     if (pane.agent_session !== undefined && pane.agent_session !== null) {
       const native = object(pane.agent_session, "Legacy native session");
       if (native.kind !== "id" || native.agent !== task.agent || native.source !== `herdr:${task.agent}` || native.value !== task.sessionId) throw new Error("The saved Herdr native reference differs from the original SQLite session.");
@@ -245,7 +251,9 @@ const closeLegacyWorkspaces = async (herdr: WorkspaceMigrationHerdr, plans: read
     if (plan === undefined || plan.label !== workspace.label) throw new Error("The restored legacy workspace differs from the complete migration inventory.");
     const workspaceId = string(workspace.workspace_id, "Maintenance workspace ID");
     const bound = panes.filter((pane) => pane.workspace_id === workspaceId);
-    if (bound.length !== 1 || path.normalize(string(bound[0]!.cwd, "Maintenance cwd")) !== path.normalize(plan.cwd)) throw new Error("The restored legacy workspace has ambiguous panes or a different cwd.");
+    if (bound.length !== 1) throw new Error("The restored legacy workspace has ambiguous panes or a different cwd.");
+    const restoredCwd = string(bound[0]!.cwd, "Maintenance cwd");
+    if (!path.isAbsolute(restoredCwd) || await realpath(restoredCwd) !== await realpath(plan.cwd)) throw new Error("The restored legacy workspace has ambiguous panes or a different cwd.");
     matches.push({ id: workspaceId, plan });
   }
   if (matches.length !== plans.length || new Set(matches.map((match) => resourceOwnerKey(match.plan.owner))).size !== plans.length) throw new Error("The maintenance daemon did not restore every original legacy workspace.");

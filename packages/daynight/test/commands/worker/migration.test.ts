@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrateWorkerWorkspaces, assertWorkerWorkspaceMigrationReady } from "../../../src/commands/worker/migration.js";
 import type { WorkspaceMigrationDependencies, WorkspaceMigrationHerdr, WorkspaceMigrationPhase } from "../../../src/commands/worker/migration.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
+import { createOperation } from "../../../src/api/operation.js";
+import { createWorkerGitManager } from "../../../src/commands/worker/worktrees.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 
 const root = path.resolve(import.meta.dirname, "../../../../../.tmp/m");
@@ -19,7 +21,7 @@ const env = (): NodeJS.ProcessEnv => Object.fromEntries(Object.entries(process.e
 const git = (cwd: string, args: string[]): string => execFileSync("git", args, { cwd, env: env(), timeout: 10_000, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trimEnd();
 const fingerprint = async (target: string): Promise<string> => { const stats = await lstat(target, { bigint: true }); return `${stats.dev}:${stats.ino}`; };
 const hash = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
-const fixture = async () => {
+const fixture = async (ancestorAlias = false) => {
   await mkdir(root, { recursive: true });
   const paths = resolveWorkerPaths(home);
   await mkdir(paths.workerDirectory, { recursive: true });
@@ -40,8 +42,14 @@ const fixture = async () => {
   const fingerprints = { leaf: await fingerprint(worktree), root: await fingerprint(repo), common: await fingerprint(common) };
   const originalMarker = `daynight-worker:${JSON.stringify({ ...legacy, ...fingerprints })}\n`;
   await writeFile(marker, originalMarker);
+  let configuredRepo = repo;
+  if (ancestorAlias) {
+    const alias = path.join(root, "alias");
+    await symlink(root, alias, process.platform === "win32" ? "junction" : "dir");
+    configuredRepo = path.join(alias, "repo");
+  }
   const store = openWorkerStore(paths.databaseFile);
-  store.registerProject({ projectId: owner.projectId, repoUrl: "https://example.com/repository.git", localPath: repo });
+  store.registerProject({ projectId: owner.projectId, repoUrl: "https://example.com/repository.git", localPath: configuredRepo });
   store.registerPending({ ...owner, agent: "codex", sessionId });
   store.activateTask(owner); store.close();
   const sessionDirectory = path.join(paths.herdrDirectory, "c", "herdr", "sessions", "w");
@@ -72,7 +80,7 @@ const fixture = async () => {
     },
   };
   const dependencies: WorkspaceMigrationDependencies = { createHerdr: () => adapter };
-  return { paths, repo, worktree, marker, originalMarker, fingerprints, sessionDirectory, sessionFile, sessionBytes, events, adapter, dependencies, setFailStop: (value: boolean) => { failStop = value; }, setLoseSave: () => { loseSave = true; } };
+  return { paths, repo, configuredRepo, worktree, marker, originalMarker, fingerprints, sessionDirectory, sessionFile, sessionBytes, events, adapter, dependencies, setFailStop: (value: boolean) => { failStop = value; }, setLoseSave: () => { loseSave = true; } };
 };
 afterEach(async () => { await rm(root, { recursive: true, force: true }); });
 
@@ -97,6 +105,43 @@ describe("one-time worker workspace migration", () => {
     await expect(assertWorkerWorkspaceMigrationReady(f.paths)).resolves.toBeUndefined();
     await expect(lstat(path.join(f.sessionDirectory, "session-backups"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(lstat(path.join(f.sessionDirectory, "session-snapshots"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("migrates and rolls back an ancestor directory alias while preserving the original configured path and execution", async () => {
+    const f = await fixture(true);
+    expect(f.configuredRepo).not.toBe(f.repo);
+    expect(await realpath(f.configuredRepo)).toBe(await realpath(f.repo));
+    const database = await readFile(f.paths.databaseFile);
+    const config = await readFile(f.paths.configFile);
+    const originalLeaf = await fingerprint(f.worktree);
+    await expect(migrateWorkerWorkspaces({ homeDirectory: home }, { ...f.dependencies, afterPhase: async (phase) => {
+      if (phase === "markers-written") throw new Error("interrupted aliased migration");
+    } })).rejects.toThrow("interrupted aliased migration");
+    expect(f.events).toContain("close:w1");
+    expect(await readFile(f.marker, "utf8")).toBe(`daynight-worker:${JSON.stringify({ ...owner, ...f.fingerprints })}\n`);
+    await migrateWorkerWorkspaces({ homeDirectory: home, rollback: true }, f.dependencies);
+    expect(await readFile(f.marker, "utf8")).toBe(f.originalMarker);
+    expect(await readFile(f.sessionFile, "utf8")).toBe(f.sessionBytes);
+    expect(await readFile(f.paths.databaseFile)).toEqual(database);
+    await migrateWorkerWorkspaces({ homeDirectory: home }, f.dependencies);
+    expect(await readFile(f.paths.databaseFile)).toEqual(database);
+    expect(await readFile(f.paths.configFile)).toEqual(config);
+    expect(await fingerprint(f.worktree)).toBe(originalLeaf);
+    expect(await readFile(path.join(f.worktree, "tracked.txt"), "utf8")).toBe("unfinished work\n");
+    expect(git(f.worktree, ["symbolic-ref", "HEAD"])).toBe(`refs/heads/daynight/${owner.taskId}`);
+    const store = openWorkerStore(f.paths.databaseFile);
+    const project = store.getProject(owner)!;
+    const task = store.getTask(owner)!;
+    store.close();
+    expect(project.localPath).toBe(f.configuredRepo);
+    expect(task).toMatchObject({ projectId: owner.projectId, taskId: owner.taskId, claimId: owner.claimId, sessionId, status: "active", agent: "codex" });
+    const manager = createWorkerGitManager({ temporaryDirectory: path.join(root, "temporary") });
+    const operation = createOperation();
+    try {
+      const binding = await manager.verifyWorktree(project, owner, operation);
+      expect(binding.repositoryPath).toBe(f.configuredRepo);
+      expect(await realpath(binding.worktreePath)).toBe(await realpath(f.worktree));
+    } finally { operation.dispose(); await manager.dispose(); }
   });
 
   it.each<WorkspaceMigrationPhase>(["backed-up", "workspaces-closed", "herdr-persisted", "markers-written", "recovery-archived"])("keeps startup blocked after interruption at %s and restores the verified complete old set", async (interrupted) => {

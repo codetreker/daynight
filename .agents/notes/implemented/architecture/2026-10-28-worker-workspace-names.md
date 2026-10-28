@@ -58,7 +58,11 @@ when the task title is unavailable.
 
 The [workspace upgrade command](../../../../packages/daynight/README.md#worker-workspace-upgrade)
 performs the explicit one-time conversion. It validates and backs up the old
-resource set under the worker instance lock, blocks normal startup durably,
+resource set under the worker instance lock. It preserves logical project-path
+spelling while accepting ancestor-directory aliases only when Git registration
+pointers and saved and restored pane working directories resolve to the original
+physical task path; the leaf remains an ordinary directory with matching physical
+fingerprints. It blocks normal startup durably,
 closes verified old Herdr workspaces in maintenance mode, stops that daemon and
 reads its persisted layout before atomically updating Git administrative owner
 markers. It preserves claim, worktree, branch, physical fingerprints and SQLite

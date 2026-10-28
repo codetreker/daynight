@@ -138,7 +138,7 @@ Agent name 为 `dn_` 加四字段 canonical JSON 的 SHA-256 前 24 位十六进
 
 只有 rename RPC 或回执故障属于 `workspace-name-error`，保留原 cause，留待后续重新观察且不计入执行恢复预算。binding/身份冲突及取消仍是生命周期错误。title 不进入 prompt 或 agent 输入，因此不能改变任务指令。
 
-旧五字段资源格式只由显式 `worker migrate-workspaces [--rollback]` 处理。迁移要求停止 runner 与原生执行，持实例锁完整核验旧 origin 等于当前服务、身份投影无冲突、SQLite 原生 ID、实际 cwd 与 Git 注册指纹。未结束且具有旧格式资源的执行必须有原生 session ID，尚无资源的新 pending 不阻塞迁移；当前格式或没有旧资源时直接完成，不启动维护 daemon。未知版本、缺失原资源或无法证明连续性时保留并报错。
+旧五字段资源格式只由显式 `worker migrate-workspaces [--rollback]` 处理。迁移要求停止 runner 与原生执行，持实例锁完整核验旧 origin 等于当前服务、身份投影无冲突、SQLite 原生 ID、实际 cwd 与 Git 注册指纹。配置中的逻辑项目路径保留原拼写；Git 注册指针与保存及恢复后的 pane cwd 解析到同一物理任务路径时，允许祖先目录别名，但 worktree leaf 仍须是指纹匹配的普通目录。未结束且具有旧格式资源的执行必须有原生 session ID，尚无资源的新 pending 不阻塞迁移；当前格式或没有旧资源时直接完成，不启动维护 daemon。未知版本、缺失原资源或无法证明连续性时保留并报错。
 
 迁移先将全组 SQLite、Herdr session/recovery snapshots 与 Git administration locked 文件备份到 `worker/workspace-migration-backups/<UUID>/`，记录原始 manifest、文件 hash、Herdr tree 与 outcome，并持久写入 `worker/workspace-migration.json` 作为启动阻塞清单。随后维护 Herdr 在 `resume_agents_on_restore=false` 下只关闭已核验的旧 workspace。退出维护 daemon 后读回 session.json，证实旧 workspace 消失，再原子写入四字段 Git marker，保留 leaf/root/common 指纹及原 worktree/branch/claim/session_id。旧恢复快照移入备份位置，避免重新引入旧 label。
 

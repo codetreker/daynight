@@ -1201,7 +1201,11 @@ daynight worker migrate-workspaces
 This explicit local operation uses the worker instance lock. It validates the old
 service identity against the configured service, canonical owner IDs, task and
 native-session records, actual workspace directories and Git administrative
-ownership fingerprints. It preserves the SQLite claim/session index, task
+ownership fingerprints. Configured project paths keep their logical spelling;
+ancestor-directory aliases are accepted when Git registration pointers and saved
+and restored pane working directories resolve to the same physical task path,
+while the worktree leaf must remain an ordinary directory with matching physical
+fingerprints. It preserves the SQLite claim/session index, task
 branches, dirty worktrees and original native conversations. An unfinished
 execution with legacy resources must have its recorded native session ID;
 a fresh pending claim without resources does not block migration. Unknown
