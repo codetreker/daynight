@@ -63,6 +63,23 @@ describe('Goal task lists', () => {
     expect(document.querySelector('button button')).toBeNull();
   });
 
+  it('counts only in-progress ordinary members including the representative and updates the collapsed header', () => {
+    const items = [task('Goal', 'in_progress'), task('Second root', 'in_progress'),
+      task('Join', 'todo', ['Goal', 'Second root', 'External'], ['External']), task('External', 'in_progress')];
+    const view = render(list(indexOf(items)));
+    expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^2 进行中$/);
+    expect(disclosure().querySelector('.goal-eyebrow, .root-meta')).toBeNull();
+    expect(disclosure()).toHaveAttribute('aria-expanded', 'false');
+    const remaining = items.map((item) => item.id === 'Second root' ? { ...item, status: 'done' as const } : item);
+    view.rerender(list(indexOf(remaining)));
+    expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^1 进行中$/);
+    view.rerender(list(indexOf(remaining.map((item) => item.id === 'Goal' ? { ...item, status: 'done' as const } : item))));
+    expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 进行中$/);
+    expect(disclosure().querySelector('.root-status')).toHaveTextContent('进行中');
+    view.setLocale('en');
+    expect(disclosure().querySelector('.goal-in-progress')).toHaveTextContent(/^0 in progress$/);
+  });
+
   it('orders children by status while retaining snapshot order within each status', () => {
     const index = indexOf([
       task('Goal', 'done'), task('Done first', 'done', ['Goal']), task('Todo first', 'todo', ['Goal']),
