@@ -58,6 +58,7 @@ export type WorkspaceMessages = {
     readonly showingSnapshot: string;
     readonly retryRefresh: string;
     readonly selectedTaskRemoved: string;
+    readonly dismissNotice: string;
     readonly statistics: string;
     readonly totalTasks: string;
     readonly uniqueTasks: string;

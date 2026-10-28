@@ -218,7 +218,12 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
               <button className="button" type="button" onClick={graph.refresh}>{m.retryRefresh}</button>
             </section>
           )}
-          {snapshot !== null && notice !== null && <p className="snapshot-notice" role="status">{notice.kind === "selected-task-removed" ? m.selectedTaskRemoved : overview.targetUnavailable}</p>}
+          {snapshot !== null && notice?.kind === "selected-task-removed" && <div className="snapshot-notice snapshot-notice-dismissible" role="status">
+            <span className="snapshot-notice-message">{m.selectedTaskRemoved}</span>
+            <button className="snapshot-notice-dismiss" type="button" aria-label={m.dismissNotice} title={m.dismissNotice}
+              onClick={() => { setNotice(null); heading.current?.focus({ preventScroll: true }); }}><span aria-hidden="true">×</span></button>
+          </div>}
+          {snapshot !== null && notice?.kind === "overview-target-unavailable" && <p className="snapshot-notice" role="status">{overview.targetUnavailable}</p>}
           <section className="project-section-panel project-overview" id="project-section-panel-overview" role="tabpanel"
             aria-labelledby="project-section-tab-overview" hidden={section !== "overview"} inert={section !== "overview"} tabIndex={0}>
             {snapshot !== null && <ProjectOverview snapshot={snapshot} chainIds={categories!.chains} standaloneIds={categories!.standalone}

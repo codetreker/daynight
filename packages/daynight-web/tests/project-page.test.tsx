@@ -178,7 +178,7 @@ describe("project dashboard", () => {
     expect(detailRequest).toHaveBeenCalledOnce();
   });
 
-  it("closes a removed chain and vanished detail without opening a replacement", async () => {
+  it("dismisses a vanished-task notice across refreshes and shows a new removal without changing the view", async () => {
     graphRequest.mockResolvedValueOnce(graph()).mockResolvedValueOnce(resetSnapshot(graph([seeds[2]!, seeds[3]!])));
     render(<ProjectPage projectId={projectId} />); selectTasks();
     await openChain("已完成根");
@@ -191,6 +191,31 @@ describe("project dashboard", () => {
     expect(screen.queryAllByTestId(/^chain-/)).toHaveLength(0);
     expect(document.activeElement).toBe(screen.getByRole("tab", { name: "任务链" }));
     expect(number("任务总数")).toBe("2");
+    const preferences = { ...window.localStorage };
+    const requests = graphRequest.mock.calls.length;
+    fireEvent.click(screen.getByRole("button", { name: "关闭提示" }));
+    expect(screen.queryByText("所选任务已不在新的任务图中，详情已关闭。")).toBeNull();
+    expect(screen.queryByRole("complementary")).toBeNull();
+    expect(screen.getByRole("tab", { name: "任务列表" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: "任务链" })).toHaveAttribute("aria-selected", "true");
+    expect(number("任务总数")).toBe("2");
+    expect(window.localStorage).toMatchObject(preferences);
+    expect(graphRequest).toHaveBeenCalledTimes(requests);
+    expect(screen.getByRole("heading", { name: "核心项目" })).toHaveFocus();
+
+    graphRequest.mockResolvedValue(graph([seeds[2]!, seeds[3]!]));
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(graphRequest).toHaveBeenCalledTimes(requests + 1));
+    await waitFor(() => expect(screen.getByRole("button", { name: "刷新" })).toBeEnabled());
+    expect(screen.queryByText("所选任务已不在新的任务图中，详情已关闭。")).toBeNull();
+
+    await openChain("另一任务链");
+    fireEvent.click(screen.getByRole("button", { name: "节点 阻塞任务" }));
+    await waitFor(() => expect(screen.getByTestId("detail-title")).toHaveTextContent("阻塞任务"));
+    graphRequest.mockResolvedValue(resetSnapshot(graph([])));
+    fireEvent.click(screen.getByRole("button", { name: "刷新全图" }));
+    expect(await screen.findByRole("button", { name: "关闭提示" })).toBeVisible();
+    expect(screen.queryByRole("complementary")).toBeNull();
   });
 
   it("reuses a retained detail after an unchanged graph receipt without patching graph statistics", async () => {
