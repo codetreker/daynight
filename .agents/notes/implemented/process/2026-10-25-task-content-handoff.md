@@ -18,22 +18,22 @@ into a lasting execution restriction or bury confirmed decisions in discussion h
 ## Decision
 
 The public `using-daynight` bundle has a `handoff <task-id>` mode and one shared
-`references/task-content.md` standard. The standard covers objective and
-requirements, scope and deliverables, solution and design, input/output contracts,
-acceptance and verification, and references. The description identifies the
-current task, its responsibility and readable sources. Body content, required
-referenced documents and mixed organization meet the same sufficiency test; a
-complete description needs no primary attachment. Each content item has one
-owner, and confirmation, acceptance conclusions and delivery evidence have an
-explicit location in the current task's body or attachments.
+`references/task-content.md` standard. The description identifies the current
+task, its responsibility and readable sources. Body content, required referenced
+documents and mixed organization meet the same sufficiency test; a complete
+description needs no primary attachment, and each detailed explanation has one
+owner.
 
-The shared standard distinguishes task requirements from session-only constraints
-before applying the six content requirements. Only task-specific information is
-recorded. Confirmed decisions, stage questions and confirmation gates, actual
-execution, permission and verification constraints, and evidence remain task
-content. Session-only operation arrangements and discussion narration are excluded;
-the current operation still follows the original instructions. Existing entrypoint
-and creation references apply the same rule without duplicating its wording.
+The original standard used six categories, including a solution, validation
+methods and a designated task-local confirmation/evidence location. Those choices
+made independent consumption explicit and kept stable detail separate from
+execution progress. The [task/session content decision](2026-10-28-task-session-content.md)
+partially supersedes that content model: five definition categories plus current
+and final artifacts replace the universal solution and evidence requirements.
+Task content retains real inputs and outputs, while execution/discussion methods,
+operational authorization and recovery information stay in the session. The
+shared rule governs descriptions, attachments and referenced task material;
+existing entrypoint and creation references apply it without duplicating wording.
 
 This partially replaces the mandatory primary-attachment storage rules in the
 [mode decision](../../archived/architecture/2026-10-21-using-daynight-modes.md),
@@ -54,8 +54,9 @@ direct index; inline architecture does not require a fabricated path, copy or
 relocation into an attachment.
 
 Handoff requires the user's explicit authorization for its designated tasks.
-It reads actual task content and necessary further references, checks the six
-items for the current stage, and verifies applicable upstream/downstream contracts.
+It reads actual task content and necessary further references, checks the task
+definition and existing artifacts for the current stage, and verifies applicable
+upstream/downstream contracts. A session execution plan is not a handoff prerequisite.
 Known, already-confirmed information can organize a not-yet-enabled todo;
 missing decisions remain concrete blockers. A blocked todo may be handed off when
 its design and interfaces are sufficient, while its dependencies still prevent
@@ -97,8 +98,9 @@ mechanism is added.
 **Require a primary attachment for every task.** This separated detailed plans
 from descriptions and operational progress in the original workflow, but it
 makes a complete body fail a storage rule. It also requires another file for
-simple complete assignments. Content sufficiency and a designated evidence
-owner preserve the useful separation without imposing that file.
+simple complete assignments. The later task/session boundary retains single
+content ownership and real artifacts without requiring that file or a universal
+evidence location.
 
 **Copy complete shared requirements and designs into every task.** Each task
 would be independently readable, but changes would create competing versions and
@@ -108,8 +110,9 @@ provide the required context while preserving a single shared owner.
 **Copy all conversation constraints into the task.** This preserves the request's
 words but loses their scope: an instruction to register without executing or enabling
 Agents in the current conversation can become a permanent task restriction.
-Retaining only task-specific information preserves real execution and permission
-constraints without importing that temporary arrangement.
+The task/session successor separates real result constraints from session
+methods and operational authorization; the current operation still honors its
+original instructions without copying them into task prose.
 
 **Treat a link or existing true permission as review proof.** A readable name
 says nothing about content sufficiency, and permission can predate the current
@@ -132,8 +135,9 @@ mechanisms rather than infer a certificate from allowAgents.
 One standard controls creation, Goal breakdown, handoff and execution, including
 stage-specific inputs and outputs. This removes the primary-file gate without
 weakening current-stage content, real dependencies, Goal confirmation or direct
-architecture-source indexing. Task evidence remains findable even when all
-requirements and design are in the description.
+architecture-source indexing. Task inputs and resulting artifacts remain
+findable even when all requirements and design are in the description; session
+continuity does not become task material.
 
 The flag permits automatic selection but does not certify future document
 versions, pause scheduling or prove execution. Existing true tasks are not

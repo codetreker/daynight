@@ -169,16 +169,17 @@ Markdown 引用反馈绑定其所属的语义任务/页签/文件选择；首次
 结果，同路径更新仍使用既有 revision 与 `updatedAt` 重读规则。
 
 公开 skill 源为 `packages/daynight/src/commands/skill/skills/using-daynight/`。
-共享 task-content 标准由入口和 create-task、handoff、run-task 及适用 Goal 指引读取，
-任务 description 明确当前责任与资料入口。六项内容由正文、实际引用或混合组织提供，
-正文完整无需主附件；确认、验收结论和交付证据保存在本任务明确的正文或附件位置。每个 Goal 交付正文
-直接列出架构任务 ID 及各必需来源：来源 description 全文或其中适用章节、真实附件完整路径
-或不可变仓库引用；正文来源通过 task show 读取，间接后继同样保留入口。登记时核验，
-实施前读取所列输入，仓库文档保留架构任务身份与不可变引用。资料引用不新增执行
-依赖；共享要求、设计和原型引用实际来源，不复制整套资料。`[方案与验收](plan.md)` 或
-`[交互原型](mockui/index.html)` 只用于实际归属且确认上传的文件。依赖、PR 属性、
-Goal 阶段、创建/实现/合并权限继续独立。创建默认 todo，登记不执行；已有明确执行范围覆盖 ready 后继，
-通过精确版本 set-status 开始或完成，不另设任务审批。状态不授予实现、发布或合并权限。
+入口及创建、handoff、执行和 Goal 指引共用 task-content 标准；任务定义、成果及
+session 方法与过程的内容归属由 [Agent skill 设计](daynight-agent-skill.md#文档职责与任务资料)
+拥有，阅读层不维护另一套栏目或强制证据位置。description 明确当前责任与资料入口，
+正文完整无需主附件，共享要求、设计和原型引用实际来源。
+
+每个 Goal 交付正文直接列出架构任务 ID 及各必需来源：来源 description 全文或适用
+章节、真实附件完整路径，或保留所属架构任务身份的不可变仓库引用。正文来源通过
+`task show` 读取，间接后继同样保留入口；登记时核验，实施前读取所列输入。资料引用
+不新增执行依赖，也不复制整套共享材料。真实资源确认上传后才加入引用，链接按实际
+所有权和根/文档路径解析。依赖、PR 属性、Goal 阶段、创建/实现/合并权限继续独立；
+创建默认 todo，登记不执行，精确版本 set-status 不授予额外实现或交付权限。
 交付验证检查实际 npm bundle 及隔离安装夹具，
 安装目录通过正常重新安装更新。机制取舍见
 [Markdown 描述决策](../../.agents/notes/implemented/architecture/2026-10-22-task-description-markdown.md)。

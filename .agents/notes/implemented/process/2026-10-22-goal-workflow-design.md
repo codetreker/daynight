@@ -45,19 +45,20 @@ Sequential user-confirmed discussions now govern when those tasks are created
 and completed; the stage-produced-output rule still applies.
 
 Every task description identifies the current task, its responsibility and readable
-sources. Its body and required references jointly provide the six task-content items;
+sources. Its body and required references jointly provide the task definition
+and existing artifacts under the [task/session content decision](2026-10-28-task-session-content.md);
 a complete description needs no primary attachment. Goal tasks cover their agreed
 whole outcome, while implementation and acceptance tasks retain their own assignments.
-Each content item has one owner; confirmation, acceptance conclusions and delivery
-evidence have a designated location in the current task's body or attachments. The
-original brief-plus-primary-attachment structure separated stable detail from transient
-progress; that rationale remains covered by single content ownership and separate
-execution checkpoints.
+Each detailed explanation has one owner. The original brief-plus-primary-attachment
+structure separated stable detail from transient progress; single content ownership
+and session checkpoints retain that rationale without requiring a task execution
+plan or a generic confirmation/evidence location.
 
 Materials follow content ownership. Requirements stay with the Goal requirements
-task; architecture owns its phase plan, design and registered breakdown; implementation
-and acceptance own their respective plans and later evidence. These may be in task
-bodies or required referenced documents, according to the content/handoff successor. Every delivery description directly
+task; architecture owns its design and registered breakdown; implementation and
+acceptance own their agreed artifacts and results. These may be in task bodies
+or required referenced documents. Execution/discussion plans, operational
+authorization, confirmation exchanges and recovery information remain session context. Every delivery description directly
 identifies the architecture task and each required source, including indirect
 successors whose direct prerequisite is another implementation task. Shared body
 content names its owning task ID, the description field (whole body or applicable sections),
@@ -75,9 +76,11 @@ confirmed changes, satisfies its requirements. The canonical
 [Final acceptance rule](../../../../packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md#final-acceptance)
 owns this shared boundary. Creation identifies the whole acceptance subject and
 requirement sources; Goal breakdown and execution use that same rule. The owning
-task delivers the requirement-based conclusion, supporting evidence, defects and
-unverified items. The evidence identifies the tested source, environment, method,
-observations and material limits without requiring a new receipt format or platform.
+task delivers the requirement-based conclusion, defects and unverified items,
+with necessary source identity, supporting observations and material limits.
+Verification methods and execution history remain in the session unless an agreed
+method document is itself a deliverable; no receipt format or evidence platform
+is required.
 
 Manual verification, existing checks and temporary helper scripts are valid
 methods. Final-acceptance helpers remain uncommitted and are not integrated into
