@@ -49,7 +49,7 @@ export const workerDefinition: CommandDefinition = {
     description: "Attempt recovery once for an active original claim",
     arguments: task,
     options: [claim, project, help],
-    details: "Stop worker run first. Attempt one reconnection or recovery for the active claim under the same exclusive lock. Keep its recorded agent and native session ID, using current applicable settings. A missing session ID logs a warning and starts a fresh conversation. Pending claims use normal run scheduling.",
+    details: "Stop worker run first. Attempt one reconnection or recovery for the active claim under the same exclusive lock. Keep its recorded agent and native session ID, using current applicable settings. A NULL session ID logs an informational message and starts a fresh conversation. Pending claims use normal run scheduling.",
   }, {
     name: "release",
     description: "Clean the original execution and release its claim to todo",

@@ -155,9 +155,10 @@ Fresh and resumed Copilot/Codex processes use fixed full access and task-folder
 trust settings without native permission prompts. Business input remains
 available through `daynight worker attach`. The local task record retains only
 Project/task/claim, pending/active/done, agent type and native
-session ID. A missing session ID produces Warning and a fresh conversation in the
-same worktree; a known ID uses native resume. Cleanup timers and recovery counts
-are process-local, and restarted agents use current applicable settings.
+session ID. A NULL session ID produces an informational message and a fresh
+conversation in the same worktree; a known ID uses native resume. Cleanup timers
+and recovery counts are process-local, and restarted agents use current applicable
+settings.
 
 Stop the runner before `worker retry/release/resume`; the commands use
 its same instance lock. The [worker guide](packages/daynight/README.md#worker-manual-management)
