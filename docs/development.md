@@ -211,7 +211,8 @@ Use Go 1.27.2, PostgreSQL 18.6, Node.js 24 LTS and pnpm 11.28.6. Run
 [server module](../packages/daynight-server/README.md) owns configuration, startup,
 the isolated database setup and complete validation commands. Its HTTP runtime
 binds only numeric loopback addresses and serves authenticated project/task,
-complete graph, membership, invitation and attachment routes with embedded UI.
+task-chain graph, task-summary sync, membership, invitation and attachment routes
+with embedded UI.
 The five mandatory authentication settings and independent HTTP test switches
 are described in the server module and deployment guides.
 

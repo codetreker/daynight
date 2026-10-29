@@ -524,7 +524,7 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     for (const [path, type, body] of assets) check((await bob.put(`${origin}${fileUrl(shared.id, task.id, path)}`, {
       headers: { Origin: origin, 'Content-Type': type }, data: body })).status() === 201, 'Shared preview resource creation failed.');
     const preview = previewUrl(shared.id, task.id, 'site/index.html');
-    const protectedPaths = [`/api/v1/projects/${shared.id}`, `/api/v1/projects/${shared.id}/tasks`, `/api/v1/projects/${shared.id}/task-graph`,
+    const protectedPaths = [`/api/v1/projects/${shared.id}`, `/api/v1/projects/${shared.id}/tasks`, `/api/v1/projects/${shared.id}/task-graph?taskId=${task.id}`,
       `/api/v1/projects/${shared.id}/tasks/${task.id}`, `/api/v1/projects/${shared.id}/tasks/${task.id}/attachments`, binaryResource, preview,
       `/api/v1/projects/${shared.id}/members`];
     const anonymousContext = await browser.newContext({ baseURL: origin }); contexts.push(anonymousContext);

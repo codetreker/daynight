@@ -108,7 +108,8 @@ describe("task parameter boundaries", () => {
     ["update", taskId, "--pull-request-url=", "--clear-pull-requests"],
     ["update", taskId, "--pull-request-title=", "--clear-pull-requests"],
     ["update", taskId, "--pull-request-url", "-leading", "--pull-request-title", "Title"],
-    ["graph", "--ready"], ["create", "--title", "Title", "--json"], ["list", "--ready", "--ready"],
+    ["graph"], ["graph", "invalid"], ["graph", taskId, "extra"], ["graph", taskId, "--depends-only", "--depends-only"],
+    ["graph", taskId, "--ready"], ["create", "--title", "Title", "--json"], ["list", "--ready", "--ready"],
     ...["0", "101", "-1", "+1", "1.5", "1e1", " 1", "1 ", "Infinity", "99999999999999999999999999999", ""].map((value) => ["ready", `--limit=${value}`]),
     ["ready", "--status", "todo"], ["ready", "--cursor", "next"], ["ready", "--limit", "1", "--limit", "2"],
     ...["approve", "unapprove", "claim", "complete"].flatMap((action) => [
@@ -249,7 +250,7 @@ describe("task parameter boundaries", () => {
   it.each(["create", "list", "ready", "show", "update", "graph"])("uses explicit project for %s without consulting cwd or repository resolution", async (command) => {
     const f = fixture();
     f.context.workingDirectory.mockImplementation(() => { throw new Error("Explicit project must not read cwd"); });
-    const base = command === "create" ? [command, "--title", "Title"] : command === "show" ? [command, taskId.toUpperCase()] : command === "update" ? [command, taskId.toUpperCase(), "--description="] : [command];
+    const base = command === "create" ? [command, "--title", "Title"] : (command === "show" || command === "graph") ? [command, taskId.toUpperCase()] : command === "update" ? [command, taskId.toUpperCase(), "--description="] : [command];
     await runTaskCommand([...base, "--project", projectId.toUpperCase()], f.context, f.dependencies);
     expect(f.api.getProject).toHaveBeenCalledExactlyOnceWith(projectId);
     expect(f.dependencies.resolveProject).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
@@ -320,7 +321,7 @@ describe("task request contracts", () => {
     f.api.getTask.mockResolvedValue(value);
     f.api.listTasks.mockResolvedValue([value]);
     f.api.getTaskGraph.mockResolvedValue({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, requiredPlatform })) });
-    for (const args of [["show", taskId], ["list"], ["graph"]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
+    for (const args of [["show", taskId], ["list"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
     for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`Required platform: ${requiredPlatform === null ? "any" : requiredPlatform}\n`);
   });
 
@@ -480,7 +481,7 @@ describe("task output contracts", () => {
 
   it.each(["list", "ready", "show", "graph"])("preserves %s JSON fields with numeric full-int64 versions", async (command) => {
     const f = fixture();
-    const base = command === "show" ? [command, taskId] : [command];
+    const base = (command === "show" || command === "graph") ? [command, taskId] : [command];
     await runTaskCommand([...base, "--json", "--project", projectId], f.context, f.dependencies);
     const output = f.context.stdout.mock.calls[0]![0];
     expect(output.endsWith("\n")).toBe(true);
@@ -494,9 +495,27 @@ describe("task output contracts", () => {
 
   it("renders every graph node, dependency and summary with explicit title truncation", async () => {
     const f = fixture();
-    await runTaskCommand(["graph", "--project", projectId], f.context, f.dependencies);
+    await runTaskCommand(["graph", taskId, "--project", projectId], f.context, f.dependencies);
     const output = f.context.stdout.mock.calls[0]![0];
     for (const field of [`Project: ${projectId}`, "Name: Project", `Repository: ${project.repoUrl}`, "Summary:", "Total: 1", "Todo: 1", "In progress: 0", "Done: 0", "Ready: 1", "Blocked: 0", `ID: ${taskId}`, "Title preview: Task title", "Title truncated: true", "Depends on: none", "External dependencies (0): none", "Blocked by: none"]) expect(output).toContain(field);
+    expect(f.api.getTaskGraph).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+  });
+
+  it.each([false, true])("prints only complete dependency declarations in graph audit mode with JSON=%s", async (json) => {
+    const f = fixture();
+    const tasks = [
+      { ...graph.tasks[0]!, dependsOn: [dependencyId], externalDependsOn: [dependencyId] },
+      { ...graph.tasks[0]!, id: dependencyId, dependsOn: [otherDependencyId], externalDependsOn: [] },
+    ];
+    f.api.getTaskGraph.mockResolvedValue({ ...graph, tasks });
+    await runTaskCommand(["graph", taskId.toUpperCase(), "--depends-only", ...(json ? ["--json"] : []), "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getTaskGraph).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    const output = f.context.stdout.mock.calls[0]![0];
+    if (json) expect(parseApiJson(output)).toEqual([
+      { id: taskId, dependsOn: [dependencyId], externalDependsOn: [dependencyId] },
+      { id: dependencyId, dependsOn: [otherDependencyId], externalDependsOn: [] },
+    ]);
+    else expect(output).toBe(`ID: ${taskId}\nDepends on: ${dependencyId}\nExternal dependencies: ${dependencyId}\n\nID: ${dependencyId}\nDepends on: ${otherDependencyId}\nExternal dependencies: none\n`);
   });
 
   it("keeps terminal control characters visible and preserves raw JSON strings", async () => {
@@ -511,13 +530,10 @@ describe("task output contracts", () => {
     expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(raw);
   });
 
-  it("renders an empty task list and empty graph explicitly", async () => {
+  it("renders an empty task list explicitly", async () => {
     const f = fixture(); f.api.listTasks.mockResolvedValue([]);
-    f.api.getTaskGraph.mockResolvedValue({ observedAt: time, project, tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } });
     await runTaskCommand(["list", "--project", projectId], f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenLastCalledWith("No tasks.\n");
-    await runTaskCommand(["graph", "--project", projectId], f.context, f.dependencies);
-    expect(f.context.stdout.mock.calls[1]![0]).toContain("Total: 0"); expect(f.context.stdout.mock.calls[1]![0]).toMatch(/No tasks\.\n$/);
   });
 
   it("renders an empty ready selection in human and JSON output", async () => {

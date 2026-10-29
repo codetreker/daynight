@@ -60,7 +60,7 @@ func TestTaskHTTPTimingIsServerOwnedFrozenAndSharedAcrossResources(t *testing.T)
 		t.Fatalf("finished interval changed during an edit: %+v", task)
 	}
 	listed := decodeResponse[api.TaskPage](t, projectRequest(handler, http.MethodGet, taskCollection(project.ID), ""), http.StatusOK)
-	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID), ""), http.StatusOK)
+	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID, task.ID), ""), http.StatusOK)
 	if len(listed.Items) != 1 || !reflect.DeepEqual(listed.Items[0], task) || len(graph.Tasks) != 1 ||
 		!reflect.DeepEqual(graph.Tasks[0].StartedAt, task.StartedAt) || !reflect.DeepEqual(graph.Tasks[0].CompletedAt, task.CompletedAt) || graph.ObservedAt.Before(end) {
 		t.Fatalf("resource timing differs across reads: task %+v, list %+v, graph %+v", task, listed, graph)

@@ -113,7 +113,10 @@ it("runs the actual installed launcher through native project/task discovery, pe
           dependencies = { ...dependencies, ...(dependencyFields.dependsOn === undefined ? {} : { dependsOn: dependencyFields.dependsOn }), ...(dependencyFields.externalDependsOn === undefined ? {} : { externalDependsOn: dependencyFields.externalDependsOn }) };
           send(response, { ...task(projectId), ...dependencies, description, requiredPlatform, ...(request.method === "PATCH" ? { allowAgents } : {}), ...(body as object), ...((body as { properties?: unknown }).properties === undefined ? {} : { properties: { ...(body as { properties: object }).properties, worker: null } }), ...(request.method === "POST" ? { status: "todo", ready: true } : {}), version: request.method === "PATCH" ? 9_007_199_254_740_994n : 1n }, request.method === "POST" ? 201 : 200); return;
         }
-        if (parts[5] === "task-graph") { send(response, { observedAt: time, project: project(projectId), summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 }, tasks: [] }); return; }
+        if (parts[5] === "task-graph") {
+          if (url.searchParams.get("taskId") !== taskId) { fault(response, "invalid_input", "native-graph-target", 400); return; }
+          send(response, { observedAt: time, project: project(projectId), summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ ...task(projectId), titlePreview: "Task 中文", titleTruncated: false }] }); return;
+        }
         if (parts.length === 7) {
           const status = properties.worker?.state === "active" ? "in_progress" : properties.worker?.state === "completed" ? "done" : "todo";
           send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, status, ready: status === "todo", ...(properties.worker === null ? {} : { startedAt: time, completedAt: status === "done" ? time : null }), version: 9_007_199_254_740_993n }); return;
@@ -301,7 +304,8 @@ it("runs the actual installed launcher through native project/task discovery, pe
     const emptyDescriptionList = parseApiJson((await invoke(["task", "list", "--status", "todo", "--ready", "--json", ...explicit], outside, 0, true)).stdout) as Record<string, unknown>[];
     expect(emptyDescriptionList).toEqual([taskListItem(task())]);
     expect(emptyDescriptionList[0]).not.toHaveProperty("description");
-    expect(JSON.parse((await invoke(["task", "graph", "--json", ...explicit], outside, 0, true)).stdout).tasks).toEqual([]);
+    expect(JSON.parse((await invoke(["task", "graph", taskId, "--json", ...explicit], outside, 0, true)).stdout).tasks).toMatchObject([{ id: taskId }]);
+    expect(parseApiJson((await invoke(["task", "graph", taskId, "--depends-only", "--json", ...explicit], outside, 0, true)).stdout)).toEqual([{ id: taskId, dependsOn: [], externalDependsOn: [] }]);
     scenarios.push("installed-project-task-operations-server-only-config-explicit-isolation");
 
     const dependencyCreateAt = requests.length;

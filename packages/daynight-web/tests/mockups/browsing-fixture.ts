@@ -274,7 +274,7 @@ export const installBrowsingFixture = (): BrowsingFixture => {
     signal?.throwIfAborted();
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin);
     if (url.origin !== location.origin) throw new Error(`Unknown browsing preview origin: ${url.origin}`);
-    const graphMatch = /^\/api\/v1\/projects\/([^/]+)\/(task-graph|task-sync)$/.exec(url.pathname);
+    const graphMatch = /^\/api\/v1\/projects\/([^/]+)\/task-sync$/.exec(url.pathname);
     const taskMatch = /^\/api\/v1\/projects\/([^/]+)\/tasks\/([^/]+)(\/(?:attachments|status))?$/.exec(url.pathname);
     const projectId = graphMatch?.[1] ?? taskMatch?.[1];
     const state = projectId === undefined ? undefined : states.get(projectId);
@@ -286,7 +286,7 @@ export const installBrowsingFixture = (): BrowsingFixture => {
       });
       if (state.scenario === 'error' && count === 0 || state.scenario === 'refresh-error' && count === 1 || state.failedGraphReads) return fault('internal_error', 500);
       const snapshot = graphSnapshot(state);
-      return graphMatch[2] === 'task-sync' ? taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: state.epoch, versionForTask: (task) => state.tasks.get(task.id)!.version, viewerId: TEST_VIEWER_ID }) : jsonResponse(snapshot);
+      return taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: state.epoch, versionForTask: (task) => state.tasks.get(task.id)!.version, viewerId: TEST_VIEWER_ID });
     }
     const storedTask = state?.tasks.get(taskMatch?.[2] ?? '');
     const task = state !== undefined && storedTask !== undefined ? currentTask(state, storedTask.id) : undefined;

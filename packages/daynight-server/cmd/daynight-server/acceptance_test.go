@@ -732,9 +732,9 @@ func acceptanceStatusReads(t *testing.T, scenario *acceptanceScenario) {
 	if !slices.Equal(readyIDs, wantReadyIDs) {
 		t.Fatal("ready inventory did not use all todo prerequisites")
 	}
-	graph := acceptanceDecode[api.TaskGraph](t, process.request(context.Background(), http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph", nil, ""), http.StatusOK)
-	if graph.Summary != (api.TaskGraphSummary{Total: 5, Todo: 4, Done: 1, Ready: 2, Blocked: 2}) || len(graph.Tasks) != 5 {
-		t.Fatal("built process did not project the complete three-state summary")
+	graph := acceptanceDecode[api.TaskGraph](t, process.request(context.Background(), http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph?taskId="+ready.ID, nil, ""), http.StatusOK)
+	if graph.Summary != (api.TaskGraphSummary{Total: 3, Todo: 2, Done: 1, Ready: 1, Blocked: 1}) || len(graph.Tasks) != 3 {
+		t.Fatal("built process did not project the selected chain three-state summary")
 	}
 	for _, task := range graph.Tasks {
 		if task.ID == ready.ID && (task.Status != "todo" || !task.Ready || len(task.BlockedBy) != 0) ||

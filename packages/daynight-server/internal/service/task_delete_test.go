@@ -71,7 +71,7 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 			t.Fatalf("deleted task is listed: %#v %v", page, err)
 		}
 	}
-	graph, err := tasks.Graph(ctx, principal, task.ProjectID)
+	graph, err := tasks.Graph(ctx, principal, task.ProjectID, pre.ID)
 	if err != nil || len(graph.Tasks) != 1 || graph.Tasks[0].ID != pre.ID || graph.Summary.Total != 1 {
 		t.Fatalf("deleted task counted in graph: %#v %v", graph, err)
 	}
@@ -104,9 +104,10 @@ func TestTaskDeletionPreservesDataAndReplacesSyncBaseline(t *testing.T) {
 	if err := tasks.Delete(ctx, principal, task.ProjectID, pre.ID, DeleteTask{Version: pre.Version}); err != nil {
 		t.Fatal(err)
 	}
-	graph, err = tasks.Graph(ctx, principal, task.ProjectID)
-	if err != nil || len(graph.Tasks) != 0 || graph.Summary != (core.TaskGraphSummary{}) {
-		t.Fatalf("historical tasks or edges leaked into active graph: %#v %v", graph, err)
+	graph, err = tasks.Graph(ctx, principal, task.ProjectID, pre.ID)
+	requireFault(t, err, "task_deleted")
+	if !reflect.DeepEqual(graph, core.TaskGraph{}) {
+		t.Fatalf("deleted graph root returned data: %#v", graph)
 	}
 }
 
@@ -201,13 +202,13 @@ func TestTaskDeletionSerializesWithDependencyCreation(t *testing.T) {
 	if success != 1 {
 		t.Fatalf("both deletion and a live reference committed: %#v", results)
 	}
-	graph, err := tasks.Graph(context.Background(), principal, project.ID)
+	page, err := tasks.List(context.Background(), principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, task := range graph.Tasks {
+	for _, task := range page.Items {
 		for _, dependency := range task.DependsOn {
-			if !slices.ContainsFunc(graph.Tasks, func(candidate core.GraphTask) bool { return candidate.ID == dependency }) {
+			if !slices.ContainsFunc(page.Items, func(candidate core.Task) bool { return candidate.ID == dependency }) {
 				t.Fatal("concurrent write left a dangling active dependency")
 			}
 		}

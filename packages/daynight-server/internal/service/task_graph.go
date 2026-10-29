@@ -15,11 +15,15 @@ const (
 	graphTitlePreviewCharacters = 160
 )
 
-func (s *Tasks) Graph(ctx context.Context, principal core.Principal, projectID string) (core.TaskGraph, error) {
+func (s *Tasks) Graph(ctx context.Context, principal core.Principal, projectID, taskID string) (core.TaskGraph, error) {
 	if err := requirePrincipal(principal); err != nil {
 		return core.TaskGraph{}, err
 	}
 	projectID, err := CanonicalID(projectID)
+	if err != nil {
+		return core.TaskGraph{}, err
+	}
+	taskID, err = CanonicalID(taskID)
 	if err != nil {
 		return core.TaskGraph{}, err
 	}
@@ -41,7 +45,14 @@ func (s *Tasks) Graph(ctx context.Context, principal core.Principal, projectID s
 		if err != nil {
 			return err
 		}
-		size, err := snapshot.TaskGraphSize(ctx, projectID)
+		if err := snapshot.TaskGraphRoot(ctx, projectID, taskID); err != nil {
+			if errors.Is(err, core.ErrNotFound) || errors.Is(err, core.ErrTaskDeleted) {
+				refusal = taskNotFound(err)
+				return nil
+			}
+			return err
+		}
+		size, err := snapshot.TaskGraphProjectionSize(ctx, projectID, taskID)
 		if err != nil {
 			return err
 		}
@@ -51,7 +62,7 @@ func (s *Tasks) Graph(ctx context.Context, principal core.Principal, projectID s
 					MaxNodes: maxGraphNodes, MaxEdges: maxGraphEdges}}
 			return nil
 		}
-		graph.Tasks, err = snapshot.TaskGraphTasks(ctx, projectID, graphTitlePreviewCharacters)
+		graph.Tasks, err = snapshot.TaskGraphTasks(ctx, projectID, taskID, graphTitlePreviewCharacters)
 		if err != nil {
 			return err
 		}

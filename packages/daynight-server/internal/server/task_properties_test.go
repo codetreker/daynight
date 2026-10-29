@@ -60,7 +60,7 @@ func TestTaskHTTPPropertiesRoundTripAndMutationSemantics(t *testing.T) {
 	if !slices.ContainsFunc(page.Items, func(item api.Task) bool { return reflect.DeepEqual(item, changed) }) {
 		t.Fatal("full properties missing from paginated task resources")
 	}
-	graph := projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph", "")
+	graph := projectRequest(handler, http.MethodGet, graphPath(project.ID, changed.ID), "")
 	if graph.Code != http.StatusOK || strings.Contains(graph.Body.String(), "pullRequests") || strings.Contains(graph.Body.String(), "properties") || strings.Contains(graph.Body.String(), "acceptance-secret") {
 		t.Fatalf("graph projection selected properties: %s", graph.Body)
 	}
@@ -116,7 +116,7 @@ func TestTaskHTTPCorruptPropertiesFailWithoutFallback(t *testing.T) {
 			assertProjectError(t, projectRequest(handler, http.MethodGet, path, ""), http.StatusInternalServerError, "internal_error")
 		}
 		assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(task), `{"version":1,"title":"Rejected"}`), http.StatusInternalServerError, "internal_error")
-		graph := projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph", "")
+		graph := projectRequest(handler, http.MethodGet, graphPath(project.ID, task.ID), "")
 		if graph.Code != http.StatusOK {
 			t.Fatal("graph began decoding full properties")
 		}

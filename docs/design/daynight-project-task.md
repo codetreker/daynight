@@ -54,7 +54,7 @@ CLI 默认使用 `https://daynight.cc`，显式 `login/logout` 管理通过设�
 | [`commands/review/paths.ts`](../../packages/daynight/src/commands/review/paths.ts) | 既有配置位置为 `~/.daynight/config.yml` |
 | [`api/projects.go`](../../packages/daynight-server/api/projects.go) | project、分页及含 request ID 的结构化错误 |
 | [`api/tasks.go`](../../packages/daynight-server/api/tasks.go) | task、派生字段、版本和字段可选的更新请求 |
-| [`api/task_graph.go`](../../packages/daynight-server/api/task_graph.go) | 完整图、节点预览及 summary 响应 |
+| [`api/task_graph.go`](../../packages/daynight-server/api/task_graph.go) | 任务链图、节点预览及 summary 响应 |
 | [`service/repository.go`](../../packages/daynight-server/internal/service/repository.go) | 服务接受通用 HTTPS、SSH、SCP 地址，保存原始地址 |
 
 现有 review 的 `remoteIdentity` 面向 GitHub 且把 owner/name 转小写，不能直接成为
@@ -343,7 +343,7 @@ flowchart TD
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
 | `task set-status <id> <status> [--claim-id <claim-id>]` | 可选先 GET task，再 PUT 同一 task 的 `/status`；普通 body 为 version/status，显式 done claim 完成为 version/status/claimId |
 | `task delete <id> [--remove-depends]` | 可选先 GET task，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |
-| `task graph` | `GET /api/v1/projects/{projectId}/task-graph`，不附加 query |
+| `task graph <task-id>` | `GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}`；taskId 为必填且唯一 query |
 | `task attachment put <id> <file>` | `PUT /api/v1/projects/{projectId}/tasks/{id}/attachments/files/{path...}`，流式请求体，接受 200/201 元数据 |
 | `task attachment list <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}/attachments`，按路径身份读完分页 |
 | `task attachment read <id> <path>` | `GET /api/v1/projects/{projectId}/tasks/{id}/attachments/files/{path...}`，原始字节逐段输出 |
@@ -364,7 +364,14 @@ flowchart TD
 不增加服务排序或多状态查询契约。
 
 API 响应与命令 choices 均只接受 todo、in_progress、done，拒绝旧状态。
-graph summary 只返回 total、todo、inProgress、done、ready、blocked；图文本不显示旧统计。
+graph 参数先验证目标 UUID，缺失或非法值在配置、Git 和网络 I/O 前失败。
+`ApiClient.getTaskGraph(projectId, taskId)` 将规范化 ID 作为 taskId query 提交，解码器同时
+核对请求 project 和目标任务。返回集合必须恰好是目标所在普通依赖无向分量，加上该分量
+成员直接声明的 external 前置；链成员的前置必须完整存在，只有补充的外部上下文节点可以
+引用未返回的前置。解码器仍拒绝重复 ID、错误外部子集、错误 summary、已返回节点之间的环
+及与已知前置状态不符的阻塞字段，不通过补造状态处理缺少上下文任务行的情形。
+graph summary 只返回 total、todo、inProgress、done、ready、blocked，统计所有返回节点；
+图文本不显示旧统计。
 列表默认保留未完成任务，按 in_progress、ready todo、其他 todo、done 稳定分组。
 元数据 update 不声明 status，状态由专用 set-status 提交；详见[状态架构](daynight-task-status.md)。删除由专用 delete 提交精确版本，省略版本时只预读一次；可选 --remove-depends 决定是否明确发送 removeDepends=true，未提供时不解除引用。成功无需 Task 正文，不自动重试。已删除资源返回 `410 task_deleted`，业务保护与数据保留由[软删除设计](daynight-task-deletion.md)拥有。
 
@@ -438,7 +445,7 @@ JSON 输出不转为字符串，Project 可读输出保持既有标签。未知�
 
 任务及图的已知读取字段还包括必填 `externalDependsOn`。CLI 依赖解码要求正规化、升序、
 不重复的 D/E，并验证 E 属于完整 D；缺字段不使用兼容默认值。JSON 保留该数组，
-列表只省略 description 的规则不变。人类 task、list、ready、操作结果和 graph 复用依赖区，
+列表只省略 description 的规则不变。人类 task、list、ready、操作结果和普通 graph 复用依赖区，
 输出 `External dependencies (N): <ID 列表或 none>`。HTTP 客户端保留独立可选 D/E，服务负责部分 PATCH；
 命令层依赖声明则总是提交完整 D/E，与 API 单独给 D 保留存续性质的语义不同。
 完整示例见[外部依赖架构](daynight-external-dependencies.md)。
@@ -480,7 +487,7 @@ Task 的 `rendering.ts` 提供列表标签块与完整资源标签块，均显�
 依赖/阻塞为空时显示 `none`，空 list 为 `No tasks.`，空 ready 为 `No ready tasks.`。
 PR 字符串只检查类型，保留空、重复、控制字符与原有顺序，可读输出继续使用
 terminalText。创建和更新分别以 `Task created.`、`Task updated.` 表明服务确认结果。
-Graph 展示完整 project、六个 summary 字段及全部节点；节点的 `titlePreview` 与
+普通 Graph 展示完整 project、六个 summary 字段及所选链与一层外部前置的全部节点；节点的 `titlePreview` 与
 `titleTruncated`
 同时展示，保留既有状态、ready、依赖、阻塞和创建/更新时间，不能把预览称为完整标题。
 新增起止字段和图时钟由 JSON 保留，不为可读渲染器增加标签。所有字段
@@ -488,13 +495,18 @@ Graph 展示完整 project、六个 summary 字段及全部节点；节点的 `t
 
 查询 `--json` 是脚本和模型调用 CLI 的稳定接口：show 为完整资源对象，project list
 为所有匹配资源的完整字段数组，task list 为所有匹配 task 仅省略 `description`
-的数组，ready 为所选完整 task 的数组，graph 为服务原始完整响应对象。
+的数组，ready 为所选完整 task 的数组，普通 graph 为服务原始任务链图响应对象。
 Task 的 `renderTaskListJson` 在命令完成状态选择和稳定分组后建立输出投影，
 每个 task 只移除 `description`；默认及所有合法筛选共享该路径。其余字段保留
 API 名称、类型及原始值，包括 PR 列表、完整 int64 版本、时间戳以及明确的起止 `null`；
 graph JSON 保留顶层数据库 `observedAt`。这些字段不在命令层计算或省略，并继续使用
 `stringifyApiJson` 精确序列化。完整 API DTO、验证、分页、服务响应及其他操作
 不采用该投影，描述仍由 show、ready、create 和 update 返回。
+`--depends-only` 在完整读取和校验成功后仅投影 id、dependsOn、externalDependsOn，
+不改变任务选择或依赖数组。文本渲染为三个标签 ID、Depends on、External dependencies，
+空依赖显示 none；JSON 为每项恰好三字段的裸数组。两种输出使用完整 UUID，保留外部
+上下文节点指向投影外前置的引用，不输出项目、summary 或其他 task 字段。
+
 ready 空结果为 `[]`，不输出分页 envelope 或 cursor。仅序列化 API 字段，不加入
 渲染专用字符串、进度或诊断；无额外 model agent tool 或遥测框架。元数据查询在读取
 完成前保持 stdout 为空，确保脚本不会消费前半段成功结果。附件 list 同样完整输出

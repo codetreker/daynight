@@ -132,8 +132,8 @@ func TestExternalDependencyStoreReadsWritesAndRollback(t *testing.T) {
 		if err != nil || len(page.Items) != 4 || !reflect.DeepEqual(page.Items[2], target) {
 			t.Fatalf("scoped list lost classification: %#v, %v", page, err)
 		}
-		graph, err := snapshot.TaskGraphTasks(ctx, project.ID, 160)
-		if err != nil || len(graph) != 4 || !slices.Equal(graph[2].ExternalDependsOn, target.ExternalDependsOn) {
+		graph, err := snapshot.TaskGraphTasks(ctx, project.ID, target.ID, 160)
+		if err != nil || len(graph) != 3 || !slices.Equal(graph[2].ExternalDependsOn, target.ExternalDependsOn) {
 			t.Fatalf("scoped graph lost classification: %#v, %v", graph, err)
 		}
 		size, err := snapshot.TaskGraphSize(ctx, project.ID)

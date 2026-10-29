@@ -7,8 +7,8 @@
 及任务依赖管理。行为要求由[需求文档](../spec/daynight-server.md)拥有；架构选择及
 重新评估条件由[决策记录](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
 拥有。决策记录标记的是已采用的设计，不表示服务已经交付。
-[看板设计](daynight-web.md)定义完整图快照接口、浏览器页面和内嵌静态资源
-交付；图 API 保留本文的领域与事务结构，不改变现有分页读取的一致性承诺。
+[看板设计](daynight-web.md)定义浏览器完整项目图的本地投影、页面和内嵌静态资源
+交付；任务链图 API 保留本文的领域与事务结构，不改变现有分页读取的一致性承诺。
 
 已采用的[附件架构](daynight-task-attachments.md)提供独立的 bucket/path 文件存储；
 通用本地存储、元数据及单文件附件接口已实现；[附件需求](../spec/daynight-task-attachments.md)
@@ -41,33 +41,48 @@
 
 [快照设计](daynight-worker-snapshots.md)拥有 `workers` 表、原子 UPSERT、旧 observation 保护、稳定分页和时间语义；[需求](../spec/daynight-worker-snapshots.md)拥有公开字段与错误。任务图、claim inventory 和本机执行恢复保持各自的职责。
 
-## 完整图读取
+## 任务链图查询
 
-`Tasks.Graph` 复用既有具体 store 与只读 `ReadSnapshot`：先在同一快照检查项目成员
-关系并读取 project，随后获取精确节点和边数量，检查 1,000/5,000 上限，再读取轻量图节点并折叠统计。core 的
-`GraphTask`、`TaskGraphSummary`、`TaskGraph` 与 HTTP DTO 分离；store 的 SQL
-直接截取 160 code points 的标题预览，不加载 description 或完整标题，并投影可空执行起止。
-图节点与统计读取完毕后，通过同一 snapshot 的 `ObservedAt` 查询取得数据库 `statement_timestamp()`，
-作为顶层 `observedAt` 返回；不使用事务开始时刻或 HTTP Date 代替。
+`Tasks.Graph` 接收明确的 projectId 与 taskId，复用既有具体 store 与只读
+`ReadSnapshot`。同一快照内先检查项目成员关系，读取 Project 并核对目标任务，再以
+普通依赖的无向连通分量确定完整链成员。store 用递归 `UNION` 去重，沿普通前置和
+普通后继两侧查询；现有依赖主键与反向索引分别支持两个方向，无需增加持久组身份或迁移。
+从链成员直接声明的 external 依赖补充一层外部前置；不沿外部节点递归，不包含只在链外
+依赖本链的任务。选择集合在 SQL 中确定，不先加载整个项目的图节点。
 
-Project、计数、依赖及 ready 都来自同一次 `REPEATABLE READ`。服务层的缺失和
-超限 Fault 等事务成功收尾后才返回，操作或清理失败仍优先。HTTP 拒绝全部非空
-query，返回 no-store，并沿用既有 requestId 和结构化错误机制。具体响应与拒绝
-要求由[服务端需求](../spec/daynight-server.md#完整任务图)拥有；浏览器图投影由
-[看板设计](daynight-web.md#图投影与统计)拥有，不进入 store 或服务端领域状态。
+同一选择规则先返回精确节点数与依赖引用数，检查 1,000/5,000 上限，成功后才读取轻量
+节点并折叠 summary。计数只覆盖本次返回节点，但每个节点的完整 dependsOn 都计入边数，
+包括指向返回集合外的引用。无关链不使小链查询超限；精确计数仍须遍历目标分量，
+不承诺常数查询成本。core 的 `GraphTask`、`TaskGraphSummary`、`TaskGraph` 与 HTTP DTO
+保持分离；SQL 直接截取 160 code points 的标题预览，不加载 description 或完整标题，
+并投影可空执行起止、平台和许可。外部节点保留原始完整依赖、阻塞和 ready，不能用输出
+节点的状态重算并删去投影外前置。summary 覆盖全部返回节点。
+
+Project、目标、选择集合、计数、依赖及 ready 都来自同一次 `REPEATABLE READ`。
+节点与统计读取后，通过同一 snapshot 的 `ObservedAt` 取得数据库
+`statement_timestamp()`，作为顶层 observedAt；不使用事务开始时刻或 HTTP Date。
+缺失、软删除和超限 Fault 在事务成功收尾后才返回，操作或清理失败仍优先。
+HTTP 接受且仅接受一个必填 taskId query，返回 no-store，沿用 requestId、GET/HEAD
+和结构化错误机制。具体响应与拒绝由
+[服务端需求](../spec/daynight-server.md#任务链图查询)拥有；决策取舍见
+[任务链查询记录](../../.agents/notes/implemented/architecture/2026-10-29-chain-scoped-task-graph.md)。
+
+浏览器从 task-sync 摘要物化完整项目图，其完整上游闭包由
+[看板设计](daynight-web.md#图投影与统计)拥有。CLI 的一层外部前置查询不改变浏览器的
+链投影，也不适合作为完整项目图输入。
 
 ## 时间窗口摘要读取
 
 `NewTaskSync(store, overlap)` 接收已验证的配置，独立的 `taskSyncRoutes` 与原任务/图路由共同注册。
 服务复用具体 store、项目读授权及 `ReadSnapshot`，在同一快照中取得 Project、
 `task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。域拒绝在事务成功结束后返回，
-操作和清理失败优先，与完整图相同。
+操作和清理失败优先，与任务链图查询相同。
 
 store 只投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、时间和两类依赖；
 不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
-[时间窗口架构](daynight-task-sync.md)；当前 Web 仍使用完整图。Worker 归属修改沿用已有 version/updatedAt 事务，因此摘要可见其版本变化；摘要不包含 properties，身份核对仍 GET 已知任务，不增加 worker 查询投影。
+[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属修改沿用已有 version/updatedAt 事务，因此摘要可见其版本变化；摘要不包含 properties，身份核对仍 GET 已知任务，不增加 worker 查询投影。
 
 ## 目录与调用方向
 
@@ -150,7 +165,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 不回填创建/编辑时间，也不在读路径判断旧格式。
 `010_project_settings.sql` 给项目同行增加正值 `execution_warning_minutes integer DEFAULT 60` 与
 `settings_version bigint DEFAULT 1`，两列均非空；既有项目的创建/更新时间保持不变。
-项目创建、成员可见列表、单项读取和完整图投影共用同一 settings 扫描与 HTTP DTO。
+项目创建、成员可见列表、单项读取、任务链图与摘要同步共用同一 settings 扫描与 HTTP DTO。
 `011_task_agent_permission.sql` 为 task 增加非空布尔 `allow_agents`：既有行取得 true，随后数据库新行默认值为 false；应用创建同样显式提供 false。迁移保持任务版本、业务时间及其他字段不变。完整读写、图精简投影和生命周期候选都显式携带许可，严格读取不补缺字段默认值。
 
 `012_external_dependencies.sql` 给依赖行增加 `external boolean NOT NULL DEFAULT false`，

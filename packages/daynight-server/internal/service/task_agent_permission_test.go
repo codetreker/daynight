@@ -111,15 +111,16 @@ func TestTaskAgentPermissionFilterPrecedesLimitAndBindsCursor(t *testing.T) {
 	if err != nil || len(all.Items) != 6 {
 		t.Fatalf("omitted permission filter changed full inventory: %v", err)
 	}
-	graph, err := tasks.Graph(ctx, principal, project.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, task := range graph.Tasks {
-		if task.AllowAgents != slices.Contains(permitted, task.ID) {
-			t.Fatalf("graph lost permission: %#v", task)
+	for _, original := range all.Items {
+		graph, err := tasks.Graph(ctx, principal, project.ID, original.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(graph.Tasks) != 1 || graph.Tasks[0].ID != original.ID || graph.Tasks[0].AllowAgents != original.AllowAgents {
+			t.Fatalf("graph lost permission: %#v", graph)
 		}
 	}
+
 }
 
 func TestTaskAgentPermissionAndStartRaceHasOneMutationWinner(t *testing.T) {

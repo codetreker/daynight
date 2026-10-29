@@ -1,12 +1,11 @@
+import { readProjectSnapshot } from './project-snapshot';
 import { openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
-import { decodeTaskGraphJson } from '../../src/api/project-json';
 import { randomUUID } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { attachmentDownloadUrl, attachmentPageUrl, attachmentPreviewUrl } from '../../src/api/client';
-import { parseTaskGraph } from '../../src/api/parse';
 import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
 import { createProject, createTask, expect, test, updateTask } from './fixtures';
 import { captureStableDependencyGeometry, checkDependencyGeometry, expectedDependencyTopology } from './dependency-geometry';
@@ -350,9 +349,7 @@ test('task-description-markdown', { annotation: { type: 'scenario', description:
       await updateTask(request, project.id, task.id, { version: after.version, dependsOn: [prerequisite.id] });
       await createTask(request, project.id, { title: 'Markdown graph successor', dependsOn: [task.id] });
       await createTask(request, project.id, { title: 'Markdown graph sibling', dependsOn: [ancestor.id] });
-      const graphResponse = await request.get(`/api/v1/projects/${project.id}/task-graph`);
-      expect(graphResponse.status()).toBe(200);
-      const snapshot = parseTaskGraph(await decodeTaskGraphJson(new Response(await graphResponse.text())), project.id);
+      const { graph: snapshot } = await readProjectSnapshot(request, project.id);
       const expected = expectedDependencyTopology(snapshot.tasks, ancestor.id);
       const byId = new Map(snapshot.tasks.map((entry) => [entry.id, entry]));
       const upstream = new Set<string>(); const pending = [task.id];
