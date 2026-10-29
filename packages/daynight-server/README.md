@@ -5,8 +5,8 @@ foundation is implemented: explicit database and file-storage configuration,
 loopback-only HTTP binding, connection validation, structured request logs, cancellation, and bounded
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
-executable serves project, task, complete task-graph and task-summary synchronization routes together with the
-embedded task dashboard. Generic bucket/path local storage, task attachment
+executable serves project, task, complete task-graph, task-summary synchronization
+and account-owned Worker snapshot routes together with the embedded task dashboard. Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
 are grouped by project and the first two canonical task UUID characters; an
 explicit offline maintenance command migrates the old task-only layout.
@@ -31,7 +31,7 @@ project creation, filtered project lists, administrator changes and invitations.
 The project settings API provides a versioned execution-warning threshold that
 administrators save and members read.
 The application mux mounts all of these modules and requires authentication for
-every project, task, graph and attachment route. The production Web entry separates
+every project, task, graph, attachment and Worker snapshot route. The production Web entry separates
 the public introduction at `/`, the zero-API guide at `/setup`, and the existing
 `AuthenticatedApp` lifecycle for `/login`, `/projects` and private pages.
 `daynight login` uses Daynight device authorization to obtain
@@ -536,6 +536,14 @@ Project-list membership filtering precedes pagination. Pages use a validated lim
 position; status/readiness filters run before keyset pagination. Page lookahead
 is returned as `HasMore`; HTTP cursor encoding belongs to the API layer.
 
+`Store.WriteWorker` is an independent `READ COMMITTED` transaction for account-owned
+Worker observations. It updates only the matching Worker row, atomically preserving
+server report time, telemetry and normalized task observations. It does not acquire
+a project lock or mutate task ownership. Snapshot reads batch-filter saved task
+references by current project membership and undeleted-task visibility. The
+[Worker snapshot design](../../docs/design/daynight-worker-snapshots.md) owns this
+separate storage and current-permission behavior.
+
 The shared `core.Project` and `core.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and
 candidate reachability. The typed property codec in `internal/taskproperties/`
@@ -549,8 +557,8 @@ properties, which reject worker even when null or unchanged. Corrupt stored
 structures fail reads; there is no read-time default. The HTTP boundary
 and property codec share the strict object decoder in `internal/jsonobject/`.
 The service owns reference validation, DAG/state rules, optimistic version
-comparison and semantic no-ops. There are no foreign keys or
-delete operations. Direct database writers must not bypass these service rules.
+comparison and semantic no-ops. These task resources have no foreign keys or
+hard-delete operations. Direct database writers must not bypass these service rules.
 
 Store tests use unique owned schemas and real PostgreSQL sessions. They prove
 old-schema property migration with unchanged metadata, multi-migration exclusion,
@@ -562,6 +570,37 @@ wrong-order and missing-index cases retain a same-named fallback-schema index to
 verify isolation. The [index assertion decision](../../.agents/notes/implemented/testing/2026-10-24-schema-owned-index-assertions.md)
 records the query-ordering rationale. Rollback and advisory unlock use
 independent bounded contexts and preserve original causes.
+
+## Worker runtime snapshots
+
+The authenticated account owns one latest observation per stable Worker ID.
+Clients register or refresh it through the report endpoint; task claims and
+ordinary task timestamps do not create or renew this resource. The
+[contract](../../docs/spec/daynight-worker-snapshots.md) defines the complete typed
+report and response fields, and the
+[design](../../docs/design/daynight-worker-snapshots.md) defines independent
+transactions and permission-filtered reads.
+
+| Method | Path | Result |
+|---|---|---|
+| `POST` | `/api/v1/me/workers/{workerId}/report` | `200`, server `observedAt` and retained `lastReportedAt` |
+| `GET` | `/api/v1/me/workers` | `200`, recent Worker summaries and an account-bound cursor |
+| `GET` | `/api/v1/me/workers/{workerId}` | `200`, telemetry and visible task observations |
+
+All routes use normal PAT/session admission, exact Cookie-write Origin and
+`Daynight-User-ID`; responses are `no-store`. Report and detail requests accept no
+query parameters. List uses `limit` (default 50, maximum 100) and `cursor`. The
+recent window includes exactly 72 hours; 120 seconds without a report is offline
+when consumers compare the returned server clock with `lastReportedAt`. GET does
+not refresh liveness. Unknown, other-account and expired detail reads return 404.
+
+Reports use closed Probe states, explicit unknown inventory and a full task
+reference array. A known empty array is distinct from inventory that has never
+been synchronized. Task titles, status and phase come from current owned claims;
+subsequent reads preserve those observations while applying current membership
+and undeleted-task filtering to both rows and counts. Completion or reassignment
+does not erase an otherwise visible historical observation. Liveness and recent
+visibility do not control claims or task state.
 
 ## Project API
 

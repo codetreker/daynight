@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的行为与可观察验收条件。[整体架构](../design/daynight-worker.md)拥有运行机制，[认领架构](../design/daynight-worker-claims.md)拥有服务端归属协议。命令可用性与组件验证不替代 Linux、macOS、Windows 的完整原生运行验收。
+本文定义 `daynight worker run` 的行为与可观察验收条件。[整体架构](../design/daynight-worker.md)拥有运行机制，[认领架构](../design/daynight-worker-claims.md)拥有服务端归属协议。账号级运行快照的服务端契约由[快照需求](daynight-worker-snapshots.md)拥有；其在线状态和近期可见性不参与 claim 资格、执行控制或本机恢复。命令可用性与组件验证不替代 Linux、macOS、Windows 的完整原生运行验收。
 
 ## 目标与范围
 
