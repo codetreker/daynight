@@ -102,7 +102,7 @@ func acceptanceCLIPlatforms(t *testing.T, cli *acceptanceCLI, process *acceptanc
 	if got := read(active.ID); !reflect.DeepEqual(got, active) {
 		t.Fatal("installed locked platform changed actual task")
 	}
-	graph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", "--project", project.ID, "--json"))
+	graph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", active.ID, "--project", project.ID, "--json"))
 	for _, task := range graph.Tasks {
 		if task.ID == active.ID && (task.RequiredPlatform == nil || *task.RequiredPlatform != "linux") {
 			t.Fatal("installed graph lost platform")

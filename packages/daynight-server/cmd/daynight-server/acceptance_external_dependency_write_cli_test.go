@@ -84,8 +84,8 @@ func TestInstalledCLIExternalDependencyWriteAcceptance(t *testing.T) {
 		}
 		update("--external-depends-on", c.ID)
 		cli.refuse(t, process, "dependency_unsatisfied", c.ID, "task", "set-status", target.ID, "in_progress", "--project", projectID, "--if-version", strconv.FormatInt(target.Version, 10))
-		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", "--json"))
-		if len(graph.Tasks) != 5 || !slices.Equal(graph.Tasks[3].ExternalDependsOn, target.ExternalDependsOn) {
+		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", target.ID, "--json"))
+		if len(graph.Tasks) != 2 || graph.Tasks[0].ID != c.ID || graph.Tasks[1].ID != target.ID || !slices.Equal(graph.Tasks[1].ExternalDependsOn, target.ExternalDependsOn) {
 			t.Fatal("installed graph did not expose newly written classification")
 		}
 		process.signal(t)

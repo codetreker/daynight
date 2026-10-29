@@ -58,7 +58,7 @@ func acceptanceCLIAllowAgents(t *testing.T, cli *acceptanceCLI, process *accepta
 		t.Fatal("installed active same-value request changed resource")
 	}
 	cli.refuse(t, process, "invalid_transition", "", "task", "update", active.ID, "--project", project.ID, "--if-version", strconv.FormatInt(active.Version, 10), "--allow-agents", "true")
-	graph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", "--project", project.ID, "--json"))
+	graph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", active.ID, "--project", project.ID, "--json"))
 	for _, task := range graph.Tasks {
 		if task.AllowAgents {
 			t.Fatal("installed graph changed saved false permission")

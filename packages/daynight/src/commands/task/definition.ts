@@ -102,8 +102,10 @@ export const taskDefinition: CommandDefinition = {
     },
     {
       name: "graph",
-      description: "Show the complete task graph and summary",
-      options: [projectOption, jsonOption, helpOption],
+      description: "Show a task's complete chain and direct external prerequisites",
+      arguments: [taskArgument],
+      options: [{ names: ["--depends-only"], description: "Print only task IDs and complete dependency sets" }, projectOption, jsonOption, helpOption],
+      details: "Include every task connected through ordinary dependencies, in either direction and in every status, plus the chain members' direct external prerequisites. Do not expand those external tasks or include external dependents.\n--depends-only preserves the same task set and prints only id, dependsOn and externalDependsOn with complete UUIDs and dependency references, including references outside the returned task set. With --json, print an array containing only those three fields; otherwise print three labeled lines per task.",
     },
     {
       name: "attachment",

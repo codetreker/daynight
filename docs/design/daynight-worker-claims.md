@@ -4,7 +4,7 @@
 
 ## 资源和属性所有权
 
-完整 Task 的 `properties` 必须包含 `pullRequests` 与 `worker`。`worker` 为 null 表示当前没有保留的执行归属记录，包括从未认领或已经强制撤回；非 null 时是最后一条认领记录，`state` 为 `active`、`released` 或 `completed`。历史任务通过迁移取得显式 null，读取器不以缺失字段代替 null。完整图与同步摘要只投影 workerNeedsAttention 布尔值，严格表示非 null worker 的 signaling 非空；完整属性与执行身份仍通过 Task 读取。
+完整 Task 的 `properties` 必须包含 `pullRequests` 与 `worker`。`worker` 为 null 表示当前没有保留的执行归属记录，包括从未认领或已经强制撤回；非 null 时是最后一条认领记录，`state` 为 `active`、`released` 或 `completed`。历史任务通过迁移取得显式 null，读取器不以缺失字段代替 null。任务链图与同步摘要只投影 workerNeedsAttention 布尔值，严格表示非 null worker 的 signaling 非空；完整属性与执行身份仍通过 Task 读取。
 
 ```json
 {

@@ -12,7 +12,7 @@ contract while remaining usable after database history replacement.
 
 ## Decision
 
-The service exposes GET/HEAD task-sync beside the complete graph. An absent or
+The service exposes GET/HEAD task-sync beside the task-graph query. An absent or
 changed project epoch returns a complete snapshot; a matching epoch returns a
 delta selected by updated_at >= since - overlap, or all rows when since is
 absent for an empty baseline. The server owns a positive Go-duration overlap,
@@ -85,8 +85,12 @@ is available at the existing middleware boundary and avoids guessed ownership.
 
 ## Consequences
 
-The API supplies latest bounded task summaries without changing existing task,
-complete-graph or CLI resources. The API itself introduces no event history,
+The API supplies latest bounded task summaries. Its original delivery left the
+complete-graph and CLI resource shapes unchanged. The later
+[chain-scoped task-graph decision](2026-10-29-chain-scoped-task-graph.md) gives
+that query a required target and one layer of external prerequisites; task-sync
+retains its complete-project capacity and summary contract. The API itself
+introduces no event history,
 deletion feed, background cleanup or new task execution authority; browser
 persistence belongs to the summary-cache decision. Future task
 deletion must add removal semantics or invalidate the project epoch.

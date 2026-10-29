@@ -67,7 +67,7 @@ export const runTaskCommand = async (
   const setsStatus = name === "set-status";
   const rawClaimId = command.options.get("--claim-id") as string | undefined;
   if (rawClaimId !== undefined && command.values[1] !== "done") throw new UsageError("--claim-id is only valid when setting done.", help);
-  const targetsTask = name === "show" || name === "update" || setsStatus || name === "delete";
+  const targetsTask = name === "show" || name === "update" || setsStatus || name === "delete" || name === "graph";
   const title = command.options.get("--title") as string | undefined;
   const description = command.options.get("--description") as string | undefined;
   const status = command.options.get("--status") as TaskFilters["status"];
@@ -141,7 +141,7 @@ export const runTaskCommand = async (
       project = await dependencies.resolveProject({ serverUrl, operation, api, workingDirectory: context.workingDirectory() });
     }
     operation.check();
-    const { renderTask, renderTaskGraph, renderTaskJson, renderTaskList, renderTaskListJson, renderTaskSummaryList } = await import("./rendering.js");
+    const { renderTask, renderTaskGraph, renderTaskGraphDependencies, renderTaskJson, renderTaskList, renderTaskListJson, renderTaskSummaryList } = await import("./rendering.js");
     operation.check();
     if (command.command.name === "create") {
       const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), ...platformFields, ...dependencyFields, ...(properties === undefined ? {} : { properties }) };
@@ -163,8 +163,9 @@ export const runTaskCommand = async (
       return command.options.has("--json") ? renderTaskJson(tasks) : tasks.length === 0 ? "No ready tasks.\n" : renderTaskList(tasks);
     }
     if (command.command.name === "graph") {
-      const graph = await api.getTaskGraph(project.id);
+      const graph = await api.getTaskGraph(project.id, taskId!);
       operation.check();
+      if (command.options.has("--depends-only")) return renderTaskGraphDependencies(graph, command.options.has("--json"));
       return command.options.has("--json") ? renderTaskJson(graph) : renderTaskGraph(graph);
     }
     if (command.command.name === "show") {

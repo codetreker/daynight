@@ -37,11 +37,17 @@ func (h *taskHandler) graph(w http.ResponseWriter, request *http.Request, princi
 		writeError(w, request, logger, "task_graph", "get", err)
 		return
 	}
-	if request.URL.RawQuery != "" {
-		writeError(w, request, logger, "task_graph", "get", invalidInput("task graph does not accept query parameters"))
+	values, err := queryValues(request, "taskId")
+	if err != nil {
+		writeError(w, request, logger, "task_graph", "get", err)
 		return
 	}
-	graph, err := h.tasks.Graph(request.Context(), principal, projectID)
+	taskID := values.Get("taskId")
+	if taskID == "" {
+		writeError(w, request, logger, "task_graph", "get", invalidInput("task graph requires taskId"))
+		return
+	}
+	graph, err := h.tasks.Graph(request.Context(), principal, projectID, taskID)
 	if err != nil {
 		if fault, ok := knownFault(err); ok && ErrorKind(err) == fault.Code && fault.GraphLimit != nil {
 			logger = logger.With("node_count", fault.GraphLimit.NodeCount, "edge_count", fault.GraphLimit.EdgeCount)

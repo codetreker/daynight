@@ -77,7 +77,10 @@ func TestTaskReadersRejectInvalidStoredStatus(t *testing.T) {
 					_, err := snapshot.Tasks(ctx, project.ID, TaskQuery{Page: Page{Limit: 10}})
 					return err
 				},
-				func(snapshot *Snapshot) error { _, err := snapshot.TaskGraphTasks(ctx, project.ID, 160); return err },
+				func(snapshot *Snapshot) error {
+					_, err := snapshot.TaskGraphTasks(ctx, project.ID, task.ID, 160)
+					return err
+				},
 			} {
 				if err := database.ReadSnapshot(ctx, read); err == nil || errors.Is(err, core.ErrNotFound) {
 					t.Fatalf("invalid persisted status was accepted or hidden: %v", err)

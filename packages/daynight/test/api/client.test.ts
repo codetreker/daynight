@@ -49,7 +49,7 @@ describe("operation-scoped API access", () => {
     const api = client(fetch);
     await expect(api.createTask(projectId, { title: "Platform task", requiredPlatform })).resolves.toEqual(value);
     await expect(api.updateTask(projectId, taskId, { version: 9_223_372_036_854_775_807n, requiredPlatform })).resolves.toEqual(value);
-    await expect(api.getTaskGraph(projectId)).resolves.toEqual(taskGraph);
+    await expect(api.getTaskGraph(projectId, taskId)).resolves.toEqual(taskGraph);
     expect(parseApiJson(String(fetch.mock.calls[0]![1]!.body))).toEqual({ title: "Platform task", requiredPlatform });
     expect(parseApiJson(String(fetch.mock.calls[1]![1]!.body))).toEqual({ version: 9_223_372_036_854_775_807n, requiredPlatform });
   });
@@ -113,7 +113,7 @@ describe("operation-scoped API access", () => {
     const api = client(fetch);
     await expect(api.getTask(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
     await expect(api.listReadyTasks(projectId, 1)).rejects.toMatchObject({ phase: "protocol" });
-    await expect(api.getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+    await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
@@ -163,7 +163,7 @@ describe("operation-scoped API access", () => {
     const api = client(fetch);
     await expect(api.getTask(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
     await expect(api.listReadyTasks(projectId, 1)).rejects.toMatchObject({ phase: "protocol" });
-    await expect(api.getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+    await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
     expect(fetch).toHaveBeenCalledTimes(3);
   });
 
@@ -390,7 +390,7 @@ describe("operation-scoped API access", () => {
     await expect(api.setTaskStatus(projectId, taskId, { version: 1n, status: "done" })).rejects.toMatchObject({
       operation: "task.set-status", phase: "response", projectId, taskId, status: 409, code: "dependency_unsatisfied", requestId: "req-1", details: { taskIds: [otherId] }, confirmedRefusal: true, outcomeUnconfirmed: false, cause: expect.any(Error),
     });
-    await expect(api.getTaskGraph(projectId)).rejects.toMatchObject({ code: "graph_limit_exceeded", details: { nodeCount: 1001, edgeCount: 0, maxNodes: 1000, maxEdges: 5000 } });
+    await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ code: "graph_limit_exceeded", details: { nodeCount: 1001, edgeCount: 0, maxNodes: 1000, maxEdges: 5000 } });
   });
 
   it("never forwards a POST redirect to a second destination", async () => {
@@ -567,12 +567,57 @@ const threeStateGraph = (): TaskGraph => {
   return { observedAt: time, project, summary: { total: 4, todo: 2, inProgress: 1, done: 1, ready: 1, blocked: 1 }, tasks: [ready, blocked, inProgress, done] };
 };
 
+const joinId = "55555555-5555-5555-5555-555555555555";
+const externalId = "66666666-6666-6666-6666-666666666666";
+const outsideId = "77777777-7777-7777-7777-777777777777";
+const externalDependencyId = "99999999-9999-9999-9999-999999999999";
+const chainProjection = (): TaskGraph => {
+  const node = (id: string, dependsOn: string[] = [], externalDependsOn: string[] = []) => ({
+    ...graph().tasks[0]!, id, dependsOn, externalDependsOn, blockedBy: dependsOn, ready: dependsOn.length === 0,
+  });
+  return {
+    observedAt: time, project,
+    summary: { total: 5, todo: 5, inProgress: 0, done: 0, ready: 1, blocked: 4 },
+    tasks: [node(taskId), node(otherId, [taskId, externalId], [externalId]), node(normalId, [taskId]), node(joinId, [otherId, normalId]), node(externalId, [outsideId, externalDependencyId], [externalDependencyId])],
+  };
+};
+
 describe("response DTO contract", () => {
   it.each([undefined, null, "", 1])("rejects malformed graph attention markers: %j", async (workerNeedsAttention) => {
     const value = graph();
     const tasks = value.tasks.map((item) => ({ ...item, workerNeedsAttention }));
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks }))).getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks }))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
   });
+  it.each([taskId, otherId, normalId, joinId])("reads the full fork/join chain from %s with one external prerequisite and its raw dependency references", async (seed) => {
+    const value = chainProjection();
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(value));
+    await expect(client(fetch).getTaskGraph(projectId.toUpperCase(), seed.toUpperCase())).resolves.toEqual(value);
+    expect(new URL(String(fetch.mock.calls[0]![0])).pathname).toBe(`/api/v1/projects/${projectId}/task-graph`);
+    expect(Object.fromEntries(new URL(String(fetch.mock.calls[0]![0])).searchParams)).toEqual({ taskId: seed });
+  });
+
+  it("rejects an invalid graph target before making a request", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    expect(() => client(fetch).getTaskGraph(projectId, "invalid")).toThrow("Resource ID must be a hyphenated UUID.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing-root", "missing-member", "missing-external", "reverse-external", "recursive-external", "chain-dangling", "context-known-blocker", "context-cycle"])("rejects a graph with %s", async (failure) => {
+    const value = chainProjection();
+    let tasks = value.tasks.map((item) => ({ ...item }));
+    let seed = otherId;
+    if (failure === "missing-root") seed = outsideId;
+    if (failure === "missing-member") tasks = tasks.filter((item) => item.id !== normalId);
+    if (failure === "missing-external") tasks = tasks.filter((item) => item.id !== externalId);
+    if (failure === "reverse-external") tasks.push({ ...tasks[1]!, id: outsideId, dependsOn: [otherId], externalDependsOn: [otherId], blockedBy: [otherId] });
+    if (failure === "recursive-external") tasks.push({ ...tasks[0]!, id: outsideId });
+    if (failure === "chain-dangling") tasks[1] = { ...tasks[1]!, dependsOn: [taskId, externalId, outsideId], blockedBy: [taskId, externalId, outsideId] };
+    if (failure === "context-known-blocker") tasks[4] = { ...tasks[4]!, dependsOn: [taskId, outsideId], externalDependsOn: [taskId], blockedBy: [outsideId] };
+    if (failure === "context-cycle") tasks[4] = { ...tasks[4]!, dependsOn: [otherId, outsideId], externalDependsOn: [otherId], blockedBy: [otherId, outsideId] };
+    const summary = { total: tasks.length, todo: tasks.length, inProgress: 0, done: 0, ready: tasks.filter((task) => task.ready).length, blocked: tasks.filter((task) => !task.ready).length };
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks, summary }))).getTaskGraph(projectId, seed)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
+  });
+
   it("preserves mixed external subsets, blocking, precise versions and timestamps across task reads and metadata results", async () => {
     const value = { ...task, allowAgents: true, description: "Complete Markdown\n\n```text\nexternal\n```", version: 9_223_372_036_854_775_807n, dependsOn: [otherId, normalId], externalDependsOn: [otherId], blockedBy: [otherId], ready: false };
     const graphValue = mixedDependencyGraph();
@@ -586,7 +631,7 @@ describe("response DTO contract", () => {
     await expect(api.listTasks(projectId)).resolves.toEqual([value]);
     await expect(api.updateTask(projectId, taskId, { version: 9_007_199_254_740_993n, title: "Metadata edit" })).resolves.toEqual(value);
     expect(parseApiJson(String(fetch.mock.calls[2]![1]!.body))).toEqual({ version: 9_007_199_254_740_993n, title: "Metadata edit" });
-    await expect(api.getTaskGraph(projectId)).resolves.toEqual(graphValue);
+    await expect(api.getTaskGraph(projectId, taskId)).resolves.toEqual(graphValue);
   });
 
   it("retains completed external prerequisites on ready task resources", async () => {
@@ -613,7 +658,7 @@ describe("response DTO contract", () => {
       .mockResolvedValueOnce(jsonResponse({ ...graphValue, tasks: [{ ...graphValue.tasks[0]!, ...changes }, ...graphValue.tasks.slice(1)] }));
     const api = client(fetch);
     await expect(api.getTask(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
-    await expect(api.getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+    await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
   });
 
   it("rejects an all-external cycle and a graph that hides unfinished external blockers", async () => {
@@ -629,7 +674,7 @@ describe("response DTO contract", () => {
     const mixed = mixedDependencyGraph();
     const hiddenBlocker = { ...mixed, summary: { ...mixed.summary, ready: 2, blocked: 0 }, tasks: [{ ...mixed.tasks[0]!, blockedBy: [], ready: true }, ...mixed.tasks.slice(1)] };
     for (const response of [cyclic, hiddenBlocker]) {
-      await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(response))).getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+      await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(response))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
     }
   });
 
@@ -647,7 +692,7 @@ describe("response DTO contract", () => {
     await expect(api.createProject({ name: value.name, repoUrl: value.repoUrl })).resolves.toEqual(value);
     await expect(api.getProject(projectId)).resolves.toEqual(value);
     await expect(api.listProjects()).resolves.toEqual([value]);
-    await expect(api.getTaskGraph(projectId)).resolves.toEqual(graphValue);
+    await expect(api.getTaskGraph(projectId, taskId)).resolves.toEqual(graphValue);
   });
 
   it.each([
@@ -664,7 +709,7 @@ describe("response DTO contract", () => {
     const api = client(fetch);
     await expect(api.getProject(projectId)).rejects.toMatchObject({ phase: "protocol" });
     await expect(api.listProjects()).rejects.toMatchObject({ phase: "protocol" });
-    await expect(api.getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+    await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
   });
 
   it.each(["1.0", "1e3", "9223372036854775808"])("rejects non-int64 settings version lexeme %s before rounding can be accepted", async (version) => {
@@ -689,7 +734,7 @@ describe("response DTO contract", () => {
     const api = client(fetch);
     await expect(api.getTask(projectId, taskId)).resolves.toEqual(value);
     await expect(api.listTasks(projectId)).resolves.toEqual([value]);
-    await expect(api.getTaskGraph(projectId)).resolves.toEqual(graphValue);
+    await expect(api.getTaskGraph(projectId, taskId)).resolves.toEqual(graphValue);
   });
 
   it.each(["startedAt", "completedAt"] as const)("requires an explicit null or valid UTC timestamp for %s", async (field) => {
@@ -702,13 +747,13 @@ describe("response DTO contract", () => {
         .mockResolvedValueOnce(jsonResponse(graphValue));
       const api = client(fetch);
       await expect(api.getTask(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
-      await expect(api.getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+      await expect(api.getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
     }
   });
 
   it.each([undefined, null, 0, "invalid", "2026-02-30T00:00:00Z", "2026-10-20T00:00:00+00:00"])("requires the database clock timestamp without a client fallback: %j", async (observedAt) => {
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...graph(), observedAt })))
-      .getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+      .getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
   });
 
   it.each(["todo", "in_progress", "done"])("reads %s tasks and paginated inventories with lossless versions and complete descriptions", async (status) => {
@@ -729,9 +774,9 @@ describe("response DTO contract", () => {
 
   it("projects all three graph states and counts only blocked todo tasks as blocked", async () => {
     const value = threeStateGraph();
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(value))).getTaskGraph(projectId)).resolves.toEqual(value);
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(value))).getTaskGraph(projectId, taskId)).resolves.toEqual(value);
     const empty = { observedAt: time, project, summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 }, tasks: [] };
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(empty))).getTaskGraph(projectId)).resolves.toEqual(empty);
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(empty))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol" });
   });
 
   it.each([
@@ -739,7 +784,7 @@ describe("response DTO contract", () => {
     { total: 5 }, { todo: 5 }, { inProgress: 2 }, { done: 2 }, { ready: 2 }, { blocked: 2 },
   ])("rejects missing, malformed or inconsistent three-state graph counters %#", async (changes) => {
     const value = threeStateGraph();
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, summary: { ...value.summary, ...changes } }))).getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, summary: { ...value.summary, ...changes } }))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
 
   it.each(["todo-ready", "todo-blockers", "in-progress-blocked", "done-blocked", "proposed"])("rejects invalid three-state graph dependency data: %s", async (failure) => {
@@ -752,7 +797,7 @@ describe("response DTO contract", () => {
       const index = failure === "in-progress-blocked" ? 2 : 3;
       tasks[index] = { ...tasks[index]!, dependsOn: [tasks[0]!.id], blockedBy: [tasks[0]!.id] };
     }
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks }))).getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks }))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
 
   it("projects complete raw PR properties without interpreting their content or future fields", async () => {
@@ -806,7 +851,7 @@ describe("response DTO contract", () => {
   it("returns a complete graph and ignores future additional fields", async () => {
     const value = graph();
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, futureField: 42 }));
-    expect(await client(fetch).getTaskGraph(projectId)).toEqual(value);
+    expect(await client(fetch).getTaskGraph(projectId, taskId)).toEqual(value);
   });
   it.each([
     { ...task, version: "1" }, { ...task, version: 0 }, { ...task, version: 1.5 }, { ...task, status: "invalid" },
@@ -832,11 +877,11 @@ describe("response DTO contract", () => {
     if (failure === "blocked") tasks[0] = { ...tasks[0]!, blockedBy: [otherId], ready: false };
     if (failure === "preview") tasks[0] = { ...tasks[0]!, titleTruncated: true };
     if (failure === "duplicate") tasks[1] = { ...tasks[1]!, id: taskId };
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks, summary }))).getTaskGraph(projectId)).rejects.toBeInstanceOf(ApiError);
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks, summary }))).getTaskGraph(projectId, taskId)).rejects.toBeInstanceOf(ApiError);
   });
   it("accepts a whitespace preview cut from a nonempty long title", async () => {
     const value = graph();
     const tasks = [{ ...value.tasks[0]!, titlePreview: " ".repeat(160), titleTruncated: true }, value.tasks[1]!];
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks }))).getTaskGraph(projectId)).resolves.toMatchObject({ tasks });
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks }))).getTaskGraph(projectId, taskId)).resolves.toMatchObject({ tasks });
   });
 });

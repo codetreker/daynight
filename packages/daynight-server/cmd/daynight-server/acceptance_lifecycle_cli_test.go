@@ -450,8 +450,8 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		if len(legacyMetadata) != 1 || cli.run(t, cli.caller, "task", "attachment", "read", ids[1], "plans/legacy.md", "--project", projectID) != string(legacyBytes) {
 			t.Fatal("migration changed historical attachment metadata or bytes")
 		}
-		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", "--project", projectID, "--json"))
-		if graph.Summary != (api.TaskGraphSummary{Total: 5, Todo: 3, InProgress: 1, Done: 1, Ready: 2, Blocked: 1}) {
+		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", ids[1], "--project", projectID, "--json"))
+		if graph.Summary != (api.TaskGraphSummary{Total: 3, Todo: 2, Done: 1, Ready: 1, Blocked: 1}) {
 			t.Fatal("installed graph did not project converted task readiness")
 		}
 		create := func(title string, dependencies ...string) api.Task {

@@ -26,10 +26,54 @@ func (s *Snapshot) TaskGraphSize(ctx context.Context, projectID string) (TaskGra
 	return size, nil
 }
 
-func (s *Snapshot) TaskGraphTasks(ctx context.Context, projectID string, previewCharacters int) ([]core.GraphTask, error) {
-	rows, err := s.tx.Query(ctx, `SELECT t.id::text, left(t.title, $2), char_length(t.title) > $2,
+const taskGraphSelection = `WITH RECURSIVE chain(id) AS (
+ SELECT id FROM tasks WHERE project_id = $1 AND id = $2 AND deleted_at IS NULL
+ UNION
+ SELECT neighbor.id FROM chain member
+ CROSS JOIN LATERAL (
+  SELECT depends_on_task_id AS id FROM task_dependencies
+   WHERE project_id = $1 AND task_id = member.id AND NOT external
+  UNION
+  SELECT task_id AS id FROM task_dependencies
+   WHERE project_id = $1 AND depends_on_task_id = member.id AND NOT external
+ ) neighbor
+ JOIN tasks live ON live.project_id = $1 AND live.id = neighbor.id AND live.deleted_at IS NULL
+), selected(id) AS (
+ SELECT id FROM chain
+ UNION
+ SELECT dependency.depends_on_task_id FROM task_dependencies dependency
+ JOIN chain member ON member.id = dependency.task_id
+ JOIN tasks live ON live.project_id = $1 AND live.id = dependency.depends_on_task_id AND live.deleted_at IS NULL
+ WHERE dependency.project_id = $1 AND dependency.external
+) `
+
+func (s *Snapshot) TaskGraphRoot(ctx context.Context, projectID, taskID string) error {
+	var deletedAt *time.Time
+	if err := s.tx.QueryRow(ctx, `SELECT deleted_at FROM tasks WHERE project_id = $1 AND id = $2`, projectID, taskID).Scan(&deletedAt); err != nil {
+		return queryError("read task graph root", err)
+	}
+	if deletedAt != nil {
+		return core.ErrTaskDeleted
+	}
+	return nil
+}
+
+func (s *Snapshot) TaskGraphProjectionSize(ctx context.Context, projectID, taskID string) (TaskGraphSize, error) {
+	var size TaskGraphSize
+	err := s.tx.QueryRow(ctx, taskGraphSelection+`SELECT
+  (SELECT count(*) FROM selected),
+  (SELECT count(*) FROM task_dependencies dependency JOIN selected source ON source.id = dependency.task_id
+   WHERE dependency.project_id = $1)`, projectID, taskID).Scan(&size.NodeCount, &size.EdgeCount)
+	if err != nil {
+		return TaskGraphSize{}, queryError("count task graph projection", err)
+	}
+	return size, nil
+}
+
+func (s *Snapshot) TaskGraphTasks(ctx context.Context, projectID, taskID string, previewCharacters int) ([]core.GraphTask, error) {
+	rows, err := s.tx.Query(ctx, taskGraphSelection+`SELECT t.id::text, left(t.title, $3), char_length(t.title) > $3,
 		t.status, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.worker_needs_attention, `+taskDependsOn+`, `+taskExternalDependsOn+`, `+taskBlockedBy+`, `+taskReady+`
-		FROM tasks t WHERE t.project_id = $1 AND t.deleted_at IS NULL ORDER BY t.created_at, t.id`, projectID, previewCharacters)
+		FROM tasks t JOIN selected ON selected.id = t.id WHERE t.project_id = $1 AND t.deleted_at IS NULL ORDER BY t.created_at, t.id`, projectID, taskID, previewCharacters)
 	if err != nil {
 		return nil, queryError("read task graph", err)
 	}

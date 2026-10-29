@@ -115,6 +115,7 @@ export type TaskGraphSummary = {
   readonly blocked: number;
 };
 
+/** A complete ordinary chain with direct external prerequisites, whose own dependency references may lie outside the returned tasks. */
 export type TaskGraph = {
   readonly observedAt: string;
   readonly project: Project;

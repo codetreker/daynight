@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { setTaskStatus, getTask, getTaskGraph, type TaskResponseAdmission } from '../src/api/client';
-import { TEST_VIEWER_ID } from './helpers/taskSync';
+import { setTaskStatus, getTask, type TaskResponseAdmission } from '../src/api/client';
+import { TEST_VIEWER_ID, taskSyncFixture } from './helpers/taskSync';
+import { graphFromTaskSync, readProjectGraph } from './helpers/projectGraph';
+import { parseTaskSync } from '../src/api/task-sync';
 import { parseApiJson } from '../src/api/json';
 import { parseTaskGraph } from '../src/api/parse';
 import { decodeTaskGraphJson } from '../src/api/project-json';
@@ -14,6 +16,14 @@ const taskId = (number: number) => `00000000-0000-4000-8000-${String(number).pad
 const statusProject = (scenario: BrowsingScenario) => browsingProjects[scenario].project.id;
 
 describe('production task browsing fixture', () => {
+  it.each([false, true])('preserves attention=%s while materializing a complete project from task-sync', (workerNeedsAttention) => {
+    const source = browsingProjects.mixed;
+    const graph = { ...source, tasks: source.tasks.map((task, index) => ({ ...task, workerNeedsAttention: index === 0 && workerNeedsAttention })) };
+    const wire = taskSyncFixture(graph, { versionForTask: () => 1n });
+    const materialized = graphFromTaskSync(parseTaskSync(wire, graph.project.id));
+    expect(materialized).toEqual(graph);
+    expect(materialized.tasks[0]!.workerNeedsAttention).toBe(workerNeedsAttention);
+  });
   it.each(Object.entries(browsingProjects))('provides a valid three-state snapshot for %s', (_scenario, graph) => {
     const parsed = parseTaskGraph(graph, graph.project.id);
     const index = buildGraphIndex(parsed);
@@ -111,7 +121,7 @@ describe('production task browsing fixture', () => {
     const dispose = installBrowsingFixture();
     try {
       const projectId = browsingProjects.external.project.id;
-      const graph = await getTaskGraph(projectId, signal());
+      const graph = await readProjectGraph(projectId, signal());
       const task = await getTask(projectId, taskId(2), signal(), admission);
       expect(task).toMatchObject({
         dependsOn: [taskId(1), taskId(3)], externalDependsOn: [taskId(3)],
@@ -127,7 +137,7 @@ describe('production task browsing fixture', () => {
     const dispose = installBrowsingFixture();
     try {
       const source = browsingProjects[scenario];
-      const graph = await getTaskGraph(source.project.id, signal());
+      const graph = await readProjectGraph(source.project.id, signal());
       expect(graph).toEqual(source);
       expect(graph.tasks.every((task) => !('version' in task))).toBe(true);
       const task = await getTask(source.project.id, source.tasks[0]!.id, signal(), admission);
@@ -140,13 +150,13 @@ describe('production task browsing fixture', () => {
     try {
       const load = async (scenario: 'error' | 'refresh-error') => {
         const graph = browsingProjects[scenario];
-        return fetch(`/api/v1/projects/${graph.project.id}/task-graph`);
+        return fetch(`/api/v1/projects/${graph.project.id}/task-sync`);
       };
       expect((await load('error')).status).toBe(500);
-      expect(await decodeTaskGraphJson(await load('error'))).toEqual(browsingProjects.error);
+      expect(graphFromTaskSync(parseTaskSync(await decodeTaskGraphJson(await load('error')), browsingProjects.error.project.id))).toEqual(browsingProjects.error);
       expect((await load('refresh-error')).status).toBe(200);
       expect((await load('refresh-error')).status).toBe(500);
-      expect(await decodeTaskGraphJson(await load('refresh-error'))).toEqual(browsingProjects['refresh-error']);
+      expect(graphFromTaskSync(parseTaskSync(await decodeTaskGraphJson(await load('refresh-error')), browsingProjects['refresh-error'].project.id))).toEqual(browsingProjects['refresh-error']);
     } finally {
       dispose();
     }
@@ -156,7 +166,7 @@ describe('production task browsing fixture', () => {
     const dispose = installBrowsingFixture();
     try {
       const controller = new AbortController();
-      const pending = fetch(`/api/v1/projects/${browsingProjects.loading.project.id}/task-graph`, { signal: controller.signal });
+      const pending = fetch(`/api/v1/projects/${browsingProjects.loading.project.id}/task-sync`, { signal: controller.signal });
       controller.abort();
       await expect(pending).rejects.toBe(controller.signal.reason);
     } finally {
@@ -186,7 +196,7 @@ describe('production status fixture', () => {
     const dispose = installBrowsingFixture();
     try {
       const project = statusProject(scenario);
-      const graph = await getTaskGraph(project, signal());
+      const graph = await readProjectGraph(project, signal());
       const expected = scenario === 'reopen-ready' ? { todo: 2, inProgress: 0, done: 1, ready: 2, blocked: 0 }
         : scenario === 'reopen-blocked' ? { todo: 1, inProgress: 1, done: 1, ready: 1, blocked: 0 }
           : { todo: 3, inProgress: 0, done: 0, ready: 2, blocked: 1 };
@@ -203,7 +213,7 @@ describe('production status fixture', () => {
       const started = await setTaskStatus(project, taskId(1), 'in_progress', version, signal(), admission);
       expect(started).toMatchObject({ status: 'in_progress', version: version + 1n, ready: false, completedAt: null });
       expect(started.startedAt).not.toBeNull();
-      expect((await getTaskGraph(project, signal())).summary).toEqual({ total: 3, todo: 2, inProgress: 1, done: 0, ready: 1, blocked: 1 });
+      expect((await readProjectGraph(project, signal())).summary).toEqual({ total: 3, todo: 2, inProgress: 1, done: 0, ready: 1, blocked: 1 });
       expect(await getTask(statusProject('pending'), taskId(1), signal(), admission)).toMatchObject({ status: 'todo', version });
     } finally { dispose(); }
   });
@@ -253,7 +263,7 @@ describe('production status fixture', () => {
       await setTaskStatus(project, taskId(1), 'done', version, signal(), admission);
       const refreshed = await setTaskStatus(project, before.id, 'todo', before.version, signal(), admission);
       expect(refreshed).toEqual({ ...before, ready: true, blockedBy: [] });
-      const graph = await getTaskGraph(project, signal());
+      const graph = await readProjectGraph(project, signal());
       expect(graph.tasks.find((task) => task.id === before.id)).toMatchObject({ ready: true, blockedBy: [] });
       expect(graph.summary).toEqual({ total: 3, todo: 2, inProgress: 0, done: 1, ready: 2, blocked: 0 });
     } finally { dispose(); }
@@ -337,13 +347,13 @@ describe('production status fixture', () => {
     const dispose = installBrowsingFixture();
     try {
       const project = statusProject('graph-refresh-error');
-      await getTaskGraph(project, signal());
+      await readProjectGraph(project, signal());
       await setTaskStatus(project, taskId(1), 'in_progress', version, signal(), admission);
-      await expect(getTaskGraph(project, signal())).rejects.toMatchObject({ kind: 'server' });
+      await expect(readProjectGraph(project, signal())).rejects.toMatchObject({ kind: 'server' });
       expect(await getTask(project, taskId(1), signal(), admission)).toMatchObject({ status: 'in_progress', version: version + 1n });
       expect(dispose.controls('graph-refresh-error').graphReadFailure).toBe(true);
       dispose.recoverReads('graph-refresh-error');
-      expect((await getTaskGraph(project, signal())).summary).toMatchObject({ todo: 2, inProgress: 1, ready: 1, blocked: 1 });
+      expect((await readProjectGraph(project, signal())).summary).toMatchObject({ todo: 2, inProgress: 1, ready: 1, blocked: 1 });
     } finally { dispose(); }
   });
 

@@ -93,7 +93,7 @@ func TestTaskSignalingProjectionFollowsAtomicTaskWrites(t *testing.T) {
 	assertProjection := func(want bool) {
 		t.Helper()
 		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-			graph, err := snapshot.TaskGraphTasks(ctx, project.ID, 160)
+			graph, err := snapshot.TaskGraphTasks(ctx, project.ID, task.ID, 160)
 			if err != nil || len(graph) != 1 || graph[0].WorkerNeedsAttention != want {
 				t.Fatalf("graph signaling projection: %#v %v", graph, err)
 			}

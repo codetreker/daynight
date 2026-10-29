@@ -1,6 +1,6 @@
 # 项目与任务看板设计
 
-状态：完整图 API、项目任务看板、Go 内嵌交付及 localhost/dev-ci 部署已实现；长斜线 SVG 虚线绘制曾造成 raster/commit 阻塞，采用局部水平线与短原生转角路径分解；完整生产验收已交付。运行结果随对应 PR 与 CI 保存；本地回执不能代替干净 hosted 验证。原始看板基线为[只读 MVP](../spec/daynight-web.md)，当前项目工作区以实际组件为准，早期内层分类页签见[任务视图交互预览](mockups/task-views.html)；[原始看板预览](mockups/task-dashboard.html)和[项目详情截图](mockups/task-dashboard-project.png)保留初始视觉基线。[决策记录](../../.agents/notes/archived/architecture/2026-10-20-task-dashboard-mvp-design.md)保存选型与范围取舍。
+状态：task-sync 摘要与完整本地图、项目任务看板、Go 内嵌交付及 localhost/dev-ci 部署已实现；长斜线 SVG 虚线绘制曾造成 raster/commit 阻塞，采用局部水平线与短原生转角路径分解；完整生产验收已交付。运行结果随对应 PR 与 CI 保存；本地回执不能代替干净 hosted 验证。原始看板基线为[只读 MVP](../spec/daynight-web.md)，当前项目工作区以实际组件为准，早期内层分类页签见[任务视图交互预览](mockups/task-views.html)；[原始看板预览](mockups/task-dashboard.html)和[项目详情截图](mockups/task-dashboard-project.png)保留初始视觉基线。[决策记录](../../.agents/notes/archived/architecture/2026-10-20-task-dashboard-mvp-design.md)保存选型与范围取舍。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 和任务详情中的
 只读 PR 区域已实现。[需求](../spec/daynight-task-properties.md)与
@@ -597,7 +597,7 @@ flowchart LR
   写操作和预览 frame；task/project 切换仍以资源 key 卸载旧状态。
 - `useAttachments(projectId, taskId)` 独立拥有按页加载的文件、选择、写操作与预览；所有结果绑定 project/task，预览还绑定 path。列表校验重复游标和目录冲突，续页失败保留已读取文件并明确标记不完整；刷新取消旧列表请求。所选路径或 `updatedAt` 改变时取消并重新读取内容，同路径覆盖后增加预览 revision。
 - 图与详情的已加载数据分别绑定 projectId 与 `(projectId,taskId)`。渲染时只显示 key 相符的数据；key 变化立即显示新资源的加载状态，不能等 effect 清理后再去掉旧内容。同资源刷新才保留旧快照，取消/序号检查不能代替这一显示身份约束。对话框的焦点外壳保持独立，关系跳转不把焦点临时恢复到旧节点。
-- API client 的明确入口为 `listProjects(query, signal)`、`getTaskSync(projectId, query, expectedUserId, signal, onPrincipalMismatch)`、`getTaskGraph(projectId, signal)`（完整图调用者与对照）、`getTask(projectId, taskId, signal)` 与 versioned `setTaskStatus`、`setTaskAgentPermission`、`setTaskRequiredPlatform`。错误类型区分已取消、网络/解析失败和服务端错误码；错误页面只展示脱敏文案及 requestId。图响应的 project.id、详情响应的 projectId/id 必须与规范化后的请求资源匹配，否则按协议错误拒绝显示。
+- API client 的明确入口为 `listProjects(query, signal)`、`getTaskSync(projectId, query, expectedUserId, signal, onPrincipalMismatch)`、`getTask(projectId, taskId, signal)` 与 versioned `setTaskStatus`、`setTaskAgentPermission`、`setTaskRequiredPlatform`。错误类型区分已取消、网络/解析失败和服务端错误码；错误页面只展示脱敏文案及 requestId。同步响应的 project.id、详情响应的 projectId/id 必须与规范化后的请求资源匹配，否则按协议错误拒绝显示。
 - 页面导航使用 `pushState`，浏览器返回使用 `popstate`；在组件装卸边界取消请求。未知路径、无法解码的路径或无效 projectId 有明确错误页面，不发起拼接后的非法请求。
 
 项目视图偏好均由 `useProjectViewPreferences.ts` 中的专用 hooks 读取和保存，使用下列
@@ -633,7 +633,7 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 | `GET /setup` | 返回同一个 index，由公开静态入口显示日常使用指南，不发起任何 API 请求 |
 | `GET /projects/{projectId}/tasks/{taskId}/attachments/{path...}` | 返回同一个 index，前端在工作空间外打开独立阅读页；文件存在性由完整附件清单决定 |
 | `GET /assets/` 前缀 | 仅返回实际存在的构建资源；目录与缺失文件返回 404 |
-| `/api/v1/...` | 项目、任务及 task-graph API 已实现 |
+| `/api/v1/...` | 项目、任务、task-sync 及按 taskId 查询的 task-graph API |
 | 其他路径 | 404；未知 `/api/*` 保留 JSON 错误，不返回 HTML |
 
 GET 沿用 Go 的 HEAD 语义；已知 UI、asset 和图路径不支持的方法返回 405 与 Allow。
@@ -810,19 +810,18 @@ Project、分页 Project 与图内 Project.settings 的版本通过专用 `proje
 不改变通用 parseApiJson 对未知嵌套 version 的处理，也不要求较新浏览器的 reviver source context。
 超过 `2^53` 的 settings.version 保持 bigint，保存编码为 JSON 数字；缺失或错误 settings 不补默认值。
 
-## 完整图 API
+## 完整项目图的本地投影
 
-```http
-GET /api/v1/projects/{projectId}/task-graph
-```
+生产页面通过 task-sync 读取任务摘要，合并完整本地集合后物化 `TaskGraph`，不调用
+服务端 task-graph。`task-cache/projection.ts` 从完整摘要计算 blockedBy、ready 和六项
+summary，再由既有 `buildGraphIndex` 验证依赖、状态、容量、统计与无环条件。所有依赖
+必须在本地完整集合中可解析；完整上游闭包供 Web 链图使用，不采用 CLI 的一层外部前置边界。
+[时间窗口架构](daynight-task-sync.md)拥有同步、持久化、版本、水位、身份和发布机制。
 
-Project.settings 是下述必填 ProjectSettings，HTTP 将版本写为精确 JSON 数字；完整图成功返回：
+本地图保留以下结构，供页面、统计和图模型共同使用；Project.settings 的版本使用
+既有精确 int64 解码，不能从缺失字段补默认值：
 
 ```ts
-type ProjectSettings = {
-  version: bigint;
-  executionWarningMinutes: number;
-};
 type TaskGraph = {
   observedAt: string;
   project: Project;
@@ -854,77 +853,11 @@ type TaskGraph = {
 };
 ```
 
-### Go 读取模型与事务
-
-`internal/core/task_graph.go` 拥有只读投影，不把 HTTP 字段名或 JSON 编解码放入 core：
-
-```go
-type GraphTask struct {
-    ID                string
-    TitlePreview      string
-    TitleTruncated    bool
-    Status            TaskStatus
-    DependsOn         []string
-    ExternalDependsOn []string
-    BlockedBy         []string
-    Ready             bool
-    AllowAgents       bool
-    WorkerNeedsAttention bool
-    CreatedAt         time.Time
-    UpdatedAt         time.Time
-    StartedAt         *time.Time
-    CompletedAt       *time.Time
-}
-
-type TaskGraphSummary struct {
-    Total, Todo, InProgress, Done, Ready, Blocked int64
-}
-
-type TaskGraph struct {
-    ObservedAt time.Time
-    Project Project
-    Summary TaskGraphSummary
-    Tasks   []GraphTask
-}
-```
-
-具体调用入口为：
-
-```go
-// internal/service/task_graph.go
-func (s *Tasks) Graph(ctx context.Context, projectID string) (core.TaskGraph, error)
-
-// internal/core/store/task_graph.go
-func (s *Snapshot) TaskGraphSize(ctx context.Context, projectID string) (TaskGraphSize, error)
-func (s *Snapshot) TaskGraphTasks(ctx context.Context, projectID string, previewCharacters int) ([]core.GraphTask, error)
-func (s *Snapshot) ObservedAt(ctx context.Context) (time.Time, error)
-```
-
-`store.TaskGraphSize` 包含 int64 的 NodeCount 和 EdgeCount；它只描述查询结果。`Tasks.Graph` 使用现有具体 store，拥有 1,000/5,000/160 的策略常量，不新增可配置项、连接池或存储接口。
-
-事务顺序固定为：规范化 projectId → `ReadSnapshot` → 同快照内检查成员关系并读取 `Project` → 精确节点/边计数 → 检查上限 → 查询轻量完整节点及前置 → 从节点折叠 summary → 查询数据库 `statement_timestamp()` 作为 `observedAt` → 完成事务 → 返回资源或待返回的领域错误。
-
-store 的 SQL 直接读取 `left(title, previewCharacters)` 与 `char_length(title) > previewCharacters`，不先读取完整 title 或 description。复用现有 project 范围的有序 dependsOn/blockedBy 与 ready SQL 语义，并从同一关系集投影 externalDependsOn 子集，避免另写一套阻塞规则。查询使用现有 project 前缀索引和 `(created_at,id)` 排序；空数组和空节点列表保持 `[]`。计数与长文本扫描仍有数据库成本，上限保证的是返回与渲染规模，不是数据库查询已经有常数耗时。
-
-`api/task_graph.go` 独立定义 JSON DTO，server 将 core 结果转换为 DTO 和 UTC 时间。HTTP handler 拒绝全部 query 参数，不接受分页或筛选；沿用请求 context 与正常的 GET/HEAD、405 方法边界。
-
-### 错误详情与兼容范围
-
-在 `service.Fault` 中增加可选的强类型 `GraphLimit *GraphLimitDetails`，其中包含精确数量和上限。`api.ErrorDetails` 增加对应可选数字字段，图规模错误仅输出这四个字段，原依赖错误继续输出 `taskIds`，不引入任意 map 或将 `taskIds: null` 混进图错误。
-
-同步 `server` 的状态映射、details 转换和 `knownFault` 白名单，保持 `409 graph_limit_exceeded` 可识别且有 requestId。缺失项目或超限 Fault 在 snapshot callback 内暂存并正常完成回调；只有外层事务完成成功后才返回。数据库、取消、提交和清理失败优先，不能因保留了 Fault 就降格为 404/409。
-
-图读取继续保持既有列表、详情和写入的一致性边界；执行计时迁移与这些资源的新增可空时间字段由[计时架构](daynight-task-timing.md)拥有，创建和修改输入仍不接受这些只读字段。
-
-### 图 API 行为
-
-- 无分页、无筛选。`tasks` 是完整项目图；edges 从 `dependsOn` 推导，不再重复传一份边。
-- 在一个 `ReadSnapshot` 中检查成员关系并读取项目、节点数、边数、节点与依赖，最终推导统计。回调内领域拒绝仍沿用服务现有事务收尾约定，数据库及清理错误不被领域错误覆盖。
-- 快照内先查询数量；超过 1,000 节点或 5,000 边时返回 `409 graph_limit_exceeded`，details 包含 `nodeCount/edgeCount/maxNodes/maxEdges`。不返回部分成功数据，不改变既有写入规则。
-- 标题预览限制为 160 Unicode code points，并返回 `titleTruncated`；查询直接投影预览，避免先加载所有完整标题。GraphTask 不含 description；完整文本在点击详情时读取。
-- 查询 `dependsOn`、`externalDependsOn` 与 `blockedBy` 只覆盖该项目。外部子集为必填字段，完整依赖仍包含所有关系；输入尚不接受分类。数组排序、任务排序与既有 API 规则保持稳定。HTTP 400/404/500 沿用现有 typed Fault 和错误脱敏。
-- 增加图规模错误时，同步维护 `service.Fault`、HTTP 错误 DTO、状态映射与日志白名单。错误响应沿用 requestId；不返回 SQL、驱动错误或仓库凭据。
-- 执行计时通过任务同行迁移持久化，图查询只投影这些字段；不加存储接口，不复用 CLI 的 YAML 或 SQLite。
+服务端 `GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}` 使用相同的轻量
+节点字段，但返回目标的完整普通链及一层直接 external 前置。其外部上下文节点可以引用
+返回集合外的任务，不能直接交给要求全前置闭包的 Web 图模型。该接口的选择、容量、
+同快照读取和错误由[服务端需求](../spec/daynight-server.md#任务链图查询)与
+[服务端设计](daynight-server.md#任务链图查询)拥有。
 
 ## 请求、刷新与故障
 
@@ -977,7 +910,7 @@ Markdown 复用渲染器，分别使用任务根与文档目录；其他附件�
 - HTTP 入口沿用现有 requestId；图用例日志附 project_id、component、phase、耗时和 node_count/edge_count，禁止记录标题、描述、repoUrl、SQL 或完整响应。
 - 使用既有请求 context 进入 store。布局同步计算只属于当前快照；关闭图浮层后释放节点、边和视口，不保留其他图实例。
 - API 错误在 HTTP 边界记录一次；浏览器仅展示脱敏 message 与 requestId。静态资源请求也走现有访问日志，不新增第二套错误上报。
-- 验证时从浏览器 Network 的 task-sync 记录响应或错误的 requestId（完整图仍可作对照）；在服务结构化日志中按该 requestId 与 project_id 过滤，确认一次请求的状态、耗时和图规模。禁止用任务正文定位。
+- 验证时从浏览器 Network 的 task-sync 记录响应或错误的 requestId；在服务结构化日志中按该 requestId 与 project_id 过滤，确认一次请求的状态、耗时和图规模。禁止用任务正文定位。
 
 模型工具预算不适用：本功能不新增模型调用或工具接口。
 
@@ -1151,7 +1084,7 @@ CI 无论验收成功、失败或取消都执行恢复与归档；恢复成功�
 
 ### 验证矩阵
 
-1. Go：真实 PostgreSQL 测试完整图与统计一致性、空项目、不存在、规模边界、长文本预览、并发写期间的一致快照、取消与数据库失败；增加静态资源、深链接、API 优先级、缺失资源与方法测试。
+1. Go：真实 PostgreSQL 测试任务链图与统计一致性、孤立任务、分叉汇合、一层外部前置与反向外部引用排除、原始依赖保留、目标缺失/删除、返回集合规模边界、长文本预览、并发写期间的一致快照、取消与数据库失败；增加静态资源、深链接、API 优先级、缺失资源与方法测试。
 2. web：Vitest + Testing Library，重点测本地自然日边界、午夜无快照推进、时区与夏令时、Goal 最后成员及未知时间证据、20/21/40/41 条分页、汇总行和 Goal 子任务计数、跨页定位、独立页码恢复/筛选重置/缩页钳位、完整图独立分类、页签未完成任务数与默认/恢复、普通多起点合为唯一分量、筛选计数稳定、全部完成归零及刷新后的状态/分类计数、独立任务直接详情、分类迁移、独立筛选与浏览位置、普通起点/代表识别、闭包、菱形去重、显式外部边与链外前置、统计口径、请求取消/晚到、失败重试和居中详情焦点。项目列表必须覆盖续页游标、末页隐藏加载按钮、去重及下一页失败重试，证明所有项目可访问。断言可见行为，不依赖框架内部坐标。
 3. 覆盖率：保留 Go go-cov 和原始 profile 的严格 `covered * 10 > total * 9`。web job 使用 Vitest V8 provider 输出的 `coverage-final.json`，按产品文件的语句命中表汇总计数并用整数执行同样严格比较。显式设置 `coverage.include` 为 `src/**/*.{ts,tsx}`；检查脚本另行枚举同一源码清单并逐文件核对报告，含未被测试导入的产品文件，缺失即失败。纯类型文件只有在确认没有运行语句时允许零语句；API、图算法和入口没有排除项。拒绝空、畸形报告，测试恰好 90%、舍入、未导入文件和遗漏文件等失败边界。第三方库与构建产物不属于产品源码。
 4. 两个模块分别大于 90%，因此加权总体也大于 90%；不能靠 Go 的高覆盖率掩盖 web 缺口。现有 Go package/function/critical-block 与所有 CLI 原生平台门槛保持。

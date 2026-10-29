@@ -65,7 +65,7 @@ func TestTaskPropertyResourcesRoundTripAndVersionSemantics(t *testing.T) {
 		if !reflect.DeepEqual(noop, changed) || !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
 			t.Fatal("equivalent JSON string update changed task version or timestamps")
 		}
-		graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph", ""), http.StatusOK)
+		graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph?taskId="+task.ID, ""), http.StatusOK)
 		if len(graph.Tasks) != 1 || graph.Tasks[0].WorkerNeedsAttention != (value != "") {
 			t.Fatal("property update did not synchronize the attention projection")
 		}

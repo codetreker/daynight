@@ -60,7 +60,7 @@ func TestTaskHTTPPlatformStrictInputsAndNullableResources(t *testing.T) {
 	if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
 		t.Fatal("locked platform partly saved metadata")
 	}
-	for _, path := range []string{taskPath(task), taskCollection(project.ID), "/api/v1/projects/" + project.ID + "/task-graph"} {
+	for _, path := range []string{taskPath(task), taskCollection(project.ID), graphPath(project.ID, task.ID)} {
 		read := projectRequest(handler, http.MethodGet, path, "")
 		if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"requiredPlatform":"windows"`) {
 			t.Fatalf("resource lost platform: %s %s", path, read.Body)

@@ -198,7 +198,7 @@ test('auth-project-isolation', scenario('auth-project-isolation'), async ({ page
     const file = attachmentDownloadUrl(own.id, task.id, 'site/index.html');
     const preview = attachmentPreviewUrl(own.id, task.id, 'site/index.html');
     expect((await request.put(file, { headers: { 'Content-Type': 'text/html' }, data: '<!doctype html><button>Private file</button>' })).status()).toBe(201);
-    const paths = [`/api/v1/projects/${own.id}`, `/api/v1/projects/${own.id}/task-graph`, `/api/v1/projects/${own.id}/tasks`,
+    const paths = [`/api/v1/projects/${own.id}`, `/api/v1/projects/${own.id}/task-graph?taskId=${task.id}`, `/api/v1/projects/${own.id}/tasks`,
       `/api/v1/projects/${own.id}/tasks/${task.id}`, `/api/v1/projects/${own.id}/tasks/${task.id}/attachments`, file, preview,
       `/api/v1/projects/${own.id}/members`, `/api/v1/projects/${own.id}/invitations`];
     for (const path of paths) {

@@ -129,7 +129,7 @@ daynight task show <task-id> [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
-daynight task graph [--json] [--project <project-id>]
+daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
 daynight task attachment put <task-id> <file> [--path <relative-path>] [--project <project-id>]
 daynight task attachment list <task-id> [--tree | --json] [--project <project-id>]
@@ -518,8 +518,27 @@ daynight task update <task-id> --clear-required-platform --if-version <version>
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task update <task-id> --depends-on <task-a> --depends-on <task-b>
 daynight task update <task-id> --clear-dependencies
-daynight task graph --json
+daynight task graph <task-id> --json
+daynight task graph <task-id> --depends-only
+daynight task graph <task-id> --depends-only --json
 ```
+
+`task graph` requires a task ID. It returns every member of that task's ordinary
+undirected dependency component, including completed tasks and sibling branches,
+plus one layer of external prerequisites declared by those members. External
+tasks that depend on the chain do not enter the result. Added external tasks do
+not expand their own prerequisites or chain. The service applies its 1,000-task
+and 5,000-dependency-reference limits to this returned set; unrelated chains do
+not count toward this query's limits.
+
+Every returned task retains its full `dependsOn`, `externalDependsOn`, `blockedBy`
+and `ready`. An external context task can therefore reference an ID with no task
+row in this response. Those references remain available for dependency audits.
+The ordinary graph output includes the project, statistics for all returned
+nodes and the compact node facts. `--depends-only` uses the same tasks but prints
+only `ID`, `Depends on` and `External dependencies`, with full UUIDs and `none`
+for empty sets. With `--json`, this mode returns a bare array of objects containing
+only `id`, `dependsOn` and `externalDependsOn`.
 
 Every operation accepts `--project <project-id>`, which selects a project for one
 invocation without reading Git or local bindings. Otherwise, the CLI reads the
@@ -565,7 +584,7 @@ Task resources expose required nullable `startedAt` and `completedAt`. Actual en
 into in_progress starts a new interval and clears the end; return to todo clears
 both. In-progress to done preserves a nullable start and records a real end;
 todo to done records only an end, leaving duration unknown. Metadata and same-state
-writes preserve time. Complete-graph and task-sync responses supply a database
+writes preserve time. Task-graph and task-sync responses supply a database
 `observedAt` sample; Web synchronization updates its separate clock without
 rebuilding unchanged graph/index data.
 Read-only timing fields remain in JSON; human CLI output keeps its field choices.
@@ -648,7 +667,8 @@ and tasks requiring that platform. The service applies all filters before
 pagination and binds them to the cursor. The service orders results by creation time and then task ID, both
 ascending. A ready task is `todo` with all direct dependencies `done`. This
 bounded selection supports choosing the next work without retrieving the whole
-project; `task graph` provides a dependency overview when needed. `task list`
+project; `task graph <task-id>` provides the selected chain and one layer of
+external prerequisites. `task list`
 reads every matching page, including with `--ready`, and excludes `done` by
 default. `--all` includes every status; `--status <status>` selects one status,
 including `done`. These two options conflict. `--ready` intersects the selected
@@ -752,7 +772,8 @@ and the enum otherwise. Queries support
 version and timestamps. This applies to the default list and every filter,
 including `--all`. Project lists retain all API fields. Task `ready` returns its
 selected full tasks as an array, details return one full resource, and graphs
-return the complete API object. An empty human ready result is `No ready tasks.`
+return the selected task-chain API object unless `--depends-only` projects the
+three dependency fields. An empty human ready result is `No ready tasks.`
 and empty JSON is `[]`. Versions remain JSON numbers with full int64 precision.
 Local preparation fails before any task mutation; a lost write response is
 reported as unconfirmed. Installed CLI integration uses the real Go/PostgreSQL

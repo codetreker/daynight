@@ -329,7 +329,8 @@ describe("compiled task commands", () => {
         ["update", taskId, "--pull-request-title=", "--clear-pull-requests"],
         ["update", taskId, "--status", "invalid"],
         ["update", taskId, "--status", "done", "--if-version", "9223372036854775808"],
-        ["show", "invalid"], ["list", "--project", "invalid"], ["list", "--ready", "false"], ["list", "--all", "--status", "todo"], ["list", "--status", "done", "--all"], ["graph", "--unknown"],
+        ["show", "invalid"], ["list", "--project", "invalid"], ["list", "--ready", "false"], ["list", "--all", "--status", "todo"], ["list", "--status", "done", "--all"],
+        ["graph"], ["graph", "invalid"], ["graph", "--depends-only"], ["graph", taskId, "--unknown"],
         ["ready", "--limit", "0"], ["ready", "--limit", "101"], ["ready", "--limit=1e1"], ["ready", "--limit=1.5"], ["ready", "--limit=+1"], ["ready", "--status", "todo"],
         ...["approve", "unapprove", "claim", "complete"].flatMap((action) => [[action], [action, "invalid"], [action, taskId, "--if-version=0"], [action, taskId, "--if-version=9223372036854775808"], [action, taskId, "--status=todo"]]),
         ["attachment", "list", "invalid"], ["attachment", "list", taskId, "--tree", "--json"],
@@ -366,7 +367,7 @@ describe("compiled task commands", () => {
         else respond(response, current);
       });
       for (const command of ["show", "list", "ready", "graph"]) {
-        const args = command === "show" ? [command, taskId] : [command];
+        const args = (command === "show" || command === "graph") ? [command, taskId] : [command];
         const human = await f.invoke([...args, ...explicit]);
         expect(human.code, human.stderr).toBe(0);
         expect(human.stdout).toContain("Automatic execution: true");
@@ -381,6 +382,33 @@ describe("compiled task commands", () => {
       }
     } finally { await f.close(); }
   }, 60_000);
+
+  it("audits complete dependency IDs through the compiled CLI while keeping external prerequisites at one layer", async () => {
+    const f = await fixture();
+    try {
+      const value: TaskGraph = {
+        ...graph(), summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 0, blocked: 2 },
+        tasks: [
+          { ...graph().tasks[0]!, dependsOn: [secondId], externalDependsOn: [secondId], blockedBy: [secondId], ready: false },
+          { ...graph().tasks[0]!, id: secondId, dependsOn: [thirdId], blockedBy: [thirdId], ready: false },
+        ],
+      };
+      const { requests } = await f.serve((request, response) => {
+        expect(Object.fromEntries(request.query)).toEqual({ taskId });
+        respond(response, value);
+      });
+      const human = await f.invoke(["graph", taskId.toUpperCase(), "--depends-only", ...explicit]);
+      expect(human.code, human.stderr).toBe(0);
+      expect(human.stdout).toBe(`ID: ${taskId}\nDepends on: ${secondId}\nExternal dependencies: ${secondId}\n\nID: ${secondId}\nDepends on: ${thirdId}\nExternal dependencies: none\n`);
+      const json = await f.invoke(["graph", taskId, "--depends-only", "--json", ...explicit]);
+      expect(json.code, json.stderr).toBe(0);
+      expect(parseApiJson(json.stdout)).toEqual([
+        { id: taskId, dependsOn: [secondId], externalDependsOn: [secondId] },
+        { id: secondId, dependsOn: [thirdId], externalDependsOn: [] },
+      ]);
+      expect(requests.filter(({ pathname }) => pathname.endsWith("/task-graph"))).toHaveLength(2);
+    } finally { await f.close(); }
+  });
 
   it("soft-deletes through the compiled entrypoint with observed and explicit exact versions", async () => {
     const f = await fixture();
@@ -492,7 +520,7 @@ describe("compiled task commands", () => {
       const listed = await f.invoke(["list", "--all", "--json", ...explicit]);
       expect(listed.code, listed.stderr).toBe(0);
       expect(parseApiJson(listed.stdout)).toEqual([taskListItem(completed)]);
-      const graphed = await f.invoke(["graph", "--json", ...explicit]);
+      const graphed = await f.invoke(["graph", taskId, "--json", ...explicit]);
       expect(graphed.code, graphed.stderr).toBe(0);
       expect(parseApiJson(graphed.stdout)).toEqual(value);
       const text = await f.invoke(["list", "--all", ...explicit]);
@@ -732,7 +760,7 @@ describe("compiled task commands", () => {
       expect(pages.map(({ query }) => Object.fromEntries(query))).toEqual([
         { status: "todo", ready: "true", limit: "100" }, { status: "todo", ready: "true", limit: "100", cursor },
       ]);
-      const graphed = await f.invoke(["graph", "--json", ...explicit]);
+      const graphed = await f.invoke(["graph", taskId, "--json", ...explicit]);
       expect(graphed.code, graphed.stderr).toBe(0);
       expect(parseApiJson(graphed.stdout)).toEqual(graph());
       expect([created, shown, listed, graphed].every(({ stderr }) => stderr === "")).toBe(true);
@@ -815,7 +843,7 @@ describe("compiled task commands", () => {
       expect(failedPage.stderr).toContain("internal_error"); expect(failedPage.stderr).toContain("task-later-page");
       expect(requests.filter(({ pathname }) => pathname === taskPath)).toHaveLength(2);
       mode = "graph";
-      const failedGraph = await f.invoke(["graph", "--json", ...explicit]);
+      const failedGraph = await f.invoke(["graph", taskId, "--json", ...explicit]);
       expect(failedGraph.code).toBe(1); expect(failedGraph.stdout).toBe("");
       for (const value of ["graph_limit_exceeded", "task-graph-limit", "1001", "1000", "5000"]) expect(failedGraph.stderr).toContain(value);
       mode = "write";

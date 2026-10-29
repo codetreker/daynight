@@ -33,7 +33,7 @@ func TestResourceServicesRejectAbsentPrincipals(t *testing.T) {
 				_, err := tasks.List(ctx, principal, id, TaskListRequest{PageRequest: PageRequest{Limit: 1}})
 				return err
 			},
-			func() error { _, err := tasks.Graph(ctx, principal, id); return err },
+			func() error { _, err := tasks.Graph(ctx, principal, id, id); return err },
 			func() error {
 				_, err := tasks.SetStatus(ctx, principal, id, id, SetTaskStatus{Version: 1, Status: core.TaskTodo})
 				return err
@@ -80,7 +80,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 				_, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 1}})
 				return err
 			},
-			func() error { _, err := tasks.Graph(ctx, principal, project.ID); return err },
+			func() error { _, err := tasks.Graph(ctx, principal, project.ID, task.ID); return err },
 			func() error {
 				_, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Attempt"})
 				return err

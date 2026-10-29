@@ -45,7 +45,7 @@ daynight task list [--all | --status <status>] [--ready] [--allow-agents true|fa
 daynight task ready [--limit <N>] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
 daynight task update <task-id> [options]
-daynight task graph [--json] [--project <project-id>]
+daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
 daynight task attachment put <task-id> <file> [--path <relative-path>] [--project <project-id>]
 daynight task attachment list <task-id> [--tree | --json] [--project <project-id>]

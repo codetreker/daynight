@@ -324,11 +324,11 @@ describe("task commands over HTTP", () => {
       if (limit) respond(response, { error: { code: "graph_limit_exceeded", message: "Graph is too large", requestId: "graph-limit", details: { nodeCount: 1001, edgeCount: 1, maxNodes: 1000, maxEdges: 5000 } } }, 422);
       else respond(response, graph);
     });
-    await f.run(["graph", "--json"]);
+    await f.run(["graph", taskId, "--json"]);
     expect(f.context.stdout).toHaveBeenCalledOnce();
     expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(graph);
     f.context.stdout.mockClear(); limit = true;
-    await expect(f.run(["graph"])).rejects.toMatchObject({ code: "graph_limit_exceeded", requestId: "graph-limit", details: { nodeCount: 1001, edgeCount: 1, maxNodes: 1000, maxEdges: 5000 } });
+    await expect(f.run(["graph", taskId])).rejects.toMatchObject({ code: "graph_limit_exceeded", requestId: "graph-limit", details: { nodeCount: 1001, edgeCount: 1, maxNodes: 1000, maxEdges: 5000 } });
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
 

@@ -38,7 +38,7 @@ CLI 的令牌配置与 HTTP 传输已实现；[凭据决策](../../.agents/notes
 ## PT1. 范围与命令边界
 
 交付包含 project 创建、列表和详情，以及 project 内 task 的创建、列表、有界 ready
-选择、详情、更新、通用属性读取/设置/移除和完整图查询。属性专用 API 与服务端类型解释由[属性需求](daynight-task-properties.md)拥有，其他命令复用既有服务接口；不增加 project 唯一约束或任务执行能力。凭据复用既有 Bearer 请求通道；配置允许省略令牌，但业务命令在本地无凭据时
+选择、详情、更新、通用属性读取/设置/移除和任务链图查询。属性专用 API 与服务端类型解释由[属性需求](daynight-task-properties.md)拥有，其他命令复用服务的 project/task 资源与任务链图接口；不增加 project 唯一约束或任务执行能力。凭据复用既有 Bearer 请求通道；配置允许省略令牌，但业务命令在本地无凭据时
 直接提示登录。设备授权接口由[鉴权需求](daynight-auth.md)拥有。地址配置不改变服务现有的 loopback 监听边界。
 
 顶层、命令组和操作帮助必须先于配置加载、Git、文件写入和网络访问执行。裸
@@ -213,7 +213,7 @@ daynight task delete <task-id> --if-version 3
 daynight task delete <task-id> --remove-depends --if-version 3
 daynight task update <task-id> --pull-request-url <url> --pull-request-title <title>
 daynight task update <task-id> --clear-pull-requests
-daynight task graph
+daynight task graph <task-id> [--depends-only]
 ```
 
 上述命令均接受 `--project <id>`。`list`、`ready`、`show`、`graph` 接受 `--json`。标题、
@@ -283,8 +283,16 @@ PR 的 `--pull-request-url` 和 `--pull-request-title` 在 create/update 中分�
 `1..9223372036854775807`，客户端必须保留完整精度，HTTP 与 JSON 输出仍使用数字。冲突必须
 报告失败，不自动读取新版本重试。无变化更新、版本递增和时间戳遵循服务语义。
 
-`graph` 使用现有完整图接口，呈现三种节点状态、依赖、阻塞和汇总；文本汇总
-只包含三状态，JSON summary 为 total、todo、inProgress、done、ready、blocked，满足
+`graph <task-id>` 必须指定目标 task，查询其普通依赖无向连通分量的全部成员，包含
+所有状态、兄弟分支、分叉和汇合，再补充成员直接声明的 external 前置任务一层。
+只依赖本链的外部任务不进入结果，补充的外部节点不继续展开。原始依赖、外部子集、
+阻塞及 ready 保持服务事实，外部节点的依赖 ID 可以指向结果之外；不能裁剪为诱导边集合。
+同一链的任意成员得到同一节点集合。无参数调用属于语法错误，不读取全项目图。
+查询范围、返回集合的节点及依赖引用上限由
+[服务端需求](daynight-server.md#任务链图查询)拥有。
+
+普通 graph 输出呈现所选节点的三种状态、依赖、阻塞和汇总。summary 统计本链与补充的
+外部节点；文本汇总只包含三状态，JSON summary 为 total、todo、inProgress、done、ready、blocked，满足
 `total = todo + inProgress + done` 与 `todo = ready + blocked`。ready 只来自全部前置完成的 todo；
 列表、show、graph 均拒绝旧状态，状态写入只通过 set-status。标题预览、快照边界、
 节点和边上限均继承服务要求。完整任务和图节点严格读取必填布尔 allowAgents 及必填nullable requiredPlatform，图节点另含必填布尔 workerNeedsAttention；缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。超限时报告数量及上限，不返回部分图。
@@ -306,15 +314,21 @@ ID、所属 project、标题、状态、ready、依赖、外部依赖、阻塞�
 不显示描述、版本及创建、更新时间，空 task list 明确说明没有 task。详情、ready、
 创建和更新结果显示完整 task 资源，包含上述字段、描述、完整版本及创建、更新时间。
 ready 空结果输出 `No ready tasks.`，创建和更新结果另表明服务已确认操作。
-图显示 project、全部 summary 字段及每个节点的状态、标题预览、截短标记、ready、
+普通图输出显示 project、全部 summary 字段及每个节点的状态、标题预览、截短标记、ready、
 依赖、外部依赖、阻塞和时间。依赖区统一输出 `External dependencies (N): ...`，
 计数与列表只包含显式外部子集，空值显示 none。所有文本完整显示，资源边界保持清楚，输出空间随字段内容总量
 线性增长。
 
+`graph --depends-only` 使用相同任务集合，每个任务只输出完整 ID、完整 dependsOn 与
+externalDependsOn，不输出项目、统计、标题、状态或阻塞字段。文本按任务输出三个标签：
+`ID`、`Depends on`、`External dependencies`；空依赖显示 none。与 `--json` 组合时返回
+对象数组，每个对象恰好含 `id`、`dependsOn`、`externalDependsOn` 三项；没有 graph envelope。
+两种格式均保留全部原始依赖引用，包括外部节点指向本次未展开任务的 ID。
+
 可读资源字段中的 C0/C1 控制字符及 Unicode 行、段分隔符必须转义为可见文本，
 普通 Unicode 与 emoji 保持原样。`--json` 将详情输出为一个完整资源对象、project list
 输出为所有匹配资源的完整字段数组、task list 输出为所有匹配 task 仅省略
-`description` 的数组、ready 输出为所选完整 task 的数组、图输出为完整图响应对象，
+`description` 的数组、ready 输出为所选完整 task 的数组、普通图输出为服务的任务链图响应对象，
 并以换行结束。Task list 的默认、`--all`、`--status`、`--ready` 及其合法组合
 均使用同一 JSON 字段规则；其余 API 字段全部保留，包括原始 PR 字符串、完整 int64
 版本、创建/更新时间和明确可空的 `startedAt`、`completedAt`；图 JSON 另外保留顶层 `observedAt`。

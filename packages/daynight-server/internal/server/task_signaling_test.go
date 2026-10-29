@@ -35,7 +35,7 @@ func TestTaskSignalingHTTPRequiresStrictNestedUpdate(t *testing.T) {
 		if current.Properties.Worker == nil || current.Properties.Worker.Signaling != want {
 			t.Fatalf("full task lost signaling: %#v", current.Properties.Worker)
 		}
-		graphResponse := projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph", "")
+		graphResponse := projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID+"/task-graph?taskId="+task.ID, "")
 		graph := decodeResponse[api.TaskGraph](t, graphResponse, http.StatusOK)
 		if len(graph.Tasks) != 1 || graph.Tasks[0].WorkerNeedsAttention != (want != "") {
 			t.Fatalf("graph missed attention: %#v", graph.Tasks)

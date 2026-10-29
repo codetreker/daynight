@@ -1,6 +1,6 @@
 # 项目与任务看板
 
-状态：完整图 API、项目任务看板、localhost/dev-ci 单服务交付及任务详情中的附件管理与预览已实现。任务链完整上游数据、渐进概览与显式展开已由 PR #134 交付，主体依赖检查、独立 Details 与平滑路线已由 PR #143 交付。图保持读取，详情提供版本化三状态设置、自动执行许可、平台、归属展示、强制撤回和确认后的任务软删除，附件提供独立文件写操作。验证命令、要求与场景映射和回执解释见[web 验证说明](../../packages/daynight-web/README.md#production-browser-acceptance)，运行结果随对应 PR 与 CI 保存。本文拥有看板基线及其集成要求；[设计](../design/daynight-web.md)说明机制，[任务视图交互预览](../design/mockups/task-views.html)保留早期内层任务分类页签的中文视觉基线，[原始看板预览](../design/mockups/task-dashboard.html)保留初始基线。
+状态：task-sync 摘要与完整本地图、项目任务看板、localhost/dev-ci 单服务交付及任务详情中的附件管理与预览已实现。任务链完整上游数据、渐进概览与显式展开已由 PR #134 交付，主体依赖检查、独立 Details 与平滑路线已由 PR #143 交付。图保持读取，详情提供版本化三状态设置、自动执行许可、平台、归属展示、强制撤回和确认后的任务软删除，附件提供独立文件写操作。验证命令、要求与场景映射和回执解释见[web 验证说明](../../packages/daynight-web/README.md#production-browser-acceptance)，运行结果随对应 PR 与 CI 保存。本文拥有看板基线及其集成要求；[设计](../design/daynight-web.md)说明机制，[任务视图交互预览](../design/mockups/task-views.html)保留早期内层任务分类页签的中文视觉基线，[原始看板预览](../design/mockups/task-dashboard.html)保留初始基线。
 
 [预定义属性需求](daynight-task-properties.md)的 server 接口、CLI 和任务详情中的
 只读 PR 引用区域已实现。[架构](../design/daynight-task-properties.md)与
@@ -251,7 +251,7 @@ blocked = status 为 todo 且至少一个直接前置未完成的任务数
 
 ## 一致性与读取边界
 
-完整项目图 API 响应必须包含同一快照中的图和统计；Web 以原子合并的完整摘要集合派生同等的图与统计。身份核验后先显示经完整性与生命周期校验的本地项目摘要，同时后台同步；成功前详情正文和任务写入仍遵守在线准入，运行中计时等待实际服务端样本。图节点和完整详情均保留必填可空的 `startedAt`、`completedAt`。
+task-sync 响应中的 Project、任务摘要与 observedAt 必须来自同一快照；Web 以原子合并的完整摘要集合派生完整项目图与统计。CLI 的按任务查询图仅包含本链及一层外部前置，不作为 Web 完整图输入。身份核验后先显示经完整性与生命周期校验的本地项目摘要，同时后台同步；成功前详情正文和任务写入仍遵守在线准入，运行中计时等待实际服务端样本。图节点和完整详情均保留必填可空的 `startedAt`、`completedAt`。
 图还提供必填数据库 `observedAt`；未知起止为 `null`，缺失或无效时间字段按协议错误拒绝，不能使用浏览器墙钟或旧元数据补值。
 图节点与完整详情还必须提供 `externalDependsOn`，它是完整 `dependsOn` 的无重复外部子集；
 共享解码器校验 UUID、去重和子集，缺失或 null 拒绝。图等价及详情新鲜度包含该数组，
@@ -407,7 +407,7 @@ HEAD 成功不能证明实际内容已经绘制。预览没有独立弹窗、会
 
 源码构建使用固定 Node/pnpm 依赖生成真实页面，缺少产物时 Go 构建必须失败。
 Docker 构建完成相同流程，宿主机只需 Docker；最终运行镜像不依赖 Node。HTML、
-完整图和最新详情禁用缓存，哈希静态资源使用长期 immutable 缓存。未知 API 返回
+task-sync 与最新详情 HTTP 响应禁用缓存；受身份和生命周期保护的本地持久缓存遵守[缓存需求](daynight-task-sync.md)。哈希静态资源使用长期 immutable 缓存。未知 API 返回
 JSON 404，缺失资源、资源目录与未知页面形状不得回退到 SPA HTML。已登记页面形状
 中的无效 ID 沿用 index 加前端未找到页面的行为；附件原始路径守卫先拒绝非法路径。
 

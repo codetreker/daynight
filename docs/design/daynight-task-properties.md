@@ -208,7 +208,7 @@ accessibility tree 的大小随完整数组增长。固定页大小为 DOM 成�
 
 复用既有详情读取、取消、重试、关闭、焦点恢复与全图刷新提示。属性变化会更新
 task 的 updatedAt，因此详情与旧图快照的比较仍能提示刷新。网页保持只读，不在
-此设计增加属性编辑表单。图节点与完整图响应继续精简，PR 内容只由完整 task
+此设计增加属性编辑表单。图节点与任务链图响应继续精简，PR 内容只由完整 task
 读取获得。workerNeedsAttention 由列表、任务链和图节点的共享提示组件消费，为 true 时显示“需要处理”/“Needs attention”并高亮；折叠链聚合成员中的 true 值，详情另展示 signaling 原文，空字符串移除提示。该提示直接表达字符串存在性，不复用计时阈值或执行阶段。
 
 [交互预览](mockups/task-properties.html)使用当前产品 CSS 和本地 fixture，可切换

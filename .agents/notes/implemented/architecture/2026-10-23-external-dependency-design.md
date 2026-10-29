@@ -33,9 +33,13 @@ CLI dependency declarations always send both full sets, so ordinary-only
 options explicitly clear external classification and external-only options
 replace the entire set with external relationships.
 
-Ordinary-edge weak components define exclusive chain membership. Complete
-all-edge ancestor closure supplies context. Dashed edges encode explicit
-external prerequisites; dashed cards encode tasks outside the selected
+Ordinary-edge weak components define exclusive chain membership. Web's complete
+all-edge ancestor closure supplies its browsing context. The
+[chain-scoped task-graph query](2026-10-29-chain-scoped-task-graph.md) uses the
+same members with only their directly declared external prerequisites for CLI
+inspection; it preserves raw dependency sets across that output boundary.
+Dashed edges encode explicit external prerequisites; dashed cards encode tasks
+outside the selected
 component. Earlier [projection](../../archived/feature/2026-10-20-task-graph-projection.md),
 [complete context](../feature/2026-10-22-complete-prerequisite-context.md) and
 [progressive overview](../feature/2026-10-22-progressive-task-graph.md) decisions
@@ -66,7 +70,8 @@ missing classification.
 CLI output preserves the required external subset and labels it in its shared
 dependency block. Web retains the subset in graph/detail resources and includes
 it in graph equality and detail freshness. Components provide exclusive members;
-full prerequisite closure supplies context. External edges stay dashed even when
+Web retains full prerequisite closure as its context. External edges stay
+dashed even when
 an alternate ordinary path connects their endpoints, and ordinary context edges
 stay solid. The former shared-membership badge is removed.
 

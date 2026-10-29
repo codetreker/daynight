@@ -1,6 +1,6 @@
-import { TEST_VIEWER_ID, viewerHeaders } from "./helpers/taskSync";
+import { TEST_VIEWER_ID, viewerHeaders, taskSyncFixture, taskSyncFromGraph } from "./helpers/taskSync";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, getTask, getTaskGraph, isAbortError, listProjects } from "../src/api/client";
+import { ApiError, getTask, getTaskSync, isAbortError, listProjects } from "../src/api/client";
 import { canonicalId, parseProjectPage, parseServerError, parseTaskDetail, parseTaskGraph } from "../src/api/parse";
 import { stringifyWireJson } from "./helpers/wireJson";
 import { createProject } from "../src/api/auth";
@@ -23,8 +23,11 @@ const graphTask = { workerNeedsAttention: false, requiredPlatform: null, allowAg
 };
 const summary = { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 };
 const graph = { observedAt: "2026-10-20T12:00:00Z", project, summary, tasks: [graphTask] };
+const sync = taskSyncFixture(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
+const parsedSync = taskSyncFromGraph(parseTaskGraph(graph, projectId), { versionForTask: () => 1n });
 const rawProject = (version: string): string => `${JSON.stringify({ ...project, settings: undefined }).slice(0, -1)},"settings":{"version":${version},"executionWarningMinutes":60}}`;
 const rawGraph = (projectSource: string): string => `${JSON.stringify({ ...graph, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
+const rawSync = (projectSource: string): string => `${JSON.stringify({ ...sync, project: undefined }).slice(0, -1)},"project":${projectSource}}`;
 const signal = (): AbortSignal => new AbortController().signal;
 const response = (value: unknown, status = 200): Response => new Response(stringifyWireJson(value), {
   status, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json; charset=utf-8" }),
@@ -301,7 +304,7 @@ describe("targeted project JSON decoding", () => {
 });
 
 describe("API requests", () => {
-  it("uses targeted decoders for project creation, project pages and task graphs", async () => {
+  it("uses targeted decoders for project creation, project pages and task synchronization", async () => {
     const version = 9_007_199_254_740_993n;
     const source = rawProject(version.toString());
     const fetcher = vi.fn().mockResolvedValue(new Response(source, { status: 201, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
@@ -309,8 +312,8 @@ describe("API requests", () => {
     expect((await createProject({ name: project.name, repoUrl: project.repoUrl }, signal())).settings.version).toBe(version);
     fetcher.mockResolvedValue(new Response(`{"items":[${source}],"nextCursor":null}`, { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
     expect((await listProjects({}, signal())).items[0]?.settings.version).toBe(version);
-    fetcher.mockResolvedValue(new Response(rawGraph(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
-    expect((await getTaskGraph(projectId, signal())).project.settings.version).toBe(version);
+    fetcher.mockResolvedValue(new Response(rawSync(source), { headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) }));
+    expect((await getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).project.settings.version).toBe(version);
   });
   it("uses relative URLs, explicit signal, no-store, and safely encoded opaque cursor", async () => {
     const fetchMock = mockResponse({ items: [project], nextCursor: "next" });
@@ -324,15 +327,15 @@ describe("API requests", () => {
   });
 
   it("normalizes requested IDs and binds resource responses to requests", async () => {
-    const fetchMock = mockResponse(graph);
-    await expect(getTaskGraph(projectId.toUpperCase(), signal())).resolves.toEqual(graph);
-    expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/task-graph`);
+    const fetchMock = mockResponse(sync);
+    await expect(getTaskSync(projectId.toUpperCase(), {}, TEST_VIEWER_ID, signal())).resolves.toEqual(parsedSync);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`/api/v1/projects/${projectId}/task-sync`);
     fetchMock.mockResolvedValue(response(task));
     await expect(getTask(projectId.toUpperCase(), taskId.toUpperCase(), signal(), admission)).resolves.toMatchObject({ id: taskId, projectId });
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}`);
     expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get("Daynight-Worker-Protocol")).toBe("2");
-    fetchMock.mockResolvedValue(response({ ...graph, project: { ...project, id: otherId } }));
-    await expect(getTaskGraph(projectId, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
+    fetchMock.mockResolvedValue(response({ ...sync, project: { ...project, id: otherId } }));
+    await expect(getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).rejects.toMatchObject({ kind: "protocol", status: 200 });
     fetchMock.mockResolvedValue(response({ ...task, id: otherId }));
     await expect(getTask(projectId, taskId, signal(), admission)).rejects.toMatchObject({ kind: "protocol" });
   });
@@ -342,7 +345,7 @@ describe("API requests", () => {
     vi.stubGlobal("fetch", fetchMock);
     for (const limit of [0, 101, 1.5, Number.NaN]) expect(() => listProjects({ limit }, signal())).toThrow(ApiError);
     expect(() => listProjects({ cursor: "" }, signal())).toThrow(ApiError);
-    expect(() => getTaskGraph("not-a-uuid", signal())).toThrow(ApiError);
+    await expect(getTaskSync("not-a-uuid", {}, TEST_VIEWER_ID, signal())).rejects.toBeInstanceOf(ApiError);
     await expect(getTask(projectId, "../../secret", signal(), admission)).rejects.toBeInstanceOf(ApiError);
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -376,7 +379,7 @@ describe("API requests", () => {
   it("preserves graph-limit details for a useful refusal", async () => {
     const graphLimit = { nodeCount: 1001, edgeCount: 5, maxNodes: 1000, maxEdges: 5000 };
     mockResponse({ error: { code: "graph_limit_exceeded", message: "raw text", requestId: "req2", details: graphLimit } }, 409);
-    await expect(getTaskGraph(projectId, signal())).rejects.toMatchObject({ kind: "server", status: 409, graphLimit,
+    await expect(getTaskSync(projectId, {}, TEST_VIEWER_ID, signal())).rejects.toMatchObject({ kind: "server", status: 409, graphLimit,
       message: "This project's task graph exceeds the supported size." });
   });
 
