@@ -270,11 +270,13 @@ return `Daynight-User-ID` from the admitted principal, including empty mutations
 and later resource errors. Failed authentication does not emit that header;
 caller-supplied values are not echoed. An unmatched route has an empty route template.
 UI and API requests use the same logging wrapper. Exact `/device`, `/account`,
-`/invitations`, `/`, `/login`, `/projects`, `/setup`,
+`/invitations`, `/`, `/login`, `/projects`, `/workers`, `/workers/{workerId}`, `/setup`,
 `/projects/{projectId}`, `/projects/{projectId}/members`,
 `/projects/{projectId}/settings`, `/projects/{projectId}/tasks/{taskId}` and
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` page shapes return
-the index. The task routes open complete standalone details, with the attachment
+the index. Worker routes open account-owned runtime observations through the
+existing snapshot APIs; task/project data in those observations remains filtered
+by current project access. The task routes open complete standalone details, with the attachment
 path selecting its file and defaulting to the Attachments tab. Invalid page
 IDs retain the existing index response and frontend not-found behavior. The
 raw attachment path guard also protects this page namespace before ServeMux

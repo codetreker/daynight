@@ -1,3 +1,4 @@
+import { workers } from "./zh-CN/workers";
 import { workspace } from "./zh-CN/workspace";
 import { graph } from "./zh-CN/graph";
 import { platform } from "./zh-CN/platform";
@@ -11,6 +12,7 @@ import type { Messages } from "../messages";
 
 export const zhCN: Messages = {
   workspace,
+  workers,
   graph,
   inspection,
   automation,

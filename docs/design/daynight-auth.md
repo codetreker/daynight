@@ -211,6 +211,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | GET / | 交付同一内嵌页面，显示公开推广页；可取消身份提示只改变导航，不授予私有访问。 |
 | GET /login | 交付同一内嵌页面，显示独立登录或将已有会话替换到有效目标。 |
 | GET /projects | 交付同一内嵌页面，认证后显示项目列表。 |
+| GET /workers、GET /workers/{workerId} | 交付同一内嵌页面，认证后显示当前账号的 Worker 观测；数据由账号级快照 API 准入，任务行按当前项目权限过滤。 |
 | GET /setup | 交付同一内嵌页面，在认证组件之外显示公开静态使用引导，不发起身份或其他 API 请求。 |
 | POST /api/v1/auth/logout | 主站会话注销，验证 Origin。 |
 | GET/POST /api/v1/me/tokens、PATCH/DELETE .../{tokenId} | 主站会话列出/创建、按账号与到期观察值修改、撤销自己的有效 PAT；Cookie 写校验精确 Origin。 |
