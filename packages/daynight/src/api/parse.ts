@@ -1,6 +1,6 @@
 import { validateWorkerAgentMode, workerAgentControlMode } from "./worker-mode.js";
 import { isNonemptyText, isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, User, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, User, WorkerClaim, WorkerHerdr, WorkerPhase, WorkerReportReceipt } from "./types.js";
 
 export class ProtocolError extends Error {
   constructor(message = "The server returned an invalid response.") { super(message); this.name = "ProtocolError"; }
@@ -87,6 +87,12 @@ const fields = (value: unknown, names: readonly string[]): Record<string, unknow
   const data = record(value);
   if (Object.keys(data).some((key) => !names.includes(key))) return malformed();
   return data;
+};
+export const parseWorkerReportReceipt = (value: unknown): WorkerReportReceipt => {
+  const data = fields(value, ["observedAt", "lastReportedAt"]);
+  const parsed = { observedAt: timestamp(data.observedAt), lastReportedAt: timestamp(data.lastReportedAt) };
+  if (Object.values(parsed).some((value) => /^0001-01-01T00:00:00(?:\.0{1,9})?Z$/.test(value))) return malformed();
+  return parsed;
 };
 export const parseUser = (value: unknown): User => {
   const data = fields(value, ["id", "email", "emailVerified", "name", "avatarUrl"]);

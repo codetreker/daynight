@@ -802,10 +802,32 @@ records binary transport and output ownership.
 ## Worker configuration and startup
 
 `daynight worker run` is a foreground reconciler. It claims eligible ready tasks
-across configured repositories, runs native agents through the claim’s Herdr or
-Web backend,
-and cleans resources when the original claim leaves its complete inventory. The
-agent owns delivery, acceptance, evidence and final claim-bound completion.
+across configured repositories, runs native agents through the claim's Herdr or
+Web backend, and cleans resources when the original claim leaves its complete
+inventory. The agent owns delivery, acceptance, evidence and final claim-bound
+completion.
+
+The running worker reports an account-owned runtime snapshot immediately after
+identity and authentication are ready, every 30 seconds, and after complete task
+inventory or a confirmed new claim. Reporting remains independent of execution
+polling, including idle periods, full capacity and long task operations. The
+service uses its last valid report time for the 120-second offline threshold and
+72-hour recent-worker window; observation does not release claims or change
+task status.
+
+Snapshots include actual OS, logical CPU count and utilization, memory usage,
+and available/total space for the filesystem containing the directory where
+`worker run` started. They also include the running Daynight version, a read-only
+private Herdr version observation, and Codex/Copilot installation and versions.
+Native CLI results are cached for at most 60 seconds with their original check
+time. Reporting does not run launch preflight or repair integrations; a pure-Web
+worker does not start Herdr to collect its version. Unknown task inventory and
+observed idleness remain distinct, and individual probe errors remain explicit.
+The [reporting requirements](../../docs/spec/daynight-worker-reporting.md) and
+[design](../../docs/design/daynight-worker-reporting.md) define sampling,
+bounded attempts, cancellation and sanitized diagnostics. Reporting uses the
+existing service credentials and stable worker identity, with no separate
+command or configuration switch.
 
 Start with interactive setup:
 
@@ -1233,8 +1255,10 @@ worker-wide, frozen by the service on each claim, and cannot be changed through
 summary updates. Older service records without a mode mean Herdr. Changing
 configuration affects new claims; existing work stays with its original backend.
 
-Web mode does not start or probe Herdr. Codex uses a private app-server over
-stdio, Claude uses the bundled Agent SDK, and Copilot uses the bundled SDK with
+Web execution does not initialize, start or probe Herdr. Independent runtime
+reporting only reads the private endpoint for its version and does not initialize
+the Herdr execution backend. Codex uses a private app-server over stdio, Claude
+uses the bundled Agent SDK, and Copilot uses the bundled SDK with
 its own headless runtime. Provider arguments are checked for that backend before
 claiming. The service must advertise the matching Session protocol and provider.
 Keep authentication in the native provider profile; credentials never enter a

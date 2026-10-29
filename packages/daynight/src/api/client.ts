@@ -3,8 +3,8 @@ import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
-import { canonicalId, parsePage, parseProject, parseProjectMembers, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WritableTaskProperties, WorkerHerdr, Page, TaskPageQuery } from "./types.js";
+import { canonicalId, parsePage, parseProject, parseProjectMembers, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
+import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WritableTaskProperties, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
@@ -51,6 +51,7 @@ export class ApiError extends Error {
 
 export type ApiClient = {
   getCurrentUser(): Promise<User>;
+  reportWorker(workerId: string, input: WorkerReport): Promise<WorkerReportReceipt>;
   createProject(input: CreateProjectInput): Promise<Project>;
   getProject(projectId: string): Promise<Project>;
   listProjects(): Promise<readonly Project[]>;
@@ -372,6 +373,10 @@ export const createApiClient = (options: {
 
   return {
     getCurrentUser: () => exchange({ operation: "auth.me" }, "/me", "GET", { kind: "json", parse: parseUser }, [200], undefined, true),
+    reportWorker: (workerId, input) => {
+      const worker = resourceId(workerId);
+      return exchange({ operation: "worker.report" }, `/me/workers/${encodeURIComponent(worker)}/report`, "POST", { kind: "json", parse: parseWorkerReportReceipt }, [200], { kind: "json", value: input }, true);
+    },
     createProject: (input) => request({ operation: "project.create" }, "/projects", "POST", (value) => parseProject(value), { name: input.name, repoUrl: input.repoUrl }),
     getProject: (projectId) => {
       const project = resourceId(projectId);

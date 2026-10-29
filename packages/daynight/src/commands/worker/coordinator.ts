@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { OperationError } from "../../api/operation.js";
-import type { Task, TaskPlatform, WorkerMachine } from "../../api/types.js";
+import type { Task, TaskPlatform, WorkerMachine, WorkerTaskInventory, WorkerTaskReference } from "../../api/types.js";
 import { createCleanupDriver } from "./cleanup.js";
 import { actualTaskPane, createExecutionDriver, executionContext, isWorkerCancellation, liveAgent, sameClaim, settleWorkerStops, workerOperation } from "./execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "./execution.js";
@@ -24,6 +24,7 @@ export type WorkerCoordinatorOptions = {
   serverOrigin: string; workerId: string; platform: TaskPlatform; machine: WorkerMachine;
   repositories: readonly WorkerRepositoryAssignment[]; globalConfiguration: ExecutionConfiguration; maxConcurrent: number;
   buildPrompt: (assignment: ManagedAssignment, platform: TaskPlatform) => string;
+  onInventory?: (inventory: WorkerTaskInventory) => void; onClaim?: (reference: WorkerTaskReference) => void;
   emit: (event: WorkerEvent) => void; signal?: AbortSignal; now?: () => number;
 };
 type Snapshot = { herdr: HerdrOwnedWorkspace[]; owners: Map<string, ResourceOwner>; proven: Set<string> };
@@ -267,6 +268,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     launchCleanups();
     await options.remote.currentUserId(normalSignal);
     const inventory = await ownInventory(normalSignal);
+    options.onInventory?.({ observedAt: new Date(now()).toISOString(), claims: [...inventory.values()].map(task => ({ projectId: task.projectId, taskId: task.id, claimId: task.properties.worker!.claimId })) });
     // Ownership loss is authoritative even when the following resource observations fail.
     for (const local of options.store.listUnfinishedTasks()) {
       if (inventory.has(key(local))) continue;
@@ -349,6 +351,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
           const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
           const owner = remoteOwner(granted);
           const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: granted.properties.worker!.agent, agentControlMode: granted.properties.worker!.agentControlMode });
+          options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
           if (!blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
         } catch (error) {
           if (isWorkerCancellation(error, normalSignal)) throw error;

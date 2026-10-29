@@ -1,6 +1,6 @@
 # Worker 需求
 
-本文定义 `daynight worker run` 的行为与可观察验收条件。[整体架构](../design/daynight-worker.md)拥有运行机制，[认领架构](../design/daynight-worker-claims.md)拥有服务端归属协议。账号级运行快照的服务端契约由[快照需求](daynight-worker-snapshots.md)拥有；其在线状态和近期可见性不参与 claim 资格、执行控制或本机恢复。命令可用性与组件验证不替代 Linux、macOS、Windows 的完整原生运行验收。
+本文定义 `daynight worker run` 的行为与可观察验收条件。[整体架构](../design/daynight-worker.md)拥有运行机制，[认领架构](../design/daynight-worker-claims.md)拥有服务端归属协议。账号级运行快照的服务端契约由[快照需求](daynight-worker-snapshots.md)拥有，客户端采集与持续报告由[上报需求](daynight-worker-reporting.md)拥有；在线状态和近期可见性不参与 claim 资格、执行控制或本机恢复。命令可用性与组件验证不替代 Linux、macOS、Windows 的完整原生运行验收。
 
 ## 目标与范围
 
@@ -73,7 +73,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 
 ### W-07：执行模式与 agent 执行
 
-- 模式在服务端 claim 和本机索引中冻结。默认 herdr 经 Herdr 运行原生终端；web 直接启动 Controller，通过 Daynight relay 提供 Task Session，不能探测或依赖 Herdr。同一 claim 不切换模式，不因连接错误降级。两模式支持 Codex、Claude、Copilot。
+- 模式在服务端 claim 和本机索引中冻结。默认 herdr 经 Herdr 运行原生终端；web 直接启动 Controller，通过 Daynight relay 提供 Task Session，其执行不得探测或依赖 Herdr。独立运行快照只读观察私有端点，不启动 daemon 或初始化 Herdr backend。同一 claim 不切换模式，不因连接错误降级。两模式支持 Codex、Claude、Copilot。
 - Web 的初始输入、恢复、原生能力与清理遵守 [Task Session 需求](task-sessions.md)。缺失原生 ID、journal 或停止证明不能套用 Herdr 的 NULL 新建分支。以下 Herdr 原生运行规则继续独立适用。
 
 - Worker 自动管理专用 Herdr，每 task/claim 一个 workspace/pane/agent，不干扰人工实例。保持 resume_agents_on_restore=false，由 worker 唯一决定启动或恢复。
@@ -128,6 +128,8 @@ Web 与 Herdr 共用 claim 结束和工作区删除门槛。下述按 native idl
 
 ### W-11：可观察性与交付验收
 
+- 身份与认证就绪后立即报告运行快照，独立 30 秒周期及成功完整清单、新 claim 触发不受 tick、候选查询或容量影响。最多一次进行中尝试与一个合并触发，采集含正常原生终止/join 最多 5 秒、HTTP 最多 10 秒、总预算 15 秒。退出取消并等待报告收尾后释放既有资源与实例锁；未知写入不重放，监控失败不改变任务执行。
+- 运行快照报告真实 OS、CPU 逻辑处理器及差分使用率、内存、启动目录文件系统容量和软件版本。初始未知清单为 null，真实空清单为 []，失败保留已有观测。字段失败、未安装及 Herdr 未运行各有明确状态；纯 Web 报告不启动 Herdr。详细采集口径、缓存、错误及清单规则由[上报需求](daynight-worker-reporting.md)拥有。
 - stderr 和 JSONL 提供 workerId、实际平台、projectId/taskId/claimId、agent、已知 sessionId 及启动、恢复、等待、清理与错误事件。凭据脱敏后，终端输出将上下文、消息及错误链中的完整连字符 GUID 缩写为首段 8 位十六进制字符，保留大小写；其他文本不变。JSONL 的字段、消息和错误保留完整 ID，供精确检索；API、prompt 与持久化中的 ID 不变。相同 claim 的等待/执行阶段、终端和已知原生会话不变时，轮询不重复记录；阶段切换及会话或终端变化及时报告，不同 claim 独立判断。成功启动建立观察基线，下一轮相同观察不重复提示重连。资源保留警告在连续成功观察中只提示一次，警告消失后再次出现则重新提示。真实启动、恢复、清理、人工操作和失败尝试保留日志；NULL 新建路径记录普通 info。错误保留类型和 cause，凭据脱敏，不输出完整 prompt。
 - 完整清单和私有实例就绪后显示 attach 提示；客户端只应用 attachment descriptor 的环境与移除项，原 task pane 保留自己的 native XDG/HISTFILE。
 - 许可/平台 UI 的双语、键盘、焦点和响应式行为保持 W-02/W-03。真实 Herdr/native、受控故障、各平台和完整 Goal 验收分别记录来源，文档或模拟进程不替代真实运行证据。
@@ -144,6 +146,6 @@ Web 与 Herdr 共用 claim 结束和工作区删除门槛。下述按 native idl
 | W-08 | 人工操作与 run 互斥；远端拒绝保留 worktree；成功后本机删除失败可由下次对账收尾；未知结果不重放；Web 强制撤回不声明远端已停，原 worker 下次对账收尾。 |
 | W-09 | 主索引字段及冻结模式正确，三态/唯一 active；退出取消并等待所有 job 收尾，含正在等待通知、清理轮或停止确认的终止清理 job，随后直接停止并关闭 workspace，不发送清理 prompt、不等待清理轮、不删除 worktree、不把未完成行置 done；归属已结束及原本缺失本机行的任务也保留 worktree、有效 session ID 与未完成行，重启按完整清单重新进入终止清理并解除同 task 后继的启动屏障；停止错误可见，停止不确定时私有 Herdr 保留。 |
 | W-10 | 正常完整清单缺席统一清理，正常完成、release、强制撤回及人工管理的清理语义不变；清理消息成功递交后的巡查观察到 idle 即推进关闭，缺失或不变计数不阻塞；本次十分钟上限、失败保留责任及重启重新计时成立。 |
-| W-11 | 关联日志、Warning、原错误链和脱敏成立；终端上下文、消息及错误链中的完整连字符 GUID 在脱敏后显示首段 8 位，保留大小写且不改变非 GUID 文本，JSONL 各字段、消息与错误仍含完整 ID；attach 只连接并保持既有执行；验证关联实际源码、平台和环境。 |
+| W-11 | 独立报告覆盖空闲、满并发与长操作，清单未知/空/旧及部分字段错误保持区分；采集、单飞、期限、取消与关停满足[上报需求](daynight-worker-reporting.md#验证)。关联日志、Warning、原错误链和脱敏成立；终端上下文、消息及错误链中的完整连字符 GUID 在脱敏后显示首段 8 位，保留大小写且不改变非 GUID 文本，JSONL 各字段、消息与错误仍含完整 ID；attach 只连接并保持既有执行；验证关联实际源码、平台和环境。 |
 
 完整平台运行验收要求其实际门禁与端到端结果，组件检查和 schema 验证不能替代。

@@ -110,6 +110,57 @@ const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) =
   return { owner, binding, pane };
 };
 
+describe("worker report publication boundaries", () => {
+  it("publishes a complete inventory before native resource discovery can fail", async () => {
+    const f = await fixture();
+    const reference = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(400) };
+    f.grant(f.candidates[0]!, { claimId: reference.claimId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(401) });
+    const onInventory = vi.fn();
+    const failure = new Error("native resource observation failed");
+    vi.mocked(f.herdr.ensureInstance).mockImplementation(async () => {
+      expect(onInventory).toHaveBeenCalledExactlyOnceWith({ observedAt: new Date(1000).toISOString(), claims: [reference] });
+      throw failure;
+    });
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory });
+    await expect(coordinator.tick()).rejects.toBe(failure);
+    expect(f.store.getTask(reference)).not.toBeNull();
+  });
+
+  it("does not publish an inventory when the complete remote observation fails", async () => {
+    const f = await fixture(), onInventory = vi.fn(), failure = new Error("later inventory page failed");
+    vi.mocked(f.remote.ownInventory).mockRejectedValue(failure);
+    await expect(createWorkerCoordinator({ ...f.options, onInventory }).tick()).rejects.toBe(failure);
+    expect(onInventory).not.toHaveBeenCalled();
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+  });
+
+  it("publishes a confirmed grant after durable registration and before resource preparation", async () => {
+    const f = await fixture();
+    const order: string[] = [];
+    const onInventory = vi.fn(() => { order.push("inventory"); });
+    const onClaim = vi.fn((reference: { projectId: string; taskId: string; claimId: string }) => {
+      expect(f.store.getTask(reference)).toMatchObject({ ...reference, status: "pending" });
+      expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+      order.push("claim");
+    });
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory, onClaim });
+    await coordinator.tick();
+    expect(onInventory).toHaveBeenCalledExactlyOnceWith({ observedAt: new Date(1000).toISOString(), claims: [] });
+    expect(onClaim).toHaveBeenCalledOnce(); expect(order).toEqual(["inventory", "claim"]);
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    await coordinator.shutdown();
+  });
+
+  it("keeps an uncertain claim out of confirmed grant publication", async () => {
+    const f = await fixture(), onClaim = vi.fn();
+    vi.mocked(f.remote.claim).mockRejectedValue(new Error("request outcome unknown"));
+    const coordinator = createWorkerCoordinator({ ...f.options, onClaim });
+    await coordinator.tick();
+    expect(onClaim).not.toHaveBeenCalled(); expect(f.store.listTasks()).toEqual([]);
+    await coordinator.shutdown();
+  });
+});
+
 describe("minimal worker resource reconciliation", () => {
   it("commits active before startup, saves the native ID and reconnects without replay", async () => {
     const f = await fixture(); await f.coordinator.tick();

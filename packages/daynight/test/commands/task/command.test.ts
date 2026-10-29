@@ -22,6 +22,7 @@ const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>(),
+    reportWorker: vi.fn<ApiClient["reportWorker"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
     createProject: vi.fn<ApiClient["createProject"]>(), listProjects: vi.fn<ApiClient["listProjects"]>(),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),

@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { assertCodexIntegrationHome, createHerdrEnvironment, createHerdrInstance, resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
+import { assertCodexIntegrationHome, createHerdrEnvironment, createHerdrInstance, createHerdrNativeEnvironment, createHerdrVersionObserver, resolveHerdrInstancePaths } from "../../../src/commands/worker/herdr/instance.js";
 import type { HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
 import { terminateOwnedHerdrProcess } from "../../../src/commands/worker/herdr/command.js";
 import { herdrIpcAddress } from "../../../src/commands/worker/herdr/rpc.js";
@@ -80,6 +80,29 @@ afterEach(async () => {
 });
 
 describe("private Herdr instance", () => {
+  it("observes absence without creating private paths or starting a daemon", async () => {
+    const setup = await fixture();
+    const absent = { herdrDirectory: path.join(setup.root, "a"), logsDirectory: setup.worker.logsDirectory };
+    expect(await createHerdrVersionObserver(absent).observe(operation())).toBeNull();
+    expect(existsSync(absent.herdrDirectory)).toBe(false); expect(children).toHaveLength(0);
+  });
+
+  it("reads the actual private daemon version without a session snapshot or configuration mutation", async () => {
+    const setup = await fixture(); await setup.instance.ensure(operation());
+    const before = await readFile(setup.events, "utf8"); const config = await readFile(setup.instance.paths.configurationFile, "utf8");
+    expect(await createHerdrVersionObserver(setup.worker).observe(operation())).toBe("0.9.5");
+    expect(await readFile(setup.events, "utf8")).toBe(before);
+    expect(await readFile(setup.instance.paths.configurationFile, "utf8")).toBe(config);
+    expect(children).toHaveLength(2);
+  });
+
+  it("shares the native agent environment while restoring inherited XDG roots", () => {
+    const inherited = { PATH: "/bin", XDG_CONFIG_HOME: "/native/config", HERDR_SESSION: "outer", CODEX_THREAD_ID: "private", CODEX_HOME: "/native/codex" };
+    const environment = createHerdrNativeEnvironment({ herdrDirectory: path.resolve("private-herdr") }, inherited);
+    expect(environment).toMatchObject({ PATH: "/bin", XDG_CONFIG_HOME: "/native/config", CODEX_HOME: "/native/codex" });
+    expect(environment.XDG_STATE_HOME).toBeUndefined(); expect(environment.HERDR_SESSION).toBeUndefined(); expect(environment.CODEX_THREAD_ID).toBeUndefined();
+    expect(inherited.HERDR_SESSION).toBe("outer");
+  });
   it.each([
     [{ HOME: "/native" }, "/native/.codex", "linux"],
     [{ HOME: "/wrong", CODEX_HOME: "/explicit" }, "/explicit", "linux"],
