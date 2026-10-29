@@ -57,7 +57,7 @@ func TestExternalDependenciesSurviveMetadataAndStatus(t *testing.T) {
 	if err != nil || len(page.Items) != 2 || !reflect.DeepEqual(page.Items[1], target) {
 		t.Fatalf("list lost completed classification: %#v, %v", page, err)
 	}
-	graph, err := tasks.Graph(ctx, principal, project.ID)
+	graph, err := tasks.Graph(ctx, principal, project.ID, target.ID)
 	if err != nil || len(graph.Tasks) != 2 || !slices.Equal(graph.Tasks[1].ExternalDependsOn, target.ExternalDependsOn) || graph.ObservedAt.IsZero() {
 		t.Fatalf("graph lost classification/observation: %#v, %v", graph, err)
 	}

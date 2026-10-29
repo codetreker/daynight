@@ -2,8 +2,8 @@ import mime from "mime";
 import { parseTaskSync } from "./task-sync";
 import { timestamp } from "./parse";
 import { isTaskVersion, parseApiJson, stringifyApiJson } from "./json";
-import { canonicalId, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail, parseTaskGraph } from "./parse";
-import type { ExecutionPlatform, Attachment, AttachmentPage, GraphLimitDetails, ProjectPage, TaskDetail, TaskGraph, TaskStatus, TaskSync } from "./types";
+import { canonicalId, isAttachmentPath, parseAttachment, parseAttachmentPage, parseProjectPage, parseServerError, parseTaskDetail } from "./parse";
+import type { ExecutionPlatform, Attachment, AttachmentPage, GraphLimitDetails, ProjectPage, TaskDetail, TaskStatus, TaskSync } from "./types";
 import { decodeProjectPageJson, decodeTaskGraphJson } from "./project-json";
 
 const serverMessages: Readonly<Record<string, string>> = {
@@ -179,11 +179,6 @@ export const listProjects = (query: { readonly limit?: number; readonly cursor?:
   }
   const suffix = parameters.size === 0 ? "" : `?${parameters.toString()}`;
   return read(`/api/v1/projects${suffix}`, signal, parseProjectPage, decodeProjectPageJson);
-};
-
-export const getTaskGraph = (projectId: string, signal: AbortSignal): Promise<TaskGraph> => {
-  const project = requestId(projectId);
-  return read(`/api/v1/projects/${project}/task-graph`, signal, (data) => parseTaskGraph(data, project), decodeTaskGraphJson);
 };
 
 export const getTaskSync = async (

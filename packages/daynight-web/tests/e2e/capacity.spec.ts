@@ -1,6 +1,6 @@
+import { readProjectSnapshot } from './project-snapshot';
 import { closeChain, expectClosedChain, expectOpenChain, openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
-import { decodeTaskGraphJson } from '../../src/api/project-json';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Page, TestInfo } from '@playwright/test';
@@ -10,7 +10,6 @@ import { withCapacityTrace } from './capacity-trace';
 import { panPoint } from './graph-pan';
 import { captureStableDependencyGeometry, checkDependencyGeometry, type GeometryExpectation } from './dependency-geometry';
 import { expectedBatch, expectedDependencyTopology, expectedNodeHeights, expectedOverview, type ChainTopology } from './visible-topology';
-import { parseTaskGraph } from '../../src/api/parse';
 
 // Repeated DOM snapshots of capacity views add controller work between
 // measured interactions. Dedicated CDP timelines and scenario PNGs retain the
@@ -530,9 +529,7 @@ test.describe('fixed capacity and performance @capacity', () => {
             expect(fixture.tasks.at(-1)!.dependsOn).toHaveLength(108);
           }
           const snapshotStart = performance.now();
-          const snapshot = await request.get(`/api/v1/projects/${fixture.project.id}/task-graph`);
-          expect(snapshot.status()).toBe(200);
-          const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await snapshot.text())), fixture.project.id);
+          const { graph } = await readProjectSnapshot(request, fixture.project.id);
           expect(graph.summary.total).toBe(1000);
           expect(graph.summary).not.toHaveProperty('proposed');
           expect(graph.summary.todo).toBe(1000);
@@ -643,7 +640,7 @@ test.describe('fixed capacity and performance @capacity', () => {
   test('rejects each independent graph capacity limit without partial data', { annotation: { type: 'scenario', description: 'capacity-limits' } }, async ({ page, api: request }, info) => {
     test.setTimeout(240_000);
     const assertRefusal = async (projectId: string, nodes: number, edges: number) => {
-      const response = await request.get(`/api/v1/projects/${projectId}/task-graph`);
+      const response = await request.get(`/api/v1/projects/${projectId}/task-sync`, { headers: { 'Daynight-Worker-Protocol': '2' } });
       expect(response.status()).toBe(409);
       const body = await response.json() as { error: { code: string; details: Omit<Limit, 'status'> } };
       expect(body.error.code).toBe('graph_limit_exceeded');
@@ -684,7 +681,7 @@ test.describe('fixed capacity and performance @capacity', () => {
         } finally {
           try {
             await updateTask(request, projectId, task.id, { version: extended.version, dependsOn: task.dependsOn });
-            const restored = await request.get(`/api/v1/projects/${projectId}/task-graph`);
+            const restored = await request.get(`/api/v1/projects/${projectId}/task-sync`, { headers: { 'Daynight-Worker-Protocol': '2' } });
             expect(restored.status()).toBe(200);
             const body = await restored.json() as { tasks: { dependsOn: string[] }[] };
             expect(body.tasks.reduce((count, candidate) => count + candidate.dependsOn.length, 0)).toBe(5000);

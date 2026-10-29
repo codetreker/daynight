@@ -184,22 +184,48 @@ const summary = (value: unknown): TaskGraphSummary => {
   return { total: count(data.total), todo: count(data.todo), inProgress: count(data.inProgress), done: count(data.done), ready: count(data.ready), blocked: count(data.blocked) };
 };
 
-export const parseTaskGraph = (value: unknown, projectId: string): TaskGraph => {
+const graphChainMembers = (byId: ReadonlyMap<string, GraphTask>, taskId: string): Set<string> => {
+  if (!byId.has(taskId)) return malformed();
+  const neighbors = new Map(Array.from(byId.keys(), (id) => [id, new Set<string>()]));
+  for (const task of byId.values()) {
+    for (const dependency of task.dependsOn) {
+      if (task.externalDependsOn.includes(dependency) || !byId.has(dependency)) continue;
+      neighbors.get(task.id)!.add(dependency);
+      neighbors.get(dependency)!.add(task.id);
+    }
+  }
+  const members = new Set<string>();
+  const pending = [taskId];
+  for (const current of pending) {
+    if (members.has(current)) continue;
+    members.add(current);
+    pending.push(...neighbors.get(current)!);
+  }
+  return members;
+};
+
+export const parseTaskGraph = (value: unknown, projectId: string, taskId: string): TaskGraph => {
   const data = record(value);
   const parsed = { observedAt: timestamp(data.observedAt), project: parseProject(data.project, projectId), summary: summary(data.summary), tasks: array(data.tasks, graphTask) };
   const byId = new Map(parsed.tasks.map((task) => [task.id, task]));
   if (parsed.tasks.length > 1000 || byId.size !== parsed.tasks.length || parsed.tasks.reduce((sum, task) => sum + task.dependsOn.length, 0) > 5000) return malformed();
+  const members = graphChainMembers(byId, taskId);
+  const selected = new Set(members);
+  for (const member of members) {
+    const task = byId.get(member)!;
+    if (task.dependsOn.some((dependency) => !byId.has(dependency))) return malformed();
+    task.externalDependsOn.forEach((dependency) => selected.add(dependency));
+  }
+  if (selected.size !== byId.size || Array.from(selected).some((id) => !byId.has(id))) return malformed();
   const expected = { total: parsed.tasks.length, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 };
   for (const task of parsed.tasks) {
     if (task.status === "todo") { expected.todo++; if (task.ready) expected.ready++; else expected.blocked++; }
     else if (task.status === "in_progress") expected.inProgress++;
     else expected.done++;
-    const blocked = task.dependsOn.filter((dependency) => {
+    for (const dependency of task.dependsOn) {
       const target = byId.get(dependency);
-      if (target === undefined) return malformed();
-      return target.status !== "done";
-    });
-    if (blocked.length !== task.blockedBy.length || blocked.some((dependency) => !task.blockedBy.includes(dependency))) return malformed();
+      if (target !== undefined && task.blockedBy.includes(dependency) !== (target.status !== "done")) return malformed();
+    }
   }
   for (const key of Object.keys(expected) as (keyof TaskGraphSummary)[]) if (expected[key] !== parsed.summary[key]) return malformed();
   const visited = new Set<string>();
@@ -208,7 +234,7 @@ export const parseTaskGraph = (value: unknown, projectId: string): TaskGraph => 
     if (active.has(taskId)) return malformed();
     if (visited.has(taskId)) return;
     active.add(taskId);
-    for (const dependency of byId.get(taskId)!.dependsOn) visit(dependency);
+    for (const dependency of byId.get(taskId)!.dependsOn) if (byId.has(dependency)) visit(dependency);
     active.delete(taskId);
     visited.add(taskId);
   };

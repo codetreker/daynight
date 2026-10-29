@@ -5,8 +5,9 @@ foundation is implemented: explicit database and file-storage configuration,
 loopback-only HTTP binding, connection validation, structured request logs, cancellation, and bounded
 HTTP shutdown. Versioned migrations and transactional storage are implemented;
 project/task APIs and built-process acceptance are implemented. The current
-executable serves project, task, complete task-graph, task-summary synchronization
-and account-owned Worker snapshot routes together with the embedded task dashboard. Generic bucket/path local storage, task attachment
+executable serves project, task, task-chain graph, task-summary synchronization
+and account-owned Worker snapshot routes together with the embedded task dashboard.
+Generic bucket/path local storage, task attachment
 metadata and file/preview HTTP endpoints are implemented. Attachment addresses
 are grouped by project and the first two canonical task UUID characters; an
 explicit offline maintenance command migrates the old task-only layout.
@@ -286,7 +287,7 @@ the complete page, and the
 owns file rendering. Unknown page shapes return JSON 404; `/assets/` serves actual generated
 files without directory listings or an HTML fallback. Unknown API routes retain
 JSON 404 responses. GET routes support HEAD; other methods receive 405 with
-`Allow`. HTML, complete graphs and latest task details use
+`Allow`. HTML, task-chain graphs and latest task details use
 `Cache-Control: no-store`; hashed assets use long-lived immutable caching.
 Handler panics emit a safe request-correlated error and abort the HTTP request;
 the recovered value and stack are not printed by the HTTP server.
@@ -739,52 +740,60 @@ worker ownership is matched through the existing decoded TEXT properties before
 collecting the final limit+1 matching rows. No bounded output page hides later
 matches, and opaque PR strings are not converted through PostgreSQL JSON types.
 
-## Complete task graph
+## Task-chain graph
 
-`GET /api/v1/projects/{projectId}/task-graph` reads the project, exact graph size,
-all graph nodes and their dependency projections in one read-only repeatable-read
-transaction. It returns `{project, summary, tasks, observedAt}` with no pagination or filters.
-Nonempty query strings fail with 400, including unsupported parameters and invalid
-encodings. Responses use `Cache-Control: no-store`.
+`GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}` requires one task UUID.
+The service reads the project, validates the live target, counts the selected
+graph and reads its compact nodes in one read-only repeatable-read transaction.
+Missing, empty, repeated or malformed `taskId`, unsupported query parameters and
+invalid URL encoding return 400 `invalid_input`. Responses use
+`Cache-Control: no-store`; there is no project-wide fallback or pagination.
+
+Ordinary dependencies are `dependsOn` minus `externalDependsOn`. Treating those
+edges as undirected, the graph contains the entire connected component of the
+selected task, including every status, branch and join. It also contains each
+external prerequisite directly declared by any component member. These context
+nodes do not expand further: their prerequisites, ordinary chain and external
+dependents are not added. Tasks outside the component that externally depend on
+a member are not selected. A standalone task forms its own component.
+
+The response remains `{project, summary, tasks, observedAt}`. Each selected task
+counts once; the summary requires total, todo, inProgress, done, ready and blocked,
+including zero values. `total = todo + inProgress + done` and
+`todo = ready + blocked`. Only todo contributes to ready/blocked; readiness still
+uses every original direct prerequisite, including prerequisites outside this
+projection. Graph reads do not change stored status, revisions or timestamps.
+
+Nodes contain `id`, `titlePreview`, `titleTruncated`, `status`, `dependsOn`,
+`externalDependsOn`, `blockedBy`, `ready`, required boolean `allowAgents`, required
+nullable enum `requiredPlatform`, UTC creation/update timestamps and explicit
+nullable `startedAt`/`completedAt`. SQL produces at most 160 Unicode code points
+of each title without selecting descriptions, properties or full titles. Use the
+task detail endpoint for complete content. Node order is `(createdAt, id)`;
+dependency arrays are sorted and empty collections encode as `[]`.
+
+Each node retains all original dependency and blocker IDs. `externalDependsOn`
+is the external subset of the complete `dependsOn` set. A context node may refer
+to prerequisites whose task rows are intentionally absent; consumers must retain
+those references rather than interpret the projection as a dependency closure.
 
 `observedAt` is a fresh UTC database statement timestamp sampled after graph data
 has been read. It shares the clock authority of task execution timestamps without
-changing stored task metadata. Its changing value is not graph-content identity;
-clients preserve task/index identity on clock-only responses.
+changing stored metadata. Its changing value is not graph-content identity.
 
-The summary requires total, todo, inProgress, done, ready and blocked, including
-zero values. Each project task counts once: `total = todo + inProgress + done`
-and `todo = ready + blocked`. Only todo contributes to ready/blocked; ready means
-all direct prerequisites are done. Task/get/list/graph and status filters accept
-only three states. Graph reads do not change stored status, revisions or time.
-
-Nodes contain `id`, `titlePreview`, `titleTruncated`, `status`, `dependsOn`,
-`externalDependsOn`, `blockedBy`, `ready`, required boolean `allowAgents`,
-required nullable enum `requiredPlatform`, UTC creation/update timestamps and explicit nullable
-`startedAt`/`completedAt`. SQL produces at most 160 Unicode code
-points of each title without selecting descriptions, properties or full titles. Use the
-existing task detail endpoint for complete content. Node order is `(createdAt,
-id)`; dependency arrays are sorted and empty collections encode as `[]`.
-`externalDependsOn` is a duplicate-free subset of the complete `dependsOn` set.
-Blocking, readiness, cycle validation and graph-size limits use every edge.
-Migration `012_external_dependencies.sql` initializes existing edges to ordinary
-without rewriting endpoints or task metadata.
-
-Projects above 1,000 nodes or 5,000 edges return 409 `graph_limit_exceeded` with
-exact `nodeCount`, `edgeCount`, `maxNodes` and `maxEdges` in `error.details`.
-The response contains no partial graph. Missing projects return 404. Operational
-or transaction-completion failures take precedence over missing/limit refusals.
+Selected graphs above 1,000 nodes or 5,000 original dependency edges return 409
+`graph_limit_exceeded` with exact `nodeCount`, `edgeCount`, `maxNodes` and
+`maxEdges` in `error.details`. Counts include context rows and all their original
+outgoing dependencies, including references beyond the projection. Unrelated
+project tasks and edges do not consume these limits. Refusal returns no partial
+graph. Missing projects or tasks return 404; an authorized deleted target returns
+410 `task_deleted`. Project authorization precedes target lookup. Operational or
+transaction-completion failures take precedence over domain refusals.
 
 Graph requests share the existing request ID and safe error handling. Logs add
-project identity and graph counts without recording task content or repository
-addresses. This endpoint supports the implemented
-[task dashboard](../../docs/design/daynight-web.md); the browser application
-and embedded static delivery are implemented.
-From the repository root, `pnpm web:acceptance` builds this executable and runs
-production browser workflows against both a native process and the dev-ci
-container gateway. It owns separate PostgreSQL resources; its prerequisites,
-receipts and fixed-capacity gates are in the
-[web README](../daynight-web/README.md#production-browser-acceptance).
+project identity and graph counts without recording task content, repository
+addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
+`task-sync` and computes its graphs locally.
 
 ## Task HTTP API
 

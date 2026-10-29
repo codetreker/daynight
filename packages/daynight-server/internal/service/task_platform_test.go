@@ -116,14 +116,16 @@ func TestTaskPlatformCandidateMatrixAndGraph(t *testing.T) {
 			}
 		}
 	}
-	graph, err := tasks.Graph(ctx, principal, project.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, task := range graph.Tasks {
-		for _, original := range inventory {
-			if original.ID == task.ID && !equalOptional(task.RequiredPlatform, original.RequiredPlatform) {
-				t.Fatal("graph omitted platform")
+	for _, seed := range inventory {
+		graph, err := tasks.Graph(ctx, principal, project.ID, seed.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, task := range graph.Tasks {
+			for _, original := range inventory {
+				if original.ID == task.ID && !equalOptional(task.RequiredPlatform, original.RequiredPlatform) {
+					t.Fatal("graph omitted platform")
+				}
 			}
 		}
 	}

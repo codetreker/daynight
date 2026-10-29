@@ -70,7 +70,7 @@ export type ApiClient = {
   releaseWorkerClaim(projectId: string, taskId: string, input: ReleaseWorkerClaimInput): Promise<Task>;
   withdrawWorkerClaim(projectId: string, taskId: string, input: WithdrawWorkerClaimInput): Promise<Task>;
   resumeWorkerTask(projectId: string, taskId: string, input: ResumeWorkerTaskInput): Promise<Task>;
-  getTaskGraph(projectId: string): Promise<TaskGraph>;
+  getTaskGraph(projectId: string, taskId: string): Promise<TaskGraph>;
   putTaskAttachment(projectId: string, taskId: string, path: string, input: PutTaskAttachmentInput): Promise<TaskAttachment>;
   listTaskAttachments(projectId: string, taskId: string): Promise<readonly TaskAttachment[]>;
   readTaskAttachment(projectId: string, taskId: string, path: string, consume: AttachmentConsumer): Promise<void>;
@@ -488,9 +488,9 @@ export const createApiClient = (options: {
       const project = resourceId(projectId), task = resourceId(taskId), attachmentPath = validateAttachmentPath(path);
       return exchange({ operation: "task.attachment.remove", projectId: project, taskId: task }, `${attachmentPrefix(project, task)}/files/${encodeAttachmentPath(attachmentPath)}`, "DELETE", { kind: "empty", result: undefined }, [204], undefined, true);
     },
-    getTaskGraph: (projectId) => {
-      const project = resourceId(projectId);
-      return request({ operation: "task.graph", projectId: project }, `/projects/${encodeURIComponent(project)}/task-graph`, "GET", (value) => parseTaskGraph(value, project));
+    getTaskGraph: (projectId, taskId) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      return request({ operation: "task.graph", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/task-graph?taskId=${encodeURIComponent(task)}`, "GET", (value) => parseTaskGraph(value, project, task));
     },
   };
 };

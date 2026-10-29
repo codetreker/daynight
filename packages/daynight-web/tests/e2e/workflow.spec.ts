@@ -1,11 +1,10 @@
+import { readProjectSnapshot } from './project-snapshot';
 import { closeChain, expectClosedChain, expectOpenChain, openChain } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
-import { decodeTaskGraphJson } from '../../src/api/project-json';
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
 import { test, expect, createProject, createTask, updateTask, startTask, finishTask, executeTask, seedExternalDependencies, type Task, withDependencyFailure, withProjectsFailure } from './fixtures';
 import { authenticatedAPI } from './authentication';
-import { parseTaskGraph } from '../../src/api/parse';
 import type { PullRequestProperty } from '../../src/api/types';
 import { attachmentDownloadUrl, attachmentPreviewUrl } from '../../src/api/client';
 import { captureStableDependencyGeometry, checkDependencyGeometry, expectedDependencyTopology } from './dependency-geometry';
@@ -314,9 +313,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
   await expect(page.locator('.task-graph-canvas')).toHaveCount(1);
   await expect(page.locator('.react-flow__node')).toHaveCount(7);
   await expect(page.locator('.react-flow__edge')).toHaveCount(7);
-  const graphResponse = await request.get(`/api/v1/projects/${project.id}/task-graph`);
-  expect(graphResponse.status()).toBe(200);
-  const graphSnapshot = parseTaskGraph(await decodeTaskGraphJson(new Response(await graphResponse.text())), project.id);
+  const { graph: graphSnapshot } = await readProjectSnapshot(request, project.id);
   const checkEdges = async (rootId: string): Promise<void> => {
     const expected = expectedDependencyTopology(graphSnapshot.tasks, rootId);
     const heights = expectedNodeHeights(expected, expected.nodes.map(({ id }) => id)).map(({ id, height }) => ({ id, height: `${height}px` })).sort((a, b) => a.id.localeCompare(b.id));
@@ -613,8 +610,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expectClosedChain(page, goal.id);
     await openChain(page, goal.id);
     expect(await page.evaluate((key) => localStorage.getItem(key), key)).toBeNull();
-    const response = await request.get(`/api/v1/projects/${regression.id}/task-graph`);
-    const snapshot = parseTaskGraph(await decodeTaskGraphJson(new Response(await response.text())), regression.id);
+    const { graph: snapshot } = await readProjectSnapshot(request, regression.id);
     const expected = expectedDependencyTopology(snapshot.tasks, goal.id);
     expect(expected.memberIds).toHaveLength(10); expect(expected.nodes).toHaveLength(18);
     expect(expected.edges.filter((edge) => edge.external)).toHaveLength(2);
@@ -648,8 +644,7 @@ test('project-graph', scenario('project-graph'), async ({ page, api: request, ba
     await expect(root(page, first.id).locator('.root-progress-label')).toHaveText('2/3 已完成');
     await expect(inspectTask(page, last.id)).toHaveAttribute('aria-pressed', 'true');
     expect(await appearance()).toEqual(before);
-    const graphResponse = await request.get(`/api/v1/projects/${shortcut.id}/task-graph`);
-    const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await graphResponse.text())), shortcut.id);
+    const { graph } = await readProjectSnapshot(request, shortcut.id);
     const expected = expectedDependencyTopology(graph.tasks, first.id);
     expect(expected.memberIds).toHaveLength(3); expect(expected.edges.filter((edge) => edge.external)).toHaveLength(1);
     expect(await checkDependencyGeometry(page, expected, info)).toEqual({ total: 0, examples: [] });
@@ -1065,9 +1060,7 @@ test('detail-navigation', scenario('detail-navigation'), async ({ page, api: req
   await openTaskProject(page, project.id, project.name);
   await openChain(page, a.id);
   await pauseRefreshClock(page);
-  const graphResponse = await request.get(`/api/v1/projects/${project.id}/task-graph`);
-  expect(graphResponse.status()).toBe(200);
-  const graph = await graphResponse.json() as { tasks: Record<string, unknown>[] };
+  const { graph } = await readProjectSnapshot(request, project.id);
   expect(graph.tasks.every((task) => !Object.hasOwn(task, 'properties'))).toBe(true);
   const unknown = await createTask(request, project.id, { title: '图快照外的新任务', description: '最新详情可读取' });
   await updateTask(request, project.id, b.id, { version: b.version, dependsOn: [a.id, unknown.id] });

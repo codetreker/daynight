@@ -79,8 +79,18 @@ export const renderTaskGraph = (graph: TaskGraph): string => [
   `Ready: ${graph.summary.ready}`,
   `Blocked: ${graph.summary.blocked}`,
   "",
-  graph.tasks.length === 0 ? "No tasks.\n" : graph.tasks.map(renderGraphTask).join("\n"),
+  graph.tasks.map(renderGraphTask).join("\n"),
 ].join("\n");
+
+export const renderTaskGraphDependencies = (graph: TaskGraph, json: boolean): string => {
+  const tasks = graph.tasks.map(({ id, dependsOn, externalDependsOn }) => ({ id, dependsOn, externalDependsOn }));
+  return json ? `${stringifyApiJson(tasks)}\n` : tasks.map((task) => [
+    `ID: ${terminalText(task.id)}`,
+    `Depends on: ${identifiers(task.dependsOn)}`,
+    `External dependencies: ${identifiers(task.externalDependsOn)}`,
+    "",
+  ].join("\n")).join("\n");
+};
 
 export const renderTaskJson = (value: Task | readonly Task[] | TaskGraph): string => `${stringifyApiJson(value)}\n`;
 

@@ -1,3 +1,4 @@
+import { readProjectSnapshot } from './project-snapshot';
 import { closeChain, openChain } from './chain-dialog';
 import { selectTaskList } from './project-view';
 import { randomUUID, createHash } from 'node:crypto';
@@ -5,8 +6,7 @@ import { readFile } from 'node:fs/promises';
 import type { APIResponse, Locator, Page, Route, TestInfo } from '@playwright/test';
 import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
 import { parseApiJson, stringifyApiJson } from '../../src/api/json';
-import { parseServerError, parseTaskDetail, parseTaskGraph } from '../../src/api/parse';
-import { decodeTaskGraphJson } from '../../src/api/project-json';
+import { parseServerError, parseTaskDetail } from '../../src/api/parse';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
 import type { TaskDetail, TaskStatus } from '../../src/api/types';
 import { attachmentDownloadUrl } from '../../src/api/client';
@@ -43,9 +43,7 @@ const open = async (page: Page, project: string, task: string): Promise<void> =>
     await page.getByRole('button', { name: /^(刷新|Refresh)$/, exact: true }).click();
   }
   await (await response).finished();
-  const graphResponse = await authenticatedAPI(page.context().request).get(`/api/v1/projects/${project}/task-graph`);
-  expect(graphResponse.status()).toBe(200);
-  const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await graphResponse.text())), project);
+  const { graph } = await readProjectSnapshot(authenticatedAPI(page.context().request), project);
   const index = buildGraphIndex(graph); const representative = index.componentByTask.get(task)!;
   const standalone = index.components.get(representative)!.memberIds.size === 1;
   await selectTaskList(page);
@@ -312,8 +310,7 @@ test('task-status-transitions', { annotation: { type: 'scenario', description: '
       await lifecycle.success(['task', 'set-status', prerequisite.id, 'todo', '--project', project.id, '--if-version', String(prerequisite.version)]);
       expect(await read(api, project.id, dependent.id)).toMatchObject({ status: 'todo', ready: false, blockedBy: [prerequisite.id], startedAt: null, completedAt: null });
     }
-    const graphResponse = await api.get(`/api/v1/projects/${project.id}/task-graph`); expect(graphResponse.status()).toBe(200);
-    const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(await graphResponse.text())), project.id);
+    const { graph } = await readProjectSnapshot(api, project.id);
     expect(Object.keys(graph.summary).sort()).toEqual(['blocked', 'done', 'inProgress', 'ready', 'todo', 'total']);
     expect(graph.summary.total).toBe(graph.summary.todo + graph.summary.inProgress + graph.summary.done);
     expect(graph.summary.todo).toBe(graph.summary.ready + graph.summary.blocked);

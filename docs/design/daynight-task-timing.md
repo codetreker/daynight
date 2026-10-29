@@ -10,9 +10,11 @@
 [状态服务](../../packages/daynight-server/internal/service/task_lifecycle.go)提供统一 SetStatus，普通任务更新没有状态字段。
 [项目写事务](../../packages/daynight-server/internal/core/store/project_tx.go)通过项目行锁串行化写入，再在同一事务修改任务、版本和依赖；
 `updated_at` 随普通编辑变化，不能作为执行起点。
-[图读取服务](../../packages/daynight-server/internal/service/task_graph.go)在只读快照中读取项目、任务与统计，并在数据读取后采样数据库 `observedAt`。
+[任务链图读取服务](../../packages/daynight-server/internal/service/task_graph.go)在只读快照中
+读取所选链及一层外部前置并折叠统计；[摘要同步服务](../../packages/daynight-server/internal/service/task_sync.go)
+读取项目摘要。两者都在数据读取后采样数据库 `observedAt`。
 
-Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每五秒读取图，内容比较排除 `observedAt`；
+Web 的 [useTaskGraph](../../packages/daynight-web/src/features/projects/useTaskGraph.ts) 每五秒读取 task-sync，由完整本地摘要物化图；内容比较排除 `observedAt`；
 最新服务端样本由独立 `GraphSnapshot.observedAt` 保存，因此仅时钟变化时复用图与索引仍能取得新样本。
 [TaskNode](../../packages/daynight-web/src/features/task-graph/TaskNode.tsx) 已将检查任务的主体按钮和打开详情的 Details 按钮分开。
 `GraphIndex` 拥有任务与统计，布局来自投影和展开状态；项目设置与每秒计时不应成为这些计算的输入。
