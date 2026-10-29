@@ -11,6 +11,7 @@
 !packages/daynight/src/session/
 !packages/daynight/src/session/**
 !packages/daynight-web/
+packages/daynight-web/**
 !packages/daynight-web/package.json
 !packages/daynight-web/index.html
 !packages/daynight-web/tsconfig.json
@@ -18,6 +19,7 @@
 !packages/daynight-web/src/
 !packages/daynight-web/src/**
 !packages/daynight-web/scripts/
+packages/daynight-web/scripts/**
 !packages/daynight-web/scripts/publish-assets.mts
 !packages/daynight-server/
 !packages/daynight-server/go.mod

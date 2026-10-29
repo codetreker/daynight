@@ -42,8 +42,10 @@ fails after returning headers cannot establish this transport observation.
 ### One additional journey for each target
 
 `packages/daynight-web/scripts/acceptance/auth-combined.mts` owns the normal
-browser and installed-CLI journey, safe API operations, exact int64 versions,
-receipt and strict result validation. `auth-combined-target.mts` validates the
+browser and installed-CLI journey, safe API operations, exact int64 versions and
+receipt recording. `auth-combined-report.mts` owns inert receipt types and strict
+result validation shared by runtime and portable completion checks.
+`auth-combined-target.mts` validates the
 run's source, PostgreSQL container labels and native storage or container image
 before reading actual staging files and metadata. Its only database mutation is
 expiring a PAT that the normal browser session has already minted; it does not
@@ -86,9 +88,13 @@ then verifies the same pending input, single submission and same revealed token
 element across English/Simplified Chinese. The response remains the actual
 server result. Screenshots happen only after closing or masking the secret.
 
-The current 53 Playwright cases comprise 24 native functional, 24 container
-functional and 5 native capacity, including the later task-unapproval scenario. Native and container each require a separate
-combined receipt. These receipts do not renumber the Playwright inventory or
+At this decision's delivery, the 53 Playwright cases comprised 24 native
+functional, 24 container functional and five native capacity, including the
+later task-unapproval scenario. Complete current acceptance retains 34 native
+and 29 container browser results, with one combined receipt per target. An
+explicit scope requires its selected target's combined journey; it cannot claim
+the complete union. The [target execution decision](2026-10-28-web-target-acceptance.md)
+owns that selection. Combined receipts do not renumber the Playwright inventory or
 replace its fixed data, five samples, geometry checks, zero retries, raw report
 validation or time/request/memory budgets. Capacity remains isolated from
 competing preparation, restart and container cleanup.
@@ -149,7 +155,8 @@ The added Go wire-loss test has a focused race pass for file SHA256
 `20d5e75452021f75e879c850de8b8f9bcf1e4efe984afd7e85f4ee107555c6b7` on that baseline.
 The working tree then contained the uncommitted test, so this is a dirty-source
 focused result, not a clean-head or complete acceptance claim. Full current-code
-CI, both combined run receipts and their cleanup must be assessed separately.
+CI, the complete union of both combined run receipts and their target-local
+cleanup must be assessed separately. A standalone scope proves only its target.
 
 Actual App/third-party human login and configured isolated deployment remain
 independent acceptance items. Controlled external-provider responses, provider

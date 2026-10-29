@@ -320,13 +320,16 @@ For a disposable full-stack HTTP target, run a command through
 containers, volume, network and image tag after completion, failure or cancellation,
 and records cleanup failures.
 
-`pnpm web:acceptance` builds production UI and a native Go executable, creates an
+The default `pnpm web:acceptance` (`--target all`) builds production UI and a native Go executable, creates an
 owned PostgreSQL instance and starts the normal dev-ci production build in
 parallel. It runs native functional workflows, then the container workflows and
 complete container cleanup, and finally the fixed native capacity cases. It
 requires Go 1.27.2, Docker, Node 24, pnpm 11.28.6 and Playwright Chromium. The
 [web README](../packages/daynight-web/README.md#production-browser-acceptance) owns
-browser setup, required gates and receipt interpretation.
+browser setup, required gates and receipt interpretation. Explicit
+`--target native` and `--target container` use the same phases with independent
+resource ownership; a scoped result proves only its selected target. The Web
+README also owns prepared CLI package input and its source/producer validation.
 
 ## Package versions
 
@@ -486,11 +489,13 @@ calibrates that existing setting for the dedicated public standard Linux
 runner's four CPUs; it does not change inputs, assertions or coverage gates.
 The `browser` mode installs pinned Chromium and Linux dependencies under the
 existing 600-second bound, then invokes ordinary core acceptance after the job's
-deployment fixture checks. The wrapper checks that each command's owned process
+deployment fixture checks. Production Docker builds admit the UI, shared session
+protocol and asset-publisher inputs; acceptance tooling remains in the workspace's
+complete typecheck and harness checks rather than the product build context. The wrapper checks that each command's owned process
 group stopped after settlement, preserving both command and cleanup failures.
 
 The core has no quality/browser preparation callbacks or readiness-admission
-observer. Local acceptance uses its existing installed browser. Native and
+observer. Local acceptance uses its existing installed browser. In a complete `all` run, native and
 container preparation still overlap; native functional checks and browser cleanup
 precede the container browser permission release. The permission wait remains
 900 seconds. Core preparation, functional phases, full container cleanup and
@@ -502,8 +507,12 @@ CPU/I/O cause or guaranteed hosted speedup.
 Both Go-consuming jobs restore module and compiler caches keyed by the server
 `go.sum`, while the server check expires test results before database/race/
 coverage validation. The web pipeline retains the full production build and
-unique image identity check. One packed/installed CLI is reused by the native
-and container browser attachment journeys. After the web pipeline and recorded
+unique image identity check. A complete run reuses one packed/installed CLI
+across native and container attachment journeys. Explicit target scopes own
+separate installations and can consume the same verified tarball; schema 4
+receipts and recovery require the declared scope and its actual resources. The
+[target execution decision](../.agents/notes/implemented/testing/2026-10-28-web-target-acceptance.md)
+records these boundaries. After the web pipeline and recorded
 resource recovery, Ubuntu web CI runs the existing real-container attachment
 persistence and paired-backup check once; its `.tmp/attachment-deployment-*/`
 evidence is archived with the browser/deployment evidence. The

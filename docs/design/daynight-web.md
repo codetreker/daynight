@@ -658,13 +658,13 @@ pnpm web:acceptance
 DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
 ```
 
-`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行完整 Vitest/V8 单元及组件测试与严格覆盖率检查；任何一段失败都使完整命令失败。`web:acceptance` 自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；浏览器按原生功能、容器功能、原生容量的顺序完成验证，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
+`web:dev`、`web:typecheck`、`web:test`、`web:build` 和 `web:acceptance` 已实现。共享 `web:build` 调用 Vite 后执行 `scripts/publish-assets.mts`，验证普通文件、index 及其引用，完成整目录暂存与替换，替换失败时尝试恢复先前目录；恢复也失败时保留先前产物并传播两个原因。`web:test` 串行组合包内 `test:harness` 与 `test:coverage`：前者执行全部 Node 验收/工具 harness，后者执行完整 Vitest/V8 单元及组件测试与严格覆盖率检查；任何一段失败都使完整命令失败。默认 `web:acceptance`（`--target all`）自行创建有所有权标记的 PostgreSQL 容器及卷，并与正常 dev-ci 生产构建并行准备原生 Go 进程；浏览器按原生功能、容器功能、原生容量的顺序完成验证，需要 Docker、Go 工具链与 Playwright Chromium。浏览器本机优先复用，CI 下载及全部临时 profile 放在项目 `.tmp/`。`web:build` 不调用 Go，避免循环依赖。Go `scripts/check.sh` 在执行需要内嵌资源的 Go 命令前，从仓库根调用该命令；Go 测试中重新构建的进程使用同一份真实资源。缺少 pnpm、依赖、index 或资源时明确失败。
 
 开发模式的 Vite 将 `/api` 代理到本机 Go，不引入 CORS 通配配置；生产使用 `http://127.0.0.1:8787/`。运行机器只需要服务二进制与 PostgreSQL；源码构建固定使用 Node 24 与 pnpm 11.28.6。根目录现有 CLI build/test/acceptance 命令的含义保持独立，新增 web 命令显式选择 `@codetreker/daynight-web`。
 
 ### localhost 交付部署
 
-生产交付直接集成既有 `deployment/localhost/`。继续执行 `bash deployment/localhost/up.sh`，一次构建并启动带页面的 Go 服务、PostgreSQL 和 gateway；完成后同一地址可打开项目页面与 API。镜像加入前端构建阶段，最终运行阶段仍只有非 root Go 二进制，不增加前端容器。日常重建与停止保持现有数据保留语义。
+生产交付直接集成既有 `deployment/localhost/`。继续执行 `bash deployment/localhost/up.sh`，一次构建并启动带页面的 Go 服务、PostgreSQL 和 gateway；完成后同一地址可打开项目页面与 API。镜像加入前端构建阶段，最终运行阶段仍只有非 root Go 二进制，不增加前端容器。构建上下文只接纳产品前端、共享 session 协议和资源发布工具；目录例外之后重新排除子项再逐项接纳，避免把验收工具的依赖带入生产构建。工作区完整类型检查与 harness 保留全部开发输入，容器继续校验并构建实际产品闭包。日常重建与停止保持现有数据保留语义。
 
 ```text
 仓库根构建上下文
@@ -749,7 +749,7 @@ CI 命令包装保留进程组所有权：命令结束后由 `requireGroupStoppe
 完整原因。core 不再拥有质量/浏览器准备 callback、空成功阶段或覆盖率准入观察器。
 本地 acceptance 继续使用已安装浏览器，不因 CI 拆分增加质量命令或准备等待。
 
-core 并行准备原生 UI/Go/PostgreSQL 和正常 dev-ci 源码构建/启动。dev-ci 继续拥有本次
+完整 `all` scope 并行准备原生 UI/Go/PostgreSQL 和正常 dev-ci 源码构建/启动。dev-ci 继续拥有本次
 唯一镜像、运行镜像身份校验与完整 shell 清理。原生功能阶段及其浏览器回收通过后，
 runner 原子写入绑定 acceptance run ID、dev-ci run ID 和 source SHA 的容器执行许可。
 容器 callback 登记身份后等待并验证该许可，保留 900 秒等待上限，再记录浏览器 inventory
@@ -991,11 +991,14 @@ Markdown 复用渲染器，分别使用任务根与文档目录；其他附件�
 `scripts/acceptance/runner.mts` 拥有新建运行的源码身份、构建、原生 PostgreSQL/
 服务进程、Playwright、dev-ci 调用与恢复；模块导入不注册信号或启动工作。
 `packages/daynight-web/scripts/acceptance.mts` 是解析命令及显式传入取消控制器的
-CLI。`scripts/ci.mts` 的 browser 模式完成浏览器安装后调用同一普通 runner，quality
+CLI，通过 `arguments.mts` 解析 scope 与包输入。`scripts/ci.mts` 的 browser 模式完成浏览器安装后调用同一普通 runner，quality
 模式独立执行完整质量命令；core 没有准备 hook 或空质量阶段。
-`pipeline.mts` 只表达本验收的固定阶段依赖，`permission.mts` 拥有绑定运行和源码的
-原子许可；没有新增部署环境接口或旧二进制交接路径。`tests/e2e/` 拥有功能流程、
-API 数据和固定图集。
+`pipeline.mts` 表达完整及单目标 scope 的实际阶段依赖，`permission.mts` 拥有完整 `all` 运行中绑定运行和源码的
+原子许可；没有新增部署环境接口或旧二进制交接路径。`inventory.mts` 拥有按目标区分的具名场景，`evidence.mts` 拥有 scope 与资源结构，`completion.mts` 验证可移植结果及其相对文件引用和摘要。`auth-combined-report.mts` 提供无运行期启动副作用的认证回执类型与严格校验；实际认证流程仍由 `auth-combined.mts` 执行。`tests/e2e/` 拥有功能流程、API 数据和固定图集。
+显式 `native` scope 依次执行原生准备、功能与认证组合、容量及清理；`container` scope 先准备本地 CLI，再执行正常 dev-ci 构建、功能与认证组合及完整清理，不等待另一原生运行。完整 `all` 的准备重叠、功能串行与容量隔离保持。每个 scope 精确验证自己的库存，不能用空阶段满足另一目标的必需项。`--target all|native|container` 与内部 `--container` callback 分开，`--apfs` 仅用于包含原生目标的 scope。
+
+共享 CLI fixture 将源码打包与本地安装分开。`cli-package.mts` 准备 `daynight.tgz` 和 schema 1 manifest，绑定源码 commit/tree/dirty、包版本、tarball SHA-256 与 producer run ID/originAttempt；消费者以独立预期验证 manifest 及实际 bytes，再在自己的独占根目录安装并生成原有安装回执。成功 producer 的 attempt 可以早于消费者；安装目录和本机回执不跨机器传递。可移植完成结果保留所选目标及 artifact 内相对引用，不授予跨机器 PID/路径的恢复权限。[目标执行决策](../../.agents/notes/implemented/testing/2026-10-28-web-target-acceptance.md)拥有这些职责与取舍。
+
 [web 验证说明](../../packages/daynight-web/README.md#production-browser-acceptance)
 拥有验证命令、要求与场景映射和回执解释。逐次运行结果随对应 PR 与 CI 保存。
 较早渲染器的本地双目标与固定性能矩阵通过，但
@@ -1003,7 +1006,7 @@ API 数据和固定图集。
 渲染器的原生长虚线绘制也曾触发 hosted 超时；局部绘制分解随 PR #52 交付，
 对应运行结果由该 PR 与 CI 保存。
 
-每次运行生成真实 UI 与 Go 可执行文件、启动独立 PostgreSQL 18.6，等待服务
+完整 `all` 运行生成真实 UI 与 Go 可执行文件、启动独立 PostgreSQL 18.6，等待服务
 结构化就绪日志并记录二进制摘要；正常 dev-ci 生产构建/启动与这些工作并行。
 两目标通过固定到 `0978963813fcefd9d553f6cb9bcc319084c764b3` 的真实 UniAuth
 gateway 夹具取得正常浏览器会话和 PAT，数据准备与安装 CLI 使用同一授权通道。
@@ -1107,8 +1110,8 @@ CDP timeline、User Timing、frame 与 GC 事件关联浏览器内的输入/条�
 等待；正常 ready/count 判定与全部预算保持原义。
 
 回执增量写入 `packages/daynight-web/.tmp/acceptance/<run-id>/`，顶层
-`evidence.json` 指向最近一次结果，顶层 `schemaVersion: 3` 包含源码、二进制、
-数据库/浏览器版本、两目标结果、生产镜像与清理状态。已安装 CLI 回执核对 Git SHA、
+`evidence.json` 指向最近一次结果，顶层 `schemaVersion: 4` 以显式 `scope: all | native | container`
+约束资源、阶段与结果。原生 scope 包含二进制、PostgreSQL、存储和容量；容器 scope 包含生产镜像、dev-ci 和容器浏览器，不创建原生资源对象。完整 `all` 包含两者；共同字段保留源码、安装 CLI、浏览器与清理身份。已安装 CLI 回执核对 Git SHA、
 dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty 标记不代表工作区文件
 内容指纹，CI 的干净源码与 `GITHUB_SHA` 检查继续承担源码归属。`stages` 逐阶段记录名称、
 结果、起止时间、实际取得的受管理命令进程身份 `commands` 和这些命令的
@@ -1117,8 +1120,8 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 起止时间、Playwright 进程/组、浏览器身份及 `browserCleanup`。
 `native/functional/`、`container/`、`native/capacity/` 分别保留原始 Playwright JSON、
 场景截图和浏览器身份；容量的原 schema 1 性能回执位于
-`native/capacity/performance.json`。额外必需的 schema 1 `kind: auth-combined` 回执为
-`native/auth-combined/target.json` 和 `container/auth-combined/target.json`；每份
+`native/capacity/performance.json`。所选目标额外必需的 schema 1 `kind: auth-combined` 回执为
+`native/auth-combined/target.json` 或 `container/auth-combined/target.json`，完整 `all` 要求两份；每份
 严格要求十一项具名检查、源码/浏览器/安装包、重启前后进程身份及浏览器/资源清理。
 回执不保存凭据、配置 body 或原始日志，私有日志扫描只记录安全结果；既有场景
 报告校验保持独立。CI 的 `daynight-web-acceptance` 产物同时归档
@@ -1126,8 +1129,7 @@ dirty 标记、tarball 和 entry 摘要，并重算实际产物摘要；dirty �
 清单。web job 被选中后，任何执行或清理失败必须让该 job 失败。
 
 恢复命令为 `node packages/daynight-web/scripts/acceptance.mts --cleanup [run-id]`，
-默认读取最近一次回执，缺失回执不操作资源。恢复只接受顶层 schema 3，schema 1、schema 2
-及未知版本明确失败。恢复先确认原 runner、阶段命令身份和全部登记进程组均停止；
+默认读取最近一次回执，缺失回执不操作资源。恢复只接受顶层 schema 4 及有效显式 scope，旧版与未知版本明确失败。恢复仅处理所选 scope 的资源与阶段目录。恢复先确认原 runner、阶段命令身份和全部登记进程组均停止；
 浏览器按 `native/capacity`、`container`、`native/functional` 的逆序检查和回收。
 两个 `auth-combined/` 目录同样加入已有浏览器与命令进程恢复扫描。callback 和
 Playwright 的进程及其组必须已停止，再依据记录的平台、PID、
