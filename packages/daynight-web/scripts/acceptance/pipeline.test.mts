@@ -292,3 +292,64 @@ test('a pre-aborted pipeline does not start operations', async () => {
   await assert.rejects(runPipeline(controller, run.phases), (error) => error === reason);
   assert.deepEqual(run.events, []);
 });
+
+test('native target executes only preparation, functional recovery and then capacity', async () => {
+  const { runTargetPipeline } = await import('./pipeline.mts');
+  const events: string[] = [];
+  const functional = deferred();
+  const began = deferred();
+  const pending = runTargetPipeline(new AbortController(), { target: 'native',
+    preparation: async () => { events.push('prepared'); },
+    functional: async () => { events.push('functional'); began.resolve(); await functional.promise; events.push('recovered'); },
+    capacity: async () => { events.push('capacity'); },
+  });
+  await began.promise;
+  assert.deepEqual(events, ['prepared', 'functional']);
+  functional.resolve();
+  await pending;
+  assert.deepEqual(events, ['prepared', 'functional', 'recovered', 'capacity']);
+});
+
+test('container target prepares its installation and directly executes its owned gateway', async () => {
+  const { runTargetPipeline } = await import('./pipeline.mts');
+  const events: string[] = [];
+  await runTargetPipeline(new AbortController(), { target: 'container',
+    preparation: async () => { events.push('installed'); }, container: async () => { events.push('container'); },
+  });
+  assert.deepEqual(events, ['installed', 'container']);
+});
+
+test('target pipeline cancellation and failures prevent later phases without replacing the reason', async () => {
+  const { runTargetPipeline } = await import('./pipeline.mts');
+  for (const aborted of [false, true]) {
+    const controller = new AbortController();
+    const failure = new Error('Target preparation failed');
+    let later = false;
+    await assert.rejects(runTargetPipeline(controller, { target: 'native', preparation: async () => {
+      if (aborted) controller.abort(failure); else throw failure;
+    }, functional: async () => { later = true; }, capacity: async () => { later = true; } }), (error) => error === failure);
+    assert.equal(later, false);
+    assert.equal(controller.signal.reason, failure);
+  }
+});
+
+test('target cancellation waits for the active phase and retains a separate cleanup failure', async () => {
+  const { runTargetPipeline } = await import('./pipeline.mts');
+  const controller = new AbortController();
+  const began = deferred();
+  const cleanup = deferred();
+  const reason = new Error('Target cancelled');
+  const cleanupFailure = new Error('Target browser cleanup failed');
+  let capacity = false;
+  const pending = observe(runTargetPipeline(controller, { target: 'native', preparation: async () => {},
+    functional: async () => { began.resolve(); await cleanup.promise; throw cleanupFailure; }, capacity: async () => { capacity = true; },
+  }));
+  await began.promise;
+  controller.abort(reason);
+  assert.equal(pending.settled(), false);
+  cleanup.resolve();
+  const result = await pending.result;
+  assert.ok(result.error instanceof AggregateError);
+  assert.deepEqual(result.error.errors, [reason, cleanupFailure]);
+  assert.equal(capacity, false);
+});

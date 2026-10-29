@@ -34,7 +34,7 @@ decision](2026-10-28-web-quality-worker-capacity.md); its `forks` pool, file
 isolation and full product-source manifest remain unchanged.
 
 Browser mode installs pinned Chromium with Linux dependencies under the existing
-600-second bound, then invokes ordinary core acceptance. That runner owns native
+600-second bound, then invokes complete `all` core acceptance. That runner owns native
 and container preparation, functional browser order, atomic permission release,
 capacity, recovery and cleanup. It has no quality/browser preparation callbacks,
 empty success phases or readiness-admission observer. Local acceptance continues
@@ -47,7 +47,7 @@ when the command leader exited successfully. A command failure, cancellation or
 process-group cleanup failure remains a failure; combined errors are preserved.
 This guard is not replaced by the command leader's exit status.
 
-The container's 900-second permission wait, native-before-container browser
+Within complete `all` acceptance, the container's 900-second permission wait, native-before-container browser
 release, one browser worker, zero retries, complete capacity inputs and all
 geometry/performance thresholds remain unchanged. Within browser acceptance,
 capacity waits for its own preparation, functional phases, complete container
@@ -87,7 +87,9 @@ contract without separating the competing responsibilities. Both jobs retain
 **Shard browser scenarios across runners.** Shards duplicate target preparation
 and require new scenario, artifact and permission aggregation. The full native,
 container and capacity journey remains together; only independent quality work
-has a separate job.
+has a separate job. Explicit standalone targets use the ownership and recovery
+rules of the [target execution decision](2026-10-28-web-target-acceptance.md); a
+selected target result does not replace complete acceptance.
 
 ## Consequences
 

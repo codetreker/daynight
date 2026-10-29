@@ -1505,7 +1505,7 @@ ownership revalidation. Uncertain ownership fails without recursive removal.
 Existing recovery commands remain available without opting into new attachment.
 
 The full CI workflow remains on Linux and retains case-sensitive storage coverage.
-macOS local acceptance runs the same 63 scenarios, additional combined
+The default complete macOS acceptance runs the same 63 scenarios, additional combined
 authentication checks and fixed performance budgets, with native filesystem
 coverage qualified by its recorded capability. A local pass does not establish
 macOS CI coverage. The [filesystem coverage decision](../../.agents/notes/implemented/testing/2026-10-23-native-development-filesystem-coverage.md)
@@ -1515,7 +1515,56 @@ for the workspace. Export `pnpm_config_registry=https://mirrors.cloud.tencent.co
 acceptance CLI installation, and `DAYNIGHT_NPM_REGISTRY` for Docker builds. Both Compose stacks default to the official
 npm registry unless the build variable is explicitly supplied.
 
-The command builds real embedded assets and a new Go executable and owns a
+### Target selection and CLI package input
+
+The default scope is `all`. Explicit targets reuse the same production phases and
+validators while owning only the selected resources:
+
+| Scope | Required browser results | Resource ownership |
+|---|---|---|
+| `all` | Native 29 functional + 5 capacity, container 29 functional, both combined authentication receipts | Native and dev-ci targets; native/container preparation overlaps, functional browsers serialize, capacity follows complete container cleanup |
+| `native` | 29 functional + 5 capacity and native combined authentication | Native Go, PostgreSQL, storage, browser and installed CLI; no dev-ci target |
+| `container` | 29 functional and container combined authentication | Normal production dev-ci stack, browser and installed CLI; no native Daynight target or native attachment storage |
+
+From the repository root:
+
+```bash
+pnpm web:acceptance --target native
+pnpm web:acceptance --target container
+```
+
+`--target all` explicitly selects the default. `--apfs` is valid for `all` or
+`native`; it is rejected for a container-only run. The internal `--container`
+callback remains distinct from target selection. A scoped pass proves its
+selected inventory and cannot substitute for complete acceptance.
+
+Ordinary runs build and pack the CLI from their checkout. A prepared package can
+instead be supplied with all three options:
+
+```bash
+node packages/daynight-web/scripts/acceptance.mts --target native \
+  --cli-package "$CLI_PACKAGE_DIRECTORY" \
+  --producer-run "$CLI_PACKAGE_RUN_ID" \
+  --producer-attempt "$CLI_PACKAGE_ATTEMPT"
+```
+
+The directory contains `daynight.tgz` and `manifest.json`. The schema 1 manifest
+binds source commit/tree/dirty state, package version, tarball SHA-256 and producer
+run ID/origin attempt. Producer expectations come from the caller, independently
+of the manifest. Consumers verify the current checkout and actual bytes before
+starting target resources. CI requires its clean `GITHUB_SHA` and workflow run;
+a successful producer's earlier attempt remains valid when a consumer is rerun.
+
+Each target installs checked tarball bytes into its own exclusive installation
+root and retains the existing launcher, entry/tarball hash, source and process
+ownership validation. Installation directories and machine-local receipts are
+not transported between hosts. `cli-package.mts` owns preparation and manifest
+validation; the [target execution decision](../../.agents/notes/implemented/testing/2026-10-28-web-target-acceptance.md)
+owns scope, package and cleanup responsibilities.
+
+### Production workflows and acceptance inventory
+
+The default `all` command builds real embedded assets and a new Go executable and owns a
 separate PostgreSQL container/volume and ephemeral loopback listener. In parallel,
 the normal dev-ci runner builds and starts the actual production image. Browser
 execution proceeds through twenty-nine native functional scenarios, the same twenty-nine
@@ -1524,7 +1573,7 @@ native capacity/limit scenarios. The native process and PostgreSQL remain alive
 through the capacity phase; other preparation commands and the complete
 container stack have finished before that phase starts. No normal localhost service or dataset is used. Functional and
 capacity fixtures use normal UniAuth-acquired sessions/PATs and real write APIs.
-The shared gateway fixture is pinned to
+The gateway fixture is pinned to
 `0978963813fcefd9d553f6cb9bcc319084c764b3`; App credentials, browser session and PAT
 metadata remain in private 0600 files outside public artifact trees. External
 provider HTTP responses are controlled, so this proves the real gateway/SDK
@@ -1574,7 +1623,9 @@ distinguishes installed-process races, production journeys and offline fixtures.
 No annotation, target topology,
 capacity, coverage or cleanup gate is added or removed by this extension.
 
-One packed/installed CLI is shared by the whole web run. On each target,
+One packed/installed CLI is shared by a complete `all` run. Each explicit target
+owns its installation; checked package input can bind separate installations to
+the same tarball bytes. On each selected target,
 `task-attachments` uploads through that CLI and consumes the same task/files in
 the production page, then checks Web mutations through raw CLI reads. It covers
 Markdown relative images, image/text/PDF and interactive HTML resources, detail
@@ -1744,31 +1795,41 @@ scenario annotations validated in each target's report.
 | L9–L10 | Task-attached offline mockup checks, typed catalog/component checks, and complete native/container production receipts with the existing coverage and cleanup gates |
 | Authentication | `auth-login-session`, `auth-project-isolation`, `auth-project-members`, `auth-personal-tokens`, `auth-invitations`, `auth-resource-session`: normal login/logout, private project access, roles and removal, PAT creation/revocation, explicit invitation acceptance, protected files and resource-session loss |
 
+### Receipt identity and validation
+
 Receipts live in `packages/daynight-web/.tmp/acceptance/<run-id>/`, with the
 latest aggregate at `.tmp/acceptance/evidence.json` inside this package. They
-use top-level `schemaVersion: 3` and record source identity, including required
+use top-level `schemaVersion: 4` with explicit `scope: all | native | container`
+and record source identity, including required
 `source.gitTreeSha` from actual `git rev-parse HEAD^{tree}`, the installed CLI
-receipt and raw artifact identities, native binary
-SHA-256, PostgreSQL/browser versions, pipeline stages, target phases, capacity
-measurements, container image identity and cleanup outcomes. Each stage records
+receipt and raw artifact identities, selected resource identities, pipeline stages,
+target phases and cleanup outcomes. Native scopes include their binary SHA-256,
+PostgreSQL and capacity measurements; container scopes include production image
+identity. A container-only receipt has no native resource object. Each stage records
 its result, start/end times, observed command process identities and spawned
 process groups. Each browser phase records its own result, browser identity,
 Playwright process/group and `browserCleanup` result. Raw reports and screenshots
 live under `native/functional/`, `container/` and `native/capacity/`; the unchanged
-schema 1 capacity receipt is `native/capacity/performance.json`. Additional mandatory
-combined receipts are `native/auth-combined/target.json` and
-`container/auth-combined/target.json`, both schema 1 with `kind: auth-combined`.
+schema 1 capacity receipt is `native/capacity/performance.json` for native scopes.
+Each selected target requires its combined receipt at
+`native/auth-combined/target.json` or `container/auth-combined/target.json`,
+schema 1 with `kind: auth-combined`.
 They require all eleven named checks, source/browser/installed-package identity,
 old/new restart process identity and passed browser/resource cleanup. They retain
 safe observations and hashes, not credential/configuration bodies or raw logs.
-The 63-case report validator remains independent. `CI` requires a clean checkout matching
+Complete acceptance retains the independent 63-case report inventory. Scoped
+validation requires exactly its selected targets and phases, without empty
+success placeholders for omitted resources. `CI` requires a clean checkout matching
 `GITHUB_SHA` and the pinned browser for the current Linux or macOS host. Playwright uses one worker and no
 retries; skipped, flaky, duplicate/missing or incomplete scenarios fail validation.
 When selected, the web CI job archives `daynight-web-acceptance` separately from raw
 coverage for 30 days. Inspect the artifact from the exact workflow run and its
 tested checkout identity, which is normally a merge revision for PR runs. A pass
 requires the strict union of twenty-nine native functional and five native capacity/limit
-scenarios (34 native total), plus the twenty-nine container functional scenarios. Every
+scenarios (34 native total), plus the twenty-nine container functional scenarios.
+A standalone pass proves only its declared scope. Portable completion data preserves
+selected target validation and contained artifact-relative references; it does not
+turn another host's process IDs or absolute paths into local recovery authority. Every
 phase and target rejects missing, extra or duplicate scenarios and skipped/flaky/retried results.
 Installed-CLI handoff, container callbacks and recovery require matching source
 commit/tree/dirty state as well as existing package/artifact ownership. A missing
@@ -1813,13 +1874,16 @@ logout, revocation or expiry.
 The runner registers owned-resource cleanup before creating its database or
 native process. Timeouts and cancellation stop owned command groups; browser
 receipts identify the detached Chromium group and project-local profile as well.
-A passing run requires confirmed native, browser/profile and dev-ci cleanup.
+A passing run requires confirmed cleanup for every selected native, browser/profile
+and dev-ci resource.
 Each phase verifies its Playwright group has stopped and recovers owned browser
-resources immediately. After the native functional phase, an atomically written
+resources immediately. In a complete `all` run, after the native functional phase, an atomically written
 `container/container-permission.json` binds its completed cleanup to the exact
 acceptance run ID, dev-ci run ID and source SHA. The container callback records
 its identity before waiting, and inventories browsers only after permission;
-its `ready.json` is diagnostic timing, not browser permission. Any stage failure
+its `ready.json` is diagnostic timing, not browser permission. A standalone
+container callback starts after its own CLI preparation and source validation;
+it has no native phase or cross-runner permission wait. Any stage failure
 or unexpected native-server exit cancels sibling work, drains started tasks and
 preserves failures before final cleanup.
 
@@ -1833,10 +1897,12 @@ node packages/daynight-web/scripts/acceptance.mts --cleanup
 node packages/daynight-web/scripts/acceptance.mts --cleanup RUN_ID
 ```
 
-No receipt is a no-op. Recovery accepts only top-level schema 3 receipts;
-schema 1, schema 2 and unknown versions fail without a compatibility fallback. Valid
+No receipt is a no-op. Recovery accepts only top-level schema 4 receipts with a
+valid explicit scope; older and unknown versions fail without a compatibility
+fallback. Valid
 receipts constrain recovery to recorded run/source identities, exact Docker labels and names, and host platform/PID/executable/start-time
-identity. Linux uses procfs ticks; macOS uses kernel start time in microseconds,
+identity. Only the recorded scope's resources and phase directories are eligible
+for recovery. Linux uses procfs ticks; macOS uses kernel start time in microseconds,
 actual executable paths and process groups. Receipts from another platform are rejected. It verifies recorded stage command identities/groups and visits browser
 phases in reverse order: `native/capacity`, `container`, `native/functional`.
 A still-running native Go process also requires its recorded binary
@@ -1846,7 +1912,7 @@ or unknown new profiles cause failure and remain for diagnosis. It does not kill
 unidentified processes or remove unidentified profiles. Dev-ci recovery uses the
 same recorded project identity and bounded cleanup entry.
 
-The runner persists one `installedCli` ownership record before package
+Each run persists one `installedCli` ownership record before package
 preparation: its deterministic `<acceptanceRun>/installed-cli` root and cleanup
 state exist even if a completed receipt does not. Preparation creates that root
 exclusively. Cleanup requires recorded commands/groups to have stopped, validates
