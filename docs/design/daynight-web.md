@@ -664,7 +664,7 @@ DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
 
 ### localhost 交付部署
 
-生产交付直接集成既有 `deployment/localhost/`。继续执行 `bash deployment/localhost/up.sh`，一次构建并启动带页面的 Go 服务、PostgreSQL 和 gateway；完成后同一地址可打开项目页面与 API。镜像加入前端构建阶段，最终运行阶段仍只有非 root Go 二进制，不增加前端容器。日常重建与停止保持现有数据保留语义。
+生产交付直接集成既有 `deployment/localhost/`。继续执行 `bash deployment/localhost/up.sh`，一次构建并启动带页面的 Go 服务、PostgreSQL 和 gateway；完成后同一地址可打开项目页面与 API。镜像加入前端构建阶段，最终运行阶段仍只有非 root Go 二进制，不增加前端容器。构建上下文只接纳产品前端、共享 session 协议和资源发布工具；目录例外之后重新排除子项再逐项接纳，避免把验收工具的依赖带入生产构建。工作区完整类型检查与 harness 保留全部开发输入，容器继续校验并构建实际产品闭包。日常重建与停止保持现有数据保留语义。
 
 ```text
 仓库根构建上下文

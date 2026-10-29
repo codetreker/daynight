@@ -13,7 +13,7 @@ import { waitForContainerPermission, writeContainerPermission } from './permissi
 import { runPipeline, runTargetPipeline } from './pipeline.mts';
 import { browserDirectories, capacityScenarios, expectedTargets, functionalScenarios, readAcceptanceScope, type AcceptanceScope } from './inventory.mts';
 import { recordAcceptanceCompletion } from './completion.mts';
-import { nativeEvidence, validateEvidenceScope, type Source, type Target, type BrowserPhase, type Stage, type NativeEvidence, type AuthFixtureEvidence, type InstalledEvidence, type ReadyInstalledEvidence, type Evidence } from './evidence.mts';
+import { acceptanceEvidenceSchemaVersion, nativeEvidence, readEvidenceHeader, validateEvidenceScope, type Source, type Target, type BrowserPhase, type Stage, type NativeEvidence, type AuthFixtureEvidence, type InstalledEvidence, type ReadyInstalledEvidence, type Evidence } from './evidence.mts';
 import type { PackedCliPackage } from '../../../daynight/test/fixtures/installed-cli.ts';
 import { prepareStorage, cleanupStorage, type StorageReceipt } from './storage.mts';
 import { recoverCliProcesses, validateInstalledCli, type InstalledCliReceipt } from './installed-cli.mts';
@@ -268,13 +268,8 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     }
     const acceptanceDirectory = dirname(directory);
     const evidence = await readJson(join(acceptanceDirectory, 'evidence.json')) as Evidence;
-    if (evidence.schemaVersion !== 4 || !['all', 'container'].includes(evidence.scope) || directory !== join(evidenceRoot, evidence.runId, 'container')
-      || (evidence.scope === 'all' && (typeof nativeEvidence(evidence) !== 'object' || nativeEvidence(evidence) === null))
-      || (evidence.scope === 'container' && 'native' in evidence)
-      || !/^\d{14}-[a-f0-9-]{36}$/.test(evidence.runId) || !/^[a-f0-9]{40}$/.test(evidence.source.gitSha)
-      || !/^[a-f0-9]{40}$/.test(evidence.source.gitTreeSha)) {
-      throw new Error('Container callback does not belong to this acceptance source and run.');
-    }
+    const header = readEvidenceHeader(evidence, 'container');
+    if (directory !== join(evidenceRoot, header.runId, 'container')) throw new Error('Container callback does not belong to this acceptance source and run.');
     validateEvidenceScope(evidence);
     const project = `daynight-dev-ci-${runId}`;
     const callback = await processIdentity(process.pid);
@@ -292,8 +287,9 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     }
     cancellation.signal.throwIfAborted();
     const prepared = await readJson(join(acceptanceDirectory, 'evidence.json')) as Evidence;
-    if (prepared.schemaVersion !== 4 || prepared.scope !== evidence.scope || prepared.runId !== evidence.runId
-      || prepared.source.gitSha !== evidence.source.gitSha || prepared.source.gitTreeSha !== evidence.source.gitTreeSha) {
+    const preparedHeader = readEvidenceHeader(prepared, 'container');
+    if (preparedHeader.scope !== header.scope || preparedHeader.runId !== header.runId
+      || preparedHeader.source.gitSha !== header.source.gitSha || preparedHeader.source.gitTreeSha !== header.source.gitTreeSha) {
       throw new Error('Container parent identity changed during preparation.');
     }
     validateEvidenceScope(prepared);
@@ -570,7 +566,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     const original = await optionalJson(requestedRunId === undefined ? join(evidenceRoot, 'evidence.json') : join(evidenceRoot, requestedRunId, 'evidence.json'));
     if (original === undefined) { console.log('Web acceptance recovery: no run receipt; no resources were changed.'); return; }
     const evidence = original as Evidence;
-    if (evidence.schemaVersion !== 4 || !['all', 'native', 'container'].includes(evidence.scope) || !/^\d{14}-[a-f0-9-]{36}$/.test(evidence.runId)
+    if (evidence.schemaVersion !== acceptanceEvidenceSchemaVersion || !['all', 'native', 'container'].includes(evidence.scope) || !/^\d{14}-[a-f0-9-]{36}$/.test(evidence.runId)
       || (requestedRunId !== undefined && evidence.runId !== requestedRunId)) throw new Error('Invalid acceptance recovery receipt.');
     validateEvidenceScope(evidence);
     const directory = join(evidenceRoot, evidence.runId);
@@ -588,7 +584,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
         throw new Error('Recovery receipt does not identify this run resources and source.');
       }
     }
-    const receipt: Record<string, unknown> = { schemaVersion: 4, scope: evidence.scope, runId: evidence.runId, result: 'running', startedAt: new Date().toISOString() };
+    const receipt: Record<string, unknown> = { schemaVersion: acceptanceEvidenceSchemaVersion, scope: evidence.scope, runId: evidence.runId, result: 'running', startedAt: new Date().toISOString() };
     const save = async (): Promise<void> => {
       await json(join(directory, 'recovery.json'), receipt);
       await json(join(evidenceRoot, 'recovery.json'), receipt);
@@ -678,7 +674,7 @@ const createRunner = (cancellation: AbortController, options: AcceptanceOptions 
     const owner = `daynight-web-${runId}`;
     const runner = await processIdentity(process.pid);
     if (runner === null) throw new Error('Acceptance runner process identity disappeared.');
-    const initial = { schemaVersion: 4 as const, runId, source: await sourceIdentity(), startedAt: new Date().toISOString(),
+    const initial = { schemaVersion: acceptanceEvidenceSchemaVersion, runId, source: await sourceIdentity(), startedAt: new Date().toISOString(),
       result: 'running' as const, targets: [], stages: [], cleanup: 'pending' as const, runner, authCombined: [] };
     const evidence: Evidence = scope === 'container' ? { ...initial, scope } : { ...initial, scope,
       native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,

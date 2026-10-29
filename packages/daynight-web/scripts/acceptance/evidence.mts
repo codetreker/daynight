@@ -4,9 +4,28 @@ import type { Scenario } from './report.mts';
 import type { BrowserInventory } from './browser.mts';
 import type { StorageReceipt } from './storage.mts';
 import type { InstalledCliReceipt } from './installed-cli.mts';
-import type { AuthCombinedReceipt, RestartReceipt } from './auth-combined.mts';
+import type { AuthCombinedReceipt, RestartReceipt } from './auth-combined-report.mts';
 
+export const acceptanceEvidenceSchemaVersion = 4 as const;
 export type Source = { gitSha: string; gitTreeSha: string; githubSha: string | null; dirty: boolean };
+export type EvidenceHeader = { schemaVersion: typeof acceptanceEvidenceSchemaVersion; scope: AcceptanceScope; runId: string; source: Source };
+
+export const readEvidenceHeader = (value: unknown, target?: AcceptanceTarget): EvidenceHeader => {
+  const invalid: () => never = () => { throw new Error('Invalid acceptance parent evidence.'); };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid();
+  const evidence = value as Record<string, unknown>;
+  if (evidence.schemaVersion !== acceptanceEvidenceSchemaVersion || typeof evidence.runId !== 'string'
+    || !/^\d{14}-[a-f0-9-]{36}$/.test(evidence.runId)) invalid();
+  const scope = readAcceptanceScope(evidence.scope);
+  if (target !== undefined && !expectedTargets(scope).includes(target)) invalid();
+  if (typeof evidence.source !== 'object' || evidence.source === null || Array.isArray(evidence.source)) invalid();
+  const source = evidence.source as Record<string, unknown>;
+  if (typeof source.gitSha !== 'string' || !/^[a-f0-9]{40}$/.test(source.gitSha)
+    || typeof source.gitTreeSha !== 'string' || !/^[a-f0-9]{40}$/.test(source.gitTreeSha)
+    || typeof source.dirty !== 'boolean' || (source.githubSha !== null && (typeof source.githubSha !== 'string' || !/^[a-f0-9]{40}$/.test(source.githubSha)))) invalid();
+  return { schemaVersion: acceptanceEvidenceSchemaVersion, scope, runId: evidence.runId,
+    source: { gitSha: source.gitSha, gitTreeSha: source.gitTreeSha, dirty: source.dirty, githubSha: source.githubSha as string | null } };
+};
 export type TargetIdentity = {
   target: 'native' | 'container'; baseUrl: string; postgresContainer: string;
   projectLabel: { key: string; value: string }; database: 'daynight';
@@ -31,7 +50,7 @@ export type AuthFixtureEvidence = { directory: string; binary: string; binarySha
 export type InstalledEvidence = { root: string; receiptPath?: string; receipt?: InstalledCliReceipt; cleanup: 'pending' | 'passed' | 'failed' };
 export type ReadyInstalledEvidence = InstalledEvidence & { receiptPath: string; receipt: InstalledCliReceipt };
 type EvidenceBase = {
-  schemaVersion: 4; runId: string; source: Source; startedAt: string; result: 'running' | 'passed' | 'failed';
+  schemaVersion: typeof acceptanceEvidenceSchemaVersion; runId: string; source: Source; startedAt: string; result: 'running' | 'passed' | 'failed';
   targets: Target[]; stages: Stage[]; container?: unknown; performance?: unknown;
   cleanup: 'pending' | 'passed' | 'failed'; finishedAt?: string; error?: string; cleanupErrors?: string[];
   installedCli?: InstalledEvidence;
@@ -51,7 +70,7 @@ export const validateEvidenceScope = (value: unknown): AcceptanceScope => {
   const invalid: () => never = () => { throw new Error('Invalid acceptance scope or resource inventory.'); };
   if (typeof value !== 'object' || value === null || Array.isArray(value)) invalid();
   const evidence = value as Record<string, unknown>;
-  const scope = readAcceptanceScope(evidence.scope);
+  const { scope } = readEvidenceHeader(evidence);
   if (scope === 'container') {
     if ('native' in evidence) invalid();
   } else {

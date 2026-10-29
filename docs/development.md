@@ -489,7 +489,9 @@ calibrates that existing setting for the dedicated public standard Linux
 runner's four CPUs; it does not change inputs, assertions or coverage gates.
 The `browser` mode installs pinned Chromium and Linux dependencies under the
 existing 600-second bound, then invokes ordinary core acceptance after the job's
-deployment fixture checks. The wrapper checks that each command's owned process
+deployment fixture checks. Production Docker builds admit the UI, shared session
+protocol and asset-publisher inputs; acceptance tooling remains in the workspace's
+complete typecheck and harness checks rather than the product build context. The wrapper checks that each command's owned process
 group stopped after settlement, preserving both command and cleanup failures.
 
 The core has no quality/browser preparation callbacks or readiness-admission

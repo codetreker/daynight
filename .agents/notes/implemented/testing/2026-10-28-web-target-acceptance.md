@@ -31,9 +31,11 @@ zero-retry, fixed inputs, repetitions, timing, geometry, screenshots, traces and
 privacy rules retain their existing meaning. The [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)
 owns commands and receipt interpretation.
 
-Top-level evidence and recovery use schema 4 with an explicit scope. Recovery
-validates that scope and visits only its recorded resources and phase
-directories. Process/platform/start identity, exact Docker ownership, native
+`evidence.mts` owns the top-level schema version and parent-header parser.
+Runner creation, callback/recovery and combined database controls share that
+source and compatible-target admission. Top-level evidence and recovery use
+schema 4 with an explicit scope. Recovery validates that scope and visits only
+its recorded resources and phase directories. Process/platform/start identity, exact Docker ownership, native
 binary and storage identity, browser/profile markers, managed command groups
 and bounded error-preserving cleanup remain mandatory. Older or ambiguous
 receipts fail rather than acquiring guessed resource ownership. Capacity,
@@ -94,3 +96,10 @@ production operations and acceptance assertions.
 Complete acceptance still costs both target journeys. Separate execution alone
 does not establish a hosted speedup or a new timing allowance. Runtime results
 remain tied to the tested source, workload, browser and environment.
+
+The production Web build context admits product sources, shared session
+protocol sources and the asset publisher. Its directory exceptions re-exclude
+descendants before listing those inputs, so acceptance tooling does not become
+a production image input through parent-directory matching. Full workspace
+TypeScript and harness checks retain their complete development inputs outside
+the image; the container still typechecks and builds its real product closure.

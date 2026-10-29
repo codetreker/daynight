@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import { processIdentity } from './identity.mts';
 import { launchNativeServer, restartContainerServer } from './runner.mts';
 import { acceptanceUsage } from './arguments.mts';
+import { acceptanceEvidenceSchemaVersion } from './evidence.mts';
 import type { CombinedCommand } from './auth-combined-target.mts';
 import type { RestartReceipt } from './auth-combined.mts';
 
@@ -192,7 +193,7 @@ test('recovery removes only the recorded native storage after confirming the nat
     const operatorStorage = join(value.directory, 'operator-storage');
     const owner = `daynight-web-${id}`;
     const evidence = {
-      schemaVersion: 4, scope: 'all', runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, githubSha: process.env.GITHUB_SHA ?? null },
+      schemaVersion: acceptanceEvidenceSchemaVersion, scope: 'all', runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, dirty: false, githubSha: process.env.GITHUB_SHA ?? null },
       runner: { platform: process.platform, pid: 2_147_483_647, executable: process.execPath, startTicks: '1', group: 2_147_483_647 }, stages: [], targets: [],
       native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
         binary: join(directory, 'daynight-server'), storageRoot },
@@ -226,7 +227,7 @@ test('recovery refuses a storage path outside its run and preserves storage whil
       const storageRoot = join(directory, 'native-storage');
       const owner = `daynight-web-${id}`;
       const evidence = {
-        schemaVersion: 4, scope: 'all', runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, githubSha: process.env.GITHUB_SHA ?? null },
+        schemaVersion: acceptanceEvidenceSchemaVersion, scope: 'all', runId: id, source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, dirty: false, githubSha: process.env.GITHUB_SHA ?? null },
         runner: { platform: process.platform, pid: 2_147_483_647, executable: process.execPath, startTicks: '1', group: 2_147_483_647 }, stages: [], targets: [],
         native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
           binary: join(directory, 'daynight-server'), storageRoot: invalid === 'path' ? value.directory : storageRoot,
@@ -253,7 +254,7 @@ const earlyContainerCallback = async (value: Fixture, delays = { initializationM
   const directory = join(evidenceRoot, id);
   const containerDirectory = join(directory, 'container');
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 4, scope: 'all', runId: id, native: { owner: `daynight-web-${id}`, postgresContainer: `daynight-web-${id}-postgres`, postgresVolume: `daynight-web-${id}-data`, binary: join(directory, 'daynight-server'), storageRoot: join(directory, 'native-storage') }, targets: [], stages: [], source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha } }));
+  await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: acceptanceEvidenceSchemaVersion, scope: 'all', runId: id, native: { owner: `daynight-web-${id}`, postgresContainer: `daynight-web-${id}-postgres`, postgresVolume: `daynight-web-${id}-data`, binary: join(directory, 'daynight-server'), storageRoot: join(directory, 'native-storage') }, targets: [], stages: [], source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, dirty: false, githubSha: process.env.GITHUB_SHA ?? null } }));
   await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'%s\\n\' "$0 $*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nif [ "$1" != ps ]; then exit 91; fi\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
   value.env = { ...value.env, DAYNIGHT_ACCEPTANCE_DIRECTORY: containerDirectory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId,
     DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };
@@ -409,7 +410,7 @@ const installationRecoveryFixture = async (value: Fixture, completed: boolean) =
     installedCli.receiptPath = receiptPath;
     await writeFile(receiptPath, JSON.stringify(receipt));
   }
-  const evidence = { schemaVersion: 4, scope: 'all', runId: id, source, installedCli,
+  const evidence = { schemaVersion: acceptanceEvidenceSchemaVersion, scope: 'all', runId: id, source, installedCli,
     runner: { platform: process.platform, pid: 2_147_483_647, executable: process.execPath, startTicks: '1', group: 2_147_483_647 }, stages: [], targets: [],
     native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`, binary: join(directory, 'daynight-server'), storageRoot } };
   await writeFile(join(directory, 'evidence.json'), JSON.stringify(evidence));
@@ -615,8 +616,8 @@ test('recovery cleans only recorded native auth directories and refuses an unide
       await writeFile(join(authDirectory, 'apps.db'), 'owned private fixture database');
       const auth = { directory: authDirectory, binary: fileURLToPath(new URL('../../../daynight-server/.tmp/uniauth-fixture', import.meta.url)),
         binarySha256: 'a'.repeat(64), cleanup: 'pending', ...(kind === 'live' ? { processPid: process.pid } : {}) };
-      await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 4, scope: 'all', runId: id,
-        source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, githubSha: process.env.GITHUB_SHA ?? null },
+      await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: acceptanceEvidenceSchemaVersion, scope: 'all', runId: id,
+        source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, dirty: false, githubSha: process.env.GITHUB_SHA ?? null },
         runner: { platform: process.platform, pid: 2_147_483_647, executable: process.execPath, startTicks: '1', group: 2_147_483_647 }, stages: [], targets: [],
         native: { owner, postgresContainer: `${owner}-postgres`, postgresVolume: `${owner}-data`,
           binary: join(directory, 'daynight-server'), storageRoot, authFixtures: [auth] } }));
@@ -954,8 +955,8 @@ test('standalone container callback does not wait for a native permission and re
     const containerDirectory = join(directory, 'container');
     const devCiRunId = '20261021123457-1234-56789';
     await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: 4, scope: 'container', runId: id,
-      targets: [], stages: [], source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha } }));
+    await writeFile(join(directory, 'evidence.json'), JSON.stringify({ schemaVersion: acceptanceEvidenceSchemaVersion, scope: 'container', runId: id,
+      targets: [], stages: [], source: { gitSha: sourceGitSha, gitTreeSha: sourceGitTreeSha, dirty: false, githubSha: process.env.GITHUB_SHA ?? null } }));
     await writeFile(join(value.bin, 'docker'), '#!/bin/sh\nprintf \'%s\\n\' "$0 $*" >> "$DAYNIGHT_TEST_COMMAND_LOG"\nprintf \'%s\\n\' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n');
     value.env = { ...value.env, DAYNIGHT_ACCEPTANCE_DIRECTORY: containerDirectory, DAYNIGHT_DEV_CI_RUN_ID: devCiRunId, DAYNIGHT_BASE_URL: 'http://127.0.0.1:12345' };
     try {

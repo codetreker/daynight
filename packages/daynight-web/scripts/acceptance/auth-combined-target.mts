@@ -4,6 +4,7 @@ import { lstat, open, readFile, readdir, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyStorage, type StorageReceipt } from './storage.mts';
+import { readEvidenceHeader } from './evidence.mts';
 import type { CommandOptions } from './process.mts';
 
 export type CombinedCommand = (file: string, args: readonly string[], options?: Omit<CommandOptions, 'cwd'> & { cwd?: string }) => Promise<string>;
@@ -170,11 +171,10 @@ export const createAuthCombinedTarget = (target: CombinedTarget, run: CombinedCo
   };
   const verifyDatabase = async (): Promise<void> => {
     const evidence = JSON.parse(await readFile(join(target.acceptanceDirectory, 'evidence.json'), 'utf8')) as {
-      schemaVersion: unknown; runId: unknown; source?: { gitSha?: unknown };
       native?: { storageRoot?: string; storage?: StorageReceipt };
     };
-    requireValue(evidence.schemaVersion === 3 && evidence.runId === basename(target.acceptanceDirectory)
-      && evidence.source?.gitSha === target.sourceGitSha);
+    const header = readEvidenceHeader(evidence, target.target);
+    requireValue(header.runId === basename(target.acceptanceDirectory) && header.source.gitSha === target.sourceGitSha);
     if (target.storage.kind === 'native') {
       const storage = evidence.native?.storage;
       requireValue(storage !== undefined && evidence.native?.storageRoot === join(target.acceptanceDirectory, 'native-storage')

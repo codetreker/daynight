@@ -8,6 +8,7 @@ import { basename, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import type { StorageReceipt } from './storage.mts';
+import { acceptanceEvidenceSchemaVersion } from './evidence.mts';
 import { createAuthCombinedTarget, type CombinedCommand, type CombinedTarget } from './auth-combined-target.mts';
 import { AuthCombinedTransportError, startAuthCombinedUpload, type AuthCombinedTransportCategory, type AuthCombinedUploadOptions, type PausedUpload } from './auth-combined-transport.mts';
 import { launchAuthCombinedBrowser, validateAuthCombinedReceipt, type AuthCombinedReceipt, type RestartReceipt } from './auth-combined.mts';
@@ -74,7 +75,8 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
       root: target.storage.root, mode: 'directory', phase: 'ready' };
     await writeFile(join(directory, 'storage-receipt.json'), JSON.stringify(storage));
   }
-  await writeFile(join(acceptanceDirectory, 'evidence.json'), JSON.stringify({ schemaVersion: 3, runId: basename(acceptanceDirectory), source: { gitSha: sourceGitSha },
+  await writeFile(join(acceptanceDirectory, 'evidence.json'), JSON.stringify({ schemaVersion: acceptanceEvidenceSchemaVersion, scope: 'all', runId: basename(acceptanceDirectory),
+    source: { gitSha: sourceGitSha, gitTreeSha: 'b'.repeat(40), githubSha: null, dirty: true },
     ...(storage === undefined ? {} : { native: { storageRoot: storage.directory, storage } }) }));
   const calls: RecordedCommand[] = [];
   const state = { postgresLabel: target.projectLabel.value, service: 'postgres', serverIdentity: `${composeProject}|server|sha256:${'c'.repeat(64)}`,
@@ -97,6 +99,43 @@ const withTarget = async (kind: CombinedTarget['target'], action: (fixture: Targ
   try { await action({ target, run, calls, state }); }
   finally { await rm(acceptanceDirectory, { recursive: true, force: true }); }
 };
+
+test('target controls admit current parent evidence for complete and matching standalone scopes', async () => {
+  for (const kind of ['native', 'container'] as const) await withTarget(kind, async ({ target, run, calls }) => {
+    const path = join(target.acceptanceDirectory, 'evidence.json');
+    const original = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    const controls = createAuthCombinedTarget(target, run);
+    for (const scope of ['all', kind]) {
+      calls.length = 0;
+      await writeFile(path, JSON.stringify({ ...original, scope }));
+      assert.deepEqual(await controls.observeUpload(upload), emptyObservation);
+      assert.equal((await controls.expirePAT({ id: patId, userId })).id, patId);
+      assert.equal(calls.some(({ args }) => args[0] === 'exec' && args[1] === target.postgresContainer), true);
+    }
+  });
+});
+
+test('target source admission rejects old schemas and absent or foreign scopes before control commands', async () => {
+  for (const kind of ['native', 'container'] as const) await withTarget(kind, async ({ target, run, calls }) => {
+    const path = join(target.acceptanceDirectory, 'evidence.json');
+    const original = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+    const { scope: _scope, ...withoutScope } = original;
+    const controls = createAuthCombinedTarget(target, run);
+    for (const changed of [
+      { ...original, schemaVersion: 3 },
+      withoutScope,
+      { ...original, scope: kind === 'native' ? 'container' : 'native' },
+      { ...original, scope: 'unknown' },
+      { ...original, source: { ...(original.source as Record<string, unknown>), gitTreeSha: marker } },
+    ]) {
+      calls.length = 0;
+      await writeFile(path, JSON.stringify(changed));
+      await safeFailure(controls.observeUpload(upload));
+      await safeFailure(controls.expirePAT({ id: patId, userId }));
+      assert.equal(calls.length, 0, 'Invalid parent admission must precede even read-only Docker controls.');
+    }
+  });
+});
 
 test('native observations distinguish an admitted prefix, publication and discarded upload with exact member versions', async () => {
   await withTarget('native', async ({ target, run, state, calls }) => {
@@ -166,7 +205,7 @@ test('target controls reject invalid paths, source receipts and changed PostgreS
     for (const path of ['../escape', '/absolute', 'nested//file', 'nested/./file', 'nested\\file', 'nested/\0file']) await safeFailure(controls.observeUpload({ ...upload, path }));
     assert.equal(calls.length, 0);
     const originalEvidence = JSON.parse(await readFile(join(target.acceptanceDirectory, 'evidence.json'), 'utf8'));
-    await writeFile(join(target.acceptanceDirectory, 'evidence.json'), JSON.stringify({ ...originalEvidence, source: { gitSha: 'f'.repeat(40) } }));
+    await writeFile(join(target.acceptanceDirectory, 'evidence.json'), JSON.stringify({ ...originalEvidence, source: { ...originalEvidence.source, gitSha: 'f'.repeat(40) } }));
     await safeFailure(controls.observeUpload(upload));
     assert.equal(calls.length, 0);
     await writeFile(join(target.acceptanceDirectory, 'evidence.json'), JSON.stringify(originalEvidence));
