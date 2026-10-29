@@ -35,6 +35,12 @@
 [执行计时架构](daynight-task-timing.md)的起止事实与图数据库时间样本已接入相同事务和读取模型。
 项目阈值通过项目同行设置、管理员 PATCH 与完整 Project 投影交付；实时卡片消费这些事实，当前显示机制由[看板设计](daynight-web.md)拥有。
 
+## 账号级 Worker 观测
+
+`Workers` service 与既有任务用例共享具体 store 和认证 principal，使用独立的报告事务保存账号级最新运行快照。`workersRoutes` 注册报告、列表和详情，并沿用既有认证及清洗日志。报告只按输入任务主键批量规范化 claim 引用，读取按当前成员关系过滤历史观测；该路径不取得 project 写锁或修改任务归属。
+
+[快照设计](daynight-worker-snapshots.md)拥有 `workers` 表、原子 UPSERT、旧 observation 保护、稳定分页和时间语义；[需求](../spec/daynight-worker-snapshots.md)拥有公开字段与错误。任务图、claim inventory 和本机执行恢复保持各自的职责。
+
 ## 完整图读取
 
 `Tasks.Graph` 复用既有具体 store 与只读 `ReadSnapshot`：先在同一快照检查项目成员
@@ -122,12 +128,13 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 | Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes） |
 | Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、具体 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt` |
 | TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
+| WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
 
 `TaskDependency` 的方向是“`taskId` 依赖 `dependsOnTaskId`”。project 拥有任务及依赖
 图；不同 project 可以关联相同仓库地址，`repoUrl` 不作为 project 唯一键。当前 API
 没有修改 project 仓库或删除资源的操作。
 
-使用 `projects`、`tasks`、`task_dependencies` 三张表。`tasks.properties` 用 text
+任务图核心使用 `projects`、`tasks`、`task_dependencies` 三张表；账号级 Worker 观测使用独立 `workers` 表。`tasks.properties` 用 text
 保存固定属性 DTO 的序列化 JSON；属性不增加关联表，完整 task 同行读写，图查询
 保持显式精简投影。主键分别为 `id`、`id`、
 `(project_id, task_id, depends_on_task_id)`。数据库使用非空、状态枚举检查、正版本
@@ -262,6 +269,9 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `POST .../tasks/{taskId}/worker-claim/release` | owner/admin 确认停止后释放并返回 todo |
 | `POST .../tasks/{taskId}/worker-claim/withdraw` | owner/admin 原子撤回 active/released，清除归属并关闭自动执行 |
 | `POST .../tasks/{taskId}/worker-claim/resume` | owner/admin 显式为 released task 开始新执行 |
+| `POST /api/v1/me/workers/{workerId}/report` | 原子保存账号级最新运行快照，不写 task |
+| `GET /api/v1/me/workers` | 近期 Worker 摘要、当前可见任务计数及稳定 cursor |
+| `GET /api/v1/me/workers/{workerId}` | telemetry 与按当前权限过滤的任务观测 |
 
 创建 project 的输入为 `name` 和 `repoUrl`。创建 task 的输入为 `title`、可省略的
 `description`、`dependsOn`、`externalDependsOn` 与 `properties`；省略描述表示空字符串，省略依赖和
