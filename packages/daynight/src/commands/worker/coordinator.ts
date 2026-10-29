@@ -52,6 +52,13 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   let nextPendingProject = 0;
   let shuttingDown = false;
   let ticking = false;
+  const cancel = (): void => {
+    shuttingDown = true;
+    const reason = normalSignal.aborted ? normalSignal.reason : new Error("Worker shutdown requested.");
+    for (const running of controllers.values()) running.controller.abort(reason);
+  };
+  normalSignal.addEventListener("abort", cancel, { once: true });
+  if (normalSignal.aborted) cancel();
   const serialize = async <T>(identity: ClaimIdentity, action: () => Promise<T>): Promise<T> => {
     const identityKey = taskKey(identity);
     const previous = tails.get(identityKey) ?? Promise.resolve();
@@ -135,10 +142,10 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   };
   const startJob = (identity: ClaimIdentity, action: (signal: AbortSignal) => Promise<void>, terminal: boolean): void => {
     const identityKey = key(identity);
-    if (jobs.has(identityKey)) return;
+    if (shuttingDown || jobs.has(identityKey)) return;
     const controller = new AbortController();
     controllers.set(identityKey, { controller, terminal });
-    const signal = terminal ? controller.signal : AbortSignal.any([normalSignal, controller.signal]);
+    const signal = AbortSignal.any([normalSignal, controller.signal]);
     const job = serialize(identity, () => action(signal)).catch((error: unknown) => {
       if (isWorkerCancellation(error, signal)) return;
       if (!terminal) failures.set(identityKey, (failures.get(identityKey) ?? 0) + 1);
@@ -396,8 +403,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       await serialize(owner, () => runCleanup(owner, true, normalSignal));
     },
     shutdown: async (): Promise<boolean> => {
-      shuttingDown = true;
-      for (const running of controllers.values()) running.controller.abort(new Error("Worker shutdown requested."));
+      cancel();
+      normalSignal.removeEventListener("abort", cancel);
       await Promise.all(jobs.values());
       let complete = true;
       for (const task of options.store.listUnfinishedTasks()) if (task.agentControlMode === "web" && options.webStore?.getTask(task) == null) {

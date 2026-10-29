@@ -39,8 +39,11 @@ A report has a 15-second attempt budget: up to five seconds for collection,
 including native termination and join, and up to ten seconds for HTTP. Typed
 unconfirmed command cleanup prevents replacement probes for that tool while
 other fields continue reporting. A timed-out statfs call retains a single gate
-until the uncancellable OS request settles. Runtime cancels and joins reporting
-before returning its existing resources and lock.
+until the uncancellable OS request settles. Root cancellation synchronously
+stops scheduling and aborts every job, including terminal cleanup, before any
+reporter join. Runtime then joins reporting and jobs before directly stopping
+execution resources and releasing its stores and lock. Unfinished worktrees and
+claim rows retain the existing shutdown semantics.
 
 ## Alternatives
 
@@ -71,6 +74,8 @@ Observation adds periodic OS and bounded subprocess work. Native version data
 may be up to 60 seconds old, with its original checkedAt. OS filesystem I/O
 cannot be cancelled; a stuck operation makes that field unavailable without
 accumulating probes. Unconfirmed native cleanup disables that tool's probes for
-the remaining process lifetime and remains an exit failure. Neither the client
+the remaining process lifetime and remains an exit failure. A slow reporter join
+cannot extend terminal cleanup: all jobs have already been cancelled, so
+shutdown preserves unfinished worktrees and local rows. Neither the client
 nor the latest server row retains resource history or proves provider login,
 launch capability, or completed native task execution.

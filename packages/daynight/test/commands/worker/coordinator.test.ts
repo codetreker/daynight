@@ -6,6 +6,10 @@ import { isWorkerCancellation } from "../../../src/commands/worker/execution.js"
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
+import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
+import type { Operation } from "../../../src/api/operation.js";
+import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
@@ -424,6 +428,71 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
     expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId });
     expect(f.store.getTask(old)).toEqual(old);
+  });
+
+  it("cancels terminal cleanup before a pending reporter join and preserves its resources for shutdown", async () => {
+    const f = await fixture(), cancellation = new AbortController();
+    const coordinator = createWorkerCoordinator({ ...f.options, signal: cancellation.signal });
+    await coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    f.grants.clear(); f.candidates.splice(0);
+    f.tasks.submitPrompt.mockImplementation(async (context, binding) => ({
+      submission: "submitted", observation: { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding },
+    }));
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.submitPrompt).toHaveBeenCalledOnce());
+    f.resources.get(row.claimId)!.panes[0]!.status = "idle";
+    let releaseObservation!: () => void;
+    const observation = new Promise<void>(resolve => { releaseObservation = resolve; });
+    let pendingOperation: Operation | undefined;
+    vi.mocked(f.herdr.tasks.listResources).mockImplementationOnce(async operation => {
+      pendingOperation = operation;
+      await observation; operation.check();
+      return structuredClone([...f.resources.values()]);
+    });
+    await eventually(() => expect(pendingOperation).toBeDefined());
+    let releaseSample!: (value: WorkerTelemetrySample) => void;
+    const sample = new Promise<WorkerTelemetrySample>(resolve => { releaseSample = resolve; });
+    const reporter = createWorkerReporter({ signal: cancellation.signal, collect: async () => sample,
+      send: vi.fn(), emit: vi.fn(),
+    });
+    const shutdown = vi.spyOn(coordinator, "shutdown");
+    let joined = false;
+    const closing = (async () => { await reporter.stop(); joined = true; return coordinator.shutdown(); });
+    let close: Promise<boolean> | undefined;
+    try {
+      cancellation.abort(new Error("Worker interrupted while native telemetry is joining."));
+      close = closing();
+      expect(pendingOperation!.signal.aborted).toBe(true);
+      const observationDisposed = vi.spyOn(pendingOperation!, "dispose");
+      releaseObservation();
+      await eventually(() => expect(observationDisposed).toHaveBeenCalledOnce());
+      await coordinator.tick();
+      expect(joined).toBe(false); expect(shutdown).not.toHaveBeenCalled();
+      expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      expect(f.store.getTask(row)).toEqual(row); expect(f.worktrees.has(row.claimId)).toBe(true);
+      releaseSample({ telemetry: workerTelemetry, issues: [] });
+      await expect(close).resolves.toBe(true);
+      expect(f.tasks.stopAndClose).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      expect(f.store.getTask(row)).toEqual(row); expect(f.worktrees.has(row.claimId)).toBe(true);
+      expect(f.resources.size).toBe(0); expect(f.events.some(event => event.kind === "cleanup-error")).toBe(false);
+    } finally {
+      cancellation.abort(); releaseObservation(); releaseSample({ telemetry: workerTelemetry, issues: [] });
+      if (close === undefined) close = closing();
+      await close;
+    }
+  });
+
+  it("detaches root cancellation after shutdown and ignores a cancelled coordinator's ticks", async () => {
+    const f = await fixture(), cancellation = new AbortController();
+    const remove = vi.spyOn(cancellation.signal, "removeEventListener");
+    const coordinator = createWorkerCoordinator({ ...f.options, signal: cancellation.signal });
+    cancellation.abort();
+    await coordinator.tick();
+    expect(f.remote.ownInventory).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
+    await expect(coordinator.shutdown()).resolves.toBe(true);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
   });
 
   it("interrupts an already waiting terminal cleanup without another prompt or worktree deletion", async () => {
