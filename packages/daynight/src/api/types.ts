@@ -60,6 +60,37 @@ export type WorkerAgent = "codex" | "copilot" | "claude";
 export type AgentControlMode = "herdr" | "web";
 export type WorkerPhase = "preparing" | "executing" | "verifying" | "completing" | "waiting" | "paused";
 export type WorkerMachine = { readonly id: string; readonly name: string };
+export type WorkerProbeCode = "not_found" | "permission_denied" | "timeout" | "command_failed" | "invalid_output" | "invalid_sample" | "out_of_range" | "io_error" | "unavailable";
+export type WorkerProbe<T> =
+  | { readonly state: "ok"; readonly checkedAt: string; readonly value: T }
+  | { readonly state: "error"; readonly checkedAt: string; readonly code: WorkerProbeCode };
+export type WorkerExecutableProbe = WorkerProbe<string> | { readonly state: "not_installed"; readonly checkedAt: string };
+export type WorkerHerdrProbe = WorkerProbe<string> | { readonly state: "not_running"; readonly checkedAt: string };
+export type WorkerOS = { readonly type: string; readonly release: string; readonly version: string; readonly arch: string };
+export type WorkerCPU = { readonly model: string; readonly logicalProcessors: number; readonly usagePercent: number };
+export type WorkerMemory = { readonly usedBytes: number; readonly totalBytes: number };
+export type WorkerDisk = { readonly availableBytes: number; readonly totalBytes: number };
+export type WorkerVersions = {
+  readonly daynight: string;
+  readonly herdr: WorkerHerdrProbe;
+  readonly codex: WorkerExecutableProbe;
+  readonly copilot: WorkerExecutableProbe;
+};
+export type WorkerTelemetry = {
+  readonly machine: WorkerMachine;
+  readonly platform: TaskPlatform;
+  readonly workingDirectory: string;
+  readonly sampledAt: string;
+  readonly os: WorkerProbe<WorkerOS>;
+  readonly cpu: WorkerProbe<WorkerCPU>;
+  readonly memory: WorkerProbe<WorkerMemory>;
+  readonly disk: WorkerProbe<WorkerDisk>;
+  readonly versions: WorkerVersions;
+};
+export type WorkerTaskReference = { readonly projectId: string; readonly taskId: string; readonly claimId: string };
+export type WorkerTaskInventory = { readonly observedAt: string; readonly claims: readonly WorkerTaskReference[] };
+export type WorkerReport = WorkerTelemetry & { readonly taskInventory: WorkerTaskInventory | null };
+export type WorkerReportReceipt = { readonly observedAt: string; readonly lastReportedAt: string };
 export type WorkerHerdr = { readonly session: string; readonly workspaceId: string; readonly paneId: string };
 export type WorkerClaim = {
   readonly claimId: string;

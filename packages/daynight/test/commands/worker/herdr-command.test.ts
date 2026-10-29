@@ -1,11 +1,10 @@
-import { spawn } from "node:child_process";
-import type { ChildProcess } from "node:child_process";
+import { ChildProcess, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
-import { HerdrCommandError, runHerdrCommand, terminateOwnedHerdrProcess } from "../../../src/commands/worker/herdr/command.js";
+import { hasHerdrCommandCleanupFailure, HerdrCommandCleanupError, HerdrCommandError, runHerdrCommand, terminateOwnedHerdrProcess } from "../../../src/commands/worker/herdr/command.js";
 import type { HerdrSpawn } from "../../../src/commands/worker/herdr/command.js";
 
 const operations: Operation[] = [];
@@ -98,5 +97,23 @@ describe("bounded Herdr prerequisite commands", () => {
     await expect(runHerdrCommand(command("setInterval(()=>{},1000);"), op, start)).rejects.toThrow("command deadline elapsed");
     expect(op.signal.aborted).toBe(false); expect(() => op.check()).not.toThrow();
     const child = children.at(-1)!; expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+  });
+
+  it("reserves termination and actual stream closure inside a strict collection deadline", async () => {
+    const op = operation(1_200); const began = performance.now();
+    await expect(runHerdrCommand(command("process.stdout.write('started');setInterval(()=>{},1000);"), op, start, { cleanupWithinDeadline: true })).rejects.toThrow("command deadline elapsed");
+    expect(performance.now() - began).toBeLessThan(1_400);
+    const child = children.at(-1)!;
+    expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
+    expect(child.stdout?.destroyed).toBe(true); expect(child.stderr?.destroyed).toBe(true);
+  });
+
+  it("keeps missing close acknowledgement explicit within the strict total budget", async () => {
+    const op = operation(200); const began = performance.now();
+    const failure: unknown = await runHerdrCommand(command(""), op, () => new ChildProcess(), { cleanupWithinDeadline: true }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(HerdrCommandCleanupError);
+    expect(hasHerdrCommandCleanupFailure(new Error("Probe failed", { cause: failure }))).toBe(true);
+    expect(hasHerdrCommandCleanupFailure(new AggregateError([new Error("ordinary field failure")]))).toBe(false);
+    expect(performance.now() - began).toBeLessThan(400);
   });
 });

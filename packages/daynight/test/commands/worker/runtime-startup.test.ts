@@ -10,7 +10,8 @@ import { changeWorkerRepositories, readWorkerRepositorySnapshot } from "../../..
 import type { WorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerCoordinatorOptions } from "../../../src/commands/worker/coordinator.js";
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), reporter: vi.fn() }));
+vi.mock("../../../src/commands/worker/reporter.js", () => ({ createWorkerReporter: mocks.reporter }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitManager: mocks.git }));
@@ -35,12 +36,13 @@ const fixture = async (warm = false, configured = false) => {
   await writeFile(paths.configFile, source);
   let store: WorkerStore | undefined;
   if (warm) { store = openWorkerStore(paths.databaseFile); stores.add(store); }
-  return { homeDirectory, packageDirectory: path.resolve("package"), paths, source, document, repository, store };
+  return { homeDirectory, version: "0.26.1", workingDirectory: homeDirectory, packageDirectory: path.resolve("package"), paths, source, document, repository, store };
 };
 const coordinator = (tick: () => Promise<void>) => ({ tick: vi.fn(tick), shutdown: vi.fn(async () => true) });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.reporter.mockReturnValue({ publishInventory: vi.fn(), recordClaim: vi.fn(), stop: vi.fn(async () => {}) });
   mocks.remote.mockReturnValue({ currentUserId: vi.fn(async () => uuid(6)), resolveProject: vi.fn(async () => ({ id: uuid(1) })) });
   mocks.git.mockReturnValue({ prepareRepository: vi.fn(async () => {}), dispose: vi.fn(async () => {}) });
   mocks.herdr.mockReturnValue({ stopInstance: vi.fn(async () => ({ stopped: true })), attachment: {} });

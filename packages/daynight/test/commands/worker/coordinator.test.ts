@@ -6,6 +6,10 @@ import { isWorkerCancellation } from "../../../src/commands/worker/execution.js"
 import { createCleanupDriver } from "../../../src/commands/worker/cleanup.js";
 import { HerdrAgentActionError, HerdrRpcError } from "../../../src/commands/worker/herdr.js";
 import { createWorkerCoordinator } from "../../../src/commands/worker/coordinator.js";
+import { createWorkerReporter } from "../../../src/commands/worker/reporter.js";
+import type { WorkerTelemetrySample } from "../../../src/commands/worker/telemetry.js";
+import type { Operation } from "../../../src/api/operation.js";
+import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
@@ -109,6 +113,57 @@ const addOrphan = (f: Awaited<ReturnType<typeof fixture>>, taskId = uuid(900)) =
   f.resources.set(owner.claimId, { owner, workspaceId: binding.workspaceId, panes: [pane] });
   return { owner, binding, pane };
 };
+
+describe("worker report publication boundaries", () => {
+  it("publishes a complete inventory before native resource discovery can fail", async () => {
+    const f = await fixture();
+    const reference = { projectId: f.project.projectId, taskId: f.candidates[0]!.id, claimId: uuid(400) };
+    f.grant(f.candidates[0]!, { claimId: reference.claimId, workerId, machine: f.options.machine, platform: "linux", agent: "codex", worktreeId: uuid(401) });
+    const onInventory = vi.fn();
+    const failure = new Error("native resource observation failed");
+    vi.mocked(f.herdr.ensureInstance).mockImplementation(async () => {
+      expect(onInventory).toHaveBeenCalledExactlyOnceWith({ observedAt: new Date(1000).toISOString(), claims: [reference] });
+      throw failure;
+    });
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory });
+    await expect(coordinator.tick()).rejects.toBe(failure);
+    expect(f.store.getTask(reference)).not.toBeNull();
+  });
+
+  it("does not publish an inventory when the complete remote observation fails", async () => {
+    const f = await fixture(), onInventory = vi.fn(), failure = new Error("later inventory page failed");
+    vi.mocked(f.remote.ownInventory).mockRejectedValue(failure);
+    await expect(createWorkerCoordinator({ ...f.options, onInventory }).tick()).rejects.toBe(failure);
+    expect(onInventory).not.toHaveBeenCalled();
+    expect(f.herdr.ensureInstance).not.toHaveBeenCalled();
+  });
+
+  it("publishes a confirmed grant after durable registration and before resource preparation", async () => {
+    const f = await fixture();
+    const order: string[] = [];
+    const onInventory = vi.fn(() => { order.push("inventory"); });
+    const onClaim = vi.fn((reference: { projectId: string; taskId: string; claimId: string }) => {
+      expect(f.store.getTask(reference)).toMatchObject({ ...reference, status: "pending" });
+      expect(f.git.prepareWorktree).not.toHaveBeenCalled();
+      order.push("claim");
+    });
+    const coordinator = createWorkerCoordinator({ ...f.options, onInventory, onClaim });
+    await coordinator.tick();
+    expect(onInventory).toHaveBeenCalledExactlyOnceWith({ observedAt: new Date(1000).toISOString(), claims: [] });
+    expect(onClaim).toHaveBeenCalledOnce(); expect(order).toEqual(["inventory", "claim"]);
+    await eventually(() => expect(f.tasks.start).toHaveBeenCalledOnce());
+    await coordinator.shutdown();
+  });
+
+  it("keeps an uncertain claim out of confirmed grant publication", async () => {
+    const f = await fixture(), onClaim = vi.fn();
+    vi.mocked(f.remote.claim).mockRejectedValue(new Error("request outcome unknown"));
+    const coordinator = createWorkerCoordinator({ ...f.options, onClaim });
+    await coordinator.tick();
+    expect(onClaim).not.toHaveBeenCalled(); expect(f.store.listTasks()).toEqual([]);
+    await coordinator.shutdown();
+  });
+});
 
 describe("minimal worker resource reconciliation", () => {
   it("commits active before startup, saves the native ID and reconnects without replay", async () => {
@@ -373,6 +428,71 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.tasks.start).toHaveBeenCalledTimes(2));
     expect(f.tasks.start.mock.calls[1]![2]).toMatchObject({ resumeSessionId: old.sessionId });
     expect(f.store.getTask(old)).toEqual(old);
+  });
+
+  it("cancels terminal cleanup before a pending reporter join and preserves its resources for shutdown", async () => {
+    const f = await fixture(), cancellation = new AbortController();
+    const coordinator = createWorkerCoordinator({ ...f.options, signal: cancellation.signal });
+    await coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    f.grants.clear(); f.candidates.splice(0);
+    f.tasks.submitPrompt.mockImplementation(async (context, binding) => ({
+      submission: "submitted", observation: { ...f.resources.get(context.claimId)!.panes[0]!, name: "managed", binding },
+    }));
+    await coordinator.tick();
+    await eventually(() => expect(f.tasks.submitPrompt).toHaveBeenCalledOnce());
+    f.resources.get(row.claimId)!.panes[0]!.status = "idle";
+    let releaseObservation!: () => void;
+    const observation = new Promise<void>(resolve => { releaseObservation = resolve; });
+    let pendingOperation: Operation | undefined;
+    vi.mocked(f.herdr.tasks.listResources).mockImplementationOnce(async operation => {
+      pendingOperation = operation;
+      await observation; operation.check();
+      return structuredClone([...f.resources.values()]);
+    });
+    await eventually(() => expect(pendingOperation).toBeDefined());
+    let releaseSample!: (value: WorkerTelemetrySample) => void;
+    const sample = new Promise<WorkerTelemetrySample>(resolve => { releaseSample = resolve; });
+    const reporter = createWorkerReporter({ signal: cancellation.signal, collect: async () => sample,
+      send: vi.fn(), emit: vi.fn(),
+    });
+    const shutdown = vi.spyOn(coordinator, "shutdown");
+    let joined = false;
+    const closing = (async () => { await reporter.stop(); joined = true; return coordinator.shutdown(); });
+    let close: Promise<boolean> | undefined;
+    try {
+      cancellation.abort(new Error("Worker interrupted while native telemetry is joining."));
+      close = closing();
+      expect(pendingOperation!.signal.aborted).toBe(true);
+      const observationDisposed = vi.spyOn(pendingOperation!, "dispose");
+      releaseObservation();
+      await eventually(() => expect(observationDisposed).toHaveBeenCalledOnce());
+      await coordinator.tick();
+      expect(joined).toBe(false); expect(shutdown).not.toHaveBeenCalled();
+      expect(f.tasks.stopAndClose).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      expect(f.store.getTask(row)).toEqual(row); expect(f.worktrees.has(row.claimId)).toBe(true);
+      releaseSample({ telemetry: workerTelemetry, issues: [] });
+      await expect(close).resolves.toBe(true);
+      expect(f.tasks.stopAndClose).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+      expect(f.store.getTask(row)).toEqual(row); expect(f.worktrees.has(row.claimId)).toBe(true);
+      expect(f.resources.size).toBe(0); expect(f.events.some(event => event.kind === "cleanup-error")).toBe(false);
+    } finally {
+      cancellation.abort(); releaseObservation(); releaseSample({ telemetry: workerTelemetry, issues: [] });
+      if (close === undefined) close = closing();
+      await close;
+    }
+  });
+
+  it("detaches root cancellation after shutdown and ignores a cancelled coordinator's ticks", async () => {
+    const f = await fixture(), cancellation = new AbortController();
+    const remove = vi.spyOn(cancellation.signal, "removeEventListener");
+    const coordinator = createWorkerCoordinator({ ...f.options, signal: cancellation.signal });
+    cancellation.abort();
+    await coordinator.tick();
+    expect(f.remote.ownInventory).not.toHaveBeenCalled(); expect(f.remote.claim).not.toHaveBeenCalled();
+    await expect(coordinator.shutdown()).resolves.toBe(true);
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
   });
 
   it("interrupts an already waiting terminal cleanup without another prompt or worktree deletion", async () => {

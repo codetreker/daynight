@@ -35,7 +35,7 @@ describe("worker startup configuration defaults", () => {
   ])("reaches authentication with $label and preserves the user's files", async ({ source }) => {
     const { homeDirectory, paths, before } = await fixture(source);
     const messages: string[] = [];
-    await expect(runWorker({ homeDirectory, packageDirectory, log: (message) => { messages.push(message); } }))
+    await expect(runWorker({ homeDirectory, packageDirectory, version: "0.26.1", workingDirectory: homeDirectory, log: (message) => { messages.push(message); } }))
       .rejects.toThrow(authenticationError);
     expect((await readdir(homeDirectory, { recursive: true })).sort()).toEqual(before);
     if (source !== undefined) expect(await readFile(paths.configFile, "utf8")).toBe(source);
@@ -48,7 +48,7 @@ describe("worker startup configuration defaults", () => {
     { source: "worker:\n  repositories: null\n", message: "worker.repositories must be a sequence" },
   ])("rejects invalid configuration before authentication: $source", async ({ source, message }) => {
     const { homeDirectory, paths, before } = await fixture(source);
-    await expect(runWorker({ homeDirectory, packageDirectory })).rejects.toThrow(message);
+    await expect(runWorker({ homeDirectory, packageDirectory, version: "0.26.1", workingDirectory: homeDirectory })).rejects.toThrow(message);
     expect((await readdir(homeDirectory, { recursive: true })).sort()).toEqual(before);
     expect(await readFile(paths.configFile, "utf8")).toBe(source);
   });
