@@ -14,15 +14,31 @@ import { processIdentity, requireGroupStopped, type ProcessIdentity } from './id
 import { createAuthCombinedTarget, type CombinedCommand, type CombinedTarget, type UploadObservation } from './auth-combined-target.mts';
 import { AuthCombinedTransportError, startAuthCombinedUpload, type PausedUpload } from './auth-combined-transport.mts';
 
-export type { AuthCombinedReceipt, RestartReceipt } from './auth-combined-report.mts';
-import { CombinedFailure, requiredCombinedChecks as requiredChecks, validateAuthCombinedReceipt, type AuthCombinedReceipt, type RestartReceipt } from './auth-combined-report.mts';
-export { validateAuthCombinedReceipt } from './auth-combined-report.mts';
+export type RestartReceipt = {
+  target: 'native' | 'container'; origin: string; startedAt: string; readyAt: string;
+  before: { pid: number; start: string }; after: { pid: number; start: string };
+  binaryOrImage: string; containerId?: string;
+};
+type Check = { name: string; result: 'passed'; details: Record<string, unknown> };
+export type AuthCombinedReceipt = {
+  schemaVersion: 1; kind: 'auth-combined'; target: 'native' | 'container'; sourceGitSha: string;
+  origin: string; result: 'running' | 'passed' | 'failed'; startedAt: string; finishedAt?: string;
+  cleanup: 'pending' | 'passed' | 'failed'; browserCleanup: 'not-started' | 'pending' | 'passed' | 'failed';
+  browserInventory?: BrowserInventory; browser?: { name: string; version: string; platform: string; executableOverride: boolean };
+  installedCli: { version: string; sourceGitSha: string; entrySha256: string; tarballSha256: string };
+  checks: Check[]; screenshots: string[]; commands: ProcessIdentity[]; commandGroups: number[];
+  restart?: RestartReceipt; error?: string; cleanupErrors?: string[];
+};
 export type AuthCombinedOptions = {
   target: CombinedTarget; directory: string; installedReceiptPath: string; signal: AbortSignal;
   restartTarget(run: CombinedCommand, signal: AbortSignal): Promise<RestartReceipt>;
   readLogs(run: CombinedCommand): Promise<string>;
 };
 
+const requiredChecks = ['partial-sharing', 'normal-member-writes', 'bilingual-token', 'same-data-cli-browser',
+  'restart-original-state', 'logout-independent-pat', 'pat-revocation', 'socket-disconnect',
+  'admitted-member-removal', 'expired-pat', 'secret-scan'] as const;
+class CombinedFailure extends Error {}
 let launchingBrowser = false;
 export const launchAuthCombinedBrowser = async <T,>(temporaryRoot: string, launch: () => Promise<T>): Promise<T> => {
   if (launchingBrowser) throw new CombinedFailure('A combined browser launch is already active.');
@@ -116,6 +132,21 @@ const cliDenied = async (cli: Cli, args: string[], code: 'not_found' | 'unauthen
   check(response.exitCode !== 0 && response.stdout === '' && response.stderr.includes(code), 'Installed CLI did not preserve the expected authority failure.');
 };
 
+export const validateAuthCombinedReceipt = (value: unknown, target: CombinedTarget): AuthCombinedReceipt => {
+  check(typeof value === 'object' && value !== null, 'Combined receipt is missing.');
+  const receipt = value as AuthCombinedReceipt;
+  check(receipt.schemaVersion === 1 && receipt.kind === 'auth-combined' && receipt.result === 'passed'
+    && receipt.cleanup === 'passed' && receipt.browserCleanup === 'passed' && receipt.target === target.target
+    && receipt.origin === target.baseUrl && receipt.sourceGitSha === target.sourceGitSha, 'Combined receipt identity or cleanup differs.');
+  check(receipt.checks.length === requiredChecks.length && requiredChecks.every((name) => receipt.checks.filter((entry) => entry.name === name && entry.result === 'passed').length === 1), 'Combined receipt does not contain every required result exactly once.');
+  check(receipt.restart?.origin === target.baseUrl && receipt.restart.before.pid !== receipt.restart.after.pid
+    && receipt.restart.before.start !== receipt.restart.after.start, 'Combined restart did not replace the owned process.');
+  check(receipt.browser?.name === 'chromium' && /^\d+\.\d+\.\d+\.\d+$/.test(receipt.browser.version)
+    && receipt.browser.platform === process.platform && ['linux', 'darwin'].includes(receipt.browser.platform)
+    && (!process.env.CI || receipt.browser.executableOverride === false), 'Combined browser identity is invalid.');
+  check(receipt.installedCli.sourceGitSha === target.sourceGitSha && receipt.screenshots.length >= 2, 'Combined CLI source or screenshot evidence is missing.');
+  return receipt;
+};
 
 const bilingualToken = async (page: Page, context: BrowserContext, origin: string, secrets: Set<string>, signal: AbortSignal): Promise<Token> => {
   await page.goto(`${origin}/account`);

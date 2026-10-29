@@ -57,8 +57,8 @@ Portable completion data preserves target validation and contained artifact-rela
 file references. It does not interpret a downloaded PID, Docker identity or
 absolute path as a resource on the receiving host. Source and producer identity
 do not replace actual target-local process, image, browser, file and cleanup
-checks. The [quality isolation decision](2026-10-26-web-quality-job-isolation.md)
-owns independent quality work; the [cross-layer decision](2026-10-22-task-lifecycle-cross-layer-acceptance.md)
+checks. The [quality isolation decision](../../implemented/testing/2026-10-26-web-quality-job-isolation.md)
+owns independent quality work; the [cross-layer decision](../../implemented/testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 owns installed-process and source-attribution proof.
 
 ## Alternatives

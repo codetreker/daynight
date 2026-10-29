@@ -1,7 +1,4 @@
 import { recoverAcceptance, runAcceptance, runContainerCallback } from './acceptance/runner.mts';
-import { parseAcceptanceArguments } from './acceptance/arguments.mts';
-import { readCliPackage } from './acceptance/cli-package.mts';
-import { readCliSourceIdentity } from '../../daynight/test/fixtures/installed-cli.ts';
 
 const cancellation = new AbortController();
 const cancel = (): void => cancellation.abort();
@@ -9,17 +6,11 @@ process.once('SIGINT', cancel);
 process.once('SIGTERM', cancel);
 
 try {
-  const invocation = parseAcceptanceArguments(process.argv.slice(2));
-  if (invocation.command === 'callback') await runContainerCallback(cancellation);
-  else if (invocation.command === 'cleanup') await recoverAcceptance(cancellation, invocation.runId);
-  else {
-    const packed = invocation.package;
-    const prepared = packed === undefined ? undefined : await readCliPackage(packed.directory, {
-      source: readCliSourceIdentity(), runId: packed.runId, originAttempt: packed.originAttempt,
-    });
-    await runAcceptance(cancellation, { scope: invocation.scope, allowApfsImage: invocation.allowApfsImage,
-      ...(prepared === undefined ? {} : { packedPackage: prepared.packedPackage }) });
-  }
+  if (process.argv.length === 3 && process.argv[2] === '--container') await runContainerCallback(cancellation);
+  else if ((process.argv.length === 3 || process.argv.length === 4) && process.argv[2] === '--cleanup') await recoverAcceptance(cancellation, process.argv[3]);
+  else if (process.argv.length === 3 && process.argv[2] === '--apfs') await runAcceptance(cancellation, { allowApfsImage: true });
+  else if (process.argv.length === 2) await runAcceptance(cancellation);
+  else throw new Error('Usage: node scripts/acceptance.mts [--apfs | --cleanup [run-id]]');
 } catch (error) {
   console.error(error);
   process.exitCode = 1;
