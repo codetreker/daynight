@@ -741,11 +741,11 @@ project identity and graph counts without recording task content or repository
 addresses. This endpoint supports the implemented
 [task dashboard](../../docs/design/daynight-web.md); the browser application
 and embedded static delivery are implemented.
-From the repository root, the default `pnpm web:acceptance` builds this executable and runs
+From the repository root, `pnpm web:acceptance` builds this executable and runs
 production browser workflows against both a native process and the dev-ci
 container gateway. It owns separate PostgreSQL resources; its prerequisites,
-receipts, explicit target scopes, prepared CLI package input and fixed-capacity
-gates are in the [web README](../daynight-web/README.md#production-browser-acceptance).
+receipts and fixed-capacity gates are in the
+[web README](../daynight-web/README.md#production-browser-acceptance).
 
 ## Task HTTP API
 

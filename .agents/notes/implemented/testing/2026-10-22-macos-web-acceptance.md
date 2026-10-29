@@ -13,8 +13,7 @@ survive the platform extension.
 
 ## Decision
 
-Keep the same target execution capabilities for Linux and macOS. The default
-complete `all` pipeline retains the same functional and capacity
+Keep one pipeline for Linux and macOS with the same functional and capacity
 inventories, combined authentication checks, four fixed capacity datasets, five
 measurements and existing latency limits. Linux remains
 the full CI platform; macOS local acceptance requires native execution and does
@@ -88,12 +87,10 @@ The native suite verifies busy recovery with a real acknowledged read-only file
 holder. Only a real detach refusal followed by a PID-specific open-file check,
 acknowledged release and successful retry establishes that lifecycle evidence.
 
-The platform extension introduced schema 3 to preserve native identity units.
-Current top-level evidence and recovery use explicit schema 4 scopes under the
-[target execution decision](2026-10-28-web-target-acceptance.md). Older schemas and
-cross-platform process identities are rejected; interpretation never guesses
-identity units or drops ownership checks. Capacity and container-permission
-child formats retain their own versions.
+Top-level evidence and recovery use schema 3. Older schemas and cross-platform
+process identities are rejected; receipt interpretation never guesses identity
+units or silently drops ownership checks. Capacity and container-permission
+receipt formats remain unchanged.
 
 The shared dev-ci runner supports macOS system Bash 3.2. Bootstrap logging uses
 an owned FIFO and an explicit background logger: dynamically allocated file

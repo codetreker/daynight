@@ -17,10 +17,8 @@ The existing acceptance owners provide complementary evidence for the
 [three-state setter](../architecture/2026-10-24-task-status-assignment.md). The Go
 command fixture retains its built race binary, isolated PostgreSQL schema,
 project-row barriers, structured request logs and restart/cleanup ownership. The
-production Web runner reuses its packed CLI and the selected scope's services,
-browser phases and request allowlists. Complete `all` acceptance retains both
-services and its shared installation; explicit targets establish their own
-installed-artifact and cleanup ownership. Native CLI acceptance validates
+production Web runner reuses its existing packed CLI, native and container
+services, browser phases and request allowlists. Native CLI acceptance validates
 the actual installed package. The
 [authentication activation](../architecture/2026-10-22-authentication-activation.md)
 provides normal real-UniAuth sessions/PATs and explicit membership. Browser and
@@ -88,10 +86,8 @@ cases use actual GET/PUT digits and database results independently of multi-hop
 version growth. Graph failures use owned real failure paths. Redacting request
 forwarding preserves original method, headers, body and Origin validation.
 
-At this delivery the production inventory was 28 functional scenarios per
-target plus five native capacity/limit cases (33 native, 28 container). Current
-complete acceptance retains 34 native and 29 container results; an explicit
-scope proves only its selected target. Source-bound runtime receipts,
+Production inventory remains 28 functional scenarios per target plus five native
+capacity/limit cases (33 native, 28 container). Source-bound runtime receipts,
 strict coverage, performance, one-worker/no-retry and cleanup gates are unchanged.
 Transport barriers and offline fixtures establish their declared boundaries;
 they do not replace actual status-changing database requests.
@@ -115,10 +111,8 @@ Existing source receipts add required gitTreeSha from actual
 `source.gitTreeSha` in shared packed-CLI and Web source records, and root
 `gitTreeSha` in Go acceptance. Handoff, callback and recovery validation require
 matching commit, tree, dirty state, package and artifact identities. Missing or
-mismatched tree identity fails. Adding tree identity did not change that
-receipt version or reinterpret incomplete data. Current explicit Web scope and
-schema 4 recovery are owned by the [target execution decision](2026-10-28-web-target-acceptance.md),
-which retains the same exact-source requirements. A tree identifies committed content; dirty
+mismatched tree identity fails; no schema-version bump or legacy fallback
+reinterprets an incomplete receipt. A tree identifies committed content; dirty
 state is not a digest of modifications, and tree equality alone proves neither
 an executed gate nor reviewer approval. Original artifact and platform identities
 remain intact under the [evidence ownership decision](../../archived/process/2026-10-20-source-bound-validation-evidence.md).
