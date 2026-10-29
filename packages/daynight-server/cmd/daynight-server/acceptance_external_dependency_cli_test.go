@@ -37,13 +37,13 @@ func TestInstalledCLIExternalDependencyReadAcceptance(t *testing.T) {
 		if !target.AllowAgents || !slices.Equal(target.ExternalDependsOn, []string{prerequisiteID}) {
 			t.Fatal("installed permission update lost stored edge classification")
 		}
-		for _, output := range []string{cli.run(t, cli.repo, "task", "show", target.ID), cli.run(t, cli.repo, "task", "list"), cli.run(t, cli.repo, "task", "graph")} {
+		for _, output := range []string{cli.run(t, cli.repo, "task", "show", target.ID), cli.run(t, cli.repo, "task", "list"), cli.run(t, cli.repo, "task", "graph", target.ID)} {
 			if !strings.Contains(output, "External dependencies (1): "+prerequisiteID+"\n") {
 				t.Fatal("installed CLI text output lost external classification")
 			}
 		}
 		acceptanceCLITaskListJSON(t, cli.run(t, cli.repo, "task", "list", "--json"), []api.Task{prerequisite, target})
-		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", "--json"))
+		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", target.ID, "--json"))
 		if len(graph.Tasks) != 2 || !slices.Equal(graph.Tasks[1].ExternalDependsOn, target.ExternalDependsOn) {
 			t.Fatal("installed CLI graph omitted seeded classification")
 		}
@@ -77,7 +77,7 @@ func TestInstalledCLIExternalDependencyReadAcceptance(t *testing.T) {
 			t.Fatal("installed execution actions lost classification")
 		}
 		acceptanceCLITaskListJSON(t, cli.run(t, cli.repo, "task", "list", "--all", "--json"), []api.Task{prerequisite, target})
-		graph = acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", "--json"))
+		graph = acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", target.ID, "--json"))
 		process.signal(t)
 		process.stopped(t, 0)
 		restarted := fixture.launch(t, map[string]string{"DAYNIGHT_LISTEN_ADDR": process.address}).started(t)
@@ -87,7 +87,7 @@ func TestInstalledCLIExternalDependencyReadAcceptance(t *testing.T) {
 		if after := cli.task(t, prerequisite.ID); !reflect.DeepEqual(after, prerequisite) {
 			t.Fatal("prerequisite changed across service restart")
 		}
-		afterGraph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", "--json"))
+		afterGraph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", target.ID, "--json"))
 		afterGraph.ObservedAt = graph.ObservedAt
 		if !reflect.DeepEqual(afterGraph, graph) {
 			t.Fatal("classified graph changed across service restart")
