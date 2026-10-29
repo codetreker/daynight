@@ -1631,10 +1631,17 @@ and all owned browser, service, database and storage resources require confirmed
 cleanup. First-party fixture checks remain distinct from source-bound probes. The probe's local browser identity
 is recorded and is not a hosted-CI browser claim.
 
-The chain fixture creates 1,000 independent tasks, then attaches its 999 edges
-with versioned PATCH requests from sink to root, avoiding repeated traversal of
-a growing ancestor chain during setup. Complete snapshots compare every node's
-dependencies with the fixture, including the chain's exact predecessor sequence.
+The chain, merge and external fixtures create independent tasks in their
+source-first batches, then attach dependencies with versioned PATCH requests
+from sinks toward sources. Merge and external attach one complete layer at a
+time, with at most six requests within that layer; predecessors have no upstream
+dependencies when cycle validation visits them. Each PATCH-returned task replaces
+its earlier version, including the merge limit probe and the external sink before
+its dependency classification. Shared-root construction retains its direct API
+writes. Complete snapshots compare every node and dependency with the fixture;
+the actual API order remains the overview oracle's input. The [fixture
+construction decision](../../.agents/notes/implemented/testing/2026-10-28-web-capacity-fixture-construction.md)
+records the additional API-write cost and the retained acceptance boundaries.
 
 Capacity keeps four exact complete API inputs: 1,000 tasks each, a 999-edge chain
 and 5,000-edge merge/shared/external graphs. Complete snapshots still compare

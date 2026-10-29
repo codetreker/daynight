@@ -27,31 +27,56 @@ export const boundedMap = async <Input, Output>(items: readonly Input[], operati
   return result;
 };
 
+type LayerTask = { title: string; dependsOn: string[] };
+type DependencyLayer = readonly { index: number; dependsOn: string[] }[];
+
+const createDependencyLayers = (request: AuthenticatedAPI, projectId: string, tasks: Task[]) => {
+  const layers: DependencyLayer[] = [];
+  const createLayer = async (inputs: readonly LayerTask[]): Promise<Task[]> => {
+    const offset = tasks.length;
+    const created = await boundedMap(inputs, ({ title }) => createTask(request, projectId, { title }));
+    tasks.push(...created);
+    layers.push(inputs.map(({ dependsOn }, index) => ({ index: offset + index, dependsOn })));
+    return created;
+  };
+  const attachDependencies = async (): Promise<void> => {
+    // Layer barriers keep each prerequisite independent until all of its
+    // dependents are attached, avoiding repeated upstream cycle-check traversal.
+    for (const layer of layers.toReversed()) {
+      await boundedMap(layer.filter(({ dependsOn }) => dependsOn.length > 0), async ({ index, dependsOn }) => {
+        const task = tasks[index]!;
+        tasks[index] = await updateTask(request, projectId, task.id, { version: task.version, dependsOn });
+      });
+    }
+  };
+  return { createLayer, attachDependencies };
+};
+
 export const seedCapacity = async (request: AuthenticatedAPI, kind: CapacityKind): Promise<CapacityFixture> => {
   const project = await createProject(request, { name: `Capacity ${kind} ${randomUUID()}` });
   const root = await createTask(request, project.id, { title: `${kind} source root` });
   const tasks: Task[] = [root];
   if (kind === 'external') {
-    let previous = await boundedMap(Array.from({ length: 99 }, (_, index) => index), (index) =>
-      createTask(request, project.id, { title: `external source ${index}` }));
-    tasks.push(...previous);
+    const { createLayer, attachDependencies } = createDependencyLayers(request, project.id, tasks);
+    let previous = await createLayer(Array.from({ length: 99 }, (_, index) =>
+      ({ title: `external source ${index}`, dependsOn: [] })));
     let additional = 397;
     for (let layer = 1; layer <= 9; layer++) {
       const inputs = Array.from({ length: 99 }, (_, index) => {
         const count = additional > 0 ? 6 : 5;
         if (additional > 0) additional--;
-        return { index, dependsOn: Array.from({ length: count }, (_, offset) => previous[(index * 5 + offset) % previous.length]!.id) };
+        return { title: `external layer ${layer} task ${index}`,
+          dependsOn: Array.from({ length: count }, (_, offset) => previous[(index * 5 + offset) % previous.length]!.id) };
       });
-      previous = await boundedMap(inputs, ({ index, dependsOn }) =>
-        createTask(request, project.id, { title: `external layer ${layer} task ${index}`, dependsOn }));
-      tasks.push(...previous);
+      previous = await createLayer(inputs);
     }
-    const tails = await boundedMap(Array.from({ length: 8 }, (_, index) => index), (index) =>
-      createTask(request, project.id, { title: `external final prerequisite ${index}`, dependsOn: Array.from({ length: 5 }, (_, offset) => previous[index * 5 + offset]!.id) }));
-    tasks.push(...tails);
+    const tails = await createLayer(Array.from({ length: 8 }, (_, index) =>
+      ({ title: `external final prerequisite ${index}`, dependsOn: Array.from({ length: 5 }, (_, offset) => previous[index * 5 + offset]!.id) })));
     const externalIds = [...previous.map((task) => task.id), ...tails.map((task) => task.id)];
-    const sink = await createTask(request, project.id, { title: 'external chain sink', dependsOn: [root.id, ...externalIds] });
-    tasks.push(await seedExternalDependencies(request, project.id, sink, externalIds));
+    await createLayer([{ title: 'external chain sink', dependsOn: [root.id, ...externalIds] }]);
+    await attachDependencies();
+    const sinkIndex = tasks.length - 1;
+    tasks[sinkIndex] = await seedExternalDependencies(request, project.id, tasks[sinkIndex]!, externalIds);
     return { kind, project, root, tasks, edgeCount: 5000 };
   }
 
@@ -69,28 +94,28 @@ export const seedCapacity = async (request: AuthenticatedAPI, kind: CapacityKind
   }
 
   if (kind === 'merge') {
-    let previous = await boundedMap(Array.from({ length: 99 }, (_, index) => index), (index) =>
-      createTask(request, project.id, { title: `merge layer 1 task ${index}`, dependsOn: [root.id] }));
-    tasks.push(...previous);
+    const { createLayer, attachDependencies } = createDependencyLayers(request, project.id, tasks);
+    let previous = await createLayer(Array.from({ length: 99 }, (_, index) =>
+      ({ title: `merge layer 1 task ${index}`, dependsOn: [root.id] })));
     let additional = 401;
-    let extraEdge: CapacityFixture['additionalEdge'];
+    let extraPredecessorId: string | undefined;
     for (let layer = 2; layer <= 10; layer++) {
       const layerInputs = Array.from({ length: 100 }, (_, index) => {
         const count = additional > 0 ? 6 : 5;
         if (additional > 0) additional--;
-        return { index, dependsOn: Array.from({ length: count }, (_, offset) => previous[(index * 5 + offset) % previous.length]!.id) };
+        return { title: `merge layer ${layer} task ${index}`,
+          dependsOn: Array.from({ length: count }, (_, offset) => previous[(index * 5 + offset) % previous.length]!.id) };
       });
-      const current = await boundedMap(layerInputs, ({ index, dependsOn }) =>
-        createTask(request, project.id, { title: `merge layer ${layer} task ${index}`, dependsOn }));
+      const current = await createLayer(layerInputs);
       if (layer === 10) {
-        const task = current[current.length - 1]!;
-        const predecessorId = previous.find((candidate) => !task.dependsOn.includes(candidate.id))!.id;
-        extraEdge = { task, predecessorId };
+        const dependencies = layerInputs.at(-1)!.dependsOn;
+        extraPredecessorId = previous.find((candidate) => !dependencies.includes(candidate.id))!.id;
       }
-      tasks.push(...current);
       previous = current;
     }
-    return { kind, project, root, tasks, edgeCount: 5000, additionalEdge: extraEdge! };
+    await attachDependencies();
+    return { kind, project, root, tasks, edgeCount: 5000,
+      additionalEdge: { task: tasks.at(-1)!, predecessorId: extraPredecessorId! } };
   }
 
   const roots = [root, ...await boundedMap(Array.from({ length: 499 }, (_, index) => index), (index) =>
