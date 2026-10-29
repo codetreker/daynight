@@ -12,7 +12,7 @@ import type { createWorkerGitManager } from "./worktrees.js";
 
 export type WorkerEvent = { kind: string; message: string; task?: LocalTask; error?: unknown };
 export type WorkerGitManager = ReturnType<typeof createWorkerGitManager>;
-export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration };
+export type ExecutionInput = { task: LocalTask; project: WorkerProject; owner: ResourceOwner; title: string; configuration: ExecutionConfiguration; canPing: () => boolean };
 export type ExecutionDependencies = {
   store: WorkerStore;
   git: WorkerGitManager;
@@ -73,14 +73,14 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
     const { session, workspaceId, paneId, terminalId } = observation.binding;
     return JSON.stringify([session, workspaceId, paneId, terminalId, observation.status, observation.stateChangeSeq, observation.completionSeq]);
   };
-  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal): Promise<HerdrAgentObservation> => {
+  const submitInput = async (task: LocalTask, context: HerdrExecutionContext, observed: HerdrAgentObservation, prompt: string, signal?: AbortSignal, canSubmit?: () => boolean): Promise<HerdrAgentObservation> => {
     const identity = key(task);
-    lastInput.set(identity, inputState(observed));
-    const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation), signal).catch((error: unknown) => {
+    const receipt = await workerOperation((operation) => deps.herdr.tasks.submitPrompt(context, observed.binding, prompt, operation, canSubmit), signal).catch((error: unknown) => {
       if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") lastInput.delete(identity);
       else lastInput.set(identity, null);
       throw error;
     });
+    if (receipt.submission === "suppressed") return receipt.observation;
     lastInput.set(identity, inputState(receipt.observation));
     return workerOperation((operation) => deps.herdr.tasks.observe(context, observed.binding, operation), signal);
   };
@@ -131,8 +131,8 @@ export const createExecutionDriver = (deps: ExecutionDependencies) => {
             if (error instanceof HerdrAgentActionError && error.promptSubmission === "not-submitted") pendingInput.set(identity, pending);
             throw error;
           }
-        } else if (pending === undefined && (observed.status === "idle" || observed.status === "done") && observed.interactiveReady && !observed.launchPending && lastInput.get(identity) !== inputState(observed)) {
-          observed = await submitInput(task, context, observed, workerPingPrompt(task), signal);
+        } else if (pending === undefined && (observed.status === "idle" || observed.status === "done") && observed.interactiveReady && !observed.launchPending && lastInput.get(identity) !== inputState(observed) && input.canPing()) {
+          observed = await submitInput(task, context, observed, workerPingPrompt(task), signal, input.canPing);
         }
         assertNativeSession(task, observed);
         if (observed.nativeSession !== null) task = deps.store.setSessionId(task, observed.nativeSession.sessionId);

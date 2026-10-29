@@ -104,9 +104,13 @@ func (tx *ProjectTx) Reachable(ctx context.Context, from, to string, replacement
 	return reachable, nil
 }
 
+func workerNeedsAttention(properties core.TaskProperties) bool {
+	return properties.Worker != nil && properties.Worker.Signaling != ""
+}
+
 func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite) (core.Task, error) {
-	_, err := tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, properties, allow_agents, required_platform)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, id, tx.projectID, values.Title, values.Description, values.Status, taskproperties.Encode(values.Properties), values.AllowAgents, values.RequiredPlatform)
+	_, err := tx.tx.Exec(ctx, `INSERT INTO tasks (id, project_id, title, description, status, properties, allow_agents, required_platform, worker_needs_attention)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, id, tx.projectID, values.Title, values.Description, values.Status, taskproperties.Encode(values.Properties), values.AllowAgents, values.RequiredPlatform, workerNeedsAttention(values.Properties))
 	if err != nil {
 		return core.Task{}, queryError("create task", err)
 	}
@@ -117,7 +121,7 @@ func (tx *ProjectTx) CreateTask(ctx context.Context, id string, values TaskWrite
 }
 
 func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite) (core.Task, error) {
-	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, properties = $6, allow_agents = $7, required_platform = $8,
+	result, err := tx.tx.Exec(ctx, `UPDATE tasks SET title = $3, description = $4, status = $5, properties = $6, allow_agents = $7, required_platform = $8, worker_needs_attention = $9,
 		started_at = CASE
 			WHEN status <> $5 AND $5 = 'in_progress' THEN statement_timestamp()
 			WHEN status <> $5 AND $5 = 'todo' THEN NULL
@@ -128,7 +132,7 @@ func (tx *ProjectTx) UpdateTask(ctx context.Context, id string, values TaskWrite
 			WHEN status <> $5 AND $5 IN ('todo', 'in_progress') THEN NULL
 			ELSE completed_at END,
 		version = version + 1, updated_at = statement_timestamp() WHERE project_id = $1 AND id = $2`,
-		tx.projectID, id, values.Title, values.Description, values.Status, taskproperties.Encode(values.Properties), values.AllowAgents, values.RequiredPlatform)
+		tx.projectID, id, values.Title, values.Description, values.Status, taskproperties.Encode(values.Properties), values.AllowAgents, values.RequiredPlatform, workerNeedsAttention(values.Properties))
 	if err != nil {
 		return core.Task{}, queryError("update task", err)
 	}

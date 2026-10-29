@@ -36,6 +36,8 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
   tasks across configured repositories, preserve ongoing work through restarts
   and clean resources when the original claim leaves the worker's inventory.
+  Tasks can carry a needs-attention signal that highlights them in the Web and
+  suppresses routine worker pings until the signal is cleared.
 - **Control a task session in the browser.** With `worker.agentControlMode: web`,
   view native messages, reasoning and tool results, send text, stop a turn, and
   answer supported approvals, questions and forms in the task’s Session tab.

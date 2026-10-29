@@ -4,7 +4,7 @@
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 和任务详情中的
 只读 PR 区域已实现。[需求](../spec/daynight-task-properties.md)与
-[交互预览](mockups/task-properties.html)分别拥有行为和样式。
+[交互预览](mockups/task-properties.html)分别拥有 PR 行为和样式。列表、任务链、图节点和共享详情还消费需要处理信号，行为由同一属性需求拥有。
 
 已实现的[附件架构](daynight-task-attachments.md)扩展 task 详情，提供文件树、
 单文件上传/覆盖/删除、下载及同源预览。[附件需求](../spec/daynight-task-attachments.md)
@@ -268,6 +268,8 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 确认后 `setTaskAgentPermission` 通过普通 task PATCH 提交目标许可与精确 bigint 数字。成功响应核验原 project/task、未变生命周期、目标许可和单次版本增长，然后安装完整详情并刷新图；许可变更保持执行起止、PR 和依赖。冲突重读并重新审阅，明确失败保持原值，网络/5xx/协议错误或响应丢失先 GET 核对，不重放 PATCH。`in_progress` 禁止实际切换；该锁不改变明确执行、ready 或依赖语义。
 
 ### 认领归属与强制撤回
+
+列表、任务链子行和图节点使用 workerNeedsAttention 投影判断需要处理状态，为 true 时显示“需要处理”/“Needs attention”并使用统一高亮样式。折叠链按普通成员聚合是否存在 true 值，不把根任务的信号替代整链状态。信号内容不参与布局尺寸或节点几何计算；详情以原文文本展示并换行，空字符串撤下提示。该显示独立于任务状态、allowAgents 与阶段。
 
 详情弹窗、独立页及全屏通过共享 TaskDetailSurface 显示 worker 的当前归属。Active 显示认领用户名称或账号、机器、agent 和阶段；released 明确标为已释放，completed 历史不表示当前被认领。项目授权壳共享既有成员资料，为用户展示和 owner/admin 可用性提供输入；原 owner 不在当前成员清单时仍显示真实 userId，成员加载或失败不会把实际 claim 隐藏。服务端保留最终成员及权限校验。
 
@@ -842,6 +844,7 @@ type TaskGraph = {
     blockedBy: string[];
     ready: boolean;
     allowAgents: boolean;
+    workerNeedsAttention: boolean;
     requiredPlatform: "windows" | "linux" | "macos" | null;
     createdAt: string;
     updatedAt: string;
@@ -866,6 +869,7 @@ type GraphTask struct {
     BlockedBy         []string
     Ready             bool
     AllowAgents       bool
+    WorkerNeedsAttention bool
     CreatedAt         time.Time
     UpdatedAt         time.Time
     StartedAt         *time.Time

@@ -72,11 +72,12 @@ export type WorkerClaim = {
   readonly agentControlMode: AgentControlMode;
   readonly worktreeId: string;
   readonly phase: WorkerPhase;
+  readonly signaling: string;
   readonly herdr: WorkerHerdr | null;
   readonly nativeSessionId: string | null;
   readonly claimedAt: string;
 };
-export type WritableTaskProperties = { readonly pullRequests: readonly PullRequestProperty[]; readonly worker?: never };
+export type WritableTaskProperties = { readonly pullRequests?: readonly PullRequestProperty[]; readonly worker?: { readonly signaling: string } };
 export type TaskProperties = { readonly pullRequests: readonly PullRequestProperty[]; readonly worker: WorkerClaim | null };
 
 export type Task = {
@@ -100,6 +101,7 @@ export type Task = {
 };
 
 export type GraphTask = Omit<Task, "projectId" | "title" | "description" | "version" | "properties"> & {
+  readonly workerNeedsAttention: boolean;
   readonly titlePreview: string;
   readonly titleTruncated: boolean;
 };
@@ -126,7 +128,7 @@ export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly description?: string;
-  readonly properties?: WritableTaskProperties;
+  readonly properties?: Pick<WritableTaskProperties, "pullRequests">;
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
 };

@@ -6,7 +6,7 @@ import { GraphDataError, projectChain } from "../src/features/task-graph/model";
 const id = (value: number) => `00000000-0000-0000-0000-${value.toString(16).padStart(12, "0")}`;
 const time = "2026-10-20T12:00:00Z";
 const project: Project = { id: id(100), name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: id(n), version: 1n, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: id(n), version: 1n, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], workerNeedsAttention: false, allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
 
 it("orders UTC seconds and padded nanoseconds without rounding or lexical fraction errors", () => {
   expect(compareTimestamps(`${time.slice(0, -1)}.1Z`, `${time.slice(0, -1)}.100000000Z`)).toBe(0);
@@ -53,6 +53,7 @@ it("compares intrinsic facts including versions and preserves semantically equal
   expect(sameSummary(original, { ...original, createdAt: `${time.slice(0, -1)}.000Z` })).toBe(true);
   expect(sameSummary(original, task(1, { version: 2n }))).toBe(false);
   expect(sameSummary(original, task(1, { allowAgents: false }))).toBe(false);
+  expect(sameSummary(original, task(1, { workerNeedsAttention: true }))).toBe(false);
   expect(sameSummary(original, task(1, { dependsOn: [id(2)] }))).toBe(false);
   expect(sameSummary(original, task(1, { startedAt: time }))).toBe(false);
   expect(sameProject(project, { ...project })).toBe(true);

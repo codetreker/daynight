@@ -148,7 +148,7 @@ const createGraph = (scenario: BrowsingScenario, number: number): TaskGraph => {
     const createdAt = new Date(Date.UTC(2026, 9, 21, 9, task.number * 10)).toISOString();
     const title = Array.from(task.title);
     titles.set(`${id(number)}:${id(task.number)}`, task.title);
-    return { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+    return { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, startedAt: null, completedAt: null,
       id: id(task.number), titlePreview: title.slice(0, 160).join(''), titleTruncated: title.length > 160, status: task.status,
       dependsOn: task.dependencies.map(id).sort(), externalDependsOn: task.externalDependencies.map(id).sort(), blockedBy,
       ready: task.status === 'todo' && blockedBy.length === 0, createdAt, updatedAt: createdAt,
@@ -225,7 +225,7 @@ const currentTask = (state: SceneState, taskId: string): TaskDetail => {
 const graphSnapshot = (state: SceneState): TaskGraph => {
   const tasks: GraphTask[] = [...state.tasks.keys()].map((id) => {
     const task = currentTask(state, id);
-    return { requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt,
+    return { requiredPlatform: task.requiredPlatform, workerNeedsAttention: task.properties.worker !== null && task.properties.worker.signaling !== '', allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt,
       id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160,
       status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready,
       createdAt: task.createdAt, updatedAt: task.updatedAt };

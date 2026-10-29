@@ -28,7 +28,7 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
   const worker: WorkerClaim | null = options.claim === undefined ? null : {
     claimId: '00000000-0000-4000-8000-000000000901', state: options.claim === 'released' ? 'released' : options.claim === 'completed' ? 'completed' : 'active',
     userId: claimOwner, workerId: '00000000-0000-4000-8000-000000000902', machine: { id: '00000000-0000-4000-8000-000000000903', name: options.longClaim ? 'Machine-'.repeat(24) + 'complete' : 'macmini.local' },
-    platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: '00000000-0000-4000-8000-000000000904', phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: timestamp,
+    platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: '00000000-0000-4000-8000-000000000904', phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: timestamp, signaling: '',
   };
   const member = (userId: string, name: string, role: string) => ({ projectId: detailProjectId, userId, name: options.longClaim ? 'Claim owner '.repeat(16) + 'complete' : name, email: `${options.longClaim ? 'account'.repeat(24) : userId === TEST_VIEWER_ID ? 'jianjun' : 'teammate'}@example.com`, avatarUrl: null, role, version: 1, createdAt: timestamp, updatedAt: timestamp });
   const members = [member(TEST_VIEWER_ID, 'Jianjun', viewerRole), ...(claimOwner === otherOwnerId && options.claim !== 'former' ? [member(otherOwnerId, 'Alex Chen', 'member')] : [])];
@@ -53,7 +53,7 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
       observedAt: timestamp,
       project: { id: detailProjectId, name: '任务详情交互示例', repoUrl: 'https://github.com/example/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: timestamp, updatedAt: timestamp },
       tasks: details.map((item) => ({ id: item.id, titlePreview: item.title, titleTruncated: false, status: item.status,
-        allowAgents: item.allowAgents, requiredPlatform: item.requiredPlatform, dependsOn: item.dependsOn, externalDependsOn: item.externalDependsOn,
+        workerNeedsAttention: item.properties.worker !== null && item.properties.worker.signaling !== '', allowAgents: item.allowAgents, requiredPlatform: item.requiredPlatform, dependsOn: item.dependsOn, externalDependsOn: item.externalDependsOn,
         blockedBy: item.blockedBy, ready: item.ready, startedAt: item.startedAt, completedAt: item.completedAt, createdAt: item.createdAt, updatedAt: item.updatedAt })),
       summary: { total: details.length, todo: details.filter((item) => item.status === 'todo').length,
         inProgress: details.filter((item) => item.status === 'in_progress').length, done: details.filter((item) => item.status === 'done').length, ready: details.filter((item) => item.ready).length,

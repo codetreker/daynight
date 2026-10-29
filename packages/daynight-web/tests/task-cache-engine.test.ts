@@ -16,7 +16,7 @@ const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(1
 const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: taskId(n), version: 1n, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: taskId(n), version: 1n, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], workerNeedsAttention: false, allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
 const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ mode: "delta", epoch, project, observedAt: later, tasks, ...changes });
 const signal = () => new AbortController().signal;
 const scopes: TaskCacheScope[] = [];
@@ -35,7 +35,7 @@ class Channel {
 const scope = (identity = userId, onIdentityMismatch = vi.fn()) => {
   const value = createTaskCacheScope({ userId: identity, onIdentityMismatch }); scopes.push(value); return value;
 };
-const inspect = async () => { const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1); connections.push(database); return database; };
+const inspect = async () => { const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE); connections.push(database); return database; };
 const seed = async (cache: TaskCacheScope, tasks: readonly TaskSummary[] = [task(1)], ownerProject = project) => {
   const ticket = await cache.beginSync(ownerProject.id, signal());
   return cache.applySync(ticket, response(tasks, { mode: "snapshot", project: ownerProject }), signal());

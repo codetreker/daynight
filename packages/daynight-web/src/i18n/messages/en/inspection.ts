@@ -1,6 +1,8 @@
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  needsAttention: "Needs attention",
+  attentionControls: "Task settings and attention",
   claim: {
     controls: "Task settings and claim",
     active: "Claimed by", released: "Released claim", machine: "Machine", agent: "Agent",

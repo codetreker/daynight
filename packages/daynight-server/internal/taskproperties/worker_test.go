@@ -82,7 +82,7 @@ func TestWorkerCodecRetainsEverySupportedExecutionValue(t *testing.T) {
 }
 
 func TestWorkerCodecRequiresCompleteStrictReadStructure(t *testing.T) {
-	for _, field := range []string{"claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"} {
+	for _, field := range []string{"claimId", "state", "userId", "workerId", "machine", "platform", "agent", "worktreeId", "phase", "signaling", "herdr", "nativeSessionId", "claimedAt"} {
 		t.Run("missing "+field, func(t *testing.T) {
 			worker := workerJSON(t)
 			delete(worker, field)
@@ -103,6 +103,7 @@ func TestWorkerCodecRequiresCompleteStrictReadStructure(t *testing.T) {
 		{"herdr scalar", "herdr", `false`}, {"herdr missing", "herdr", `{"session":"w","workspaceId":"workspace"}`}, {"herdr wrong type", "herdr", `{"session":"w","workspaceId":null,"paneId":"pane"}`},
 		{"herdr blank", "herdr", `{"session":" ","workspaceId":"workspace","paneId":"pane"}`}, {"herdr NUL", "herdr", `{"session":"w","workspaceId":"workspace","paneId":"pane\u0000"}`},
 		{"herdr unknown", "herdr", `{"session":"w","workspaceId":"workspace","paneId":"pane","extra":true}`}, {"herdr duplicate", "herdr", `{"session":"w","workspaceId":"workspace","paneId":"pane","paneId":"other"}`},
+		{"signaling numeric", "signaling", `0`}, {"signaling null", "signaling", `null`},
 		{"native numeric", "nativeSessionId", `0`}, {"native blank", "nativeSessionId", `" "`}, {"native NUL", "nativeSessionId", `"session\u0000"`},
 	} {
 		t.Run(test.name, func(t *testing.T) {

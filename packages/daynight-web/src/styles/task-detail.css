@@ -90,8 +90,8 @@
 .task-detail-panel-overview { overflow: auto; overscroll-behavior: contain; }
 .task-detail-panel-attachments { display: flex; overflow: hidden; padding: 24px 30px 30px; }
 .task-detail-heading { padding: 14px 30px 0; flex: 0 1 auto; min-height: 0; min-width: 0; overflow: auto; overscroll-behavior: contain; }
-.task-detail-heading-claimed { max-height: min(50%, max(32px, calc(100% - 120px))); }
-.task-detail-heading-claimed:focus-visible { outline: 3px solid #8c8cf0; outline-offset: -3px; }
+.task-detail-heading-bounded { max-height: min(50%, max(32px, calc(100% - 120px))); }
+.task-detail-heading-bounded:focus-visible { outline: 3px solid #8c8cf0; outline-offset: -3px; }
 .task-detail-title-row { display: flex; align-items: flex-start; gap: 8px; flex: 1; min-width: 0; }
 .task-detail-title-action { flex: none; margin: 0; }
 .task-detail-title { flex: 0 1 auto; min-width: 0; max-height: 4.35em; overflow: auto; overscroll-behavior: contain; color: var(--ink); font-size: 22px; line-height: 1.45; font-weight: 650; letter-spacing: -.4px; margin: 0; overflow-wrap: anywhere; }

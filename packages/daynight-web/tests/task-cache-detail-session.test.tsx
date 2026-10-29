@@ -204,7 +204,7 @@ it("shows a valid confirmed write's raw authoritative body while summary sync is
   await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("confirmed"));
   expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 6n, status: "in_progress", ready: false }, requiresFreshRead: true, graphMismatch: true });
   expect(scope.getSummaryVersion(projectId, taskId)).toBe(5n); expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(watermark);
-  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1);
+  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache");
   expect((await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).detail.version).toBe(5n); connection.close();
   await apply(scope, [saved]); session.observe(projectId, taskId, node(scope));
   await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ requiresFreshRead: false, graphMismatch: false })); expect(fetch).toHaveBeenCalledTimes(2);
@@ -342,7 +342,7 @@ it.each(["done", "todo"] as const)("reconciles a lost write when current summari
   await act(async () => { await apply(scope, [current]); }); rerender({ revision: 4, observed: node(scope) });
   await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4)); expect(result.current.canSetStatus).toBe(false);
   expect(result.current.mutation).toMatchObject({ operation: { action: "status", status: "done", version: initial.version }, phase: "unknown", reconciling: true });
-  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1);
+  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache");
   expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined();
   fresh.resolve(resourceResponse(current, TEST_VIEWER_ID));
   await waitFor(() => expect(result.current.mutation).toMatchObject({ phase: "reconciled", reconciling: false, reconciliationError: null }));
@@ -473,7 +473,7 @@ it("revokes known cached detail admission after a trusted 404 before an offline 
   const session = await open(scope); session.load(projectId, taskId, 2, "open");
   await waitFor(() => expect(session.snapshot(projectId, taskId).detail).toBeNull()); await waitFor(() => expect(scope.getAuthorizedProject(projectId)).toBeNull());
   session.load(projectId, taskId, 3, "refresh"); expect(session.snapshot(projectId, taskId).detail).toBeNull(); expect(fetch).toHaveBeenCalledTimes(2);
-  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1);
+  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache");
   await waitFor(async () => expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined()); connection.close();
 });
 
@@ -515,7 +515,7 @@ it("keeps a nonexistent task's trusted 404 local to that task without revoking i
   const missingId = "20000000-0000-4000-8000-000000000099"; const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "unknown-task" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) })); vi.stubGlobal("fetch", fetch);
   const session = new TaskDetailSessions(scope); sessions.push(session); session.observe(projectId, missingId, undefined); session.load(projectId, missingId, 1, "open");
   await waitFor(() => expect(session.snapshot(projectId, missingId).error).toMatchObject({ kind: "server", code: "not_found" })); expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
-  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1); expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeDefined(); connection.close();
+  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache"); expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeDefined(); connection.close();
 });
 
 it.each(["status", "allowAgents", "requiredPlatform"] as const)("withdraws the live scope and peer cache after a disposed session's trusted %s write 404", async (action) => {

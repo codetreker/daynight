@@ -24,7 +24,7 @@
 
 ## R3：变化与派生一致性
 
-创建、标题、description、PR 信息、三状态设置、Agent 许可、执行平台要求、依赖及外部性质变化通过任务摘要的业务 version 被发现。任务事实、所有依赖、阻塞列表、可执行性、统计、链成员与进度在一个本地快照中一致。前置完成后，后继即使自身未编辑也正确更新派生状态。
+创建、标题、description、PR 信息、worker signaling、三状态设置、Agent 许可、执行平台要求、依赖及外部性质变化通过任务摘要的业务 version 被发现。任务事实、所有依赖、阻塞列表、可执行性、统计、链成员与进度在一个本地快照中一致。摘要和完整图均包含必填布尔 workerNeedsAttention，严格表示 worker 非 null 且 properties.worker.signaling 非空。非空信号支持无需读取完整详情的“需要处理”高亮，变化随同一业务版本同步，完整 worker 身份不进入摘要。前置完成后，后继即使自身未编辑也正确更新派生状态。
 
 ## R4：原子应用与多标签页
 
@@ -40,7 +40,7 @@
 
 ## R6：失败恢复
 
-缓存缺失、schema 不兼容、结构损坏、数据库异常关闭时允许重新装载完整摘要。active 与 invalidated manifest 都必须验证归属、生命周期及对应格式；invalidated 的 epoch/project/水位必须全为 null，任务与边计数全为零，不能把残留 epoch 作为增量基线。用户 fence 损坏时，在一个事务中轮换 fence 并清除或失效该用户可重建数据，不依赖损坏 fence，也不影响其他用户；旧绑定 scope 和 ticket 不能跨修复发布。IndexedDB 打开、升级、配额、修复及写入失败明确进入现有错误/Retry 状态；失败事务保留原持久状态和允许显示的当前快照，不能当作空项目或同步成功。重试先读实际存储。
+缓存缺失、schema 不兼容、结构损坏、数据库异常关闭时允许重新装载完整摘要。增加 workerNeedsAttention 后升级缓存 schema，清除可重建的旧摘要和详情并轮换 fence；读取器不为缺失字段补 false。active 与 invalidated manifest 都必须验证归属、生命周期及对应格式；invalidated 的 epoch/project/水位必须全为 null，任务与边计数全为零，不能把残留 epoch 作为增量基线。用户 fence 损坏时，在一个事务中轮换 fence 并清除或失效该用户可重建数据，不依赖损坏 fence，也不影响其他用户；旧绑定 scope 和 ticket 不能跨修复发布。IndexedDB 打开、升级、配额、修复及写入失败明确进入现有错误/Retry 状态；失败事务保留原持久状态和允许显示的当前快照，不能当作空项目或同步成功。重试先读实际存储。
 
 ## R7：计时与项目设置
 

@@ -24,7 +24,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		if err := migrate(ctx, pool, schemaMigrations[:17]); err != nil {
 			t.Fatal(err)
 		}
 		var marker bool

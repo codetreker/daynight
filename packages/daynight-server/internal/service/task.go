@@ -115,7 +115,7 @@ func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID,
 	if input.Version < 1 {
 		return core.Task{}, invalidInput("Version must be a positive integer.")
 	}
-	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.Properties.PullRequests == nil && input.AllowAgents == nil && input.RequiredPlatform == nil {
+	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.Properties.PullRequests == nil && input.Properties.WorkerSignaling == nil && input.AllowAgents == nil && input.RequiredPlatform == nil {
 		return core.Task{}, invalidInput("At least one task field must be provided.")
 	}
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
@@ -146,7 +146,7 @@ func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID,
 			return taskMutation{}, err
 		}
 		changed := !equalOptional(current.RequiredPlatform, values.RequiredPlatform) || current.AllowAgents != values.AllowAgents || current.Title != values.Title || current.Description != values.Description ||
-			!slices.Equal(current.DependsOn, values.DependsOn) || !slices.Equal(current.ExternalDependsOn, values.ExternalDependsOn) || !slices.Equal(current.Properties.PullRequests, values.Properties.PullRequests)
+			!slices.Equal(current.DependsOn, values.DependsOn) || !slices.Equal(current.ExternalDependsOn, values.ExternalDependsOn) || !slices.Equal(current.Properties.PullRequests, values.Properties.PullRequests) || workerSignalingChanged(current.Properties.Worker, values.Properties.Worker)
 		return taskMutation{id: id, current: current, values: values, changed: changed}, nil
 	})
 }
@@ -261,10 +261,22 @@ func taskCandidate(current core.Task, input UpdateTask) (store.TaskWrite, error)
 	if input.Properties.PullRequests != nil {
 		values.Properties.PullRequests = append([]core.PullRequestProperty{}, (*input.Properties.PullRequests)...)
 	}
+	if input.Properties.WorkerSignaling != nil {
+		if current.Properties.Worker == nil {
+			return store.TaskWrite{}, invalidInput("Worker signaling requires an existing worker claim.")
+		}
+		worker := *current.Properties.Worker
+		worker.Signaling = *input.Properties.WorkerSignaling
+		values.Properties.Worker = &worker
+	}
 	if err := validateTaskValues(values); err != nil {
 		return store.TaskWrite{}, err
 	}
 	return values, nil
+}
+
+func workerSignalingChanged(current, next *core.WorkerClaim) bool {
+	return current != nil && next != nil && current.Signaling != next.Signaling
 }
 
 func validateTaskValues(values store.TaskWrite) error {

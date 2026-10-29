@@ -1,6 +1,8 @@
 import type { WorkerPhase } from '../../api/types';
 
 export type InspectionMessages = {
+  readonly needsAttention: string;
+  readonly attentionControls: string;
   readonly claim: {
     readonly controls: string;
     readonly active: string;

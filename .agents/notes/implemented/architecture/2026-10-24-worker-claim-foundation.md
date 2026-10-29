@@ -15,8 +15,11 @@ cannot establish whether ownership changed.
 The [claim foundation](../../../../docs/design/daynight-worker-claims.md) stores
 the latest typed worker record in task properties and applies every ownership
 mutation within the existing project write transaction. Read/stored properties
-and public property patches have separate codecs: public create/PATCH rejects
-worker even when its value is unchanged, while PR and worker updates preserve
+and public property patches have separate codecs. The foundation originally
+rejected worker in both public create and PATCH to prevent forged ownership. The
+[attention-signaling decision](../feature/2026-10-29-worker-attention-signaling.md)
+opens only signaling on an existing worker through PATCH; create and every
+identity field remain protected. PR, signaling and execution updates preserve
 each other. The text migration inserts explicit null without JSON/JSONB
 conversion, preserving opaque PR strings, task versions and timestamps.
 
@@ -59,7 +62,7 @@ decision](2026-10-26-worker-claim-inventory.md) partially supersedes that
 discovery choice: the project task list now selects the authenticated
 user/worker active claims. Known-task reads still reconcile explicit writes,
 while complete workerId-only project traversals supply the current ownership
-set. Candidate pagination remains separate from inventory; no projection or
+set. Candidate pagination remains separate from inventory; no ownership projection or
 claim table is introduced.
 
 The [worker responsibility decision](2026-10-22-worker-design.md) remains the

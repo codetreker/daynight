@@ -277,6 +277,10 @@ func acceptanceStatusMigrationRows(t *testing.T, before, after []acceptanceHisto
 			t.Fatal("soft-delete migration did not preserve historical task visibility")
 		}
 		left["deleted_at"] = json.RawMessage("null")
+		if string(right["worker_needs_attention"]) != "false" {
+			t.Fatal("signaling migration incorrectly marked historical tasks as requiring attention")
+		}
+		left["worker_needs_attention"] = json.RawMessage("false")
 		var beforeProperties, afterProperties string
 		var beforeFields, afterFields map[string]json.RawMessage
 		if json.Unmarshal(left["properties"], &beforeProperties) != nil || json.Unmarshal(right["properties"], &afterProperties) != nil ||
@@ -424,8 +428,13 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		}); err != nil {
 			t.Fatal("cannot persist migrated schema and resource snapshots")
 		}
-		if len(migration.AfterLedger) != 25 || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || migration.AfterLedger[12].Version != 13 || migration.AfterLedger[13].Version != 14 || migration.AfterLedger[14].Version != 15 || migration.AfterLedger[15].Version != 16 || migration.AfterLedger[16].Version != 17 || migration.AfterLedger[17].Version != 18 || migration.AfterLedger[18].Version != 19 || migration.AfterLedger[19].Version != 20 || migration.AfterLedger[20].Version != 21 || migration.AfterLedger[21].Version != 22 || migration.AfterLedger[22].Version != 23 || migration.AfterLedger[23].Version != 24 || migration.AfterLedger[24].Version != 25 || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
-			t.Fatal("startup did not append the Worker snapshot schema while preserving prior ledger, dependencies and attachments")
+		if len(migration.AfterLedger) != 26 || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
+			t.Fatal("startup did not append the Worker signaling schema while preserving prior ledger, dependencies and attachments")
+		}
+		for index, entry := range migration.AfterLedger {
+			if entry.Version != int64(index+1) {
+				t.Fatal("startup migration ledger is not the complete ordered schema prefix")
+			}
 		}
 		acceptanceStatusMigrationRows(t, migration.StatusBeforeRows, migration.AfterRows)
 		user := acceptanceDecode[api.User](t, process.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK)

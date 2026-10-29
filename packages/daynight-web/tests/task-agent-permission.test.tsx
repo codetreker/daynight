@@ -19,7 +19,7 @@ const project: Project = { id: projectId, name: 'Automatic tasks', repoUrl: 'htt
 const detail: TaskDetail = { requiredPlatform: null, id: taskId, projectId, title: 'Reviewed task', description: 'Keep this content', allowAgents: false, status: 'todo', version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, properties: { worker: null, pullRequests: [] }, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const graphTask = (value: TaskDetail): GraphTask => ({ id: value.id, titlePreview: value.title, titleTruncated: false, status: value.status,
-  requiredPlatform: value.requiredPlatform, allowAgents: value.allowAgents, dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
+  requiredPlatform: value.requiredPlatform, workerNeedsAttention: value.properties.worker !== null && value.properties.worker.signaling !== '', allowAgents: value.allowAgents, dependsOn: value.dependsOn, externalDependsOn: value.externalDependsOn, blockedBy: value.blockedBy, ready: value.ready,
   startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt });
 let world: ReturnType<typeof createTaskSessionWorld>;
 const snapshotDetails = new WeakMap<object, readonly TaskDetail[]>();

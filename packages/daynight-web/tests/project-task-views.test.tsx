@@ -25,7 +25,7 @@ const project = '00000000-0000-4000-8000-000000000100';
 const otherProject = '00000000-0000-4000-8000-000000000200';
 const canonicalTask = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const timestamp = '2026-10-20T12:00:00.123456Z';
-const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
+const seed = (id: string, status: GraphTask['status'] = 'todo', dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
   id, titlePreview: `任务 ${id}`, titleTruncated: false, status, dependsOn, blockedBy: [], ready: false,
   createdAt: timestamp, updatedAt: timestamp,
 });

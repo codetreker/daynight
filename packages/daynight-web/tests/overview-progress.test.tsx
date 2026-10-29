@@ -21,7 +21,7 @@ const snapshot = (seeds: readonly Seed[], observed = observedAt): Extract<GraphS
     const blockedBy = dependsOn.filter((id) => seeds.find((task) => task.id === id)!.status !== "done");
     return { id: seed.id, titlePreview: `Title ${seed.id}`, titleTruncated: seed.titleTruncated === true, status: seed.status,
       dependsOn, externalDependsOn: seed.externalDependsOn === undefined ? [] : seed.externalDependsOn, blockedBy,
-      ready: seed.status === "todo" && blockedBy.length === 0, allowAgents: false, requiredPlatform: null,
+      ready: seed.status === "todo" && blockedBy.length === 0, workerNeedsAttention: false, allowAgents: false, requiredPlatform: null,
       startedAt: null, completedAt: seed.completedAt === undefined ? null : seed.completedAt, createdAt: beforeCutoff, updatedAt: observed };
   });
   const graph: TaskGraph = { observedAt: observed,

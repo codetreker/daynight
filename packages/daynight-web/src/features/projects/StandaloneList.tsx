@@ -8,6 +8,7 @@ import { TaskExecutionDescription, TaskExecutionDuration, TaskExecutionWarning }
 import type { GraphIndex } from "../task-graph/model";
 import { TaskPlatformBadge } from "../task-detail/TaskPlatform";
 import { TaskAgentPermissionBadge } from "../task-detail/TaskAgentPermissionBadge";
+import { TaskAttentionBadge } from "../task-detail/TaskAttention";
 import "../../styles/graph.css";
 import "../../styles/task-status-rows.css";
 
@@ -25,12 +26,12 @@ const StandaloneRow = memo(({ task, onSelectTask }: { readonly task: GraphTask; 
   const { messages: { workspace: { standalone: m, project }, common }, format } = useI18n();
   const execution = useTaskExecution(task);
   const descriptionId = useId();
-  return <li><button className={`standalone-row task-status-surface${execution?.overdue ? " standalone-row-stuck" : ""}`} data-task-status={task.status} id={`standalone-task-${task.id}`} type="button"
+  return <li><button className={`standalone-row task-status-surface${execution?.overdue ? " standalone-row-stuck" : ""}${task.workerNeedsAttention ? ' task-needs-attention' : ''}`} data-task-status={task.status} id={`standalone-task-${task.id}`} type="button"
     aria-describedby={execution === null ? undefined : descriptionId} onClick={(event) => { onSelectTask(task.id, event.currentTarget); }}>
     <span className="root-heading"><span className="root-title">{task.titlePreview}{task.titleTruncated ? "…" : ""}</span>
       <span className="root-meta"><span className="standalone-task-id">{task.id}</span> · <time dateTime={task.createdAt}>{m.createdOn({ date: format.date(task.createdAt) })}</time>
       {execution !== null && <span className="standalone-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} />{execution.overdue && <TaskExecutionWarning />}</span>}</span></span>
-    <span className="task-row-status"><TaskAgentPermissionBadge allowAgents={task.allowAgents} /><TaskPlatformBadge requiredPlatform={task.requiredPlatform} /><span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
+    <span className="task-row-status"><TaskAttentionBadge needsAttention={task.workerNeedsAttention} /><TaskAgentPermissionBadge allowAgents={task.allowAgents} /><TaskPlatformBadge requiredPlatform={task.requiredPlatform} /><span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
     <svg className="standalone-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
   </button>{execution !== null && <TaskExecutionDescription execution={execution} id={descriptionId} />}</li>;
 });

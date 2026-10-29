@@ -350,8 +350,11 @@ export const createApiClient = (options: {
     ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
   };
-  const writableProperties = (properties: WritableTaskProperties | undefined): void => {
-    if (properties !== undefined && Object.hasOwn(properties, "worker")) throw new Error("Worker ownership cannot be supplied through ordinary task properties.");
+  const writableProperties = (properties: WritableTaskProperties | undefined, creating = false): void => {
+    if (properties === undefined || !Object.hasOwn(properties, "worker")) return;
+    if (creating) throw new Error("Worker ownership cannot be supplied when creating a task.");
+    const worker = properties.worker;
+    if (typeof worker !== "object" || worker === null || Array.isArray(worker) || Object.keys(worker).length !== 1 || !Object.hasOwn(worker, "signaling") || typeof worker.signaling !== "string") throw new Error("Worker ownership is protected; ordinary task updates accept only worker.signaling as a string.");
   };
   const taskVersion = (version: bigint): void => {
     if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
@@ -384,7 +387,7 @@ export const createApiClient = (options: {
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);
-      writableProperties(input.properties);
+      writableProperties(input.properties, true);
       return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => parseTask(value, project), {
         title: input.title,
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
@@ -431,7 +434,11 @@ export const createApiClient = (options: {
     updateTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       writableProperties(input.properties);
-      return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => parseTask(value, project, task), {
+      return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => {
+        const result = parseTask(value, project, task);
+        if (input.properties?.worker !== undefined && result.properties.worker?.signaling !== input.properties.worker.signaling) throw new ProtocolError("Task does not match the requested worker signaling.");
+        return result;
+      }, {
         version: input.version,
         ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),

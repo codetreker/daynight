@@ -26,7 +26,7 @@ const apply = async (cache: TaskCacheScope, value = detail(), snapshot = false) 
   const ticket = await cache.beginSync(value.projectId, signal());
   return cache.applySync(ticket, taskSyncFromGraph(graphFixture([value]), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: () => value.version }), signal());
 };
-const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1); connections.push(connection); return connection; };
+const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE); connections.push(connection); return connection; };
 const failPurge = () => {
   const original = IDBObjectStore.prototype.put;
   return vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {

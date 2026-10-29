@@ -47,6 +47,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const ending = new Map<string, ResourceOwner>();
   const failures = new Map<string, number>();
   const snapshotWarnings = new Map<string, Set<string>>();
+  const signaling = new Map<string, string>();
   let nextRepository = 0;
   let nextPendingProject = 0;
   let shuttingDown = false;
@@ -121,6 +122,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       result.set(key(owner), task);
       options.store.registerPending({ projectId: task.projectId, taskId: task.id, claimId: owner.claimId, agent: task.properties.worker!.agent, agentControlMode: task.properties.worker!.agentControlMode });
     }
+    signaling.clear();
+    for (const [identity, task] of result) signaling.set(identity, task.properties.worker!.signaling);
     return result;
   };
   const publishSummary = async (task: LocalTask, observed: HerdrAgentObservation, remoteTask: Task, signal: AbortSignal): Promise<void> => {
@@ -246,7 +249,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     }
     await syncWorkspaceName(task, owner, remoteTask.title, signal);
     if (!execute) return;
-    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: configurationFor(task) };
+    const input: ExecutionInput = { task, project: projectFor(task), owner, title: remoteTask.title, configuration: configurationFor(task), canPing: () => signaling.get(key(task)) === "" };
     const observed = await execution.advance(input, signal);
     const latest = options.store.getTask(task)!;
     await publishSummary(latest, observed, remoteTask, signal);
@@ -348,6 +351,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         try {
           const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
           const owner = remoteOwner(granted);
+          signaling.set(key(owner), granted.properties.worker!.signaling);
           const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: granted.properties.worker!.agent, agentControlMode: granted.properties.worker!.agentControlMode });
           if (!blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
         } catch (error) {
@@ -376,6 +380,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     },
     advanceRetry: async (identity: ClaimIdentity): Promise<void> => {
       const { task, remoteTask } = await readSource(identity);
+      signaling.set(key(task), remoteTask.properties.worker!.signaling);
       if (task.status !== "active") throw new Error("Only an active original claim may be retried; pending work is started by worker run.");
       failures.delete(key(identity));
       if (task.agentControlMode === "web" && options.webStore?.getTask(task)) options.webStore.authorizeRecoveryRetry(task, now());

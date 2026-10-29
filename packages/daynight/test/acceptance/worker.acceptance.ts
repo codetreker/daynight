@@ -234,7 +234,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       if (task !== undefined && parts[7] === "worker-claim" && request.method === "POST") {
         const input = body as WorkerClaimDescriptor & { version: bigint };
         if (input.version !== task.version || !task.ready || task.properties.worker?.state === "active") { refusal(response); return; }
-        task.properties = { ...task.properties, worker: { claimId: input.claimId, workerId: input.workerId, machine: input.machine, platform: input.platform, agent: input.agent, agentControlMode: input.agentControlMode ?? "herdr", worktreeId: input.worktreeId, state: "active", userId: uuid(100), phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time } };
+        task.properties = { ...task.properties, worker: { claimId: input.claimId, workerId: input.workerId, machine: input.machine, platform: input.platform, agent: input.agent, agentControlMode: input.agentControlMode ?? "herdr", worktreeId: input.worktreeId, state: "active", userId: uuid(100), phase: "preparing", herdr: null, nativeSessionId: null, signaling: "", claimedAt: time } };
         task.status = "in_progress"; task.ready = false; task.startedAt = time; task.version += 1n;
         send(response, task); return;
       }

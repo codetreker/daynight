@@ -329,14 +329,17 @@ edit changes task time or graph geometry.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 1 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
+schema 2 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
 stores. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and bounded counts for both active and invalidated manifests.
 An invalidated manifest has a recognized reason, null epoch/Project/watermark and
 zero task/edge counts; it cannot retain a usable incremental baseline. The shared
 details store and guarded transaction interface support intrinsic content reuse,
-bounded LRU and business-version-driven detail reads.
+bounded LRU and business-version-driven detail reads. The schema upgrade for the
+required `workerNeedsAttention` field clears rebuildable projects, summaries and
+details, rotates fences and reloads complete summaries; old records do not gain
+a read-time default.
 
 `beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
 `applySync` validates the transaction's complete durable set and atomically saves
@@ -399,7 +402,7 @@ owns the algorithm, schema, failure rules and detail integration.
 
 ## Persistent task details
 
-`TaskDetailSessions(scope)` uses the same authenticated scope and schema-1 details
+`TaskDetailSessions(scope)` uses the same authenticated scope and schema-2 details
 store as project summaries. `detail-cache.ts` validates intrinsic bodies against
 the current summary and guarded lifecycle ticket, then materializes readiness and
 blockers from the complete local graph. Full current properties, including
@@ -912,7 +915,17 @@ The detail decoder requires `properties.pullRequests` with string `url` and
 `title` fields. Missing or malformed structure produces the existing detail
 error and retry state. It preserves string content, including NUL and arbitrary
 address text, without defaults or content validation. The graph decoder retains
-its compact projection and never copies properties into graph nodes.
+its compact projection and never copies complete properties into graph nodes.
+Full worker records require the raw string `signaling`; graph and synchronization
+summaries require the boolean `workerNeedsAttention`, true exactly when a
+non-null worker has a nonempty signal. Standalone rows, chain child rows and
+graph nodes highlight **Needs attention / 需要处理** when this flag is true.
+Collapsed chains retain an aggregate hint when any ordinary member needs
+attention. Shared details show the same label and original signaling text,
+wrapping long content within the available width. Empty strings remove the
+label. These cues do not depend on status, permission or execution phase, and
+remain distinct from the elapsed-time stall warning. Summary equality, detail
+freshness and cache invalidation include the projected flag.
 
 Graph and detail reads require `externalDependsOn` alongside the complete
 `dependsOn` set. The shared decoder canonicalizes UUIDs, rejects duplicates and

@@ -8,7 +8,7 @@ const claimId = "33333333-3333-3333-3333-333333333333";
 const time = "2026-10-24T12:34:56.123456789Z";
 const worker: WorkerClaim = {
   claimId, state: "active", userId: projectId, workerId: taskId, machine: { id: claimId, name: "Machine" },
-  platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", claimedAt: time,
+  platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", signaling: '', claimedAt: time,
 };
 const task: TaskDetail = {
   id: taskId, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null,
@@ -53,6 +53,13 @@ describe("worker ownership detail reads", () => {
     expect(parseTaskDetail(task, projectId, taskId)).toEqual(task);
     const preparing = { ...task, properties: { ...task.properties, worker: { ...worker, herdr: null, nativeSessionId: null } } };
     expect(parseTaskDetail(preparing, projectId, taskId)).toEqual(preparing);
+  });
+  it.each(['', ' ', '需要确认\nRelease window', '<script>request()</script>'])('preserves signal strings %j', (signaling) => {
+    const value = { ...task, properties: { ...task.properties, worker: { ...worker, signaling } } };
+    expect(parseTaskDetail(value, projectId, taskId).properties.worker?.signaling).toBe(signaling);
+  });
+  it.each([undefined, null, false, 1, {}])('rejects missing or malformed signal %j', (signaling) => {
+    expect(() => parseTaskDetail({ ...task, properties: { ...task.properties, worker: { ...worker, signaling } } }, projectId, taskId)).toThrow('invalid response');
   });
   it("preserves Go-valid non-whitespace FEFF in worker resource names", () => {
     const taskWithNames = { ...task, properties: { ...task.properties, worker: { ...worker, machine: { ...worker.machine, name: "\uFEFF" }, nativeSessionId: "\uFEFF", herdr: { session: "\uFEFF", workspaceId: "\uFEFF", paneId: "\uFEFF" } } } };

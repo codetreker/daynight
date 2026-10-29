@@ -25,7 +25,7 @@ vi.mock('../src/features/task-graph/TaskGraph', () => ({ TaskGraph: ({ index, ro
 const projectId = '10000000-0000-0000-0000-000000000001';
 const otherProject = '10000000-0000-0000-0000-000000000002';
 const time = '2026-10-20T12:00:00Z';
-const task = (id: string, status: GraphTask['status'], dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ requiredPlatform: null, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
+const task = (id: string, status: GraphTask['status'], dependsOn: string[] = [], externalDependsOn: string[] = []): GraphTask => ({ requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn, startedAt: null, completedAt: null,
   id, titlePreview: `任务 ${id}`, titleTruncated: false, status, dependsOn, blockedBy: [], ready: false, createdAt: time, updatedAt: time,
 });
 const seeds = [task('00000000-0000-4000-8000-000000000001', 'done'), task('00000000-0000-4000-8000-000000000002', 'todo', ['00000000-0000-4000-8000-000000000001']), task('00000000-0000-4000-8000-000000000003', 'done'), task('00000000-0000-4000-8000-000000000004', 'done', ['00000000-0000-4000-8000-000000000003']), task('00000000-0000-4000-8000-000000000005', 'done'), task('00000000-0000-4000-8000-000000000006', 'todo'), task('00000000-0000-4000-8000-000000000007', 'todo', ['00000000-0000-4000-8000-000000000002', '00000000-0000-4000-8000-000000000006'], ['00000000-0000-4000-8000-000000000002']), task('00000000-0000-4000-8000-000000000008', 'done', ['00000000-0000-4000-8000-000000000005'])];

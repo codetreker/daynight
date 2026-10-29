@@ -27,7 +27,7 @@ type Seed = { readonly number: number; readonly title: string; readonly status: 
 const task = ({ number, title, status, dependsOn = [], completedAt = null }: Seed): GraphTask => ({
   id: id(number), titlePreview: title, titleTruncated: false, status,
   dependsOn: dependsOn.map(id), externalDependsOn: [], blockedBy: [], ready: false,
-  allowAgents: false, requiredPlatform: null, startedAt: null, completedAt,
+  workerNeedsAttention: false, allowAgents: false, requiredPlatform: null, startedAt: null, completedAt,
   createdAt: timestamp(number), updatedAt: observedAt,
 });
 

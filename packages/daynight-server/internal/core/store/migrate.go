@@ -86,6 +86,9 @@ var testSessionsSQL string
 //go:embed migrations/025_worker_snapshots.sql
 var workerSnapshotsSQL string
 
+//go:embed migrations/026_worker_signaling.sql
+var workerSignalingSQL string
+
 type migration struct {
 	version int64
 	sql     string
@@ -117,6 +120,7 @@ var schemaMigrations = []migration{
 	{version: 23, sql: sessionTransactionOwnershipSQL},
 	{version: 24, sql: testSessionsSQL},
 	{version: 25, sql: workerSnapshotsSQL},
+	{version: 26, sql: workerSignalingSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

@@ -112,7 +112,7 @@ it("retains loading without a baseline and keeps another user's and project's ca
 
 it("rebuilds corrupt local rows through the existing full sync without publishing an incomplete preview", async () => {
   await seed();
-  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1);
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE);
   await database.delete("summaries", [TEST_VIEWER_ID, projectId, taskId]); database.close();
   const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
   const { result } = mount();
@@ -204,7 +204,7 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
     await act(async () => { initial.resolve(sync(graph())); });
   }
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null }));
-  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1);
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE);
   try {
     expect(await database.get("projects", [TEST_VIEWER_ID, projectId])).toMatchObject({ state: "active", epoch: replacementEpoch,
       cacheGeneration: peer.getAuthorizedProject(projectId)!.manifest.cacheGeneration });

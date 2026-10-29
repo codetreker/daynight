@@ -63,11 +63,11 @@ query，返回 no-store，并沿用既有 requestId 和结构化错误机制。�
 `task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。域拒绝在事务成功结束后返回，
 操作和清理失败优先，与完整图相同。
 
-store 只投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、时间和两类依赖；
+store 投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、需要处理信号、时间和两类依赖；
 不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
-[时间窗口架构](daynight-task-sync.md)；当前 Web 仍使用完整图。Worker 归属修改沿用已有 version/updatedAt 事务，因此摘要可见其版本变化；摘要不包含 properties，身份核对仍 GET 已知任务，不增加 worker 查询投影。
+[时间窗口架构](daynight-task-sync.md)；当前 Web 使用摘要合并后物化本地图。Worker 归属修改沿用已有 version/updatedAt 事务，因此摘要可见其版本变化；摘要只包含 workerNeedsAttention 精简字段，不携带完整 properties 或执行身份，身份核对仍 GET 已知任务。
 
 ## 目录与调用方向
 
@@ -276,7 +276,7 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 创建 project 的输入为 `name` 和 `repoUrl`。创建 task 的输入为 `title`、可省略的
 `description`、`dependsOn`、`externalDependsOn` 与 `properties`；省略描述表示空字符串，省略依赖和
 PR 引用表示空数组。创建成功
-返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create/PATCH 不能提供 properties.worker，PR 更新保留它。
+返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create 不能提供 properties.worker；普通 PATCH 只接受已有 worker 的 signaling 字符串，其他归属字段仍受保护。PR、信号与执行摘要更新相互保留。
 
 项目设置 PATCH 独立接受必填正 int64 `version` 和 `1..2147483647` 的 `executionWarningMinutes`，
 拒绝 query、缺失/未知/重复字段及非法类型，不接受 Project 其他字段。

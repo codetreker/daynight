@@ -5,6 +5,12 @@ import { renderZshCompletion } from "../../../src/commands/completion/zsh.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("native zsh completion", () => {
+  it("offers worker signaling only for task updates", () => {
+    const update = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
+    const create = renderZshCompletion(taskDefinition.commands!.find(({ name }) => name === "create")!);
+    expect(update).toContain("--worker-signaling=");
+    expect(create).not.toContain("--worker-signaling");
+  });
   it("offers explicit login and logout with a boolean browser option", () => {
     const script = renderZshCompletion(commandTree);
     expect(script).toContain("'login:Sign in through a browser using a device code'");

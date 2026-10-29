@@ -20,7 +20,7 @@ const seed = async (details: readonly TaskDetail[]) => {
   await scope.applySync(await scope.beginSync(projectId, signal()), taskSyncFromGraph(graph, { versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version }), signal());
   return scope;
 };
-const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1); connections.push(connection); return connection; };
+const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE); connections.push(connection); return connection; };
 const record = async (n = 1) => (await inspect()).get("details", [TEST_VIEWER_ID, projectId, taskId(n)]);
 afterEach(() => { scopes.splice(0).forEach((scope) => scope.dispose()); connections.splice(0).forEach((connection) => connection.close()); });
 

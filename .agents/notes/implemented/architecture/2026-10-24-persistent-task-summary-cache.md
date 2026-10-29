@@ -20,7 +20,11 @@ existing GraphIndex locally. Network decoding and authentication happen outside
 the transaction; publication follows transaction completion. Equal versions must
 have identical intrinsic content. Older rows cannot advance coverage.
 
-The origin-local daynight-task-cache database uses schema 1 and idb 8.0.4. Its
+The origin-local daynight-task-cache database uses schema 2 and idb 8.0.4. The
+[attention-signaling decision](../feature/2026-10-29-worker-attention-signaling.md)
+adds the required workerNeedsAttention summary field; upgrading clears
+rebuildable projects, summaries and details and rotates user fences before full
+reload, without defaults for missing fields. Its
 userScopes store owns durable user fences; projects owns project manifests and
 cache generations; summaries owns intrinsic task rows; details establishes the
 shared intrinsic-detail record and transaction shape. Manifest counts, edges,

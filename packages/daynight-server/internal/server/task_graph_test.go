@@ -77,7 +77,7 @@ func TestTaskGraphHTTPCompleteProjectionAndSafeLogs(t *testing.T) {
 		t.Fatalf("summary must expose exactly six three-state counts: %+v", raw.Summary)
 	}
 	for _, task := range raw.Tasks {
-		if len(task) != 14 {
+		if len(task) != 15 {
 			t.Fatalf("graph task exposes unexpected fields: %+v", task)
 		}
 		for _, field := range []string{"title", "description", "version", "projectId"} {

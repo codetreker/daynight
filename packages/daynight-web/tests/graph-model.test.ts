@@ -11,7 +11,7 @@ const graph = (seeds: readonly Seed[]): TaskGraph => {
     const dependsOn = seed.dependsOn ?? [];
     const status = seed.status ?? "todo";
     const blockedBy = dependsOn.filter((predecessor) => seeds.find((item) => item.id === predecessor)?.status !== "done");
-    return { requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null,
+    return { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null,
       id: seed.id, status, dependsOn, blockedBy, ready: status === "todo" && blockedBy.length === 0,
       titlePreview: "Private task text", titleTruncated: false, createdAt: time, updatedAt: time,
     };

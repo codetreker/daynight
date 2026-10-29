@@ -23,6 +23,7 @@ import { TaskId } from './TaskId';
 import { useTaskCacheScope } from '../task-cache/TaskCacheProvider';
 import { useProjectMembers } from '../projects/ProjectMembers';
 import { mayWithdrawClaim, matchesWithdrawalReview, TaskClaimSummary, TaskWithdrawalConfirmation, TaskWithdrawalFeedback, type WithdrawalConfirmation } from './TaskClaim';
+import { TaskAttentionNotice } from './TaskAttention';
 import { TaskCopyButton } from './TaskCopyButton';
 import { matchesDeletionReview, TaskDeletionConfirmation, TaskDeletionFeedback, type DeletionConfirmation } from './TaskDeletion';
 import { TaskPullRequests } from './TaskPullRequests';
@@ -94,6 +95,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const { detail, status, error, retry } = task;
   const worker = detail?.properties.worker;
   const currentClaim = worker !== undefined && worker !== null && worker.state !== 'completed' ? worker : null;
+  const boundedHeading = currentClaim !== null || worker !== undefined && worker !== null && worker.signaling !== '';
   const membership = useProjectMembers(projectId, currentClaim !== null);
   const viewer = useTaskCacheScope();
   const mayWithdraw = currentClaim !== null && membership.status === 'ready' && mayWithdrawClaim(currentClaim, viewer.userId, membership.members);
@@ -257,7 +259,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
           )}
           {detail !== null && (
             <>
-              <div className={`task-detail-heading${currentClaim === null ? '' : ' task-detail-heading-claimed'}`} {...(currentClaim === null ? {} : { tabIndex: 0, role: 'region', 'aria-label': messages.inspection.claim.controls })}>
+              <div className={`task-detail-heading${boundedHeading ? ' task-detail-heading-bounded' : ''}`} {...(boundedHeading ? { tabIndex: 0, role: 'region', 'aria-label': currentClaim === null ? messages.inspection.attentionControls : messages.inspection.claim.controls } : {})}>
                 <div className="task-detail-status-row">
                   <div className="task-detail-badges">
                     <div className="task-detail-state-controls">
@@ -271,6 +273,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                   <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />
                 </div>
+                {detail.properties.worker !== null && <TaskAttentionNotice signaling={detail.properties.worker.signaling} />}
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry}
                   canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => requestConfirmation({ kind: 'withdraw', detail, claimId: currentClaim.claimId }) } : {})} />}
               </div>

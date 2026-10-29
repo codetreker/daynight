@@ -3,20 +3,21 @@ package api
 import "time"
 
 type GraphTask struct {
-	ID                string     `json:"id"`
-	TitlePreview      string     `json:"titlePreview"`
-	TitleTruncated    bool       `json:"titleTruncated"`
-	Status            string     `json:"status"`
-	DependsOn         []string   `json:"dependsOn"`
-	ExternalDependsOn []string   `json:"externalDependsOn"`
-	BlockedBy         []string   `json:"blockedBy"`
-	RequiredPlatform  *string    `json:"requiredPlatform"`
-	AllowAgents       bool       `json:"allowAgents"`
-	Ready             bool       `json:"ready"`
-	CreatedAt         time.Time  `json:"createdAt"`
-	UpdatedAt         time.Time  `json:"updatedAt"`
-	StartedAt         *time.Time `json:"startedAt"`
-	CompletedAt       *time.Time `json:"completedAt"`
+	ID                   string     `json:"id"`
+	TitlePreview         string     `json:"titlePreview"`
+	TitleTruncated       bool       `json:"titleTruncated"`
+	Status               string     `json:"status"`
+	DependsOn            []string   `json:"dependsOn"`
+	ExternalDependsOn    []string   `json:"externalDependsOn"`
+	BlockedBy            []string   `json:"blockedBy"`
+	RequiredPlatform     *string    `json:"requiredPlatform"`
+	AllowAgents          bool       `json:"allowAgents"`
+	WorkerNeedsAttention bool       `json:"workerNeedsAttention"`
+	Ready                bool       `json:"ready"`
+	CreatedAt            time.Time  `json:"createdAt"`
+	UpdatedAt            time.Time  `json:"updatedAt"`
+	StartedAt            *time.Time `json:"startedAt"`
+	CompletedAt          *time.Time `json:"completedAt"`
 }
 
 type TaskGraphSummary struct {

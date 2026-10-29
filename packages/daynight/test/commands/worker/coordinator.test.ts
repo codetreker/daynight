@@ -81,7 +81,7 @@ const fixture = async (maxConcurrent = 1) => {
   };
   const herdr = { tasks, ensureInstance: vi.fn(async () => {}), stopInstance: vi.fn() } as unknown as WorkerHerdrAdapter;
   const grant = (candidate: Task, descriptor: WorkerClaimDescriptor): Task => {
-    const result: Task = { ...candidate, status: "in_progress", ready: false, version: candidate.version + 1n, properties: { ...candidate.properties, worker: { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(2), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: "2026-10-27T00:00:00Z" } } };
+    const result: Task = { ...candidate, status: "in_progress", ready: false, version: candidate.version + 1n, properties: { ...candidate.properties, worker: { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(2), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, signaling: "", claimedAt: "2026-10-27T00:00:00Z" } } };
     grants.set(descriptor.claimId, result); return result;
   };
   const remote = {
@@ -547,6 +547,55 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.tasks.submitPrompt.mock.calls[0]![2]).toContain("worker's periodic check");
     expect(f.tasks.submitPrompt.mock.calls[0]![2]).not.toBe(f.options.buildPrompt.mock.results[0]!.value);
     expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it.each(["idle", "done"] as const)("honors current signaling across %s turns and worker restart", async (status) => {
+    const f = await fixture();
+    await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const setSignal = (signaling: string) => {
+      const current = f.grants.get(row.claimId)!;
+      f.grants.set(row.claimId, { ...current, version: current.version + 1n, properties: { ...current.properties, worker: { ...current.properties.worker!, signaling } } });
+    };
+    setSignal("Human review required");
+    const pane = f.resources.get(row.claimId)!.panes[0]!;
+    const observed = f.tasks.observe.mock.calls.length;
+    await eventually(async () => { await f.coordinator.tick(); expect(f.tasks.observe.mock.calls.length).toBeGreaterThan(observed); });
+    pane.status = status;
+    pane.stateChangeSeq! += 1;
+    const restarted = createWorkerCoordinator(f.options);
+    const beforeRestart = f.tasks.observe.mock.calls.length;
+    await eventually(async () => { await restarted.tick(); expect(f.tasks.observe.mock.calls.length).toBeGreaterThan(beforeRestart); });
+    expect(f.tasks.submitPrompt).not.toHaveBeenCalled();
+    setSignal("");
+    await eventually(async () => { await restarted.tick(); expect(f.tasks.submitPrompt).toHaveBeenCalledOnce(); });
+    expect(f.tasks.start).toHaveBeenCalledOnce();
+    expect(f.store.getTask(row)?.status).toBe("active");
+  });
+
+  it("suppresses a pending patrol ping when a newer inventory observes signaling", async () => {
+    const f = await fixture();
+    await f.coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const row = f.store.listTasks()[0]!;
+    const pane = f.resources.get(row.claimId)!.panes[0]!;
+    pane.status = "idle";
+    pane.stateChangeSeq! += 1;
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const observe = f.tasks.observe.getMockImplementation()!;
+    let entered = false;
+    let completed = false;
+    f.tasks.observe.mockImplementationOnce(async (...args) => { entered = true; await held; const result = await observe(...args); completed = true; return result; });
+    await eventually(async () => { await f.coordinator.tick(); expect(entered).toBe(true); });
+    const current = f.grants.get(row.claimId)!;
+    f.grants.set(row.claimId, { ...current, properties: { ...current.properties, worker: { ...current.properties.worker!, signaling: "Inspect the deployment" } } });
+    await f.coordinator.tick();
+    release();
+    await eventually(() => expect(completed).toBe(true));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(f.tasks.submitPrompt).not.toHaveBeenCalled();
   });
 
   it("resets cleanup timing with a new in-memory driver", async () => {

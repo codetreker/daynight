@@ -81,9 +81,14 @@ export const runTaskCommand = async (
   const pullRequestUrls = command.options.get("--pull-request-url") as readonly string[] | undefined;
   const pullRequestTitles = command.options.get("--pull-request-title") as readonly string[] | undefined;
   const clearPullRequests = command.options.has("--clear-pull-requests");
+  const workerSignaling = command.options.get("--worker-signaling") as string | undefined;
   if (clearPullRequests && (pullRequestUrls !== undefined || pullRequestTitles !== undefined)) throw new UsageError("--clear-pull-requests conflicts with --pull-request-url and --pull-request-title.", help);
   if (pullRequestUrls?.length !== pullRequestTitles?.length) throw new UsageError("Provide the same number of --pull-request-url and --pull-request-title values.", help);
-  const properties = clearPullRequests ? { pullRequests: [] } : pullRequestUrls === undefined ? undefined : { pullRequests: pullRequestUrls.map((url, index) => ({ url, title: pullRequestTitles![index]! })) };
+  const pullRequests = clearPullRequests ? [] : pullRequestUrls?.map((url, index) => ({ url, title: pullRequestTitles![index]! }));
+  const properties = pullRequests === undefined && workerSignaling === undefined ? undefined : {
+    ...(pullRequests === undefined ? {} : { pullRequests }),
+    ...(workerSignaling === undefined ? {} : { worker: { signaling: workerSignaling } }),
+  };
   const limitArgument = command.options.get("--limit") as string | undefined;
   const readyLimit = limitArgument === undefined ? 10 : Number(limitArgument);
   if (limitArgument !== undefined && (!/^[0-9]+$/.test(limitArgument) || !Number.isInteger(readyLimit) || readyLimit < 1 || readyLimit > 100)) throw new UsageError("Ready task limit must be a decimal integer from 1 to 100.", help);
@@ -98,7 +103,7 @@ export const runTaskCommand = async (
     ...dependencyFields,
     ...(properties === undefined ? {} : { properties }),
   };
-  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, automatic-execution permission, platform requirement, dependency, or PR reference change.", help);
+  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, automatic-execution permission, platform requirement, dependency, PR reference, or worker signaling change.", help);
   const rawProjectId = command.options.get("--project") as string | undefined;
   let projectId: string | undefined;
   let taskId: string | undefined;

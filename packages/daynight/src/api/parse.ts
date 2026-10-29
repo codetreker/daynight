@@ -121,7 +121,7 @@ const workerHerdr = (value: unknown): WorkerHerdr | null => {
 };
 const parseWorkerClaim = (value: unknown): WorkerClaim | null => {
   if (value === null) return null;
-  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
+  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "signaling", "herdr", "nativeSessionId", "claimedAt"]);
   const machine = fields(data.machine, ["id", "name"]);
   const platform = requiredPlatform(data.platform);
   if (platform === null) return malformed();
@@ -132,7 +132,7 @@ const parseWorkerClaim = (value: unknown): WorkerClaim | null => {
   return {
     claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
     userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: text(machine.name, true) }, platform,
-    agent, agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
+    agent, agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase), signaling: rawString(data.signaling),
     herdr: workerHerdr(data.herdr), nativeSessionId: data.nativeSessionId === null ? null : text(data.nativeSessionId, true), claimedAt: timestamp(data.claimedAt),
   };
 };
@@ -168,7 +168,7 @@ export const parsePage = <T>(value: unknown, parse: (item: unknown) => T, identi
 
 const graphTask = (value: unknown): GraphTask => {
   const data = record(value);
-  const parsed = { ...dependencyState(data), titlePreview: text(data.titlePreview), titleTruncated: bool(data.titleTruncated) };
+  const parsed = { ...dependencyState(data), workerNeedsAttention: bool(data.workerNeedsAttention), titlePreview: text(data.titlePreview), titleTruncated: bool(data.titleTruncated) };
   const characters = Array.from(parsed.titlePreview).length;
   if (characters === 0 || characters > 160 || (parsed.titleTruncated && characters !== 160)) return malformed();
   return parsed;

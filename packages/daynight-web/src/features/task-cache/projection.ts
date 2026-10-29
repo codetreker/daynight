@@ -23,7 +23,7 @@ export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
   left.id === right.id && left.version === right.version && left.titlePreview === right.titlePreview &&
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
-  left.allowAgents === right.allowAgents && left.requiredPlatform === right.requiredPlatform &&
+  left.allowAgents === right.allowAgents && left.requiredPlatform === right.requiredPlatform && left.workerNeedsAttention === right.workerNeedsAttention &&
   sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 

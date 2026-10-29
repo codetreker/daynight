@@ -103,7 +103,7 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const events: WorkerEvent[] = [];
   const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
   const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
-  const input: ExecutionInput = { task, project, owner, title: "Task execution", configuration };
+  const input: ExecutionInput = { task, project, owner, title: "Task execution", configuration, canPing: () => true };
   const resources = async () => { const operation = createOperation(); try { return await manager.listResources(operation); } finally { operation.dispose(); } };
   return { root, store, input, context, manager, rpc, resources, events, calls, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
 };
@@ -181,6 +181,58 @@ describe("execution from current Herdr resources", () => {
     await f.driver.advance(f.input);
     await f.driver.advance(f.input);
     expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+  });
+
+  it.each(["idle", "done"])("keeps signaling %s turns quiet until the signal clears", async (status) => {
+    const f = await fixture("copilot", staleId);
+    let signaling = "Review the blocked deployment";
+    f.input.canPing = () => signaling === "";
+    const current: Entry = { ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "working", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 };
+    f.agents.push(current);
+    await f.driver.advance(f.input);
+    current.agent_status = status;
+    current.state_change_seq = 11;
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    signaling = "";
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+    expect(f.launches).toEqual([]);
+    expect(f.store.getTask(f.input.task)?.status).toBe("active");
+  });
+
+  it("preserves initial assignments and inactive-agent recovery while signaling", async () => {
+    const f = await fixture("copilot", savedId);
+    f.input.canPing = () => false;
+    await f.driver.advance(f.input);
+    expect(f.launches).toHaveLength(1);
+    expect(f.launches[0]!.args).toContain(`--resume=${savedId}`);
+  });
+
+  it.each(["composer", "waiting"])("rechecks signaling after the native %s surface read without consuming the ping baseline", async (surface) => {
+    const f = await fixture("codex", staleId);
+    let canPing = true;
+    f.input.canPing = () => canPing;
+    f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const request = f.rpc.request;
+    let signalingPending = true;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (...args) => {
+      const result = await request(...args);
+      if (args[0] === "agent.read" && signalingPending) {
+        canPing = false;
+        signalingPending = false;
+        if (surface === "waiting") (result.read as Entry).text = "Waiting for native UI\n";
+      }
+      return result;
+    });
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    canPing = true;
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
   });
 
   it.each([["idle", "working"], ["working", "idle"]])("uses fresh %s -> %s status when deciding whether to ping", async (snapshotStatus, observedStatus) => {

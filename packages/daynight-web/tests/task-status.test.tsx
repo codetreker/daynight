@@ -49,7 +49,7 @@ const otherRecords = new Map<string, TaskDetail>();
 const graph = (): TaskGraph => {
   const tasks = [...records.values()].map((task) => {
     const blockedBy = task.dependsOn.filter((dependency) => records.get(dependency)!.status !== 'done');
-    return { requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
+    return { requiredPlatform: task.requiredPlatform, workerNeedsAttention: task.properties.worker !== null && task.properties.worker.signaling !== '', allowAgents: task.allowAgents, externalDependsOn: task.externalDependsOn, startedAt: task.startedAt, completedAt: task.completedAt, id: task.id, titlePreview: task.title, titleTruncated: false, status: task.status, dependsOn: task.dependsOn,
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0, createdAt: time, updatedAt: task.updatedAt };
   });
   return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: project, name: 'Approval project', repoUrl: 'https://example.com/repo', createdAt: time, updatedAt: time }, tasks,
@@ -233,7 +233,7 @@ describe('status in shared production task details', () => {
     otherRecords.set(otherTask, other);
     const otherGraph: TaskGraph = { observedAt: "2026-10-20T12:00:00Z",
       project: { ...graph().project, id: otherProject, name: 'Other project' },
-      tasks: [{ requiredPlatform: other.requiredPlatform, allowAgents: other.allowAgents, externalDependsOn: other.externalDependsOn, startedAt: null, completedAt: null, id: otherTask, titlePreview: other.title, titleTruncated: false, status: 'todo',
+      tasks: [{ requiredPlatform: other.requiredPlatform, workerNeedsAttention: other.properties.worker !== null && other.properties.worker.signaling !== '', allowAgents: other.allowAgents, externalDependsOn: other.externalDependsOn, startedAt: null, completedAt: null, id: otherTask, titlePreview: other.title, titleTruncated: false, status: 'todo',
         dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time }],
       summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
     };

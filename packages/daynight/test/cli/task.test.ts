@@ -27,7 +27,7 @@ const graph = (): TaskGraph => ({
   observedAt: time,
   project,
   summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
-  tasks: [{ id: taskId, titlePreview: "Task 中文", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time }],
+  tasks: [{ id: taskId, titlePreview: "Task 中文", workerNeedsAttention: false, titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time }],
 });
 const taskPath = `/api/v1/projects/${projectId}/tasks`;
 const projectPath = `/api/v1/projects/${projectId}`;
@@ -623,6 +623,34 @@ describe("compiled task commands", () => {
       const refused = await f.invoke(["update", taskId, ...pairs, ...explicit]);
       expect(refused.code).toBe(1); expect(refused.stdout).toBe(""); expect(refused.stderr).toContain("pr-conflict");
       expect(requests.slice(conflictAt).map(({ method }) => method)).toEqual(["GET", "GET", "PATCH"]);
+    } finally { await f.close(); }
+  }, 60_000);
+
+  it("sets and clears worker signaling through the compiled command while retaining claim metadata", async () => {
+    const f = await fixture();
+    try {
+      const worker = { claimId: secondId, state: "active", userId: projectId, workerId: thirdId, machine: { id: thirdId, name: "Machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: thirdId, phase: "executing", signaling: "", herdr: null, nativeSessionId: "native", claimedAt: time } as const;
+      let current = task({ status: "in_progress", ready: false, startedAt: time, allowAgents: true, properties: { worker, pullRequests: [{ url: "https://example.test/pr", title: "Delivery" }] } });
+      const { requests } = await f.serve((request, response) => {
+        if (request.method === "PATCH") {
+          const input = request.body as { version: bigint; properties: { worker: { signaling: string } } };
+          current = { ...current, version: input.version + 1n, properties: { ...current.properties, worker: { ...current.properties.worker!, signaling: input.properties.worker.signaling } } };
+        }
+        respond(response, current);
+      });
+      for (const signaling of ["需要处理: review deployment", " ", ""]) {
+        const before = requests.length;
+        const version = current.version;
+        const result = await f.invoke(["update", taskId, `--worker-signaling=${signaling}`, "--if-version", String(version), ...explicit]);
+        expect(result.code, result.stderr).toBe(0);
+        expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "PATCH"]);
+        expect(requests.at(-1)!.body).toEqual({ version, properties: { worker: { signaling } } });
+        const shown = await f.invoke(["show", taskId, "--json", ...explicit]);
+        expect(shown.code, shown.stderr).toBe(0);
+        const read = parseApiJson(shown.stdout) as Task;
+        expect(read.properties.worker).toEqual({ ...worker, signaling });
+        expect(read.properties.pullRequests).toEqual(current.properties.pullRequests);
+      }
     } finally { await f.close(); }
   }, 60_000);
 

@@ -48,7 +48,7 @@ const serverDetail = (projectId: string): TaskDetail => {
 const graph = (projectId: string): TaskGraph => {
   const detail = serverDetail(projectId);
   return { observedAt: "2026-10-20T12:00:00Z", project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: `${currentUser.name} project ${projectId === project ? 'P' : 'Q'}`, repoUrl: 'https://example.com/repo', createdAt: stamp, updatedAt: stamp },
-    tasks: [{ requiredPlatform: detail.requiredPlatform, allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: detail.startedAt, completedAt: detail.completedAt, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: detail.blockedBy, ready: detail.ready, createdAt: detail.createdAt, updatedAt: detail.updatedAt }],
+    tasks: [{ requiredPlatform: detail.requiredPlatform, workerNeedsAttention: detail.properties.worker !== null && detail.properties.worker.signaling !== '', allowAgents: detail.allowAgents, externalDependsOn: detail.externalDependsOn, startedAt: detail.startedAt, completedAt: detail.completedAt, id: detail.id, titlePreview: detail.title, titleTruncated: false, status: detail.status, dependsOn: [], blockedBy: detail.blockedBy, ready: detail.ready, createdAt: detail.createdAt, updatedAt: detail.updatedAt }],
     summary: { total: 1, todo: detail.status === 'todo' ? 1 : 0, inProgress: detail.status === 'in_progress' ? 1 : 0, done: detail.status === 'done' ? 1 : 0, ready: detail.ready ? 1 : 0, blocked: 0 } };
 };
 const deferred = <T,>() => {

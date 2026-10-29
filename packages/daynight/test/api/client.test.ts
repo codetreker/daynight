@@ -543,8 +543,8 @@ const graph = (): TaskGraph => ({
   project,
   summary: { total: 2, todo: 1, inProgress: 0, done: 1, ready: 1, blocked: 0 },
   tasks: [
-    { id: taskId, titlePreview: "Task", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", dependsOn: [otherId], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
-    { id: otherId, titlePreview: "Done", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "done", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+    { id: taskId, titlePreview: "Task", workerNeedsAttention: false, titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", dependsOn: [otherId], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+    { id: otherId, titlePreview: "Done", workerNeedsAttention: false, titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "done", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
   ],
 });
 
@@ -568,6 +568,11 @@ const threeStateGraph = (): TaskGraph => {
 };
 
 describe("response DTO contract", () => {
+  it.each([undefined, null, "", 1])("rejects malformed graph attention markers: %j", async (workerNeedsAttention) => {
+    const value = graph();
+    const tasks = value.tasks.map((item) => ({ ...item, workerNeedsAttention }));
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks }))).getTaskGraph(projectId)).rejects.toMatchObject({ phase: "protocol" });
+  });
   it("preserves mixed external subsets, blocking, precise versions and timestamps across task reads and metadata results", async () => {
     const value = { ...task, allowAgents: true, description: "Complete Markdown\n\n```text\nexternal\n```", version: 9_223_372_036_854_775_807n, dependsOn: [otherId, normalId], externalDependsOn: [otherId], blockedBy: [otherId], ready: false };
     const graphValue = mixedDependencyGraph();

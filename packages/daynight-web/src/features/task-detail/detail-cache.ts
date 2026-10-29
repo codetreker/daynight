@@ -11,9 +11,9 @@ const intrinsic = ({ ready: _ready, blockedBy: _blockedBy, ...detail }: TaskDeta
 export const detailByteSize = (detail: TaskIntrinsicDetail): number => new TextEncoder().encode(stringifyApiJson(detail)).byteLength;
 export const materializeDetail = (detail: TaskIntrinsicDetail, node: GraphTask): TaskDetail => ({ ...detail, ready: node.ready, blockedBy: node.blockedBy });
 const summaryOf = (detail: TaskIntrinsicDetail): TaskSummary => {
-  const { projectId: _projectId, title, description: _description, properties: _properties, ...summary } = detail;
+  const { projectId: _projectId, title, description: _description, properties, ...summary } = detail;
   const characters = Array.from(title);
-  return { ...summary, titlePreview: characters.slice(0, 160).join(""), titleTruncated: characters.length > 160 };
+  return { ...summary, workerNeedsAttention: properties.worker !== null && properties.worker.signaling !== "", titlePreview: characters.slice(0, 160).join(""), titleTruncated: characters.length > 160 };
 };
 const sameIntrinsicDetail = (left: TaskIntrinsicDetail, right: TaskIntrinsicDetail): boolean =>
   left.projectId === right.projectId && left.title === right.title && left.description === right.description &&

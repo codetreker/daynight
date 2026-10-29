@@ -13,7 +13,7 @@ const task = { id: taskId, projectId, title: 'Automatic work', description: '', 
 const graph = (allowAgents: unknown) => ({ observedAt: time,
   project: { id: projectId, name: 'Project', repoUrl: 'https://example.com/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },
   summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 },
-  tasks: [{ ...task, titlePreview: task.title, titleTruncated: false, allowAgents }],
+  tasks: [{ ...task, titlePreview: task.title, titleTruncated: false, workerNeedsAttention: false, allowAgents }],
 });
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: viewerHeaders(TEST_VIEWER_ID, { 'Content-Type': 'application/json' }) });

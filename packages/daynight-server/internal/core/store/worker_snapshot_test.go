@@ -377,9 +377,14 @@ func TestWorkerSnapshotMigrationPreservesExistingTaskData(t *testing.T) {
 	}
 	database := &Store{Pool: pool}
 	project := queryProject(t, database, 10)
-	setSnapshotTaskClaim(t, database, project.ID, 20, queryID(1), queryID(2))
+	claim := &core.WorkerClaim{ClaimID: queryID(120), State: core.WorkerActive, UserID: queryID(1), WorkerID: queryID(2),
+		Machine: core.WorkerMachine{ID: queryID(999), Name: "Worker"}, Platform: core.PlatformLinux, Agent: core.AgentClaude,
+		AgentControlMode: core.AgentControlModeWeb, WorktreeID: queryID(220), Phase: core.WorkerExecuting, ClaimedAt: project.CreatedAt}
+	properties := taskproperties.Encode(core.TaskProperties{PullRequests: []core.PullRequestProperty{}, Worker: claim})
+	properties = strings.Replace(properties, `"signaling":"",`, "", 1)
+	mustQueryExec(t, database, `INSERT INTO tasks(id,project_id,title,status,properties) VALUES($1,$2,'Existing claim','in_progress',$3)`, queryID(20), project.ID, properties)
 	before := workerMigrationRows(t, database)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:25]); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(workerMigrationRows(t, database), before) {
@@ -392,7 +397,7 @@ func TestWorkerSnapshotMigrationPreservesExistingTaskData(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM pg_constraint WHERE conrelid='workers'::regclass AND contype='f'`).Scan(&foreignKeys); err != nil || foreignKeys != 0 {
 		t.Fatalf("worker registry added a foreign key: %d %v", foreignKeys, err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:25]); err != nil {
 		t.Fatal(err)
 	}
 }

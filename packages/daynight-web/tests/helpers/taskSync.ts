@@ -37,7 +37,7 @@ export const taskSyncFixture = (graph: TaskGraph, { query = {}, epoch = taskSync
   const tasks = graph.tasks.filter((task) => lowerBound === null || nanoseconds(task.updatedAt) >= lowerBound).map((task) => ({
     id: task.id, version: versionForTask(task).toString(), titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
     status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
-    allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt,
+    workerNeedsAttention: task.workerNeedsAttention, allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt,
     createdAt: task.createdAt, updatedAt: task.updatedAt,
   }));
   return { mode, epoch, project: graph.project, observedAt: graph.observedAt, tasks };

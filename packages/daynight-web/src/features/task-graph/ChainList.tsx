@@ -5,6 +5,7 @@ import type { GraphTask, TaskStatus } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskExecution } from '../task-execution/TaskExecutionClock';
 import { TaskExecutionDuration } from '../task-execution/TaskExecutionPresentation';
+import { TaskAttentionBadge } from '../task-detail/TaskAttention';
 import type { GraphIndex } from './model';
 import { TaskChainDialog } from './TaskChainDialog';
 import '../../styles/graph.css';
@@ -40,10 +41,10 @@ const GoalTaskRow = memo(({ task, rootId, onOpenTask }: GoalTaskRowProps) => {
   const { messages: { common, workspace: { project } } } = useI18n();
   const execution = useTaskExecution(task);
   return <li>
-    <button className="goal-task-row task-status-surface" data-task-status={task.status} id={`chain-task-${rootId}-${task.id}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
+    <button className={`goal-task-row task-status-surface${task.workerNeedsAttention ? ' task-needs-attention' : ''}`} data-task-status={task.status} id={`chain-task-${rootId}-${task.id}`} type="button" onClick={(event) => onOpenTask(task.id, event.currentTarget)} aria-haspopup="dialog">
       <span className={`goal-task-dot graph-status-${task.status}`} aria-hidden="true" />
       <span className="root-heading"><span className="root-title">{task.titlePreview}{task.titleTruncated ? '…' : ''}</span>{execution !== null && <span className="goal-task-execution" aria-hidden="true"><TaskExecutionDuration execution={execution} tooltip="duration" /></span>}</span>
-      <span className="goal-task-status"><span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
+      <span className="goal-task-status"><TaskAttentionBadge needsAttention={task.workerNeedsAttention} /><span className={`root-status graph-status-${task.status}`}>{common.status[task.status]}</span>{task.ready && <span className="task-ready">{project.ready}</span>}{task.blockedBy.length > 0 && <span className="graph-blocked-badge">{project.blocked}</span>}</span>
       <svg className="goal-task-chevron" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
     </button>
   </li>;
@@ -56,19 +57,20 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
   const component = index.components.get(rootId)!;
   const progress = component.progress;
   const inProgressCount = [...component.memberIds].filter((id) => index.nodes.get(id)!.status === 'in_progress').length;
+  const needsAttention = [...component.memberIds].some((id) => index.nodes.get(id)!.workerNeedsAttention);
   const title = `${task.titlePreview}${task.titleTruncated ? '…' : ''}`;
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
     return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
       .toSorted((left, right) => statusOrder[left.status] - statusOrder[right.status]);
   }, [index, rootId]);
-  return <li className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
-    <div className="goal-header task-status-surface" data-task-status={progress.status}>
+  return <li className={`root-row goal-row${needsAttention ? ' task-needs-attention' : ''}`} data-chain-id={rootId} data-task-status={progress.status}>
+    <div className={`goal-header task-status-surface${needsAttention ? ' task-needs-attention' : ''}`} data-task-status={progress.status}>
       <button className="root-toggle goal-toggle" type="button" id={`task-root-${rootId}`} aria-expanded={expanded}
         aria-controls={`goal-children-${rootId}`} onClick={() => setExpanded((value) => !value)}>
         <svg className={`goal-disclosure${expanded ? ' expanded' : ''}`} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" aria-hidden="true"><path d="m9 5 7 7-7 7" /></svg>
         <span className="root-heading">
-          <span className="goal-title-line"><span className="root-title">{title}</span><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span></span>
+          <span className="goal-title-line"><span className="root-title">{title}</span><TaskAttentionBadge needsAttention={needsAttention} /><span className="goal-in-progress">{m.inProgressCount({ count: inProgressCount })}</span></span>
         </span>
         <span className="root-progress"><span className="root-progress-label">{m.progress({ done: progress.done, total: progress.total })}</span><span className="root-progress-track" aria-hidden="true"><i style={{ width: `${progress.done / progress.total * 100}%` }} /></span></span>
         <span className={`root-status graph-status-${progress.status}`}>{common.status[progress.status]}</span>

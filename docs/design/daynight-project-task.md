@@ -17,7 +17,7 @@ CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 成对 PR 引用
-参数与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 包含只读 worker，公共输入使用独立的可写属性类型。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
+参数与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 包含 worker 及必填 signaling 字符串，公共输入使用独立的可写属性类型。创建只接受 PR，更新的 worker patch 只接受 signaling；`task update --worker-signaling <text>` 使用原样文本，显式空值清除信号，其他归属字段仍受保护。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
 [附件架构](daynight-task-attachments.md)中的 `task attachment put/list/read/remove`
 及二进制传输通道已实现，行为见[附件需求](../spec/daynight-task-attachments.md)。

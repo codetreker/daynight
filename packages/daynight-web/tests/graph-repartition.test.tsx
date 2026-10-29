@@ -22,7 +22,7 @@ const projectId = '10000000-0000-0000-0000-000000000001';
 const [A, B, C, X] = [1, 2, 3, 4].map((value) => `20000000-0000-0000-0000-${String(value).padStart(12, '0')}`) as [string, string, string, string];
 const node = (id: string, titlePreview: string, dependsOn: readonly string[]): GraphTask => ({
   id, titlePreview, titleTruncated: false, status: 'todo', dependsOn, externalDependsOn: [], blockedBy: dependsOn,
-  ready: dependsOn.length === 0, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
+  ready: dependsOn.length === 0, requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
 });
 const graph = (tasks: readonly GraphTask[]): TaskGraph => ({
   project: { id: projectId, name: 'Task repartition', repoUrl: 'https://github.com/example/repo', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time },

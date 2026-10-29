@@ -16,7 +16,7 @@ const claimId = "abcdefab-4444-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
-const worker: WorkerClaim = { claimId, state: "active", userId: projectId, workerId: otherId, machine: { id: otherId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: otherId, phase: "executing", herdr: { session: "w", workspaceId: "task-workspace", paneId: "task-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
+const worker: WorkerClaim = { claimId, state: "active", userId: projectId, workerId: otherId, machine: { id: otherId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: otherId, phase: "executing", herdr: { session: "w", workspaceId: "task-workspace", paneId: "task-pane" }, nativeSessionId: "original-native-session", signaling: "", claimedAt: time };
 type Request = { readonly method: string; readonly path: string; readonly query: URLSearchParams; readonly body: string };
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); vi.restoreAllMocks(); });
@@ -278,8 +278,8 @@ describe("task commands over HTTP", () => {
   it("renders complete graph data and exposes graph limit refusal details", async () => {
     let limit = false;
     const graph: TaskGraph = { observedAt: time, project, summary: { total: 2, todo: 2, inProgress: 0, done: 0, ready: 1, blocked: 1 }, tasks: [
-      { id: taskId, titlePreview: "T".repeat(160), titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: false, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
-      { id: otherId, titlePreview: "Dependency", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+      { id: taskId, titlePreview: "T".repeat(160), workerNeedsAttention: false, titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: false, dependsOn: [otherId], externalDependsOn: [], blockedBy: [otherId], startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+      { id: otherId, titlePreview: "Dependency", workerNeedsAttention: false, titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
     ] };
     const f = await fixture((_request, response) => {
       if (limit) respond(response, { error: { code: "graph_limit_exceeded", message: "Graph is too large", requestId: "graph-limit", details: { nodeCount: 1001, edgeCount: 1, maxNodes: 1000, maxEdges: 5000 } } }, 422);

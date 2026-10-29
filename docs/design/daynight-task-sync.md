@@ -87,6 +87,7 @@ type TaskViewRecord = {
   dependsOn: string[];
   externalDependsOn: string[];
   allowAgents: boolean;
+  workerNeedsAttention: boolean;
   requiredPlatform: "windows" | "linux" | "macos" | null;
   createdAt: string;
   updatedAt: string;
@@ -115,7 +116,7 @@ type TaskSync = {
 
 在一次现有只读快照中验证成员资格、读取 Project/epoch、精确容量检查、匹配摘要和 observedAt。全部状态都参与同步。响应规模不超过完整有界图，因此不引入分页或中间发布。每次检查容量，不能保留旧修订号方案的“序号相等即跳过计数”优化。
 
-TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须保留当前 GraphTask 已有的 requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。新 version 字符串严格解码为 bigint；Project.settings.version 沿用现有无损解码。缓存字段不得缺省。GET/HEAD、no-store、错误信封、请求取消及现有完整 task-graph 合同保持。
+TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须保留当前 GraphTask 已有的 requiredPlatform（明确可空）、allowAgents 及 workerNeedsAttention 布尔值；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。新 version 字符串严格解码为 bigint；Project.settings.version 沿用现有无损解码。workerNeedsAttention 严格取完整归属中的 signaling 是否非空，worker 为 null 时由服务端投影为 false；该字段供无需详情读取的高亮使用，不携带执行身份。缓存字段不得缺省。GET/HEAD、no-store、错误信封、请求取消及现有完整 task-graph 合同保持。
 
 认证边界为实际认证后的响应写 `Daynight-User-ID`，覆盖同步、详情、写结果及认证后资源错误。缓存发布前与当前身份核对；401 沿用会话失效流程。该头来自 core.Principal，不能回显客户端输入。
 
@@ -133,6 +134,8 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 | details / [userId,projectId,taskId] | userFence、cacheGeneration、完整任务自身内容及业务 version、byteSize、lastUsedAt |
 
 `lifecycle.ts` 统一验证用户记录与两类 manifest：userId/projectId 必须匹配请求归属，userFence 和 cacheGeneration 必须是规范 UUID，计数必须是容量上限内的非负安全整数。active manifest 要求 invalidatedBy=null、合法 epoch/Project，且 taskCount 为零当且仅当 maxUpdatedAt=null；invalidated manifest 要求明确的 access/corrupt/user 原因、epoch/project/maxUpdatedAt 全为 null、taskCount/edgeCount 全为零。失效状态不能保留可用于增量请求的旧 epoch。
+
+缓存 schema 随必填 workerNeedsAttention 升级；既有升级路径清除可重建的项目、摘要和详情并轮换 fence，随后完整重建，不为旧记录缺失字段补默认值。
 
 不存派生 ready/blockedBy，不把 bigint 当作 IDB 键，也不 JSON.stringify bigint。`projects` 的 `by-user` 索引支持用户清理；`summaries`、`details` 的 `by-user` 与 `by-project` 索引支持定向读取和清理。`TaskIntrinsicDetail = Omit<TaskDetail, "ready" | "blockedBy">` 固定详情存储边界，保留 description、完整 properties（含 pullRequests 和 nullable worker）及精确业务 version。
 
@@ -170,7 +173,7 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 每次已准入的详情打开先调用 `requireOpeningRead(projectId,taskId)` 记录这次 opening 的 live GET 要求，再判断 pending/unknown/reconciling 是否阻止读取；阻止期间要求仍保留，解除后合并执行必要 GET。openingGeneration/liveOpeningGeneration 只在内存中识别该要求，不是 DB、协议或项目水位。GET 捕获开始时的 opening，磁盘正文、写结果、同版本 no-op/拒绝响应以及重开前已开始的 reconciliation 均不能满足后一次 opening；重复五秒 receipt 不创建新 opening。取得当前生命周期 ticket 后可以显示匹配摘要版本的持久自身正文，live GET 成功前 requiresFreshRead 保持，磁盘内容不启用写操作。网络在事务外进行，响应通过实际用户核对后，保存事务再次验证 ticket、当前摘要和已有详情。较旧结果不覆盖正文。较新的 GET 结果保留待安装并触发项目同步；已确认且通过目标/版本校验的较新写正文，在受保护生命周期检查后可暂时按原始服务端字段显示，同时保持 graphMismatch、requiresFreshRead 和禁写，不提前持久化。暂存结果高于摘要版本时继续等待，版本相等时按原有 ticket 校验采用本地派生并持久化，不额外 GET（新的 opening 要求仍独立保留）。若当前摘要已越过暂存版本，则丢弃过期 payload 和旧 liveVersion，在原队列中合并必要 GET，空闲时执行，活动读或写结束后再排空。队列和 pending 保留发起用途：普通详情读取仍按普通读取恢复，操作结果核对仍按 reconciliation 恢复；原操作意图、阶段和已确认版本下界不因此改变，旧 payload 不安装也不满足 opening。普通读取失败进入可见的 detail error/Retry，不写入隐藏的 mutation reconciliationError；成功 GET 清除该读的错误和新鲜度阻塞。核对 GET 失败、仍旧版本、精确 pending 准入异常或提交后摘要再次前进时，退出当前 reconciling 并保留 reconciliationError 与检查状态/Retry；成功核对清除对应阻塞，保留操作归属。失败结果只作用于当前 entry/ticket generation，旧失败不能覆盖新读。重复摘要不形成核对循环，显式 Retry 只 GET。以上过程不推进项目覆盖。snapshot 会轮换项目 generation，不能跨 generation 采用旧 ticket 或待安装正文；任何 generation 变化立即释放旧详情正文、PR 和 loadedRevision，取消旧读取/待安装结果，并重置 liveVersion、已确认版本下界、读取错误与新鲜度；相同 taskId/version/时间也不能证明属于同一历史。hook 在 observer effect 前也以 `hasCurrentGeneration` 阻止旧正文闪现，新 GET 挂起或失败时不能保留旧 generation 的内容。一般 generation 更替保留操作 confirmed/unknown 的意图和阶段，旧核对取消后 reconciling 复位，以便显式 GET 核对恢复。已删除任务在新历史重新出现时初始化新的 mutation 所有权并强制 live GET；旧操作意图不能占用或改写新历史的操作状态，迟到结果仍须通过所有者与历史准入检查。同 generation 的刷新失败继续保留当前成功正文。
 
-摘要自身 version 变化使对应详情失效并读取新内容。相同 version 的前置变化直接从完整本地图重新物化 ready/blockedBy，不下载所有后继。description、PR 或 worker 属性变化由业务 version 被发现。收到 live GET/写响应时，先以原始服务端派生字段检查 isTaskStale，再物化本地派生值；`graphMismatch` 保存差异证据并继续提示、禁写和触发项目同步，不能用覆盖后的相同值消除它。成功读取或本地图收敛后才解除对应限制。重复 receipt 仅在读取错误、缺失新鲜观察、原始差异或核对未完成时提供必要恢复机会。
+摘要自身 version 变化使对应详情失效并读取新内容。相同 version 的前置变化直接从完整本地图重新物化 ready/blockedBy，不下载所有后继。description、PR 或 worker 属性变化由业务 version 被发现。摘要相等比较和图投影保留 workerNeedsAttention，详情新鲜度同时比较它与完整 worker.signaling 的非空性，使信号变化进入同一失效与刷新机制。收到 live GET/写响应时，先以原始服务端派生字段检查 isTaskStale，再物化本地派生值；`graphMismatch` 保存差异证据并继续提示、禁写和触发项目同步，不能用覆盖后的相同值消除它。成功读取或本地图收敛后才解除对应限制。重复 receipt 仅在读取错误、缺失新鲜观察、原始差异或核对未完成时提供必要恢复机会。
 
 ### 详情存储与预算
 

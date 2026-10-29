@@ -35,6 +35,7 @@ type workerDocument struct {
 	AgentControlMode core.WorkerAgentControlMode `json:"agentControlMode"`
 	WorktreeID       string                      `json:"worktreeId"`
 	Phase            core.WorkerPhase            `json:"phase"`
+	Signaling        string                      `json:"signaling"`
 	Herdr            *herdrDocument              `json:"herdr"`
 	NativeSessionID  *string                     `json:"nativeSessionId"`
 	ClaimedAt        string                      `json:"claimedAt"`
@@ -46,7 +47,7 @@ func encodeWorker(worker *core.WorkerClaim) *workerDocument {
 	}
 	value := &workerDocument{ClaimID: worker.ClaimID, State: worker.State, UserID: worker.UserID, WorkerID: worker.WorkerID,
 		Machine: machineDocument{ID: worker.Machine.ID, Name: worker.Machine.Name}, Platform: worker.Platform, Agent: worker.Agent, AgentControlMode: worker.AgentControlMode,
-		WorktreeID: worker.WorktreeID, Phase: worker.Phase, NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC().Format(time.RFC3339Nano)}
+		WorktreeID: worker.WorktreeID, Phase: worker.Phase, Signaling: worker.Signaling, NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC().Format(time.RFC3339Nano)}
 	if worker.Herdr != nil {
 		value.Herdr = &herdrDocument{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}
 	}
@@ -57,12 +58,12 @@ func decodeWorker(data []byte) (*core.WorkerClaim, error) {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
 		return nil, nil
 	}
-	fields, err := jsonobject.Decode(data, "properties.worker", "claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt")
+	fields, err := jsonobject.Decode(data, "properties.worker", "claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "signaling", "herdr", "nativeSessionId", "claimedAt")
 	if err != nil {
 		return nil, err
 	}
 	values := make(map[string]string, 10)
-	for _, key := range []string{"claimId", "state", "userId", "workerId", "platform", "agent", "worktreeId", "phase", "claimedAt"} {
+	for _, key := range []string{"claimId", "state", "userId", "workerId", "platform", "agent", "worktreeId", "phase", "signaling", "claimedAt"} {
 		value, err := stringField(fields, key, "properties.worker")
 		if err != nil {
 			return nil, err
@@ -93,7 +94,7 @@ func decodeWorker(data []byte) (*core.WorkerClaim, error) {
 	if err != nil || claimedAt.IsZero() {
 		return nil, fmt.Errorf("properties.worker.claimedAt must be an RFC3339 timestamp")
 	}
-	worker := &core.WorkerClaim{ClaimID: values["claimId"], State: core.WorkerState(values["state"]), UserID: values["userId"], WorkerID: values["workerId"], Machine: core.WorkerMachine{ID: machineID, Name: machineName}, Platform: core.TaskPlatform(values["platform"]), Agent: core.WorkerAgent(values["agent"]), WorktreeID: values["worktreeId"], Phase: core.WorkerPhase(values["phase"]), ClaimedAt: claimedAt.UTC()}
+	worker := &core.WorkerClaim{ClaimID: values["claimId"], State: core.WorkerState(values["state"]), UserID: values["userId"], WorkerID: values["workerId"], Machine: core.WorkerMachine{ID: machineID, Name: machineName}, Platform: core.TaskPlatform(values["platform"]), Agent: core.WorkerAgent(values["agent"]), WorktreeID: values["worktreeId"], Phase: core.WorkerPhase(values["phase"]), Signaling: values["signaling"], ClaimedAt: claimedAt.UTC()}
 	worker.AgentControlMode = core.AgentControlModeHerdr
 	if _, exists := fields["agentControlMode"]; exists {
 		mode, err := stringField(fields, "agentControlMode", "properties.worker")

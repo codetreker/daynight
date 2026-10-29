@@ -28,7 +28,7 @@ const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ 
   id: id(value), projectId, title: `任务 ${value}`, description: `任务 ${value} 的完整描述`, status: 'todo', version: 1n,
   properties: { worker: null, pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
-const node = (task: TaskDetail): GraphTask => ({ requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt,
+const node = (task: TaskDetail): GraphTask => ({ requiredPlatform: task.requiredPlatform, workerNeedsAttention: task.properties.worker !== null && task.properties.worker.signaling !== '', allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt,
   id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160,
   status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt,
 });
@@ -87,6 +87,21 @@ beforeEach(() => {
 afterEach(() => { cleanup(); world.dispose(); root.remove(); document.body.style.overflow = ''; });
 
 describe('task detail dialog', () => {
+  it('keeps a completed claim with a long signal in a bounded keyboard-scrollable heading', async () => {
+    const signaling = '需要人工确认已完成的交付。\n'.repeat(100);
+    const completed = detail(1, { status: 'done', ready: false, properties: { pullRequests: [], worker: {
+      claimId: id(2), state: 'completed', userId: TEST_VIEWER_ID, workerId: id(3), machine: { id: id(4), name: 'Machine' },
+      platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(5), phase: 'completing',
+      herdr: null, nativeSessionId: null, claimedAt: timestamp, signaling,
+    } } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(completed)));
+    await open(props({ snapshot: snapshot([completed]) }));
+    const heading = await screen.findByRole('region', { name: '任务设置与需处理提示' });
+    expect(heading).toHaveClass('task-detail-heading-bounded');
+    expect(heading).toHaveAttribute('tabindex', '0');
+    expect(within(heading).getByRole('region', { name: '需要处理' }).querySelector('p')!.textContent).toBe(signaling);
+    expect(screen.getByRole('tabpanel', { name: '概览' })).toBeVisible();
+  });
   it('copies the complete title independently of the ID and reports a localized failure with retry', async () => {
     const reviewed = detail(1, { title: `${'完整标题 & <文本> 🧩 '.repeat(30)}\n结尾` });
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));

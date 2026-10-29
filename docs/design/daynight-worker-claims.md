@@ -4,7 +4,7 @@
 
 ## 资源和属性所有权
 
-完整 Task 的 `properties` 必须包含 `pullRequests` 与 `worker`。`worker` 为 null 表示当前没有保留的执行归属记录，包括从未认领或已经强制撤回；非 null 时是最后一条认领记录，`state` 为 `active`、`released` 或 `completed`。历史任务通过迁移取得显式 null，读取器不以缺失字段代替 null。图保持原有精简投影，不包含属性。
+完整 Task 的 `properties` 必须包含 `pullRequests` 与 `worker`。`worker` 为 null 表示当前没有保留的执行归属记录，包括从未认领或已经强制撤回；非 null 时是最后一条认领记录，`state` 为 `active`、`released` 或 `completed`。历史任务通过迁移取得显式 null，读取器不以缺失字段代替 null。完整图与同步摘要只投影 workerNeedsAttention 布尔值，严格表示非 null worker 的 signaling 非空；完整属性与执行身份仍通过 Task 读取。
 
 ```json
 {
@@ -18,17 +18,20 @@
   "agentControlMode": "herdr",
   "worktreeId": "45dd8ec8-a8ea-4ac9-a72d-c2ed98fc66f5",
   "phase": "preparing",
+  "signaling": "",
   "herdr": null,
   "nativeSessionId": null,
   "claimedAt": "2026-10-24T12:00:00Z"
 }
 ```
 
-`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 为 herdr/web，是 claim 创建时冻结的执行模式；Codex、Claude、Copilot 均可使用任一模式，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null。
+`platform` 为 windows/linux/macos，`agent` 为 codex/copilot/claude。`agentControlMode` 为 herdr/web，是 claim 创建时冻结的执行模式；Codex、Claude、Copilot 均可使用任一模式，web 记录的 herdr 关联必须为 null。`phase` 为 preparing/executing/verifying/completing/waiting/paused，是执行摘要，不是第二套 task 状态。Herdr 关联未取得时为 null，取得后是包含非空 `session`、`workspaceId`、`paneId` 的对象；原生会话未取得时为 null。认领创建时阶段为 preparing，会话字段为 null，signaling 为空字符串。signaling 是必填原样字符串：空表示没有需要处理的提示，任何非空值表示需要人关注。它不改变 phase、状态或执行身份。
 
 初始认领和人工接续的 userId 来自服务端认证用户。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。released/completed 保留最后身份、工作区及会话信息作为历史，不自动过期；字段存在不证明原资源仍存活，也不要求新执行复用它们。
 
-存储/读取 codec 与公共属性写入 codec 分开。普通 create/PATCH 提供 worker 字段时，即使为 null 或与现值相同也返回 invalid_input。PR 列表修改保留 worker，worker 操作保留 PR 及其他任务资料。016_task_worker.sql 在规范 JSON 文本末尾插入 worker:null 并调整默认值，保留版本和时间；不经过 PostgreSQL JSON/JSONB 转换，以保留既有 PR 字符串中的 NUL 转义和 Unicode 语义。
+存储/读取 codec 与公共属性写入 codec 分开。普通 create 提供 worker 字段时返回 invalid_input；普通 PATCH 只接受 `properties:{worker:{signaling:"..."}}`，拒绝 null、未知字段和其他受保护字段。该 PATCH 要求已有非 null worker，不创建归属；成员权限与任务精确 version 沿用普通任务更新。只修改 signaling，保持 PR、任务状态、计时及归属的其他字段。PR 列表与受控 worker 摘要更新同样保留 signaling。
+
+016_task_worker.sql 在规范 JSON 文本末尾插入 worker:null 并调整默认值，保留版本和时间；不经过 PostgreSQL JSON/JSONB 转换，以保留既有 PR 字符串中的 NUL 转义和 Unicode 语义。signaling 的独立迁移为已有非 null worker 补齐空字符串，保留 null、其他字符串、任务版本与时间；完整读取严格拒绝缺失或错误类型，不做旧结构 fallback。
 
 ## 执行模式兼容
 
@@ -73,7 +76,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 | released | 普通 todo→in_progress/done 被拒绝；通过满足资格的自动认领或显式人工 resume 开始新执行。 |
 | completed 或 null | 普通三状态设置保持原行为；completed 历史记录不会因状态重开而变成 active。 |
 
-非当前 claim 引用不能完成或更新执行。管理员可以 release/withdraw，但不以管理员身份代替 owner 完成当前执行。metadata PATCH 没有 status，也不能写 worker。[显式解除引用并删除其他目标](daynight-task-deletion.md)允许源任务仍持有 active claim：只移除其指向目标的依赖并增加源任务版本，保留 claim、状态和计时。源 worker 的下一次写入须核对新版本，该操作不表示 release、停止或撤回执行；active 目标任务自身仍禁止删除。
+非当前 claim 引用不能完成或更新执行。管理员可以 release/withdraw，但不以管理员身份代替 owner 完成当前执行。metadata PATCH 没有 status，worker 只开放 signaling 更新。[显式解除引用并删除其他目标](daynight-task-deletion.md)允许源任务仍持有 active claim：只移除其指向目标的依赖并增加源任务版本，保留 claim、状态和计时。源 worker 的下一次写入须核对新版本，该操作不表示 release、停止或撤回执行；active 目标任务自身仍禁止删除。
 
 ### 释放、强制撤回和计时
 
@@ -89,7 +92,7 @@ stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代�
 
 全部写入复用现有 Tasks 服务和项目行锁，同一事务内核验成员、版本、依赖、归属并写入属性、状态、计时和版本。失败、取消或数据库错误完整回滚。许可或平台编辑与认领同版本竞争只能提交一个有效结果。无需归属查询投影、索引或独立 claim 表。
 
-真实 worker 修改沿用同一事务的 task.version 与 updatedAt；[时间窗口摘要](daynight-task-sync.md)因此能观察到其业务版本变化，同值 no-op 保持原值。摘要只读且不包含 properties，不携带 worker 归属；需要核对执行身份时仍按已知 taskId GET 完整 Task。现有同步窗口和更新时间索引继续由摘要能力拥有，不增加 worker 查询投影或反向索引。
+真实 worker 修改沿用同一事务的 task.version 与 updatedAt；[时间窗口摘要](daynight-task-sync.md)因此能观察到其业务版本变化，同值 no-op 保持原值。摘要只读，不携带完整 properties 或 worker 归属；workerNeedsAttention 仅供列表与图高亮，需要核对执行身份时仍按已知 taskId GET 完整 Task。现有同步窗口和更新时间索引继续由摘要能力拥有，不增加执行身份反向索引。
 
 沿用 invalid_input、认证/forbidden/not_found、version_conflict、dependency_unsatisfied、invalid_transition，并用 claim_conflict 表达非当前归属。非成员读取和写入按现有规则隐藏任务。错误保持原有链和诊断，不转换为空候选或成功。
 
@@ -109,11 +112,11 @@ Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 workerId；listTasks 成功
 
 自动初次认领结果未知时不重放；成功完整的自己 claim 清单找回实际 claim 后再登记 pending，失败或部分清单不建立归属结论。显式管理的精确版本及未知写入结果仍按具体 taskId 读取核对原 claim 及具体操作的目标结果；该读取不用于自动清理的缺席原因分类。只有明确拒绝的提交可由新明确决定替换，该决定须重新读取 task 并核对精确 if-version 与本次观察相同；拒绝未修改 task 时，数值相同的版本仍有效。Unknown 提交不因读到旧值解除 fence。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
 
-每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建/更新输入仅暴露可写的 PR 属性。
+每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建输入仅暴露可写的 PR 属性；更新另允许仅含 signaling 的 worker patch。公开 CLI 的 `task update --worker-signaling <text>` 生成该嵌套 patch，空字符串清除信号；不调用受控执行摘要接口，也不允许改写执行身份。
 
 ## Web 归属展示与撤回
 
-任务详情弹窗、独立页及全屏共享当前归属展示。Active 显示认领用户、机器、agent 和阶段；released 明确标为已释放，completed 不作为当前认领。用户名称与账号来自项目成员资料；已移出项目的原 owner 仍可能保留 claim，查不到资料时保留真实 userId，不把资料缺席解释为归属消失。成员读取失败保持可见。
+任务详情弹窗、独立页及全屏共享当前归属展示。Active 显示认领用户、机器、agent 和阶段；released 明确标为已释放，completed 不作为当前认领。用户名称与账号来自项目成员资料；已移出项目的原 owner 仍可能保留 claim，查不到资料时保留真实 userId，不把资料缺席解释为归属消失。成员读取失败保持可见。非空 signaling 独立于归属展示的 active/released/completed 分类，始终显示“需要处理”/“Needs attention”与原始信号文本；列表、任务链和图使用摘要投影，不额外读取身份。
 
 原 owner/admin 可从“强制撤回”进入确认；其他成员只读归属。确认冻结完整 task/claim 和精确版本，说明回到 todo、清空归属与计时、关闭自动执行，以及远端 agent 无法保证立即停止。取消不提交，后台已知变化使确认失效。Web 通过既有 TaskDetailSession 串行提交，验证完整返回值再更新详情和图；版本冲突要求重新审阅，未知结果只用 GET 核对，不重发请求或把观察到的状态归因于未知写入。成员显示和按钮可见性不替代服务端权限校验。
 
@@ -131,6 +134,6 @@ jq 'select(.task_id == "<task-id>" and .request_id == "<request-id>")' server.js
 
 ## 验证边界
 
-服务基础验证包括真实 PostgreSQL 同版本竞争、owner/admin/成员边界、许可/平台变化、所有状态旁路、旧 claim、释放/强制撤回/接续、撤回原子性及事务回滚，以及属性迁移的 NUL/Unicode 保全。客户端验证覆盖完整读取、写保护类型、200 操作、精确 int64、未知结果不重发和候选游标推进。
+服务基础验证包括真实 PostgreSQL 同版本竞争、owner/admin/成员边界、许可/平台变化、所有状态旁路、旧 claim、释放/强制撤回/接续、撤回原子性及事务回滚，以及属性迁移的 NUL/Unicode 保全。客户端验证覆盖完整读取、写保护类型、200 操作、精确 int64、未知结果不重发和候选游标推进。signaling 验证覆盖严格类型、原始空白/控制字符保全、已有归属要求、同值 no-op、过期版本、清空、执行上报保留、图与增量摘要投影。
 
 这些检查证明服务端和 typed client 的归属基础，不代替本机 SQLite、Git 或原生 agent 的独立证据。当前资源适配的 Linux 针对性结果及限制由[运行时验证边界](daynight-worker.md#验证边界)拥有；前台协调与人工管理各有自己的验收，完整三平台交付仍须最终验证。[人工管理决策](../../.agents/notes/implemented/architecture/2026-10-27-worker-manual-control.md)保存终止后新执行和唯一控制者的取舍。

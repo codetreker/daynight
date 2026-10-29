@@ -139,6 +139,7 @@ const graphTask = (value: unknown): GraphTask => {
     blockedBy: ids(data.blockedBy),
     ready: boolean(data.ready),
     allowAgents: boolean(data.allowAgents),
+    workerNeedsAttention: boolean(data.workerNeedsAttention),
     requiredPlatform: requiredPlatform(data.requiredPlatform),
     startedAt: nullableTimestamp(data.startedAt),
     completedAt: nullableTimestamp(data.completedAt),
@@ -188,7 +189,7 @@ const workerText = (value: unknown): string => {
 const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
 const workerClaim = (value: unknown): WorkerClaim | null => {
   if (value === null) return null;
-  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
+  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt", "signaling"]);
   const machine = fields(data.machine, ["id", "name"]);
   const herdr = data.herdr === null ? null : fields(data.herdr, ["session", "workspaceId", "paneId"]);
   const agentControlMode = !Object.hasOwn(data, "agentControlMode") ? "herdr" : data.agentControlMode;
@@ -199,7 +200,7 @@ const workerClaim = (value: unknown): WorkerClaim | null => {
     userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: workerText(machine.name) }, platform: executionPlatform(data.platform),
     agent: data.agent === "codex" || data.agent === "copilot" || data.agent === "claude" ? data.agent : malformed(), agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
     herdr: herdr === null ? null : { session: workerText(herdr.session), workspaceId: workerText(herdr.workspaceId), paneId: workerText(herdr.paneId) },
-    nativeSessionId: data.nativeSessionId === null ? null : workerText(data.nativeSessionId), claimedAt: timestamp(data.claimedAt),
+    nativeSessionId: data.nativeSessionId === null ? null : workerText(data.nativeSessionId), claimedAt: timestamp(data.claimedAt), signaling: string(data.signaling),
   };
 };
 const properties = (value: unknown): TaskProperties => {

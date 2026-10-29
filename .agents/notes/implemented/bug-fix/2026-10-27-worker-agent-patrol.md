@@ -27,8 +27,11 @@ permissions and task-folder trust for fresh and resumed processes.
 
 For a still-owned active claim, a patrol reads the current agent inside the
 existing serialized task operation. A live, interactive-ready agent in idle or
-done receives a continuation ping when it is not launching and has no first
-input pending. Working, blocked, unknown and not-ready states remain under
+done receives a continuation ping when it is not launching, has no first
+input pending and the latest remote signaling is empty. The later
+[attention-signaling decision](../feature/2026-10-29-worker-attention-signaling.md)
+adds that human-attention gate while preserving the original continuation and
+cleanup distinction. Working, blocked, unknown and not-ready states remain under
 observation. The ping preserves task, claim, worktree and authorization, and
 reminds the agent to wait for review and CI. The agent's state cannot complete
 the business task; only its original claim-bound completion does that.

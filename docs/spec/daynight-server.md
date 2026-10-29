@@ -85,7 +85,7 @@ Task 包含以下持久化字段：
 | `projectId` | 所属 project，创建后不可变 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL |
 | `description` | 不含 NUL 的 UTF-8 描述，省略时为空字符串，允许更新为空字符串 |
-| `properties` | 必含 pullRequests 有序字符串记录数组与 worker:null/执行归属；PR 默认空数组，worker 为服务端受保护记录 |
+| `properties` | 必含 pullRequests 有序字符串记录数组与 worker:null/执行归属；PR 默认空数组，非 null worker 必含 signaling 字符串，归属字段由服务端保护，普通 PATCH 仅可改 signaling |
 | `status` | `todo / in_progress / done`，创建时为 todo；普通设置使用状态资源，受控 worker 操作原子改变对应状态 |
 | `allowAgents` | 必填布尔自动执行许可，新任务为 `false`；与状态、依赖、实际执行者独立 |
 | `requiredPlatform` | 字段必填，值为 `null`、`windows`、`linux` 或 `macos`；`null` 表示不限制，新旧任务默认均不限制 |
@@ -238,7 +238,7 @@ Worker 资源归属来自认证 principal，报告不能提供 userId 或权威�
 
 Project、缓存 epoch、完整容量检查、匹配任务和 observedAt 来自一次只读快照；
 即使窗口只命中少量任务，项目超过 1,000/5,000 上限也明确拒绝。摘要的业务 version
-使用精确十进制字符串，包含 requiredPlatform，省略 description/properties 及派生 ready/blockedBy。
+使用精确十进制字符串，包含 requiredPlatform 与必填布尔 workerNeedsAttention，省略 description/properties 及派生 ready/blockedBy。workerNeedsAttention 严格表示存在 worker 且 signaling 非空，完整信号内容仍通过任务详情读取。
 纳秒下界向上对齐到 PostgreSQL 微秒精度，避免驱动截断造成边界外记录进入结果。
 身份/权限、HEAD、no-store 和错误优先级服从既有合同。完整行为由
 [任务缓存需求](daynight-task-sync.md)拥有；Web 持久缓存尚未在当前交付中接入。
@@ -254,7 +254,7 @@ summary 必须包含 `total`、`todo`、`inProgress`、`done`、`ready`、`block
 满足 `total = todo + inProgress + done` 与 `todo = ready + blocked`。
 blocked 只计入前置未全部完成的 todo；图读取不改变任务状态、版本或时间。
 图节点返回 `id`、`titlePreview`、`titleTruncated`、`status`、`dependsOn`、
-`externalDependsOn`、`blockedBy`、`ready`、必填布尔 `allowAgents`、必填可空枚举 `requiredPlatform`、`createdAt`、`updatedAt` 以及明确可空的 `startedAt`、`completedAt`。
+`externalDependsOn`、`blockedBy`、`ready`、必填布尔 `allowAgents` 与 `workerNeedsAttention`、必填可空枚举 `requiredPlatform`、`createdAt`、`updatedAt` 以及明确可空的 `startedAt`、`completedAt`。
 顶层 `observedAt` 是图数据与统计读取后的数据库时间样本，使用 UTC RFC 3339；
 它不是事务开始时间或任务更新时间，不修改任务状态或版本。标题预览最多 160 Unicode code
 points，截短时标记 titleTruncated；不返回完整标题、description 或 version。完整

@@ -15,7 +15,7 @@ const claimId = "abcdefab-5555-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
-const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
+const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, workerNeedsAttention: false, titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
 const operations: Operation[] = [];
 afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose()); });
 const fixture = (operation = createOperation()) => {
@@ -65,8 +65,14 @@ describe("task parameter boundaries", () => {
       expect(output).toContain("[--pull-request-url <text>...]");
       expect(output).toContain("[--pull-request-title <text>...]");
       expect(output).toContain("the nth URL pairs with the nth title");
-      if (args[0] === "update") expect(output).toContain("--clear-pull-requests");
-      else expect(output).not.toContain("--clear-pull-requests");
+      if (args[0] === "update") {
+        expect(output).toContain("--clear-pull-requests");
+        expect(output).toContain("--worker-signaling <text>");
+        expect(output).toContain("an empty value clears it");
+      } else {
+        expect(output).not.toContain("--clear-pull-requests");
+        expect(output).not.toContain("--worker-signaling");
+      }
     }
     if (args[0] === "set-status") {
       expect(f.context.stdout.mock.calls[0]![0]).toContain("[--claim-id <claim-id>]");
@@ -104,6 +110,9 @@ describe("task parameter boundaries", () => {
     ["create", "--title", "Title", "--pull-request-url", "url"],
     ["create", "--title", "Title", "--pull-request-title="],
     ["create", "--title", "Title", "--clear-pull-requests"],
+    ["create", "--title", "Title", "--worker-signaling", "Attention"],
+    ["update", taskId, "--worker-signaling"],
+    ["update", taskId, "--worker-signaling", "one", "--worker-signaling", "two"],
     ["update", taskId, "--pull-request-url", "one", "--pull-request-url", "two", "--pull-request-title", "title"],
     ["update", taskId, "--pull-request-url=", "--clear-pull-requests"],
     ["update", taskId, "--pull-request-title=", "--clear-pull-requests"],
@@ -217,7 +226,7 @@ describe("task parameter boundaries", () => {
     const f = fixture();
     f.api.getTask.mockResolvedValue({
       ...task, status: "in_progress", ready: false, startedAt: time,
-      properties: { ...task.properties, worker: { claimId, state: "active", userId: projectId, workerId: dependencyId, machine: { id: otherDependencyId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: taskId, phase: "executing", herdr: null, nativeSessionId: null, claimedAt: time } },
+      properties: { ...task.properties, worker: { claimId, state: "active", userId: projectId, workerId: dependencyId, machine: { id: otherDependencyId, name: "Build machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: taskId, phase: "executing", herdr: null, nativeSessionId: null, signaling: "", claimedAt: time } },
     });
 
     await runTaskCommand(["set-status", taskId, "done", "--project", projectId], f.context, f.dependencies);
@@ -264,6 +273,18 @@ describe("task parameter boundaries", () => {
 });
 
 describe("task request contracts", () => {
+  it.each(["Needs approval", "", " ", "-leading", "需要处理\nReview CI"])("updates signaling verbatim with the explicit version: %j", async (signaling) => {
+    const f = fixture();
+    await runTaskCommand(["update", taskId, `--worker-signaling=${signaling}`, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { properties: { worker: { signaling } }, version: 9_223_372_036_854_775_807n });
+  });
+
+  it("combines signaling and PR changes atomically", async () => {
+    const f = fixture();
+    await runTaskCommand(["update", taskId, "--worker-signaling", "Review PR", "--clear-pull-requests", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { properties: { worker: { signaling: "Review PR" }, pullRequests: [] }, version: task.version });
+  });
   it.each([true, false])("updates only automatic execution to %s using the explicit exact version", async (allowAgents) => {
     const f = fixture();
     await runTaskCommand(["update", taskId, "--allow-agents", String(allowAgents), "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);

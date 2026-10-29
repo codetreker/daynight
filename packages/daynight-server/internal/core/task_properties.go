@@ -11,5 +11,6 @@ type TaskProperties struct {
 }
 
 type TaskPropertiesPatch struct {
-	PullRequests *[]PullRequestProperty
+	WorkerSignaling *string
+	PullRequests    *[]PullRequestProperty
 }

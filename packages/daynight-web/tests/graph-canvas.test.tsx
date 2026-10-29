@@ -33,12 +33,12 @@ const graph: TaskGraphData = { observedAt: "2026-10-20T12:00:00Z",
   project: { settings: { version: 1n, executionWarningMinutes: 60 }, id: 'project', name: '项目', repoUrl: 'https://github.com/example/repo', createdAt: time, updatedAt: time },
   summary: { total: 6, todo: 3, inProgress: 1, done: 2, ready: 2, blocked: 1 },
   tasks: [
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'E', titlePreview: '独立任务', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
-    { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'A', titlePreview: '基础 API', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'B', titlePreview: '设计方案', titleTruncated: false, status: 'done', dependsOn: [], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: ['B'], startedAt: null, completedAt: null, id: 'C', titlePreview: '合流实现', titleTruncated: true, status: 'in_progress', dependsOn: ['A', 'B'], blockedBy: [], ready: false, createdAt: time, updatedAt: time },
+    { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: ['F'], startedAt: null, completedAt: null, id: 'D', titlePreview: '最终验收', titleTruncated: false, status: 'todo', dependsOn: ['C', 'F'], blockedBy: ['C', 'F'], ready: false, createdAt: time, updatedAt: time },
+    { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'E', titlePreview: '独立任务', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
+    { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null, id: 'F', titlePreview: '发布检查', titleTruncated: false, status: 'todo', dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time },
   ],
 };
 const index = buildGraphIndex(graph);
@@ -56,6 +56,24 @@ const ready = async (container: HTMLElement) => {
 beforeEach(installGraphMeasurements);
 
 describe('task dependency canvas', () => {
+  it('highlights attention on main and external nodes and clears it without changing geometry', async () => {
+    const signaled: TaskGraphData = { ...graph, tasks: graph.tasks.map((task) => ({ ...task, workerNeedsAttention: task.id === 'C' || task.id === 'F' })) };
+    const view = render(<TaskGraph index={buildGraphIndex(signaled)} rootId="A" onOpenTask={noop} />);
+    await ready(view.container);
+    for (const title of ['合流实现…', '发布检查']) {
+      expect(within(nodeButton(title)).getByText('需要处理')).toBeVisible();
+      expect(nodeButton(title)).toHaveAccessibleName(/需要处理/);
+      expect(nodeShell(title)).toHaveClass('task-needs-attention');
+    }
+    const geometry = [...view.container.querySelectorAll<HTMLElement>('.react-flow__node')].map((node) => [node.dataset.id, node.style.transform, node.style.width, node.style.height]);
+    view.setLocale('en');
+    expect(screen.getAllByText('Needs attention')).toHaveLength(2);
+    view.setLocale('zh-CN');
+    view.rerender(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
+    await waitFor(() => expect(screen.queryByText('需要处理')).toBeNull());
+    expect(view.container.querySelector('.task-needs-attention')).toBeNull();
+    expect([...view.container.querySelectorAll<HTMLElement>('.react-flow__node')].map((node) => [node.dataset.id, node.style.transform, node.style.width, node.style.height])).toEqual(geometry);
+  });
   it('omits the entire expansion footer for fully visible tasks and sizes every card to its body', async () => {
     const view = render(<TaskGraph index={index} rootId="A" onOpenTask={noop} />);
     await ready(view.container);

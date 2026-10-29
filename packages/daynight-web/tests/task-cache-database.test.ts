@@ -1,7 +1,7 @@
 import * as fake from "fake-indexeddb";
 import { openDB, unwrap } from "idb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { TASK_CACHE_DATABASE, TaskCacheDatabase, type TaskCacheSchema } from "../src/features/task-cache/database";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, TaskCacheDatabase, type TaskCacheSchema } from "../src/features/task-cache/database";
 
 const databases: TaskCacheDatabase[] = [];
 const cache = (onFailure = vi.fn(), version = 1) => { const database = new TaskCacheDatabase(onFailure, version); databases.push(database); return database; };
@@ -15,6 +15,22 @@ it("shares one opening connection and rejects opens after release", async () => 
   const database = cache(); const a = database.open(); const b = database.open(); expect(a).toBe(b);
   const connection = await a; expect(await database.open()).toBe(connection); database.close();
   await expect(database.open()).rejects.toMatchObject({ name: "AbortError" });
+});
+
+it('upgrades the historical cache through the production schema and removes incompatible task records', async () => {
+  const legacy = cache(); await legacy.open(); legacy.close();
+  const old = await openDB(TASK_CACHE_DATABASE, 1);
+  const userId = '10000000-0000-0000-0000-000000000001';
+  await old.put('userScopes', { userId, userFence: 'old-fence' });
+  for (const store of ['projects', 'summaries', 'details']) {
+    await old.put(store, { userId, projectId: 'project', taskId: 'task', format: 'without signaling' });
+  }
+  old.close();
+  const current = new TaskCacheDatabase(); databases.push(current);
+  const connection = await current.open();
+  expect(connection.version).toBe(TASK_CACHE_SCHEMA);
+  expect((await connection.get('userScopes', userId))!.userFence).not.toBe('old-fence');
+  for (const store of ['projects', 'summaries', 'details'] as const) expect(await connection.getAll(store)).toEqual([]);
 });
 
 it("closes on schema versionchange and rotates fences while clearing rebuildable stores", async () => {

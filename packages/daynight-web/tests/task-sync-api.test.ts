@@ -9,7 +9,7 @@ const userId = "30000000-0000-0000-0000-000000000001";
 const epoch = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:34:56.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { id: taskId, version: "9007199254740993", titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const task = { id: taskId, version: "9007199254740993", titlePreview: "Task", titleTruncated: false, workerNeedsAttention: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const sync = { mode: "snapshot", epoch, project, observedAt: time, tasks: [task] };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200, principal: string | null = userId) => wireResponse(value, { status, headers: principal === null ? {} : { "Daynight-User-ID": principal } });
@@ -36,9 +36,12 @@ describe("strict summary protocol", () => {
   it.each([undefined, null, 1, 1n, "", "0", "-1", "+1", "01", "1.0", "1e1", "9223372036854775808"])("rejects noncanonical versions %#", (version) => {
     expect(() => parseTaskSummary({ ...task, version })).toThrow("invalid response");
   });
-  it.each(["requiredPlatform", "startedAt", "completedAt", "externalDependsOn", "allowAgents", "updatedAt", "version"])("requires %s", (field) => {
+  it.each(["requiredPlatform", "startedAt", "completedAt", "externalDependsOn", "allowAgents", "workerNeedsAttention", "updatedAt", "version"])("requires %s", (field) => {
     const incomplete: Record<string, unknown> = { ...task }; delete incomplete[field];
     expect(() => parseTaskSummary(incomplete)).toThrow("invalid response");
+  });
+  it.each([null, '', 'true', 0, 1, {}])('rejects malformed attention projection %j', (workerNeedsAttention) => {
+    expect(() => parseTaskSummary({ ...task, workerNeedsAttention })).toThrow('invalid response');
   });
   it.each([
     { status: "proposed" }, { requiredPlatform: "android" }, { dependsOn: [taskId, taskId] },

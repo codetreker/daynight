@@ -13,7 +13,7 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 [方案决策](../../.agents/notes/archived/architecture/2026-10-20-project-task-cli-design.md)。
 
 [预定义属性需求](daynight-task-properties.md)的 server 接口、CLI PR 引用参数和
-完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建/更新输入只提供可写 PR 字段。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有；worker 人工管理命令由 [Worker 需求](daynight-worker.md#w-08人工介入与强制撤回)定义。
+完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建输入只提供可写 PR 字段；更新另可通过 `--worker-signaling <text>` 设置现有 worker 的信号，`--worker-signaling=` 清空。该更新只提交 signaling，不允许覆盖受保护归属。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有；worker 人工管理命令由 [Worker 需求](daynight-worker.md#w-08人工介入与强制撤回)定义。
 
 [附件需求](daynight-task-attachments.md)定义的 `task attachment put/list/read/remove`
 及原始字节读取已实现，复用本文的服务配置和 project 选择。
@@ -281,7 +281,7 @@ PR 的 `--pull-request-url` 和 `--pull-request-title` 在 create/update 中分�
 只包含三状态，JSON summary 为 total、todo、inProgress、done、ready、blocked，满足
 `total = todo + inProgress + done` 与 `todo = ready + blocked`。ready 只来自全部前置完成的 todo；
 列表、show、graph 均拒绝旧状态，状态写入只通过 set-status。标题预览、快照边界、
-节点和边上限均继承服务要求。完整任务和图节点严格读取必填布尔 allowAgents 及必填nullable requiredPlatform；缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。超限时报告数量及上限，不返回部分图。
+节点和边上限均继承服务要求。完整任务和图节点严格读取必填布尔 allowAgents 及必填nullable requiredPlatform，图节点另含必填布尔 workerNeedsAttention；缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。超限时报告数量及上限，不返回部分图。
 
 附件 `put/list/read/remove` 继承相同的 project 选择，逐文件处理完整相对路径。
 目标 basename、MIME 推导、目录拒绝与原始内容输出的完整要求由

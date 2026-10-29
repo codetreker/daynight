@@ -553,7 +553,12 @@ existing tasks empty PR lists while preserving version and timestamps. Migration
 016_task_worker.sql inserts explicit worker:null into the canonical stored text
 and updates the default without JSON/JSONB conversion, preserving opaque PR
 strings and task metadata. The stored/read codec is distinct from public writable
-properties, which reject worker even when null or unchanged. Corrupt stored
+properties. Public create rejects worker; versioned task PATCH accepts only
+`properties.worker.signaling` on an existing non-null worker. The value is a
+required raw string, with empty meaning no attention signal; worker identity and
+other execution fields remain protected. Omission preserves it, and progress
+updates cannot clear it. A migration adds empty signaling to retained worker
+records without changing task versions or timestamps. Corrupt stored
 structures fail reads; there is no read-time default. The HTTP boundary
 and property codec share the strict object decoder in `internal/jsonobject/`.
 The service owns reference validation, DAG/state rules, optimistic version
@@ -759,10 +764,17 @@ all direct prerequisites are done. Task/get/list/graph and status filters accept
 only three states. Graph reads do not change stored status, revisions or time.
 
 Nodes contain `id`, `titlePreview`, `titleTruncated`, `status`, `dependsOn`,
-`externalDependsOn`, `blockedBy`, `ready`, required boolean `allowAgents`,
+`externalDependsOn`, `blockedBy`, `ready`, required booleans `allowAgents` and
+`workerNeedsAttention`,
 required nullable enum `requiredPlatform`, UTC creation/update timestamps and explicit nullable
 `startedAt`/`completedAt`. SQL produces at most 160 Unicode code
-points of each title without selecting descriptions, properties or full titles. Use the
+points of each title without selecting descriptions, properties or full titles.
+`workerNeedsAttention` is true exactly when a non-null worker has nonempty
+`signaling`. The central task store derives `worker_needs_attention` from the typed
+properties and saves it atomically with task writes; graph and sync queries read
+only this compact column. Full signal text remains in task details. This avoids
+loading PR and signal bodies for each graph/sync read and preserves opaque
+strings that PostgreSQL JSON extraction cannot represent. Use the
 existing task detail endpoint for complete content. Node order is `(createdAt,
 id)`; dependency arrays are sorted and empty collections encode as `[]`.
 `externalDependsOn` is a duplicate-free subset of the complete `dependsOn` set.

@@ -675,6 +675,15 @@ preserve version and time; stale updates conflict and actual in-progress changes
 are refused atomically. Explicit manual status setting remains available for every
 requirement. The query platform selects candidates; it does not configure or
 prove the environment of a future worker.
+`task update --worker-signaling <text>` sets the needs-attention signal on an
+existing worker record; `--worker-signaling=` clears it. Empty is the only value
+that means no signal: whitespace and other text are preserved as supplied. The
+option is unavailable on create, and a task with `worker:null` rejects the update.
+Only `properties.worker.signaling` is writable through this path; the worker
+identity and other execution fields remain protected. Other task and worker
+updates preserve the signal. It shares the task version, semantic no-op and
+atomic-update rules.
+
 By default the CLI reads the task version before PATCH; `--if-version <n>`
 uses that exact positive int64 version. Conflicts and failed writes are reported
 without automatic retries.
@@ -699,7 +708,11 @@ Human task lists use labeled blocks containing ID, project, title, PR references
 status, readiness, automatic-execution permission, required platform, dependencies and blocking.
 Description, version and timestamps
 remain available in show, ready, create and update output. Graph nodes include
-state, permission, required platform, dependencies, blocking and title-preview truncation flags.
+state, permission, required platform, dependencies, blocking, title-preview truncation flags
+and the required boolean `workerNeedsAttention`. This compact flag is true exactly
+when a worker record has a nonempty `signaling`; full text remains in the task
+resource. Non-null worker records require a string `signaling`, including the
+empty string, without a missing-field default.
 Task and graph decoders require a boolean `allowAgents`; missing, null or
 nonboolean values are protocol errors. They also require `requiredPlatform`
 as null or one of the three platform enums; missing keys or other values fail
@@ -1101,7 +1114,13 @@ within its existing business authorization.
 
 For a still-owned active claim, each patrol observes the live agent. An
 interactive-ready agent that is not launching and has no first input pending
-receives a continuation ping when idle or done. Working, blocked, unknown and
+receives a continuation ping when idle or done and the current remote
+`properties.worker.signaling` is empty. A nonempty signal suppresses routine
+pings while the agent is working and after it becomes idle or done. The driver
+checks the latest inventory before submission, so a signal received while an
+observation is pending also applies. Clearing it restores the existing patrol
+conditions. Initial assignment, execution recovery and terminal cleanup retain
+their separate rules. Working, blocked, unknown and
 not-ready agents remain under observation. The ping preserves the original task,
 claim, worktree and authorization; idle or done does not complete the business
 task. The driver retains the last input observation in memory and suppresses

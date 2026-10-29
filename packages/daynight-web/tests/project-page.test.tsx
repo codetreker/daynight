@@ -52,7 +52,7 @@ const seeds: readonly Seed[] = [
 const graph = (items = seeds, id = projectId): TaskGraph => {
   const tasks: GraphTask[] = items.map((seed) => {
     const blockedBy = seed.dependsOn.filter((id) => items.find((item) => item.id === id)?.status !== "done");
-    return { requiredPlatform: null, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
+    return { requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: seed.externalDependsOn ?? [], startedAt: null, completedAt: null, id: seed.id, titlePreview: seed.title, titleTruncated: false, status: seed.status, dependsOn: seed.dependsOn, blockedBy,
       ready: seed.status === "todo" && blockedBy.length === 0, createdAt: time, updatedAt: time };
   });
   return { observedAt: "2026-10-20T12:00:00Z",

@@ -1,6 +1,8 @@
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  needsAttention: "需要处理",
+  attentionControls: "任务设置与需处理提示",
   claim: {
     controls: "任务设置与认领",
     active: "当前认领", released: "已释放的认领", machine: "机器", agent: "Agent",

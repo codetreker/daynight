@@ -977,7 +977,7 @@ describe("authenticated application shell", () => {
     let finishStatus!: (response: Response) => void;
     const detail = () => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, id: taskId, projectId, title: "Lifecycle task", description: "Reviewed lifecycle content", properties: { worker: null, pullRequests: [] },
       status: started ? "in_progress" : "todo", version: started ? 8 : 7, dependsOn: [], blockedBy: [], ready: !started, createdAt: now, updatedAt: now });
-    const taskGraph = (): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [{ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, id: taskId, titlePreview: "Lifecycle task", titleTruncated: false,
+    const taskGraph = (): TaskGraph => ({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [{ requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, externalDependsOn: [], startedAt: started ? now : null, completedAt: null, id: taskId, titlePreview: "Lifecycle task", titleTruncated: false,
       status: started ? "in_progress" : "todo", dependsOn: [], blockedBy: [], ready: !started, createdAt: now, updatedAt: now }],
       summary: { total: 1, todo: started ? 0 : 1, inProgress: started ? 1 : 0, done: 0, ready: started ? 0 : 1, blocked: 0 } });
     const fetcher = vi.fn((url: string, options?: RequestInit) => {

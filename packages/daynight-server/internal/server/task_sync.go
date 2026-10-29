@@ -54,7 +54,7 @@ func taskSyncResponse(sync core.TaskSync) api.TaskSync {
 	for _, task := range sync.Tasks {
 		result.Tasks = append(result.Tasks, api.TaskViewRecord{
 			ID: task.ID, TitlePreview: task.TitlePreview, TitleTruncated: task.TitleTruncated, Status: string(task.Status), Version: strconv.FormatInt(task.Version, 10),
-			DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform),
+			DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), AllowAgents: task.AllowAgents, WorkerNeedsAttention: task.WorkerNeedsAttention, RequiredPlatform: platformResponse(task.RequiredPlatform),
 			CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(), StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
 		})
 	}

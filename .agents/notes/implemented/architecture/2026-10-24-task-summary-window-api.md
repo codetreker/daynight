@@ -28,7 +28,10 @@ size, intrinsic summaries and observedAt. Domain refusals are returned only afte
 successful transaction completion. Task versions become decimal strings at the
 API boundary. The summary preserves the current three states, execution platform,
 Agent permission, timing and both dependency sets, without descriptions,
-properties or derived readiness. Nanosecond lower bounds are rounded upward to
+complete properties or derived readiness. The
+[attention-signaling decision](../feature/2026-10-29-worker-attention-signaling.md)
+adds the compact workerNeedsAttention boolean; full signal text and execution
+identity remain with the complete task. Nanosecond lower bounds are rounded upward to
 PostgreSQL microseconds before pgx binding to preserve the exact inclusive set.
 
 The existing project lock is acquired before assigning task statement timestamps.

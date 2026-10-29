@@ -50,19 +50,30 @@ func Decode(data []byte) (core.TaskProperties, error) {
 }
 
 func DecodePatch(data []byte) (core.TaskPropertiesPatch, error) {
-	fields, err := jsonobject.Decode(data, "properties", "pullRequests")
+	fields, err := jsonobject.Decode(data, "properties", "pullRequests", "worker")
 	if err != nil {
 		return core.TaskPropertiesPatch{}, err
 	}
-	raw, exists := fields["pullRequests"]
-	if !exists {
-		return core.TaskPropertiesPatch{}, nil
+	result := core.TaskPropertiesPatch{}
+	if raw, exists := fields["pullRequests"]; exists {
+		values, err := decodePullRequests(raw)
+		if err != nil {
+			return core.TaskPropertiesPatch{}, err
+		}
+		result.PullRequests = &values
 	}
-	values, err := decodePullRequests(raw)
-	if err != nil {
-		return core.TaskPropertiesPatch{}, err
+	if raw, exists := fields["worker"]; exists {
+		worker, err := jsonobject.Decode(raw, "properties.worker", "signaling")
+		if err != nil {
+			return core.TaskPropertiesPatch{}, err
+		}
+		value, err := stringField(worker, "signaling", "properties.worker")
+		if err != nil {
+			return core.TaskPropertiesPatch{}, err
+		}
+		result.WorkerSignaling = &value
 	}
-	return core.TaskPropertiesPatch{PullRequests: &values}, nil
+	return result, nil
 }
 
 func decodePullRequests(raw []byte) ([]core.PullRequestProperty, error) {

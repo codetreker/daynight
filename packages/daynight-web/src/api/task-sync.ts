@@ -23,6 +23,7 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
     status: data.status, dependsOn, externalDependsOn,
     allowAgents: boolean(data.allowAgents),
+    workerNeedsAttention: boolean(data.workerNeedsAttention),
     requiredPlatform: data.requiredPlatform === null ? null : executionPlatform(data.requiredPlatform),
     startedAt: data.startedAt === null ? null : timestamp(data.startedAt),
     completedAt: data.completedAt === null ? null : timestamp(data.completedAt),

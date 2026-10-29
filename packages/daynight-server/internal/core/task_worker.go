@@ -74,6 +74,7 @@ type WorkerClaim struct {
 	AgentControlMode WorkerAgentControlMode
 	WorktreeID       string
 	Phase            WorkerPhase
+	Signaling        string
 	Herdr            *WorkerHerdr
 	NativeSessionID  *string
 	ClaimedAt        time.Time

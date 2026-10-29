@@ -22,7 +22,7 @@ const ordinaryId = "c1b2c3d4-1111-4222-8333-123456789abc";
 const externalId = "d1b2c3d4-1111-4222-8333-123456789abc";
 const claimId = "e1b2c3d4-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
-const workerClaim: WorkerClaim = { claimId, state: "active", userId: alternateId, workerId: unrelatedId, machine: { id: alternateId, name: "Worker machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: ordinaryId, phase: "executing", herdr: { session: "w", workspaceId: "original-workspace", paneId: "original-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
+const workerClaim: WorkerClaim = { claimId, state: "active", userId: alternateId, workerId: unrelatedId, machine: { id: alternateId, name: "Worker machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: ordinaryId, phase: "executing", herdr: { session: "w", workspaceId: "original-workspace", paneId: "original-pane" }, nativeSessionId: "original-native-session", signaling: "", claimedAt: time };
 const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time });
 const task = (projectId = id): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({

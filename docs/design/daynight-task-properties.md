@@ -8,7 +8,7 @@
 ## 问题与设计目标
 
 Task 需要记录关联的多个 PR。把引用写进 description 会混合任务说明与结构化数据，
-客户端也无法稳定提取。Server 需要拥有有限、明确的属性目录，首个属性
+客户端也无法稳定提取。自动任务需要人关注时，还需要结构化信号供浏览器和调度器共同消费。Server 拥有有限、明确的属性目录，
 `pullRequests` 的每项只有 `url` 和 `title`。两者都是调用方提供的字符串；属性
 机制不负责判断 PR 的格式、存在性或业务含义。
 
@@ -48,7 +48,7 @@ flowchart LR
 组合候选值与检测变化。`internal/jsonobject` 复用严格对象解析，
 `internal/taskproperties` 以具体类型编解码持久化文档及属性 patch，`store` 在
 完整 task 读写中调用该 codec。CLI 和 web 各自在已有 API 层
-声明相同资源结构，不引入跨语言共享代码生成或运行时属性插件。完整存储/读取类型包含只读 worker；公共创建和 patch DTO 单独只接受 PR 字段，[认领架构](daynight-worker-claims.md)拥有受保护操作。
+声明相同资源结构，不引入跨语言共享代码生成或运行时属性插件。完整存储/读取类型包含 worker；公共创建 DTO 只接受 PR 字段，patch DTO 另允许仅含 signaling 的 worker 对象。[认领架构](daynight-worker-claims.md)拥有归属的受保护字段和操作。
 
 ```go
 type PullRequestProperty struct {
@@ -62,7 +62,8 @@ type TaskProperties struct {
 }
 
 type TaskPropertiesPatch struct {
-    PullRequests *[]PullRequestProperty
+    PullRequests    *[]PullRequestProperty
+    WorkerSignaling *string
 }
 ```
 
@@ -87,16 +88,16 @@ ALTER TABLE tasks ADD COLUMN properties text NOT NULL
 文本列保存固定 DTO 序列化出的 JSON 文档。URL 和标题中的 NUL 会编码为转义，
 不把 NUL 字节传入 PostgreSQL text。[PostgreSQL 18 JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)
 指出 JSONB 会将 Unicode 转义转成内部文本并拒绝 `\u0000`；采用 JSONB 会额外
-限制调用方可保存的内容。当前没有属性查询需求，文本列与有类型的应用编解码匹配。
+限制调用方可保存的内容。当前只需要 signaling 的列表与图投影，不提供通用属性查询；文本列与有类型的应用编解码匹配，投影也必须保留允许的字符串内容。
 
-Store 用具体的完整属性 DTO 编码与严格解码，校验必需结构、非 null PR 数组、显式可空 worker 及已知字段；公共属性写入使用独立 codec，即使 worker 为 null/原值也拒绝。
+Store 用具体的完整属性 DTO 编码与严格解码，校验必需结构、非 null PR 数组、显式可空 worker 及已知字段；公共属性写入使用独立 codec；create 拒绝 worker，patch 仅允许其 signaling 字符串，拒绝 worker:null 和其他字段。
 不使用 `map[string]any` 或存储任意请求片段。损坏 JSON、未知持久化字段、错误类型
 及缺失字段均使读取失败并保留错误链。序列化表示并非公开契约；比较用领域值，
 不比较 JSON key 排列、转义写法或字符串化结果。
 
 属性位于 `TaskWrite`、完整 task SQL 投影、扫描器和 INSERT/UPDATE。与任务其他
 标量同处一行，因此不需要额外关联表、foreign key、第二次查询或分开的提交点。
-图查询继续使用现有显式投影，不读取属性列。
+图与同步摘要输出 workerNeedsAttention 精简布尔投影，worker 为 null 或 signaling 为空时为 false；完整属性和执行身份不进入响应。`tasks.worker_needs_attention` 由中央 Task 写入口从同一份强类型 properties 推导，与属性、version 和 updatedAt 在同一条写入中原子保存。图和同步查询只读取该布尔列，不读取可能很大的 PR 或信号内容。signaling 迁移同时初始化该投影；新旧数据不经过 PostgreSQL JSON/JSONB 提取，保留允许的 NUL/Unicode 字符串。
 
 ## HTTP 与事务
 
@@ -125,14 +126,14 @@ NUL、协议或仓库结构限制。既有请求 1 MiB 上限自然约束一次�
 Service 在已有 project 写事务内读取当前 task、比较期望版本、构造完整候选状态，
 再执行既有状态及依赖校验。`properties:{}` 不产生属性修改意图；若也没有其他
 可修改字段，则按既有空 patch 规则拒绝。已提供的 `pullRequests` 替换完整数组，
-未提供的其他属性保留，worker 仅能通过受控归属操作修改。
+未提供的其他属性保留。worker patch 只表达 signaling 的提供与原始值，要求当前归属非 null；复制完整 worker 后只替换该字符串，其余执行字段仍只能通过受控归属操作修改。
 
 按数组顺序逐项比较两个字符串；相等列表不改变版本和时间。真实属性变化与其他
 真实字段变化合计只执行一次版本递增。写入失败与取消通过原有事务完整回滚。
 不增加属性级版本、锁或冲突自动重试。
 
 Task GET/list 及创建/更新结果都返回完整属性；分页、status/ready 筛选和 cursor
-绑定保持原有含义。属性既不进入图响应，也不改变 summary、状态与 ready 计算。
+绑定保持原有含义。图与同步摘要只增加 workerNeedsAttention 布尔值，不携带完整属性；信号不改变 summary 计数、状态与 ready 计算。
 
 ## CLI 输入与输出
 
@@ -155,7 +156,7 @@ daynight task update "$TASK_ID" --clear-pull-requests
 daynight task create --title '验证登录' --pull-request-url= --pull-request-title=
 ```
 
-Create 支持成对选项；Update 另有 `--clear-pull-requests`，与任一配对选项互斥。
+Create 支持成对选项；Update 另有 `--clear-pull-requests`，与任一配对选项互斥。Update 的 `--worker-signaling <text>` 是允许空值的单值文本选项，直接生成 `properties.worker.signaling` patch；`--worker-signaling=` 清除信号，创建入口不接受该选项。
 参数层生成有字段存在性语义的属性 patch。Update 只改属性时也满足“至少修改一项”
 要求，并沿用现有 GET version 或显式 `--if-version` 路径。
 
@@ -200,7 +201,7 @@ accessibility tree 的大小随完整数组增长。固定页大小为 DOM 成�
 复用既有详情读取、取消、重试、关闭、焦点恢复与全图刷新提示。属性变化会更新
 task 的 updatedAt，因此详情与旧图快照的比较仍能提示刷新。网页保持只读，不在
 此设计增加属性编辑表单。图节点与完整图响应继续精简，PR 内容只由完整 task
-读取获得。
+读取获得。workerNeedsAttention 由列表、任务链和图节点的共享提示组件消费，为 true 时显示“需要处理”/“Needs attention”并高亮；折叠链聚合成员中的 true 值，详情另展示 signaling 原文，空字符串移除提示。该提示直接表达字符串存在性，不复用计时阈值或执行阶段。
 
 [交互预览](mockups/task-properties.html)使用当前产品 CSS 和本地 fixture，可切换
 多项、单项、空列表、空字符串、长文本、重复、分页与任意地址等数据。预览控制是设计
@@ -221,7 +222,7 @@ CLI 使用已有 operation scope、命令期限和错误映射；web 使用已�
 日志的同一 `request_id`，核对 method、route、状态码、完成或失败阶段；然后 GET
 核对数组及版本。此过程不依赖新日志系统，也不能把读取失败解释为空属性。
 
-CLI 的模型可见增量是三个静态选项和输出中的真实 PR 数据，写入仍为现有的
+CLI 的模型可见增量是静态 PR/信号选项和输出中的真实属性数据，写入仍为现有的
 GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有模型专用新工具；
 不单独估算模型 token 或创建测量工具，真实响应字节预算由现有客户端检查负责。
 
@@ -243,18 +244,19 @@ GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有�
 | 能力 | 当前行为与后续增加代价 |
 |---|---|
 | 其他预定义属性 | 未知写入字段被拒绝。增加时修改具体类型、校验、输出与存储迁移；既有行通过迁移补充结构，读取不做旧格式 fallback。 |
-| 属性过滤、排序和反向 PR 查 task | 当前列表支持状态、ready、自动许可、兼容平台及[专用 workerId 归属筛选](daynight-worker-claims.md#进程内客户端候选和恢复)，不提供通用属性查询。完整自有 claim 清单恢复实际归属，已知 taskId 的 GET 核对显式写入；两者不增加 worker 投影或反向索引。通用属性查询仍须定义比较、投影、索引与 cursor 绑定。 |
+| 属性过滤、排序和反向 PR 查 task | 当前列表支持状态、ready、自动许可、兼容平台及[专用 workerId 归属筛选](daynight-worker-claims.md#进程内客户端候选和恢复)，不提供通用属性查询。完整自有 claim 清单恢复实际归属，已知 taskId 的 GET 核对显式写入；两者不增加执行身份投影或反向索引。通用属性查询仍须定义比较、投影、索引与 cursor 绑定。 |
 | PR 标题抓取与状态同步 | 当前值由调用方维护。未来要定义凭据、网络故障、生命周期及与人工值的所有权，作为独立设计。 |
 | 网页编辑、逐项增删 | 网页只读，CLI 提交完整列表。未来可复用 task version；必须显式处理并发冲突，不能静默合并。 |
 
-大量属性会增加完整 task/list 内容，但既有客户端预算保持严格执行；图投影与
-summary 独立避免图容量契约随 PR 内容增长。存储文本缺少数据库 JSON 类型约束，
+大量属性会增加完整 task/list 内容，但既有客户端预算保持严格执行；图与摘要响应只保留需要处理信号，完整 PR 内容不会进入浏览器图节点。存储文本缺少数据库 JSON 类型约束，
 通过具体 codec 和真实损坏数据用例暴露错误。更换属性结构需要迁移数据；部署按
 先 server、再新 CLI/web 执行，新客户端不以缺失 properties 推断空列表。已交付
 旧客户端按现有已知字段投影忽略新增属性，其未提供属性的更新保持服务端现值；
 验证这一兼容行为不引入新的格式兼容分支。
 
-验证按 TP-V1–TP-V8 建立数据与可观察结果的映射：真实 PostgreSQL 覆盖迁移、NUL
+signaling 的写入保护、原样持久化、迁移、图/摘要投影及调度条件由[需要处理信号决策](../../.agents/notes/implemented/feature/2026-10-29-worker-attention-signaling.md)记录取舍；它保留首次输入、恢复和清理的既有职责。
+
+验证按 TP-V1–TP-V9 建立数据与可观察结果的映射：真实 PostgreSQL 覆盖迁移、NUL
 转义往返、事务失败及并发；Go HTTP 覆盖严格嵌套结构；CLI 覆盖配对与真实服务输出；
 生产浏览器覆盖展示、导航执行策略和既有焦点。沿用 README 中适用的 Go build/vet/
 race/go-cov、CLI typecheck/test/build、web 覆盖率和生产浏览器门禁。Go 和 web 总

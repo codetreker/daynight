@@ -31,6 +31,7 @@ export type GraphTask = {
   readonly blockedBy: readonly string[];
   readonly ready: boolean;
   readonly allowAgents: boolean;
+  readonly workerNeedsAttention: boolean;
   readonly requiredPlatform: ExecutionPlatform | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
@@ -77,9 +78,13 @@ export type WorkerClaim = {
   readonly herdr: { readonly session: string; readonly workspaceId: string; readonly paneId: string } | null;
   readonly nativeSessionId: string | null;
   readonly claimedAt: string;
+  readonly signaling: string;
 };
 
-export type WritableTaskProperties = { readonly pullRequests: readonly PullRequestProperty[]; readonly worker?: never };
+export type WritableTaskProperties = {
+  readonly pullRequests?: readonly PullRequestProperty[];
+  readonly worker?: { readonly signaling: string };
+};
 
 export type TaskProperties = {
   readonly pullRequests: readonly PullRequestProperty[];

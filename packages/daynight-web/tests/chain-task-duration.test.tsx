@@ -12,7 +12,7 @@ const epoch = Date.parse(start);
 const at = (milliseconds: number) => new Date(epoch + milliseconds).toISOString();
 const task = (id: string, changes: Partial<GraphTask> = {}): GraphTask => ({
   id, titlePreview: id, titleTruncated: false, status: 'done', dependsOn: ['Goal'], externalDependsOn: [],
-  blockedBy: [], ready: false, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+  blockedBy: [], ready: false, requiredPlatform: null, workerNeedsAttention: false, allowAgents: false, startedAt: null, completedAt: null,
   createdAt: start, updatedAt: start, ...changes,
 });
 const snapshot = (tasks: readonly GraphTask[], elapsed = 59_000): GraphSnapshot => {

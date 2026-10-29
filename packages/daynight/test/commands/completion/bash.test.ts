@@ -5,6 +5,12 @@ import type { CommandDefinition } from "../../../src/cli/schema.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("Bash completion rendering", () => {
+  it("offers worker signaling only for task updates", () => {
+    const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
+    const create = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "create")!);
+    expect(update).toContain("'--worker-signaling'");
+    expect(create).not.toContain("'--worker-signaling'");
+  });
   it("offers explicit login and logout with a boolean browser option", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("'login' 'logout'");

@@ -59,7 +59,7 @@ func propertiesResponse(properties core.TaskProperties) api.TaskProperties {
 		result.Worker = &api.WorkerClaim{ClaimID: worker.ClaimID, State: string(worker.State), UserID: worker.UserID,
 			WorkerID: worker.WorkerID, Machine: api.WorkerMachine{ID: worker.Machine.ID, Name: worker.Machine.Name},
 			Platform: string(worker.Platform), Agent: string(worker.Agent), AgentControlMode: string(worker.AgentControlMode), WorktreeID: worker.WorktreeID,
-			Phase: string(worker.Phase), NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC()}
+			Phase: string(worker.Phase), Signaling: worker.Signaling, NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC()}
 		if worker.Herdr != nil {
 			result.Worker.Herdr = &api.WorkerHerdr{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}
 		}
@@ -85,6 +85,9 @@ func optionalProperties(fields map[string]json.RawMessage) (*api.TaskPropertiesP
 		return nil, invalidInput(err.Error())
 	}
 	result := &api.TaskPropertiesPatch{}
+	if properties.WorkerSignaling != nil {
+		result.Worker = &api.WorkerSignalingPatch{Signaling: *properties.WorkerSignaling}
+	}
 	if properties.PullRequests != nil {
 		values := propertiesResponse(core.TaskProperties{PullRequests: *properties.PullRequests})
 		result.PullRequests = &values.PullRequests
@@ -142,6 +145,9 @@ func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, 
 	if err != nil {
 		return api.CreateTaskRequest{}, err
 	}
+	if properties != nil && properties.Worker != nil {
+		return api.CreateTaskRequest{}, invalidInput("Worker properties cannot be set when creating a task.")
+	}
 	if properties != nil && properties.PullRequests != nil {
 		input.Properties.PullRequests = *properties.PullRequests
 	}
@@ -191,7 +197,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 		return api.UpdateTaskRequest{}, err
 	}
 	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.AllowAgents == nil && input.RequiredPlatform == nil &&
-		(input.Properties == nil || input.Properties.PullRequests == nil) {
+		(input.Properties == nil || (input.Properties.PullRequests == nil && input.Properties.Worker == nil)) {
 		return api.UpdateTaskRequest{}, invalidInput("at least one task field must be provided")
 	}
 	return input, nil
@@ -326,6 +332,9 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	values := service.UpdateTask{RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn}
+	if input.Properties != nil && input.Properties.Worker != nil {
+		values.Properties.WorkerSignaling = &input.Properties.Worker.Signaling
+	}
 	if input.Properties != nil && input.Properties.PullRequests != nil {
 		properties := propertyValues(api.TaskWritableProperties{PullRequests: *input.Properties.PullRequests})
 		values.Properties.PullRequests = &properties.PullRequests

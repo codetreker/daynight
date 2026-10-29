@@ -16,7 +16,12 @@ type TaskWritableProperties struct {
 	PullRequests []PullRequestProperty `json:"pullRequests"`
 }
 
+type WorkerSignalingPatch struct {
+	Signaling string `json:"signaling"`
+}
+
 type TaskPropertiesPatch struct {
+	Worker       *WorkerSignalingPatch  `json:"worker,omitempty"`
 	PullRequests *[]PullRequestProperty `json:"pullRequests,omitempty"`
 }
 

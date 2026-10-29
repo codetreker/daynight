@@ -175,13 +175,13 @@ NULL 是新 claim 首次启动的正常状态，也覆盖上次已经启动但 I
 
 首次启动和明确恢复使用完整 managed assignment，显式提供 worker-managed 环境、using-daynight、autopilot-managed-task 及 task/claim/worktree 上下文和本次执行配置。Prompt 声明这是后台任务，不向用户提问，任务范围和已有授权内的决定自行处理；等待 review 或 CI 时自行等待、定期检查并继续交付，不结束当前轮执行。连接存活 agent 不重发启动指令。适配层递交调用方给出的不透明 prompt，不选择业务任务或解释验收。
 
-巡查在每个 task 的串行操作内读取当前 agent。原 claim 仍有效、agent 存活、interactiveReady 且未在启动、没有首次输入待递交时，idle/done 触发继续原任务的 ping；working、blocked、unknown 或尚未就绪只观察。Ping 沿用原任务、claim、worktree 和授权，要求自行等待 review/CI；agent 的 idle/done 不作为业务完成凭据。进入终止清理后只推进收尾。
+巡查在每个 task 的串行操作内读取当前 agent。原 claim 仍有效、当前归属清单中的 signaling 为空，且 agent 存活、interactiveReady 且未在启动、没有首次输入待递交时，idle/done 触发继续原任务的 ping；working、blocked、unknown 或尚未就绪只观察。Ping 沿用原任务、claim、worktree 和授权，要求自行等待 review/CI；agent 的 idle/done 不作为业务完成凭据。非空 signaling 只禁止常规 ping，正在工作的 agent 后续进入 idle/done 也继续观察；清空信号后恢复已有巡查条件。协调器提供当前归属清单的读取回调，执行驱动在递交 ping 前读取最新 signaling，观察等待期间收到的信号同样生效；不写入本机 SQLite。首次 assignment、恢复和终止清理不由信号改写；Web 执行后端当前没有常规 ping。进入终止清理后只推进收尾。
 
 首次输入在调用启动适配层前记录为 pendingInput 中的明确未递交 assignment，此时没有已提交输入基线。agent.start 的错误不表示 prompt 已递交：若后续观察到匹配的存活且就绪 pane，继续递交原 assignment；缺失或 inactive 资源仍走既有重建流程。只有成功回执前明确的 agent.prompt 未知结果，才将这次输入转为不确定标记。启动适配层串行检查后若仅重连已有 live agent、未发送输入，成功返回时清除 pending，保留没有提交基线的事实，后续可按状态发送 ping。
 
 执行驱动在内存保留上次启动或 ping 输入的提交基线。成功递交时，基线只取适配层为这次输入读取的提交前观察。启动适配层在确认递交成功后、查询原生 session ID 前，通过 onPromptSubmitted 回调立即报告该回执，清除 pending 并建立基线；启动返回值仍为后续观察。后续观察不能覆盖输入基线，查询失败也保留已确认的回执；常规 ping 同样先记录成功回执，再读取后续状态。即使 agent 在启动调用返回前已推进并再次进入 idle/done，后续巡查仍能识别这一进展并发送 ping。
 
-观察未变不重复递交，未知递交结果先观察核对，不盲目重放。这些输入记录不写入 SQLite、文件或日志恢复台账，进程重启后按当前资源重新判断。巡查和清理的选择依据见[agent 巡查决策](../../.agents/notes/implemented/bug-fix/2026-10-27-worker-agent-patrol.md)。
+观察未变不重复递交，未知递交结果先观察核对，不盲目重放。这些输入记录不写入 SQLite、文件或日志恢复台账，进程重启后按当前资源重新判断。巡查和清理的选择依据见[agent 巡查决策](../../.agents/notes/implemented/bug-fix/2026-10-27-worker-agent-patrol.md)；需要处理期间的输入约束见[信号决策](../../.agents/notes/implemented/feature/2026-10-29-worker-attention-signaling.md)。
 
 每次 fresh/resume 启动都由同一个参数构造器施加固定 full access 策略，配置中的 model/args 不能降低权限或重新启用确认。Copilot 在配置参数后追加 `--allow-all --no-ask-user --no-sandbox`；创建该任务 workspace 及运行只读原生探测时，最后覆盖 `COPILOT_ALLOW_ALL=true`、`COPILOT_ASSISTED_APPROVAL=false`。精确的字符串 `true` 同时免除 Copilot 的交互式目录信任；关闭 assisted approval 避免继承环境恢复权限确认。
 

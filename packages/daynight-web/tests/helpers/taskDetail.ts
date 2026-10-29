@@ -20,7 +20,7 @@ export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
     observedAt: timestamp,
     project: { id: projectId, name: '任务项目', repoUrl: 'https://github.com/example/project', settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: timestamp, updatedAt: timestamp },
     tasks: current.map((task) => ({ id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160, status: task.status,
-      allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
+      workerNeedsAttention: task.properties.worker !== null && task.properties.worker.signaling !== '', allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
       blockedBy: task.blockedBy, ready: task.ready, startedAt: task.startedAt, completedAt: task.completedAt, createdAt: task.createdAt, updatedAt: task.updatedAt })),
     summary: { total: details.length, todo: current.filter((task) => task.status === 'todo').length, inProgress: current.filter((task) => task.status === 'in_progress').length,
       done: current.filter((task) => task.status === 'done').length, ready: current.filter((task) => task.ready).length,

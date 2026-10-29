@@ -1,0 +1,12 @@
+.task-attention-badge { display: inline-flex; align-items: center; flex: none; max-width: 100%; padding: 2px 7px; border: 1px solid #e5b35a; border-radius: 4px; background: #fff0cc; color: #825000; font-size: 10px; font-weight: 650; line-height: 16px; white-space: nowrap; }
+.task-attention-compact { padding: 0 3px; font-size: 8px; line-height: 12px; }
+.task-status-surface.task-needs-attention[data-task-status] { --row-background: #fff7e8; --row-hover: #fff0d6; --row-border: #d4a04a; }
+.goal-row.task-needs-attention[data-task-status] { border-color: #d4a04a; }
+.task-node.task-needs-attention, .task-node.task-needs-attention:hover { border-color: #d48a28; background: #fff8eb; box-shadow: 0 0 0 1px #d48a2844, 0 3px 8px #8b571216; }
+.task-node.task-needs-attention .task-node-meta-labels { gap: 2px; }
+.task-node.task-needs-attention .task-stuck-label { padding: 0 2px; font-size: 8px; line-height: 11px; }
+.task-node.task-needs-attention .task-stuck-label svg { width: 9px; height: 9px; }
+.task-node.task-needs-attention .task-agent-permission-compact, .task-node.task-needs-attention .task-platform-compact { font-size: 7px; padding: 0 2px; }
+.task-attention-notice { margin-top: 12px; padding: 10px 12px; border: 1px solid #e5b35a; border-radius: 7px; background: #fff7e8; color: #825000; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.task-attention-notice strong { font-weight: 650; }
+.task-attention-notice p { margin: 4px 0 0; white-space: pre-wrap; }

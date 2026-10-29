@@ -11,7 +11,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 
 const id = (value: number) => `00000000-0000-4000-8000-${String(value).padStart(12, '0')}`;
 const timestamp = '2026-10-27T00:00:00Z';
-const worker: WorkerClaim = { claimId: id(2), state: 'active', userId: id(3), workerId: id(4), machine: { id: id(5), name: 'macmini.local' }, platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: timestamp };
+const worker: WorkerClaim = { claimId: id(2), state: 'active', userId: id(3), workerId: id(4), machine: { id: id(5), name: 'macmini.local' }, platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: id(6), phase: 'paused', herdr: null, nativeSessionId: null, signaling: '', claimedAt: timestamp };
 const member = (userId = worker.userId, role: ProjectMember['role'] = 'member'): ProjectMember => ({ projectId: id(100), userId, name: 'Jianjun', email: 'jianjun@example.com', avatarUrl: null, role, version: 1n, createdAt: timestamp, updatedAt: timestamp });
 const detail: TaskDetail = { id: id(1), projectId: id(100), title: 'Claimed task', description: '', status: 'in_progress', version: 4n, allowAgents: true, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: timestamp, completedAt: null, properties: { worker, pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };

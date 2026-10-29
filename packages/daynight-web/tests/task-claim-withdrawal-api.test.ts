@@ -18,7 +18,7 @@ const result: TaskDetail = {
 };
 const worker: WorkerClaim = {
   claimId, state: 'released', userId: TEST_VIEWER_ID, workerId: otherId, machine: { id: otherId, name: 'Machine' },
-  platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: projectId, phase: 'paused', herdr: null, nativeSessionId: null, claimedAt: time,
+  platform: 'macos', agent: 'codex', agentControlMode: 'herdr', worktreeId: projectId, phase: 'paused', herdr: null, nativeSessionId: null, signaling: '', claimedAt: time,
 };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200, principal = TEST_VIEWER_ID) => new Response(stringifyApiJson(value), {

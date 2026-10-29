@@ -23,6 +23,7 @@ export type HerdrPendingStop = { context: HerdrExecutionOwner & { cwd: string };
 export type HerdrNativeReference = { source: string; agent: WorkerAgent; sessionId: string };
 export type HerdrAgentObservation = { binding: HerdrTaskBinding; kind: string | null; name: string | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null };
 export type HerdrPromptReceipt = { submission: "submitted"; observation: HerdrAgentObservation };
+export type HerdrPromptResult = HerdrPromptReceipt | { submission: "suppressed"; observation: HerdrAgentObservation };
 export type HerdrAgentStartInput = {
   configuration: HerdrAgentConfiguration;
   prompt: string;
@@ -217,7 +218,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     if (confirmed.pane!.tab_id !== tabId) throw new Error("The original input pane changed tabs during the visible surface observation.");
     return context.agent === "claude" ? claudeInputSurface(read.text) : codexInputSurface(read.text);
   };
-  const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false): Promise<HerdrPromptReceipt> => {
+  const submit = async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, initialPrompt = false, canSubmit?: () => boolean): Promise<HerdrPromptResult> => {
     if (typeof prompt !== "string" || prompt.length === 0) throw new HerdrAgentActionError("The caller prompt must be nonempty text.", "agent.prompt", "not-submitted", { promptSubmission: "not-submitted" });
     let before: HerdrAgentObservation;
     const verifyInputAgent = (current: HerdrAgentObservation): void => {
@@ -227,17 +228,21 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
     try {
       while (true) {
         before = await observation(context, binding, operation);
+        if (canSubmit !== undefined && !canSubmit()) return { submission: "suppressed", observation: before };
         verifyInputAgent(before);
         if (context.agent !== "codex" && context.agent !== "claude") break;
         const surface = await visibleCodexSurface(context, binding, operation);
+        if (canSubmit !== undefined && !canSubmit()) return { submission: "suppressed", observation: before };
         if (surface === "blocked") throw new Error("The original Codex input surface requires operator action; automatic input was not submitted.");
         before = await observation(context, binding, operation);
+        if (canSubmit !== undefined && !canSubmit()) return { submission: "suppressed", observation: before };
         verifyInputAgent(before);
         if (surface === "composer" || (!initialPrompt && before.status === "working")) break;
         await wait(operation);
       }
       operation.check();
     } catch (cause) { throw new HerdrAgentActionError(cause instanceof Error ? cause.message : "The original native input surface could not be verified.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" }); }
+    if (canSubmit !== undefined && !canSubmit()) return { submission: "suppressed", observation: before };
     const result = await mutation("agent.prompt", { target: binding.paneId, text: prompt }, "agent_prompted", operation);
     try {
       const returned = object(result.agent, "Prompt agent receipt");
@@ -369,7 +374,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         throw new HerdrAgentActionError("The native process could not become ready before its first input.", "agent.prompt", "not-submitted", { cause, promptSubmission: "not-submitted" });
       }
       const receipt = await submit(context, binding, input.prompt, operation, true);
-      input.onPromptSubmitted?.(receipt);
+      if (receipt.submission === "submitted") input.onPromptSubmitted?.(receipt);
       // SessionStart may be emitted on the first input rather than process launch.
       // https://github.com/openai/codex/blob/6aaac694803004a63c6f393d153c96d22521a6b9/codex-rs/core/src/session/turn.rs#L340-L342
       while (true) {
@@ -382,7 +387,7 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
         await wait(operation);
       }
     }),
-    submitPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation) => serialized(binding.workspaceId, operation, () => submit(context, binding, prompt, operation)),
+    submitPrompt: (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, canSubmit?: () => boolean) => serialized(binding.workspaceId, operation, () => submit(context, binding, prompt, operation, false, canSubmit)),
     stopAndClose: (context: HerdrExecutionOwner & { cwd: string }, binding: HerdrTaskBinding, operation: Operation): Promise<void> => serialized(binding.workspaceId, operation, async () => {
       if (binding.session !== session) throw new Error("The task binding belongs to another Herdr session.");
       const before = await snapshot(operation);

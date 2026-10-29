@@ -17,7 +17,7 @@ const task = { requiredPlatform: null, allowAgents: false, startedAt: null, comp
   id: taskId, projectId, title: "A task", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", version: 9007199254740993n,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
-const graphTask = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
+const graphTask = { workerNeedsAttention: false, requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
   id: taskId, titlePreview: "A task", titleTruncated: false, status: "todo",
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
@@ -38,6 +38,15 @@ const mockResponse = (value: unknown, status = 200) => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("response parsing", () => {
+  it('requires an explicit attention projection and preserves both values', () => {
+    for (const workerNeedsAttention of [false, true]) {
+      expect(parseTaskGraph({ ...graph, tasks: [{ ...graphTask, workerNeedsAttention }] }, projectId).tasks[0]!.workerNeedsAttention).toBe(workerNeedsAttention);
+    }
+    const { workerNeedsAttention: _attention, ...missing } = graphTask;
+    for (const node of [missing, ...[null, '', 'false', 0, 1, {}].map((workerNeedsAttention) => ({ ...graphTask, workerNeedsAttention }))]) {
+      expect(() => parseTaskGraph({ ...graph, tasks: [node] }, projectId)).toThrow('invalid response');
+    }
+  });
   it("requires the external subset on both full tasks and graph nodes", () => {
     const { externalDependsOn: _fullSubset, ...missingTask } = task;
     const { externalDependsOn: _graphSubset, ...missingNode } = graphTask;
