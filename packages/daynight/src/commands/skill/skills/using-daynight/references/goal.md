@@ -29,8 +29,9 @@ permission.
 A request to start a Goal discussion authorizes creating and starting
 that discussion task so it becomes `in_progress`. A registration-only request
 creates only the current discussion task in `todo`. After verification, report
-its identity and status, ask whether to start that discussion, and wait under
-the [shared creation-to-execution authorization rule](../SKILL.md#shared-constraints).
+its identity and status. Without applicable execution authorization, ask whether
+to start that discussion and wait under the [shared creation-to-execution
+authorization rule](../SKILL.md#shared-constraints).
 Goal registration alone does not supply discussion-start or delivery execution
 authorization.
 

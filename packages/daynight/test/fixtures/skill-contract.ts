@@ -232,9 +232,9 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     input: "The user asks only to register a Goal, without starting a discussion.",
     obligation: "Create only the current requirements task as todo, report its identity and status, then ask and wait before beginning that discussion; do not precreate architecture or delivery work.",
     propositions: [
-      { resource: "references/goal.md", section: "## Identify the current discussion", requires: [/A registration-only request creates only the current discussion task in `todo`/, /After verification, report its identity and status, ask whether to start that discussion, and wait/, /Goal registration alone does not supply discussion-start or delivery execution authorization/] },
+      { resource: "references/goal.md", section: "## Identify the current discussion", requires: [/A registration-only request creates only the current discussion task in `todo`/, /After verification, report its identity and status/, /Without applicable execution authorization, ask whether to start that discussion and wait/, /Goal registration alone does not supply discussion-start or delivery execution authorization/] },
       { resource: "references/goal.md", section: "## Start requirements discussion", requires: [/Create or reuse only the requirements discussion task/, /Do not create an architecture placeholder or delivery tasks at this point/] },
-      { resource: "references/create-task.md", section: "## Choose the tracked outcome", requires: [/A registration-only request leaves the current stage todo while awaiting the explicit answer to the creation-to-execution question/] },
+      { resource: "references/create-task.md", section: "## Choose the tracked outcome", requires: [/Without applicable execution authorization, a registration-only request leaves the current stage todo while awaiting the explicit answer to the creation-to-execution question/] },
     ],
   },
   {

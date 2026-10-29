@@ -46,9 +46,10 @@ or delivery tasks upfront. Its stage brief describes the discussion and its
 user-confirmation gate; finished requirements and applicable prototypes are
 outputs. User-confirmed requirements permit creation and start of solution
 discussion. Only user-confirmed solution permits actual delivery registration.
-A registration-only request leaves the current stage todo while awaiting the
-explicit answer to the creation-to-execution question; an explicit
-discussion-start request authorizes its start through run-task. Creating a Goal covers the later in-scope stages and breakdown only
+Without applicable execution authorization, a registration-only request leaves
+the current stage todo while awaiting the explicit answer to the
+creation-to-execution question. An explicit discussion-start request authorizes
+its start through run-task. Creating a Goal covers the later in-scope stages and breakdown only
 at those confirmation gates.
 
 For a single tracked outcome, prepare its stage-appropriate task definition,
