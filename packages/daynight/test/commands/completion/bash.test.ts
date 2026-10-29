@@ -5,11 +5,12 @@ import type { CommandDefinition } from "../../../src/cli/schema.js";
 import { taskDefinition } from "../../../src/commands/task/definition.js";
 
 describe("Bash completion rendering", () => {
-  it("offers worker signaling only for task updates", () => {
-    const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
-    const create = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "create")!);
-    expect(update).toContain("'--worker-signaling'");
-    expect(create).not.toContain("'--worker-signaling'");
+  it("offers generic property commands without property-specific options", () => {
+    const script = renderBashCompletion(taskDefinition);
+    expect(script).toContain("set-property");
+    expect(script).toContain("get-properties");
+    expect(script).toContain("remove-property");
+    expect(script).not.toContain("--worker-signaling");
   });
   it("offers explicit login and logout with a boolean browser option", () => {
     const script = renderBashCompletion(commandTree);
@@ -57,7 +58,7 @@ describe("Bash completion rendering", () => {
   it("offers unified status command and three-state filtering without metadata status updates", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("complete -F _daynight_completion 'daynight' 'dn'\n");
-    expect(script).toContain("dn_children=('create' 'list' 'ready' 'show' 'update' 'set-status' 'delete' 'graph' 'attachment')");
+    expect(script).toContain("dn_children=('create' 'list' 'ready' 'show' 'get-properties' 'set-property' 'remove-property' 'update' 'set-status' 'delete' 'graph' 'attachment')");
     expect(script).toContain("dn_value_choices=('todo' 'in_progress' 'done')");
     const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("'--status'");

@@ -22,6 +22,9 @@ const fixture = (operation = createOperation()) => {
   operations.push(operation);
   const api = {
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>(),
+    getTaskProperties: vi.fn<ApiClient["getTaskProperties"]>().mockResolvedValue('{"version":"9007199254740993","properties":{"future":900719925474099312345}}\n'),
+    removeTaskProperty: vi.fn<ApiClient["removeTaskProperty"]>().mockResolvedValue('{"version":"9007199254740994","properties":{"future":900719925474099312345}}\n'),
+    setTaskProperty: vi.fn<ApiClient["setTaskProperty"]>().mockResolvedValue('{"version":"9007199254740994","properties":{"future":900719925474099312345}}\n'),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
     createProject: vi.fn<ApiClient["createProject"]>(), listProjects: vi.fn<ApiClient["listProjects"]>(),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),
@@ -55,7 +58,7 @@ const fixture = (operation = createOperation()) => {
 };
 
 describe("task parameter boundaries", () => {
-  it.each([[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
+  it.each([[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph", "get-properties", "set-property", "remove-property"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
     const f = fixture();
     await runTaskCommand(args, f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenCalledOnce();
@@ -67,8 +70,7 @@ describe("task parameter boundaries", () => {
       expect(output).toContain("the nth URL pairs with the nth title");
       if (args[0] === "update") {
         expect(output).toContain("--clear-pull-requests");
-        expect(output).toContain("--worker-signaling <text>");
-        expect(output).toContain("an empty value clears it");
+        expect(output).not.toContain("--worker-signaling");
       } else {
         expect(output).not.toContain("--clear-pull-requests");
         expect(output).not.toContain("--worker-signaling");
@@ -78,6 +80,7 @@ describe("task parameter boundaries", () => {
       expect(f.context.stdout.mock.calls[0]![0]).toContain("[--claim-id <claim-id>]");
       expect(f.context.stdout.mock.calls[0]![0]).toContain("The claim is never inferred from the task or environment.");
     }
+    if (args[0] === "set-property") expect(f.context.stdout.mock.calls[0]![0]).toContain(`and '"Needs attention"'; an empty argument or '""' clears it.`);
     expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
     expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
     expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
@@ -113,6 +116,14 @@ describe("task parameter boundaries", () => {
     ["create", "--title", "Title", "--worker-signaling", "Attention"],
     ["update", taskId, "--worker-signaling"],
     ["update", taskId, "--worker-signaling", "one", "--worker-signaling", "two"],
+    ["get-properties"], ["get-properties", "invalid"], ["get-properties", taskId, "--json"],
+    ["set-property"], ["set-property", taskId], ["set-property", taskId, "property"],
+    ["set-property", taskId, "property", "value", "extra"],
+    ["set-property", taskId, "property", "value", "--if-version", "0"],
+    ["set-property", "invalid", "property", "value"],
+    ["remove-property"], ["remove-property", "invalid", "property"],
+    ["remove-property", taskId], ["remove-property", taskId, "property", "extra"],
+    ["remove-property", taskId, "property", "--if-version", "0"],
     ["update", taskId, "--pull-request-url", "one", "--pull-request-url", "two", "--pull-request-title", "title"],
     ["update", taskId, "--pull-request-url=", "--clear-pull-requests"],
     ["update", taskId, "--pull-request-title=", "--clear-pull-requests"],
@@ -273,17 +284,62 @@ describe("task parameter boundaries", () => {
 });
 
 describe("task request contracts", () => {
-  it.each(["Needs approval", "", " ", "-leading", "需要处理\nReview CI"])("updates signaling verbatim with the explicit version: %j", async (signaling) => {
+  it("prints properties without projecting or reserializing future fields", async () => {
     const f = fixture();
-    await runTaskCommand(["update", taskId, `--worker-signaling=${signaling}`, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
+    const source = '{ "version":"9223372036854775807", "properties":{"worker":{"future":900719925474099399999},"version":1e999} }\n';
+    f.api.getTaskProperties.mockResolvedValue(source);
+    await runTaskCommand(["get-properties", taskId, "--project", projectId], f.context, f.dependencies);
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(source);
     expect(f.api.getTask).not.toHaveBeenCalled();
-    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { properties: { worker: { signaling } }, version: 9_223_372_036_854_775_807n });
+    expect(f.api.setTaskProperty).not.toHaveBeenCalled();
   });
 
-  it("combines signaling and PR changes atomically", async () => {
+  it.each([
+    { property: "worker.signaling", value: "请确认" },
+    { property: "worker.signaling", value: '"请确认"' },
+    { property: "worker.signaling", value: "" },
+    { property: "future.nested.field", value: '{"number":900719925474099312345,"version":1e999}' },
+    { property: "", value: "{" },
+    { property: "-unknown", value: "-900719925474099312345" },
+  ])("passes property/value unchanged to the service: $property/$value", async ({ property, value }) => {
     const f = fixture();
-    await runTaskCommand(["update", taskId, "--worker-signaling", "Review PR", "--clear-pull-requests", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { properties: { worker: { signaling: "Review PR" }, pullRequests: [] }, version: task.version });
+    await runTaskCommand(["set-property", taskId, "--project", projectId, "--", property, value], f.context, f.dependencies);
+    expect(f.api.getTaskProperties).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.api.setTaskProperty).toHaveBeenCalledExactlyOnceWith(projectId, taskId, property, { version: 9_007_199_254_740_993n, value });
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith('{"version":"9007199254740994","properties":{"future":900719925474099312345}}\n');
+    expect(f.api.getTask).not.toHaveBeenCalled();
+  });
+
+  it("uses an explicit version without reading properties or task data", async () => {
+    const f = fixture();
+    await runTaskCommand(["set-property", taskId, "anything", "not JSON", "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getTaskProperties).not.toHaveBeenCalled();
+    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.setTaskProperty).toHaveBeenCalledExactlyOnceWith(projectId, taskId, "anything", { version: 9_223_372_036_854_775_807n, value: "not JSON" });
+  });
+
+  it.each([undefined, "9223372036854775807"])("removes an opaque property with version %s without choosing a default", async (version) => {
+    const f = fixture();
+    await runTaskCommand(["remove-property", taskId, ...(version === undefined ? [] : ["--if-version", version]), "--project", projectId, "--", ""], f.context, f.dependencies);
+    expect(f.api.getTaskProperties).toHaveBeenCalledTimes(version === undefined ? 1 : 0);
+    expect(f.api.getTask).not.toHaveBeenCalled();
+    expect(f.api.removeTaskProperty).toHaveBeenCalledExactlyOnceWith(projectId, taskId, "", { version: version === undefined ? 9_007_199_254_740_993n : 9_223_372_036_854_775_807n });
+    expect(f.api.setTaskProperty).not.toHaveBeenCalled();
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith('{"version":"9007199254740994","properties":{"future":900719925474099312345}}\n');
+  });
+
+  it.each([undefined, null, 1, "0", "9223372036854775808"])("does not write when properties metadata has an invalid version: %j", async (version) => {
+    const f = fixture();
+    f.api.getTaskProperties.mockResolvedValue(JSON.stringify({ version, properties: false }));
+    await expect(runTaskCommand(["set-property", taskId, "anything", "value", "--project", projectId], f.context, f.dependencies)).rejects.toThrow();
+    expect(f.api.setTaskProperty).not.toHaveBeenCalled();
+  });
+
+  it("reads only version metadata when choosing the default mutation version", async () => {
+    const f = fixture();
+    f.api.getTaskProperties.mockResolvedValue('{"version":"9223372036854775807","properties":false}');
+    await runTaskCommand(["set-property", taskId, "unknown", "{}", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.setTaskProperty).toHaveBeenCalledExactlyOnceWith(projectId, taskId, "unknown", { version: 9_223_372_036_854_775_807n, value: "{}" });
   });
   it.each([true, false])("updates only automatic execution to %s using the explicit exact version", async (allowAgents) => {
     const f = fixture();

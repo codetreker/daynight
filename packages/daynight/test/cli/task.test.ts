@@ -303,7 +303,7 @@ describe("compiled task commands", () => {
     const f = await fixture();
     try {
       const helpBlocked = ["/api/", "/config/", "/repository/", "/commands/server/", "/commands/task/rendering.js", "better-sqlite3"];
-      for (const args of [[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph"].map((name) => [name, "--help"]), ["attachment"], ["attachment", "--help"], ...["put", "list", "read", "remove"].map((name) => ["attachment", name, "--help"])]) {
+      for (const args of [[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph", "get-properties", "set-property", "remove-property"].map((name) => [name, "--help"]), ["attachment"], ["attachment", "--help"], ...["put", "list", "read", "remove"].map((name) => ["attachment", name, "--help"])]) {
         const result = await f.invoke(args, { blocked: helpBlocked });
         expect(result.code, result.stderr).toBe(0);
         expect(result.stdout).toContain("Usage: daynight task");
@@ -626,31 +626,51 @@ describe("compiled task commands", () => {
     } finally { await f.close(); }
   }, 60_000);
 
-  it("sets and clears worker signaling through the compiled command while retaining claim metadata", async () => {
+  it("passes generic property values and prints opaque resources through the compiled command", async () => {
     const f = await fixture();
     try {
-      const worker = { claimId: secondId, state: "active", userId: projectId, workerId: thirdId, machine: { id: thirdId, name: "Machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: thirdId, phase: "executing", signaling: "", herdr: null, nativeSessionId: "native", claimedAt: time } as const;
-      let current = task({ status: "in_progress", ready: false, startedAt: time, allowAgents: true, properties: { worker, pullRequests: [{ url: "https://example.test/pr", title: "Delivery" }] } });
-      const { requests } = await f.serve((request, response) => {
-        if (request.method === "PATCH") {
-          const input = request.body as { version: bigint; properties: { worker: { signaling: string } } };
-          current = { ...current, version: input.version + 1n, properties: { ...current.properties, worker: { ...current.properties.worker!, signaling: input.properties.worker.signaling } } };
-        }
-        respond(response, current);
+      const source = '{ "version":"9223372036854775807", "properties":{"future":900719925474099312345,"worker":{"futureField":1e999}} }\n';
+      let refuseNext = false;
+      const { requests } = await f.serve((_request, response) => {
+        if (refuseNext) refuse(response, "invalid_input", "property-type", 400);
+        else { response.writeHead(200, { "Content-Type": "application/json" }); response.end(source); }
       });
-      for (const signaling of ["需要处理: review deployment", " ", ""]) {
+      const read = await f.invoke(["get-properties", taskId, ...explicit]);
+      expect(read.code, read.stderr).toBe(0);
+      expect(read.stdout).toBe(source);
+      for (const [property, value, explicitVersion] of [
+        ["worker.signaling", "需要处理", false],
+        ["worker.signaling", '"需要处理"', true],
+        ["future /?#%字段", '{"number":900719925474099312345}', true],
+        ["", "", true],
+        [".", "value", true],
+        ["..", "value", true],
+        ["-future", "-value", true],
+      ] as const) {
         const before = requests.length;
-        const version = current.version;
-        const result = await f.invoke(["update", taskId, `--worker-signaling=${signaling}`, "--if-version", String(version), ...explicit]);
+        const result = await f.invoke(["set-property", taskId, ...(explicitVersion ? ["--if-version", "9223372036854775807"] : []), ...explicit, "--", property, value]);
         expect(result.code, result.stderr).toBe(0);
-        expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "PATCH"]);
-        expect(requests.at(-1)!.body).toEqual({ version, properties: { worker: { signaling } } });
-        const shown = await f.invoke(["show", taskId, "--json", ...explicit]);
-        expect(shown.code, shown.stderr).toBe(0);
-        const read = parseApiJson(shown.stdout) as Task;
-        expect(read.properties.worker).toEqual({ ...worker, signaling });
-        expect(read.properties.pullRequests).toEqual(current.properties.pullRequests);
+        expect(result.stdout).toBe(source);
+        expect(requests.slice(before).map(({ method }) => method)).toEqual(explicitVersion ? ["GET", "PUT"] : ["GET", "GET", "PUT"]);
+        expect(requests.at(-1)!.pathname).toBe(`${taskPath}/${taskId}/properties`);
+        expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, property, value });
       }
+      for (const explicitVersion of [false, true]) {
+        const before = requests.length;
+        const result = await f.invoke(["remove-property", taskId, "future /?#%字段", ...(explicitVersion ? ["--if-version", "9223372036854775807"] : []), ...explicit]);
+        expect(result.code, result.stderr).toBe(0);
+        expect(result.stdout).toBe(source);
+        expect(requests.slice(before).map(({ method }) => method)).toEqual(explicitVersion ? ["GET", "DELETE"] : ["GET", "GET", "DELETE"]);
+        expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, property: "future /?#%字段" });
+      }
+      refuseNext = true;
+      const before = requests.length;
+      const refused = await f.invoke(["set-property", taskId, "pullRequests", "{bad JSON", "--if-version", "1", ...explicit]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("invalid_input");
+      expect(refused.stdout).toBe("");
+      expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "PUT"]);
+      expect(requests.at(-1)!.body).toEqual({ version: 1n, property: "pullRequests", value: "{bad JSON" });
     } finally { await f.close(); }
   }, 60_000);
 

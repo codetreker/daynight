@@ -13,7 +13,7 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 [方案决策](../../.agents/notes/archived/architecture/2026-10-20-project-task-cli-design.md)。
 
 [预定义属性需求](daynight-task-properties.md)的 server 接口、CLI PR 引用参数和
-完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建输入只提供可写 PR 字段；更新另可通过 `--worker-signaling <text>` 设置现有 worker 的信号，`--worker-signaling=` 清空。该更新只提交 signaling，不允许覆盖受保护归属。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有；worker 人工管理命令由 [Worker 需求](daynight-worker.md#w-08人工介入与强制撤回)定义。
+完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取严格保留必填 worker:null/归属对象；公共创建输入只提供可写 PR 字段；通用 `task set-property` 可设置服务端已定义的可写属性，包括现有 worker 的 signaling。`task remove-property` 清除为服务端声明默认值；`task get-properties` 返回完整原始属性资源，包含只读归属；服务端保护执行身份。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有；worker 人工管理命令由 [Worker 需求](daynight-worker.md#w-08人工介入与强制撤回)定义。
 
 [附件需求](daynight-task-attachments.md)定义的 `task attachment put/list/read/remove`
 及原始字节读取已实现，复用本文的服务配置和 project 选择。
@@ -38,8 +38,7 @@ CLI 的令牌配置与 HTTP 传输已实现；[凭据决策](../../.agents/notes
 ## PT1. 范围与命令边界
 
 交付包含 project 创建、列表和详情，以及 project 内 task 的创建、列表、有界 ready
-选择、详情、更新和完整图查询。本文已交付的命令复用现有服务接口，不新增 server API、数据库字段、project 唯一
-约束或任务执行能力。凭据复用既有 Bearer 请求通道；配置允许省略令牌，但业务命令在本地无凭据时
+选择、详情、更新、通用属性读取/设置/移除和完整图查询。属性专用 API 与服务端类型解释由[属性需求](daynight-task-properties.md)拥有，其他命令复用既有服务接口；不增加 project 唯一约束或任务执行能力。凭据复用既有 Bearer 请求通道；配置允许省略令牌，但业务命令在本地无凭据时
 直接提示登录。设备授权接口由[鉴权需求](daynight-auth.md)拥有。地址配置不改变服务现有的 loopback 监听边界。
 
 顶层、命令组和操作帮助必须先于配置加载、Git、文件写入和网络访问执行。裸
@@ -196,6 +195,11 @@ daynight task list --ready
 daynight task list --all --json
 daynight task list --status in_progress
 daynight task show <task-id>
+daynight task get-properties <task-id>
+daynight task remove-property <task-id> worker.signaling --if-version 3
+daynight task set-property <task-id> worker.signaling '请确认'
+daynight task set-property <task-id> worker.signaling '"请确认"'
+daynight task set-property <task-id> worker.signaling '' --if-version 3
 daynight task update <task-id> --title "新的标题"
 daynight task update <task-id> --allow-agents true --if-version 3
 daynight task update <task-id> --description ""
@@ -272,7 +276,9 @@ PR 的 `--pull-request-url` 和 `--pull-request-title` 在 create/update 中分�
 没有相关选项时省略属性 patch；重复项、空白与空字符串都保留，不检查 URL 内容。
 配对、互斥和修改字段组合错误必须先于配置、Git 和网络 I/O 失败。
 
-未传 `--if-version` 时，CLI 先读取 task 的当前 `version`，再将该版本与更新字段
+`set-property <task-id> <property> <value>` 仅声明通用位置参数，不在 CLI 校验属性名、点分路径、schema、值类型或输入文本的 JSON 语法。property 与 value 原文作为 JSON 请求体字符串发送到同一 properties 资源；服务端按属性类型解释，字符串接受原文和 JSON 字符串，结构化值要求相应 JSON。原始空字符串与 JSON 空字符串均可清除 signaling。未知/空路径、受保护字段、错误结构及结构化 JSON 解析失败由服务端拒绝。默认先 GET 属性资源，仅读取 version 元数据后 PUT 一次；显式 `--if-version` 跳过 GET，冲突和不确定结果不重试。`remove-property <task-id> <property>` 使用相同项目、版本与不重试规则提交同一资源 DELETE，原始 property 位于请求体；CLI 不检查路径或选择默认值，服务端用共享定义清除属性。worker.signaling 清为空字符串，pullRequests 清为空数组，同值保持版本与时间；响应必填字段保持；未知路径、受保护字段或 worker 分支的移除由服务端拒绝。未来服务端增加属性无需更新 CLI 属性目录。
+
+未传 `--if-version` 时，普通 update 先读取 task 的当前 `version`，再将该版本与更新字段
 一起提交。显式指定时，使用该正整数作为期望版本，不用最新版本覆盖它。版本范围为
 `1..9223372036854775807`，客户端必须保留完整精度，HTTP 与 JSON 输出仍使用数字。冲突必须
 报告失败，不自动读取新版本重试。无变化更新、版本递增和时间戳遵循服务语义。
@@ -288,6 +294,8 @@ PR 的 `--pull-request-url` 和 `--pull-request-title` 在 create/update 中分�
 [附件需求](daynight-task-attachments.md#cli)拥有。
 
 ## PT8. 输出、分页与错误
+
+get-properties、set-property 与 remove-property 的成功输出始终是属性资源的原始 JSON 文本，不进入 Task/Worker 已知字段解析或重新序列化；保留未知属性、未知 worker 字段与大整数。资源形状为 `{version:"<正 int64 十进制>",properties:<完整对象>}`，version 与普通 Task 的数字字段表示不同，但指向同一任务版本。
 
 普通元数据查询提供可读结果；`project list` 和 `task list` 自动遍历全部匹配分页，
 `task ready` 只读取所选的前 N 项。每个操作在其全部必要读取、结构验证、渲染及

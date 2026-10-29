@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseTask } from "../../src/api/parse.js";
+import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Task, WorkerClaim } from "../../src/api/types.js";
 
 const projectId = "11111111-1111-1111-1111-111111111111";
@@ -18,14 +19,18 @@ const task: Task = {
 const malformedWorkers: unknown[] = [
   undefined, {}, [], false, { ...worker, state: "expired" }, { ...worker, claimId: "not-id" }, { ...worker, userId: "not-id" },
   { ...worker, workerId: "not-id" }, { ...worker, worktreeId: "not-id" }, { ...worker, machine: { id: claimId, name: "" } },
-  { ...worker, machine: { id: "bad", name: "Machine" } }, { ...worker, machine: { ...worker.machine, unexpected: true } },
+  { ...worker, machine: { id: "bad", name: "Machine" } },
   { ...worker, platform: null }, { ...worker, platform: "win32" }, { ...worker, agent: "other" }, { ...worker, phase: "done" },
   { ...worker, herdr: {} }, { ...worker, herdr: { session: "w", workspaceId: "ws", paneId: "" } },
-  { ...worker, nativeSessionId: "" }, { ...worker, claimedAt: "2026-02-30T00:00:00Z" }, { ...worker, unexpected: true },
+  { ...worker, nativeSessionId: "" }, { ...worker, claimedAt: "2026-02-30T00:00:00Z" },
   ...Object.keys(worker).filter((key) => key !== "agentControlMode").map((key) => Object.fromEntries(Object.entries(worker).filter(([field]) => field !== key))),
 ];
 
 describe("worker ownership read DTO", () => {
+  it.each([0, -1, 0.5])("ignores future property and worker extensions with nested numeric version %s", (version) => {
+    const extended = { ...task, properties: { ...task.properties, future: { version }, pullRequests: task.properties.pullRequests.map((item) => ({ ...item, future: { version } })), worker: { ...worker, future: { version }, machine: { ...worker.machine, future: { version } }, herdr: { ...worker.herdr!, future: { version } } } } };
+    expect(parseTask(parseApiJson(stringifyApiJson(extended)), projectId, taskId)).toEqual(task);
+  });
   it("retains protected execution metadata and opaque PR strings", () => {
     expect(parseTask(task, projectId, taskId)).toEqual(task);
     const preparing = { ...task, properties: { ...task.properties, worker: { ...worker, herdr: null, nativeSessionId: null } } };

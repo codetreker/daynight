@@ -12,6 +12,7 @@ export type CommandOption = {
 export type CommandArgument = {
   name: string;
   description: string;
+  allowEmpty?: boolean;
   choices?: readonly string[];
 };
 
@@ -112,7 +113,7 @@ export const parseCommand = (
     }
     const positional = definition.arguments?.[values.length];
     if (positional === undefined) throw new UsageError(`Unexpected ${path.join(" ")} argument ${JSON.stringify(argument)}.`, helpCommand);
-    if (argument === "") throw new UsageError(`${path.join(" ")} requires a ${positional.name} value.`, helpCommand);
+    if (argument === "" && positional.allowEmpty !== true) throw new UsageError(`${path.join(" ")} requires a ${positional.name} value.`, helpCommand);
     if (positional.choices !== undefined && !positional.choices.includes(argument)) {
       throw new UsageError(`Unknown ${positional.name} ${JSON.stringify(argument)}. Expected ${positional.choices.join(" or ")}.`, helpCommand);
     }

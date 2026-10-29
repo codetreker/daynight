@@ -17,7 +17,7 @@ CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 成对 PR 引用
-参数与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 包含 worker 及必填 signaling 字符串，公共输入使用独立的可写属性类型。创建只接受 PR，更新的 worker patch 只接受 signaling；`task update --worker-signaling <text>` 使用原样文本，显式空值清除信号，其他归属字段仍受保护。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
+参数与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 包含 worker 及必填 signaling 字符串，公共输入使用独立的可写属性类型。创建只接受 PR，普通更新的 worker patch 只接受 signaling；通用 `task set-property`、`task remove-property` 与 `task get-properties` 通过属性专用资源设置、移除和读取，服务端解释路径与文本值，归属字段仍受保护。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
 [附件架构](daynight-task-attachments.md)中的 `task attachment put/list/read/remove`
 及二进制传输通道已实现，行为见[附件需求](../spec/daynight-task-attachments.md)。
@@ -93,6 +93,8 @@ rendering 分别拥有语法、API/仓库关联组合及可读/JSON 输出，复
 `allowOptionsTerminator`，使 `--` 后的词按位置参数处理，因而前导 `-` 的名称也能
 原样提交。语法层只校验位置参数的存在性、非空字符串及声明的固定候选；名称的
 Unicode 文本语义由 Project 命令在业务加载之前校验。
+通用属性命令只声明 task ID、property 和 value 参数及项目/版本选项。property/value 保留原文与显式空值，不使用 choices、属性路径表或值 schema。命令把 property 与 value 编码为 JSON 请求体字符串，服务端决定原文、JSON 字符串或结构化 JSON 的解释。GET、PUT 与 DELETE 成功结果保留原始文本；移除默认值由服务端共享属性定义决定，CLI 不维护删除目录。省略设置或移除版本时只读取 GET 的 version 元数据，不把 properties 交给普通 Task 解析器。
+
 共享语法通过 `value.allowEmpty` 表达描述空值，通过 `value.choices` 表达状态允许值，
 通过 `repeatable` 表达有序依赖数组；解析与静态补全消费这些事实，帮助使用定义中
 的名称、值名、必填性与选项说明。
@@ -340,6 +342,9 @@ flowchart TD
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
+| `task get-properties <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}/properties`，原始属性资源文本 |
+| `task remove-property <id> <property>` | 可选先 GET properties 读取 version，再 DELETE `/properties`，请求体为 version/property；按服务端声明默认值清除，返回原始属性资源 |
+| `task set-property <id> <property> <value>` | 可选先 GET properties 读取 version，再 PUT `/properties`；property/value 均为原始参数文本的 JSON 字符串 |
 | `task update <id>` | 可选先 GET task，再 PATCH 同一路径，只写元数据 |
 | `task set-status <id> <status> [--claim-id <claim-id>]` | 可选先 GET task，再 PUT 同一 task 的 `/status`；普通 body 为 version/status，显式 done claim 完成为 version/status/claimId |
 | `task delete <id> [--remove-depends]` | 可选先 GET task，再 DELETE 同一路径提交精确 version；可选开关明确发送 removeDepends=true 解除全部传入引用，默认严格删除；成功 `204`，保留任务与附件 |

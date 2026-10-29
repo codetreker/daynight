@@ -33,9 +33,8 @@ const renderPrefixValidation = (command: CommandDefinition): string => {
 
   const options = command.options?.filter((option) => option.action === undefined) ?? [];
   const arguments_ = command.arguments ?? [];
-  const positionalValidation = arguments_.length === 0 ? "          return 1" : `          [[ -n "$word" ]] || return 1
-          case "$positional_count" in
-${arguments_.map((argument, index) => `            ${index})${argument.choices === undefined ? " ;;" : `
+  const positionalValidation = arguments_.length === 0 ? "          return 1" : `          case "$positional_count" in
+${arguments_.map((argument, index) => `            ${index})${argument.allowEmpty === true ? "" : '\n              [[ -n "$word" ]] || return 1'}${argument.choices === undefined ? "\n              ;;" : `
               case "$word" in
                 ${argument.choices.map(quote).join("|")}) ;;
                 *) return 1 ;;

@@ -158,7 +158,7 @@ requiredPlatform 未提供保留，windows/linux/macos 设置，null 清除；�
 null 或与实际平台同值；自动 worker 的事务重验和执行平台记录仍按 worker 要求另行实现。
 
 PR url/title 仅验证字符串与必填结构，保留空白、控制字符、顺序及重复项；不检查远端 PR。
-严格拒绝属性未知字段、重复 key、null、缺项或错误类型，详见[属性需求](daynight-task-properties.md)。
+严格拒绝属性未知字段、重复 key、null、缺项或错误类型，详见[属性需求](daynight-task-properties.md)。属性专用 PUT 的 value 是原始输入文本字符串：字符串属性接受原文或 JSON 字符串，结构化属性要求对应类型 JSON；服务端独自维护可写属性目录并验证点分路径、类型与保护规则。GET/PUT/DELETE 属性资源包含完整 properties 和任务 version 的十进制字符串，同值及冲突沿用任务语义。属性 DELETE 由同一共享定义选择默认值，signaling 清为空字符串、pullRequests 清为空数组；必填结构保留，worker 分支及受保护字段不能移除。
 HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Origin，响应 no-store。
 [三状态要求](daynight-task-status.md)拥有完整状态契约，[状态架构](../design/daynight-task-status.md)解释并发与迁移机制。
 
@@ -173,6 +173,9 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `POST` | `/api/v1/projects/{projectId}/tasks` | 创建 task，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 返回 task，缺失或不属于该 project 时 `404` |
+| `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | `200`，完整 properties 与十进制字符串任务 version |
+| `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | 数字 version 与原始字符串 property/value，服务端按属性类型解释文本，原子设置单属性并返回同样资源 |
+| `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | 数字 version 与原始字符串 property，按声明默认值清除单属性并返回同样资源；同值不改版本或时间 |
 | `GET` | `/api/v1/projects/{projectId}/task-graph` | 返回同一完整快照的 project、任务图和统计 |
 | `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta，使用 epoch 与任务最大 updatedAt 水位 |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |

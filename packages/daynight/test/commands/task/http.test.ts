@@ -54,6 +54,45 @@ const fixture = async (handler: (request: Request, response: ServerResponse, raw
 };
 
 describe("task commands over HTTP", () => {
+  it("round-trips an opaque future properties resource and reads only version metadata for updates", async () => {
+    const source = '{ "version":"9223372036854775807", "properties":{"worker":{"future":900719925474099312345,"version":1e999},"other":[null,true]} }\n';
+    const f = await fixture((_request, response) => { response.writeHead(200, { "Content-Type": "application/json" }); response.end(source); });
+    await f.run(["get-properties", taskId]);
+    expect(f.context.stdout).toHaveBeenLastCalledWith(source);
+    await f.run(["set-property", taskId, "future /?#%字段", "  {invalid JSON  "]);
+    expect(f.requests.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks/${taskId}/properties`,
+      `GET /api/v1/projects/${projectId}`, `GET /api/v1/projects/${projectId}/tasks/${taskId}/properties`,
+      `PUT /api/v1/projects/${projectId}/tasks/${taskId}/properties`,
+    ]);
+    expect(f.requests.at(-1)!.body).toBe('{"version":9223372036854775807,"property":"future /?#%字段","value":"  {invalid JSON  "}');
+    expect(f.context.stdout).toHaveBeenLastCalledWith(source);
+  });
+
+  it.each([400, 409])("lets the service reject invalid property values with HTTP %s", async (status) => {
+    const f = await fixture((_request, response) => respond(response, { error: { code: status === 400 ? "invalid_input" : "version_conflict", message: "Property was refused.", requestId: "property-refusal" } }, status));
+    await expect(f.run(["set-property", taskId, "", "", "--if-version", "9223372036854775807"])).rejects.toMatchObject({ status, confirmedRefusal: true });
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.requests.at(-1)!.body).toBe('{"version":9223372036854775807,"property":"","value":""}');
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("does not retry or report success after an unconfirmed property mutation", async () => {
+    const f = await fixture((_request, _response, raw) => { raw.socket.destroy(); });
+    await expect(f.run(["set-property", taskId, "future", "value", "--if-version", "1"])).rejects.toMatchObject({ operation: "task.set-property", outcomeUnconfirmed: true });
+    expect(f.requests.map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "9223372036854775807"])("removes a property over HTTP with version %s and prints the opaque result", async (version) => {
+    const source = '{"version":"9223372036854775807","properties":{"future":900719925474099312345}}';
+    const f = await fixture((_request, response) => { response.writeHead(200, { "Content-Type": "application/json" }); response.end(source); });
+    await f.run(["remove-property", taskId, "unknown /?#%字段", ...(version === undefined ? [] : ["--if-version", version])]);
+    expect(f.requests.map(({ method }) => method)).toEqual(version === undefined ? ["GET", "GET", "DELETE"] : ["GET", "DELETE"]);
+    expect(f.requests.at(-1)!.body).toBe('{"version":9223372036854775807,"property":"unknown /?#%字段"}');
+    expect(f.requests.at(-1)!.path).toBe(`/api/v1/projects/${projectId}/tasks/${taskId}/properties`);
+    expect(f.context.stdout).toHaveBeenCalledExactlyOnceWith(source);
+  });
   it.each([false, true].flatMap((removeDepends) => [undefined, "9223372036854775807"].map((version) => ({ removeDepends, version }))))("deletes once with exact version $version and removal consent $removeDepends", async ({ version, removeDepends }) => {
     const f = await fixture((request, response) => {
       if (request.method === "DELETE") { response.writeHead(204); response.end(); }

@@ -504,6 +504,12 @@ daynight task list --ready
 daynight task list --all --json
 daynight task list --status in_progress --json
 daynight task show <task-id> --json
+daynight task get-properties <task-id>
+daynight task remove-property <task-id> worker.signaling --if-version <version>
+daynight task set-property <task-id> worker.signaling 'Please confirm'
+daynight task set-property <task-id> worker.signaling '"Please confirm"'
+daynight task set-property <task-id> worker.signaling '' --if-version <version>
+daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"Sign-in"}]'
 daynight task update <task-id> --description=
 daynight task update <task-id> --allow-agents true --if-version <version>
 daynight task create --title "Check Windows build" --required-platform windows
@@ -675,16 +681,39 @@ preserve version and time; stale updates conflict and actual in-progress changes
 are refused atomically. Explicit manual status setting remains available for every
 requirement. The query platform selects candidates; it does not configure or
 prove the environment of a future worker.
-`task update --worker-signaling <text>` sets the needs-attention signal on an
-existing worker record; `--worker-signaling=` clears it. Empty is the only value
-that means no signal: whitespace and other text are preserved as supplied. The
-option is unavailable on create, and a task with `worker:null` rejects the update.
-Only `properties.worker.signaling` is writable through this path; the worker
-identity and other execution fields remain protected. Other task and worker
-updates preserve the signal. It shares the task version, semantic no-op and
-atomic-update rules.
 
-By default the CLI reads the task version before PATCH; `--if-version <n>`
+`task get-properties <task-id>` returns the complete property resource.
+`task set-property <task-id> <property> <value>` sets one property through its
+dotted path, such as `worker.signaling` or `pullRequests`. The CLI sends the value
+and property arguments unchanged as JSON-encoded body strings and performs no
+property-name, path,
+schema, value-type or JSON-content validation. The service owns those rules and
+interprets the text by the target type. String properties accept plain text or
+a JSON string: both `'Please confirm'` and `'"Please confirm"'` set the same
+signal, while `''` and `'""'` both clear it. Structured properties require JSON
+of their declared type; `pullRequests` uses a complete JSON array. Unknown or
+empty paths, protected fields, bad structures and malformed structured JSON fail
+at the service. A task with `worker:null` cannot acquire a signal through this
+operation; other worker fields remain protected.
+
+`task remove-property <task-id> <property>` uses the same version rules to clear
+a property to its service-declared default. The CLI passes the path through and
+does not choose defaults or validate removability. Currently `worker.signaling`
+becomes an empty string and `pullRequests` an empty array; required response
+fields remain present. Unknown or protected paths and the whole worker branch
+are refused by the service. Clearing an already empty value preserves the task
+version and timestamps.
+
+All three commands output the complete successful resource as its original JSON
+text, without parsing or reserializing property contents. Future fields,
+worker extensions and large integers remain intact without a CLI schema update.
+The envelope is `{"version":"<positive int64 decimal>","properties":{...}}`.
+Without `--if-version`, set-property and remove-property first read that resource
+and extract only its exact version metadata before one PUT or DELETE. An explicit version skips the GET.
+Conflicts and unconfirmed writes are never retried. Other task and execution
+updates preserve the signal; semantic no-op and atomic-write rules still apply.
+
+By default ordinary task updates read the task version before PATCH; `--if-version <n>`
 uses that exact positive int64 version. Conflicts and failed writes are reported
 without automatic retries.
 

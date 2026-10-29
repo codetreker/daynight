@@ -18,7 +18,7 @@ Task 使用 server 预定义且有明确结构的属性。pullRequests 保存任
 | TP4 | 创建与更新 task 支持属性；属性、普通字段及依赖在现有 task 事务内原子提交。 |
 | TP5 | 属性更新沿用 task 的 `version`，无变化更新保留版本与时间，真实变化只增加一次版本。 |
 | TP6 | 单项读取、分页列表及创建/更新结果返回完整属性；完整图与同步摘要只投影 workerNeedsAttention，不携带完整属性或执行身份。 |
-| TP7 | CLI 支持提供完整 PR 列表和清空列表，并在文本及 JSON 资源输出中保留全部项。 |
+| TP7 | CLI 支持通用属性读取、单属性设置与移除，属性路径和输入文本由服务端按属性类型解释并校验；输出完整原始属性资源，保留未知字段与精确数值。原有 PR 列表参数保留。 |
 | TP8 | 网页详情展示每个 PR 的标题和地址；非空 signaling 在列表、任务链、图节点和详情明确高亮“需要处理”，详情展示原文。 |
 | TP9 | 已有 task 通过数据库迁移获得空 PR 列表，迁移保持其版本、创建时间与更新时间。 |
 
@@ -76,9 +76,33 @@ PATCH 继续要求正整数 `version`，并按以下规则处理：
 
 Web 的独立任务行、任务链子行和图节点在非空时显示“需要处理”/“Needs attention”并高亮；折叠任务链仍提示成员中有需要处理的任务。详情的同一提示展示原始信号内容，作为文本换行，长内容不能撑宽窄屏。清空后撤下提示。worker 调度器从当前归属清单读取该值，非空时停止常规 ping，包括 agent 从 working 进入 idle/done 之后；清空后恢复已有巡查条件。首次任务输入、执行恢复和终止清理沿用既有规则。
 
+## 属性资源与单属性设置和移除
+
+以下路径位于 `/api/v1/projects/{projectId}/tasks/{taskId}`，沿用任务成员访问、no-store、请求大小限制及严格 JSON 规则。
+
+| 方法和后缀 | 请求与结果 |
+|---|---|
+| GET `/properties` | 返回 `200` 与 `{version:"<正 int64 十进制>",properties:<完整属性对象>}`，包含只读 worker 字段。 |
+| PUT `/properties` | 请求为 `{version:<正 int64 数字>,property:<原始属性名字符串>,value:<原始输入文本字符串>}`；成功返回 `200` 和同样的属性资源。 |
+| DELETE `/properties` | 请求为 `{version:<正 int64 数字>,property:<原始属性名字符串>}`；将属性清除为声明默认值，成功返回 `200` 和同样的属性资源。 |
+
+`property` 作为 PUT/DELETE 请求体中的原始字符串传递，由服务端解析点分路径，例如 `pullRequests` 或 `worker.signaling`。服务端以共享属性定义作为唯一可写目录、类型与移除默认值的所有者，复用类型与受保护字段校验；空路径、未知路径、受保护字段、错误类型和缺项均明确拒绝。value 必须是字符串；服务端按目标类型解释其内容：字符串属性接受原始文本或 JSON 字符串，JSON 字符串解码后保存；数组等结构化属性要求对应类型的合法 JSON，解析失败明确拒绝。设置 `worker.signaling` 仍要求已有 worker。移除将当前必填属性重置为其声明默认值：worker.signaling 为空字符串，pullRequests 为空数组，不删除响应中的必填字段。worker 整个分支、未知路径及受保护字段不能移除；移除 signaling 仍要求已有 worker。同值移除是无变化操作。一次请求只设置或清除指定属性，其他属性与任务资料保持；同值、精确版本冲突、原子提交和失败回滚沿用任务更新语义。属性资源的 version 是任务原有版本的十进制字符串，没有独立属性版本。
+
 ## CLI
 
-`task update --worker-signaling <text>` 设置现有 worker 的信号，`--worker-signaling=` 清空；创建不接受此选项。它可与其他更新原子提交，保留 `--if-version` 与不重试冲突的规则。
+`task get-properties <task-id>` 读取完整属性资源；`task set-property <task-id> <property> <value>` 设置一个属性；`task remove-property <task-id> <property>` 清除为声明默认值。三个命令使用既有项目选择与服务配置。value 位置参数作为原始文本写入请求的字符串 value，CLI 只把属性名和值做 JSON 字符串编码，不解析或校验属性名、点分路径、属性结构、值类型或 JSON 内容，由服务端统一判断。未来服务端增加属性或 worker 字段时，通用命令无需同步属性目录。
+
+```bash
+daynight task get-properties "$TASK_ID"
+daynight task set-property "$TASK_ID" worker.signaling '请确认'
+daynight task set-property "$TASK_ID" worker.signaling '"请确认"'
+daynight task set-property "$TASK_ID" worker.signaling ''
+daynight task set-property "$TASK_ID" worker.signaling '""'
+daynight task remove-property "$TASK_ID" worker.signaling
+daynight task set-property "$TASK_ID" pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"登录接口"}]'
+```
+
+set-property 与 remove-property 支持 `--if-version`：提供时直接使用该精确正 int64，不读取最新值；省略时先调用 get-properties，只读取 version 元数据后提交一次 PUT 或 DELETE。冲突及不确定结果不自动重试写入。三个命令的成功响应均按原始 JSON 文本输出，不经当前客户端的属性 schema 读取或重新序列化，保留未来字段、只读归属和大整数的原始表示。
 
 `task create` 和 `task update` 接受可重复的 `--pull-request-url <text>` 与
 `--pull-request-title <text>`。第 n 个 URL 对应第 n 个标题，两者出现次数必须相等；
@@ -121,3 +145,4 @@ Web 的独立任务行、任务链子行和图节点在非空时显示“需要�
 | TP-V7 | 网页覆盖空、单项、多项、重复、空标题、长文本及不可导航地址，以及 100/101 项分页边界、末页、集合替换重置和完整原值；挂载项不超过 100，任意输入都不会作为脚本或 HTML 执行，焦点、关闭与窄屏交互保持有效。 |
 | TP-V8 | 图响应只携带 workerNeedsAttention 投影而不包含完整属性，列表保持分页与快照语义；既有请求、响应及命令预算仍被执行，超限明确失败。 |
 | TP-V9 | signaling 设置、同值、清空、版本冲突及错误类型符合约定；迁移保留任务元数据和字符串，执行上报保留信号。Web 各入口在非空时显示需要处理并在清空后撤下，覆盖折叠链、双语和长文本窄屏；worker 在 working 转 idle/done、重启及观察等待期间收到信号后不再 ping，清空后恢复已有规则。 |
+| TP-V10 | 通用 CLI 将已知/未知路径与原始值文本发送给服务端，服务端按类型统一解释与验证；字符串的原文/JSON 形式及两种空值形式等价，数组要求合法 JSON；显式版本零预读，隐式版本只读取属性版本，冲突不重试；原始响应保留未来字段和大整数。移除恢复声明默认值、同值不改版本和时间，未知/受保护/分支路径由服务端拒绝，CLI 保持原始输出。 |

@@ -321,34 +321,4 @@ describe("in-process worker task API", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("rejects protected properties on ordinary mutation inputs before dispatch", () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const operation = createOperation();
-    cleanups.push(() => operation.dispose());
-    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
-    for (const worker of [null, claim(), {}, [], { signaling: null }, { signaling: false }, { signaling: "attention", phase: "waiting" }]) {
-      const properties = { pullRequests: [], worker } as never;
-      expect(() => client.createTask(projectId, { title: "Task", properties })).toThrow("Worker ownership");
-      expect(() => client.updateTask(projectId, taskId, { version: 1n, properties })).toThrow("Worker ownership");
-    }
-    expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it.each(["Review the deployment", "", " ", "\0\u001b[2J", "\ud800"])("updates only signaling and retains protected claim identity: %j", async (signaling) => {
-    const before = claim();
-    const updated = task({ ...before, signaling });
-    const origin = await listen((request, response, body) => {
-      expect(request.method).toBe("PATCH");
-      expect(body).toEqual({ version: 1n, properties: { worker: { signaling } } });
-      respond(response, updated);
-    });
-    const result = await api(origin).updateTask(projectId, taskId, { version: 1n, properties: { worker: { signaling } } });
-    expect(result.properties.worker).toEqual({ ...before, signaling });
-    expect(result.properties.pullRequests).toEqual(updated.properties.pullRequests);
-  });
-
-  it.each([null, claim()])("rejects a signaling response that did not apply the requested reason", async (worker) => {
-    const origin = await listen((_request, response) => respond(response, task(worker)));
-    await expect(api(origin).updateTask(projectId, taskId, { version: 1n, properties: { worker: { signaling: "Needs attention" } } })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
-  });
 });

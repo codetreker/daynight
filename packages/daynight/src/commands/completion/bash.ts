@@ -35,7 +35,7 @@ const commandCases = (root: CommandDefinition): string => {
       }
     }
     const choices = (node.arguments ?? []).map((argument, argumentIndex) =>
-      `        ${argumentIndex}) dn_choices=${shellArray(argument.choices ?? [])} ;;`,
+      `        ${argumentIndex}) dn_choices=${shellArray(argument.choices ?? [])}; dn_argument_empty=${argument.allowEmpty === true ? 1 : 0} ;;`,
     );
     const valueChoices = (node.options ?? []).flatMap((option, optionIndex) => option.value?.choices === undefined ? [] :
       [`        ${optionIndex}) dn_value_choices=${shellArray(option.value.choices)} ;;`]);
@@ -117,6 +117,7 @@ const runtime = String.raw`
   dn_children=(); dn_child_nodes=(); dn_options=(); dn_option_ids=()
   dn_option_values=(); dn_option_actions=(); dn_choices=()
   dn_option_empty=(); dn_option_repeats=(); dn_value_choices=()
+  dn_argument_empty=0
   case "$dn_node" in
 @CASES@
   esac
@@ -138,7 +139,7 @@ const runtime = String.raw`
   local -a dn_words dn_children dn_child_nodes dn_options dn_option_ids
   local -a dn_option_values dn_option_actions dn_choices
   local -a dn_option_empty dn_option_repeats dn_value_choices
-  local dn_node=0 dn_position=0 dn_argument_count=0 dn_count=0 dn_pending=''
+  local dn_node=0 dn_position=0 dn_argument_count=0 dn_argument_empty=0 dn_count=0 dn_pending=''
   local dn_value_option=-1 dn_value_match=-1 dn_inline=0 dn_options_terminated=0 dn_allow_terminator=0
   local dn_used='|' dn_tilde dn_current dn_word dn_index dn_match dn_option
   local dn_candidate dn_prefix dn_fragment dn_trim dn_choice
@@ -200,7 +201,7 @@ const runtime = String.raw`
       continue
     fi
     ((dn_position < dn_argument_count)) || return 0
-    [[ -n "$dn_word" ]] || return 0
+    [[ -n "$dn_word" || "$dn_argument_empty" == 1 ]] || return 0
     if ((@{#dn_choices[@]} > 0)); then
       dn_match=0
       for dn_choice in "@{dn_choices[@]}"; do

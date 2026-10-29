@@ -263,6 +263,9 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 | `POST /api/v1/projects/{projectId}/tasks` | 创建 `todo` task |
 | `GET /api/v1/projects/{projectId}/tasks` | 分页列出 task |
 | `GET /api/v1/projects/{projectId}/tasks/{taskId}` | 获取 task |
+| `GET /api/v1/projects/{projectId}/tasks/{taskId}/properties` | 完整属性资源与十进制字符串任务 version |
+| `PUT /api/v1/projects/{projectId}/tasks/{taskId}/properties` | 数字 version 与原始字符串 property/value，解释路径和值后复用属性 patch 与任务事务 |
+| `DELETE /api/v1/projects/{projectId}/tasks/{taskId}/properties` | 数字 version 与原始字符串 property，按共享声明默认值清除属性并复用相同任务事务 |
 | `PATCH /api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据及依赖 |
 | `PUT /api/v1/projects/{projectId}/tasks/{taskId}/status` | 精确版本与目标三状态，done 可带当前 claimId |
 | `POST/PATCH .../tasks/{taskId}/worker-claim` | 原子自动认领/当前 owner 更新摘要 |
@@ -276,7 +279,7 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 创建 project 的输入为 `name` 和 `repoUrl`。创建 task 的输入为 `title`、可省略的
 `description`、`dependsOn`、`externalDependsOn` 与 `properties`；省略描述表示空字符串，省略依赖和
 PR 引用表示空数组。创建成功
-返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create 不能提供 properties.worker；普通 PATCH 只接受已有 worker 的 signaling 字符串，其他归属字段仍受保护。PR、信号与执行摘要更新相互保留。
+返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create 不能提供 properties.worker；普通 PATCH 只接受已有 worker 的 signaling 字符串，其他归属字段仍受保护。PR、信号与执行摘要更新相互保留。属性专用 GET/PUT/DELETE 返回 `{version:"<正 int64 十进制>",properties:<完整对象>}`。PUT 在同一 properties 路径接收原始属性名字符串 property 和输入文本字符串 value，由服务端按目标类型解释：字符串可用原文或 JSON 字符串，数组等值使用合法 JSON。路径、类型解释及移除默认值由同一共享属性定义拥有，复用属性 patch codec，不建立第二份可写目录。DELETE 在同一路径提交 version/property，将 signaling 清为空字符串或 pullRequests 清为空数组；其他任务资料保持，同值不写；完整契约由[属性设计](daynight-task-properties.md#http-与事务)拥有。
 
 项目设置 PATCH 独立接受必填正 int64 `version` 和 `1..2147483647` 的 `executionWarningMinutes`，
 拒绝 query、缺失/未知/重复字段及非法类型，不接受 Project 其他字段。

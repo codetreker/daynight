@@ -800,6 +800,23 @@ receipts and fixed-capacity gates are in the
 
 ## Task HTTP API
 
+The property resource uses GET, PUT and DELETE at the same
+`/tasks/{taskId}/properties` path below the project API path. All return
+200 and `{"version":"<positive int64 decimal>","properties":{...}}`, including the
+complete protected worker record. PUT requires a numeric task `version`, a string `property` carrying the original
+property name, and a string `value` carrying the original input text. The service interprets that text
+by the target property type: strings accept plain text or a JSON string;
+structured properties require JSON of their declared type. Dotted paths, type interpretation and removal defaults belong to one shared
+property definition tree used by `DecodePatch` and the property routes. Unknown,
+empty or protected paths and invalid values fail without a parallel client
+schema. DELETE accepts the numeric version and original string property and clears to the declared
+default: signaling becomes an empty string and pullRequests an empty array.
+Required fields remain; the whole worker branch cannot be removed. Clearing an
+already empty property preserves version and timestamps. The operation shares task authorization, exact-version checks,
+semantic no-ops, atomic updates and error handling. The
+[property design](../../docs/design/daynight-task-properties.md#http-与事务)
+owns the complete protocol and opaque CLI transport.
+
 Worker operations return complete Task resources with 200 and no-store, preserving
 existing authentication, exact int64 versions and strict JSON/error handling.
 They do not start processes. Claims use fresh caller-persisted UUIDs; the latest
@@ -824,6 +841,9 @@ user/worker active-claim inventory; no claim table is introduced.
 | `POST` | `/api/v1/projects/{projectId}/tasks` | `201`, task and `Location` |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | `200`, task page |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | `200`, task |
+| `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | `200`, complete properties and decimal-string task version |
+| `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | `200`, single-property write from numeric version and original string property/value; same envelope |
+| `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | `200`, clear to declared default from numeric version and string property; same envelope |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | `200`, updated metadata/dependencies |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`, exact-version status; done may include current claimId |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, atomic automatic acquisition |

@@ -16,8 +16,28 @@ attention signal; every nonempty value, including whitespace, requests human
 attention. The task PATCH accepts only this nested worker field on an existing
 record, with ordinary member access and the exact task version. A missing worker
 is an input error. Worker identity remains protected, and PR, status and execution
-updates preserve the signal. The CLI exposes the same operation through
-`task update --worker-signaling`, including an explicit empty value for clearing.
+updates preserve the signal. The CLI uses
+`task set-property <task-id> <property> <value>`,
+`task remove-property <task-id> <property>` and `task get-properties <task-id>`
+with the task's property resource. It has no property-path or value schema. The setter JSON-encodes the untouched property and value arguments as request
+body strings; the service interprets the value using the target property's
+rules. String properties accept plain text or a JSON string, including both
+empty forms for clearing. Structured properties require their corresponding JSON.
+Dotted paths, type interpretation and removal defaults belong to a shared
+property definition tree consumed by the patch codec and property routes. There
+is one writable registry. Removal clears the current required fields to their
+declared defaults: signaling becomes an empty string and pullRequests an empty
+array. The worker branch and protected fields cannot be removed; clearing an
+already empty value is a semantic no-op.
+
+GET, PUT and DELETE share one properties resource path. The property name stays
+in the JSON body so empty names, dot segments and slashes reach service validation
+without URL normalization changing the request target. GET and successful
+PUT/DELETE return the complete properties with the same task
+version encoded as a decimal string. These commands retain the response as original
+JSON text, preserving future properties, worker fields and large integers. An
+implicit set/remove version reads only the GET's version metadata; an explicit
+version skips that read. Conflicts and unconfirmed writes are never replayed.
 The [property design](../../../../docs/design/daynight-task-properties.md) and
 [claim protocol](../../../../docs/design/daynight-worker-claims.md) own the full
 write and persistence contracts.
@@ -46,6 +66,26 @@ worker-PATCH restriction in the [claim foundation](../architecture/2026-10-24-wo
 
 ## Alternatives
 
+**Add a dedicated signaling option or hard-code property paths in the CLI.**
+Either would require another client release whenever the server property schema
+expands. The generic commands leave property names, types and protection rules
+with the service while retaining existing typed task operations.
+
+**Put property names in URL segments.** URL processing can normalize dot
+segments before the server sees them, and empty or slash-containing names can
+alter route matching. Treating the name as JSON body data preserves the original
+input for the same property validator without client guards or redirects.
+
+**Embed the value argument as raw JSON in the request body.** This would require
+JSON quoting for every string and make malformed input alter the envelope.
+Encoding the original argument as a string supports both plain and JSON string
+forms while keeping interpretation at the service.
+
+**Decode generic property responses through the current Task schema.** Known
+field projection can drop future properties, while numeric decoding followed by
+serialization can round unknown large integers. Raw response text keeps the
+complete server resource without coupling its contents to the installed CLI.
+
 **Write signaling through the owner-only execution-summary endpoint.** That
 endpoint already fences progress by claim and owner, but attention is task
 metadata that project members can set and clear. A narrowly typed public patch
@@ -66,8 +106,11 @@ complete task resource.
 ## Consequences
 
 One task version coordinates attention, metadata and execution updates; a stale
-write cannot silently clear a newer signal. The store projection is a derived
-column, so every maintained task-write path must use the central writer. Direct
+write cannot silently clear a newer signal. The generic endpoint adds no property
+version or transaction owner. Clients can set future server-defined properties
+without a client schema change, but the service still rejects unknown and
+protected paths. Ordinary typed task reads retain their separate parsing rules.
+The store projection is a derived column, so every maintained task-write path must use the central writer. Direct
 SQL maintenance must preserve that derivation or rebuild it before serving data.
 
 The signal prevents automatic continuation pings; it does not stop a native

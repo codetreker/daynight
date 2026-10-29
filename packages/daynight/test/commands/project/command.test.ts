@@ -18,6 +18,7 @@ const fixture = (projects: readonly Project[] = []) => {
   const api = {
     listProjectMembers: async () => { throw new Error("Unused project member API method"); },
     getCurrentUser: unavailable,
+    getTaskProperties: unavailable, setTaskProperty: unavailable, removeTaskProperty: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),
     listProjects: vi.fn<ApiClient["listProjects"]>().mockResolvedValue(projects),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),

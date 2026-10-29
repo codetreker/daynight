@@ -77,7 +77,7 @@ export type WorkerClaim = {
   readonly nativeSessionId: string | null;
   readonly claimedAt: string;
 };
-export type WritableTaskProperties = { readonly pullRequests?: readonly PullRequestProperty[]; readonly worker?: { readonly signaling: string } };
+export type WritableTaskProperties = Readonly<Record<string, unknown>>;
 export type TaskProperties = { readonly pullRequests: readonly PullRequestProperty[]; readonly worker: WorkerClaim | null };
 
 export type Task = {
@@ -128,7 +128,7 @@ export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;
   readonly description?: string;
-  readonly properties?: Pick<WritableTaskProperties, "pullRequests">;
+  readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
   readonly externalDependsOn?: readonly string[];
 };
@@ -143,6 +143,8 @@ export type UpdateTaskInput = {
   readonly externalDependsOn?: readonly string[];
 };
 export type DeleteTaskInput = { readonly version: bigint; readonly removeDepends?: boolean };
+export type SetTaskPropertyInput = { readonly version: bigint; readonly value: string };
+export type RemoveTaskPropertyInput = { readonly version: bigint };
 export type SetTaskStatusInput = { readonly version: bigint; readonly status: TaskStatus };
 export type WorkerClaimDescriptor = {
   readonly claimId: string;

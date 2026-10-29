@@ -12,6 +12,22 @@ type TaskProperties struct {
 	Worker       *WorkerClaim          `json:"worker"`
 }
 
+type RemoveTaskPropertyRequest struct {
+	Version  int64  `json:"version"`
+	Property string `json:"property"`
+}
+
+type SetTaskPropertyRequest struct {
+	Property string `json:"property"`
+	Version  int64  `json:"version"`
+	Value    string `json:"value"`
+}
+
+type TaskPropertiesResource struct {
+	Version    string         `json:"version"`
+	Properties TaskProperties `json:"properties"`
+}
+
 type TaskWritableProperties struct {
 	PullRequests []PullRequestProperty `json:"pullRequests"`
 }

@@ -201,6 +201,14 @@ describe("worker remote API", () => {
     for (const operation of opened) expect(() => operation.check()).toThrow("disposed");
   });
 
+  it("keeps worker inventory usable when the service adds unrelated properties and worker fields", async () => {
+    const original = task(taskId, worker);
+    const extended = { ...original, properties: { ...original.properties, future: { version: 0.5 }, worker: { ...worker, future: { version: 0 }, machine: { ...worker.machine, future: { version: -1 } } } } };
+    const serverUrl = await listen((_request, response) => respond(response, { items: [extended], nextCursor: null }));
+    const result = await (await verifiedRemote(serverUrl)).ownInventory([{ projectId }], workerId, signal());
+    expect(result).toEqual([original]);
+  });
+
 
   it.each(["later failure", "duplicate", "cursor loop", "wrong worker"])("rejects a whole inventory after %s", async (kind) => {
     const serverUrl = await listen((request, response) => {

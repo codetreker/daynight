@@ -49,31 +49,72 @@ func Decode(data []byte) (core.TaskProperties, error) {
 	return core.TaskProperties{PullRequests: items, Worker: worker}, nil
 }
 
-func DecodePatch(data []byte) (core.TaskPropertiesPatch, error) {
-	fields, err := jsonobject.Decode(data, "properties", "pullRequests", "worker")
-	if err != nil {
-		return core.TaskPropertiesPatch{}, err
-	}
-	result := core.TaskPropertiesPatch{}
-	if raw, exists := fields["pullRequests"]; exists {
+type writableProperty struct {
+	name           string
+	required       bool
+	stringArgument bool
+	reset          json.RawMessage
+	fields         []writableProperty
+	decode         func(json.RawMessage, *core.TaskPropertiesPatch) error
+}
+
+var writableProperties = []writableProperty{
+	{name: "pullRequests", reset: json.RawMessage(`[]`), decode: func(raw json.RawMessage, patch *core.TaskPropertiesPatch) error {
 		values, err := decodePullRequests(raw)
 		if err != nil {
-			return core.TaskPropertiesPatch{}, err
+			return err
 		}
-		result.PullRequests = &values
+		patch.PullRequests = &values
+		return nil
+	}},
+	{name: "worker", fields: []writableProperty{
+		{name: "signaling", required: true, stringArgument: true, reset: json.RawMessage(`""`), decode: func(raw json.RawMessage, patch *core.TaskPropertiesPatch) error {
+			value, err := stringValue(raw, "properties.worker.signaling")
+			if err != nil {
+				return err
+			}
+			patch.WorkerSignaling = &value
+			return nil
+		}},
+	}},
+}
+
+func DecodePatch(data []byte) (core.TaskPropertiesPatch, error) {
+	patch := core.TaskPropertiesPatch{}
+	if err := decodePropertyFields(data, "properties", writableProperties, &patch); err != nil {
+		return core.TaskPropertiesPatch{}, err
 	}
-	if raw, exists := fields["worker"]; exists {
-		worker, err := jsonobject.Decode(raw, "properties.worker", "signaling")
-		if err != nil {
-			return core.TaskPropertiesPatch{}, err
-		}
-		value, err := stringField(worker, "signaling", "properties.worker")
-		if err != nil {
-			return core.TaskPropertiesPatch{}, err
-		}
-		result.WorkerSignaling = &value
+	return patch, nil
+}
+
+func decodePropertyFields(data []byte, path string, definitions []writableProperty, patch *core.TaskPropertiesPatch) error {
+	allowed := make([]string, len(definitions))
+	for index, definition := range definitions {
+		allowed[index] = definition.name
 	}
-	return result, nil
+	fields, err := jsonobject.Decode(data, path, allowed...)
+	if err != nil {
+		return err
+	}
+	for _, definition := range definitions {
+		fieldPath := path + "." + definition.name
+		raw, exists := fields[definition.name]
+		if !exists {
+			if definition.required {
+				return fmt.Errorf("%s is required", fieldPath)
+			}
+			continue
+		}
+		if definition.decode != nil {
+			err = definition.decode(raw, patch)
+		} else {
+			err = decodePropertyFields(raw, fieldPath, definition.fields, patch)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func decodePullRequests(raw []byte) ([]core.PullRequestProperty, error) {
@@ -105,10 +146,13 @@ func decodePullRequests(raw []byte) ([]core.PullRequestProperty, error) {
 }
 
 func stringField(fields map[string]json.RawMessage, key, path string) (string, error) {
-	raw, exists := fields[key]
+	return stringValue(fields[key], path+"."+key)
+}
+
+func stringValue(raw json.RawMessage, path string) (string, error) {
 	var value string
-	if !exists || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &value) != nil {
-		return "", fmt.Errorf("%s.%s is required and must be a string", path, key)
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &value) != nil {
+		return "", fmt.Errorf("%s is required and must be a string", path)
 	}
 	return value, nil
 }

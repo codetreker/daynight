@@ -112,7 +112,7 @@ Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 workerId；listTasks 成功
 
 自动初次认领结果未知时不重放；成功完整的自己 claim 清单找回实际 claim 后再登记 pending，失败或部分清单不建立归属结论。显式管理的精确版本及未知写入结果仍按具体 taskId 读取核对原 claim 及具体操作的目标结果；该读取不用于自动清理的缺席原因分类。只有明确拒绝的提交可由新明确决定替换，该决定须重新读取 task 并核对精确 if-version 与本次观察相同；拒绝未修改 task 时，数值相同的版本仍有效。Unknown 提交不因读到旧值解除 fence。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
 
-每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建输入仅暴露可写的 PR 属性；更新另允许仅含 signaling 的 worker patch。公开 CLI 的 `task update --worker-signaling <text>` 生成该嵌套 patch，空字符串清除信号；不调用受控执行摘要接口，也不允许改写执行身份。
+每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建输入仅暴露可写的 PR 属性；更新另允许仅含 signaling 的 worker patch。公开 CLI 的 `task set-property <task-id> worker.signaling <value>` 通过通用属性资源设置该字段；原始文本或 JSON 字符串均可，原始空字符串与 JSON 空字符串均清除。服务端将属性路径与输入文本交给同一可写属性规则，不调用受控执行摘要接口，也不允许改写执行身份。`task remove-property <task-id> worker.signaling` 按同一属性定义清为空字符串。`task get-properties` 原样输出包含完整归属的属性资源，保持未知字段；其传输与 version 元数据契约由[属性设计](daynight-task-properties.md#http-与事务)拥有。
 
 ## Web 归属展示与撤回
 

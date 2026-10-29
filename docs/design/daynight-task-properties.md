@@ -101,6 +101,10 @@ Store 用具体的完整属性 DTO 编码与严格解码，校验必需结构、
 
 ## HTTP 与事务
 
+属性专用资源复用任务的成员授权与 version。GET `/tasks/{taskId}/properties` 返回完整属性和十进制字符串 version；PUT 同一路径接收数字 version、原始属性名字符串 property 与保存原始输入文本的字符串 value；DELETE 同一路径接收数字 version 与字符串 property。三种操作成功均返回相同资源结构，移除将当前必填属性恢复为声明默认值。读取包含受保护归属，写入仍遵守同一可写目录。
+
+服务端将字符串 value 按目标属性类型解释，并把点分 property 路径和值组合成嵌套属性 patch，再交给 `DecodePatch`。共享属性定义树拥有属性名、嵌套结构、类型、写保护和移除默认值，供 patch codec 和属性资源入口共同使用；路径入口和 CLI 不另维护允许字段清单。字符串属性同时接受原始文本和 JSON 字符串，结构化属性要求对应类型的合法 JSON。非法路径、受保护字段和错误值沿用属性输入错误，合法 patch 进入现有 Tasks 更新事务。移除从同一定义取得默认值并复用相同 patch 事务：signaling 清为空字符串，pullRequests 清为空数组；受保护字段和 worker 分支不能移除。属性名放在 JSON 请求体中，保证空值、点段及斜线直接到达同一服务端校验，不受 URL 正规化影响。没有独立属性事务、版本或冲突重试。
+
 沿用 `POST /api/v1/projects/{projectId}/tasks` 与
 `PATCH /api/v1/projects/{projectId}/tasks/{taskId}`，创建与更新增加可选
 `properties`。嵌套对象使用既有严格 JSON 对象解析规则的可复用部分；不能只依赖
@@ -156,9 +160,13 @@ daynight task update "$TASK_ID" --clear-pull-requests
 daynight task create --title '验证登录' --pull-request-url= --pull-request-title=
 ```
 
-Create 支持成对选项；Update 另有 `--clear-pull-requests`，与任一配对选项互斥。Update 的 `--worker-signaling <text>` 是允许空值的单值文本选项，直接生成 `properties.worker.signaling` patch；`--worker-signaling=` 清除信号，创建入口不接受该选项。
+Create 支持成对选项；Update 另有 `--clear-pull-requests`，与任一配对选项互斥。
 参数层生成有字段存在性语义的属性 patch。Update 只改属性时也满足“至少修改一项”
 要求，并沿用现有 GET version 或显式 `--if-version` 路径。
+
+通用 `task set-property <task-id> <property> <value>` 把 property 和 value 参数原文编码为同一属性资源 PUT 请求体中的字符串；CLI 只做 JSON 字符串转义，不解析参数 JSON、不检查属性路径或查询本地 schema。`task get-properties <task-id>` 使用属性资源 GET，`task remove-property <task-id> <property>` 使用同一资源的 DELETE，请求体包含原始 property，服务端决定默认值。设置或移除省略 `--if-version` 时，只从该 GET 提取精确 version 元数据；显式版本跳过预读，冲突不重试。
+
+这三个命令的成功结果保留为原始 JSON 文本，不进入普通 Task 的已知字段解析器，也不重新序列化 properties。未来属性、worker 扩展和数值不依赖当前 CLI 类型，超过 JavaScript 安全整数范围的值也不会因输出转换而舍入。HTTP 状态、凭据、取消、响应预算与不确定写入错误继续由共享传输拥有。`worker.signaling` 接受原始文本 `'请确认'` 或 JSON 字符串 `'"请确认"'`，`''` 与 `'""'` 都清空；`pullRequests` 的输入文本是完整 JSON 数组。
 
 Windows 的 `.cmd` 启动器经 CMD 转发参数，字面 CR/LF 不属于其可靠的单参数表示。
 [Node 子进程文档](https://nodejs.org/docs/latest-v24.x/api/child_process.html#spawning-bat-and-cmd-files-on-windows)
@@ -222,8 +230,7 @@ CLI 使用已有 operation scope、命令期限和错误映射；web 使用已�
 日志的同一 `request_id`，核对 method、route、状态码、完成或失败阶段；然后 GET
 核对数组及版本。此过程不依赖新日志系统，也不能把读取失败解释为空属性。
 
-CLI 的模型可见增量是静态 PR/信号选项和输出中的真实属性数据，写入仍为现有的
-GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有模型专用新工具；
+CLI 的属性写入包含既有 PR 参数生成的 GET+PATCH，以及通用 set-property 的属性 GET+PUT 和 remove-property 的 GET+DELETE；显式 version 均省略预读，创建仍为一次 POST。通用命令的属性目录只在服务端维护。没有模型专用新工具；
 不单独估算模型 token 或创建测量工具，真实响应字节预算由现有客户端检查负责。
 
 ## 备选方案与代价
@@ -234,7 +241,7 @@ GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有�
 | JSONB 属性列 | PostgreSQL 可查询与索引内部字段 | 会拒绝部分已允许字符串；当前只读写完整值，没有查询收益。 |
 | 关系表逐条保存 PR | 按 PR 查询或独立修改每条关联 | 需要顺序身份与额外读取，text 列同样限制 NUL；现有更新单位是整个列表。 |
 | 文本列保存具体属性 JSON | 接受既定字符串内容，沿用单行事务与快照 | 依赖应用编解码发现存储损坏；将来属性查询需要有明确语义的索引或投影。 |
-| 一项 CLI 参数携带 JSON 数组 | 直接表达 API 数据并方便程序生成 | 手写时有 shell 与 JSON 两层转义；已存在的重复文本选项可表达成对数据。 |
+| 仅用一项 JSON 数组参数替代 create/update 的 PR 参数 | 直接表达 API 数据并方便程序生成 | 成对文本选项保留手工录入方式；通用 set-property 另提供完整 JSON 数组设置，两条入口复用服务端属性规则。 |
 
 详细决策背景由[决策记录](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)
 拥有。上述取舍不预先承诺属性搜索、逐项修改或运行时扩展能力。
@@ -243,8 +250,8 @@ GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有�
 
 | 能力 | 当前行为与后续增加代价 |
 |---|---|
-| 其他预定义属性 | 未知写入字段被拒绝。增加时修改具体类型、校验、输出与存储迁移；既有行通过迁移补充结构，读取不做旧格式 fallback。 |
-| 属性过滤、排序和反向 PR 查 task | 当前列表支持状态、ready、自动许可、兼容平台及[专用 workerId 归属筛选](daynight-worker-claims.md#进程内客户端候选和恢复)，不提供通用属性查询。完整自有 claim 清单恢复实际归属，已知 taskId 的 GET 核对显式写入；两者不增加执行身份投影或反向索引。通用属性查询仍须定义比较、投影、索引与 cursor 绑定。 |
+| 其他预定义属性 | 未知写入字段由服务端拒绝。增加时修改服务端具体类型、校验、属性输出与必要的存储迁移，通用属性 CLI 无需改变；依赖新属性含义的 typed 客户端按其契约更新。既有行通过迁移补充结构，读取不做旧格式 fallback。 |
+| 属性过滤、排序和反向 PR 查 task | 当前列表支持状态、ready、自动许可、兼容平台及[专用 workerId 归属筛选](daynight-worker-claims.md#进程内客户端候选和恢复)，不提供跨任务属性筛选。完整自有 claim 清单恢复实际归属，已知 taskId 的 GET 核对显式写入；两者不增加执行身份投影或反向索引。通用属性查询仍须定义比较、投影、索引与 cursor 绑定。 |
 | PR 标题抓取与状态同步 | 当前值由调用方维护。未来要定义凭据、网络故障、生命周期及与人工值的所有权，作为独立设计。 |
 | 网页编辑、逐项增删 | 网页只读，CLI 提交完整列表。未来可复用 task version；必须显式处理并发冲突，不能静默合并。 |
 
@@ -256,7 +263,7 @@ GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有�
 
 signaling 的写入保护、原样持久化、迁移、图/摘要投影及调度条件由[需要处理信号决策](../../.agents/notes/implemented/feature/2026-10-29-worker-attention-signaling.md)记录取舍；它保留首次输入、恢复和清理的既有职责。
 
-验证按 TP-V1–TP-V9 建立数据与可观察结果的映射：真实 PostgreSQL 覆盖迁移、NUL
+验证按 TP-V1–TP-V10 建立数据与可观察结果的映射：真实 PostgreSQL 覆盖迁移、NUL
 转义往返、事务失败及并发；Go HTTP 覆盖严格嵌套结构；CLI 覆盖配对与真实服务输出；
 生产浏览器覆盖展示、导航执行策略和既有焦点。沿用 README 中适用的 Go build/vet/
 race/go-cov、CLI typecheck/test/build、web 覆盖率和生产浏览器门禁。Go 和 web 总

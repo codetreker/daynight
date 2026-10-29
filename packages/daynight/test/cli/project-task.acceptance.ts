@@ -54,6 +54,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
   for (const key of Object.keys(environment)) if (/^(?:GIT_|GH_|GITHUB_|COPILOT_|NODE_OPTIONS$|DAYNIGHT_)/i.test(key)) delete environment[key];
   Object.assign(environment, { HOME: home, USERPROFILE: home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(receipt.root, "git-global"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
   let projects = [project(unrelatedId, "https://other.example/Unrelated/Repo"), project()];
+  const opaqueProperties = '{ "version":"9223372036854775807", "properties":{"future":900719925474099312345,"worker":{"futureField":1e999}} }\n';
   let properties: Task["properties"] = { worker: null, pullRequests: [] };
   let description = "";
   let allowAgents = false;
@@ -86,6 +87,10 @@ it("runs the actual installed launcher through native project/task discovery, pe
           return;
         }
         if (broken === "json") { response.writeHead(200, { "Content-Type": "application/json" }); response.end("{"); return; }
+        if (parts[7] === "properties") {
+          if ((body as { property?: string } | null)?.property === "server-rejected") { fault(response, "invalid_input", "native-property-refusal", 400); return; }
+          response.writeHead(200, { "Content-Type": "application/json" }); response.end(opaqueProperties); return;
+        }
         if (request.method !== "GET") {
           if (broken === "write") { response.socket!.destroy(); return; }
           if (broken === "hold") { response.writeHead(201, { "Content-Type": "application/json" }); response.write('{"id":'); received?.(); return; }
@@ -195,6 +200,27 @@ it("runs the actual installed launcher through native project/task discovery, pe
     expect(await readdir(home)).toEqual([]); scenarios.push("installed-launcher-help-and-usage-before-config");
     const firstUrl = await listen(); const secondUrl = await listen(); await configure(firstUrl);
     const explicit = ["--project", id];
+    for (const command of ["get-properties", "set-property", "remove-property"]) expect((await invoke(["task", command, "--help"], outside, 0, true)).stdout).toContain(`Usage: daynight task ${command}`);
+    expect((await invoke(["task", "get-properties", taskId, ...explicit], outside, 0, true)).stdout).toBe(opaqueProperties);
+    for (const explicitVersion of [false, true]) {
+      for (const [property, value] of [["worker.signaling", "请确认"], ["worker.signaling", '"请确认"'], ["worker.signaling", ""], ["future /?#%字段", '{"large":900719925474099312345}'], [".", "value"], ["..", "value"]]) {
+        const before = requests.length;
+        const result = await invoke(["task", "set-property", taskId, property!, value!, ...(explicitVersion ? ["--if-version", "9223372036854775807"] : []), ...explicit], outside, 0, true);
+        expect(result.stdout).toBe(opaqueProperties);
+        expect(requests.slice(before).map(({ method }) => method)).toEqual(explicitVersion ? ["GET", "PUT"] : ["GET", "GET", "PUT"]);
+        expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, property, value });
+      }
+      const before = requests.length;
+      const removed = await invoke(["task", "remove-property", taskId, ...(explicitVersion ? ["--if-version", "9223372036854775807"] : []), ...explicit, "--", ""], outside, 0, true);
+      expect(removed.stdout).toBe(opaqueProperties);
+      expect(requests.slice(before).map(({ method }) => method)).toEqual(explicitVersion ? ["GET", "DELETE"] : ["GET", "GET", "DELETE"]);
+      expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, property: "" });
+    }
+    const propertyRefusalAt = requests.length;
+    await invoke(["task", "set-property", taskId, "server-rejected", "{bad JSON", "--if-version", "1", ...explicit], outside, 1, true);
+    expect(requests.slice(propertyRefusalAt).map(({ method }) => method)).toEqual(["GET", "PUT"]);
+    expect(requests.at(-1)!.body).toEqual({ version: 1n, property: "server-rejected", value: "{bad JSON" });
+    scenarios.push("installed-opaque-property-get-set-remove-lossless-transport-and-server-validation");
     const listed = await invoke(["project", "list", "--json"], outside, 0, true);
     expect(parseApiJson(listed.stdout)).toEqual(projects);
     const existingProject = await invoke(["project", "create", "Different name", "--repo", project().repoUrl], outside, 0, true);

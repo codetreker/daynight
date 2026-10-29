@@ -4,7 +4,7 @@ import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
 import { canonicalId, parsePage, parseProject, parseProjectMembers, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WritableTaskProperties, WorkerHerdr, Page, TaskPageQuery } from "./types.js";
+import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, RemoveTaskPropertyInput, ServerError, Task, SetTaskPropertyInput, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
@@ -57,6 +57,9 @@ export type ApiClient = {
   listProjectMembers(projectId: string): Promise<readonly ProjectMember[]>;
   createTask(projectId: string, input: CreateTaskInput): Promise<Task>;
   getTask(projectId: string, taskId: string): Promise<Task>;
+  getTaskProperties(projectId: string, taskId: string): Promise<string>;
+  setTaskProperty(projectId: string, taskId: string, property: string, input: SetTaskPropertyInput): Promise<string>;
+  removeTaskProperty(projectId: string, taskId: string, property: string, input: RemoveTaskPropertyInput): Promise<string>;
   listTasks(projectId: string, filters?: TaskFilters): Promise<readonly Task[]>;
   listTaskPage(projectId: string, query: TaskPageQuery): Promise<Page<Task>>;
   listReadyTasks(projectId: string, limit: number, filters?: ReadyTaskFilters): Promise<readonly Task[]>;
@@ -102,6 +105,7 @@ export const createApiClient = (options: {
 
   type ResponseMode<T> =
     | { readonly kind: "json"; readonly parse: (value: unknown) => T }
+    | { readonly kind: "json-text"; readonly parse: (value: string) => T }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -238,11 +242,12 @@ export const createApiClient = (options: {
       }
       checkRequest();
       phase = "protocol";
-      if (success && mode.kind !== "json") return mode.result;
+      if (success && (mode.kind === "bytes" || mode.kind === "empty")) return mode.result;
       if (decodingError !== undefined) throw decodingError;
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
+      if (success && mode.kind === "json-text") return mode.parse(chunks.join(""));
       const value = parseApiJson(chunks.join(""));
       checkRequest();
       if (!success) {
@@ -350,12 +355,6 @@ export const createApiClient = (options: {
     ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
   };
-  const writableProperties = (properties: WritableTaskProperties | undefined, creating = false): void => {
-    if (properties === undefined || !Object.hasOwn(properties, "worker")) return;
-    if (creating) throw new Error("Worker ownership cannot be supplied when creating a task.");
-    const worker = properties.worker;
-    if (typeof worker !== "object" || worker === null || Array.isArray(worker) || Object.keys(worker).length !== 1 || !Object.hasOwn(worker, "signaling") || typeof worker.signaling !== "string") throw new Error("Worker ownership is protected; ordinary task updates accept only worker.signaling as a string.");
-  };
   const taskVersion = (version: bigint): void => {
     if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
   };
@@ -387,7 +386,6 @@ export const createApiClient = (options: {
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);
-      writableProperties(input.properties, true);
       return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => parseTask(value, project), {
         title: input.title,
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
@@ -400,6 +398,20 @@ export const createApiClient = (options: {
     getTask: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       return request({ operation: "task.show", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "GET", (value) => parseTask(value, project, task));
+    },
+    getTaskProperties: (projectId, taskId) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      return exchange({ operation: "task.get-properties", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/properties`, "GET", { kind: "json-text", parse: (value) => value }, [200], undefined, true);
+    },
+    setTaskProperty: (projectId, taskId, property, input) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      taskVersion(input.version);
+      return exchange({ operation: "task.set-property", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/properties`, "PUT", { kind: "json-text", parse: (value) => value }, [200], { kind: "json", value: { version: input.version, property, value: input.value } }, true);
+    },
+    removeTaskProperty: (projectId, taskId, property, input) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      taskVersion(input.version);
+      return exchange({ operation: "task.remove-property", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}/properties`, "DELETE", { kind: "json-text", parse: (value) => value }, [200], { kind: "json", value: { version: input.version, property } }, true);
     },
     listTasks: (projectId, filters = {}) => {
       const project = resourceId(projectId);
@@ -433,12 +445,7 @@ export const createApiClient = (options: {
     },
     updateTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      writableProperties(input.properties);
-      return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => {
-        const result = parseTask(value, project, task);
-        if (input.properties?.worker !== undefined && result.properties.worker?.signaling !== input.properties.worker.signaling) throw new ProtocolError("Task does not match the requested worker signaling.");
-        return result;
-      }, {
+      return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => parseTask(value, project, task), {
         version: input.version,
         ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),

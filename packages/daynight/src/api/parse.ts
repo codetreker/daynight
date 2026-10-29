@@ -116,13 +116,13 @@ export const parseProjectMembers = (value: unknown, projectId: string): readonly
 const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
 const workerHerdr = (value: unknown): WorkerHerdr | null => {
   if (value === null) return null;
-  const data = fields(value, ["session", "workspaceId", "paneId"]);
+  const data = record(value);
   return { session: text(data.session, true), workspaceId: text(data.workspaceId, true), paneId: text(data.paneId, true) };
 };
 const parseWorkerClaim = (value: unknown): WorkerClaim | null => {
   if (value === null) return null;
-  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "signaling", "herdr", "nativeSessionId", "claimedAt"]);
-  const machine = fields(data.machine, ["id", "name"]);
+  const data = record(value);
+  const machine = record(data.machine);
   const platform = requiredPlatform(data.platform);
   if (platform === null) return malformed();
   let agentControlMode;
