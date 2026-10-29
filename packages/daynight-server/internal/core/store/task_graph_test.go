@@ -38,7 +38,7 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 		CREATE VIEW tasks AS SELECT id, project_id, title, reject_description() AS description,
 		status, version, created_at, updated_at, started_at, completed_at, allow_agents, required_platform, deleted_at FROM task_source`)
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
-		size, err := snapshot.TaskGraphSize(ctx, project.ID)
+		size, err := snapshot.TaskGraphProjectionSize(ctx, project.ID, pending.ID)
 		if err != nil || size != (TaskGraphSize{NodeCount: 6, EdgeCount: 5}) {
 			t.Fatalf("scoped size: %#v, %v", size, err)
 		}
@@ -84,7 +84,7 @@ func TestTaskGraphCountAndProjectionShareSnapshot(t *testing.T) {
 		if _, err := snapshot.Project(ctx, project.ID); err != nil {
 			return err
 		}
-		before, err := snapshot.TaskGraphSize(ctx, project.ID)
+		before, err := snapshot.TaskGraphProjectionSize(ctx, project.ID, a.ID)
 		if err != nil {
 			return err
 		}
@@ -97,7 +97,7 @@ func TestTaskGraphCountAndProjectionShareSnapshot(t *testing.T) {
 		}); err != nil {
 			return err
 		}
-		after, err := snapshot.TaskGraphSize(ctx, project.ID)
+		after, err := snapshot.TaskGraphProjectionSize(ctx, project.ID, a.ID)
 		if err != nil || before != (TaskGraphSize{2, 1}) || after != before {
 			t.Fatalf("count mixed snapshots: before %#v after %#v, %v", before, after, err)
 		}
@@ -119,6 +119,7 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 		count bool
 	}{
 		{"count", "DROP TABLE task_dependencies", true},
+		{"projection count", "DROP TABLE task_dependencies", true},
 		{"query", "DROP TABLE tasks", false},
 		{"decode", `ALTER TABLE tasks RENAME TO task_source;
 			CREATE VIEW tasks AS SELECT id, project_id, title, status, 1::bigint AS created_at, updated_at, started_at, completed_at, allow_agents, required_platform, deleted_at FROM task_source`, false},
@@ -134,7 +135,11 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 			mustQueryExec(t, s, test.ddl)
 			err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
 				if test.count {
-					_, err := snapshot.TaskGraphSize(context.Background(), project.ID)
+					if test.name == "count" {
+						_, err := snapshot.TaskGraphSize(context.Background(), project.ID)
+						return err
+					}
+					_, err := snapshot.TaskGraphProjectionSize(context.Background(), project.ID, queryID(11))
 					return err
 				}
 				_, err := snapshot.TaskGraphTasks(context.Background(), project.ID, queryID(11), 160)
@@ -150,5 +155,68 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTaskGraphRootRequiresLiveProjectScopedTask(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := context.Background()
+	project, other := queryProject(t, database, 1), queryProject(t, database, 2)
+	root := queryTask(t, database, project.ID, 11, core.TaskTodo)
+	foreign := queryTask(t, database, other.ID, 21, core.TaskTodo)
+	if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { return snapshot.TaskGraphRoot(ctx, project.ID, root.ID) }); err != nil {
+		t.Fatalf("live graph root refused: %v", err)
+	}
+	for _, id := range []string{queryID(99), foreign.ID} {
+		err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { return snapshot.TaskGraphRoot(ctx, project.ID, id) })
+		if !errors.Is(err, core.ErrNotFound) {
+			t.Fatalf("missing or cross-project graph root exposed: %v", err)
+		}
+	}
+	mustQueryExec(t, database, `UPDATE tasks SET deleted_at=statement_timestamp() WHERE project_id=$1 AND id=$2`, project.ID, root.ID)
+	err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error { return snapshot.TaskGraphRoot(ctx, project.ID, root.ID) })
+	if !errors.Is(err, core.ErrTaskDeleted) {
+		t.Fatalf("deleted graph root lost deletion marker: %v", err)
+	}
+}
+
+func TestTaskGraphStoreSelectsOrdinaryComponentAndDirectExternalContext(t *testing.T) {
+	database := isolatedStore(t)
+	ctx := context.Background()
+	project := queryProject(t, database, 1)
+	y := queryTask(t, database, project.ID, 10, core.TaskTodo)
+	x := queryTask(t, database, project.ID, 11, core.TaskTodo, y.ID)
+	queryTask(t, database, project.ID, 12, core.TaskTodo, x.ID)
+	a := queryTask(t, database, project.ID, 20, core.TaskTodo)
+	b := queryTask(t, database, project.ID, 21, core.TaskTodo, a.ID, x.ID)
+	c := queryTask(t, database, project.ID, 22, core.TaskTodo, a.ID)
+	d := queryTask(t, database, project.ID, 23, core.TaskTodo, b.ID, c.ID)
+	reverse := queryTask(t, database, project.ID, 30, core.TaskTodo, b.ID)
+	mustQueryExec(t, database, `UPDATE task_dependencies SET external=true
+  WHERE project_id=$1 AND ((task_id=$2 AND depends_on_task_id=$3) OR (task_id=$4 AND depends_on_task_id=$2) OR (task_id=$5 AND depends_on_task_id=$4))`, project.ID, x.ID, y.ID, b.ID, reverse.ID)
+	for _, seed := range []core.Task{a, b, c, d} {
+		if err := database.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+			size, err := snapshot.TaskGraphProjectionSize(ctx, project.ID, seed.ID)
+			if err != nil || size != (TaskGraphSize{NodeCount: 5, EdgeCount: 6}) {
+				t.Fatalf("scoped graph counted unrelated nodes or lost raw context edges: %#v %v", size, err)
+			}
+			tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, seed.ID, 160)
+			if err != nil {
+				return err
+			}
+			var ids []string
+			for _, task := range tasks {
+				ids = append(ids, task.ID)
+			}
+			if !slices.Equal(ids, []string{x.ID, a.ID, b.ID, c.ID, d.ID}) {
+				t.Fatalf("ordinary component expanded external or reverse context: %#v", ids)
+			}
+			if !slices.Equal(tasks[0].DependsOn, []string{y.ID}) || !slices.Equal(tasks[0].ExternalDependsOn, []string{y.ID}) || !slices.Equal(tasks[0].BlockedBy, []string{y.ID}) || tasks[0].Ready {
+				t.Fatalf("unexpanded external context lost raw dependencies or blockers: %#v", tasks[0])
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
