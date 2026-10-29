@@ -1,11 +1,11 @@
+import { readProjectSnapshot } from './project-snapshot';
 import { closeChain, openChain as openChainDialog } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
 import { readFile, writeFile } from 'node:fs/promises';
 import type { Page, Request, TestInfo } from '@playwright/test';
 import { createAcceptanceCli } from '../../scripts/acceptance/installed-cli.mts';
 import { parseApiJson, stringifyApiJson } from '../../src/api/json';
-import { parseTaskDetail, parseTaskGraph } from '../../src/api/parse';
-import { decodeTaskGraphJson } from '../../src/api/project-json';
+import { parseTaskDetail } from '../../src/api/parse';
 import type { TaskDetail } from '../../src/api/types';
 import type { AuthenticatedAPI } from './authentication';
 import { createProject, expect } from './fixtures';
@@ -101,11 +101,8 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
         ]);
         expect(response.status()).toBe(200); expect(new URL(response.url()).origin).toBe(baseURL);
         const body = await response.text(); evidence.webSyncs.push({ url: response.url(), body });
-        const graphResponse = await api.get(`/api/v1/projects/${project.id}/task-graph`);
-        expect(graphResponse.status()).toBe(200);
-        const graphBody = await graphResponse.text();
-        evidence.graphOracles.push({ origin: baseURL, body: graphBody });
-        const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(graphBody)), project.id);
+        const { body: syncBody, graph } = await readProjectSnapshot(api, project.id);
+        evidence.graphOracles.push({ origin: baseURL, body: syncBody });
         const count = new Intl.NumberFormat('zh-CN');
         for (const [label, value] of [
           ['任务总数', graph.summary.total], ['待处理', graph.summary.todo], ['进行中', graph.summary.inProgress],

@@ -59,7 +59,8 @@ func TestProjectSettingsSavedValueVersionAndMembership(t *testing.T) {
 	if err != nil || len(listed.Items) != 1 || !reflect.DeepEqual(listed.Items[0], saved) {
 		t.Fatalf("accessible project projection lost settings: %#v, %v", listed, err)
 	}
-	graph, err := NewTasks(f.database).Graph(ctx, member, project.ID)
+	task := createTask(t, NewTasks(f.database), member, project.ID, "Settings context")
+	graph, err := NewTasks(f.database).Graph(ctx, member, project.ID, task.ID)
 	if err != nil || !reflect.DeepEqual(graph.Project, saved) {
 		t.Fatalf("graph project projection lost settings: %#v, %v", graph, err)
 	}

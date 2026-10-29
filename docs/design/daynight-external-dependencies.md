@@ -283,7 +283,9 @@ Go 服务与嵌入 Web 一起部署；
 既有项目锁决定事务所有权，取消和失败沿同一调用链返回；不另建锁或重试循环。
 
 成功读写使用现有 `type=resource`、`component=task`、`phase=get/create/update` 和 request ID。
-全图读取保持 `component=task_graph` 及任务、边数；计数继续包括外部边。
+任务链图查询保持 `component=task_graph` 及返回任务、依赖引用数；计数继续包括外部边与
+外部节点指向投影外任务的引用。其一层 external 选择由
+[服务端图查询](../spec/daynight-server.md#任务链图查询)拥有，Web 的完整上游闭包不变。
 新校验失败使用现有 Fault 代码和安全消息，数据库与取消保留可解包原因。
 [错误管线](https://github.com/codetreker/daynight/blob/2d7fdd1e4e178db17e46da5d3b6c0e4050edf730/packages/daynight-server/internal/server/logging.go#L86-L116)
 通过 `type=operation_error` 记录 `component`、`phase`、`cause`、`error_code`、安全 `diagnostic` 和 `request_id`；

@@ -1,4 +1,3 @@
-import { wireResponse } from "../helpers/wireJson";
 import { taskSyncEpoch, taskSyncQuery, taskSyncResponse, TEST_VIEWER_ID } from "../helpers/taskSync";
 import { TestTaskCacheBoundary } from "../helpers/taskCache";
 import { useEffect, useState, type MouseEvent } from 'react';
@@ -88,7 +87,7 @@ const installFixture = () => {
     const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
     const prefix = `/api/v1/projects/${base.project.id}`;
     if (url.origin !== location.origin || !url.pathname.startsWith(prefix)) throw new Error(`Unknown auto-refresh preview request: ${url.pathname}`);
-    const graphRequest = url.pathname === `${prefix}/task-graph` || url.pathname === `${prefix}/task-sync`;
+    const graphRequest = url.pathname === `${prefix}/task-sync`;
     const taskRequest = new RegExp(`^${prefix}/tasks/([^/]+)(?:/attachments(?:/(.*))?)?$`).exec(url.pathname);
     if (method === 'GET' && (graphRequest || taskRequest !== null && taskRequest[2] === undefined && !url.pathname.endsWith('/attachments'))) {
       if (graphRequest) fixture.graphReads++;
@@ -98,7 +97,7 @@ const installFixture = () => {
       while (fixture.response === 'loading') await delay(100, signal);
       if (fixture.response === 'error') return Response.json({ error: { code: 'internal_error', message: 'Preview service is temporarily unavailable.', requestId: 'preview-auto-refresh' } }, { status: 500 });
       const snapshot = graph();
-      if (graphRequest) return url.pathname.endsWith('/task-sync') ? taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: taskSyncEpoch(`${fixtureEpoch}:${fixture.content}`), versionForTask: (task) => BigInt(taskRevision(task)), viewerId: TEST_VIEWER_ID }) : wireResponse(snapshot);
+      if (graphRequest) return taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: taskSyncEpoch(`${fixtureEpoch}:${fixture.content}`), versionForTask: (task) => BigInt(taskRevision(task)), viewerId: TEST_VIEWER_ID });
       const task = snapshot.tasks.find((candidate) => candidate.id === taskRequest![1]);
       return task === undefined ? Response.json({ error: { code: 'not_found', message: 'Task no longer exists.', requestId: 'preview-task-missing' } }, { status: 404 }) : new Response(stringifyApiJson(detail(task)), { headers: { 'Content-Type': 'application/json' } });
     }

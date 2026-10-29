@@ -217,12 +217,12 @@ func TestUIRegistrationPreservesAPIResponses(t *testing.T) {
 	handler := projectTestHandler(t, database, io.Discard)
 	project := taskProject(t, handler)
 	task := createHTTPTask(t, handler, project.ID, "Task")
-	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + project.ID, "/api/v1/projects/" + project.ID + "/members", taskCollection(project.ID), taskPath(task), graphPath(project.ID)} {
+	for _, target := range []string{"/api/v1/projects", "/api/v1/projects/" + project.ID, "/api/v1/projects/" + project.ID + "/members", taskCollection(project.ID), taskPath(task), graphPath(project.ID, task.ID)} {
 		response := projectRequest(handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "application/json" || strings.Contains(response.Body.String(), "<html") {
 			t.Fatalf("UI registration changed API response: %s %d %+v", target, response.Code, response.Header())
 		}
-		if (target == taskPath(task) || target == graphPath(project.ID)) && response.Header().Get("Cache-Control") != "no-store" {
+		if (target == taskPath(task) || target == graphPath(project.ID, task.ID)) && response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("latest task read may be cached: %s %+v", target, response.Header())
 		}
 	}

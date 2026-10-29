@@ -173,7 +173,7 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `POST` | `/api/v1/projects/{projectId}/tasks` | 创建 task，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 返回 task，缺失或不属于该 project 时 `404` |
-| `GET` | `/api/v1/projects/{projectId}/task-graph` | 返回同一完整快照的 project、任务图和统计 |
+| `GET` | `/api/v1/projects/{projectId}/task-graph?taskId={taskId}` | 返回同一快照中的 project、完整本链及一层外部前置、相应统计 |
 | `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta，使用 epoch 与任务最大 updatedAt 水位 |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`，三状态精确版本设置，返回完整任务 |
@@ -222,7 +222,7 @@ Cursor 必须绑定列表类型、所属 project 和规范化筛选条件；指�
 
 ### 时间窗口任务摘要
 
-`GET /api/v1/projects/{projectId}/task-sync` 已实现，与完整任务图并存。唯一可选参数为
+`GET /api/v1/projects/{projectId}/task-sync` 已实现，与任务链图查询并存。唯一可选参数为
 `epoch`、`since`；since 必须伴随规范 UUID epoch，并为 UTC `Z` 结尾、0–9 位小数的有效时间。
 无 epoch 或 epoch 不同返回完整 snapshot；相同 epoch 返回 delta，带 since 时读取
 `updatedAt >= since - overlap`，无 since 时返回全部摘要供空基线使用。所有状态和依赖性质均参与，
@@ -234,32 +234,50 @@ Project、缓存 epoch、完整容量检查、匹配任务和 observedAt 来自�
 使用精确十进制字符串，包含 requiredPlatform，省略 description/properties 及派生 ready/blockedBy。
 纳秒下界向上对齐到 PostgreSQL 微秒精度，避免驱动截断造成边界外记录进入结果。
 身份/权限、HEAD、no-store 和错误优先级服从既有合同。完整行为由
-[任务缓存需求](daynight-task-sync.md)拥有；Web 持久缓存尚未在当前交付中接入。
+[任务缓存需求](daynight-task-sync.md)拥有；Web 已使用持久摘要及本地完整图投影。
 
-### 完整任务图
+### 任务链图查询
 
-`GET /api/v1/projects/{projectId}/task-graph` 提供同一只读 `REPEATABLE READ` 快照中的
-project、完整 tasks、summary 及数据库时间样本 `observedAt`，不使用分页或状态筛选。任何非空 query，包括未知
-字段、分页/筛选字段和无效编码，均返回 `400 invalid_input`。成功、拒绝和读取错误
-响应采用 `Cache-Control: no-store`；GET 同时支持 HEAD，其他方法返回 405 与 Allow。
+`GET /api/v1/projects/{projectId}/task-graph?taskId={taskId}` 提供指定任务所属任务链的
+轻量图。`taskId` 为必填且唯一的 UUID query 参数；缺失、空值、重复值、未知参数、
+分页或筛选参数及无效编码均返回 `400 invalid_input`。不提供无 taskId 的全项目图模式。
+成功、拒绝和读取错误采用 `Cache-Control: no-store`；GET 同时支持 HEAD，其他方法返回
+405 与 Allow。授权成员访问不存在或不属于该项目的目标返回 `404 not_found`，已软删除
+目标返回 `410 task_deleted`；项目缺失或非成员仍为 `404 not_found`。
 
-summary 必须包含 `total`、`todo`、`inProgress`、`done`、`ready`、`blocked` 六个非负整数，零值也必须返回。
-满足 `total = todo + inProgress + done` 与 `todo = ready + blocked`。
-blocked 只计入前置未全部完成的 todo；图读取不改变任务状态、版本或时间。
+先以普通依赖，即 `dependsOn` 排除 `externalDependsOn` 后的关系，按无向连通分量确定
+目标所在任务链的全部成员。所有任务状态都参与，分叉、汇合、兄弟分支和孤立任务均保留。
+再补充这些成员直接声明的 `externalDependsOn` 所引用的外部前置任务。只补充这一层，
+不从补充的外部任务继续展开任何前置或其所属任务链；链外任务对本链的外部引用也不触发展开。
+
+例如本链 B 的 `externalDependsOn = [X]` 会补充 X；链外 Z 的
+`externalDependsOn = [B]` 不会补充 Z。若 X 又依赖 Y，返回 X 的任务行和其真实依赖 ID，
+但不因该关系补充 Y。每个返回节点保留完整的 `dependsOn`、`externalDependsOn`、
+`blockedBy` 与 `ready`；这些字段不因投影边界裁剪或重新解释。因此外部上下文节点可以引用
+本次未返回的任务，读取者不能把缺少其任务行解释为不存在该依赖。
+
+响应的 project、所选 tasks、summary 及数据库时间样本 `observedAt` 来自同一只读
+`REPEATABLE READ` 快照，不使用分页或状态筛选。summary 统计所有返回节点，包含补充的外部
+节点；必须包含 `total`、`todo`、`inProgress`、`done`、`ready`、`blocked` 六个非负整数，
+零值也返回，满足 `total = todo + inProgress + done` 与 `todo = ready + blocked`。
+blocked 只计入前置未全部完成的 todo；查询不改变任务状态、版本或时间。
+
 图节点返回 `id`、`titlePreview`、`titleTruncated`、`status`、`dependsOn`、
-`externalDependsOn`、`blockedBy`、`ready`、必填布尔 `allowAgents`、必填可空枚举 `requiredPlatform`、`createdAt`、`updatedAt` 以及明确可空的 `startedAt`、`completedAt`。
-顶层 `observedAt` 是图数据与统计读取后的数据库时间样本，使用 UTC RFC 3339；
-它不是事务开始时间或任务更新时间，不修改任务状态或版本。标题预览最多 160 Unicode code
-points，截短时标记 titleTruncated；不返回完整标题、description 或 version。完整
-任务内容继续使用既有详情接口。节点按 `(createdAt,id)` 排序，前置及阻塞 ID 数组
-按 ID 排序；空图和空数组使用 `[]`，时间使用 UTC。真实边由全部 `dependsOn` 表示，
-`externalDependsOn` 仅保留其中的性质，不减免阻塞、环检测或图边数。
+`externalDependsOn`、`blockedBy`、`ready`、必填布尔 `allowAgents`、必填可空枚举
+`requiredPlatform`、`createdAt`、`updatedAt` 以及明确可空的 `startedAt`、`completedAt`。
+顶层 `observedAt` 是图数据与统计读取后的数据库 UTC RFC 3339 时间样本，不是事务开始时间
+或任务更新时间。标题预览最多 160 Unicode code points，截短时标记 titleTruncated；
+不返回完整标题、description 或 version。完整任务继续使用既有详情接口。节点按
+`(createdAt,id)` 排序，前置及阻塞 ID 数组按 ID 排序；空数组为 `[]`，时间使用 UTC。
+`externalDependsOn` 仅保留依赖性质，不减免阻塞或环检测。
 
-一个成功图最多包含 1,000 节点、5,000 边。快照内先获取精确数量；超过任一上限
-返回 `409 graph_limit_exceeded`，error.details 包含 `nodeCount`、`edgeCount`、
-`maxNodes`、`maxEdges`，不包含 taskIds，不返回部分图。缺失 project 仍为 404。
-数据库、取消和事务完成失败优先于暂存的缺失或超限结果，不得被降格成 404/409。
-计数、依赖、ready 与 summary 必须来自同一次快照，即使读取期间有并发写入。
+一次成功查询最多返回 1,000 节点、5,000 条依赖引用。节点数为本链及一层外部前置的并集
+大小，边数为这些返回节点完整 `dependsOn` 的条目总数，包含指向投影外任务的引用。
+无关任务链不参与本次容量计数。快照内先获取精确数量，超过任一上限返回
+`409 graph_limit_exceeded`，error.details 包含 `nodeCount`、`edgeCount`、`maxNodes`、
+`maxEdges`，不包含 taskIds，不返回部分图。数据库、取消和事务完成失败优先于暂存的
+缺失、已删除或超限结果，不得被降格为 404、410 或 409。计数、节点、依赖、ready 与
+summary 必须来自同一次快照，即使读取期间有并发写入。
 
 错误响应统一包含 `error.code`、`error.message`、`error.requestId`，必要时包含
 `error.details.taskIds` 中按 ID 排序的阻塞 task ID。HTTP 状态与错误分类如下：
@@ -275,7 +293,7 @@ points，截短时标记 titleTruncated；不返回完整标题、description �
 | `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |
 | `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则、done 重开存在 active/done 直接后继，或严格删除存在未删除引用者 |
-| `409` | `graph_limit_exceeded` | 完整图超过节点或边上限，返回精确数量和支持上限 |
+| `409` | `graph_limit_exceeded` | 任务链查询的返回集合或 task-sync 的全项目集合超过节点或依赖上限，返回精确数量和支持上限 |
 | `410` | `task_deleted` | 授权成员访问已软删除任务；不表示项目访问撤回 |
 | `500` | `internal_error` | 内部或持久化操作失败，响应不泄露数据库连接信息或 SQL |
 
@@ -296,7 +314,7 @@ points，截短时标记 titleTruncated；不返回完整标题、description �
 关闭时停止接收新请求，在有界期限内排空请求，再关闭数据库连接。
 
 本文的任务管理接口范围不包含自动任务执行、PR 关联、review 调度、跨 project
-依赖或 project/task 删除接口。完整图读取由本文定义，浏览器页面及内嵌交付要求由
+依赖或 project/task 删除接口。任务链图查询由本文定义，浏览器页面及内嵌交付要求由
 [看板需求](daynight-web.md)与[公开入口要求](daynight-landing.md)拥有，包括公开 `/` 推广页、
 独立 `/login`、`/projects` 项目列表、公开静态 `/setup` 日常使用引导，以及基础任务路径
 和附件路径的独立完整详情 GET/HEAD 深链接。页面只交付既有 index，完整详情、项目图、附件清单与文件读取继续使用原接口；

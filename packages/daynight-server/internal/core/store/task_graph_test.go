@@ -42,7 +42,7 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 		if err != nil || size != (TaskGraphSize{NodeCount: 6, EdgeCount: 5}) {
 			t.Fatalf("scoped size: %#v, %v", size, err)
 		}
-		tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, 160)
+		tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, queryID(11), 160)
 		if err != nil || len(tasks) != 6 {
 			t.Fatalf("graph tasks: %#v, %v", tasks, err)
 		}
@@ -64,7 +64,7 @@ func TestTaskGraphProjectionAndUnicodeBounds(t *testing.T) {
 			!slices.Equal(tasks[5].BlockedBy, []string{pending.ID}) || tasks[4].Status != core.TaskTodo || tasks[5].Status != core.TaskTodo {
 			t.Fatalf("graph derived fields: %#v", tasks)
 		}
-		empty, err := snapshot.TaskGraphTasks(ctx, queryID(999), 160)
+		empty, err := snapshot.TaskGraphTasks(ctx, queryID(999), queryID(11), 160)
 		if err != nil || empty == nil || len(empty) != 0 {
 			t.Fatalf("empty graph slice: %#v, %v", empty, err)
 		}
@@ -101,7 +101,7 @@ func TestTaskGraphCountAndProjectionShareSnapshot(t *testing.T) {
 		if err != nil || before != (TaskGraphSize{2, 1}) || after != before {
 			t.Fatalf("count mixed snapshots: before %#v after %#v, %v", before, after, err)
 		}
-		tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, 160)
+		tasks, err := snapshot.TaskGraphTasks(ctx, project.ID, queryID(11), 160)
 		if err != nil || len(tasks) != 2 || tasks[0].TitlePreview != a.Title || tasks[0].Status != core.TaskTodo ||
 			!reflect.DeepEqual(tasks[1].BlockedBy, []string{a.ID}) || tasks[1].Ready {
 			t.Fatalf("projection mixed snapshots: %#v, %v", tasks, err)
@@ -137,7 +137,7 @@ func TestTaskGraphStoreFailuresPreserveCauses(t *testing.T) {
 					_, err := snapshot.TaskGraphSize(context.Background(), project.ID)
 					return err
 				}
-				_, err := snapshot.TaskGraphTasks(context.Background(), project.ID, 160)
+				_, err := snapshot.TaskGraphTasks(context.Background(), project.ID, queryID(11), 160)
 				return err
 			})
 			if err == nil || errors.Is(err, core.ErrNotFound) || strings.Contains(err.Error(), "private graph") {

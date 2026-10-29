@@ -465,6 +465,62 @@ func (c *acceptanceCLI) refuse(t *testing.T, process *acceptanceProcess, code, t
 	return result
 }
 
+func acceptanceCLITaskChainGraph(t *testing.T, cli *acceptanceCLI, process *acceptanceProcess) {
+	t.Helper()
+	project := process.project(t, "Scoped graph dependency audit")
+	ordinaryPre := process.task(t, project, "External ordinary prerequisite")
+	externalPre := process.task(t, project, "External prerequisite")
+	x := process.task(t, project, "Direct external context", ordinaryPre.ID, externalPre.ID)
+	x = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(x), map[string]any{"version": x.Version, "externalDependsOn": []string{externalPre.ID}}, ""), http.StatusOK)
+	a := process.task(t, project, "Chain root")
+	b := process.task(t, project, "Chain B", a.ID, x.ID)
+	b = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(b), map[string]any{"version": b.Version, "externalDependsOn": []string{x.ID}}, ""), http.StatusOK)
+	c := process.task(t, project, "Chain C", a.ID)
+	d := process.task(t, project, "Chain join", b.ID, c.ID)
+	reverse := process.task(t, project, "Outside external dependent", b.ID)
+	acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(reverse), map[string]any{"version": reverse.Version, "externalDependsOn": []string{b.ID}}, ""), http.StatusOK)
+	want := []api.Task{x, a, b, c, d}
+	for _, seed := range []api.Task{b, c} {
+		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", seed.ID, "--project", project.ID, "--json"))
+		if len(graph.Tasks) != len(want) {
+			t.Fatalf("installed graph expanded external relationships: %#v", graph)
+		}
+		for index, task := range graph.Tasks {
+			if task.ID != want[index].ID || !slices.Equal(task.DependsOn, want[index].DependsOn) || !slices.Equal(task.ExternalDependsOn, want[index].ExternalDependsOn) || !slices.Equal(task.BlockedBy, want[index].BlockedBy) {
+				t.Fatalf("installed graph changed raw context relations: %#v", task)
+			}
+		}
+	}
+	var rows []map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(cli.run(t, cli.caller, "task", "graph", b.ID, "--project", project.ID, "--depends-only", "--json")), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("installed dependency audit changed scoped membership: %#v", rows)
+	}
+	var text strings.Builder
+	for index, row := range rows {
+		var id string
+		var depends, external []string
+		if len(row) != 3 || json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["dependsOn"], &depends) != nil || json.Unmarshal(row["externalDependsOn"], &external) != nil || id != want[index].ID || !slices.Equal(depends, want[index].DependsOn) || !slices.Equal(external, want[index].ExternalDependsOn) {
+			t.Fatalf("installed audit lost raw or unexpanded dependency IDs: %#v", row)
+		}
+		names := func(ids []string) string {
+			if len(ids) == 0 {
+				return "none"
+			}
+			return strings.Join(ids, ", ")
+		}
+		if index > 0 {
+			text.WriteString("\n")
+		}
+		fmt.Fprintf(&text, "ID: %s\nDepends on: %s\nExternal dependencies: %s\n", id, names(depends), names(external))
+	}
+	if got := cli.run(t, cli.caller, "task", "graph", b.ID, "--project", project.ID, "--depends-only"); got != text.String() {
+		t.Fatalf("installed text dependency audit changed fields or raw dependency IDs: got %q want %q", got, text.String())
+	}
+}
+
 func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 	receipt := readAcceptanceCLI(t)
 	acceptanceCase(t, "installed_cli_project_task_workflow", []string{"PT.V1", "PT.V3", "PT.V5", "PT.V6", "PT.V7", "PT.V8", "PT.V9", "PT.V10", "TP-V1", "TP-V3", "TP-V6", "TP-V8"}, func(t *testing.T, scenario *acceptanceScenario) {
@@ -648,11 +704,11 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		if !foundExactSettings {
 			t.Fatal("installed project list omitted the project with an exact nested settings version")
 		}
-		exactGraph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", "--project", exactProject.ID, "--json"))
+		exact := process.task(t, exactProject, "Exact lifecycle")
+		exactGraph := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", exact.ID, "--project", exactProject.ID, "--json"))
 		if !reflect.DeepEqual(exactGraph.Project, exactProject) {
 			t.Fatal("installed graph rounded the nested project settings version")
 		}
-		exact := process.task(t, exactProject, "Exact lifecycle")
 		fixture.exec(t, "UPDATE tasks SET version=$1 WHERE id=$2", int64(9_007_199_254_740_993), exact.ID)
 		cli.run(t, cli.caller, "task", "set-status", exact.ID, "todo", "--project", exactProject.ID, "--if-version", "9007199254740993")
 		cli.run(t, cli.caller, "task", "set-status", exact.ID, "in_progress", "--project", exactProject.ID)
@@ -813,8 +869,8 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 				t.Fatal("installed compact task list emitted raw PR terminal controls")
 			}
 		}
-		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", "--json"))
-		expectedGraph := acceptanceDecode[api.TaskGraph](t, process.request(context.Background(), http.MethodGet, "/api/v1/projects/"+projectID+"/task-graph", nil, ""), http.StatusOK)
+		graph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", blockedTodoID, "--json"))
+		expectedGraph := acceptanceDecode[api.TaskGraph](t, process.request(context.Background(), http.MethodGet, "/api/v1/projects/"+projectID+"/task-graph?taskId="+blockedTodoID, nil, ""), http.StatusOK)
 		if !expectedGraph.ObservedAt.After(graph.ObservedAt) {
 			t.Fatal("separate real graph reads did not advance the database clock sample")
 		}
@@ -822,16 +878,45 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		if !reflect.DeepEqual(graph, expectedGraph) {
 			t.Fatal("installed CLI graph omitted or changed server response fields")
 		}
-		if graph.Project.ID != projectID || graph.Summary.Total != 6 || graph.Summary.Done != 2 || graph.Summary.Todo != 4 || graph.Summary.Ready != 3 || graph.Summary.Blocked != 1 || len(graph.Tasks) != 6 {
-			t.Fatal("installed CLI graph lost the complete server summary or tasks")
+		if graph.Project.ID != projectID || graph.Summary.Total != 2 || graph.Summary.Done != 0 || graph.Summary.Todo != 2 || graph.Summary.Ready != 1 || graph.Summary.Blocked != 1 || len(graph.Tasks) != 2 {
+			t.Fatal("installed CLI graph lost the selected chain summary or tasks")
 		}
-		graphText := cli.run(t, cli.repo, "task", "graph")
-		if !strings.Contains(graphText, "Todo: 4\n") || strings.Contains(graphText, "Proposed:") || !strings.Contains(graphText, readyTodoID) || !strings.Contains(graphText, blockedTodoID) {
+		graphText := cli.run(t, cli.repo, "task", "graph", blockedTodoID)
+		if !strings.Contains(graphText, "Todo: 2\n") || strings.Contains(graphText, "Proposed:") || strings.Contains(graphText, readyTodoID) || !strings.Contains(graphText, second) || !strings.Contains(graphText, blockedTodoID) {
 			t.Fatal("installed CLI graph text lost todo count or tasks")
 		}
-		if strings.Contains(cli.run(t, cli.repo, "task", "graph", "--json"), `"properties"`) {
+		if strings.Contains(cli.run(t, cli.repo, "task", "graph", blockedTodoID, "--json"), `"properties"`) {
 			t.Fatal("installed graph included full-resource properties")
 		}
+		var dependencies []map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(cli.run(t, cli.repo, "task", "graph", blockedTodoID, "--depends-only", "--json")), &dependencies); err != nil {
+			t.Fatal(err)
+		}
+		if len(dependencies) != 2 {
+			t.Fatalf("installed dependency audit changed chain membership: %#v", dependencies)
+		}
+		for index, row := range dependencies {
+			if len(row) != 3 || row["id"] == nil || row["dependsOn"] == nil || row["externalDependsOn"] == nil {
+				t.Fatalf("installed dependency audit leaked fields: %#v", row)
+			}
+			var id string
+			var depends, external []string
+			if json.Unmarshal(row["id"], &id) != nil || json.Unmarshal(row["dependsOn"], &depends) != nil || json.Unmarshal(row["externalDependsOn"], &external) != nil || id != graph.Tasks[index].ID || !slices.Equal(depends, graph.Tasks[index].DependsOn) || !slices.Equal(external, graph.Tasks[index].ExternalDependsOn) {
+				t.Fatalf("installed audit changed raw dependencies: %#v", row)
+			}
+		}
+		auditText := cli.run(t, cli.repo, "task", "graph", blockedTodoID, "--depends-only")
+		for _, line := range strings.Split(strings.TrimSpace(auditText), "\n") {
+			if line != "" && !strings.HasPrefix(line, "ID: ") && !strings.HasPrefix(line, "Depends on: ") && !strings.HasPrefix(line, "External dependencies: ") {
+				t.Fatalf("installed text audit leaked fields: %s", auditText)
+			}
+		}
+		completedGraph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", target, "--json"))
+		if completedGraph.Summary != (api.TaskGraphSummary{Total: 2, Done: 2}) || len(completedGraph.Tasks) != 2 {
+			t.Fatal("installed graph omitted completed chain members")
+		}
+
+		acceptanceCLITaskChainGraph(t, cli, process)
 		acceptanceCLIAllowAgents(t, cli, process)
 		firstBefore, targetBefore := cli.task(t, first), cli.task(t, target)
 		process.signal(t)
@@ -861,10 +946,10 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		if after := acceptanceCLIProjectResource(t, cli.run(t, cli.caller, "project", "show", exactProject.ID, "--json")); !reflect.DeepEqual(after, exactProject) {
 			t.Fatal("exact nested project settings did not persist across actual process restart")
 		}
-		if after := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", "--project", exactProject.ID, "--json")); !reflect.DeepEqual(after.Project, exactProject) {
+		if after := acceptanceCLIGraphResource(t, cli.run(t, cli.caller, "task", "graph", exact.ID, "--project", exactProject.ID, "--json")); !reflect.DeepEqual(after.Project, exactProject) {
 			t.Fatal("restarted installed graph lost exact nested project settings")
 		}
-		afterGraph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", "--json"))
+		afterGraph := acceptanceCLIGraphResource(t, cli.run(t, cli.repo, "task", "graph", blockedTodoID, "--json"))
 		if !afterGraph.ObservedAt.After(graph.ObservedAt) {
 			t.Fatal("restarted service did not supply a fresh database clock sample")
 		}

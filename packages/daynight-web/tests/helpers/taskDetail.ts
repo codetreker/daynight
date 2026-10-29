@@ -37,7 +37,6 @@ export const withDetailResources = (projectId: string, taskId: string, fallback:
     const task = detailFixture(projectId, taskId, changes);
     const parsed = new URL(url, location.origin);
     if (parsed.pathname === `/api/v1/projects/${projectId}/task-sync`) return taskSyncResponse(graphFixture([task]), { query: taskSyncQuery(parsed), versionForTask: () => task.version, viewerId: typeof viewer === 'string' ? viewer : viewer() });
-    if (url === `/api/v1/projects/${projectId}/task-graph`) return resourceResponse(graphFixture([task]));
     if (url === `/api/v1/projects/${projectId}/tasks/${taskId}`) return resourceResponse(task, typeof viewer === 'string' ? viewer : viewer());
     return fallback(url, options);
   };

@@ -72,9 +72,10 @@ func TestProjectSettingsHTTPVersionsAndConsistentProjections(t *testing.T) {
 		t.Fatalf("minimum supported warning threshold failed: %+v", updated.Settings)
 	}
 
+	task := createHTTPTask(t, handler, project.ID, "Settings context")
 	read := decodeResponse[api.Project](t, projectRequest(handler, http.MethodGet, "/api/v1/projects/"+project.ID, ""), http.StatusOK)
 	page := decodeResponse[api.ProjectPage](t, projectRequest(handler, http.MethodGet, "/api/v1/projects", ""), http.StatusOK)
-	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID), ""), http.StatusOK)
+	graph := decodeResponse[api.TaskGraph](t, projectRequest(handler, http.MethodGet, graphPath(project.ID, task.ID), ""), http.StatusOK)
 	if read != updated || graph.Project != updated || len(page.Items) != 2 || page.Items[0] != updated || page.Items[1] != other {
 		t.Fatalf("settings differ across project/get/list/graph resources: project %+v, page %+v, graph %+v", read, page, graph.Project)
 	}

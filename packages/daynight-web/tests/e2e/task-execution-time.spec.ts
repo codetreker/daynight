@@ -209,7 +209,7 @@ test('task-execution-time', { annotation: { type: 'scenario', description: 'task
     expect(running).toEqual(seeded);
     const cliTask = parseTaskDetail(parseApiJson(await success(['task', 'show', crossing.id, '--project', project.id, '--json'])), project.id, crossing.id);
     expect(cliTask).toEqual(running);
-    const rawGraph = await success(['task', 'graph', '--project', project.id, '--json']); evidence.graphReads.push(rawGraph);
+    const rawGraph = await success(['task', 'graph', crossing.id, '--project', project.id, '--json']); evidence.graphReads.push(rawGraph);
     const graph = parseTaskGraph(await decodeTaskGraphJson(new Response(rawGraph)), project.id);
     const members = expectedChainMembers(graph.tasks, roots[0]!.id);
     expect(members).toHaveLength(8);

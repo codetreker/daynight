@@ -46,7 +46,7 @@ func TestTaskHTTPAgentPermissionResourcesAndStrictInputs(t *testing.T) {
 	}
 	task = setHTTPTask(t, handler, task, "done")
 	task = updateHTTPTask(t, handler, task, map[string]any{"allowAgents": false})
-	for _, path := range []string{taskPath(task), taskCollection(project.ID), "/api/v1/projects/" + project.ID + "/task-graph"} {
+	for _, path := range []string{taskPath(task), taskCollection(project.ID), graphPath(project.ID, task.ID)} {
 		read := projectRequest(handler, http.MethodGet, path, "")
 		if read.Code != http.StatusOK || !strings.Contains(read.Body.String(), `"allowAgents":false`) {
 			t.Fatalf("resource omitted permission: %s %s", path, read.Body)
