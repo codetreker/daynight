@@ -44,7 +44,7 @@
 只登记 repo 地址，不触发 clone、GitHub 请求、review 启动或 CLI 配置修改。
 客户端的[需求](daynight.md)与 review 的[需求](daynight-review.md)分别由其自身文档定义。
 
-受保护 worker 属性、原子认领/更新/释放/强制撤回和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。服务端不启动执行进程；前台 Worker 与真实资源恢复仍是独立运行时能力。
+受保护 worker 属性、原子认领/更新/释放/强制撤回和显式人工接续由[认领架构](../design/daynight-worker-claims.md)拥有。账号级运行快照由[快照需求](daynight-worker-snapshots.md)定义，记录认证客户端最近的机器和任务观测。快照读写不改变 claim 或任务状态；服务端不启动执行进程，前台 Worker 与真实资源恢复仍是独立运行时能力。
 
 ## Project
 
@@ -178,6 +178,9 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`，三状态精确版本设置，返回完整任务 |
 | `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 精确版本软删除；可选 removeDepends=true 原子解除全部传入引用，成功 `204`，保留任务与附件数据 |
+| `POST` | `/api/v1/me/workers/{workerId}/report` | 保存账号自己的最新运行快照，返回服务端 observation 与 lastReportedAt |
+| `GET` | `/api/v1/me/workers` | 返回最近 72 小时的账号级 Worker 摘要及稳定分页 cursor |
+| `GET` | `/api/v1/me/workers/{workerId}` | 返回近期 Worker telemetry 与按当前权限过滤的任务观测 |
 
 HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 charset。请求体
 最多 1 MiB，必须是单个 JSON 对象；拒绝无效 UTF-8、重复 key、字段名大小写不符、
@@ -219,6 +222,10 @@ Task 列表支持单个三状态 status、ready/allowAgents 布尔值、compatib
 Cursor 必须绑定列表类型、所属 project 和规范化筛选条件；指定 workerId 时还绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
 输入错误拒绝；`limit` 的默认值仅用于未提供该参数。
 单次响应中的 task、依赖和派生字段保持一致；多次翻页不承诺跨请求快照。
+
+### 账号级 Worker 快照
+
+Worker 资源归属来自认证 principal，报告不能提供 userId 或权威任务状态。完整结构、Probe 分支、null/空/旧清单、72 小时窗口及任务计数由[快照协议](daynight-worker-snapshots.md)拥有。GET 不续活，详情超窗、未知与他人资源统一为 404。离线和移出近期列表不改变任务执行；读取时的当前项目权限同时约束历史标题、任务行和计数。
 
 ### 时间窗口任务摘要
 
