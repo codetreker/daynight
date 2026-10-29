@@ -165,10 +165,10 @@ export const instructionScenarios: readonly InstructionScenario[] = [
   {
     id: "registration-without-execution",
     input: "Creation is authorized and all task artifacts are readable; execution was not requested.",
-    obligation: "Register todo work, verify owned resources, and return without execution.",
+    obligation: "Register todo work, verify owned resources, report its identity and status, and ask before waiting for explicit execution authorization; refusal, silence and ambiguity do not start work.",
     propositions: [
-      { resource: "references/create-task.md", section: "## Register and verify", requires: [/Create new tasks in `todo`/, /Read back each complete task, its attachment inventory and required contents/, /Registration leaves work todo and does not execute it/, /Return after verified registration without selecting or executing a task/] },
-      { resource: "SKILL.md", section: "## Shared constraints", requires: [/Create tasks only with explicit permission for their scope/, /Creation produces `todo` for every normal task and Goal stage/] },
+      { resource: "references/create-task.md", section: "## Register and verify", requires: [/Create new tasks in `todo`/, /Read back each complete task, its attachment inventory and required contents/, /Registration leaves work todo and does not execute it/, /After verified registration, report the confirmed task IDs and current statuses/, /ask whether to start the identified task and wait for an explicit answer, leaving it todo/, /Do not select another task or start later delivery work from registration alone/] },
+      { resource: "SKILL.md", section: "## Shared constraints", requires: [/Create tasks only with explicit permission for their scope/, /Creation produces `todo` for every normal task and Goal stage/, /If no explicit execution authorization covers that task, ask whether to start the identified task and wait for an explicit affirmative answer/, /Keep it `todo` and do not begin its implementation or other task execution while authorization is missing/, /Creation, readiness, silence, elapsed time, and an ambiguous reply do not authorize execution/, /A refusal ends the current startup proposal/, /silence leaves it waiting/, /an ambiguous reply requires clarification before starting/] },
     ],
   },
   {
@@ -178,6 +178,7 @@ export const instructionScenarios: readonly InstructionScenario[] = [
     propositions: [
       { resource: "references/run-task.md", section: "## Start or resume the task", requires: [/ready/, /`todo`/, /dependencies/, /authorized/, /task set-status <task-id> in_progress/, /exact version/, /confirm.*in_progress/] },
       { resource: "references/task-execution.md", section: "## Verify prerequisites and scope", requires: [/direct prerequisite/, /externalDependsOn/, /Both kinds must be done/, /Classification never grants permission to execute a prerequisite/] },
+      { resource: "SKILL.md", section: "## Shared constraints", requires: [/Existing explicit execution authorization remains effective within its stated task or Goal scope/, /do not request it again or extend it to other work/, /The reply authorizes only the task and scope it clearly identifies; prerequisites and required inputs still apply/] },
     ],
   },
   {
@@ -229,11 +230,11 @@ export const instructionScenarios: readonly InstructionScenario[] = [
   {
     id: "goal-registration-only",
     input: "The user asks only to register a Goal, without starting a discussion.",
-    obligation: "Create only the current requirements task as todo and return; do not precreate architecture or delivery work.",
+    obligation: "Create only the current requirements task as todo, report its identity and status, then ask and wait before beginning that discussion; do not precreate architecture or delivery work.",
     propositions: [
-      { resource: "references/goal.md", section: "## Identify the current discussion", requires: [/A registration-only request creates only the current discussion task in `todo` and returns without execution/] },
+      { resource: "references/goal.md", section: "## Identify the current discussion", requires: [/A registration-only request creates only the current discussion task in `todo`/, /After verification, report its identity and status, ask whether to start that discussion, and wait/, /Goal registration alone does not supply discussion-start or delivery execution authorization/] },
       { resource: "references/goal.md", section: "## Start requirements discussion", requires: [/Create or reuse only the requirements discussion task/, /Do not create an architecture placeholder or delivery tasks at this point/] },
-      { resource: "references/create-task.md", section: "## Choose the tracked outcome", requires: [/A registration-only request leaves the current stage todo and returns/] },
+      { resource: "references/create-task.md", section: "## Choose the tracked outcome", requires: [/A registration-only request leaves the current stage todo while awaiting the explicit answer to the creation-to-execution question/] },
     ],
   },
   {

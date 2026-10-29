@@ -31,8 +31,12 @@ user-directed discussion transitions with ordinary single-task execution.
 Starting a Goal requirements discussion creates or reuses only `[Goal]<outcome>`.
 An explicit request to begin that discussion authorizes set-status in_progress,
 using its observed version and confirming the result. A registration-only request
-leaves the sole requirements task todo and
-returns. No architecture placeholder or delivery tasks are created upfront.
+leaves the sole requirements task todo. The
+[creation-to-execution authorization decision](2026-10-28-task-creation-execution-authorization.md)
+replaces the former return-only behavior after verified registration: report the
+current task, ask whether to start when its execution is not already authorized,
+and wait for an explicit affirmative answer. No architecture placeholder or
+delivery tasks are created upfront; the stage-confirmation gates remain unchanged.
 
 The requirements task owns current requirements and the applicable interactive
 prototype; the [task/session content decision](2026-10-28-task-session-content.md)

@@ -106,11 +106,21 @@ is ready. This skill does not discover and continuously select subsequent tasks.
   the user-confirmation gates in the Goal protocol; unrelated work needs
   separate permission.
 - Creation produces `todo` for every normal task and Goal stage and does not
-  start execution. A request to start a Goal discussion authorizes entering
-  `in_progress` for that discussion only; a user-confirmed transition authorizes
-  the next discussion under the Goal protocol. Registration and discussion
-  confirmation grant no delivery execution permission. Existing explicit
-  execution authorization remains limited to its stated task or Goal scope.
+  start execution. After creation and readback are complete, report the task's
+  identity and current status. If no explicit execution authorization covers
+  that task, ask whether to start the identified task and wait for an explicit
+  affirmative answer. Keep it `todo` and do not begin its implementation or other
+  task execution while authorization is missing. Creation, readiness, silence,
+  elapsed time, and an ambiguous reply do not authorize execution. A refusal
+  ends the current startup proposal; silence leaves it waiting; an ambiguous
+  reply requires clarification before starting. Existing explicit execution
+  authorization remains effective within its stated task or Goal scope; do not
+  request it again or extend it to other work. The reply authorizes only the
+  task and scope it clearly identifies; prerequisites and required inputs still
+  apply. A request to start a Goal discussion authorizes entering `in_progress`
+  for that discussion only; a user-confirmed transition authorizes the next
+  discussion under the Goal protocol. Registration and discussion confirmation
+  grant no delivery execution permission.
 - Use a normal task for one independently tracked outcome. Work requiring
   multiple independently tracked delivery stages is a Goal, expressed through
   existing tasks and `dependsOn`. Read [the Goal protocol](references/goal.md)

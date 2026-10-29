@@ -2,9 +2,11 @@
 
 Use this mode to prepare and register work that needs persistent tracking. Read
 [the handbook](handbook.md) before discovery, queries, or writes and
-[the task content standard](task-content.md) for content preparation. Return after
-registration; registration alone does not authorize execution. An explicit request to start a Goal discussion routes the registered
-current stage to run-task under the Goal protocol.
+[the task content standard](task-content.md) for content preparation. After
+verified registration, apply the [shared creation-to-execution authorization
+rule](../SKILL.md#shared-constraints). Registration alone does not authorize
+execution; starting an authorized ordinary task uses run-task, and Goal discussion
+starts retain their stage-confirmation gates.
 
 Create tasks only with the user's explicit permission for the relevant scope.
 An explicit user or applicable repository instruction requiring Daynight tracking
@@ -44,9 +46,9 @@ or delivery tasks upfront. Its stage brief describes the discussion and its
 user-confirmation gate; finished requirements and applicable prototypes are
 outputs. User-confirmed requirements permit creation and start of solution
 discussion. Only user-confirmed solution permits actual delivery registration.
-A registration-only request leaves the current stage todo and returns; an
-explicit discussion-start request authorizes its start through
-run-task. Creating a Goal covers the later in-scope stages and breakdown only
+A registration-only request leaves the current stage todo while awaiting the
+explicit answer to the creation-to-execution question; an explicit
+discussion-start request authorizes its start through run-task. Creating a Goal covers the later in-scope stages and breakdown only
 at those confirmation gates.
 
 For a single tracked outcome, prepare its stage-appropriate task definition,
@@ -192,7 +194,14 @@ If creation succeeds but a later operation fails, retain the confirmed IDs and
 resume missing operations there. Tasks remain `todo`. Reconcile uncertain results through the handbook before another
 mutation. Report incomplete registration with the exact missing operation or
 artifact and next step. An unreadable required source is still a failure; do
-not silently replace it with invented or weaker content. Return after verified
-registration without selecting or executing a task for registration-only requests. If the user explicitly requested
-the current Goal discussion to start, pass its confirmed ID to run-task under
-the Goal protocol.
+not silently replace it with invented or weaker content.
+
+After verified registration, report the confirmed task IDs and current statuses.
+Apply the shared creation-to-execution authorization rule: without applicable
+execution authorization, ask whether to start the identified task and wait for
+an explicit answer, leaving it todo. An affirmative reply or existing explicit
+authorization permits only its specified task and scope to proceed through
+run-task once its prerequisites and required inputs are complete. An explicit
+request to start the current Goal discussion follows the Goal protocol through
+that same ordinary entry. Do not select another task or start later delivery work
+from registration alone.

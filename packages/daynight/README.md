@@ -157,6 +157,14 @@ prompt explicitly names the `worker-managed` environment, the `using-daynight`
 skill and that mode, together with their assignment. `SKILL.md` routes to the
 selected instructions; ordinary execution does not load managed task rules.
 Shared task inputs, delivery and acceptance rules retain one owner in the bundle.
+After creating and reading back a task, report its identity and status. Without
+explicit execution authorization covering that task, ask whether to start and
+wait for an explicit affirmative answer, keeping it todo until authorized.
+Refusal ends the startup proposal, silence leaves it waiting, and an ambiguous
+reply requires clarification. Existing applicable authorization remains effective
+without another request, and the answer authorizes only its identified task and
+scope. Goal stage confirmations, handoff and automatic-execution permission keep
+their separate boundaries.
 The [foreground worker](#worker-configuration-and-startup) constructs that
 explicit assignment and loads the installed managed entry before launch.
 Managed execution follows one assignment through implementation, validation,

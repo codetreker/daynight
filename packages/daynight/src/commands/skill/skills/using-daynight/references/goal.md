@@ -28,7 +28,9 @@ permission.
 
 A request to start a Goal discussion authorizes creating and starting
 that discussion task so it becomes `in_progress`. A registration-only request
-creates only the current discussion task in `todo` and returns without execution.
+creates only the current discussion task in `todo`. After verification, report
+its identity and status, ask whether to start that discussion, and wait under
+the [shared creation-to-execution authorization rule](../SKILL.md#shared-constraints).
 Goal registration alone does not supply discussion-start or delivery execution
 authorization.
 
@@ -116,7 +118,10 @@ in the session, and register the delivery breakdown below. Complete
 the solution discussion only after the accepted solution and actual registered delivery tasks,
 their required materials, and their dependencies are read back
 and verified. Use `task set-status <task-id> done` with the observed version and confirm done.
-Completion satisfies dependencies and grants no delivery execution permission. Completing
+Completion satisfies dependencies and grants no delivery execution permission.
+Report the verified delivery registration and apply the shared
+creation-to-execution authorization rule before starting any identified delivery
+task; solution confirmation alone is not its execution authorization. Completing
 either discussion does not establish whole-Goal completion.
 
 ## Register the confirmed delivery breakdown
