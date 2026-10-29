@@ -12,7 +12,7 @@ import crossSpawn from "cross-spawn";
 import { parse as parseYaml, stringify as yaml } from "yaml";
 import { expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
-import type { Project, Task, UpdateWorkerClaimInput, WorkerClaimDescriptor } from "../../src/api/types.js";
+import type { Project, Task, UpdateWorkerClaimInput, WorkerClaimDescriptor, WorkerReport } from "../../src/api/types.js";
 import { codexProjectTrustArguments } from "../../src/commands/worker/herdr/arguments.js";
 import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
 
@@ -193,6 +193,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   const cleanupEvidenceFile = path.join(workspace, ".tmp", `installed-worker-${scenario}-cleanup.json`);
   const logs: string[] = [];
   const requests: { method: string; path: string; taskId?: string }[] = [];
+  const reports: { workerId: string; input: WorkerReport }[] = [];
   const inventoryResponses: { projectId: string; itemCount: number; status: number; mappedProjectCount: number }[] = [];
   const children = new Map<ChildProcess, Promise<unknown>>();
   let installed: Awaited<ReturnType<typeof createInstalledCli>> | undefined;
@@ -213,6 +214,11 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       const task = tasks.find((item) => item.id === parts[6]);
       if (request.headers.authorization !== "Bearer worker-fixture-token") { send(response, { error: { code: "unauthorized", message: "Fixture authentication mismatch", requestId: "worker-auth-fixture" } }, 401); return; }
       requests.push({ method: request.method!, path: `${url.pathname}${url.search}`, ...(task === undefined ? {} : { taskId: task.id }) });
+      if (parts.length === 7 && parts[3] === "me" && parts[4] === "workers" && parts[6] === "report" && request.method === "POST") {
+        reports.push({ workerId: parts[5]!, input: JSON.parse(Buffer.concat(chunks).toString("utf8")) as WorkerReport });
+        const observedAt = new Date().toISOString();
+        send(response, { observedAt, lastReportedAt: observedAt }); return;
+      }
       if (url.pathname === "/api/v1/me" && request.method === "GET") { send(response, { id: uuid(100), email: null, emailVerified: null, name: null, avatarUrl: null }); return; }
       if (url.pathname === "/api/v1/projects" && request.method === "GET") { send(response, { items: projects, nextCursor: null }); return; }
       if (project !== undefined && parts.length === 5 && request.method === "GET") { send(response, project); return; }
@@ -320,6 +326,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     const original = start();
     await waitFor("first native session", async () => (await events()).some((event) => event.kind === "native-start" && event.taskId === tasks[0]!.id) && row(tasks[0]!.id)?.session_id !== undefined && row(tasks[0]!.id)?.session_id !== null);
     const first = tasks[0]!;
+    await waitFor("installed runtime snapshot with the confirmed first claim", () => reports.some(({ input }) => input.taskInventory?.claims.some(reference => reference.taskId === first.id)));
     complete(first);
     await waitFor("first cleanup and second native session", () => row(first.id)?.status === "done" && row(tasks[1]!.id)?.session_id !== undefined && row(tasks[1]!.id)?.session_id !== null);
     const second = tasks[1]!;
@@ -424,7 +431,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         expect(restartLogs).not.toContain(" warning ");
       }
       expect(second.properties.worker!.claimId).toBe(originalClaim);
-      expect(requests.slice(restartRequestOffset).some((request) => request.method === "POST")).toBe(false);
+      expect(requests.slice(restartRequestOffset).some((request) => request.method === "POST" && request.path.endsWith("/worker-claim"))).toBe(false);
       expect(inventoryResponses.filter((response) => response.status === 200).every((response) => response.mappedProjectCount === 2)).toBe(true);
       expect(restarted.child.kill("SIGINT")).toBe(true);
       await expectExit(restarted.closed, 0);
@@ -476,11 +483,19 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     expect(restored).toHaveLength(scenario === "resume" ? 1 : 0);
     for (const empty of restored) expect(observed.some((event) => event.kind === "native-start" && workspaceKey(event) === workspaceKey(empty))).toBe(false);
     expect(observed.findIndex((event) => event.kind === "native-start" && event.taskId === second.id)).toBeGreaterThan(observed.findIndex((event) => event.kind === "native-stop" && event.taskId === first.id));
-    expect(requests.filter((request) => request.method === "POST").map((request) => request.taskId)).toEqual(tasks.map((task) => task.id));
+    const claimRequests = requests.filter((request) => request.method === "POST" && request.path.endsWith("/worker-claim"));
+    const reportRequests = requests.filter((request) => request.method === "POST" && /^\/api\/v1\/me\/workers\/[0-9a-f-]{36}\/report$/.test(request.path));
+    expect(claimRequests.map((request) => request.taskId)).toEqual(tasks.map((task) => task.id));
+    expect(requests.filter((request) => request.method === "POST")).toHaveLength(claimRequests.length + reportRequests.length);
+    expect(reportRequests).toHaveLength(reports.length);
+    expect(new Set(reports.map((report) => report.workerId))).toEqual(new Set([originalClaims.get(first.id)!.workerId]));
+    const awaitHome = await realpath(home);
+    expect(reports.every(({ input }) => input.workingDirectory === awaitHome && input.versions.daynight === installed!.receipt.packageVersion)).toBe(true);
+    expect(JSON.stringify(reports)).not.toContain("worker-fixture-token");
     await expect(readFile(path.join(repositoryPaths[0]!, ".worktrees/daynight", first.id, "README.md"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(row(second.id)?.session_id).toMatch(/^[0-9a-f-]{36}$/);
     await mkdir(path.dirname(evidenceFile), { recursive: true });
-    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher with real Git/SQLite/HTTP and controlled Herdr/Codex metadata and real task-process substitutes", nativeAgentExecution: false, receipt: installed.receipt, requests, inventoryResponses, events: observed, first: row(first.id), second: row(second.id), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
+    await writeFile(evidenceFile, JSON.stringify({ outcome: "passed", scenario, method: "Installed public launcher with real Git/SQLite/HTTP and controlled Herdr/Codex metadata and real task-process substitutes", nativeAgentExecution: false, receipt: installed.receipt, requests, reports, inventoryResponses, events: observed, first: row(first.id), second: row(second.id), limitations: ["Linux controlled fixture only", "Does not establish model execution or native Herdr qualification", "Two-repository progression does not establish sustained-load fairness"] }, null, 2));
   } catch (error) {
     failure = error;
     await mkdir(path.dirname(evidenceFile), { recursive: true });
