@@ -12,6 +12,7 @@ export const auth: AuthMessages = {
     },
     myProjects: "My projects",
     accountSettings: "Account settings",
+    workers: "My Workers", worker: "Worker",
     projectSettings: "Project settings",
     members: "Project members",
     teamWorkspace: "Team workspace",
@@ -45,6 +46,7 @@ export const auth: AuthMessages = {
       loginFailed: "Sign-in was not completed. The identity service could not confirm your identity. Please sign in again.",
     },
     documentTitle: {
+      workers: "My Workers · Daynight", worker: "Worker · Daynight",
       setup: "Setup guide · Daynight",
       loading: "Checking sign-in · Daynight", error: "Sign-in unavailable · Daynight", login: "Sign in · Daynight",
       device: "Authorize CLI · Daynight", invitations: "Project invitation · Daynight", projects: "My projects · Daynight", project: "Project tasks · Daynight",

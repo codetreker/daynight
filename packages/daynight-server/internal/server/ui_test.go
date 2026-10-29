@@ -45,7 +45,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	if len(entries) != 1 || entries[0]["type"] != "http_request" || entries[0]["route"] != "GET /{$}" || entries[0]["request_id"] != "project-test" {
 		t.Fatalf("UI must reuse exactly one request logger: %+v", entries)
 	}
-	for _, target := range []string{"/login", "/login?returnPath=%2Fprojects&private-query=value", "/projects", "/projects?private-query=value"} {
+	for _, target := range []string{"/login", "/login?returnPath=%2Fprojects&private-query=value", "/projects", "/projects?private-query=value", "/workers", "/workers?private-query=value", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker"} {
 		response := projectRequest(handler, http.MethodGet, target, "")
 		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) || response.Header().Get("Cache-Control") != "no-store" {
 			t.Fatalf("product entry did not return the production index: %d", response.Code)
@@ -72,6 +72,7 @@ func TestUIExactRoutesAssetsAndSingleRequestLog(t *testing.T) {
 	for _, target := range []string{
 		"/unknown-private-page", "/setup/", "/setup/private-child", "/setup-private", "/login/", "/login/private-child", "/login-private", "/projects/", "/projects-list", "/projects/id/extra", "/projects/id/members/extra", "/projects/id/settings/extra",
 		"/projects/id/tasks", "/projects/id/tasks/task/unknown", "/projects/id/tasks/task/unknown/file", "/projects/id/tasks/task/attachment/file",
+		"/workers/", "/workers-list", "/workers/id/extra", "/workers/id/assets/missing.js",
 		"/api/unknown-private-route", "/api/v1/projects/id/unknown", "/assets/", "/assets/missing-private.js",
 		"/assets/%2e%2e/index.html", "/assets/%2findex.html",
 	} {
@@ -179,7 +180,7 @@ func TestUIHeadAndKnownMethodBoundaries(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 	for _, target := range []string{
-		"/", "/setup", "/login", "/projects", "/projects/00000000-0000-4000-8000-000000000099",
+		"/", "/setup", "/login", "/workers", "/workers/00000000-0000-4000-8000-000000000099", "/workers/invalid-private-worker?private-query=value", "/projects", "/projects/00000000-0000-4000-8000-000000000099",
 		"/projects/00000000-0000-4000-8000-000000000099/members",
 		"/projects/00000000-0000-4000-8000-000000000099/settings",
 		"/projects/00000000-0000-4000-8000-000000000099/tasks/00000000-0000-4000-8000-000000000001",
