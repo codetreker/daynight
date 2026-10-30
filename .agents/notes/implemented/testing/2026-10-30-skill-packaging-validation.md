@@ -21,6 +21,9 @@ uses the actual packed CLI in an isolated installation and compares packaged
 resources with source resources and installed copies. Existing installation,
 replacement, migration and cleanup coverage remains in place.
 
+CLI lifecycle checks use test-owned Markdown data to verify byte preservation
+across task status changes, without extracting examples from skill prose.
+
 The structured receipt records `skillBundle.metadata` and `skillBundle.resources`,
 including resource paths, SHA-256 digests and local references. These are
 packaging observations, not instruction contracts or instruction-scenario
