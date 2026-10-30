@@ -1,5 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, realpath, writeFile, rename } from "node:fs/promises";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,6 +13,7 @@ import { controllerExecutionDirectory, controllerTicketPath, writeLaunchTicket, 
 import { readControllerSnapshot, recordStoppedControllerGeneration } from "./lifecycle-store.js";
 import { captureProcessProof, stopControllerProcesses, type ProcessProof } from "./process-proof.js";
 import { ControllerIpcOutcomeUnknownError, requestController } from "./local-client.js";
+import { prepareControllerIpcEndpoint } from "./paths.js";
 import type { ResumeLease } from "./resume.js";
 import type { IndependentControllerInput } from "./index.js";
 
@@ -89,12 +90,7 @@ export const runIndependentController = async (input: IndependentControllerInput
     };
     let credential = await grant("bootstrap");
     const credentialFile = path.join(directory, "credential.json"); await writeControllerCredential(credentialFile, credential);
-    const endpointKey = createHash("sha256").update(`${home}:${launchId}`).digest("hex").slice(0, 20);
-    const ipcEndpoint = process.platform === "win32" ? `\\\\.\\pipe\\daynight-${endpointKey}` : path.join(home, ".daynight", "c", `${endpointKey}.sock`);
-    if (process.platform !== "win32") {
-      if (Buffer.byteLength(ipcEndpoint) > (process.platform === "darwin" ? 103 : 107)) throw new Error("The controller IPC endpoint exceeds this platform's socket path limit.");
-      await mkdir(path.dirname(ipcEndpoint), { recursive: true, mode: 0o700 });
-    }
+    const ipcEndpoint = await prepareControllerIpcEndpoint(home, launchId);
     const nativeHome = resume?.ticket.nativeHome ?? (input.provider === "codex" ? process.env.CODEX_HOME ?? path.join(home, ".codex") : input.provider === "claude" ? process.env.CLAUDE_CONFIG_DIR ?? path.join(home, ".claude") : process.env.COPILOT_HOME ?? path.join(home, ".copilot"));
     ticket = { schemaVersion: 1, launchId, executionId, controllerId, controllerInstanceId, sessionId: session.sessionId, executionGeneration: session.executionGeneration, testExecutionId: executionId, ownerUserId: session.identity.ownerUserId, initialInput: registration.initialInput, serverOrigin: config.serverUrl, provider: input.provider, cwd, nativeHome, configuration: { agent: input.provider, agentControlMode: "web", model: resume ? null : input.model, args: resume?.ticket.configuration.args ?? input.args, recoveryLimit: 0 }, initialOperationId: randomUUID(), initialPrompt: input.prompt ?? "", resumeNativeSessionId: resume?.nativeSessionId ?? null, credentialFile, ipcEndpoint, ipcSecret: randomBytes(32).toString("hex"), createdAt: new Date().toISOString() };
     await writeLaunchTicket(home, ticket);
@@ -105,7 +101,7 @@ export const runIndependentController = async (input: IndependentControllerInput
     const log = await open(path.join(directory, "controller.log"), "a", 0o600);
     try {
       spawnAttempted = true;
-      child = spawn(process.execPath, [path.join(context.packageDirectory, "dist", "main.js"), "controller", input.provider, "--launch-id", launchId], { cwd, env: { ...process.env, HOME: home, USERPROFILE: home }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
+      child = spawn(process.execPath, [path.join(context.packageDirectory, "dist", "main.js"), "controller", input.provider, "--launch-id", launchId], { cwd, env: { ...process.env, DN_CONFIG_DIR: resolveConfigurationPaths(home).stateDirectory }, detached: process.platform !== "win32", stdio: ["ignore", log.fd, log.fd], windowsHide: true });
       childExit = new Promise<void>(resolve => { child!.once("exit", () => resolve()); child!.once("error", () => resolve()); });
       await new Promise<void>((resolve, reject) => { child!.once("spawn", resolve); child!.once("error", reject); });
     } finally { await log.close(); }

@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { runWorkerControl } from "../../../src/commands/worker/runtime.js";
 import { acquireWorkerInstanceLock } from "../../../src/commands/worker/instance-lock.js";
@@ -106,4 +106,13 @@ describe("worker synchronous management runtime ownership", () => {
     expect(mocks.submit).not.toHaveBeenCalled(); expect(mocks.coordinator).not.toHaveBeenCalled(); expect(mocks.herdr).not.toHaveBeenCalled();
     expect(f.store.getTask(f.task)).toEqual(f.task);
   });
+});
+
+
+it("can release an existing execution when its configured alias target no longer exists", async () => {
+  const f = await fixture();
+  await appendFile(f.paths.configFile, "\nagentCliAliases:\n  daynight: /missing/removed-development-launcher\n");
+  mocks.submit.mockResolvedValueOnce({ task: null, message: "release completed" });
+  await runWorkerControl(f);
+  expect(mocks.submit).toHaveBeenCalledOnce();
 });

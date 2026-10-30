@@ -33,5 +33,5 @@ export const projectDefinition: CommandDefinition = {
     },
   ],
   options: [helpOption],
-  details: "Server: https://daynight.cc (optional serverUrl override in ~/.daynight/config.yml)\nRun daynight project <command> --help for command usage.",
+  details: "Server: https://daynight.cc (optional serverUrl override in DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml))\nRun daynight project <command> --help for command usage.",
 };
