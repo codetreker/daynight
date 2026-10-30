@@ -599,10 +599,12 @@ describe("authenticated application shell", () => {
 
   it.each(["same", "changed", "expired"])("holds token metadata reads until revalidation confirms the %s session", async (outcome) => {
     window.history.replaceState(null, "", "/account");
+    const projects = Promise.withResolvers<Response>();
     let meCalls = 0;
     let finishCheck!: (response: Response) => void;
     const fetcher = vi.fn((url: string) => {
       if (url === "/api/v1/me") return ++meCalls === 1 ? Promise.resolve(json(user())) : new Promise<Response>((done) => { finishCheck = done; });
+      if (url.startsWith("/api/v1/projects?") && serverUserId === userId) return projects.promise;
       if (url === "/api/v1/me/tokens") return Promise.resolve(json({ items: [{ id: otherId, name: "Confirmed account token", createdAt: now, expiresAt: "2099-10-22T10:00:00Z" }] }));
       return Promise.resolve(defaults(url));
     });
@@ -612,9 +614,11 @@ describe("authenticated application shell", () => {
     returnFromAnotherWindow();
     await waitFor(() => expect(meCalls).toBe(2));
     await act(async () => { fireEvent.click(screen.getByRole("button", { name: "访问令牌" })); });
-    expect(screen.getByRole("status")).toHaveTextContent("正在加载访问令牌…");
+    expect(within(screen.getByRole("complementary", { name: "工作空间导航" })).getByRole("status")).toHaveTextContent("正在加载项目");
+    expect(within(screen.getByRole("region", { name: "个人访问令牌" })).getByRole("status")).toHaveTextContent("正在加载访问令牌…");
     expect(document.body).not.toHaveClass("auth-session-checking");
     expect(fetcher.mock.calls.filter(([url]) => url === "/api/v1/me/tokens")).toHaveLength(0);
+    await act(async () => projects.resolve(defaults("/api/v1/projects")));
     serverUserId = outcome === "changed" ? otherId : userId;
     await act(async () => finishCheck(outcome === "same" ? json(user()) : outcome === "changed" ? json(user(otherId, "Bob")) : fail(401, "unauthenticated")));
     if (outcome === "same") {

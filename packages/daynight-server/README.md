@@ -1016,10 +1016,13 @@ owns a separate PostgreSQL fixture, installed CLI workspace and server process.
 It checks all four required-platform values across nine status pairs, exact +0/+1,
 platform and material preservation, compatibility-filtered candidates, explicit
 clear, stale/no-op behavior and in-progress platform refusals. It requires graceful
-SIGTERM exit 0 and the fixture's normal cleanup receipt. The original project/task
-workflow retains its assertions; the platform matrix has its own unchanged
-45-second server lifetime. Runtime success remains established by source-bound
-acceptance receipts, separately from this scenario inventory.
+SIGTERM exit 0 and the fixture's normal cleanup receipt. The project/task
+workflow retains its assertions. Each scenario owns its server until cleanup,
+with a process context derived from `context.Background`, bounded by the owning
+Go test's deadline and cancelled by fixture cleanup. A bounded test timeout is
+required; startup, request, CLI-operation and shutdown bounds remain independent. Runtime
+success remains established by source-bound acceptance receipts, separately
+from this scenario inventory.
 
 The [attachment scenario](cmd/daynight-server/acceptance_attachment_cli_test.go)
 reuses the same packed/installed CLI and real-process fixture. It checks exact
