@@ -10,6 +10,7 @@ export const auth: AuthMessages = {
       writeError: "侧栏偏好尚未保存。当前布局仍可使用，请重试保存。",
       retrySave: "重试保存侧栏偏好",
     },
+    workers: "我的 Worker", worker: "Worker",
     projectSettings: "项目设置",
     myProjects: "我的项目", accountSettings: "账户设置", members: "项目成员", teamWorkspace: "团队工作空间",
     accountLink: ({ name }) => `账户设置：${name}`, currentAccount: "当前账户", genericProject: "项目",
@@ -26,6 +27,7 @@ export const auth: AuthMessages = {
       loginFailed: "登录未完成。身份服务暂时无法确认你的身份，请重新登录。",
     },
     documentTitle: {
+      workers: "我的 Worker · Daynight", worker: "Worker · Daynight",
       setup: "使用引导 · Daynight",
       loading: "正在确认登录 · Daynight", error: "登录暂不可用 · Daynight", login: "登录 · Daynight", device: "授权 CLI · Daynight", invitations: "项目邀请 · Daynight",
       projects: "我的项目 · Daynight", project: "项目任务 · Daynight", settings: "项目设置 · Daynight", members: "项目成员 · Daynight", account: "账户设置 · Daynight", notFound: "页面不存在 · Daynight",

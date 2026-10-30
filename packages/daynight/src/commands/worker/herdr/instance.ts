@@ -63,12 +63,39 @@ export const resolveHerdrInstancePaths = (
     stdoutLogFile: paths.join(worker.logsDirectory, "herdr.stdout.log"), stderrLogFile: paths.join(worker.logsDirectory, "herdr.stderr.log") };
 };
 
-export const createHerdrEnvironment = (paths: HerdrInstancePaths, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
+export const createHerdrEnvironment = (paths: Pick<HerdrInstancePaths, "configHome" | "stateHome" | "configurationFile" | "shellHistoryFile">, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
   ...Object.fromEntries(Object.entries(inherited).filter(([name]) => !inheritedIdentity.has(name.toUpperCase()))),
   XDG_CONFIG_HOME: paths.configHome,
   XDG_STATE_HOME: paths.stateHome,
   HERDR_CONFIG_PATH: paths.configurationFile,
   HISTFILE: paths.shellHistoryFile,
+});
+
+export const createHerdrNativeEnvironment = (worker: Pick<WorkerPaths, "herdrDirectory">, inherited: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+  const environment = createHerdrEnvironment({
+    configHome: path.join(worker.herdrDirectory, "c"), stateHome: path.join(worker.herdrDirectory, "s"),
+    configurationFile: path.join(worker.herdrDirectory, "config.toml"), shellHistoryFile: path.join(worker.herdrDirectory, "shell.history"),
+  }, inherited);
+  for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const) {
+    if (inherited[key] === undefined) delete environment[key];
+    else environment[key] = inherited[key];
+  }
+  return environment;
+};
+
+export const createHerdrVersionObserver = (worker: Pick<WorkerPaths, "herdrDirectory" | "logsDirectory">) => ({
+  observe: async (operation: Operation): Promise<string | null> => {
+    const paths = resolveHerdrInstancePaths(worker);
+    try {
+      const pong = await createHerdrRpcClient(paths.apiEndpoint).request("ping", {}, operation);
+      if (pong.type !== "pong" || typeof pong.version !== "string" || valid(pong.version) === null) throw new Error("The private Herdr instance returned an invalid version observation.");
+      return pong.version;
+    } catch (error) {
+      // Only a failed connection establishes absence; malformed responses and permission failures remain errors.
+      if (error instanceof Error && error.cause instanceof Error && absentConnection(error.cause)) return null;
+      throw error;
+    }
+  },
 });
 
 const bounded = (parent: Operation, maximumMs: number) => {

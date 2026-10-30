@@ -36,13 +36,17 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Run ready tasks continuously.** Use `daynight worker run` to claim eligible
   tasks across configured repositories, preserve ongoing work through restarts
   and clean resources when the original claim leaves the worker's inventory.
+- **Observe your Workers.** Open My Workers alongside My projects to see the
+  current account's recent Workers, online/offline state, resource and software
+  observations, and authorized task snapshots. Detail keeps the last report time
+  and distinguishes an unknown inventory from idle work.
 - **Control a task session in the browser.** With `worker.agentControlMode: web`,
   view native messages, reasoning and tool results, send text, stop a turn, and
   answer supported approvals, questions and forms in the task’s Session tab.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
-Task creation and general editing use the CLI. The Web app provides browsing,
+Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
 status and execution-setting controls, task deletion and attachment management.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit

@@ -1,3 +1,4 @@
+import { workers } from "./en/workers";
 import { workspace } from "./en/workspace";
 import { graph } from "./en/graph";
 import { platform } from "./en/platform";
@@ -11,6 +12,7 @@ import type { Messages } from "../messages";
 
 export const en: Messages = {
   workspace,
+  workers,
   graph,
   inspection,
   automation,

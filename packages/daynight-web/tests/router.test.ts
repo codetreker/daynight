@@ -51,6 +51,25 @@ describe("route parsing", () => {
   });
 });
 
+describe("Worker account routes", () => {
+  it("parses the account list and canonicalizes decoded detail identities", () => {
+    expect(parseAuthRoute("/workers")).toEqual({ kind: "workers" });
+    expect(parseAuthRoute(`/workers/${taskId.toUpperCase()}`)).toEqual({ kind: "worker", workerId: taskId });
+    expect(parseAuthRoute(`/workers/%62${taskId.slice(1)}`)).toEqual({ kind: "worker", workerId: taskId });
+  });
+
+  it.each(["/workers/", "/workers/not-a-uuid", "/workers/%ZZ", "/workers/%2F", "/workers/%ED%A0%80", `/workers/${taskId}/`, `/workers/${taskId}/extra`])("rejects malformed detail route %s", (pathname) => {
+    expect(parseAuthRoute(pathname)).toEqual({ kind: "notFound" });
+    expect(isLoginReturnPath(pathname)).toBe(false);
+  });
+
+  it.each(["/workers", `/workers/${taskId}`])("preserves supported Worker login destinations %s", (pathname) => {
+    expect(isLoginReturnPath(pathname)).toBe(true);
+    expect(parseAuthRoute("/login", `?${new URLSearchParams({ returnPath: pathname })}`)).toEqual({ kind: "login", returnPath: pathname });
+    expect(new URL(loginUrl(pathname), window.location.origin).searchParams.get("returnPath")).toBe(pathname);
+  });
+});
+
 describe("navigation", () => {
   it("replaces intermediary authentication entries without adding a history loop", () => {
     const listener = vi.fn();

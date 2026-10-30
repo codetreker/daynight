@@ -31,7 +31,8 @@ packages/daynight-web/
 推广、示例文档与记录、FAQ、公开身份提示和元数据；演示的稳定身份与本地选择不依赖
 语言，切换保留状态与焦点。[公开入口设计](daynight-landing.md)拥有具体组合。
 [AuthenticatedApp](daynight-auth.md) 的 messages.auth 完整英语/简体中文契约拥有
-登录、设备授权、账户、项目创建、成员、邀请和令牌文案。
+登录、设备授权、账户、项目创建、成员、邀请、令牌及工作空间 Worker 路由文案。
+messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称。
 入口在绘制前设置当前语言及与路径对应的推广页、指南或鉴权加载标题；后续页面元数据、
 路由与会话状态按当前目录更新。
 身份变化释放用户内容，但不重建语言 Provider。独立鉴权 fixture 仍显式挂载
@@ -80,17 +81,19 @@ Provider 使用一份当前 issue 状态，初始值来自 `initial.issue`。选
 ## 消息与格式化
 
 `Messages` 是两个目录共同满足的 TypeScript 契约。`common` 拥有 `retrySave`、按 `TaskStatus` 索引的 `status` 和 `requestId`；`language` 拥有标签、选项和保存错误；`workspace`、`graph` 与 `inspection` 分别拥有导航/项目、图和详情/PR/附件消息；
-`auth` 拥有登录、账户、项目创建、成员、邀请、令牌及管理对话框消息；`setup` 拥有使用引导的五步说明、成功标志、Agent 请求示例与复制反馈。组件通过 `useI18n()` 取得领域消息、公共状态与格式化器；相同 task 状态和请求 ID 标签不在领域中重复定义。
+`auth` 拥有登录、账户、项目创建、成员、邀请、令牌、工作空间路由及管理对话框消息；`workers` 拥有账号级 Worker 观测消息；`setup` 拥有使用引导的五步说明、成功标志、Agent 请求示例与复制反馈。组件通过 `useI18n()` 取得领域消息、公共状态与格式化器；相同 task 状态和请求 ID 标签不在领域中重复定义。
 
 固定文本使用字符串；动态文本使用带具名参数的函数，返回完整句子，目录负责语序、标点、单位和复数。调用方不拼接零散英语片段，不提供缺失键时使用另一种语言的静默替代。产品计数消息及格式测试覆盖 0、1 与多项；测试专用消息不进入产品目录。
 
-`getFormats(locale)` 按两种 locale 缓存 `Intl.DateTimeFormat`、`Intl.NumberFormat` 和 `Intl.PluralRules`，提供 `date`、`time`、`dateTime`、`number`、`bytes` 与 `plural`。日期输入接受 `Date`、字符串或数字，沿用本地时区与 `hour12: false`；格式改变不修改输入时间戳。数字按语言分组；字节以精确值加 `B` 展示，不转换为会丢失精度的近似容量。格式化接口保留原生 `Intl` 的输入语义，不增加替代缺失数据的默认值；日期无效时由原生格式化器抛出错误。
+`getFormats(locale)` 按两种 locale 缓存 `Intl.DateTimeFormat`、`Intl.NumberFormat` 和 `Intl.PluralRules`，提供 `date`、`time`、`dateTime`、`number`、`bytes` 与 `plural`。日期输入接受 `Date`、字符串或数字，沿用本地时区与 `hour12: false`；格式改变不修改输入时间戳。数字按语言分组；字节以精确值加 `B` 展示，不转换为会丢失精度的近似容量。格式化接口保留原生 `Intl` 的输入语义，不增加替代缺失数据的默认值；日期无效时由原生格式化器抛出错误。Worker 的 presentation helper 独立以当前 locale 的 Intl.NumberFormat 将严格 bytes 输入缩放为 B/KiB/MiB/GiB 等 IEC 读数，保留 API 精确值，不改变 getFormats.bytes 的精确 B 行为；相对上报时间使用服务端锚定时间与 Intl.RelativeTimeFormat。
 
 ## 生产界面与生命周期
 
 生产入口在 `createRoot()` 前执行初始解析，再把常驻 Provider 放在应用根部。首屏 HTML `lang` 和标题使用解析结果，后续导航与切换同步更新。Provider 不以 locale 作为 `key`，领域组件也不使用 locale 重置实例。
 
 导航、图浮层标题栏和独立 `TaskDetailPage` 共用 `LanguageSelector`。居中 `TaskDetailDialog` 通过同一个 `LocaleProvider` 订阅应用当前语言，其顶栏保留任务标题、全屏、“…”菜单和关闭入口，新标签链接位于“…”菜单；当前状态菜单与平台切换位于标题下的公共状态行。详情打开时底层页面继续处于 `inert`，模态入口使用既有焦点圈定、Escape 分层和关闭后恢复机制；独立完整详情页保留普通浏览器键盘行为，内部确认窗仍各自拥有模态交互。图浮层标题、关闭、全屏及图控件使用同一目录，语言变化保留当前打开状态、同一图实例和焦点。
+
+Worker 页面订阅 messages.workers，状态存为结构化观测而非已翻译字符串。语言变化更新资源、版本、时间和 last-confirmed 文案，不改变 Worker ID、hook 的读取依赖、冻结状态或单调锚点，不额外发起请求。普通任务状态和 phase 复用已有目录；机器名、路径和实际版本原样显示。
 
 项目摘要与附件请求继续由资源 ID、调度和原有操作触发，详情按摘要业务版本、打开及恢复需要读取；时钟 receipt 不单独重读未变化正文。locale 不进入业务 hook 的请求、取消或订阅依赖；上传、覆盖、删除和刷新期间切换只更新展示。附件预览继续使用原来的 key、URL、DOM 和 iframe 身份，输入与已选文件保持不变。
 

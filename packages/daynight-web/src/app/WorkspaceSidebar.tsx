@@ -15,6 +15,7 @@ type WorkspaceSidebarProps = {
   readonly onToggle: () => void;
   readonly routeKey: string;
   readonly projectsActive: boolean;
+  readonly workersActive?: boolean;
   readonly accountActive: boolean;
   readonly activeProjectId: string | null;
   readonly testSessionsActive?: boolean;
@@ -23,7 +24,7 @@ type WorkspaceSidebarProps = {
   readonly onNavigate: () => void;
 };
 
-export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, accountActive, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
+export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive, workersActive = false, accountActive, activeProjectId, testSessionsActive = false, identityChecking, workspaceRef, onNavigate }: WorkspaceSidebarProps) => {
   const { messages: { auth: { shell: m }, workspace: { app, projects: p } } } = useI18n();
   const projects = useProjectList();
   const testMessages = useTestSessionListMessages();
@@ -126,6 +127,7 @@ export const WorkspaceSidebar = ({ collapsed, onToggle, routeKey, projectsActive
               <button className="sidebar-project-action" type="button" onClick={projects.loadMore} disabled={projects.loadingMore}>{projects.loadingMore ? p.loadingMore : projects.moreError !== null ? p.retryMore : p.loadMore}</button>
             </div>}
           </div>
+          <a className="nav-button" href="/workers" onClick={follow} aria-label={m.workers} title={m.workers} aria-current={workersActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4M7 8h10M7 12h6" /></svg></span><span className="nav-text">{m.workers}</span></a>
           <a className="nav-button" href="/test-sessions" onClick={follow} aria-label={testMessages.title} title={testMessages.title} aria-current={testSessionsActive ? "page" : undefined}><span className="nav-icon" aria-hidden="true">▷</span><span className="nav-text">{testMessages.title}</span></a>
         </nav>
       </div>

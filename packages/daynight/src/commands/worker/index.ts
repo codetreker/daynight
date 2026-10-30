@@ -12,7 +12,7 @@ export type WorkerCommandDependencies = {
   attach: (options: { homeDirectory: string }) => Promise<void>;
   prepareRepositories: (context: CliContext, signal?: AbortSignal) => Promise<void>;
   repository: (request: WorkerRepositoryCommandRequest, context: CliContext) => Promise<void>;
-  run: (options: { homeDirectory: string; packageDirectory: string; log?: (message: string) => void; signal?: AbortSignal; prepareRepositories?: (signal: AbortSignal) => Promise<void> }) => Promise<void>;
+  run: (options: { homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string; log?: (message: string) => void; signal?: AbortSignal; prepareRepositories?: (signal: AbortSignal) => Promise<void> }) => Promise<void>;
   manage: (options: { homeDirectory: string; packageDirectory: string; request: WorkerControlRequest; log?: (message: string) => void; signal?: AbortSignal }) => Promise<void>;
 };
 
@@ -41,7 +41,7 @@ export const runWorkerCommand = async (args: readonly string[], context: CliCont
   }
   const runtime = () => ({ homeDirectory: context.homeDirectory(), packageDirectory: context.packageDirectory, log: (message: string) => { context.stderr(message); } });
   if (command.command.name === "run") {
-    await dependencies.run({ ...runtime(), prepareRepositories: (signal) => dependencies.prepareRepositories(context, signal) });
+    await dependencies.run({ ...runtime(), version: context.version, workingDirectory: context.workingDirectory(), prepareRepositories: (signal) => dependencies.prepareRepositories(context, signal) });
     return;
   }
   const help = `${command.path.join(" ")} --help`;

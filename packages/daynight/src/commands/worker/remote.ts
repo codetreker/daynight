@@ -1,8 +1,9 @@
 import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
+import type { Operation } from "../../api/operation.js";
 import { canonicalId, ProtocolError } from "../../api/parse.js";
-import type { Page, Project, Task, TaskFilters, TaskPlatform, UpdateWorkerClaimInput, WorkerClaimDescriptor, ReleaseWorkerClaimInput, ResumeWorkerTaskInput } from "../../api/types.js";
+import type { Page, Project, Task, TaskFilters, TaskPlatform, UpdateWorkerClaimInput, WorkerClaimDescriptor, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WorkerReport, WorkerReportReceipt } from "../../api/types.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { validateServerToken, validateTokenTransport } from "../../config/server-token.js";
 import { repositoryIdentity } from "../../repository/identity.js";
@@ -11,6 +12,7 @@ import type { ProjectIdentity } from "./types.js";
 export type WorkerRemote = {
   readonly serverOrigin: string;
   currentUserId(signal: AbortSignal): Promise<string>;
+  report(workerId: string, report: WorkerReport, operation: Operation): Promise<WorkerReportReceipt>;
   readTask(projectId: string, taskId: string, signal: AbortSignal): Promise<Task>;
   authorizeControl(projectId: string, originalUserId: string, signal: AbortSignal): Promise<void>;
   release(projectId: string, taskId: string, input: ReleaseWorkerClaimInput, signal: AbortSignal): Promise<Task>;
@@ -76,6 +78,10 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       if (principal !== null && principal !== user.id) throw new ProtocolError("The worker's authenticated user changed during identity verification.");
       principal = user.id;
       return principal;
+    },
+    report: (workerId, input, operation) => {
+      operation.check();
+      return createApiClient({ serverUrl: serverOrigin, ...(serverToken === undefined ? {} : { serverToken }), expectedUserId: verifiedUserId(), operation }).reportWorker(workerId, input);
     },
     readTask: (projectId, taskId, signal) => request(signal, (api) => api.getTask(projectId, taskId)),
     authorizeControl: async (projectId, originalUserId, signal) => {

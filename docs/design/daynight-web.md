@@ -1,6 +1,6 @@
-# 项目与任务看板设计
+# Web 工作空间设计
 
-状态：task-sync 摘要与完整本地图、项目任务看板、Go 内嵌交付及 localhost/dev-ci 部署已实现；长斜线 SVG 虚线绘制曾造成 raster/commit 阻塞，采用局部水平线与短原生转角路径分解；完整生产验收已交付。运行结果随对应 PR 与 CI 保存；本地回执不能代替干净 hosted 验证。原始看板基线为[只读 MVP](../spec/daynight-web.md)，当前项目工作区以实际组件为准，早期内层分类页签见[任务视图交互预览](mockups/task-views.html)；[原始看板预览](mockups/task-dashboard.html)和[项目详情截图](mockups/task-dashboard-project.png)保留初始视觉基线。[决策记录](../../.agents/notes/archived/architecture/2026-10-20-task-dashboard-mvp-design.md)保存选型与范围取舍。
+生产 Web 由公开入口、认证工作空间、项目任务看板、任务详情和账号级 Worker 观测组成，使用同一 Go 内嵌资源管线。本文拥有它们的页面组合、请求生命周期与交付机制；[需求](../spec/daynight-web.md)拥有可见结果。运行结果按对应源码保留在 PR、CI 或实际验收材料中。本地回执与设计预览不能代替实际产品组合验收；[早期看板决策](../../.agents/notes/archived/architecture/2026-10-20-task-dashboard-mvp-design.md)、[任务视图预览](mockups/task-views.html)和[原始看板预览](mockups/task-dashboard.html)保留原始设计背景。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 和任务详情中的
 只读 PR 区域已实现。[需求](../spec/daynight-task-properties.md)与
@@ -33,7 +33,7 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 ## 目标与现有基础
 
-浏览器完成“项目列表 → 项目统计 → 独立任务列表或根任务链 → 任务详情”的完整读取路径。数据继续归属 `daynight-server`，不接入 客户端的 review 命令，不新增父子任务。任务仅有 todo、in_progress、done，创建默认 todo，详情提供
+浏览器提供“项目列表 → 项目统计 → 独立任务列表或根任务链 → 任务详情”和“我的 Worker → Worker 运行详情”两条读取路径。数据继续归属 `daynight-server`，不接入 客户端的 review 命令，不新增父子任务。任务仅有 todo、in_progress、done，创建默认 todo，详情提供
 版本化状态菜单；许可和平台使用各自确认入口，图和一般元数据继续保持读取。
 
 已有基础与集成位置：
@@ -68,10 +68,10 @@ GraphTask/详情保留必填 externalDependsOn，API 层校验正规化 ID、去
 
 `AuthenticatedApp` 的 Workspace 保持路由、认证屏障与正文所有权，`WorkspaceSidebar`
 负责导航呈现。侧栏分为可滚动的 `.sidebar-main` 和不收缩的 `.sidebar-bottom`：
-前者持有品牌、“我的项目”主入口及缩进的项目链接列表，后者持有同一个 `/account` 链接、工作区说明及切换按钮。
+前者持有品牌、“我的项目”及缩进项目列表、与之平级的“我的 Worker”主入口，后者持有同一个 `/account` 链接、工作区说明及切换按钮。
 项目子项消费与项目列表页面相同的分页目录，直接复用导航 `follow` 的路由和修饰键处理。
 普通列表和链接提供层级语义；完整名称作为链接名称及 title，视觉文字允许省略。
-项目、成员及设置路由将 projectId 传给侧栏选中对应子项，父入口只在 `/projects` 选中。
+项目、成员及设置路由将 projectId 传给侧栏选中对应子项，项目父入口只在 `/projects` 选中；`/workers` 及 Worker 详情共同激活 Worker 入口。Worker 资源 ID 同时进入 Workspace 正文焦点 effect 与侧栏 routeKey，详情组件另以 workerId 作为 key，A/B 切换不会沿用旧抽屉或资源请求。
 桌面折叠和手机竖条以 `display: none` 排除项目子项交互，展开桌面或手机覆盖导航时显示。
 sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态都保留底部入口。
 链接的 `aria-current` 提供当前路由或项目选中态；主入口的图标、可访问名称及悬停提示在竖条中仍然可用。
@@ -96,6 +96,24 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 扩展，当前记录只表示一个本地外观值。[侧栏偏好决策](../../.agents/notes/implemented/feature/2026-10-25-sidebar-preference.md)
 拥有状态、错误与身份边界的取舍；[账户导航决策](../../.agents/notes/implemented/feature/2026-10-25-bottom-account-navigation.md)
 保留底部入口布局的原始理由。
+
+### 我的 Worker 列表与详情
+
+`WorkersPage` 和 `WorkerDetailPage` 在既有按 `user.id:generation` 重挂载的认证工作空间内呈现 `/workers` 与 `/workers/{workerId}`。它们直接挂载在 `WorkspaceRoutes`，项目目录只为侧栏供给数据，成功与否不控制 Worker 页面准入。路由沿用规范 UUID 解析、登录 returnPath、原生 history、标题与面包屑；Worker 任务链接通过现有 taskDetailUrl 打开当前完整任务。
+
+`api/workers.ts` 拥有 Worker 摘要、详情和 Probe 的严格读取器，以及列表和详情 GET。请求复用现有同源、no-store、取消、401 和 requestId 机制；在 JSON 解码或 404 处理前对每个非 401 响应执行 principal 校验。读取器区分 unknown/observed/stale 清单，验证显式 null、任务计数和数组一致、重复引用、Worker 请求身份、联合分支、时间与数值范围。客户端采样时间不与数据库时间强制排序。版本为实际非空文本，不在展示层加入 semver 或最低版本拒绝。
+
+`useWorkers`、`useWorker` 通过共享 `useWorkerObservation` 持有页面内存。既有 TaskCacheScope 只提供认证生命周期、ready gate 和 mismatch 失效回调，Worker 数据不进入其项目集合或 IndexedDB。每次读取前及发布前等待 scope.ready，并同时核对取消信号、请求 generation 和资源身份。Workspace 传入 readEnabled；身份核验或阻塞立即取消私有读取并暂停计时。同账号核验后重读，换号则由工作空间 key 丢弃旧内存。scope gate 还阻止身份状态尚未完成 React 重绘时的旧响应发布。
+
+列表加载器逐页读取到 nextCursor 为 null，暂存所有摘要并拒绝循环游标或重复 Worker ID。只有整轮成功才一次发布，任何页失败都保留上次完整集合。发布使用最后一页的 observedAt 与该响应接收时的 performance.now 建立统一锚点，再按在线优先、lastReportedAt 倒序和 workerId 稳定排序。摘要只有 machine、platform、上报时间及任务观测/计数，不执行逐 Worker 详情 fan-out，也不推断 OS release。
+
+每个可见页面共享一个 5 秒单飞刷新和一个 1 秒 ticker。纯 observation helper 使用 `observedAt + performance.now() - receivedMonotonic`，以 `< 120000ms` 判 online、`<= 72h` 判近期。页面隐藏、readEnabled 关闭或读取失败时，保留最后已发布时间并标记 stale，停止从旧锚点推进新结论。恢复可见或同账号核验后先发起新读取；成功才替换锚点并恢复 ticker。该生命周期与任务执行耗时不同：睡眠前的 Worker 锚点不能在重新可见时直接快进为当前在线结论。可信当前身份 404 清空详情，协议错误、网络错误及其他失败保留旧快照和“上次确认状态”。
+
+详情的资源卡和环境/版本区域只格式化实际 telemetry：OS type/release/version/arch、CPU model/logicalProcessors/usagePercent、内存 bytes、启动工作目录文件系统容量及软件 Probe。总量 0 可展示但不计算除零 meter；没有真实设备字段时不生成设备名。软件 not_installed、Herdr not_running 和 error 分别呈现，checkedAt、sampledAt 和 lastReportedAt 保留来源时间含义。任务数组及计数只消费服务器当前权限过滤后的历史观测，不以项目或任务缓存补齐；stale 清单、offline Worker 和 unavailable 清单各有明确说明。
+
+`WorkerStatusBadge` 复用绿色 online，并以 `#b54708` 文字/圆点和 `#fff0e6` 背景呈现 offline；陈旧读取另标上次确认。列表卡、详情面板和任务行复用工作空间样式与键盘导航，React 使用稳定 Worker/任务标识保持 tick 和刷新中的有效焦点。中英文目录覆盖状态、失败、时间、资源和可访问名称。桌面及 390px 的长机器名、目录和任务名自然换行。
+
+[Web 观测决策](../../.agents/notes/implemented/architecture/2026-10-29-web-worker-observations.md)保存页级读取、单调时钟及陈旧冻结的取舍；[快照设计](daynight-worker-snapshots.md)和[客户端采集设计](daynight-worker-reporting.md)分别拥有服务端归一化与采集口径。
 
 ### 项目列表 `/projects`
 
@@ -533,9 +551,10 @@ packages/daynight-server/
 | 模块 | 拥有的内容 | 依赖方向 |
 |---|---|---|
 | 浏览器 app/router | URL 解析、history/popstate、页面装卸与 404；WorkspaceSidebar 的呈现及独立本地侧栏偏好 | 组合页面；导航偏好只访问浏览器存储，不调用项目私有 helper 或业务 API |
-| api/client、api/parse | 相对 `/api` 请求、AbortSignal、JSON/附件 DTO 校验、文件传输、HEAD 与 typed error | 不引用组件和图布局 |
+| api/client、api/parse、api/workers | 相对 `/api` 请求、AbortSignal、JSON/附件与 Worker DTO 校验、principal 准入、文件传输、HEAD 与 typed error | 不引用组件和图布局 |
 | i18n | 两种目录、格式化、当前语言、独立保存与偏好错误、共用选择器 | 生产根及独立入口显式挂载；领域组件订阅展示，不调用业务 API 或图布局 |
 | projects hooks | 列表游标、完整派生图快照、加载/刷新状态、按项目隔离的视图偏好 | 摘要同步调用 api 和 task-cache；偏好只访问浏览器存储 |
+| workers hooks/observation | 页面内完整 Worker 集合或详情、整轮分页刷新、陈旧状态和一个服务端锚定时钟 | 调用 typed Worker API；只复用 scope 认证生命周期，不写项目缓存 |
 | task-cache | schema、用户/项目 fence、当前持久集合合并、摘要版本与提交后发布 | 网络与解码在事务外；纯投影复用 model，不拥有页面交互 |
 | task-graph/model | 全边验证、普通分量、派生代表、成员进度与全前置闭包 | 仅依赖 DTO 类型与标准集合 |
 | task-graph/visibility | 概览BFS、直接邻居批次、实际S协调和完整诱导投影 | 依赖完整model数据，不调用API |
@@ -576,7 +595,7 @@ flowchart LR
 
 ### 前端数据和状态所有权
 
-认证身份下的 TaskCacheScope 拥有持久摘要及可发布投影，页面维护图加载与当前资源；不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与状态操作，纯图模型只计算派生内容。TaskCacheProvider 包裹全部认证路由并位于详情 Provider 外，独立任务和附件路径页共享该 scope。
+认证身份下的 TaskCacheScope 拥有项目持久摘要及可发布投影，项目页面维护图加载与当前资源；Worker hooks 只持有页面内存观测并复用 scope 的认证生命周期，不进入项目缓存或建立全局注册表。不引入 Redux 或查询框架。专用 TaskDetailSession 保存项目/任务键对应的详情与状态操作，纯图模型只计算派生内容。TaskCacheProvider 包裹全部认证路由并位于详情 Provider 外，独立任务和附件路径页共享该 scope。
 
 - Workspace 按认证身份保持正文和导航边界；`useSidebarPreference` 只拥有 origin-local 桌面折叠值和保存错误，手机覆盖导航为独立临时状态。二者不参与项目、缓存、详情或图的 key，也不触发业务读取。
 - 项目目录 Provider 在 Workspace 的认证身份边界拥有当前已加载页、nextCursor 和下一页错误；`useProjects` 在 Provider 内管理请求，`useProjectList` 向侧栏及项目列表提供同一份状态和操作。首次请求、加载更多和刷新有各自状态；刷新使旧游标及旧请求失效，卸载取消请求，身份变化重建目录。项目切换与侧栏折叠不重建目录或增加轮询。
@@ -595,7 +614,8 @@ flowchart LR
   写操作和预览 frame；task/project 切换仍以资源 key 卸载旧状态。
 - `useAttachments(projectId, taskId)` 独立拥有按页加载的文件、选择、写操作与预览；所有结果绑定 project/task，预览还绑定 path。列表校验重复游标和目录冲突，续页失败保留已读取文件并明确标记不完整；刷新取消旧列表请求。所选路径或 `updatedAt` 改变时取消并重新读取内容，同路径覆盖后增加预览 revision。
 - 图与详情的已加载数据分别绑定 projectId 与 `(projectId,taskId)`。渲染时只显示 key 相符的数据；key 变化立即显示新资源的加载状态，不能等 effect 清理后再去掉旧内容。同资源刷新才保留旧快照，取消/序号检查不能代替这一显示身份约束。对话框的焦点外壳保持独立，关系跳转不把焦点临时恢复到旧节点。
-- API client 的明确入口为 `listProjects(query, signal)`、`getTaskSync(projectId, query, expectedUserId, signal, onPrincipalMismatch)`、`getTask(projectId, taskId, signal)` 与 versioned `setTaskStatus`、`setTaskAgentPermission`、`setTaskRequiredPlatform`。错误类型区分已取消、网络/解析失败和服务端错误码；错误页面只展示脱敏文案及 requestId。同步响应的 project.id、详情响应的 projectId/id 必须与规范化后的请求资源匹配，否则按协议错误拒绝显示。
+- Worker API 的列表和详情读取由 `api/workers.ts` 拥有，principal 准入、整轮集合及陈旧时钟遵守“我的 Worker 列表与详情”；它不调用 task-sync。
+- API client 的项目入口为 `listProjects(query, signal)`、`getTaskSync(projectId, query, expectedUserId, signal, onPrincipalMismatch)`、`getTask(projectId, taskId, signal)` 与 versioned `setTaskStatus`、`setTaskAgentPermission`、`setTaskRequiredPlatform`。错误类型区分已取消、网络/解析失败和服务端错误码；错误页面只展示脱敏文案及 requestId。同步响应的 project.id、详情响应的 projectId/id 必须与规范化后的请求资源匹配，否则按协议错误拒绝显示。
 - 页面导航使用 `pushState`，浏览器返回使用 `popstate`；在组件装卸边界取消请求。未知路径、无法解码的路径或无效 projectId 有明确错误页面，不发起拼接后的非法请求。
 
 项目视图偏好均由 `useProjectViewPreferences.ts` 中的专用 hooks 读取和保存，使用下列
@@ -627,17 +647,18 @@ Go 服务在同一 origin 提供 JSON API、页面和真实内嵌资源。
 | `GET /{$}` | 精确根路径，返回 index 并显示公开推广页；`GET /` 不能替代精确匹配 |
 | `GET /login` | 返回同一个 index，由现有认证生命周期显示独立登录页 |
 | `GET /projects` | 返回同一个 index，认证后显示项目列表 |
+| `GET /workers`、`GET /workers/{workerId}` | 返回同一个 index，认证后显示账号级 Worker 列表或详情 |
 | `GET /projects/{projectId}` | 返回同一个 index，资源存在性由图 API 决定 |
 | `GET /setup` | 返回同一个 index，由公开静态入口显示日常使用指南，不发起任何 API 请求 |
 | `GET /projects/{projectId}/tasks/{taskId}/attachments/{path...}` | 返回同一个 index，前端在工作空间外打开独立阅读页；文件存在性由完整附件清单决定 |
 | `GET /assets/` 前缀 | 仅返回实际存在的构建资源；目录与缺失文件返回 404 |
-| `/api/v1/...` | 项目、任务、task-sync 及按 taskId 查询的 task-graph API |
+| `/api/v1/...` | 项目、任务、task-sync、按 taskId 查询的 task-graph 及账号级 Worker API |
 | 其他路径 | 404；未知 `/api/*` 保留 JSON 错误，不返回 HTML |
 
 GET 沿用 Go 的 HEAD 语义；已知 UI、asset 和图路径不支持的方法返回 405 与 Allow。
 已知页面形状的 ID 由前端解析，错误 ID 仍交付 index 后显示未找到页面。附件页面
 路径先经过既有原始附件路径守卫，非法分隔符、空段、点段和上越在 ServeMux
-规范化之前拒绝，不扩大任意页面回退范围。`internal/webui` 暴露具体 HTML/asset handler，server 拥有路由注册，不用外层 URL dispatcher 绕过原 mux。HTML、图和最新详情响应采用 `Cache-Control: no-store`，内容哈希资源采用长期 immutable 缓存；不注册 Service Worker。
+规范化之前拒绝，不扩大任意页面回退范围。`internal/webui` 暴露具体 HTML/asset handler，server 拥有路由注册，不用外层 URL dispatcher 绕过原 mux。HTML、图、Worker 观测和最新详情响应采用 `Cache-Control: no-store`，内容哈希资源采用长期 immutable 缓存；不注册 Service Worker。
 
 ### 本地构建与开发
 
@@ -900,6 +921,8 @@ Markdown 复用渲染器，分别使用任务根与文档目录；其他附件�
 
 ## 观测与生命周期
 
+Worker 请求沿用 requestId 和当前账号/资源身份。页面取消请求和两个 timer，不建立脱离页面的后台读取；读取失败只影响观测新鲜度，不能改变 task、claim 或本机记录。独立 Worker 观测与任务执行时钟分别拥有锚点、陈旧语义和消费者。
+
 浏览器页面拥有可见性驱动的定时读取，不增加服务端调度、推送连接或浏览器遥测服务。请求经过既有浏览器 fetch、图布局与 HTTP/数据库机制；验收环境另包含 dev-ci 子命令和 Compose 资源的生命周期。
 
 - 浏览器的摘要同步由 cycle_id、projectId 和请求序号关联，记录 received/changed/duplicate、cache_hit、apply_ms 与错误分类；duplicate 包含相等与旧版行。四 store 的事务、通道和身份失效由 TaskCacheScope 拥有，详情由 projectId/taskId 和请求序号关联；组件卸载清理图定时器，组件卸载或选择变化负责取消请求。
@@ -1080,6 +1103,8 @@ cleanup 成功写回原 evidence，再处理余下原生/Docker 清理。因此�
 CI 无论验收成功、失败或取消都执行恢复与归档；恢复成功不改变此前的测试失败。
 
 ### 验证矩阵
+
+Worker 定向验证使用严格 DTO、完整游标读取和真实组件，覆盖未知/空/旧任务观测、资源/版本失败、零容量、跨页失败原子保留、取消/晚到响应、当前 principal 的 404 与 mismatch、同账号核验及换号、119/120 秒、72 小时、错误 wall clock、隐藏恢复/错误冻结、任务真实链接和 390px/桌面焦点。真实 Server、CLI、Web 的组合验收核对多 Worker、停机/恢复、权限撤销与实际采集，不能由 mock、parser 或截图单独证明。
 
 1. Go：真实 PostgreSQL 测试任务链图与统计一致性、孤立任务、分叉汇合、一层外部前置与反向外部引用排除、原始依赖保留、目标缺失/删除、返回集合规模边界、长文本预览、并发写期间的一致快照、取消与数据库失败；增加静态资源、深链接、API 优先级、缺失资源与方法测试。
 2. web：Vitest + Testing Library，重点测本地自然日边界、午夜无快照推进、时区与夏令时、Goal 最后成员及未知时间证据、20/21/40/41 条分页、汇总行和 Goal 子任务计数、跨页定位、独立页码恢复/筛选重置/缩页钳位、完整图独立分类、页签未完成任务数与默认/恢复、普通多起点合为唯一分量、筛选计数稳定、全部完成归零及刷新后的状态/分类计数、独立任务直接详情、分类迁移、独立筛选与浏览位置、普通起点/代表识别、闭包、菱形去重、显式外部边与链外前置、统计口径、请求取消/晚到、失败重试和居中详情焦点。项目列表必须覆盖续页游标、末页隐藏加载按钮、去重及下一页失败重试，证明所有项目可访问。断言可见行为，不依赖框架内部坐标。

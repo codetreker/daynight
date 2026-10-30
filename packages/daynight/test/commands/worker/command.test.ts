@@ -52,11 +52,13 @@ describe("worker command", () => {
   it("passes startup context and defers repository preparation to the foreground runtime's signal", async () => {
     const { cli, errors } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
+    cli.workingDirectory = vi.fn(() => path.resolve("startup-directory"));
     const run = vi.fn<WorkerCommandDependencies["run"]>(async (options) => { options.log?.("worker started\n"); });
     const deps = { ...dependencies(), run };
     await runWorkerCommand(["run"], cli, deps);
     expect(deps.prepareRepositories).not.toHaveBeenCalled();
-    expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, log: expect.any(Function), prepareRepositories: expect.any(Function) });
+    expect(run).toHaveBeenCalledExactlyOnceWith({ homeDirectory: cli.homeDirectory(), packageDirectory: cli.packageDirectory, version: cli.version, workingDirectory: path.resolve("startup-directory"), log: expect.any(Function), prepareRepositories: expect.any(Function) });
+    expect(cli.workingDirectory).toHaveBeenCalledOnce();
     expect(errors).toEqual(["worker started\n"]);
     const signal = new AbortController().signal;
     await run.mock.calls[0]![0].prepareRepositories!(signal);
@@ -109,6 +111,7 @@ describe("worker command", () => {
     const { cli } = context();
     cli.homeDirectory = () => path.resolve("worker-home");
     const deps = dependencies();
+    cli.workingDirectory = () => path.resolve("startup-directory");
     const failure = new Error("Project selection cancelled.");
     const signal = new AbortController().signal;
     deps.prepareRepositories.mockRejectedValueOnce(failure);

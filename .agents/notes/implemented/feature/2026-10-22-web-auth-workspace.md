@@ -18,8 +18,11 @@ could be exercised without publishing mixed authentication behavior. It now
 serves login and protected production pages through the
 [activation decision](../architecture/2026-10-22-authentication-activation.md).
 It provides login, private project creation, account/token pages, member and invitation management,
-and explicit invitation acceptance. It composes the existing project list,
-project task tabs, graph and centered `TaskDetailDialog`. Workspace navigation
+and explicit invitation acceptance. It composes the project list, project task
+tabs, graph, centered `TaskDetailDialog` and account-owned My Workers pages. The
+[Worker observation decision](../architecture/2026-10-29-web-worker-observations.md)
+owns their page-local data and freshness lifecycle inside the same authenticated
+identity; it does not add Worker data to the project cache. Workspace navigation
 keeps the account entry in its sidebar footer; the [account navigation decision](2026-10-25-bottom-account-navigation.md)
 owns its placement, and the [sidebar preference decision](2026-10-25-sidebar-preference.md)
 owns local folding and temporary narrow-screen navigation. Production `main.tsx`

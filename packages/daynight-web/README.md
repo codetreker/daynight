@@ -1,9 +1,9 @@
 # daynight-web
 
 The React/TypeScript Web app provides a public product introduction and a private
-workspace. The workspace implements project browsing, cursor
-pagination, request cancellation, runtime API decoding, native browser routing
-and a pure dependency graph model with horizontal layout. Project task views
+workspace. The workspace implements project browsing, account-owned Worker
+observations, cursor pagination, request cancellation, runtime API decoding, native
+browser routing and a pure dependency graph model with horizontal layout. Project task views
 use an IndexedDB summary cache and the authenticated task-sync endpoint.
 The project dashboard, task canvas and task detail dialog are embedded into the Go
 server for single-origin delivery. The [localhost deployment](../../deployment/localhost/README.md)
@@ -29,8 +29,9 @@ projects, member and invitation management, CLI device authorization, and person
 `Application` responds to browser location under the persistent `LocaleProvider`: `/`
 shows the public introduction, `/setup` selects the zero-API guide, and other pages
 use the existing authenticated lifecycle. `/login` is explicit and `/projects` is
-the workspace index; every business API
-requires a browser session or PAT and current project membership. The Go service
+the project index. Business APIs require a browser session or PAT; project
+resources also require current membership, while Worker resources belong to the
+current account and filter their saved task observations by current project access. The Go service
 retains loopback-only listening. Trusted same-origin previews, relative resources
 and keyboard behavior remain unchanged.
 The [Web workspace decision](../../.agents/notes/implemented/feature/2026-10-22-web-auth-workspace.md)
@@ -108,13 +109,14 @@ validation, notices and already displayed errors. Login, workspace, invitation, 
 and management dialogs expose the shared language selector; native formatters
 render dates and counts. Language changes retain form inputs, dialog and
 one-time secrets, identity and pending requests without restarting operations.
-It composes the existing project list, graph and shared task-detail surfaces with
-private project creation, account/token pages, member/invitation management,
+It composes the project list, graph, shared task-detail surfaces and My Workers
+list/detail with private project creation, account/token pages, member/invitation management,
 project execution-warning settings and explicit invitation acceptance.
 
-`WorkspaceSidebar` lists accessible projects as indented links below My projects
-in its scrollable upper region. The index selects My projects; project, member
-and settings routes select the corresponding project. Links preserve native
+`WorkspaceSidebar` provides peer My projects and My Workers entries in its
+scrollable upper region. Accessible projects appear as indented links below My
+projects. The project index selects My projects; project, member and settings
+routes select the corresponding project. Both Worker routes select My Workers. Links preserve native
 modified clicks, expose full names through accessible text and titles, and
 truncate long visible names. Project children appear in expanded desktop and
 mobile navigation and are hidden in the folded rail. Initial loading, empty and
@@ -279,6 +281,83 @@ The scenario controls cover loading, conflicts, unconfirmed updates,
 reconciliation failures, unavailable tokens, and long names. The shared language
 selector and final responsive styles remain
 interactive without a Go service.
+
+## My Workers
+
+The account-owned `/workers` list and `/workers/{workerId}` detail show Workers
+that have reported within the last 72 hours. Both support direct access, reloads
+and login return destinations. They mount inside the existing authenticated
+workspace and share its navigation, styles and language. Sidebar project loading
+or failure does not admit or block Worker reads. Worker ID participates in the
+page's resource key, content focus and mobile navigation lifetime.
+
+The list uses only the actual summary: machine name, platform, last report time,
+task observation state and currently visible task count. It does not infer an OS
+release or load every detail. `null` task count means information unavailable;
+observed zero means idle. Stale task information retains its observation time.
+The complete collection sorts online first, latest report next and Worker ID as
+the stable tie-breaker.
+
+Detail resource cards render actual OS type/release/version/architecture, CPU
+model/logical processor count/use, used/total memory and available/total capacity
+of the startup working directory's filesystem. Capacity readings use localized
+IEC units while the API retains exact byte values. The directory is explicit; there
+is no inferred physical core count or fabricated device label. Zero capacity is
+valid data and does not produce a division-based meter. Software rows distinguish
+an installed version, unavailable detection, Codex/Copilot not installed and
+private Herdr not running. `checkedAt`, `sampledAt` and server `lastReportedAt`
+retain their different meanings. Version text is displayed without adding a
+minimum-version or semantic-version check.
+
+`api/workers.ts` decodes the account snapshot contract and admits the principal
+before parsing either a successful response or a resource error, including 404.
+`useWorkers`, `useWorker` and `useWorkerObservation` retain only page-local memory.
+They reuse TaskCacheScope for authenticated lifetime and foreground admission;
+Worker data never enters the project cache, IndexedDB or a global registry.
+Reads and publication both wait for identity confirmation, and abort signals,
+resource identity and request generations fence late results. The shell's
+`readEnabled` pauses private work during identity checking and blocking recovery.
+Same-account verification retains the last observation but rereads it; account
+replacement destroys the old workspace and its memory.
+
+One visible page owns one five-second single-flight refresh and one one-second
+ticker. The list traverses every cursor privately and replaces the collection
+only when the whole traversal succeeds. A failed page retains the previous
+complete collection and exposes retry. Its last response supplies `observedAt`
+and the paired `performance.now()` receipt for a common server-time anchor.
+Online means less than 120 seconds since `lastReportedAt`; exactly 120 seconds
+is offline. Exactly 72 hours remains recent; later observations disappear, and
+an expired detail becomes unavailable. Browser wall-clock changes do not affect
+these rules.
+
+Read failure, hidden state and identity checking freeze the last published
+server time and mark retained content stale. The UI shows the last confirmed
+badge and synchronization problem rather than treating browser connectivity as
+Worker liveness. Visibility return or same-account recovery starts a fresh read;
+only success recalibrates the anchor and resumes the ticker. An admitted
+current-principal 404 clears the old detail. Initial loading, initial failure,
+empty results and retained-snapshot refresh failure have separate displays.
+
+Online badges use green. Offline text and dot use `#b54708` on `#fff0e6`, with
+explicit labels in the list, detail and narrow layout. Historical task rows and
+counts use only the server's currently authorized snapshot. They show simple
+business status, existing phase and agent, including Claude Code, while real
+anchors open the current task through `taskDetailUrl` and preserve modified and
+new-tab clicks. A project cache cannot restore a title, row or count removed by
+the server. Neither offline state, expiry nor a read error mutates a task or
+claim. Stable React identities preserve still-present keyboard targets during
+ticks and refreshes; desktop and 390px layouts wrap long names, paths and tasks.
+
+The [Web requirements](../../docs/spec/daynight-web.md#我的-worker),
+[Web design](../../docs/design/daynight-web.md#我的-worker-列表与详情) and
+[observation decision](../../.agents/notes/implemented/architecture/2026-10-29-web-worker-observations.md)
+own the page behavior and its rationale. The
+[snapshot protocol](../../docs/spec/daynight-worker-snapshots.md) owns the exact
+DTOs and permission filtering; the
+[client reporting contract](../../docs/spec/daynight-worker-reporting.md) owns
+collection, reporting and version age. Component or controlled-browser results
+prove their stated frontend scope; combined Server, CLI and Web acceptance must
+separately establish real reporting, resources, permissions and recovery.
 
 ## Project execution-warning settings
 

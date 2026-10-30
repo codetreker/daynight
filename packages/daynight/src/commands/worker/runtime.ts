@@ -30,6 +30,8 @@ import { acquireWorkerInstanceLock, tryAcquireWorkerInstanceLock } from "./insta
 import { resolveWorkerPaths } from "./paths.js";
 import { createWorkerPromptBuilder } from "./prompts.js";
 import { createWorkerRemote } from "./remote.js";
+import { createWorkerReporter } from "./reporter.js";
+import { createWorkerTelemetryCollector } from "./telemetry.js";
 import { openWorkerStore } from "./store.js";
 import { createWorkerGitManager } from "./worktrees.js";
 
@@ -134,7 +136,7 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
 };
 
 export const runWorker = async (options: {
-  homeDirectory: string; packageDirectory: string;
+  homeDirectory: string; packageDirectory: string; version: string; workingDirectory: string;
   log?: (message: string) => void; signal?: AbortSignal;
   prepareRepositories?: (signal: AbortSignal) => Promise<void>;
 }): Promise<void> => {
@@ -151,6 +153,7 @@ export const runWorker = async (options: {
   let diagnostics: Awaited<ReturnType<typeof createWorkerDiagnostics>> | undefined;
   const failures: unknown[] = [];
   let renewal: Promise<void> | undefined;
+  let reporter: ReturnType<typeof createWorkerReporter> | undefined;
   try {
     signal.throwIfAborted();
     let configuration = await readWorkerConfiguration(paths, signal);
@@ -175,6 +178,9 @@ export const runWorker = async (options: {
     diagnostics = await createWorkerDiagnostics({ paths, workerId, platform, ...(options.log === undefined ? {} : { log: options.log }), secrets: [serverToken] });
     const remote = createWorkerRemote({ serverUrl, serverToken });
     await remote.currentUserId(signal);
+    const machine = machineDescription(platform);
+    const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform });
+    reporter = createWorkerReporter({ signal, collect: operation => telemetry.collect(operation), send: (report, operation) => remote.report(workerId, report, operation), emit: diagnostics.emit });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
     const agentEnvironment = await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal);
     const lazyHerdr = new Proxy({} as ReturnType<typeof createWorkerHerdr>, { get: (_target, property) => {
@@ -202,7 +208,8 @@ export const runWorker = async (options: {
     }
     coordinator = createWorkerCoordinator({
       store, git, herdr: lazyHerdr, ...web, remote, serverOrigin: serverUrl, workerId, platform,
-      machine: machineDescription(platform), repositories,
+      machine, repositories,
+      onInventory: reporter.publishInventory, onClaim: reporter.recordClaim,
       maxConcurrent: configuration.maxConcurrent, globalConfiguration: configuration,
       buildPrompt: await createWorkerPromptBuilder(options.packageDirectory),
       emit: diagnostics.emit, signal,
@@ -232,6 +239,7 @@ export const runWorker = async (options: {
   } finally {
     if (!signal.aborted) cancellation.controller.abort(new Error("Worker runtime is closing."));
     await renewal;
+    try { await reporter?.stop(); } catch (error) { failures.push(error); }
     if (coordinator !== undefined) {
       try {
         diagnostics?.emit({ kind: "shutdown", message: "Stopping agents while retaining unfinished claims, worktrees and native session IDs." });

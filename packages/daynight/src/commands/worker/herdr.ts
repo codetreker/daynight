@@ -1,7 +1,7 @@
 import type { WorkerPaths } from "./paths.js";
 import type { HerdrWorkspaceEnvironment } from "./herdr/agents.js";
 import { createHerdrAgentManager } from "./herdr/agents.js";
-import { createHerdrInstance } from "./herdr/instance.js";
+import { createHerdrInstance, createHerdrNativeEnvironment } from "./herdr/instance.js";
 import { createHerdrPreflight } from "./herdr/preflight.js";
 
 export type {
@@ -28,12 +28,10 @@ export const createWorkerHerdr = (options: {
 }) => {
   const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
   const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
-  const nativeEnvironment = { ...instance.environment };
+  const nativeEnvironment = createHerdrNativeEnvironment(options.paths, inheritedEnvironment);
   const workspaceEnvironment: { -readonly [K in keyof HerdrWorkspaceEnvironment]: HerdrWorkspaceEnvironment[K] } = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", ...options.agentEnvironment };
   for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const) {
     const value = inheritedEnvironment[key];
-    if (value === undefined) delete nativeEnvironment[key];
-    else nativeEnvironment[key] = value;
     // Herdr's workspace map cannot remove keys; empty XDG values select the user's defaults.
     // https://specifications.freedesktop.org/basedir/latest/
     workspaceEnvironment[key] = value === undefined ? "" : value;

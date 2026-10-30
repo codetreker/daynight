@@ -21,7 +21,7 @@ const Harness = ({ collapsed = false, routeKey = "/", identityChecking = false, 
   const workspace = useRef<HTMLDivElement>(null);
   useBodyScrollLock(anotherLock);
   return <ProjectsProvider>
-    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} activeProjectId={null} accountActive={routeKey === "/account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
+    <WorkspaceSidebar collapsed={collapsed} onToggle={onToggle} routeKey={routeKey} projectsActive={routeKey === "/"} workersActive={routeKey === "/workers" || routeKey.startsWith("/workers/")} activeProjectId={null} accountActive={routeKey === "/account"} identityChecking={identityChecking} workspaceRef={workspace} onNavigate={onNavigate} />
     <div ref={workspace} data-testid="workspace" inert={initiallyInert}><input aria-label="Retained draft" defaultValue="Unsubmitted" /></div>
   </ProjectsProvider>;
 };
@@ -48,6 +48,33 @@ describe("workspace sidebar", () => {
     expect(onToggle).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.body.style.overflow).not.toBe("hidden");
+  });
+
+  it.each(["/workers", "/workers/00000000-0000-4000-8000-000000000001"])("keeps Worker route %s active as a peer of project navigation", (routeKey) => {
+    render(<Harness collapsed routeKey={routeKey} />);
+    const workers = screen.getByRole("link", { name: "My Workers" });
+    const projects = screen.getByRole("link", { name: "My projects" });
+    expect(workers).toHaveAttribute("href", "/workers");
+    expect(workers).toHaveAttribute("title", "My Workers");
+    expect(workers).toHaveAttribute("aria-current", "page");
+    expect(projects).not.toHaveAttribute("aria-current");
+    expect(workers.parentElement).toBe(projects.parentElement);
+    expect(workers.closest(".sidebar-projects")).toBeNull();
+  });
+
+  it("retains native modified Worker navigation and closes the mobile drawer for ordinary navigation", () => {
+    mockSidebarMediaQuery(true);
+    const onNavigate = vi.fn();
+    render(<Harness routeKey="/workers/00000000-0000-4000-8000-000000000001" onNavigate={onNavigate} />);
+    const { drawer } = openDrawer();
+    const workers = within(drawer).getByRole("link", { name: "My Workers" });
+    fireEvent.click(workers, { ctrlKey: true });
+    expect(screen.getByRole("dialog")).toBe(drawer);
+    expect(onNavigate).not.toHaveBeenCalled();
+    fireEvent.click(workers);
+    expect(window.location.pathname).toBe("/workers");
+    expect(onNavigate).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
   it("updates accessible names in place when the interface language changes", () => {

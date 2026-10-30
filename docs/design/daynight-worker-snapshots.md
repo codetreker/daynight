@@ -1,6 +1,6 @@
 # Worker 运行快照服务端设计
 
-账号级运行快照为认证客户端保存最近一次机器观测。[需求与协议](../spec/daynight-worker-snapshots.md)拥有字段和可观察行为；[决策记录](../../.agents/notes/implemented/architecture/2026-10-28-worker-runtime-snapshots.md)保存职责分离及真实替代方案的取舍。任务执行仍由[claim 协议](daynight-worker-claims.md)管理。
+账号级运行快照为认证客户端保存最近一次机器观测。[需求与协议](../spec/daynight-worker-snapshots.md)拥有字段和可观察行为；[决策记录](../../.agents/notes/implemented/architecture/2026-10-28-worker-runtime-snapshots.md)保存职责分离及真实替代方案的取舍。[客户端采集与调度](daynight-worker-reporting.md)提供完整观测及已有清单引用，任务执行仍由[claim 协议](daynight-worker-claims.md)管理。
 
 ## 结构与职责
 
