@@ -19,6 +19,10 @@ readers by purpose and identifies the explicit managed startup declaration;
 operational rules live in the references. Readers load only the owners needed
 for the current operation and their required references.
 
+Shared execution owns PR description requirements for both execution modes:
+explain the problem and solution, and include the ID and title of an associated
+Daynight task.
+
 | Reference | Rule ownership |
 | --- | --- |
 | [Authorization and scope](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/authorization.md) | Tracking, operational authorization and task boundaries |

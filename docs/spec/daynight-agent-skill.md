@@ -148,6 +148,8 @@ feature、bug 修复、架构或设计工作及拆解出的实际工作项，按
 | PR URL 与 title | `properties.pullRequests` |
 | 执行或讨论计划、步骤、工具、协作、操作授权、进度、阻塞、等待和恢复上下文 | session 或宿主已有的本地执行检查点 |
 
+创建 PR 时，description 必须清楚说明要解决的问题及采用的解决方式；关联 Daynight task 时，必须包含该 task 的 ID 和 title。此要求适用于普通与托管执行，由共享执行规范统一定义。
+
 共享 `references/task-content.md` 拥有总原则、分类标准和阶段适用性，创建、Goal 拆分、
 handoff 和执行共同读取。Task 说明要实现和交付什么；session 保存如何执行或讨论。
 任务正文、附件和引用任务材料采用相同边界，不能通过改名、另建附件或引用文档保存
