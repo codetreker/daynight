@@ -57,8 +57,14 @@ The installed platform/status matrix runs independently as
 `TestInstalledCLIPlatformAcceptance` / `installed_cli_platform_status_workflow`.
 It retains all four platform values across nine status pairs and the original
 project/task workflow retains its assertions. Separate owned database, installed
-CLI workspace and server fixtures give each scenario the existing 45-second
-server lifetime; the matrix does not consume the main workflow's process budget.
+CLI workspace and server fixtures keep their process budgets independent. The
+platform matrix and other scenarios retain the 45-second server lifetime. The
+main project/task journey uses a two-minute server lifetime because it starts
+over a hundred real CLI processes; cumulative startup cost under race-enabled
+CI can exhaust 45 seconds while individual operations still meet their deadlines.
+Each CLI process remains bounded to 15 seconds, with unchanged startup, shutdown,
+result-receive and cleanup limits. The longer lifetime is a fixture budget, not
+a service latency requirement or an extension of individual operation deadlines.
 The platform scenario requires graceful SIGTERM exit 0 and normal cleanup evidence.
 Its source-bound runtime receipt remains distinct from source inspection or this
 scenario description.
@@ -127,6 +133,11 @@ retains original-byte, rendering, reader-input and K1 storage boundaries; shared
 artifacts do not collapse those separate proofs into this lifecycle journey.
 
 ## Alternatives
+
+**Retry the whole workflow until the 45-second fixture survives.** This leaves
+correctness acceptance dependent on cumulative process startup speed. A bounded
+lifetime specific to the long scenario preserves the individual operation and
+cleanup limits without changing the budgets of shorter scenarios.
 
 **Create another combined acceptance runner.** It would duplicate service,
 database, installation and cleanup ownership. The existing Go and Web fixtures
