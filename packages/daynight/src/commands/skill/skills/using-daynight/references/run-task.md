@@ -1,66 +1,25 @@
-# Run one task
+# Ordinary task execution
 
-Execute exactly one specified task ID within the user's authorized scope. Read
-[the handbook](handbook.md) for CLI operations, data semantics, and failures.
-This mode owns the ordinary task lifecycle. It returns without choosing a
-successor, except for the explicit user-directed requirements-to-solution
-transition under [the Goal protocol](goal.md).
+Use for one task explicitly specified by the user.
+Apply [authorization and scope](authorization.md) first, read the complete task with `daynight task show <task-id> --json`, and verify inputs and completion conditions under [shared task execution](task-execution.md).
 
-## Establish the task
+## Start or resume
 
-Read the complete task with `daynight task show <task-id> --json`. Preserve the
-requested task ID through recovery and waiting. Read and apply
-[shared task execution](task-execution.md) for its required inputs,
-prerequisites, confirmed scope, work, results, and acceptance.
+| Observed status | Behavior |
+| --- | --- |
+| todo | Once ready and authorized for execution, use `task set-status` with the exact observed version to enter `in_progress`; confirm success before starting. |
+| in_progress | Reconcile existing work and session context, coordinate and resume through established repository mechanisms, and do not treat status as an execution lock. |
+| done | Report that it is already complete; consider reopening only when the explicit request includes it. |
 
-An explicitly user-selected task may use this execution path regardless of
-`allowAgents` or platform compatibility. These conditions gate automatic worker
-selection, not an explicit task assignment. They do not remove dependencies,
-stage inputs, or execution and delivery authorization. This mode does not select
-candidates or automatically advance a fixed task queue.
+An explicit ordinary assignment is not restricted by `allowAgents` or platform filtering for automatic selection; see [task management](task-management.md#metadata).
+This workflow does not select candidate tasks or advance a queue automatically.
 
-Creation leaves a task `todo` and does not execute it. An explicit request to
-start the current Goal discussion, or the user-directed transition that starts
-solution discussion, authorizes entering `in_progress` for that discussion under
-the Goal protocol; registration alone does not. Existing execution authorization
-remains limited to its stated scope. Task status never expands implementation
-or delivery authorization.
+## Complete or wait
 
-## Start or resume the task
+Follow the shared execution rules.
+Once all completion conditions are met, reread the in-progress task, set it to done using its observed version, and confirm the service result.
+Handle all changes and uncertain responses under [write safety](write-safety.md); ordinary completion does not include a worker claim.
 
-For ready `todo`, begin only when dependencies are done, required stage inputs
-are complete, and the work is authorized. Use
-`task set-status <task-id> in_progress --if-version <observed-version>` with the
-exact version observed for that decision and confirm `in_progress` before
-starting. A stale version or changed prerequisite requires rereading and
-reconsidering, with no automatic mutation retry.
-
-For `in_progress`, recover existing work and coordinate using the project's
-established mechanisms; the state is not an assignee lock or lease. A task
-already `done` is reported as such unless reopening is within the explicit
-requested scope. An authorized reopening uses the same versioned status setter
-and dependency protection.
-
-Perform the authorized work and establish acceptance readiness under
-[shared task execution](task-execution.md). Starting a task is not evidence that
-its delivery or acceptance is complete.
-
-## Complete or return waiting
-
-When all task acceptance and delivery conditions are satisfied and its required
-results are readable, reread the complete in-progress task and use
-`task set-status <task-id> done --if-version <observed-version>` with its exact
-observed version. Only service confirmation establishes the status update;
-reconcile uncertain results before reporting success. Do not replay an
-unconfirmed mutation automatically.
-
-For Goal discussions, completion follows the confirmation gates and accepted
-materials in the Goal protocol. After requirements completion is confirmed, an
-explicit user direction can start the specified solution discussion under that
-protocol. It grants no automatic successor selection or delivery authorization.
-Whole-Goal acceptance follows the Goal protocol.
-
-Otherwise return after this task completes or needs external intervention.
-Unstarted work stays `todo`; active work stays `in_progress`. Keep the target and
-waiting checkpoint when necessary PR merges, human confirmation, permission, or
-acceptance remain pending; do not select another task to bypass the wait.
+When merging, human confirmation, authorization, or acceptance is still missing, keep the task in progress and preserve the waiting context.
+Tasks not yet started remain todo.
+Return when complete or when external intervention is needed, without selecting a successor; follow the [Goal protocol](goal.md) for discussion-stage transitions explicitly directed by the user.
