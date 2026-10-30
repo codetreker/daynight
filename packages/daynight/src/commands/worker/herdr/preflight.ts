@@ -5,6 +5,7 @@ import type { Operation } from "../../../api/operation.js";
 import { codexProjectTrustArguments, nativeAgentPermissionArguments, nativeAgentPermissionEnvironment, validateHerdrAgentArguments } from "./arguments.js";
 import { runHerdrCommand } from "./command.js";
 import type { HerdrCommand, HerdrCommandResult } from "./command.js";
+import { probeNativeAgentVersion } from "./version-probe.js";
 import type { HerdrRpcClient } from "./rpc.js";
 import { assertCodexInstallConfigurationSafe } from "./codex-install-safety.js";
 
@@ -190,13 +191,11 @@ export const createNativePrerequisiteChecks = (options: {
     kind: "version", label: `${agent} executable`,
     remedy: `Install or update the ${agent} CLI and make it available on PATH.`,
     verify: async (operation) => {
-      const output = (await runCommand({ file: agent, args: ["--version"], environment, cwd }, operation)).stdout;
-      const match = agent === "codex" ? /^codex-cli (\d+\.\d+\.\d+)(?:\s|$)/m.exec(output) : agent === "claude" ? /^(\d+\.\d+\.\d+) \(Claude Code\)(?:\s|$)/m.exec(output) : /^GitHub Copilot CLI (\d+\.\d+\.\d+)(?:[.\s]|$)/m.exec(output);
-      if (match === null) throw new Error(`Cannot identify the installed ${agent} executable version.`);
+      const version = await probeNativeAgentVersion({ agent, environment, cwd, runCommand }, operation);
       // Earlier releases expose the bypass flag while still showing an interactive startup hook review.
       // https://github.com/openai/codex/commit/5fb5e47767ac4910f7c208481c23bf4d2fe5cf62
-      if (agent === "codex" && !gte(match[1]!, "0.135.0")) throw new Error("Codex 0.135.0 or newer is required to bypass startup hook trust review.");
-      return match[1]!;
+      if (agent === "codex" && !gte(version, "0.135.0")) throw new Error("Codex 0.135.0 or newer is required to bypass startup hook trust review.");
+      return version;
     },
   }, ...nativeHookRuntimeChecks({ environment, cwd, platform, runCommand }), {
     kind: "configuration", label: `${agent} official hook asset`,

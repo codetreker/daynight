@@ -323,8 +323,8 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 本文的任务管理接口范围不包含自动任务执行、PR 关联、review 调度、跨 project
 依赖或 project/task 删除接口。任务链图查询由本文定义，浏览器页面及内嵌交付要求由
 [看板需求](daynight-web.md)与[公开入口要求](daynight-landing.md)拥有，包括公开 `/` 推广页、
-独立 `/login`、`/projects` 项目列表、公开静态 `/setup` 日常使用引导，以及基础任务路径
-和附件路径的独立完整详情 GET/HEAD 深链接。页面只交付既有 index，完整详情、项目图、附件清单与文件读取继续使用原接口；
+独立 `/login`、`/projects` 项目列表、账号级 `/workers` 和 `/workers/{workerId}`、公开静态 `/setup` 日常使用引导，以及基础任务路径
+和附件路径的独立完整详情 GET/HEAD 深链接。页面只交付既有 index，Worker 观测、完整任务详情、项目图、附件清单与文件读取使用各自已有接口；
 页面行为遵守[独立详情要求](daynight-task-inspection.md#独立完整任务详情)，附件路径校验、
 未知路径和方法拒绝遵守[附件阅读要求](daynight-task-attachments.md#独立页面完整阅读)。现有分页接口继续
 遵循本文的快照边界。后续扩展必须保留现有 task 身份、

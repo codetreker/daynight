@@ -1,3 +1,4 @@
+import type { WorkersMessages } from "./messages/workers";
 import type { TaskStatus } from "../api/types";
 import type { WorkspaceMessages } from "./messages/workspace";
 import type { GraphMessages } from "./messages/graph";
@@ -19,6 +20,7 @@ export type Messages = {
     readonly requestId: string;
   };
   readonly workspace: WorkspaceMessages;
+  readonly workers: WorkersMessages;
   readonly graph: GraphMessages;
   readonly inspection: InspectionMessages;
   readonly automation: AutomationMessages;

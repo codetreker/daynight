@@ -273,7 +273,9 @@ Diagnostics correlate original IDs, local state, recovery and cleanup errors;
 neither diagnostics nor terminal idle/done authorize task completion.
 
 Backend routing follows each saved claim. The Herdr adapter is constructed
-lazily, so a pure Web run, cleanup or shutdown neither probes nor starts Herdr.
+lazily, so pure Web execution, cleanup and shutdown do not probe or start Herdr.
+Independent [runtime reporting](2026-10-28-worker-runtime-reporting.md) reads only
+the private version endpoint without initializing that execution adapter.
 Old Herdr responsibilities still use their original instance when new work is
 configured for Web. Session capability/version/provider preflight precedes new
 Web acquisition. A Controller surviving worker exit is reobserved; replacing it

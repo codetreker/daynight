@@ -1,6 +1,6 @@
 # Worker 运行快照接口
 
-本文定义账号级 Worker 最新运行快照的服务端协议。[设计](../design/daynight-worker-snapshots.md)拥有事务、查询与存储机制；[任务认领协议](../design/daynight-worker-claims.md)继续拥有任务执行归属。
+本文定义账号级 Worker 最新运行快照的服务端协议。[设计](../design/daynight-worker-snapshots.md)拥有事务、查询与存储机制；[客户端上报需求](daynight-worker-reporting.md)拥有 CLI 的持续采集、调度与取消；[任务认领协议](../design/daynight-worker-claims.md)继续拥有任务执行归属。
 
 Worker 快照是认证客户端主动提交的观测。服务端校验格式、账号及任务归属，不执行系统采集或启动执行进程。硬件和版本数据是客户端提供的展示信息，机器名称及 machine.id 不构成认证身份。
 

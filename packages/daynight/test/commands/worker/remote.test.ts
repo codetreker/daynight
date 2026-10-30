@@ -7,6 +7,7 @@ import * as operations from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
 import type { Project, Task, WorkerClaim, WorkerClaimDescriptor } from "../../../src/api/types.js";
 import { createWorkerRemote } from "../../../src/commands/worker/remote.js";
+import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
 const uuid = (value: number): string => `00000000-0000-4000-8000-${String(value).padStart(12, "0")}`;
 const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
@@ -60,6 +61,50 @@ afterEach(async () => {
 });
 
 describe("worker remote API", () => {
+  it("reports through the caller operation with verified identity and a 200 receipt", async () => {
+    const requests: { method: string | undefined; url: string | undefined; body: unknown }[] = [];
+    const receipt = { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime };
+    const body = { ...workerTelemetry, taskInventory: null };
+    const serverUrl = await listen((request, response, input) => {
+      requests.push({ method: request.method, url: request.url, body: input }); respond(response, receipt);
+    });
+    const remote = await verifiedRemote(serverUrl);
+    const operation = operations.createOperation({ limits: { totalMs: 15_000, requestMs: 10_000 } });
+    const opened = vi.spyOn(operations, "createOperation");
+    try {
+      await expect(remote.report(workerId, body, operation)).resolves.toEqual(receipt);
+      expect(opened).not.toHaveBeenCalled(); expect(() => operation.check()).not.toThrow();
+      expect(requests).toEqual([{ method: "POST", url: `/api/v1/me/workers/${workerId}/report`, body }]);
+    } finally { operation.dispose(); }
+  });
+
+  it("requires report identity and respects caller cancellation before dispatch", async () => {
+    let requests = 0;
+    const serverUrl = await listen((_request, response) => { requests++; respond(response, {}); });
+    const remote = createWorkerRemote({ serverUrl });
+    const operation = operations.createOperation();
+    const body = { ...workerTelemetry, taskInventory: null };
+    try {
+      expect(() => remote.report(workerId, body, operation)).toThrow("verify its authenticated user");
+      await remote.currentUserId(signal()); operation.dispose();
+      expect(() => remote.report(workerId, body, operation)).toThrow("disposed");
+      expect(requests).toBe(0);
+    } finally { operation.dispose(); }
+  });
+
+  it("refuses changed report provenance and never replays an unconfirmed report", async () => {
+    let requests = 0;
+    const serverUrl = await listen((_request, response) => {
+      requests++; response.setHeader("Daynight-User-ID", uuid(80));
+      respond(response, { observedAt: workerTelemetryTime, lastReportedAt: workerTelemetryTime });
+    });
+    const remote = await verifiedRemote(serverUrl), operation = operations.createOperation();
+    try {
+      await expect(remote.report(workerId, { ...workerTelemetry, taskInventory: null }, operation)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
+      expect(requests).toBe(1);
+    } finally { operation.dispose(); }
+  });
+
   it("requires a verified principal before project, inventory or claim requests", async () => {
     let requests = 0;
     const serverUrl = await listen((_request, response) => { requests++; respond(response, { items: [], nextCursor: null }); }, { identity: false });

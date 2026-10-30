@@ -19,7 +19,9 @@ defines report, list and detail resources; the
 [design](../../../../docs/design/daynight-worker-snapshots.md) owns their
 transactions and read models. The existing
 [claim foundation](2026-10-24-worker-claim-foundation.md) retains execution
-authority.
+authority. The [runtime reporting decision](2026-10-28-worker-runtime-reporting.md)
+owns the CLI producer's independent scheduling, read-only collection and
+process-local lifecycle.
 
 A dedicated workers row atomically stores server observation time, validated
 telemetry and a server-normalized task snapshot. Client reports carry task
