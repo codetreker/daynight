@@ -36,7 +36,7 @@
 
 Controller 的升级和原 ticket/generation 校验、writer 认领位于同一外层事务；纯升级不运行这些业务步骤。Lease 的建库/迁移、查重和首个 INSERT 同样在一笔事务内。原有异步的文件、账号和进程证明准备留在事务外，最终事务重查稳定身份与格式。
 
-连接先以不改写文件的方式识别合法来源，再配置现有 writer 所需的 WAL/FULL，进入写事务重查。事务原子性覆盖结构、记录和版本，不承诺 journal mode 或数据库/WAL 文件逐字节回到打开前。SQLite 的单 writer 和事务语义见[官方事务说明](https://sqlite.org/lang_transaction.html)；同步 callback 的约束见 [better-sqlite3 API](https://github.com/WiseLibs/better-sqlite3/blob/dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb/docs/api.md)。
+可写连接先在一个短 DEFERRED 读取事务内完成整个来源初检，使 user_version 和所有结构读取属于同一快照。该读取事务结束后，才配置现有 writer 所需的 WAL/FULL；随后取得 IMMEDIATE 写事务并重新检查版本、结构及准入，不把初检结果当成迁移依据。这样并发连接提交升级时，初检仍看到完整的旧格式，后续写事务则使用实际已提交格式。事务原子性覆盖结构、记录和版本，不承诺 journal mode 或数据库/WAL 文件逐字节回到打开前。SQLite 的单 writer 和事务语义见[官方事务说明](https://sqlite.org/lang_transaction.html)；同步 callback 的约束见 [better-sqlite3 API](https://github.com/WiseLibs/better-sqlite3/blob/dbc2ea1165fef1f599b9be12faea33fa5e9d7ffb/docs/api.md)。
 
 ## 查询与维护连接
 

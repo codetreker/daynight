@@ -34,11 +34,18 @@ current records and the existing Web JSON strings instead of turning versioning
 into a data-cleaning operation. The minimal index still has only its business
 columns; no history, identity or recovery ledger is added.
 
-Current-format queries inspect and read within one readonly snapshot, without
-additional migration write permission or instance-lock acquisition. A supported
-older format is upgraded through a short writable connection before reopening
-the query snapshot. Missing databases retain each entrypoint's established
-meaning; permissions, corruption and unknown formats remain visible failures.
+Every source inspection reads its version and schema in one snapshot, including
+the writable opener's initial preflight. That short DEFERRED transaction ends
+before WAL/FULL configuration; the IMMEDIATE migration transaction then reads
+the actual source again. Concurrent commits cannot combine an old version with a
+new schema during validation.
+
+Current-format queries also inspect and read their business data in one readonly
+snapshot, without additional migration write permission or instance-lock
+acquisition. A supported older format is upgraded through a short writable
+connection before reopening the query snapshot. Missing databases retain each
+entrypoint's established meaning; permissions, corruption and unknown formats
+remain visible failures.
 
 Pure maintenance refuses every preexisting instance lock, including dead or
 uncertain owners. It releases only its own record after the gate and business

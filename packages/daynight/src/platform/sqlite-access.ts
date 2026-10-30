@@ -22,12 +22,11 @@ const markOutcome = (error: unknown, outcome: SqliteOutcome, phase?: string): vo
 export const sqliteTransactionOutcome = (error: unknown): SqliteOutcome => typeof error === "object" && error !== null ? outcomes.get(error) ?? "unknown" : "unknown";
 const thenable = (value: unknown): boolean => typeof value === "object" && value !== null && "then" in value && typeof value.then === "function";
 
-/** Migration boundaries own the whole transaction; domain savepoints remain outside this helper. */
-export const runSqliteImmediate = <T>(db: Database.Database, action: () => T): T => {
-  if (db.inTransaction) throw new Error("SQLite immediate boundary cannot nest an existing transaction.");
+const runSqliteTransaction = <T>(db: Database.Database, mode: "DEFERRED" | "IMMEDIATE", action: () => T): T => {
+  if (db.inTransaction) throw new Error(`SQLite ${mode.toLowerCase()} boundary cannot nest an existing transaction.`);
   let phase: "begin" | "action" | "commit" = "begin";
   try {
-    db.exec("BEGIN IMMEDIATE"); phase = "action";
+    db.exec(`BEGIN ${mode}`); phase = "action";
     const value = action();
     if (thenable(value)) throw new TypeError("SQLite transaction callbacks must be synchronous.");
     phase = "commit"; db.exec("COMMIT");
@@ -44,6 +43,8 @@ export const runSqliteImmediate = <T>(db: Database.Database, action: () => T): T
     markOutcome(primary, outcome, phase); throw primary;
   }
 };
+/** Migration boundaries own the whole transaction; domain savepoints remain outside this helper. */
+export const runSqliteImmediate = <T>(db: Database.Database, action: () => T): T => runSqliteTransaction(db, "IMMEDIATE", action);
 const missingError = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 export const sqliteDatabaseIsMissing = (file: string): boolean => {
   let candidate = file;
@@ -94,7 +95,12 @@ export const openSqliteDatabase = (options: OpenSqliteOptions): Database.Databas
   let phase = "inspect", source: SqliteSource | undefined, migrationId: string | undefined, started = 0, committed = false;
   const event = (kind: SqliteMigrationEvent["kind"], eventPhase: string, outcome: SqliteOutcome, transition?: SqliteTransition | null): SqliteMigrationEvent => ({ migrationId: migrationId!, database: options.format.name, file: options.file, kind, phase: eventPhase, fromVersion: transition === null ? currentSqliteVersion(options.format) : transition?.fromVersion ?? source!.version, toVersion: currentSqliteVersion(options.format), durationMs: Date.now() - started, outcome });
   try {
-    source = inspectSqlite(db, options.format, { allowEmpty: options.allowEmpty });
+    source = runSqliteTransaction(db, "DEFERRED", () => {
+      const observed = inspectSqlite(db, options.format, { allowEmpty: options.allowEmpty });
+      // Keep the observed version available if ending the read snapshot fails.
+      source = observed;
+      return observed;
+    });
     if (source.kind !== "current") { migrationId = randomUUID(); started = Date.now(); phase = "report"; report(event("started", "begin", "not-started")); }
     phase = "configure";
     if (db.pragma("journal_mode = WAL", { simple: true }) !== "wal") throw new Error("SQLite refused WAL mode.");
@@ -118,7 +124,7 @@ export const openSqliteDatabase = (options: OpenSqliteOptions): Database.Databas
     let closed = false, failure: unknown = primary;
     try { db.close(); closed = true; }
     catch (close) { failure = new AggregateError([primary, close], "SQLite operation and connection shutdown failed."); }
-    const wrapped = wrap(options, failedPhase, failure, closed, phase === "inspect" || phase === "configure" || phase === "report" && !committed ? "not-started" : outcome, source?.version);
+    const wrapped = wrap(options, failedPhase, failure, closed, phase === "inspect" && transactionPhase === undefined || phase === "configure" || phase === "report" && !committed ? "not-started" : outcome, source?.version);
     if (migrationId !== undefined) {
       try { report({ ...event("failed", failedPhase, wrapped.outcome), ...(wrapped.context.stepVersion === undefined ? {} : { stepVersion: wrapped.context.stepVersion }) }); }
       catch (reportError) { throw wrap(options, "report", new AggregateError([wrapped, reportError], "SQLite operation and failure reporting failed."), closed, wrapped.outcome, source?.version); }

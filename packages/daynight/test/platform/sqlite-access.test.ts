@@ -28,6 +28,50 @@ describe("SQLite access lifecycle", () => {
     expect(acquire).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce(); expect(read).toHaveBeenCalledOnce();
     expect(events.map(e => [e.kind, e.outcome])).toEqual([["started", "not-started"], ["completed", "committed"]]);
   });
+  it("keeps preflight version and schema in one snapshot while another reader upgrades", () => {
+    const file = makeFile(); seed(file);
+    const wal = connect(file); wal.pragma("journal_mode = WAL"); wal.close();
+    const steps: number[] = [];
+    const competing: SqliteFormat = {
+      ...format,
+      migrations: [2, 3, 4, 5].map(toVersion => ({ toVersion, up: db => { db.exec(`ALTER TABLE records ADD COLUMN extra${toVersion} TEXT`); steps.push(toVersion); } })),
+      validateVersioned: (db, version) => {
+        const actual = (db.pragma("table_info(records)") as { name: string }[]).map(row => row.name);
+        const expected = ["id", "value", ...Array.from({ length: version - 1 }, (_value, index) => `extra${index + 2}`)];
+        if (actual.join(",") !== expected.join(",")) throw new Error("Version and record layout disagree.");
+      },
+    };
+    const read = (db: Database.Database): string => (db.prepare("SELECT value FROM records WHERE id=1").get() as { value: string }).value;
+    const options = { file, format: competing, onMissing: () => "missing", onMigration: quiet };
+    const pragma = Database.prototype.pragma;
+    let interleaved = false, preflightInTransaction = false, second: string | undefined;
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function(this: Database.Database, command: string, pragmaOptions?: Database.PragmaOptions) {
+      const value = pragma.call(this, command, pragmaOptions);
+      if (!interleaved && this.name === file && !this.readonly && command === "user_version") {
+        interleaved = true; preflightInTransaction = this.inTransaction;
+        second = readSqliteDatabase(options, read);
+      }
+      return value;
+    });
+    expect(readSqliteDatabase(options, read)).toBe("committed");
+    expect(second).toBe("committed"); expect(preflightInTransaction).toBe(true);
+    expect(steps).toEqual([2, 3, 4, 5]);
+    const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(5); expect(db.pragma("table_info(records)")).toHaveLength(6);
+  });
+  it("preserves preflight validation, rollback and close failures together", () => {
+    const file = makeFile(); seed(file);
+    const validation = new Error("preflight validation failed"), rollback = new Error("preflight rollback failed"), close = new Error("preflight close failed");
+    const bad: SqliteFormat = { ...format, validateVersioned: () => { throw validation; } };
+    const exec = Database.prototype.exec;
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) { connections.add(this); if (sql === "ROLLBACK") throw rollback; return exec.call(this, sql); });
+    vi.spyOn(Database.prototype, "close").mockImplementation(function(this: Database.Database) { connections.add(this); throw close; });
+    let error: unknown;
+    try { openSqliteDatabase({ file, format: bad, allowEmpty: false, onMigration: quiet }); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ kind: "invalid-format", context: { phase: "rollback", fromVersion: 1 }, outcome: "unknown", connectionClosed: false });
+    const causes: unknown[] = [];
+    const collect = (value: unknown): void => { causes.push(value); if (value instanceof AggregateError) value.errors.forEach(collect); if (value instanceof Error && value.cause !== undefined) collect(value.cause); };
+    collect(error); expect(causes).toContain(validation); expect(causes).toContain(rollback); expect(causes).toContain(close);
+  });
   it("reads the current committed WAL snapshot without maintenance or a writer connection", () => {
     const file = makeFile(); const writer = openSqliteDatabase({ file, format, allowEmpty: true, onMigration: quiet }); connections.add(writer);
     writer.exec("INSERT INTO records(id,value) VALUES(1,'committed'); BEGIN IMMEDIATE; UPDATE records SET value='uncommitted'");
