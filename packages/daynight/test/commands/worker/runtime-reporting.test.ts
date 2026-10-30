@@ -18,7 +18,7 @@ vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitMan
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
-vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: () => ({ close: mocks.webClose }) }));
+vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: () => ({ close: mocks.webClose, listCompletedTasks: () => [] }) }));
 vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
