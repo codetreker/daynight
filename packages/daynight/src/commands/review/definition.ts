@@ -10,7 +10,7 @@ export const reviewDefinition: CommandDefinition = {
       name: "run",
       description: "Run foreground PR review until interrupted",
       options: [helpOption],
-      details: "Run foreground PR review using DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml) until interrupted.",
+      details: "Run foreground PR review using ~/.daynight/config.yml until interrupted.",
     },
     {
       name: "list",
@@ -27,9 +27,9 @@ export const reviewDefinition: CommandDefinition = {
         { names: ["--path"], description: "Dedicated review clone path (relative to the current directory)", value: { name: "path", kind: "directory" } },
         helpOption,
       ],
-      details: "Without --path, review.repositoryRoot (default: ~/daynights) determines the clone path.\nThe resolved absolute path is saved in DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml).\nChanges take effect the next time daynight review run starts.",
+      details: "Without --path, review.repositoryRoot (default: ~/daynights) determines the clone path.\nThe resolved absolute path is saved in ~/.daynight/config.yml.\nChanges take effect the next time daynight review run starts.",
     },
   ],
   options: [helpOption],
-  details: "Configuration: DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml)\nRuntime state: DN_CONFIG_DIR (default: ~/.daynight/)\nRun daynight review <command> --help for command usage.",
+  details: "Configuration: ~/.daynight/config.yml (current user's home directory)\nRuntime state: ~/.daynight/\nRun daynight review <command> --help for command usage.",
 };

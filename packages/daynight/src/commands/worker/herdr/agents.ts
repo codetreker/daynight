@@ -33,7 +33,7 @@ export type HerdrAgentStartInput = {
 };
 export type HerdrOwnedWorkspace = { owner: HerdrExecutionOwner; workspaceId: string; panes: { binding: HerdrTaskBinding; cwd: string | null; kind: WorkerAgent | null; status: string; launchPending: boolean; interactiveReady: boolean; nativeSession: HerdrNativeReference | null; stateChangeSeq: number | null; completionSeq: number | null }[] };
 export type HerdrAgentPreflight = { verifyStart(input: { context: HerdrExecutionContext; configuration: HerdrAgentConfiguration; resumeSessionId?: string }, operation: Operation): Promise<unknown> };
-export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string; PATH?: string; DN_CONFIG_DIR?: string }>;
+export type HerdrWorkspaceEnvironment = Readonly<{ XDG_CONFIG_HOME: string; XDG_STATE_HOME: string }>;
 
 type RecordValue = Record<string, unknown>;
 const object = (value: unknown, name: string): RecordValue => {
@@ -97,9 +97,8 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
   const session = text(options.session, "Herdr session");
   const suppliedEnvironment = object(options.workspaceEnvironment, "Task workspace environment");
   const xdgFields = ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const;
-  const allowedFields = new Set<string>([...xdgFields, "PATH", "DN_CONFIG_DIR"]);
-  if (xdgFields.some(field => !Object.hasOwn(suppliedEnvironment, field)) || Object.entries(suppliedEnvironment).some(([field, value]) => !allowedFields.has(field) || typeof value !== "string" || value.includes("\0"))) throw new TypeError("Task workspace environment requires XDG_CONFIG_HOME and XDG_STATE_HOME and permits optional PATH and DN_CONFIG_DIR string values without NUL.");
-  const workspaceEnvironment = { ...suppliedEnvironment } as HerdrWorkspaceEnvironment;
+  if (Object.keys(suppliedEnvironment).length !== xdgFields.length || xdgFields.some((field) => !Object.hasOwn(suppliedEnvironment, field) || typeof suppliedEnvironment[field] !== "string" || suppliedEnvironment[field].includes("\0"))) throw new TypeError("Task workspace environment must contain only XDG_CONFIG_HOME and XDG_STATE_HOME string values without NUL.");
+  const workspaceEnvironment = { XDG_CONFIG_HOME: suppliedEnvironment.XDG_CONFIG_HOME as string, XDG_STATE_HOME: suppliedEnvironment.XDG_STATE_HOME as string };
   const isExecuting = options.processExecuting === undefined ? processExecuting : options.processExecuting;
   const pollInterval = options.pollIntervalMs === undefined ? 100 : options.pollIntervalMs;
   if (!Number.isSafeInteger(pollInterval) || pollInterval <= 0 || pollInterval > 1000) throw new TypeError("The Herdr observation interval must be between 1 and 1000 milliseconds.");
@@ -346,12 +345,6 @@ export const createHerdrAgentManager = (options: { rpc: HerdrRpcClient; session:
       if (input.configuration.agent !== context.agent) throw new TypeError("The agent configuration differs from the execution identity.");
       const cwd = path.normalize(await realpath(context.cwd));
       const args = buildHerdrAgentArguments(input.configuration, cwd, input.resumeSessionId);
-      // Codex restores a login-shell snapshot. Explicit policy values are applied
-      // after that snapshot so the configured command routing survives it.
-      if (context.agent === "codex" && workspaceEnvironment.PATH !== undefined) {
-        args.push("-c", `shell_environment_policy.set.PATH=${JSON.stringify(workspaceEnvironment.PATH)}`);
-        if (workspaceEnvironment.DN_CONFIG_DIR !== undefined) args.push("-c", `shell_environment_policy.set.DN_CONFIG_DIR=${JSON.stringify(workspaceEnvironment.DN_CONFIG_DIR)}`);
-      }
       if (typeof input.prompt !== "string" || input.prompt.length === 0) throw new TypeError("The startup prompt must be nonempty text.");
       const before = await observation(context, binding, operation);
       if (before.kind !== null || before.launchPending || before.interactiveReady) return before;

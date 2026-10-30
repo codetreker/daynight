@@ -123,6 +123,8 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
       }
       if (!backendResourcesClosed(task.cleanup!)) throw new Error("The original Web backend resources are not closed.");
+      // Shutdown proves stop but leaves any terminal finalization for normal reconciliation.
+      if (kind === "shutdown") return task;
       if (task.cleanup!.kind === "terminal" && !task.cleanup!.worktreeDeleted) {
         if (execution && execution.launchSubmission !== "not-submitted") {
           if (!options.archive) throw new Error("Session archive uploader is unavailable; the original worktree is retained.");

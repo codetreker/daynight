@@ -25,7 +25,7 @@ export const selectModules = (paths: readonly string[]): ModuleSelection => {
       /(^|\/)(README|AGENTS|CLAUDE)\.md$/.test(path) || path === ".gitignore" ||
       path === ".github/workflows/publish.yml"
     ) continue;
-    if (path.startsWith("packages/daynight/") || path === "scripts/dev-install.mjs" || path === "scripts/dev-install.test.mjs") selected.cli = true;
+    if (path.startsWith("packages/daynight/")) selected.cli = true;
     else if (path.startsWith("packages/daynight-server/")) selected.server = true;
     else if (path.startsWith("packages/daynight-web/") || path.startsWith("deployment/") || webPatches.has(path)) selected.web = true;
     else return { ...allModules };

@@ -25,7 +25,13 @@ After native stop is confirmed, the launcher uploads one versioned archive to th
 service's existing file-storage abstraction. PostgreSQL stores only identity,
 status, object location, size and checksum. A matching ready receipt permits
 normal Worker worktree cleanup. Failed uploads retain their source and retry
-without restarting the Agent or repeating the task. Completed archives are
+without restarting the Agent or repeating the task. Historical catch-up attempts
+at most one execution per round and advances an in-process execution cursor on
+both success and failure, while preserving each execution's retry delay. A
+damaged source cannot monopolize later attempts. Shutdown confirms process stop
+without archiving or deleting worktrees, including executions already awaiting
+terminal finalization; their terminal responsibility survives for normal
+reconciliation after restart. Completed archives are
 immutable display records; they do not carry control or native resume authority.
 
 This partially supersedes the

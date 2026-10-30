@@ -3,21 +3,13 @@ import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { openWebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
-import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { createWebControllerLauncher } from "../../../src/commands/worker/backends/web-process.js";
 import type { WorkerSessionApi } from "../../../src/commands/worker/backends/session-api.js";
 const roots: string[] = [];
-afterEach(async () => {
-  for (const root of roots.splice(0)) {
-    if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(root, randomUUID())), { recursive: true, force: true });
-    await rm(root, { recursive: true, force: true });
-  }
-  vi.unstubAllEnvs();
-});
+afterEach(async () => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true }); });
 it.each([true, false])("freezes the Copilot profile in the launch ticket and durable execution (explicit=%s)", async explicit => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "cp-")); roots.push(home);
-  vi.stubEnv("DN_CONFIG_DIR", explicit ? path.join(home, "dev-state") : undefined);
   vi.stubEnv("COPILOT_HOME", explicit ? path.join(home, "native") : undefined);
   vi.stubEnv("CLAUDE_CONFIG_DIR", path.join(home, "other-provider"));
   const store = openWebExecutionStore(path.join(home, "worker.sqlite"));
@@ -32,7 +24,6 @@ it.each([true, false])("freezes the Copilot profile in the launch ticket and dur
     const launcher = createWebControllerLauncher({ homeDirectory: home, packageDirectory: home, store, sessionApi, now: () => 5 });
     const ticket = await launcher.prepare(task, "managed task", new AbortController().signal);
     const expected = path.join(home, explicit ? "native" : ".copilot");
-    expect(ticket.credentialFile).toContain(path.join(home, explicit ? "dev-state" : ".daynight", "controller"));
     expect(ticket.provider).toBe("copilot"); expect(ticket.nativeHome).toBe(expected);
     expect(store.getTask(claim)?.webExecution?.nativeHome).toBe(expected);
     vi.stubEnv("COPILOT_HOME", path.join(home, "changed"));

@@ -1,15 +1,8 @@
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 describe("fixed worker paths", () => {
-  afterEach(() => vi.unstubAllEnvs());
-  it("isolates every local state path under DN_CONFIG_DIR", () => {
-    vi.stubEnv("DN_CONFIG_DIR", "/isolated/daynight-dev");
-    const paths = resolveWorkerPaths("/real/home", path.posix);
-    for (const value of Object.values(paths)) expect(value === "/isolated/daynight-dev" || value.startsWith("/isolated/daynight-dev/")).toBe(true);
-  });
-
   it("keeps shared configuration and worker runtime in their fixed home locations", () => {
     expect(resolveWorkerPaths("/home/Worker User 用户", path.posix)).toEqual({
       stateDirectory: "/home/Worker User 用户/.daynight",

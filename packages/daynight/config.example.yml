@@ -1,4 +1,4 @@
-# Shared CLI configuration: $DN_CONFIG_DIR/config.yml (default ~/.daynight/config.yml).
+# Shared CLI configuration: ~/.daynight/config.yml.
 # Select the sections needed for your commands and replace the example repositories
 # and local paths. Merge settings into an existing file to retain credentials and
 # other configuration; this file is a reference, not an automatically loaded config.
@@ -10,13 +10,6 @@ serverUrl: https://daynight.cc
 # serverToken: REPLACE_WITH_CREDENTIAL_FOR_THIS_ORIGIN
 # Remove or replace an old token before changing serverUrl manually. Keep secrets
 # out of repositories and logs; files containing a token need POSIX mode 0600.
-
-# Optional Agent-only CLI mappings (macOS/Linux), disabled when omitted or {}.
-# Keys are commands the Agent uses; values are executable names or absolute paths.
-# Only new Worker/Controller Agent environments receive these aliases.
-# agentCliAliases:
-#   daynight: daynight-dev
-#   dn: daynight-dev
 
 # Review configuration. The numeric values below are the defaults; all are positive
 # integers, and fields ending in Ms use milliseconds.
@@ -35,8 +28,8 @@ review:
   # copilotReasoningEffort: high
   repositories:
     - remote: https://github.com/OWNER/REPO.git
-      # Repository paths are absolute or relative to the selected config directory, never the launch
-      # directory, and do not expand ~. Keep review clones outside that directory.
+      # Repository paths are absolute or relative to ~/.daynight/, never the launch
+      # directory, and do not expand ~. Keep review clones outside ~/.daynight/.
       path: ../daynights/github.com/owner/repo
 
 # Worker configuration. Run daynight worker setup to inspect prerequisites,

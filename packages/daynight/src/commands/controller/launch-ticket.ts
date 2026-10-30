@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, lstat, link, unlink } from "node:fs/promises";
 import path from "node:path";
 import { canonicalId } from "../../api/parse.js";
-import { resolveConfigurationPaths } from "../../config/paths.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { sessionBinding, type SessionBinding } from "../../session/protocol.js";
 import type { FrozenExecutionConfiguration } from "../worker/types.js";
@@ -23,8 +22,8 @@ export type ControllerLaunchTicket = LaunchCommon & SessionBinding & (
   | { readonly testExecutionId: string; readonly ownerUserId: string; readonly initialInput: "none" | "prompt"; readonly projectId?: never; readonly taskId?: never; readonly workerId?: never; readonly worktreeId?: never; readonly userId?: never }
 );
 const uuid = (value: unknown): string => { if (typeof value !== "string" || canonicalId(value) !== value) throw new Error("Controller identity must be a canonical UUID."); return value; };
-export const controllerExecutionDirectory = (home: string, executionId: string): string => path.join(resolveConfigurationPaths(home).stateDirectory, "controller", "executions", uuid(executionId));
-export const controllerTicketPath = (home: string, launchId: string): string => path.join(resolveConfigurationPaths(home).stateDirectory, "controller", "launches", `${uuid(launchId)}.json`);
+export const controllerExecutionDirectory = (home: string, executionId: string): string => path.join(home, ".daynight", "controller", "executions", uuid(executionId));
+export const controllerTicketPath = (home: string, launchId: string): string => path.join(home, ".daynight", "controller", "launches", `${uuid(launchId)}.json`);
 const canonicalPayload = (value: unknown): unknown => {
   if (Array.isArray(value)) return value.map(canonicalPayload);
   if (value !== null && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([left],[right])=>left<right?-1:left>right?1:0).map(([key,item])=>[key,canonicalPayload(item)]));

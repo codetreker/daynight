@@ -193,32 +193,3 @@ describe("worker repository preparation lifecycle", () => {
     expect(f.store!.getProject(binding)).toEqual(binding);
   });
 });
-
-
-it.skipIf(process.platform === "win32")("binds an explicit Agent CLI alias only in the worker's native environment", async () => {
-  const f = await fixture(false, true); const controller = new AbortController();
-  const target = path.join(f.homeDirectory, "development-cli");
-  await writeFile(target, "#!/bin/sh\nprintf dev\n", { mode: 0o700 });
-  await writeFile(f.paths.configFile, stringify({ ...f.document, agentCliAliases: { daynight: target } }));
-  const originalPath = process.env.PATH;
-  mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => coordinator(async () => {
-    void options.herdr.attachment;
-    controller.abort(new Error("Startup observed."));
-  }));
-  await runWorker({ ...f, signal: controller.signal });
-  const options = mocks.herdr.mock.calls[0]![0];
-  expect(options.agentEnvironment.PATH).toContain(path.join(f.paths.stateDirectory, "agent-cli-aliases"));
-  expect(options.agentEnvironment).toEqual({ PATH: options.agentEnvironment.PATH, DN_CONFIG_DIR: f.paths.stateDirectory });
-  expect(process.env.PATH).toBe(originalPath);
-  expect(options.environment).toBeUndefined();
-});
-
-it.runIf(process.platform === "win32")("rejects explicit Agent CLI aliases on Windows before launching native agents", async () => {
-  const f = await fixture(false, true);
-  await writeFile(f.paths.configFile, stringify({ ...f.document, agentCliAliases: { daynight: "daynight-dev" } }));
-  const originalPath = process.env.PATH;
-  await expect(runWorker(f)).rejects.toThrow("agentCliAliases is supported only on macOS and Linux");
-  expect(mocks.herdr).not.toHaveBeenCalled();
-  expect(mocks.coordinator).not.toHaveBeenCalled();
-  expect(process.env.PATH).toBe(originalPath);
-});

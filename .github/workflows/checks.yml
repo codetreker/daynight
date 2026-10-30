@@ -80,8 +80,6 @@ jobs:
         run: node packages/daynight/scripts/validation-environment.ts
       - run: pnpm typecheck
       - run: pnpm build
-      - name: Test the local development installer
-        run: pnpm dev:test
       - name: Test the compiled CLI
         run: pnpm --filter @codetreker/daynight exec vitest run
       - name: Verify the compiled CLI installation

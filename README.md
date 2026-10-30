@@ -179,7 +179,7 @@ independent. Projects must already exist, and their tasks need automatic
 execution permission before the worker can acquire them.
 
 The worker runs in the foreground with one execution slot by default. It uses
-state under `DN_CONFIG_DIR/worker/` (default `~/.daynight/worker/`). In Herdr mode, run `daynight worker attach` in another
+fixed state under `~/.daynight/worker/`. In Herdr mode, run `daynight worker attach` in another
 terminal to open its private Herdr session for human input. Each task workspace
 starts with its current task title, followed by its stable Project/task/claim/worktree
 identity. The next successful inventory updates changed titles without replacing
@@ -255,11 +255,6 @@ pnpm test
 pnpm build
 pnpm acceptance
 ```
-
-Use `pnpm dev:install` on macOS/Linux to install a local `daynight-dev` snapshot
-beside the npm CLI. It defaults to a separate `~/.daynight-dev` state root;
-Agent command aliases remain opt-in. See the [development channel guide](docs/development.md#local-development-cli-channel)
-for configuration, build identity and isolation limits.
 
 These commands target the CLI. Web checks use `pnpm web:typecheck`,
 `pnpm web:test` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL

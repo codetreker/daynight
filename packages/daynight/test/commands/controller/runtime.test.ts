@@ -11,11 +11,8 @@ vi.mock("../../../src/commands/controller/providers/codex.js", () => ({ openCode
 vi.mock("../../../src/commands/controller/providers/copilot.js", () => ({ openCopilotProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/providers/claude.js", () => ({ openClaudeProvider: (options: unknown) => { fixture.options = options; return fixture.open(); } }));
 vi.mock("../../../src/commands/controller/local-client.js", () => ({ validateControllerLocalRequest: (value: unknown) => value }));
-const aliasFixture = vi.hoisted(() => ({ environment: undefined as NodeJS.ProcessEnv | undefined, read: vi.fn(async () => ({})) }));
-vi.mock("../../../src/config/agent-cli-aliases.js", () => ({ readAgentCliAliases: aliasFixture.read }));
-vi.mock("../../../src/cli/agent-cli-aliases.js", () => ({ prepareAgentCliAliases: async (options: { environment: NodeJS.ProcessEnv }) => ({ environment: aliasFixture.environment ?? options.environment, bindings: aliasFixture.environment ? [{ name: "daynight", target: "daynight-dev", executable: "/private/build/daynight-dev" }] : [], directory: null }) }));
 import { runController } from "../../../src/commands/controller/runtime.js";
-afterEach(() => { vi.clearAllMocks(); fixture.options = null; fixture.closed = false; fixture.provider = "codex"; aliasFixture.environment = undefined; aliasFixture.read.mockReset(); aliasFixture.read.mockResolvedValue({}); vi.unstubAllEnvs(); });
+afterEach(() => { vi.clearAllMocks(); fixture.options = null; fixture.closed = false; fixture.provider = "codex"; vi.unstubAllEnvs(); });
 const setup = () => {
   const snapshot = { lifecycle: "starting", nativeSessionId: null, initialInputState: "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false } };
   const patch = vi.fn((fields?: Record<string, unknown>) => { if (fields) Object.assign(snapshot, fields); if (fixture.closed) throw new Error("Journal was closed while native startup still owned it"); });
@@ -162,30 +159,4 @@ test("draining responds only to interactions created by the actual cleanup input
     await fixture.relayCallbacks!.onCommand(command("old")); expect(respond).not.toHaveBeenCalled();
     await fixture.relayCallbacks!.onCommand(command("cleanup")); expect(respond).toHaveBeenCalledOnce();
   } finally { process.emit("SIGTERM", "SIGTERM"); await running; }
-});
-
-
-test.each(["codex", "claude", "copilot"] as const)("passes prepared aliases to %s without changing the parent environment", async provider => {
-  setup(); fixture.provider = provider;
-  const original = process.env.PATH;
-  aliasFixture.environment = { ...process.env, PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" };
-  fixture.open.mockResolvedValue({ nativeSessionId: "native", close: fixture.close });
-  const running = runController({ homeDirectory: "/private", provider, launchId: "launch" });
-  try {
-    await vi.waitFor(() => expect(fixture.open).toHaveBeenCalledOnce());
-    expect((fixture.options as { env: NodeJS.ProcessEnv }).env).toMatchObject({ PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" });
-    expect((fixture.options as { agentCliEnvironment: NodeJS.ProcessEnv }).agentCliEnvironment).toEqual({ PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" });
-    expect(process.env.PATH).toBe(original);
-  } finally { process.emit("SIGTERM", "SIGTERM"); await running; }
-});
-
-
-test("stop during alias preparation never starts a native writer afterwards", async () => {
-  setup(); let resolved!: (value: object) => void;
-  aliasFixture.read.mockImplementationOnce(() => new Promise(resolve => { resolved = resolve; }));
-  const running = runController({ homeDirectory: "/private", provider: "codex", launchId: "launch" });
-  await vi.waitFor(() => expect(aliasFixture.read).toHaveBeenCalledOnce());
-  process.emit("SIGTERM", "SIGTERM"); resolved({});
-  await running;
-  expect(fixture.open).not.toHaveBeenCalled(); expect(fixture.closed).toBe(true);
 });

@@ -99,11 +99,3 @@ test.each([{ unattended: false, resume: false }, { unattended: true, resume: fal
     env: { ...process.env, EXPECT_WORKER_PERMISSIONS: unattended && !resume ? "yes" : "no" }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
   await provider.close();
 });
-
-
-test.each([null, "native-thread"])("keeps explicit CLI mappings after native shell snapshot restoration (resume %s)", async resumeNativeSessionId => {
-  const agentCliEnvironment = { PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" };
-  const provider = await openCodexProvider({ cwd: process.cwd(), model: null, args: [], resumeNativeSessionId, agentCliEnvironment,
-    env: { ...process.env, EXPECT_AGENT_CLI_ENV: JSON.stringify(agentCliEnvironment) }, executable: fileURLToPath(new URL("./fixtures/codex-native.mjs", import.meta.url)), onTimeline: () => {}, onState: () => {}, onSpawn: () => {} });
-  await provider.close();
-});
