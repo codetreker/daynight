@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Locator, Page, TestInfo } from '@playwright/test';
+import { readWorkerClaim } from '../../src/api/task-properties';
 import { attachmentDownloadUrl } from '../../src/api/client';
 import { attachmentFileButton } from './attachment-tree';
 import type { AuthenticatedAPI } from './authentication';
@@ -54,7 +55,7 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
     const response = await api.get(`/api/v1/projects/${project.id}/members`);
     const body = await response.json() as { items: { userId: string; name: string | null; email: string | null }[] };
     const headers = { ...response.headers() }; delete headers['content-length'];
-    await route.fulfill({ status: response.status(), headers, json: { ...body, items: body.items.map((member) => member.userId === current.properties.worker!.userId ? { ...member, name: ownerName, email: account } : member) } });
+    await route.fulfill({ status: response.status(), headers, json: { ...body, items: body.items.map((member) => member.userId === readWorkerClaim(current.properties)!.userId ? { ...member, name: ownerName, email: account } : member) } });
   });
   const layouts: unknown[] = [];
   try {

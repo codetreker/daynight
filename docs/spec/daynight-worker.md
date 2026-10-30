@@ -50,7 +50,7 @@ Worker 是前台常驻进程，通过进程内 typed ApiClient 和 REST API 领�
 自动领取同时要求 allowAgents=true、ready、平台兼容及没有 active claim。服务端在同一项目事务中重验成员、精确版本、许可、平台、依赖和归属。同 task 跨用户、机器和 worker 只有一个有效 claim，竞争失败方不得启动资源。
 
 - 每次取得新的执行使用 fresh claimId/worktreeId；稳定 workerId 和项目映射先保存，实际授予后登记本机 pending。请求标识和版本只留当前进程；未知响应记录 Warning，不创建资源、不重发原请求，通过后续完整自有清单找回实际授予。
-- Task properties 保存受保护的最新 worker 归属、实际平台、agent 和已知会话摘要。普通 create/PATCH 拒绝写 worker，即使 null 或原值；PR 与 worker 更新相互保留。完整 DTO 显式包含 worker:null 或归属记录。
+- Task properties 保存受保护的最新 worker 归属、实际平台、agent 和已知会话摘要。普通 create/PATCH 拒绝写 worker，即使 null 或原值；PR 与 worker 更新相互保留。完整 DTO 中 worker 缺失表示没有保留归属，存在时为合法对象；读取不注入 null 默认值。
 - 会话摘要、释放、撤回与完成核对当前 claim 和精确版本，旧执行不能覆盖新归属。服务端验证当前成员与 owner/admin 权限，不远程证明机器进程或 Git 内容。
 - Worker 直接调用进程内 typed ApiClient，不启动 daynight 子进程。HTTP 独立有界；未知写入只读取核对，不自动重放。远端 phase、Herdr 和 nativeSessionId 是展示投影，不替代本机实际资源观察。
 
@@ -99,7 +99,7 @@ Web 人工输入通过 Task Session，Herdr 使用 attach。Retry/release/resume
 - retry/release/resume 先停止 runner，再取得同一实例锁同步处理指定 claim。锁占用时明确提示停止 runner；没有持久管理意图或后台管理队列。
 - Retry 核验仍属于本 worker 的 active claim，尝试一次重连或恢复，保持 claim/agent/worktree。Pending 由 run 经正常名额与旧执行门槛启动。计数和额外尝试只在当前调用或进程内，重启不保留累计预算。
 - Release 先核验原 owner/admin、当前项目权限、原 claim 和指定版本。通知并停止 agent、关闭 workspace 后提交远端变更，确认源归属结束后才删 worktree 和置本机 done。远端拒绝时保留工作区供原执行恢复。Release 回到 todo、清空任务计时，保留 released 历史。
-- Web 详情显示当前 active claim 的用户、机器、agent 和阶段，released 明确标识；completed 不表示当前认领。成员资料缺失时保留真实 userId，读取失败显示错误。原 owner/admin 可确认“强制撤回”：提交 active/released 的 claimId 和精确版本，同一事务清除 worker、返回 todo、清空任务起止时间、设置 allowAgents=false，其他资料保持。completed/null 不提供该操作。
+- Web 详情显示当前 active claim 的用户、机器、agent 和阶段，released 明确标识；completed 不表示当前认领。成员资料缺失时保留真实 userId，读取失败显示错误。原 owner/admin 可确认“强制撤回”：提交 active/released 的 claimId 和精确版本，同一事务清除 worker、返回 todo、清空任务起止时间、设置 allowAgents=false，其他资料保持。completed 或缺失 worker 不提供该操作。
 - 撤回确认说明所有重置结果以及远端 agent 不保证立即停止，取消不写入，冲突重新审阅，未知结果只读核对。撤回无需 stoppedConfirmed 或源机器在线，不撤销外部凭据；原 worker 下次成功完整自有清单发现原 claim 缺席后进入既有终止清理。自动再次领取需要明确重新开启许可。
 - Resume 核验 released previousClaimId、ready、原 owner/admin 和精确版本，保留明确人工安排的自动许可/平台例外，取得 fresh claimId/worktreeId 后登记 pending、session_id=NULL。普通 daemon 跳过 released 并继续分页。
 - 用户给定 --if-version 不替换。请求前生成并输出 fresh ID；未知结果只 GET 核对、不重放。仍未知或命令中断时，操作者先核对远端结果，再启动 runner。命令不承诺跨进程续接原管理意图。

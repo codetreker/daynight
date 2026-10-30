@@ -51,9 +51,7 @@ func TestAttachmentLifecycleAndTaskIndependence(t *testing.T) {
 	attachments, tasks, _, files, task, principal := attachmentService(t)
 	ctx := context.Background()
 	prerequisite := createTask(t, tasks, principal, task.ProjectID, "Prerequisite")
-	task = updateTask(t, tasks, principal, task, UpdateTask{DependsOn: pointer([]string{prerequisite.ID}), Properties: core.TaskPropertiesPatch{
-		PullRequests: pointer([]core.PullRequestProperty{{URL: "https://github.com/example/repository/pull/1"}}),
-	}})
+	task = updateTask(t, tasks, principal, task, UpdateTask{DependsOn: pointer([]string{prerequisite.ID}), Properties: propertyPatch([]core.PullRequestProperty{{URL: "https://github.com/example/repository/pull/1"}}...)})
 	empty, err := attachments.List(ctx, principal, task.ProjectID, task.ID, PageRequest{Limit: 50})
 	if err != nil || empty.Items == nil || len(empty.Items) != 0 || empty.NextCursor != nil {
 		t.Fatalf("empty page: %#v, %v", empty, err)

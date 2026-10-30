@@ -187,6 +187,53 @@ func acceptanceHistoricalRows(t *testing.T, fixture *acceptanceFixture, ids []st
 	if err := rows.Err(); err != nil || len(result) != len(ids) {
 		t.Fatal("historical row inventory is incomplete")
 	}
+	rows.Close()
+	var propertyRowsExist bool
+	if err := fixture.admin.QueryRow(ctx, "SELECT to_regclass('task_properties') IS NOT NULL").Scan(&propertyRowsExist); err != nil {
+		t.Fatal("cannot inspect historical property storage")
+	}
+	if propertyRowsExist {
+		values := make(map[string]map[string]json.RawMessage, len(ids))
+		for _, id := range ids {
+			values[id] = make(map[string]json.RawMessage)
+		}
+		propertyRows, err := fixture.admin.Query(ctx, "SELECT task_id::text,name,value FROM task_properties WHERE task_id=ANY($1::uuid[]) ORDER BY task_id,name", ids)
+		if err != nil {
+			t.Fatal("cannot snapshot migrated property rows")
+		}
+		for propertyRows.Next() {
+			var id, name, value string
+			if err := propertyRows.Scan(&id, &name, &value); err != nil {
+				t.Fatal("cannot decode migrated property rows")
+			}
+			values[id][name] = json.RawMessage(value)
+		}
+		if err := propertyRows.Err(); err != nil {
+			t.Fatal("cannot finish migrated property rows")
+		}
+		propertyRows.Close()
+		// Compare logical task materials across the column-to-row storage migration.
+		for index := range result {
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(result[index].Data), &fields); err != nil {
+				t.Fatal(err)
+			}
+			properties, err := json.Marshal(values[result[index].ID])
+			if err != nil {
+				t.Fatal(err)
+			}
+			encoded, err := json.Marshal(string(properties))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fields["properties"] = encoded
+			data, err := json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result[index].Data = string(data)
+		}
+	}
 	return result
 }
 
@@ -280,10 +327,12 @@ func acceptanceStatusMigrationRows(t *testing.T, before, after []acceptanceHisto
 		var beforeProperties, afterProperties string
 		var beforeFields, afterFields map[string]json.RawMessage
 		if json.Unmarshal(left["properties"], &beforeProperties) != nil || json.Unmarshal(right["properties"], &afterProperties) != nil ||
-			json.Unmarshal([]byte(beforeProperties), &beforeFields) != nil || json.Unmarshal([]byte(afterProperties), &afterFields) != nil || string(afterFields["worker"]) != "null" {
-			t.Fatal("worker migration did not declare absent ownership on historical rows")
+			json.Unmarshal([]byte(beforeProperties), &beforeFields) != nil || json.Unmarshal([]byte(afterProperties), &afterFields) != nil {
+			t.Fatal("cannot decode preserved historical property values")
 		}
-		delete(afterFields, "worker")
+		if _, present := afterFields["worker"]; present {
+			t.Fatal("property-row migration fabricated historical worker ownership")
+		}
 		if !reflect.DeepEqual(beforeFields, afterFields) {
 			t.Fatal("worker migration changed historical opaque property values")
 		}
@@ -322,8 +371,8 @@ func TestInstalledCLIStatusMigrationAcceptance(t *testing.T) {
 		ids := []string{"00000000-0000-4000-8000-000000000011", "00000000-0000-4000-8000-000000000012", "00000000-0000-4000-8000-000000000013", "00000000-0000-4000-8000-000000000014", "00000000-0000-4000-8000-000000000015"}
 		stamp := time.Date(2026, 1, 2, 3, 4, 5, 123456000, time.UTC)
 		fixture.exec(t, "INSERT INTO projects (id, name, repo_url) VALUES ($1, 'Preserved v12 project', 'git@git.example:Org/Repo.git')", projectID)
-		properties := api.TaskProperties{PullRequests: []api.PullRequestProperty{{URL: "https://github.com/example/migration/pull/1", Title: "Historical reference"}}}
-		encoded, err := json.Marshal(api.TaskWritableProperties{PullRequests: properties.PullRequests})
+		properties := acceptanceProperties(t, []api.PullRequestProperty{{URL: "https://github.com/example/migration/pull/1", Title: "Historical reference"}})
+		encoded, err := json.Marshal(acceptanceProperties(t, acceptancePullRequests(t, properties)))
 		if err != nil {
 			t.Fatal("cannot encode historical task properties")
 		}
@@ -424,8 +473,8 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 		}); err != nil {
 			t.Fatal("cannot persist migrated schema and resource snapshots")
 		}
-		if len(migration.AfterLedger) != 25 || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || migration.AfterLedger[12].Version != 13 || migration.AfterLedger[13].Version != 14 || migration.AfterLedger[14].Version != 15 || migration.AfterLedger[15].Version != 16 || migration.AfterLedger[16].Version != 17 || migration.AfterLedger[17].Version != 18 || migration.AfterLedger[18].Version != 19 || migration.AfterLedger[19].Version != 20 || migration.AfterLedger[20].Version != 21 || migration.AfterLedger[21].Version != 22 || migration.AfterLedger[22].Version != 23 || migration.AfterLedger[23].Version != 24 || migration.AfterLedger[24].Version != 25 || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
-			t.Fatal("startup did not append the Worker snapshot schema while preserving prior ledger, dependencies and attachments")
+		if len(migration.AfterLedger) != 26 || !reflect.DeepEqual(migration.AfterLedger[:12], migration.BeforeLedger) || migration.AfterLedger[12].Version != 13 || migration.AfterLedger[13].Version != 14 || migration.AfterLedger[14].Version != 15 || migration.AfterLedger[15].Version != 16 || migration.AfterLedger[16].Version != 17 || migration.AfterLedger[17].Version != 18 || migration.AfterLedger[18].Version != 19 || migration.AfterLedger[19].Version != 20 || migration.AfterLedger[20].Version != 21 || migration.AfterLedger[21].Version != 22 || migration.AfterLedger[22].Version != 23 || migration.AfterLedger[23].Version != 24 || migration.AfterLedger[24].Version != 25 || migration.AfterLedger[25].Version != 26 || !reflect.DeepEqual(migration.AfterLedger[:13], migration.StatusBeforeLedger) || migration.AfterEdges != beforeEdges || migration.AfterAttachments != beforeAttachments {
+			t.Fatal("startup did not append the property-row schema while preserving prior ledger, dependencies and attachments")
 		}
 		acceptanceStatusMigrationRows(t, migration.StatusBeforeRows, migration.AfterRows)
 		user := acceptanceDecode[api.User](t, process.request(context.Background(), http.MethodGet, "/api/v1/me", nil, ""), http.StatusOK)
@@ -446,7 +495,7 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 			t.Fatal("installed graph did not project converted task readiness")
 		}
 		create := func(title string, dependencies ...string) api.Task {
-			arguments := []string{"task", "create", "--project", projectID, "--title", title, "--description", "Complete status plan. Attachment: plans/lifecycle.md\nPreserve this full description.", "--pull-request-url", properties.PullRequests[0].URL, "--pull-request-title", properties.PullRequests[0].Title}
+			arguments := []string{"task", "create", "--project", projectID, "--title", title, "--description", "Complete status plan. Attachment: plans/lifecycle.md\nPreserve this full description.", "--pull-request-url", acceptancePullRequests(t, properties)[0].URL, "--pull-request-title", acceptancePullRequests(t, properties)[0].Title}
 			for _, id := range dependencies {
 				arguments = append(arguments, "--depends-on", id)
 			}

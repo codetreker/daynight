@@ -17,7 +17,7 @@ const secondId = "b1b2c3d4-1111-4222-8333-123456789abd";
 const thirdId = "b1b2c3d4-1111-4222-8333-123456789abe";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project 中文", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
+const task = (partial: Partial<Task> = {}): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, ...partial });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
   id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
   status: value.status, allowAgents: value.allowAgents, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
@@ -593,7 +593,7 @@ describe("compiled task commands", () => {
     const f = await fixture();
     try {
       const supplied = [{ url: "", title: "" }, { url: "-arbitrary=a,b", title: " 标题\n\u001b[2J " }, { url: "-arbitrary=a,b", title: " 标题\n\u001b[2J " }];
-      const returned = { worker: null, pullRequests: [...supplied, { url: "\0not a URL", title: "\0" }] };
+      const returned = { pullRequests: [...supplied, { url: "\0not a URL", title: "\0" }] };
       let current = task({ title: "Task 中文\n\u001b[2J", description: "Full description\n\u001b[2J", properties: returned, version: 9_223_372_036_854_775_807n });
       let conflict = false;
       const { requests } = await f.serve((request, response) => {
@@ -602,7 +602,7 @@ describe("compiled task commands", () => {
           if (conflict) refuse(response, "version_conflict", "pr-conflict", 409);
           else {
             const input = request.body as { readonly properties?: { readonly pullRequests: Task["properties"]["pullRequests"] } };
-            current = { ...current, ...(request.body as object), ...(input.properties === undefined ? {} : { properties: { ...input.properties, worker: current.properties.worker } }) };
+            current = { ...current, ...(request.body as object), ...(input.properties === undefined ? {} : { properties: { ...current.properties, ...input.properties } }) };
             respond(response, current);
           }
         } else if (request.pathname === taskPath) respond(response, { items: [current], nextCursor: null });
@@ -612,8 +612,8 @@ describe("compiled task commands", () => {
       const created = await f.invoke(["create", "--title", "Title", ...pairs, ...explicit]);
       expect(created.code, created.stderr).toBe(0);
       expect(requests.find(({ method }) => method === "POST")!.body).toEqual({ title: "Title", properties: { pullRequests: supplied } });
-      expect(created.stdout).toContain("Pull requests: 4");
-      expect(created.stdout).toContain("4. Title: \\u0000\n     URL: \\u0000not a URL");
+      expect(created.stdout).toContain("Properties: 1");
+      expect(created.stdout).toContain('"url":"\\u0000not a URL","title":"\\u0000"');
       for (const field of ["Description: Full description\\n\\u001b[2J", "Version: 9223372036854775807", `Created: ${time}`, `Updated: ${time}`]) expect(created.stdout).toContain(field);
       for (const command of [["show", taskId], ["list"]]) {
         const json = await f.invoke([...command, "--json", ...explicit]);
@@ -627,7 +627,7 @@ describe("compiled task commands", () => {
         expect(text.code, text.stderr).toBe(0);
         expect(text.stdout).toContain(" 标题\\n\\u001b[2J ");
         expect(text.stdout).toContain("\\u0000not a URL");
-        for (const field of [`ID: ${taskId}`, `Project: ${projectId}`, "Title: Task 中文\\n\\u001b[2J", "Pull requests: 4", "Status: todo", "Ready: true", "Depends on: none", "Blocked by: none"]) expect(text.stdout).toContain(field);
+        for (const field of [`ID: ${taskId}`, `Project: ${projectId}`, "Title: Task 中文\\n\\u001b[2J", "Properties: 1", "Status: todo", "Ready: true", "Depends on: none", "Blocked by: none"]) expect(text.stdout).toContain(field);
         for (const field of ["Description:", "Version:", "Created:", "Updated:"]) {
           if (command[0] === "list") expect(text.stdout).not.toContain(field);
           else expect(text.stdout).toContain(field);
@@ -643,7 +643,7 @@ describe("compiled task commands", () => {
       const clearAt = requests.length;
       const cleared = await f.invoke(["update", taskId, "--clear-pull-requests", "--if-version", "9223372036854775807", ...explicit]);
       expect(cleared.code, cleared.stderr).toBe(0);
-      expect(cleared.stdout).toContain("Pull requests: 0");
+      expect(cleared.stdout).toContain("  pullRequests: []");
       expect(requests.slice(clearAt).map(({ method }) => method)).toEqual(["GET", "PATCH"]);
       expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, properties: { pullRequests: [] } });
       conflict = true;
@@ -657,7 +657,7 @@ describe("compiled task commands", () => {
   it("requests a single bounded ready page and preserves full task JSON and empty output", async () => {
     const f = await fixture();
     try {
-      let items = [task({ description: "Ready details", properties: { worker: null, pullRequests: [{ url: "\0 arbitrary URL", title: "Ready\nPR" }] }, version: 9_223_372_036_854_775_807n })];
+      let items = [task({ description: "Ready details", properties: { pullRequests: [{ url: "\0 arbitrary URL", title: "Ready\nPR" }] }, version: 9_223_372_036_854_775_807n })];
       let cursor: string | null = "unrequested next page";
       const { requests } = await f.serve((request, response) => {
         if (request.query.has("cursor")) refuse(response, "internal_error", "unexpected-ready-cursor", 500);
@@ -671,7 +671,7 @@ describe("compiled task commands", () => {
       expect(Object.fromEntries(requests[1]!.query)).toEqual({ ready: "true", limit: "1" });
       const text = await f.invoke(["ready", "--limit", "1", ...explicit]);
       expect(text.code, text.stderr).toBe(0);
-      expect(text.stdout).toContain("1. Title: Ready\\nPR\n     URL: \\u0000 arbitrary URL");
+      expect(text.stdout).toContain('"url":"\\u0000 arbitrary URL","title":"Ready\\nPR"');
       for (const field of ["Description: Ready details", "Version: 9223372036854775807", `Created: ${time}`, `Updated: ${time}`]) expect(text.stdout).toContain(field);
       items = []; cursor = null;
       const empty = await f.invoke(["ready", ...explicit]);

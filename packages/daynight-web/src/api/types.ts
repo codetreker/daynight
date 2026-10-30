@@ -79,12 +79,9 @@ export type WorkerClaim = {
   readonly claimedAt: string;
 };
 
-export type WritableTaskProperties = { readonly pullRequests: readonly PullRequestProperty[]; readonly worker?: never };
-
-export type TaskProperties = {
-  readonly pullRequests: readonly PullRequestProperty[];
-  readonly worker: WorkerClaim | null;
-};
+export type JsonValue = null | boolean | number | string | readonly JsonValue[] | { readonly [key: string]: JsonValue };
+export type TaskProperties = Readonly<Record<string, JsonValue>>;
+export type WritableTaskProperties = TaskProperties;
 
 export type TaskDetail = {
   readonly id: string;

@@ -17,7 +17,7 @@ CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 成对 PR 引用
-参数与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 包含只读 worker，公共输入使用独立的可写属性类型。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
+参数与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
 [附件架构](daynight-task-attachments.md)中的 `task attachment put/list/read/remove`
 及二进制传输通道已实现，行为见[附件需求](../spec/daynight-task-attachments.md)。
@@ -117,7 +117,7 @@ review 配置可始终省略，其业务字段不参与服务校验。YAML 错�
 已知字符串的结构验证：合法 Unicode 文本、不含 NUL；非空文本还须包含 Unicode
 `White_Space` 之外的字符。该规则与 Go 服务一致，U+FEFF 可以单独构成名称，
 U+0085 则不能。验证保留字符串原值，不修剪空白，也不拒绝服务允许的其他控制字符。
-Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受的资源阻断完整列表。
+Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受的资源阻断完整列表。属性内的 PR 字符串是独立的 opaque JSON 内容，不应用此文本限制。CLI/Web 的 api/task-properties.ts 保留通用 JSON map，readPullRequests/readWorkerClaim 在各自业务处返回明确的缺失状态；sameTaskProperties 比较完整属性对象，不能因当前客户端只使用两个属性就丢弃其它键。
 
 ## 服务地址与 HTTP 客户端
 
@@ -421,6 +421,8 @@ compileDependencies 只在关系选项出现时加载 UUID 校验；普通 N 与
 空数组并与任一配对选项互斥。省略这些选项时不生成属性 patch，只有属性修改也
 满足 update 的修改字段要求。次数和互斥校验在任何 I/O 之前完成。
 
+Windows 的 .cmd 启动器经 CMD 转发参数，字面 CR/LF 不能作为可靠的单参数表示。[Node 子进程文档](https://nodejs.org/docs/latest-v24.x/api/child_process.html#spawning-bat-and-cmd-files-on-windows)说明该入口依赖命令解释器；[cross-spawn 转义](https://github.com/moxystudio/node-cross-spawn/blob/77cd97f3ca7b62c904a63a698fc4a79bf41977d0/lib/util/escape.js#L3-L38)保留字面换行。安装验收分别覆盖原生 launcher 能承载的参数和同一产物 Node 入口的 CR/LF/控制字符；无法作为进程参数传递的 NUL 等内容通过 HTTP 提供。该传输边界不改变属性字符串的服务端语义。
+
 元数据更新默认 GET task 获得 version，再带该 version PATCH；两个请求之间发生并发更新时，
 服务返回 `version_conflict`。有 `--if-version` 时直接提交指定版本，不用 GET 的
 最新值替代。CLI 不重放 PATCH，不将旧版本冲突改成成功；语义无变化的响应也直接
@@ -440,8 +442,7 @@ compileDependencies 只在关系选项出现时加载 UUID 校验；普通 N 与
 从数字原文保留精度，写入及 `--json` 使用 JSON 数字，不能转换为字符串或不精确的
 JavaScript `number`。Project、分页项目及 graph.project 的必填 settings 使用同一精确版本规则，
 `executionWarningMinutes` 为正 int32。CLI 既有嵌套数字原文读取保留 settings.version 的完整十进制值，
-JSON 输出不转为字符串，Project 可读输出保持既有标签。未知响应字段继续由 DTO 投影忽略，
-不能因未知对象中的同名 version 字段触发已知 task 或 settings 的校验。
+JSON 输出不转为字符串，Project 可读输出保持既有标签。资源 DTO 仍投影各自已知外壳；properties 作为完整 JSON 对象保留所有键。精确版本处理跳过属性子树，不能把其中任意同名 version 当作资源版本。
 
 任务及图的已知读取字段还包括必填 `externalDependsOn`。CLI 依赖解码要求正规化、升序、
 不重复的 D/E，并验证 E 属于完整 D；缺字段不使用兼容默认值。JSON 保留该数组，

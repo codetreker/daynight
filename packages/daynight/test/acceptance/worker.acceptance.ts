@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../src/api/task-properties.js";
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
@@ -200,7 +201,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   let failure: unknown;
   let failInventory = false;
   const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
-  const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: true, requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
+  const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { pullRequests: [] }, status: "todo", allowAgents: true, requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
   const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json", ...(status >= 200 && status < 300 ? { "Daynight-User-ID": uuid(100) } : {}) }); response.end(stringifyApiJson(value)); };
   const refusal = (response: ServerResponse): void => send(response, { error: { code: "version_conflict", message: "Fixture version conflict", requestId: "worker-fixture" } }, 409);
   const server = createServer(async (request, response) => {
@@ -229,7 +230,10 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
           inventoryResponses.push({ projectId: project.id, itemCount: 0, status: 500, mappedProjectCount: 2 });
           send(response, { error: { code: "internal_error", message: "Injected unavailable inventory", requestId: "worker-inventory-fault" } }, 500); return;
         }
-        const items = tasks.filter((item) => item.projectId === project.id && (inventory === null ? item.ready && item.allowAgents : item.properties.worker?.state === "active" && item.properties.worker.workerId === inventory && item.properties.worker.userId === uuid(100)));
+        const items = tasks.filter((item) => {
+          const worker = readWorkerClaim(item.properties);
+          return item.projectId === project.id && (inventory === null ? item.ready && item.allowAgents : worker?.state === "active" && worker.workerId === inventory && worker.userId === uuid(100));
+        });
         if (inventory !== null) {
           const sql = new Database(databaseFile, { readonly: true });
           try { inventoryResponses.push({ projectId: project.id, itemCount: items.length, status: 200, mappedProjectCount: (sql.prepare("SELECT count(*) AS count FROM projects").get() as { count: number }).count }); }
@@ -239,15 +243,16 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       }
       if (task !== undefined && parts[7] === "worker-claim" && request.method === "POST") {
         const input = body as WorkerClaimDescriptor & { version: bigint };
-        if (input.version !== task.version || !task.ready || task.properties.worker?.state === "active") { refusal(response); return; }
+        if (input.version !== task.version || !task.ready || readWorkerClaim(task.properties)?.state === "active") { refusal(response); return; }
         task.properties = { ...task.properties, worker: { claimId: input.claimId, workerId: input.workerId, machine: input.machine, platform: input.platform, agent: input.agent, agentControlMode: input.agentControlMode ?? "herdr", worktreeId: input.worktreeId, state: "active", userId: uuid(100), phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time } };
         task.status = "in_progress"; task.ready = false; task.startedAt = time; task.version += 1n;
         send(response, task); return;
       }
       if (task !== undefined && parts[7] === "worker-claim" && request.method === "PATCH") {
         const input = body as UpdateWorkerClaimInput;
-        if (input.version !== task.version || task.properties.worker?.state !== "active" || task.properties.worker.claimId !== input.claimId || task.properties.worker.userId !== uuid(100)) { refusal(response); return; }
-        task.properties = { ...task.properties, worker: { ...task.properties.worker, ...(input.herdr === undefined ? {} : { herdr: input.herdr }), ...(input.nativeSessionId === undefined ? {} : { nativeSessionId: input.nativeSessionId }), ...(input.phase === undefined ? {} : { phase: input.phase }) } };
+        const worker = readWorkerClaim(task.properties);
+        if (input.version !== task.version || worker?.state !== "active" || worker.claimId !== input.claimId || worker.userId !== uuid(100)) { refusal(response); return; }
+        task.properties = { ...task.properties, worker: { ...worker, ...(input.herdr === undefined ? {} : { herdr: input.herdr }), ...(input.nativeSessionId === undefined ? {} : { nativeSessionId: input.nativeSessionId }), ...(input.phase === undefined ? {} : { phase: input.phase }) } };
         task.version += 1n;
         send(response, task); return;
       }
@@ -284,7 +289,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   };
   const complete = (task: FixtureTask): void => {
     task.status = "done"; task.ready = false; task.completedAt = time; task.version += 1n;
-    task.properties = { ...task.properties, worker: { ...task.properties.worker!, state: "completed" } };
+    task.properties = { ...task.properties, worker: { ...readWorkerClaim(task.properties)!, state: "completed" } };
   };
   try {
     installed = await createInstalledCli();
@@ -331,8 +336,8 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     await waitFor("first cleanup and second native session", () => row(first.id)?.status === "done" && row(tasks[1]!.id)?.session_id !== undefined && row(tasks[1]!.id)?.session_id !== null);
     const second = tasks[1]!;
     const originalSession = row(second.id)!.session_id!;
-    const originalClaim = second.properties.worker!.claimId;
-    const originalClaims = new Map(tasks.map((task) => [task.id, task.properties.worker!]));
+    const originalClaim = readWorkerClaim(second.properties)!.claimId;
+    const originalClaims = new Map(tasks.map((task) => [task.id, readWorkerClaim(task.properties)!]));
     const sentinel = path.join(repositoryPaths[1]!, ".worktrees/daynight", second.id, "uncommitted.txt");
     await writeFile(sentinel, "Keep the original uncommitted task result.\n");
     const sql = new Database(databaseFile, { readonly: true });
@@ -357,7 +362,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     let restartLogOffset = logs.length;
     if (scenario === "inventory-failure") {
       failInventory = true;
-      second.properties = { ...second.properties, worker: null };
+      second.properties = Object.fromEntries(Object.entries(second.properties).filter(([name]) => name !== "worker"));
       second.status = "todo"; second.ready = true; second.allowAgents = false;
       second.startedAt = null; second.completedAt = null; second.version += 1n;
       await waitFor("failed own inventory", () => inventoryResponses.some((response) => response.status === 500));
@@ -369,7 +374,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       expect((await events()).some((event) => event.kind === "workspace-close" && event.taskId === second.id)).toBe(false);
       failInventory = false;
       await waitFor("withdrawn claim cleanup after a successful complete inventory", () => row(second.id)?.status === "done");
-      expect(second.properties.worker).toBeNull();
+      expect(readWorkerClaim(second.properties)).toBeUndefined();
       expect(second.allowAgents).toBe(false);
       expect(original.child.kill("SIGINT")).toBe(true);
       await expectExit(original.closed, 0);
@@ -430,7 +435,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         expect(restartLogs).toContain(` info ${second.projectId.split("-")[0]}/${second.id.split("-")[0]}/${originalClaim.split("-")[0]} active Starting a new native conversation in the task worktree.`);
         expect(restartLogs).not.toContain(" warning ");
       }
-      expect(second.properties.worker!.claimId).toBe(originalClaim);
+      expect(readWorkerClaim(second.properties)!.claimId).toBe(originalClaim);
       expect(requests.slice(restartRequestOffset).some((request) => request.method === "POST" && request.path.endsWith("/worker-claim"))).toBe(false);
       expect(inventoryResponses.filter((response) => response.status === 200).every((response) => response.mappedProjectCount === 2)).toBe(true);
       expect(restarted.child.kill("SIGINT")).toBe(true);

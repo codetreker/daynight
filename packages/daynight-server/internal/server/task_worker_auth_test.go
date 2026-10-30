@@ -50,7 +50,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	request(member, http.MethodPost, path, body, map[string]string{"Origin": "https://foreign.example"}, http.StatusForbidden, "forbidden")
 	data = request(anonymous, http.MethodPost, path, body, bearer, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
-	claim := task.Properties.Worker
+	claim := apiWorker(t, task.Properties)
 	if claim == nil || claim.UserID == adminUser.ID {
 		t.Fatal("PAT claim did not derive its execution owner from authentication")
 	}
@@ -71,7 +71,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	withdraw := map[string]any{"version": task.Version, "claimId": claim.ClaimID}
 	data = request(anonymous, http.MethodPost, path+"/withdraw", withdraw, bearer, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
-	if task.Properties.Worker != nil || task.AllowAgents || task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
+	if apiWorker(t, task.Properties) != nil || task.AllowAgents || task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
 		t.Fatal("owner withdrawal did not reset execution and disable automatic claims")
 	}
 	request(member, http.MethodPatch, path, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "phase": "executing"}, origin, http.StatusConflict, "claim_conflict")
@@ -80,22 +80,22 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	body = workerClaimBody(task.Version)
 	data = request(member, http.MethodPost, path, body, origin, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
-	data = request(admin, http.MethodPost, path+"/release", map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "stoppedConfirmed": true}, origin, http.StatusOK, "")
+	data = request(admin, http.MethodPost, path+"/release", map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "stoppedConfirmed": true}, origin, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
 	resume := workerClaimBody(task.Version)
-	resume["previousClaimId"] = task.Properties.Worker.ClaimID
+	resume["previousClaimId"] = apiWorker(t, task.Properties).ClaimID
 	request(outsider, http.MethodPost, path+"/resume", resume, origin, http.StatusNotFound, "not_found")
 	request(anonymous, http.MethodPost, path+"/resume", resume, nil, http.StatusUnauthorized, "unauthenticated")
 	data = request(admin, http.MethodPost, path+"/resume", resume, origin, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
-	if task.Properties.Worker.UserID != adminUser.ID || task.Properties.Worker.ClaimID != resume["claimId"] {
+	if apiWorker(t, task.Properties).UserID != adminUser.ID || apiWorker(t, task.Properties).ClaimID != resume["claimId"] {
 		t.Fatal("manual resume did not establish the authorized caller's new claim")
 	}
-	withdraw = map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID}
+	withdraw = map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID}
 	request(member, http.MethodPost, path+"/withdraw", withdraw, origin, http.StatusForbidden, "forbidden")
 	data = request(admin, http.MethodPost, path+"/withdraw", withdraw, origin, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)
-	if task.Properties.Worker != nil || task.AllowAgents || task.Status != "todo" {
+	if apiWorker(t, task.Properties) != nil || task.AllowAgents || task.Status != "todo" {
 		t.Fatal("administrator withdrawal retained ownership")
 	}
 	if integration.logs.contains(token.Token) || integration.logs.contains("Owned execution") || integration.logs.contains("Worker machine") {

@@ -57,7 +57,7 @@ func TestWorkerSnapshotsHTTPIdentityOriginAndCurrentPermissions(t *testing.T) {
 	claim["workerId"] = id
 	_, data = identityRequest(t, alice, http.MethodPost, integration.server.URL+taskPath(task)+"/worker-claim", jsonBody(t, claim), origin, http.StatusOK)
 	task = identityDecode[api.Task](t, data)
-	body["taskInventory"] = map[string]any{"observedAt": "2026-10-29T00:00:00Z", "claims": []any{map[string]any{"projectId": project.ID, "taskId": task.ID, "claimId": task.Properties.Worker.ClaimID}}}
+	body["taskInventory"] = map[string]any{"observedAt": "2026-10-29T00:00:00Z", "claims": []any{map[string]any{"projectId": project.ID, "taskId": task.ID, "claimId": apiWorker(t, task.Properties).ClaimID}}}
 	identityRequest(t, alice, http.MethodPost, integration.server.URL+path+"/report", jsonBody(t, body), origin, http.StatusOK)
 	_, data = identityRequest(t, alice, http.MethodGet, integration.server.URL+path, "", nil, http.StatusOK)
 	if detail := identityDecode[api.WorkerDetailResponse](t, data); len(detail.Worker.Tasks) != 1 || detail.Worker.ActiveTaskCount == nil || *detail.Worker.ActiveTaskCount != 1 {

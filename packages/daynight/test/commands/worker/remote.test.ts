@@ -14,10 +14,10 @@ const projectId = uuid(1), workerId = uuid(2), taskId = uuid(3);
 const time = "2026-10-27T00:00:00Z";
 const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine: { id: uuid(5), name: "test-machine" }, platform: "linux", agent: "codex", worktreeId: uuid(6) };
 const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
-const task = (id = taskId, claim: WorkerClaim | null = null, project = projectId): Task => ({
+const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({
   id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
   requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, version: 1n,
-  properties: { worker: claim, pullRequests: [] }, createdAt: time, updatedAt: time,
+  properties: { ...(claim === undefined ? {} : { worker: claim }), pullRequests: [] }, createdAt: time, updatedAt: time,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: claim?.state !== "active",
 });
 const project = (id = projectId, repoUrl = "https://github.com/example/repo.git"): Project => ({

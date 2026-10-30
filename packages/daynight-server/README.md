@@ -529,7 +529,11 @@ and check membership after acquiring this lock; administrator actions also
 require the admin role. Credential validation occurs at HTTP admission and is
 not repeated inside the business transaction. The operation receives a project-scoped
 `ProjectTx`; its subsequent reads observe commits made while it waited for the
-lock. Returning an error rolls back fields, properties, dependencies, version and
+lock. Target task reads for mutation also lock the parent row before property
+changes. Session relay keeps its shared parent-task lock before reading worker
+and session state; a missing property row cannot replace that fence. The lock
+order is project (when used), parent task, properties, then session/freeze.
+Returning an error rolls back fields, properties, dependencies, version and
 timestamps together. Only expose a captured resource after the outer call
 succeeds.
 
@@ -549,16 +553,27 @@ separate storage and current-permission behavior.
 
 The shared `core.Project` and `core.Task` models have one representation across
 storage and service. Store queries report prerequisite/dependent records and
-candidate reachability. The typed property codec in `internal/taskproperties/`
-stores serialized JSON in `tasks.properties` text, allowing JSON-escaped NUL
-without PostgreSQL JSONB restrictions. Migration `003_task_properties.sql` gives
-existing tasks empty PR lists while preserving version and timestamps. Migration
-016_task_worker.sql inserts explicit worker:null into the canonical stored text
-and updates the default without JSON/JSONB conversion, preserving opaque PR
-strings and task metadata. The stored/read codec is distinct from public writable
-properties, which reject worker even when null or unchanged. Corrupt stored
-structures fail reads; there is no read-time default. The HTTP boundary
-and property codec share the strict object decoder in `internal/jsonobject/`.
+candidate reachability. The static property registry in `internal/taskproperties/`
+owns native validation, normalization, schemas and public writability. Generic
+maps preserve every property key. Each task/property is a `task_properties` row,
+keyed by task_id/name, with one complete JSON value stored as text. JSON-escaped
+NUL retains its existing string semantics without SQL JSON conversion. Full
+reads batch-load properties in the same snapshot as their selected parent tasks.
+The frozen property-row migration covers soft-deleted tasks, preserves existing
+PR values including empty arrays, maps worker:null to absence, retains non-null
+claim/session identity, and leaves task versions/times unchanged. Old SQL and
+checksums remain immutable; the new checksum includes the frozen transform.
+Public mutations reject protected worker values. Missing properties are not
+materialized, and illegal stored properties fail the complete HTTP operation
+with 400 invalid_input; database failures remain 500 internal_error. The HTTP
+boundary and value codecs share strict object decoding in `internal/jsonobject/`.
+Property PUT receives unchanged argument text as valueText; it decodes JSON or
+string shorthand through the definition rather than trusting client validation.
+The complete JSON envelope, including its extra escaping, shares the 1 MiB request
+limit. DELETE removes the row and omits the key; null is never a delete marker.
+Both require the exact task version and return the resulting PropertyResource.
+Equal sets and absent repeated deletes are no-ops after version validation.
+
 The service owns reference validation, DAG/state rules, optimistic version
 comparison and semantic no-ops. These task resources have no foreign keys or
 hard-delete operations. Direct database writers must not bypass these service rules.
@@ -738,9 +753,10 @@ Task cursors bind project and optional status/ready/allowAgents/compatiblePlatfo
 filters, retaining absent/false and absent/each-enum distinctions. Optional UUID
 workerId also binds the implicit authenticated user ID and matches only that
 user/worker active claim. Ordinary eligibility filters remain SQL predicates;
-worker ownership is matched through the existing decoded TEXT properties before
-collecting the final limit+1 matching rows. No bounded output page hides later
-matches, and opaque PR strings are not converted through PostgreSQL JSON types.
+worker ownership is matched by decoding each candidate’s worker property row
+before collecting the final limit+1 matches; complete properties are batch-loaded
+for selected tasks. No bounded output page hides later matches, and opaque PR
+strings are not converted through PostgreSQL JSON types.
 
 ## Task-chain graph
 
@@ -823,6 +839,10 @@ user/worker active-claim inventory; no claim table is introduced.
 | `POST` | `/api/v1/projects/{projectId}/tasks` | `201`, task and `Location` |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | `200`, task page |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | `200`, task |
+| `GET` | `/api/v1/task-properties/schema` | `200`, authenticated server-wide definitions without project discovery |
+| `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | `200`, projectId/taskId/version and complete properties |
+| `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText; `200`, property resource after setting one complete value |
+| `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version; `200`, property resource with the removed key absent |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | `200`, updated metadata/dependencies |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/status` | `200`, exact-version status; done may include current claimId |
 | `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/worker-claim` | `200`, atomic automatic acquisition |
@@ -834,7 +854,7 @@ user/worker active-claim inventory; no claim table is introduced.
 Creation accepts required `title`, optional `description`, `dependsOn`,
 `externalDependsOn`, `requiredPlatform` and `properties`; omitted optional values
 mean empty text, empty complete/external dependency sets, unrestricted platform
-and an empty PR list. Status, version and identity are server-owned on creation.
+and no property rows. Status, version and identity are server-owned on creation.
 The external subset must belong to the final complete dependency set. On PATCH,
 omitting both fields preserves relationships; dependsOn-only replaces IDs and
 keeps surviving classifications with new edges ordinary; externalDependsOn-only
@@ -852,10 +872,11 @@ Empty description, `dependsOn: []` or `properties: {"pullRequests": []}` clears
 that value. `properties: {}` has no mutation intent and is accepted only with
 another mutable field. Fractions, exponents, strings and out-of-range versions fail.
 
-Full read `properties` contains the server-defined `pullRequests` ordered array
-and required `worker:null` or a typed active/released/completed execution record.
-Public create/PATCH accepts only writable PR properties; providing worker, even
-null or unchanged, is invalid_input. PR edits preserve worker. Each PR item
+Full read `properties` is a generic object of defined property names to complete
+JSON values. Keys may be absent; no default PR array or worker:null is injected.
+A retained worker is a typed active/released/completed claim object. Public
+create/PATCH and single-property mutations reject worker, even unchanged.
+PR edits and internal worker mutations preserve each other and all other keys. Each PR item
 requires exactly string fields `url` and `title`. Strings preserve their decoded
 JSON content, including empty text, whitespace, controls and NUL; order and
 duplicate items are data. The server performs no URL, PR, provider, repository
@@ -870,7 +891,8 @@ Task responses contain identity, project, title, description, status, required
 boolean `allowAgents`, nullable enum `requiredPlatform`, version,
 UTC creation/update timestamps, explicit nullable execution timestamps
 `startedAt`/`completedAt`, sorted `dependsOn`/`externalDependsOn`/`blockedBy` arrays, `ready` and complete
-`properties` with an initialized `pullRequests` array and explicit worker. A missing
+`properties` with its actual present keys. An empty object means no properties,
+and an explicit `pullRequests: []` remains distinct from absence. A missing
 project or a task outside the specified project returns 404. The initialized
 empty project returns `items: []`, `nextCursor: null`.
 
@@ -895,8 +917,10 @@ fail, and refusals leave fields, versions and timestamps intact.
 Version conflicts, wrong predecessor states, dependency cycles and unmet
 dependencies return 409 with `version_conflict`, `invalid_transition`,
 `dependency_cycle` or `dependency_unsatisfied`.
-Relevant sorted IDs appear in `error.details.taskIds`. Operational failures
-remain 500, and cancelled requests write neither response body nor creation
+Relevant sorted IDs appear in `error.details.taskIds`. Malformed stored property values return 400 invalid_input with a preserved
+validation cause; database and other operational failures remain 500. No path
+returns partial properties or silently repairs invalid values. Cancelled
+requests write neither response body nor creation
 Location. Parsed project/task IDs and the request ID correlate safe logs; known
 refusals use their domain `error_code` and cause instead of an internal label.
 

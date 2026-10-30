@@ -77,7 +77,7 @@ beforeEach(() => {
   detailRequest.mockImplementation(async (project, id) => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id)!;
     const blockedBy = task.blockedBy.length === 0 ? task.dependsOn : [];
-    return { ...task, id, projectId: project, title: task.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)!,
+    return { ...task, id, projectId: project, title: task.titlePreview, description: '', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)!,
       blockedBy, ready: task.status === 'todo' && blockedBy.length === 0 };
   });
 });

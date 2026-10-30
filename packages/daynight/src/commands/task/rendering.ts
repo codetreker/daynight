@@ -10,12 +10,9 @@ const taskIdentity = (task: Task): readonly string[] => [
   `Title: ${terminalText(task.title)}`,
 ];
 
-const taskPullRequests = (task: Task): readonly string[] => [
-  `Pull requests: ${task.properties.pullRequests.length}`,
-  ...task.properties.pullRequests.flatMap((pullRequest, index) => [
-    `  ${index + 1}. Title: ${terminalText(pullRequest.title)}`,
-    `     URL: ${terminalText(pullRequest.url)}`,
-  ]),
+const taskProperties = (task: Task): readonly string[] => [
+  `Properties: ${Object.keys(task.properties).length}`,
+  ...Object.entries(task.properties).sort(([left], [right]) => left.localeCompare(right)).map(([name, value]) => `  ${terminalText(name)}: ${terminalText(stringifyApiJson(value))}`),
 ];
 
 const taskDependencies = (task: Pick<Task, "ready" | "dependsOn" | "externalDependsOn" | "blockedBy">): readonly string[] => [
@@ -28,7 +25,7 @@ const taskDependencies = (task: Pick<Task, "ready" | "dependsOn" | "externalDepe
 export const renderTask = (task: Task): string => [
   ...taskIdentity(task),
   `Description: ${terminalText(task.description)}`,
-  ...taskPullRequests(task),
+  ...taskProperties(task),
   `Status: ${terminalText(task.status)}`,
   `Automatic execution: ${task.allowAgents}`,
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,
@@ -43,7 +40,7 @@ export const renderTaskList = (tasks: readonly Task[]): string => tasks.length =
 
 export const renderTaskSummaryList = (tasks: readonly Task[]): string => tasks.length === 0 ? "No tasks.\n" : tasks.map((task) => [
   ...taskIdentity(task),
-  ...taskPullRequests(task),
+  ...taskProperties(task),
   `Status: ${terminalText(task.status)}`,
   `Automatic execution: ${task.allowAgents}`,
   `Required platform: ${task.requiredPlatform === null ? "any" : task.requiredPlatform}`,

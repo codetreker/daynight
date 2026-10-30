@@ -84,7 +84,7 @@ func sessionHTTPSetup(t *testing.T) *sessionHTTPFixture {
 	body["agentControlMode"] = "web"
 	f.task = claimHTTPWorker(t, f.handler, f.task, body)
 	f.base = taskPath(f.task) + "/sessions"
-	w := f.task.Properties.Worker
+	w := apiWorker(t, f.task.Properties)
 	f.registration = sp.Registration{Protocol: sp.Protocol, RegistrationID: uuid.NewString(), ClaimID: w.ClaimID, WorkerID: w.WorkerID, WorktreeID: w.WorktreeID, Provider: "codex", ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString()}
 	result := decodeResponse[struct {
 		Session sp.Snapshot `json:"session"`

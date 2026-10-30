@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../api/task-properties";
 import type { RefObject } from 'react';
 import { ApiError } from '../../api/client';
 import type { ProjectMember } from '../../api/auth-types';
@@ -11,7 +12,7 @@ import type { TaskMutationState } from './TaskDetailSession';
 
 export type WithdrawalConfirmation = { readonly kind: 'withdraw'; readonly detail: TaskDetail; readonly claimId: string };
 export const matchesWithdrawalReview = (confirmation: WithdrawalConfirmation, detail: TaskDetail | null): boolean =>
-  detail !== null && detail.properties.worker?.claimId === confirmation.claimId && taskReviewKey(confirmation.detail) === taskReviewKey(detail);
+  detail !== null && readWorkerClaim(detail.properties)?.claimId === confirmation.claimId && taskReviewKey(confirmation.detail) === taskReviewKey(detail);
 
 export const mayWithdrawClaim = (worker: WorkerClaim, viewerId: string, members: readonly ProjectMember[]): boolean => {
   const viewer = members.find((member) => member.userId === viewerId);

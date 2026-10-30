@@ -9,7 +9,7 @@ import { renderWithLocale } from './helpers/renderWithLocale';
 
 const detail: TaskDetail = {
   requiredPlatform: null, allowAgents: false, id: 'task', projectId: 'project', title: 'Deployment acceptance', description: '',
-  properties: { worker: null, pullRequests: [] }, status: 'todo', version: 12n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
+  properties: { pullRequests: [] }, status: 'todo', version: 12n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
   startedAt: null, completedAt: null, createdAt: '2026-10-24T00:00:00Z', updatedAt: '2026-10-24T00:00:00Z',
 };
 const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, reconciling: false, reconciliationError: null };

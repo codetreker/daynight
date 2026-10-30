@@ -44,7 +44,7 @@ func TestTaskPlatformMigrationPreservesHistoryAndConstrainsValues(t *testing.T) 
 	}
 	read := func(id string) core.Task {
 		t.Helper()
-		task, err := scanHistoricalTask(pool.QueryRow(ctx, `SELECT `+taskProjection+` FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, project.ID, id))
+		task, err := scanHistoricalTask(pool.QueryRow(ctx, `SELECT `+historicalPlatformTaskProjection+` FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, project.ID, id))
 		if err != nil {
 			t.Fatal(err)
 		}

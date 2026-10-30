@@ -6,7 +6,7 @@ import { ApiError, getTaskSync, pauseAuthRequests } from "../src/api/client";
 import type { TaskGraph, TaskSync } from "../src/api/types";
 import { useTaskGraph } from "../src/features/projects/useTaskGraph";
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from "../src/features/task-cache/TaskCacheProvider";
-import { TASK_CACHE_DATABASE, type TaskCacheSchema } from "../src/features/task-cache/database";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from "../src/features/task-cache/database";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
 import { taskSyncFromGraph, taskSyncEpoch, TEST_VIEWER_ID } from "./helpers/taskSync";
 
@@ -112,7 +112,7 @@ it("retains loading without a baseline and keeps another user's and project's ca
 
 it("rebuilds corrupt local rows through the existing full sync without publishing an incomplete preview", async () => {
   await seed();
-  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1);
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   await database.delete("summaries", [TEST_VIEWER_ID, projectId, taskId]); database.close();
   const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
   const { result } = mount();
@@ -204,7 +204,7 @@ it.each(["response", "broadcast"] as const)("keeps a replacement cache hidden af
     await act(async () => { initial.resolve(sync(graph())); });
   }
   await waitFor(() => expect(view.result.current).toMatchObject({ status: "error", snapshot: null }));
-  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1);
+  const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   try {
     expect(await database.get("projects", [TEST_VIEWER_ID, projectId])).toMatchObject({ state: "active", epoch: replacementEpoch,
       cacheGeneration: peer.getAuthorizedProject(projectId)!.manifest.cacheGeneration });

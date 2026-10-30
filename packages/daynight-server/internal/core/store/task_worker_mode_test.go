@@ -6,8 +6,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
 func TestWorkerModeMigrationPreservesLegacyHistoryAndNullWorkers(t *testing.T) {
@@ -32,7 +30,7 @@ func TestWorkerModeMigrationPreservesLegacyHistoryAndNullWorkers(t *testing.T) {
 	}
 	before := workerMigrationRows(t, database)
 	for range 2 {
-		if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		if err := migrate(ctx, pool, schemaMigrations[:20]); err != nil {
 			t.Fatal(err)
 		}
 		after := workerMigrationRows(t, database)
@@ -63,7 +61,7 @@ func TestWorkerModeMigrationPreservesLegacyHistoryAndNullWorkers(t *testing.T) {
 			if string(execution["agentControlMode"]) != `"herdr"` {
 				t.Fatalf("legacy execution did not persist herdr: %s", updated["worker"])
 			}
-			if _, err := taskproperties.Decode([]byte(row.Properties)); err != nil {
+			if _, err := decodeHistoricalPropertiesFixture([]byte(row.Properties)); err != nil {
 				t.Fatalf("migrated history is unreadable: %v", err)
 			}
 		}

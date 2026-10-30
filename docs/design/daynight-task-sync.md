@@ -121,7 +121,9 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 ## 5. IndexedDB 与去重
 
-采用固定的 `idb@8.0.4` 薄包装，数据库 schema 为 1，保留显式事务所有权。[固定上游 README](https://github.com/jakearchibald/idb/blob/654c746bef13f9fe7f5871e03ac58015cebace5a/README.md)说明事务 active 生命周期与 tx.done；不引入 Dexie live query 或第二个 UI 状态所有者。原生 API 需要自行包装事务完成，idb 复用原生模型且提供类型化 Promise。
+采用固定的 `idb@8.0.4` 薄包装，数据库 schema 为 2，保留显式事务所有权。[固定上游 README](https://github.com/jakearchibald/idb/blob/654c746bef13f9fe7f5871e03ac58015cebace5a/README.md)说明事务 active 生命周期与 tx.done；不引入 Dexie live query 或第二个 UI 状态所有者。原生 API 需要自行包装事务完成，idb 复用原生模型且提供类型化 Promise。
+
+属性模型采用缺失键后，schema 1→2 升级清理可再生的 projects/summaries/details 并轮换 user fence。旧详情可能包含 worker:null 或自动生成的 PR 空数组，而属性迁移不改变任务版本；升级必须随模型切换发生，避免将这些旧值与同版本的新详情比较。摘要仍不包含 properties，升级清掉旧水位并重新取得完整摘要。
 
 同源数据库 `daynight-task-cache`：
 
@@ -134,7 +136,7 @@ TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须�
 
 `lifecycle.ts` 统一验证用户记录与两类 manifest：userId/projectId 必须匹配请求归属，userFence 和 cacheGeneration 必须是规范 UUID，计数必须是容量上限内的非负安全整数。active manifest 要求 invalidatedBy=null、合法 epoch/Project，且 taskCount 为零当且仅当 maxUpdatedAt=null；invalidated manifest 要求明确的 access/corrupt/user 原因、epoch/project/maxUpdatedAt 全为 null、taskCount/edgeCount 全为零。失效状态不能保留可用于增量请求的旧 epoch。
 
-不存派生 ready/blockedBy，不把 bigint 当作 IDB 键，也不 JSON.stringify bigint。`projects` 的 `by-user` 索引支持用户清理；`summaries`、`details` 的 `by-user` 与 `by-project` 索引支持定向读取和清理。`TaskIntrinsicDetail = Omit<TaskDetail, "ready" | "blockedBy">` 固定详情存储边界，保留 description、完整 properties（含 pullRequests 和 nullable worker）及精确业务 version。
+不存派生 ready/blockedBy，不把 bigint 当作 IDB 键，也不 JSON.stringify bigint。`projects` 的 `by-user` 索引支持用户清理；`summaries`、`details` 的 `by-user` 与 `by-project` 索引支持定向读取和清理。`TaskIntrinsicDetail = Omit<TaskDetail, "ready" | "blockedBy">` 固定详情存储边界，保留 description、完整 properties（保留实际键，worker 缺失表示没有保留归属）及精确业务 version。
 
 `TaskCacheProvider` 在认证分支内、`TaskDetailSessionProvider` 外提供同一个 `TaskCacheScope`，同时覆盖项目页、独立任务页和附件路径页。scope 以用户与会话 generation 隔离；普通同用户核验保留它。`beginSync` 返回 epoch、水位和生命周期 ticket，`applySync` 原子应用响应，`readProject` 读取实际持久集合，`canPreviewProject` 根据既有 revokedGenerations 与 authorizedProjects 判断是否允许本地摘要预览，`getAuthorizedProject` 只返回本 scope 已获在线准入的内存投影。`getSummaryVersion` 和 `subscribe` 提供精确业务版本与变更通知；`detailTransaction` 在相同 fence/generation 校验后开放四 store 内的详情事务。
 

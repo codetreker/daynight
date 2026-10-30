@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../src/api/task-properties.js";
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -24,7 +25,7 @@ const claimId = "e1b2c3d4-1111-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const workerClaim: WorkerClaim = { claimId, state: "active", userId: alternateId, workerId: unrelatedId, machine: { id: alternateId, name: "Worker machine" }, platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: ordinaryId, phase: "executing", herdr: { session: "w", workspaceId: "original-workspace", paneId: "original-pane" }, nativeSessionId: "original-native-session", claimedAt: time };
 const project = (projectId = id, repoUrl = "git@git.example:Org/Repo.git"): Project => ({ id: projectId, name: "Project 中文", repoUrl, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time });
-const task = (projectId = id): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+const task = (projectId = id): Task => ({ id: taskId, projectId, title: "Task 中文", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const taskListItem = (value: Task): Omit<Task, "description"> => ({
   id: value.id, projectId: value.projectId, title: value.title, properties: value.properties,
   status: value.status, allowAgents: value.allowAgents, requiredPlatform: value.requiredPlatform, version: value.version, startedAt: value.startedAt, completedAt: value.completedAt, createdAt: value.createdAt, updatedAt: value.updatedAt,
@@ -54,7 +55,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
   for (const key of Object.keys(environment)) if (/^(?:GIT_|GH_|GITHUB_|COPILOT_|NODE_OPTIONS$|DAYNIGHT_)/i.test(key)) delete environment[key];
   Object.assign(environment, { HOME: home, USERPROFILE: home, GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: path.join(receipt.root, "git-global"), GIT_TERMINAL_PROMPT: "0", NO_COLOR: "1" });
   let projects = [project(unrelatedId, "https://other.example/Unrelated/Repo"), project()];
-  let properties: Task["properties"] = { worker: null, pullRequests: [] };
+  let properties: Task["properties"] = { pullRequests: [] };
   let description = "";
   let allowAgents = false;
   let requiredPlatform: Task["requiredPlatform"] = null;
@@ -96,8 +97,8 @@ it("runs the actual installed launcher through native project/task discovery, pe
             const input = body as { status: Task["status"]; version: bigint; claimId?: string };
             const status = input.status;
             if (input.claimId !== undefined) {
-              const worker = properties.worker;
-              if (worker === null || worker.claimId !== input.claimId) { fault(response, "claim_conflict", "native-worker-claim-refusal", 409); return; }
+              const worker = readWorkerClaim(properties);
+              if (worker === undefined || worker.claimId !== input.claimId) { fault(response, "claim_conflict", "native-worker-claim-refusal", 409); return; }
               const sameState = worker.state === "completed";
               properties = { ...properties, worker: { ...worker, state: "completed" } };
               send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, status: "done", ready: false, startedAt: time, completedAt: time, version: input.version + (sameState ? 0n : 1n) }); return;
@@ -111,15 +112,15 @@ it("runs the actual installed launcher through native project/task discovery, pe
           if (request.method === "POST") dependencies = { dependsOn: [], externalDependsOn: [] };
           const dependencyFields = body as Partial<Pick<Task, "dependsOn" | "externalDependsOn">>;
           dependencies = { ...dependencies, ...(dependencyFields.dependsOn === undefined ? {} : { dependsOn: dependencyFields.dependsOn }), ...(dependencyFields.externalDependsOn === undefined ? {} : { externalDependsOn: dependencyFields.externalDependsOn }) };
-          send(response, { ...task(projectId), ...dependencies, description, requiredPlatform, ...(request.method === "PATCH" ? { allowAgents } : {}), ...(body as object), ...((body as { properties?: unknown }).properties === undefined ? {} : { properties: { ...(body as { properties: object }).properties, worker: null } }), ...(request.method === "POST" ? { status: "todo", ready: true } : {}), version: request.method === "PATCH" ? 9_007_199_254_740_994n : 1n }, request.method === "POST" ? 201 : 200); return;
+          send(response, { ...task(projectId), ...dependencies, description, requiredPlatform, ...(request.method === "PATCH" ? { allowAgents } : {}), ...(body as object), ...((body as { properties?: unknown }).properties === undefined ? {} : { properties: { ...(body as { properties: object }).properties } }), ...(request.method === "POST" ? { status: "todo", ready: true } : {}), version: request.method === "PATCH" ? 9_007_199_254_740_994n : 1n }, request.method === "POST" ? 201 : 200); return;
         }
         if (parts[5] === "task-graph") {
           if (url.searchParams.get("taskId") !== taskId) { fault(response, "invalid_input", "native-graph-target", 400); return; }
           send(response, { observedAt: time, project: project(projectId), summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ ...task(projectId), titlePreview: "Task 中文", titleTruncated: false }] }); return;
         }
         if (parts.length === 7) {
-          const status = properties.worker?.state === "active" ? "in_progress" : properties.worker?.state === "completed" ? "done" : "todo";
-          send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, status, ready: status === "todo", ...(properties.worker === null ? {} : { startedAt: time, completedAt: status === "done" ? time : null }), version: 9_007_199_254_740_993n }); return;
+          const status = readWorkerClaim(properties)?.state === "active" ? "in_progress" : readWorkerClaim(properties)?.state === "completed" ? "done" : "todo";
+          send(response, { ...task(projectId), ...dependencies, description, properties, allowAgents, requiredPlatform, status, ready: status === "todo", ...(readWorkerClaim(properties) === undefined ? {} : { startedAt: time, completedAt: status === "done" ? time : null }), version: 9_007_199_254_740_993n }); return;
         }
         if (readyPage !== undefined && url.searchParams.get("ready") === "true") { send(response, readyPage); return; }
         if (broken === "page" && url.searchParams.has("cursor")) { fault(response, "internal_error", "native-later-page", 500); return; }
@@ -251,7 +252,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
       expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "PUT"]);
     }
     broken = "none";
-    properties = { worker: null, pullRequests: [] };
+    properties = { pullRequests: [] };
     scenarios.push("installed-explicit-worker-claim-completion-history-noop-refusals-and-unknown-write");
     for (const permission of [true, false]) {
       const before = requests.length;
@@ -338,9 +339,9 @@ it("runs the actual installed launcher through native project/task discovery, pe
     const pairs = ["--pull-request-url=", "--pull-request-url=-arbitrary=a,b", "--pull-request-title=", "--pull-request-title", pullRequests[1]!.title, "--pull-request-title", pullRequests[2]!.title, "--pull-request-url=-arbitrary=a,b"];
     const createdWithPr = await invoke(["task", "create", "--title", "PR task", ...pairs, ...explicit], outside, 0, true);
     expect(requests.at(-1)!.body).toEqual({ title: "PR task", properties: { pullRequests } });
-    expect(createdWithPr.stdout).toContain("Pull requests: 3");
+    expect(createdWithPr.stdout).toContain("Properties: 1");
     expect(createdWithPr.stdout).toContain(" 标题 ,=() ");
-    properties = { worker: null, pullRequests: [...pullRequests, { url: "\0 arbitrary\ttext", title: "\0\n\r\u001b[2J" }] };
+    properties = { pullRequests: [...pullRequests, { url: "\0 arbitrary\ttext", title: "\0\n\r\u001b[2J" }] };
     expect(parseApiJson((await invoke(["task", "show", taskId, "--json", ...explicit], outside, 0, true)).stdout)).toEqual({ ...task(), properties, version: 9_007_199_254_740_993n });
     expect(parseApiJson((await invoke(["task", "list", "--json", ...explicit], outside, 0, true)).stdout)).toEqual([taskListItem({ ...task(), properties })]);
     listResponseTask = { ...task(), description: "List description\n\u001b[2J", properties, version: 9_223_372_036_854_775_807n };
@@ -357,17 +358,17 @@ it("runs the actual installed launcher through native project/task discovery, pe
     for (const args of [["task", "show", taskId, ...explicit], ["task", "list", ...explicit]]) {
       const output = (await invoke(args, outside, 0, true)).stdout;
       expect(output).toContain("\\u0000 arbitrary\\ttext");
-      expect(output).toContain("4. Title: \\u0000\\n\\r\\u001b[2J");
+      expect(output).toContain('"title":"\\u0000\\n\\r\\u001b[2J"');
     }
     const replaceAt = requests.length;
     await invoke(["task", "update", taskId, ...pairs, ...explicit], outside, 0, true);
     expect(requests.slice(replaceAt).map(({ method }) => method)).toEqual(["GET", "GET", "PATCH"]);
     expect(requests.at(-1)!.body).toEqual({ version: 9_007_199_254_740_993n, properties: { pullRequests } });
     const clearAt = requests.length;
-    expect((await invoke(["task", "update", taskId, "--clear-pull-requests", "--if-version", "9223372036854775807", ...explicit], outside, 0, true)).stdout).toContain("Pull requests: 0");
+    expect((await invoke(["task", "update", taskId, "--clear-pull-requests", "--if-version", "9223372036854775807", ...explicit], outside, 0, true)).stdout).toContain("  pullRequests: []");
     expect(requests.slice(clearAt).map(({ method }) => method)).toEqual(["GET", "PATCH"]);
     expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, properties: { pullRequests: [] } });
-    properties = { worker: null, pullRequests: [] };
+    properties = { pullRequests: [] };
     scenarios.push("installed-pr-pairing-empty-duplicates-raw-text-json-replace-and-clear");
 
     const multiline = [{ url: " arbitrary\r\nURL ", title: " 标题\n\r\u001b[2J " }, { url: "", title: "" }, { url: " arbitrary\r\nURL ", title: " 标题\n\r\u001b[2J " }];
@@ -375,8 +376,8 @@ it("runs the actual installed launcher through native project/task discovery, pe
     const multilinePairs = ["--pull-request-title", multiline[0]!.title, "--pull-request-url", multiline[0]!.url, "--pull-request-url=", "--pull-request-url", multiline[2]!.url, "--pull-request-title=", "--pull-request-title", multiline[2]!.title];
     const createdMultiline = await invoke(["task", "create", "--title", "Multiline PR task", ...multilinePairs, ...explicit], outside, 0, true, "node-entry");
     expect(requests.at(-1)!.body).toEqual({ title: "Multiline PR task", properties: multilineProperties });
-    expect(createdMultiline.stdout).toContain("1. Title:  标题\\n\\r\\u001b[2J \n     URL:  arbitrary\\r\\nURL ");
-    properties = { ...multilineProperties, worker: null };
+    expect(createdMultiline.stdout).toContain('"url":" arbitrary\\r\\nURL ","title":" 标题\\n\\r\\u001b[2J "');
+    properties = { ...multilineProperties };
     const multilineUpdateAt = requests.length;
     await invoke(["task", "update", taskId, ...multilinePairs, ...explicit], outside, 0, true, "node-entry");
     expect(requests.slice(multilineUpdateAt).map(({ method }) => method)).toEqual(["GET", "GET", "PATCH"]);
@@ -386,7 +387,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
       expect(parseApiJson(json.stdout)).toEqual(args[1] === "list" ? [taskListItem({ ...task(), properties })] : { ...task(), properties, version: 9_007_199_254_740_993n });
       expect((await invoke([...args, ...explicit], outside, 0, true, "node-entry")).stdout).toContain(" 标题\\n\\r\\u001b[2J ");
     }
-    properties = { worker: null, pullRequests: [] };
+    properties = { pullRequests: [] };
     scenarios.push("installed-node-entry-pr-multiline-create-update-and-readback");
 
     const markdown = [
@@ -427,12 +428,12 @@ it("runs the actual installed launcher through native project/task discovery, pe
     description = "";
     scenarios.push("installed-packaged-markdown-brief-original-bytes-across-status-changes");
 
-    const readyTask = { ...task(), description: "Ready details", properties: { worker: null, pullRequests: [{ url: "\0 arbitrary URL", title: "Ready\nPR" }] }, version: 9_223_372_036_854_775_807n };
+    const readyTask = { ...task(), description: "Ready details", properties: { pullRequests: [{ url: "\0 arbitrary URL", title: "Ready\nPR" }] }, version: 9_223_372_036_854_775_807n };
     readyPage = { items: [readyTask], nextCursor: "native unrequested next page" };
     const readyAt = requests.length;
     expect(parseApiJson((await invoke(["task", "ready", "--limit=1", "--json", ...explicit], outside, 0, true)).stdout)).toEqual([readyTask]);
     expect(requests.slice(readyAt).map(({ path: pathname }) => pathname)).toEqual([`/api/v1/projects/${id}`, `/api/v1/projects/${id}/tasks?ready=true&limit=1`]);
-    expect((await invoke(["task", "ready", "--limit=1", ...explicit], outside, 0, true)).stdout).toContain("1. Title: Ready\\nPR\n     URL: \\u0000 arbitrary URL");
+    expect((await invoke(["task", "ready", "--limit=1", ...explicit], outside, 0, true)).stdout).toContain('"url":"\\u0000 arbitrary URL","title":"Ready\\nPR"');
     readyPage = { items: [], nextCursor: null };
     expect((await invoke(["task", "ready", ...explicit], outside, 0, true)).stdout).toBe("No ready tasks.\n");
     expect(requests.at(-1)!.path).toBe(`/api/v1/projects/${id}/tasks?ready=true&limit=10`);

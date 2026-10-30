@@ -24,7 +24,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := migrate(ctx, pool, schemaMigrations); err != nil {
+		if err := migrate(ctx, pool, schemaMigrations[:17]); err != nil {
 			t.Fatal(err)
 		}
 		var marker bool
@@ -32,7 +32,7 @@ func TestTaskSoftDeleteMigrationPreservesHistory(t *testing.T) {
 			t.Fatalf("migration changed existing task facts: %s %s %v", before, after, err)
 		}
 	}
-	if task := snapshotTask(t, database, project.ID, queryID(11)); task.Version != 9007199254740993 || task.Status != core.TaskDone {
+	if task := snapshotHistoricalTask(t, database, project.ID, queryID(11)); task.Version != 9007199254740993 || task.Status != core.TaskDone {
 		t.Fatal("existing task no longer decodes")
 	}
 }

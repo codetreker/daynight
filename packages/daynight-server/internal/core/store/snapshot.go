@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -60,32 +62,48 @@ func (s *Snapshot) Task(ctx context.Context, projectID, id string) (core.Task, e
 func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery) (TaskPage, error) {
 	afterTime, afterID := pageValues(query.Page)
 	var limit any = query.Page.Limit + 1
+	projection, join := taskProjection, ""
 	if query.Worker != nil {
 		limit = nil
+		projection += ", worker_property.value"
+		join = " LEFT JOIN task_properties worker_property ON worker_property.task_id=t.id AND worker_property.name='worker'"
 	}
-	rows, err := s.tx.Query(ctx, `SELECT `+taskProjection+` FROM tasks t
-		WHERE t.project_id = $1 AND t.deleted_at IS NULL
-		AND ($2::timestamptz IS NULL OR (t.created_at, t.id) > ($2, $3::uuid))
-		AND ($4::text IS NULL OR t.status = $4)
-		AND ($5::boolean IS NULL OR `+taskReady+` = $5)
-		AND ($6::boolean IS NULL OR t.allow_agents = $6)
-		AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
-		ORDER BY t.created_at, t.id LIMIT $8`, projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit)
+	rows, err := s.tx.Query(ctx, `SELECT `+projection+` FROM tasks t`+join+`
+  WHERE t.project_id = $1 AND t.deleted_at IS NULL
+  AND ($2::timestamptz IS NULL OR (t.created_at, t.id) > ($2, $3::uuid))
+  AND ($4::text IS NULL OR t.status = $4)
+  AND ($5::boolean IS NULL OR `+taskReady+` = $5)
+  AND ($6::boolean IS NULL OR t.allow_agents = $6)
+  AND ($7::text IS NULL OR t.required_platform IS NULL OR t.required_platform = $7)
+  ORDER BY t.created_at, t.id LIMIT $8`, projectID, afterTime, afterID, query.Status, query.Ready, query.AllowAgents, query.CompatiblePlatform, limit)
 	if err != nil {
 		return TaskPage{}, queryError("list tasks", err)
 	}
 	defer rows.Close()
 	items := make([]core.Task, 0, query.Page.Limit+1)
 	for rows.Next() {
-		task, err := scanTask(rows)
+		var workerValue *string
+		var trailing []any
+		if query.Worker != nil {
+			trailing = []any{&workerValue}
+		}
+		task, err := scanTask(rows, trailing...)
 		if err != nil {
 			return TaskPage{}, queryError("list tasks", err)
 		}
-		// Worker ownership is decoded before the page limit so opaque PR strings
-		// never pass through PostgreSQL JSON conversion or hide later matches.
 		if query.Worker != nil {
-			worker := task.Properties.Worker
-			if worker == nil || worker.State != core.WorkerActive || worker.UserID != query.Worker.UserID || worker.WorkerID != query.Worker.WorkerID {
+			if workerValue == nil {
+				continue
+			}
+			value, err := taskproperties.NormalizeValue("worker", json.RawMessage(*workerValue), false)
+			if err != nil {
+				return TaskPage{}, queryError("decode worker inventory", err)
+			}
+			worker, err := taskproperties.Worker(core.TaskProperties{"worker": value})
+			if err != nil {
+				return TaskPage{}, queryError("decode worker inventory", err)
+			}
+			if worker.State != core.WorkerActive || worker.UserID != query.Worker.UserID || worker.WorkerID != query.Worker.WorkerID {
 				continue
 			}
 		}
@@ -102,14 +120,26 @@ func (s *Snapshot) Tasks(ctx context.Context, projectID string, query TaskQuery)
 	if hasMore {
 		items = items[:query.Page.Limit]
 	}
+	if err := attachTaskProperties(ctx, s.tx, items); err != nil {
+		return TaskPage{}, err
+	}
 	return TaskPage{Items: items, HasMore: hasMore}, nil
 }
 
 func readTask(ctx context.Context, tx pgx.Tx, projectID, id string) (core.Task, error) {
+	return readTaskWithLock(ctx, tx, projectID, id, "")
+}
+
+func readTaskWithLock(ctx context.Context, tx pgx.Tx, projectID, id, lock string) (core.Task, error) {
 	task, err := scanTask(liveTaskRow{tx.QueryRow(ctx, `SELECT `+taskProjection+`, t.deleted_at FROM tasks t
-		WHERE t.project_id = $1 AND t.id = $2`, projectID, id)})
+  WHERE t.project_id = $1 AND t.id = $2`+lock, projectID, id)})
 	if err != nil {
 		return core.Task{}, queryError("read task", err)
 	}
+	values, err := loadTaskProperties(ctx, tx, []string{id})
+	if err != nil {
+		return core.Task{}, err
+	}
+	task.Properties = values[id]
 	return task, nil
 }

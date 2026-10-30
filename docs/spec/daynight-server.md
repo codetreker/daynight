@@ -85,7 +85,7 @@ Task 包含以下持久化字段：
 | `projectId` | 所属 project，创建后不可变 |
 | `title` | 必填的非空 UTF-8 标题，不含 NUL |
 | `description` | 不含 NUL 的 UTF-8 描述，省略时为空字符串，允许更新为空字符串 |
-| `properties` | 必含 pullRequests 有序字符串记录数组与 worker:null/执行归属；PR 默认空数组，worker 为服务端受保护记录 |
+| `properties` | 服务端预定义属性的完整 JSON 对象；键可缺失，新任务为 {}，pullRequests 为有序数组，worker 为只读执行归属对象 |
 | `status` | `todo / in_progress / done`，创建时为 todo；普通设置使用状态资源，受控 worker 操作原子改变对应状态 |
 | `allowAgents` | 必填布尔自动执行许可，新任务为 `false`；与状态、依赖、实际执行者独立 |
 | `requiredPlatform` | 字段必填，值为 `null`、`windows`、`linux` 或 `macos`；`null` 表示不限制，新旧任务默认均不限制 |
@@ -109,7 +109,7 @@ todo 可有未完成前置，in_progress/done 的前置必须全部完成；状�
 
 新建 task 和数据库默认值均为 `todo`，初始版本为 1，执行起止为 null，`allowAgents=false`。
 创建只接受 `title`、可选 `description`、`dependsOn`、`externalDependsOn`、`requiredPlatform` 和 `properties`；
-禁止提交 status、allowAgents 和执行时间。省略描述、依赖和 PR 列表分别为空字符串、空集合与空数组。
+禁止提交 status、allowAgents 和执行时间。省略描述与依赖分别为空字符串与空集合；省略属性不创建默认属性行。
 任务登记不启动执行，也不提供实现、部署、发布、合并或主线 push 的权限。
 创建的 requiredPlatform 省略或 null 表示不限制，三个枚举可设置要求。迁移 013 只为旧行
 增加 nullable 平台字段，保留其状态、版本、时间、属性和边；迁移 014 再执行三状态归类。
@@ -173,6 +173,10 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `POST` | `/api/v1/projects/{projectId}/tasks` | 创建 task，返回 `201` 和资源 |
 | `GET` | `/api/v1/projects/{projectId}/tasks` | 返回 task 分页列表 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 返回 task，缺失或不属于该 project 时 `404` |
+| `GET` | `/api/v1/task-properties/schema` | 认证后读取全服务属性定义，无项目参数 |
+| `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | 返回 projectId、taskId、version 和完整 properties |
+| `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText，服务端解析与校验后设置完整单值，返回 200 属性资源 |
+| `DELETE` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version，真正移除可写属性，返回 200 属性资源 |
 | `GET` | `/api/v1/projects/{projectId}/task-graph?taskId={taskId}` | 返回同一快照中的 project、完整本链及一层外部前置、相应统计 |
 | `GET` | `/api/v1/projects/{projectId}/task-sync` | 返回有界任务摘要 snapshot/delta，使用 epoch 与任务最大 updatedAt 水位 |
 | `PATCH` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 原子更新元数据和依赖，返回 `200` 和资源 |
@@ -216,7 +220,7 @@ Task 更新示例：
 
 列表使用 `limit`、`cursor`。`limit` 默认 `50`，允许 `1..100`；按
 `createdAt ASC, id ASC` 稳定排序，返回 `items` 和 `nextCursor`，末页后者为 `null`。
-Task 列表支持单个三状态 status、ready/allowAgents 布尔值、compatiblePlatform=windows|linux|macos，以及可选 UUID workerId。布尔只接受 true/false，兼容匹配包含 null 或同值要求；省略不筛选。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除 null/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
+Task 列表支持单个三状态 status、ready/allowAgents 布尔值、compatiblePlatform=windows|linux|macos，以及可选 UUID workerId。布尔只接受 true/false，兼容匹配包含 null 或同值要求；省略不筛选。workerId 只匹配当前认证用户、指定 worker 的有效 active claim，排除缺失/released/completed；不隐式增加状态、ready、许可或平台资格条件。全部显式条件 AND 组合，在最终分页和 lookahead 前成立，不能取有界页再丢弃不匹配项。
 
 仅以 workerId 筛选并成功读完该 runner 全部项目和分页，才得到用于资源对账的完整自有 claim 清单。额外显式条件得到的是子集，不能据其缺席清理其他执行；读取失败或部分页不能视为空清单。
 Cursor 必须绑定列表类型、所属 project 和规范化筛选条件；指定 workerId 时还绑定隐式认证 userId，不能换用户、移除或改变 workerId 续页。格式错误或条件不匹配返回输入错误。重复 query 参数、显式空值和未知参数也作为
@@ -291,7 +295,7 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 
 | HTTP 状态 | `error.code` | 场景 |
 |---|---|---|
-| `400` | `invalid_input` | 格式、字段、分页参数、依赖引用、自身或重复依赖不合法 |
+| `400` | `invalid_input` | 格式、字段、分页参数、依赖引用、自身或重复依赖不合法，以及读取到非法存储属性值 |
 | `401` | `unauthenticated` | 会话或个人访问令牌缺失、失效或已撤销 |
 | `403` | `forbidden` | 普通成员执行管理员操作，或 Cookie 会话写请求来源不符合要求 |
 | `404` | `not_found` | 路径资源缺失、当前用户不是项目成员或 task 不属于指定 project |

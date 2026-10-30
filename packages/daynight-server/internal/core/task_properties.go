@@ -1,15 +1,12 @@
 package core
 
+import "encoding/json"
+
 type PullRequestProperty struct {
 	URL   string
 	Title string
 }
 
-type TaskProperties struct {
-	PullRequests []PullRequestProperty
-	Worker       *WorkerClaim
-}
+type TaskProperties map[string]json.RawMessage
 
-type TaskPropertiesPatch struct {
-	PullRequests *[]PullRequestProperty
-}
+type TaskPropertiesPatch = TaskProperties

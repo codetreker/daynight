@@ -390,7 +390,7 @@ func TestQueriesReadFailuresAreNeverEmptyResults(t *testing.T) {
 		task := queryTask(t, s, project.ID, 11, core.TaskTodo)
 		mustQueryExec(t, s, `ALTER TABLE tasks RENAME TO task_source;
 			CREATE VIEW tasks AS SELECT id, project_id, title, description, status, 'invalid version'::text AS version,
-			created_at, updated_at, started_at, completed_at, allow_agents, required_platform, properties, deleted_at FROM task_source`)
+			created_at, updated_at, started_at, completed_at, allow_agents, required_platform, deleted_at FROM task_source`)
 		if err := s.ReadSnapshot(context.Background(), func(snapshot *Snapshot) error {
 			_, err := snapshot.Tasks(context.Background(), project.ID, TaskQuery{Page: Page{Limit: 10}})
 			return err

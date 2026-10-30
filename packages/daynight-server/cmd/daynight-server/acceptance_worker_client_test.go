@@ -36,7 +36,7 @@ func TestInstalledWorkerClientAcceptance(t *testing.T) {
 			t.Fatalf("installed internal API-client workflow failed (%d): %s", result.status, result.stderr)
 		}
 		finished := acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodGet, acceptanceTaskPath(task), nil, "worker-api-final"), http.StatusOK)
-		if finished.Status != "done" || finished.Properties.Worker == nil || finished.Properties.Worker.State != "completed" || finished.AllowAgents || len(finished.Properties.PullRequests) != 1 {
+		if finished.Status != "done" || acceptanceWorker(t, finished.Properties) == nil || acceptanceWorker(t, finished.Properties).State != "completed" || finished.AllowAgents || len(acceptancePullRequests(t, finished.Properties)) != 1 {
 			t.Fatal("installed internal API-client workflow did not persist completion and PR evidence")
 		}
 	})
@@ -57,7 +57,7 @@ const call = async (action, transport) => {
   } finally { operation.dispose(); }
 };
 let task = await call(api => api.getTask(projectId, taskId));
-assert.equal(task.properties.worker, null);
+assert.equal(Object.hasOwn(task.properties, "worker"), false);
 const descriptor = { claimId: randomUUID(), workerId: randomUUID(), machine: { id: randomUUID(), name: "Acceptance worker" }, platform: "linux", agent: "codex", worktreeId: randomUUID() };
 let claimRequests = 0;
 await assert.rejects(call(api => api.claimWorkerTask(projectId, taskId, { version: task.version, ...descriptor }), async (input, init) => {
@@ -76,7 +76,7 @@ task = await call(api => api.updateTask(projectId, taskId, { version: task.versi
 task = await call(api => api.updateWorkerClaim(projectId, taskId, { version: task.version, claimId: descriptor.claimId, phase: "executing", herdr: { session: "w", workspaceId: "workspace", paneId: "pane" }, nativeSessionId: "native" }));
 assert.equal(task.properties.worker.nativeSessionId, "native");
 task = await call(api => api.withdrawWorkerClaim(projectId, taskId, { version: task.version, claimId: descriptor.claimId }));
-assert.equal(task.properties.worker, null);
+assert.equal(Object.hasOwn(task.properties, "worker"), false);
 assert.equal(task.status, "todo");
 assert.equal(task.allowAgents, false);
 assert.equal(task.startedAt, null);

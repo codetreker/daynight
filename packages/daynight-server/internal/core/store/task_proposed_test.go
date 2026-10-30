@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"reflect"
 	"slices"
@@ -10,7 +9,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -182,19 +180,7 @@ func scanHistoricalTask(row pgx.Row) (core.Task, error) {
 	if err != nil {
 		return core.Task{}, err
 	}
-	var fields map[string]json.RawMessage
-	if err = json.Unmarshal([]byte(properties), &fields); err != nil {
-		return core.Task{}, err
-	}
-	if _, current := fields["worker"]; current {
-		task.Properties, err = taskproperties.Decode([]byte(properties))
-	} else {
-		var patch core.TaskPropertiesPatch
-		patch, err = taskproperties.DecodePatch([]byte(properties))
-		if err == nil && patch.PullRequests != nil {
-			task.Properties = core.TaskProperties{PullRequests: *patch.PullRequests}
-		}
-	}
+	task.Properties, err = decodeHistoricalPropertiesFixture([]byte(properties))
 	task.CreatedAt, task.UpdatedAt = task.CreatedAt.UTC(), task.UpdatedAt.UTC()
 	task.StartedAt, task.CompletedAt = utcTime(task.StartedAt), utcTime(task.CompletedAt)
 	return task, err
@@ -211,3 +197,6 @@ func snapshotHistoricalTask(t *testing.T, database *Store, projectID, id string)
 	}
 	return task
 }
+
+const historicalPlatformTaskProjection = `t.id::text, t.project_id::text, t.title, t.description,
+ t.status, t.version, t.created_at, t.updated_at, t.started_at, t.completed_at, t.allow_agents, t.required_platform, t.properties, ` + taskDependsOn + `, ` + taskExternalDependsOn + `, ` + taskBlockedBy + `, ` + taskReady

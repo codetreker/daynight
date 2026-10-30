@@ -299,7 +299,7 @@ func TestTaskStatusPartialWriteFailureRollsBackTimingAndMaterials(t *testing.T) 
 	prerequisite := finishTask(t, tasks, principal, createTask(t, tasks, principal, project.ID, "Completed prerequisite"))
 	target, err := tasks.Create(ctx, principal, project.ID, CreateTask{
 		Title: "Original", Description: "Preserved Markdown", DependsOn: []string{prerequisite.ID}, ExternalDependsOn: []string{prerequisite.ID},
-		Properties: core.TaskProperties{PullRequests: []core.PullRequestProperty{{URL: "https://github.com/owner/repo/pull/1", Title: "Existing evidence"}}},
+		Properties: propertyPatch([]core.PullRequestProperty{{URL: "https://github.com/owner/repo/pull/1", Title: "Existing evidence"}}...),
 	})
 	if err != nil {
 		t.Fatal(err)

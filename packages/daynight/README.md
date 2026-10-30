@@ -715,8 +715,10 @@ traversal across all relevant projects provides ownership inventory; extra filte
 or incomplete pages cannot authorize cleanup. This field is not a public task CLI
 option.
 
-Human task lists use labeled blocks containing ID, project, title, PR references,
-status, readiness, automatic-execution permission, required platform, dependencies and blocking.
+Human task lists use labeled blocks containing ID, project, title, complete
+properties, status, readiness, automatic-execution permission, required platform,
+dependencies and blocking. Property rows are ordered by name and rendered as
+terminal-safe JSON; missing keys are not replaced with default values.
 Description, version and timestamps
 remain available in show, ready, create and update output. Graph nodes include
 state, permission, required platform, dependencies, blocking and title-preview truncation flags.

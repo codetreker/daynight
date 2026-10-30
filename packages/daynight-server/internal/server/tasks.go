@@ -29,50 +29,48 @@ func taskRoutes(mux *http.ServeMux, tasks *service.Tasks, auth *Authentication, 
 	mux.HandleFunc("PUT /api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(handler.setStatus))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}/status", auth.Require(resourceMethodNotAllowed(logger, "PUT")))
 	workerRoutes(mux, handler, auth, logger)
+	propertyRoutes(mux, handler, auth, logger)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/task-graph", auth.Require(handler.graph))
 	mux.HandleFunc("/api/v1/projects/{projectId}/task-graph", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, POST")))
 	mux.HandleFunc("/api/v1/projects/{projectId}/tasks/{taskId}", auth.Require(resourceMethodNotAllowed(logger, "GET, HEAD, PATCH, DELETE")))
 }
 
-func taskResponse(task core.Task, request *http.Request) api.Task {
+func taskResponse(task core.Task, request *http.Request) (api.Task, error) {
 	result := api.Task{ID: task.ID, ProjectID: task.ProjectID, Title: task.Title, Description: task.Description,
 		Properties: propertiesResponse(task.Properties), Status: string(task.Status), Version: task.Version, CreatedAt: task.CreatedAt.UTC(), UpdatedAt: task.UpdatedAt.UTC(),
 		StartedAt: timestampResponse(task.StartedAt), CompletedAt: timestampResponse(task.CompletedAt),
 		DependsOn: append([]string{}, task.DependsOn...), ExternalDependsOn: append([]string{}, task.ExternalDependsOn...), BlockedBy: append([]string{}, task.BlockedBy...), Ready: task.Ready, AllowAgents: task.AllowAgents, RequiredPlatform: platformResponse(task.RequiredPlatform)}
-	if !extendedWorkerProtocol(request) {
-		if !legacyWorkerCompatible(task.Properties.Worker) {
-			result.Properties.Worker = nil
-		} else if result.Properties.Worker != nil {
-			result.Properties.Worker.AgentControlMode = ""
-		}
+	if extendedWorkerProtocol(request) {
+		return result, nil
 	}
-	return result
+	worker, err := taskproperties.Worker(task.Properties)
+	if err != nil {
+		return api.Task{}, err
+	}
+	if !legacyWorkerCompatible(worker) {
+		delete(result.Properties, "worker")
+	} else if worker != nil {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(result.Properties["worker"], &fields); err != nil {
+			return api.Task{}, err
+		}
+		delete(fields, "agentControlMode")
+		value, err := json.Marshal(fields)
+		if err != nil {
+			return api.Task{}, err
+		}
+		result.Properties["worker"] = value
+	}
+	return result, nil
 }
 
 func propertiesResponse(properties core.TaskProperties) api.TaskProperties {
-	result := api.TaskProperties{PullRequests: make([]api.PullRequestProperty, len(properties.PullRequests))}
-	for index, item := range properties.PullRequests {
-		result.PullRequests[index] = api.PullRequestProperty{URL: item.URL, Title: item.Title}
-	}
-	if worker := properties.Worker; worker != nil {
-		result.Worker = &api.WorkerClaim{ClaimID: worker.ClaimID, State: string(worker.State), UserID: worker.UserID,
-			WorkerID: worker.WorkerID, Machine: api.WorkerMachine{ID: worker.Machine.ID, Name: worker.Machine.Name},
-			Platform: string(worker.Platform), Agent: string(worker.Agent), AgentControlMode: string(worker.AgentControlMode), WorktreeID: worker.WorktreeID,
-			Phase: string(worker.Phase), NativeSessionID: worker.NativeSessionID, ClaimedAt: worker.ClaimedAt.UTC()}
-		if worker.Herdr != nil {
-			result.Worker.Herdr = &api.WorkerHerdr{Session: worker.Herdr.Session, WorkspaceID: worker.Herdr.WorkspaceID, PaneID: worker.Herdr.PaneID}
-		}
-	}
-	return result
+	return taskproperties.Clone(properties)
 }
 
 func propertyValues(properties api.TaskWritableProperties) core.TaskProperties {
-	result := core.TaskProperties{PullRequests: make([]core.PullRequestProperty, len(properties.PullRequests))}
-	for index, item := range properties.PullRequests {
-		result.PullRequests[index] = core.PullRequestProperty{URL: item.URL, Title: item.Title}
-	}
-	return result
+	return taskproperties.Clone(core.TaskProperties(properties))
 }
 
 func optionalProperties(fields map[string]json.RawMessage) (*api.TaskPropertiesPatch, error) {
@@ -82,14 +80,10 @@ func optionalProperties(fields map[string]json.RawMessage) (*api.TaskPropertiesP
 	}
 	properties, err := taskproperties.DecodePatch(raw)
 	if err != nil {
-		return nil, invalidInput(err.Error())
+		return nil, err
 	}
-	result := &api.TaskPropertiesPatch{}
-	if properties.PullRequests != nil {
-		values := propertiesResponse(core.TaskProperties{PullRequests: *properties.PullRequests})
-		result.PullRequests = &values.PullRequests
-	}
-	return result, nil
+	result := api.TaskPropertiesPatch(properties)
+	return &result, nil
 }
 
 func (h *taskHandler) resource(request *http.Request, principal core.Principal) (string, string, *slog.Logger, error) {
@@ -111,7 +105,7 @@ func (h *taskHandler) resource(request *http.Request, principal core.Principal) 
 }
 
 func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, error) {
-	input := api.CreateTaskRequest{DependsOn: []string{}, Properties: api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{}}}
+	input := api.CreateTaskRequest{DependsOn: []string{}, Properties: api.TaskWritableProperties{}}
 	var err error
 	input.Title, err = requiredString(fields, "title")
 	if err != nil {
@@ -142,8 +136,8 @@ func createTaskInput(fields map[string]json.RawMessage) (api.CreateTaskRequest, 
 	if err != nil {
 		return api.CreateTaskRequest{}, err
 	}
-	if properties != nil && properties.PullRequests != nil {
-		input.Properties.PullRequests = *properties.PullRequests
+	if properties != nil {
+		input.Properties = *properties
 	}
 	platform, err := optionalRequiredPlatform(fields)
 	if err != nil {
@@ -191,7 +185,7 @@ func updateTaskInput(fields map[string]json.RawMessage) (api.UpdateTaskRequest, 
 		return api.UpdateTaskRequest{}, err
 	}
 	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && input.AllowAgents == nil && input.RequiredPlatform == nil &&
-		(input.Properties == nil || input.Properties.PullRequests == nil) {
+		(input.Properties == nil || len(*input.Properties) == 0) {
 		return api.UpdateTaskRequest{}, invalidInput("at least one task field must be provided")
 	}
 	return input, nil
@@ -261,7 +255,12 @@ func (h *taskHandler) create(w http.ResponseWriter, request *http.Request, princ
 	}
 	logger = logger.With("task_id", task.ID)
 	logger.InfoContext(request.Context(), "task created", "type", "resource", "component", "task", "phase", "create", "request_id", RequestID(request.Context()))
-	writeCreated(w, request, logger, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, taskResponse(task, request))
+	response, err := taskResponse(task, request)
+	if err != nil {
+		writeError(w, request, logger, "task", "create", err)
+		return
+	}
+	writeCreated(w, request, logger, "/api/v1/projects/"+projectID+"/tasks/"+task.ID, response)
 }
 
 func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -283,11 +282,21 @@ func (h *taskHandler) list(w http.ResponseWriter, request *http.Request, princip
 	}
 	response := api.TaskPage{Items: make([]api.Task, 0, len(page.Items)), NextCursor: page.NextCursor}
 	for _, task := range page.Items {
-		if input.WorkerID != nil && !extendedWorkerProtocol(request) && !legacyWorkerCompatible(task.Properties.Worker) {
+		worker, err := taskproperties.Worker(task.Properties)
+		if err != nil {
+			writeError(w, request, logger, "task", "list", err)
+			return
+		}
+		if input.WorkerID != nil && !extendedWorkerProtocol(request) && !legacyWorkerCompatible(worker) {
 			writeError(w, request, logger, "task", "list", workerProtocolRequired())
 			return
 		}
-		response.Items = append(response.Items, taskResponse(task, request))
+		item, err := taskResponse(task, request)
+		if err != nil {
+			writeError(w, request, logger, "task", "list", err)
+			return
+		}
+		response.Items = append(response.Items, item)
 	}
 	writeJSON(w, request, logger, http.StatusOK, response)
 }
@@ -305,7 +314,12 @@ func (h *taskHandler) get(w http.ResponseWriter, request *http.Request, principa
 		return
 	}
 	logger.InfoContext(request.Context(), "task read", "type", "resource", "component", "task", "phase", "get", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
+	response, err := taskResponse(task, request)
+	if err != nil {
+		writeError(w, request, logger, "task", "response", err)
+		return
+	}
+	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
 func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, principal core.Principal) {
@@ -326,9 +340,8 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	values := service.UpdateTask{RequiredPlatform: platformPatch(input.RequiredPlatform), AllowAgents: input.AllowAgents, Version: input.Version, Title: input.Title, Description: input.Description, DependsOn: input.DependsOn, ExternalDependsOn: input.ExternalDependsOn}
-	if input.Properties != nil && input.Properties.PullRequests != nil {
-		properties := propertyValues(api.TaskWritableProperties{PullRequests: *input.Properties.PullRequests})
-		values.Properties.PullRequests = &properties.PullRequests
+	if input.Properties != nil {
+		values.Properties = core.TaskPropertiesPatch(*input.Properties)
 	}
 
 	task, err := h.tasks.Update(workerProtocolContext(request), principal, projectID, id, values)
@@ -337,7 +350,12 @@ func (h *taskHandler) update(w http.ResponseWriter, request *http.Request, princ
 		return
 	}
 	logger.InfoContext(request.Context(), "task updated", "type", "resource", "component", "task", "phase", "update", "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
+	response, err := taskResponse(task, request)
+	if err != nil {
+		writeError(w, request, logger, "task", "response", err)
+		return
+	}
+	writeJSON(w, request, logger, http.StatusOK, response)
 }
 
 func timestampResponse(value *time.Time) *time.Time {

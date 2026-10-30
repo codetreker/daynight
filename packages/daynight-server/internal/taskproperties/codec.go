@@ -14,55 +14,91 @@ type pullRequestDocument struct {
 	Title string `json:"title"`
 }
 
-type document struct {
-	PullRequests []pullRequestDocument `json:"pullRequests"`
-	Worker       *workerDocument       `json:"worker"`
-}
-
-func Encode(properties core.TaskProperties) string {
-	value := document{PullRequests: make([]pullRequestDocument, len(properties.PullRequests)), Worker: encodeWorker(properties.Worker)}
-	for index, item := range properties.PullRequests {
-		value.PullRequests[index] = pullRequestDocument{URL: item.URL, Title: item.Title}
+func Encode(properties core.TaskProperties) (string, error) {
+	normalized, err := Normalize(properties, false)
+	if err != nil {
+		return "", err
 	}
-	// This fixed document contains only strings and arrays, which cannot fail JSON encoding.
-	data, _ := json.Marshal(value)
-	return string(data)
+	data, err := json.Marshal(normalized)
+	return string(data), err
 }
 
 func Decode(data []byte) (core.TaskProperties, error) {
-	fields, err := jsonobject.Decode(data, "properties", "pullRequests", "worker")
+	fields, err := jsonobject.Decode(data, "properties", propertyNames()...)
 	if err != nil {
-		return core.TaskProperties{}, err
+		return nil, validation("properties", err.Error(), err)
 	}
-	items, err := decodePullRequests(fields["pullRequests"])
-	if err != nil {
-		return core.TaskProperties{}, err
-	}
-	raw, exists := fields["worker"]
-	if !exists {
-		return core.TaskProperties{}, fmt.Errorf("properties.worker is required")
-	}
-	worker, err := decodeWorker(raw)
-	if err != nil {
-		return core.TaskProperties{}, err
-	}
-	return core.TaskProperties{PullRequests: items, Worker: worker}, nil
+	return Normalize(core.TaskProperties(fields), false)
 }
 
 func DecodePatch(data []byte) (core.TaskPropertiesPatch, error) {
-	fields, err := jsonobject.Decode(data, "properties", "pullRequests")
+	fields, err := jsonobject.Decode(data, "properties", propertyNames()...)
 	if err != nil {
-		return core.TaskPropertiesPatch{}, err
+		return nil, validation("properties", err.Error(), err)
 	}
-	raw, exists := fields["pullRequests"]
-	if !exists {
-		return core.TaskPropertiesPatch{}, nil
-	}
+	return Normalize(core.TaskProperties(fields), true)
+}
+
+func normalizePullRequests(raw json.RawMessage) (json.RawMessage, error) {
 	values, err := decodePullRequests(raw)
 	if err != nil {
-		return core.TaskPropertiesPatch{}, err
+		return nil, err
 	}
-	return core.TaskPropertiesPatch{PullRequests: &values}, nil
+	document := make([]pullRequestDocument, len(values))
+	for index, item := range values {
+		document[index] = pullRequestDocument{URL: item.URL, Title: item.Title}
+	}
+	return json.Marshal(document)
+}
+
+func normalizeWorker(raw json.RawMessage) (json.RawMessage, error) {
+	worker, err := decodeWorker(raw)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(encodeWorker(worker))
+}
+
+func Worker(properties core.TaskProperties) (*core.WorkerClaim, error) {
+	raw, exists := properties["worker"]
+	if !exists {
+		return nil, nil
+	}
+	value, err := NormalizeValue("worker", raw, false)
+	if err != nil {
+		return nil, err
+	}
+	return decodeWorker(value)
+}
+
+func WithWorker(properties core.TaskProperties, worker *core.WorkerClaim) (core.TaskProperties, error) {
+	result := Clone(properties)
+	if worker == nil {
+		delete(result, "worker")
+		return result, nil
+	}
+	raw, err := json.Marshal(encodeWorker(worker))
+	if err != nil {
+		return nil, err
+	}
+	value, err := NormalizeValue("worker", raw, false)
+	if err != nil {
+		return nil, err
+	}
+	result["worker"] = value
+	return result, nil
+}
+
+func PullRequests(properties core.TaskProperties) ([]core.PullRequestProperty, error) {
+	raw, exists := properties["pullRequests"]
+	if !exists {
+		return nil, nil
+	}
+	value, err := NormalizeValue("pullRequests", raw, false)
+	if err != nil {
+		return nil, err
+	}
+	return decodePullRequests(value)
 }
 
 func decodePullRequests(raw []byte) ([]core.PullRequestProperty, error) {

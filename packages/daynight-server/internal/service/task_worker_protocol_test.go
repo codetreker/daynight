@@ -16,7 +16,7 @@ func TestLegacyWorkerProtocolPreservesSupportedLifecycle(t *testing.T) {
 		t.Fatalf("legacy manual update: %#v, %v", manual, err)
 	}
 	manual, err = tasks.SetStatus(ctx, principal, project.ID, manual.ID, SetTaskStatus{Version: manual.Version, Status: core.TaskInProgress})
-	if err != nil || manual.Properties.Worker != nil || manual.Status != core.TaskInProgress {
+	if err != nil || testWorker(t, manual.Properties) != nil || manual.Status != core.TaskInProgress {
 		t.Fatalf("legacy manual lifecycle: %#v, %v", manual, err)
 	}
 	for _, agent := range []core.WorkerAgent{core.AgentCodex, core.AgentCopilot} {
@@ -25,15 +25,15 @@ func TestLegacyWorkerProtocolPreservesSupportedLifecycle(t *testing.T) {
 			descriptor := workerDescriptor()
 			descriptor.Agent = agent
 			claimed, err := tasks.ClaimWorker(ctx, principal, project.ID, candidate.ID, ClaimWorker{Version: candidate.Version, WorkerDescriptor: descriptor})
-			if err != nil || claimed.Properties.Worker == nil || claimed.Properties.Worker.AgentControlMode != core.AgentControlModeHerdr {
+			if err != nil || testWorker(t, claimed.Properties) == nil || testWorker(t, claimed.Properties).AgentControlMode != core.AgentControlModeHerdr {
 				t.Fatalf("legacy claim must retain default Herdr: %#v, %v", claimed, err)
 			}
 			updated, err := tasks.Update(ctx, principal, project.ID, claimed.ID, UpdateTask{Version: claimed.Version, Title: pointer("Updated worker task")})
-			if err != nil || updated.Title != "Updated worker task" || updated.Properties.Worker.ClaimID != descriptor.ClaimID {
+			if err != nil || updated.Title != "Updated worker task" || testWorker(t, updated.Properties).ClaimID != descriptor.ClaimID {
 				t.Fatalf("legacy metadata update: %#v, %v", updated, err)
 			}
 			completed, err := tasks.SetStatus(ctx, principal, project.ID, updated.ID, SetTaskStatus{Version: updated.Version, Status: core.TaskDone, ClaimID: &descriptor.ClaimID})
-			if err != nil || completed.Properties.Worker.State != core.WorkerCompleted {
+			if err != nil || testWorker(t, completed.Properties).State != core.WorkerCompleted {
 				t.Fatalf("legacy completion: %#v, %v", completed, err)
 			}
 		})

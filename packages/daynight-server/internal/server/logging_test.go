@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
@@ -190,5 +191,40 @@ func TestListenerConflictDiagnosticsPreserveCategoryAndHideAddress(t *testing.T)
 	}
 	if entry["cause"] != "address_in_use" || entry["phase"] != "startup" || entry["diagnostic"] != "HTTP listen failed" || strings.Contains(output.String(), "private-address-secret") || strings.Contains(output.String(), syscall.EADDRINUSE.Error()) {
 		t.Fatalf("listener conflict lost phase/category or exposed raw error: %s", &output)
+	}
+}
+
+func TestPropertyValidationHTTPErrorClassification(t *testing.T) {
+	_, validation := taskproperties.Decode([]byte(`{"pullRequests":null}`))
+	if validation == nil {
+		t.Fatal("fixture did not produce a validation error")
+	}
+	for _, item := range []struct {
+		name    string
+		failure error
+		status  int
+		code    string
+	}{
+		{"direct", validation, http.StatusBadRequest, "invalid_input"},
+		{"wrapped", fmt.Errorf("private-wrapper-secret: %w", validation), http.StatusBadRequest, "invalid_input"},
+		{"stored", &store.Error{Phase: "read properties", Cause: validation}, http.StatusBadRequest, "invalid_input"},
+		{"joined database failure", errors.Join(validation, &pgconn.PgError{Code: "08006", Message: "private-database-secret"}), http.StatusInternalServerError, "internal_error"},
+		{"joined cleanup failure", errors.Join(validation, errors.New("private-cleanup-secret")), http.StatusInternalServerError, "internal_error"},
+		{"wrapped joined failure", &store.Error{Phase: "rollback", Cause: errors.Join(validation, errors.New("private-rollback-secret"))}, http.StatusInternalServerError, "internal_error"},
+	} {
+		t.Run(item.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			response := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodGet, "/", nil)
+			request.Header.Set("X-Request-ID", "project-test")
+			RequestLogging(logger, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				writeError(w, r, logger, "task_property", "get", item.failure)
+			})).ServeHTTP(response, request)
+			assertProjectError(t, response, item.status, item.code)
+			if strings.Contains(response.Body.String(), "private-") || strings.Contains(logs.String(), "private-") {
+				t.Fatalf("validation or infrastructure details leaked: %s %s", response.Body, &logs)
+			}
+		})
 	}
 }

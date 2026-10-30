@@ -26,7 +26,7 @@ const timestamp = '2026-10-20T09:00:00.123456789Z';
 const project: Project = { settings: { version: 1n, executionWarningMinutes: 60 }, id: projectId, name: '测试项目', repoUrl: 'https://github.com/example/project', createdAt: timestamp, updatedAt: timestamp };
 const detail = (value = 1, changes: Partial<TaskDetail> = {}): TaskDetail => ({ requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
   id: id(value), projectId, title: `任务 ${value}`, description: `任务 ${value} 的完整描述`, status: 'todo', version: 1n,
-  properties: { worker: null, pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
+  properties: { pullRequests: [] }, dependsOn: [], blockedBy: [], ready: true, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
 const node = (task: TaskDetail): GraphTask => ({ requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt,
   id: task.id, titlePreview: Array.from(task.title).slice(0, 160).join(''), titleTruncated: Array.from(task.title).length > 160,
@@ -347,7 +347,7 @@ describe('task detail dialog', () => {
       { title: '  标题\n第二行\t\0', url: '  arbitrary\naddress\0  ' },
       { title: '很长的标题'.repeat(200), url: 'x'.repeat(5000) },
     ];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail(1, { properties: { worker: null, pullRequests } }))));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail(1, { properties: { pullRequests } }))));
     await open();
     const region = await screen.findByRole('region', { name: '关联 PR' });
     expect(within(region).getByRole('heading')).toHaveTextContent('关联 PR · 5');
@@ -371,7 +371,7 @@ describe('task detail dialog', () => {
       { title: '损坏地址', url: 'http://[' },
       { title: '保留原值', url: '  HTTP://EXAMPLE.COM/pull/2  ' },
     ];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail(1, { properties: { worker: null, pullRequests } }))));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail(1, { properties: { pullRequests } }))));
     await open();
     const region = await screen.findByRole('region', { name: '关联 PR' });
     const links = within(region).getAllByRole('link');
@@ -423,7 +423,7 @@ describe('task detail dialog', () => {
 
   it('waits for a matching summary before publishing a newer detail body', async () => {
     const old = detail();
-    const fresh = detail(1, { version: 2n, properties: { worker: null, pullRequests: [{ title: '新的关联', url: 'arbitrary' }] }, updatedAt: '2026-10-21T10:00:00Z' });
+    const fresh = detail(1, { version: 2n, properties: { pullRequests: [{ title: '新的关联', url: 'arbitrary' }] }, updatedAt: '2026-10-21T10:00:00Z' });
     const fetch = vi.fn().mockResolvedValueOnce(response(fresh));
     vi.stubGlobal('fetch', fetch);
     const initial = props({ snapshot: snapshot([old]) });
@@ -578,7 +578,7 @@ describe('task detail dialog', () => {
 
   it('retains the selected PR page when a receipt changes other detail fields', async () => {
     const pullRequests = Array.from({ length: 101 }, (_, index) => ({ title: `PR ${index}`, url: `https://example.com/pr/${index}` }));
-    const original = detail(1, { properties: { worker: null, pullRequests } });
+    const original = detail(1, { properties: { pullRequests } });
     const update = deferred<Response>();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(response(original)).mockReturnValueOnce(update.promise));
     const initial = props({ snapshot: snapshot([original]) });

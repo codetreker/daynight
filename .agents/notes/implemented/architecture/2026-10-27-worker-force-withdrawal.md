@@ -16,8 +16,9 @@ response must not cause another ownership mutation.
 The [claim protocol](../../../../docs/design/daynight-worker-claims.md) exposes
 `POST /worker-claim/withdraw` with the reviewed `version` and `claimId`. A current
 project member who is the claim's original owner or a project admin may withdraw
-an active or released claim. Completed history and null have no current claim to
-withdraw. The same project transaction clears `worker`, returns the task to
+an active or released claim. Completed history and an absent worker property have
+no current claim to withdraw. The same project transaction removes the `worker`
+property row, returns the task to
 `todo`, clears both execution timestamps and sets `allowAgents=false`. It preserves
 other task materials and increments the task version once. It requires no
 `stoppedConfirmed`, target descriptor or source-machine access.

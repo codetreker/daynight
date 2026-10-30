@@ -1,264 +1,119 @@
 # Task 预定义属性设计
 
-状态：服务端存储、迁移、HTTP 读写、CLI 属性操作与只读网页展示已实现。行为与验收编号由
-[属性需求](../spec/daynight-task-properties.md)拥有；
-[决策记录](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)
-保存备选方案与长期代价。[交互预览](mockups/task-properties.html)展示详情区域及边界数据。
+状态：服务端通用属性模型、独立存储、属性 HTTP 资源和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)。[交互预览](mockups/task-properties.html)继续拥有只读 PR 区域的视觉示例。
 
-## 问题与设计目标
+## 职责与数据流
 
-Task 需要记录关联的多个 PR。把引用写进 description 会混合任务说明与结构化数据，
-客户端也无法稳定提取。Server 需要拥有有限、明确的属性目录，首个属性
-`pullRequests` 的每项只有 `url` 和 `title`。两者都是调用方提供的字符串；属性
-机制不负责判断 PR 的格式、存在性或业务含义。
+属性定义由服务端代码拥有。通用 API、领域值容器、存储和客户端解析保留名称到完整 JSON 值的映射；PR 展示、Worker 执行与 Session 访问只在业务边界读取所需类型。
 
-预定义属性复用现有 task 创建、更新与读取路径，
-保留原有状态机、依赖校验和任务级并发控制。
-
-## 现有结构与集成位置
-
-下表保留设计基线 `781bd04` 的集成依据；行号与片段属于当时的既有机制，
-具体属性类型及 codec 归属由下节说明。相对链接指向实际归属文件。
-
-| 归属与位置 | 片段及影响 |
-|---|---|
-| [core/task.go](../../packages/daynight-server/internal/core/task.go)，第 13 行起 | `type Task struct` 是固定领域结构，需增加具体的属性类型。 |
-| [service/task.go](../../packages/daynight-server/internal/service/task.go)，第 106–118 行 | `current.Version != input.Version` 与 `changed :=` 已拥有版本冲突和无变化判断。 |
-| [store/project_tx.go](../../packages/daynight-server/internal/core/store/project_tx.go)，第 27 行起 | `SELECT ... FOR UPDATE` 的 project 锁序列化 task 写入；属性加入同一个 task 行更新。 |
-| [store/snapshot.go](../../packages/daynight-server/internal/core/store/snapshot.go)，第 14 行起 | `IsoLevel: pgx.RepeatableRead` 使完整 task、依赖与属性使用同一读取快照。 |
-| [store/task_graph.go](../../packages/daynight-server/internal/core/store/task_graph.go)，第 26 行起 | `TaskGraphTasks` 显式选择有界图投影，继续隔离完整属性内容。 |
-| [server/http.go](../../packages/daynight-server/internal/server/http.go)，第 19 行起 | 已有请求大小、UTF-8 与严格对象校验；需将对象级严格规则复用到属性嵌套层。 |
-| [CLI schema.ts](../../packages/daynight/src/cli/schema.ts)，第 105 行起 | 可重复选项按出现顺序形成数组，支持按位置配对 URL 与标题。 |
-| [CLI parse.ts](../../packages/daynight/src/api/parse.ts)，第 52 行起 | `parseTask` 投影已知字段；需显式解析属性，否则会丢弃 server 返回的新数据。 |
-| [TaskDetailDialog.tsx](../../packages/daynight-web/src/features/task-detail/TaskDetailDialog.tsx) | 详情已有描述与关系区域；PR 列表放在描述之后。 |
-
-## 模块与数据流
-
-```mermaid
+~~~mermaid
 flowchart LR
-  CLI[CLI 参数与资源输出] --> HTTP[严格 HTTP DTO]
-  Web[任务详情对话框] --> HTTP
-  HTTP --> Service[Task 候选状态与 version]
-  Service --> Store[既有 project 写事务 / 读取快照]
-  Store --> DB[(tasks.properties: text)]
-  Service --> Core[具体 TaskProperties 类型]
-```
+  Client[CLI / Web 通用属性对象] --> HTTP[属性与任务 HTTP]
+  HTTP --> Registry[静态定义 / native validator]
+  HTTP --> Service[任务候选 / version]
+  Service --> Tx[项目写事务 / 父任务锁]
+  Tx --> Tasks[(tasks)]
+  Tx --> Values[(task_properties)]
+  Read[一致读取快照] --> Tasks
+  Read --> Values
+  Read --> Client
+~~~
 
-`core` 持有领域类型，`api` 持有 JSON DTO，`server` 校验输入结构，`service`
-组合候选值与检测变化。`internal/jsonobject` 复用严格对象解析，
-`internal/taskproperties` 以具体类型编解码持久化文档及属性 patch，`store` 在
-完整 task 读写中调用该 codec。CLI 和 web 各自在已有 API 层
-声明相同资源结构，不引入跨语言共享代码生成或运行时属性插件。完整存储/读取类型包含只读 worker；公共创建和 patch DTO 单独只接受 PR 字段，[认领架构](daynight-worker-claims.md)拥有受保护操作。
+core 使用通用 TaskProperties map。internal/taskproperties 依赖 core 并拥有静态注册表、值 codec、规范化与 typed business accessors；core 不反向依赖 codec。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
 
-```go
-type PullRequestProperty struct {
-    URL   string
-    Title string
-}
+定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。初始属性为 pullRequests 与 worker。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
 
-type TaskProperties struct {
-    PullRequests []PullRequestProperty
-    Worker       *WorkerClaim
-}
+properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，存在的 worker 必须是合法归属对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
 
-type TaskPropertiesPatch struct {
-    PullRequests *[]PullRequestProperty
-}
-```
+## 值解析与规范化
 
-完整领域资源始终使用非 nil 列表；API 的具体 DTO 使用 `url`、`title`、
-`pullRequests` JSON 名称及显式 worker:null/对象。Patch 指针只表达是否提供属性，内容值本身没有默认值
-语义。创建入口构造显式空列表；迁移处理旧数据，读取路径不会为缺失或损坏数据补值。
+公共写入查找定义并拒绝未知或 readOnly 名称。字符串定义将合法 JSON 字符串解码，其它输入原样编码为字符串；非字符串定义严格解析一个 JSON 值，再校验结构。空文本和数值样式文本均原样到达服务端，不由 CLI 判断属性类型。
 
-## 持久化与迁移
+JSON 对象的重复键与未知字段在普通 unmarshal 前被拒绝。PR 字符串只使用原有 JSON 字符串解码，不复用标题、仓库 URL 或 Worker 文本限制；空值、控制字符、NUL、顺序和重复项均保留。规范化只统一值的 JSON 表示，保留旧系统已经解码的字符串语义，包括错误 surrogate 的既有替换行为。
 
-`003_task_properties.sql` 为属性列的有序迁移；已有迁移的内容及 checksum 保持
-不变。启动迁移仍使用原有 checksum 检查与互斥机制。
+存储读取同样通过定义的 native decoder/normalizer，语义比较和 DTO 输出使用规范值。不能把旧 JSON 原始片段直接透传，从而改变客户端看到的字符。属性名和结构非法产生可识别的属性校验错误；数据库故障保持原错误链。
 
-```sql
-ALTER TABLE tasks ADD COLUMN properties text NOT NULL
-    DEFAULT '{"pullRequests":[]}';
-```
+TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更值，不原地修改当前任务或共享快照。属性 map 的存在键参与比较，缺失与 [] 不相等；对象键序、缩进和等价转义不构成值变化，有序数组仍按顺序比较。
 
-这是属性列最初的默认值，表达已有任务没有关联 PR。016_task_worker.sql 在规范文本的末尾插入 worker:null，并把当前默认值改为同时包含两字段；不调用 JSON/JSONB cast 或重新解释 PR 字符串，NUL 转义与既有 Unicode 内容保持原值。迁移由既有启动迁移事务执行，
-不改变 task 的 `version`、`created_at` 或 `updated_at`。应用创建与更新仍显式写入
-完整属性值，默认值只负责迁移与缺省空属性语义。
+## 独立表与读取
 
-文本列保存固定 DTO 序列化出的 JSON 文档。URL 和标题中的 NUL 会编码为转义，
-不把 NUL 字节传入 PostgreSQL text。[PostgreSQL 18 JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)
-指出 JSONB 会将 Unicode 转义转成内部文本并拒绝 `\u0000`；采用 JSONB 会额外
-限制调用方可保存的内容。当前没有属性查询需求，文本列与有类型的应用编解码匹配。
+~~~sql
+CREATE TABLE task_properties (
+    task_id uuid NOT NULL,
+    name text COLLATE "C" NOT NULL CHECK (name <> ''),
+    value text NOT NULL,
+    PRIMARY KEY (task_id, name)
+);
+~~~
 
-Store 用具体的完整属性 DTO 编码与严格解码，校验必需结构、非 null PR 数组、显式可空 worker 及已知字段；公共属性写入使用独立 codec，即使 worker 为 null/原值也拒绝。
-不使用 `map[string]any` 或存储任意请求片段。损坏 JSON、未知持久化字段、错误类型
-及缺失字段均使读取失败并保留错误链。序列化表示并非公开契约；比较用领域值，
-不比较 JSON key 排列、转义写法或字符串化结果。
+task ID 已是全局 UUID 主键，属性行不重复 project_id。授权先定位父项目和任务，再以准入后的任务 ID 读取值。属性行没有独立版本、时间或删除标记；父任务软删除保留其属性，业务读取只从可见父任务派生 ID 集合。不增加 foreign key。
 
-属性位于 `TaskWrite`、完整 task SQL 投影、扫描器和 INSERT/UPDATE。与任务其他
-标量同处一行，因此不需要额外关联表、foreign key、第二次查询或分开的提交点。
-图查询继续使用现有显式投影，不读取属性列。
+value 保存完整 JSON 文本，PR 数组和 worker 对象各占一行，不继续拆分嵌套字段。NUL 以 JSON 转义存在，不把 NUL 字节送入 PostgreSQL text。[PostgreSQL JSON 类型说明](https://www.postgresql.org/docs/18/datatype-json.html)解释了 JSONB 与 JSON 处理函数的 Unicode 转换限制；存储和读取都不对既有 opaque 字符串做 SQL JSON 转换。
 
-## HTTP 与事务
+完整单项、分页和事务读取先取得所需任务，再关闭 pgx rows，批量加载 task_id = ANY($1::uuid[]) 的属性并组装 map。任务与属性使用同一 REPEATABLE READ snapshot，版本与内容属于同一状态。LIMIT 作用于任务筛选结果，不能在一对多属性 JOIN 后分页。空集合得到 {}，非法值使整个读取失败。
 
-沿用 `POST /api/v1/projects/{projectId}/tasks` 与
-`PATCH /api/v1/projects/{projectId}/tasks/{taskId}`，创建与更新增加可选
-`properties`。嵌套对象使用既有严格 JSON 对象解析规则的可复用部分；不能只依赖
-`json.Unmarshal` 到 struct，因为默认 struct 解码会忽略未知字段和重复 key。
+Worker inventory 在原 keyset 顺序中读取唯一 worker 属性并匹配 active/userId/workerId，之后才应用最终 page limit/lookahead；选中任务再批量载入完整属性。Worker reporting 对其引用的 task IDs 批量读取 worker 值并核对项目、当前 owner、worker、claim 和状态，不扫描其他项目，也不把观察快照当作认领权威。
 
-```json
-{
-  "version": 3,
-  "properties": {
-    "pullRequests": [
-      { "url": "https://github.com/owner/repo/pull/123", "title": "实现登录接口" }
-    ]
-  }
-}
-```
+## HTTP 与任务事务
 
-解析只约束对象、数组、字符串、字段存在性及已知字段名，字符串直接使用现有 JSON
-解码结果。URL/title 不复用 task 标题或仓库 URL 校验器；这些校验器会增加非空、
-NUL、协议或仓库结构限制。既有请求 1 MiB 上限自然约束一次写入，不另设 PR 条数
-或单项长度上限。完整读取继续受客户端 128 MiB 单响应、256 MiB 累计与既有期限
-约束，超过预算报错且不会截断 PR 列表。
-
-Service 在已有 project 写事务内读取当前 task、比较期望版本、构造完整候选状态，
-再执行既有状态及依赖校验。`properties:{}` 不产生属性修改意图；若也没有其他
-可修改字段，则按既有空 patch 规则拒绝。已提供的 `pullRequests` 替换完整数组，
-未提供的其他属性保留，worker 仅能通过受控归属操作修改。
-
-按数组顺序逐项比较两个字符串；相等列表不改变版本和时间。真实属性变化与其他
-真实字段变化合计只执行一次版本递增。写入失败与取消通过原有事务完整回滚。
-不增加属性级版本、锁或冲突自动重试。
-
-Task GET/list 及创建/更新结果都返回完整属性；分页、status/ready 筛选和 cursor
-绑定保持原有含义。属性既不进入图响应，也不改变 summary、状态与 ready 计算。
-
-## CLI 输入与输出
-
-沿用共享命令定义，增加两种 `repeatable: true`、`allowEmpty: true` 的文本选项：
-`--pull-request-url` 和 `--pull-request-title`。每个选项自己的数组保持输入顺序，
-第 n 项与另一个数组的第 n 项配对。出现其中任一选项时，两者次数必须相等且至少
-一对；不要求选项在命令行相邻。这样 URL、标题中出现空格、逗号或等号时仍有明确
-的传参方式，无需给一个字符串增加分隔或转义协议。
-
-`TASK_ID` 表示已有 task 的 UUID。
-
-```bash
-daynight task update "$TASK_ID" \
-  --pull-request-url 'https://github.com/owner/server/pull/123' \
-  --pull-request-title '实现登录接口' \
-  --pull-request-url 'https://github.com/owner/web/pull/124' \
-  --pull-request-title '添加登录页面'
-
-daynight task update "$TASK_ID" --clear-pull-requests
-daynight task create --title '验证登录' --pull-request-url= --pull-request-title=
-```
-
-Create 支持成对选项；Update 另有 `--clear-pull-requests`，与任一配对选项互斥。
-参数层生成有字段存在性语义的属性 patch。Update 只改属性时也满足“至少修改一项”
-要求，并沿用现有 GET version 或显式 `--if-version` 路径。
-
-Windows 的 `.cmd` 启动器经 CMD 转发参数，字面 CR/LF 不属于其可靠的单参数表示。
-[Node 子进程文档](https://nodejs.org/docs/latest-v24.x/api/child_process.html#spawning-bat-and-cmd-files-on-windows)
-说明该脚本入口依赖命令解释器；所用
-[cross-spawn 转义](https://github.com/moxystudio/node-cross-spawn/blob/77cd97f3ca7b62c904a63a698fc4a79bf41977d0/lib/util/escape.js#L3-L38)
-保留字面换行。安装验收分别验证原生 launcher 可表示的配对参数，以及同一已安装
-产物 Node 入口的 CR/LF/控制字符参数。所有平台继续验证 HTTP 传入的原始字符串
-经原生 launcher 查询和输出；NUL 等无法作为进程参数的内容由 API 提供。
-
-CLI 与 web 的完整 task 类型、已知字段投影和字符串解析均包含属性。
-PR 字符串只检查 `typeof value === "string"`，不能使用限制 task 标题内容的
-现有 `isText`。精确 JSON 版本处理继续只处理既有数字 version 需求，固定 PR
-结构没有可调用方定义的数值字段，因此无需为本功能扩展通用 JSON 数值协议。
-响应中的未知扩展字段按各客户端原有策略处理；写入仍由 server 严格限制。
-
-文本资源块追加 PR 数量及按序编号的 title/url，使用现有 terminalText 可见转义，
-输出空间随实际内容线性增长。JSON 直接序列化完整 task 属性，不加入显示占位文字。
-Shell 补全从相同命令定义取得三个固定选项，不增加远端数据补全。
-
-## 网页与交互预览
-
-`TaskDetailDialog` 在描述之后渲染“关联 PR · N”，PR 位于居中对话框的阅读主栏。外壳尺寸、双栏/窄屏堆叠与滚动机制由[看板设计](daynight-web.md#居中任务详情)拥有；PR 卡沿用关系卡片边框、字体和间距，每张分别显示 title 与 URL。
-`TaskPullRequests` 保留完整属性数组，按原顺序每页最多挂载 100 行；超过 100 项时
-显示当前范围、总数及原生页码选择、上一页/下一页。分页只改变本地展示，不增加
-请求、丢弃数据或改变 server 属性限制。任务或集合替换时同步回到第一页，分页
-控制保持可访问焦点并宣告新范围。重复引用按全局下标拥有独立行，避免以 URL 为
-React key 吞掉重复项。空列表有明确空态；
-空字符串显示专用的“（空字符串）”标记，原始数据仍保持空字符串。
-
-正文使用 React 文本节点，保留可见空白并换行，长地址使用 overflow wrapping。
-为防止任意字符串成为可执行导航，页面仅为浏览器 URL 解析器识别的绝对 HTTP(S)
-地址提供链接；href 使用原始字符串，`target="_blank"` 并设置
-`rel="noopener noreferrer"`。解析失败或其他协议只影响是否提供导航，字符串依然
-显示且可复制。这与服务端是否接受 PR 关联无关，也不校验目标是否为 PR。
-
-一次合法的 1 MiB 写入可以包含数万条短引用；直接挂载全部记录使 React/DOM 与
-accessibility tree 的大小随完整数组增长。固定页大小为 DOM 成本提供独立上限，
-同时通过原生控制让全部记录可访问。它不依赖滚动位置、可变行高测量或额外组件库。
-
-复用既有详情读取、取消、重试、关闭、焦点恢复与全图刷新提示。属性变化会更新
-task 的 updatedAt，因此详情与旧图快照的比较仍能提示刷新。网页保持只读，不在
-此设计增加属性编辑表单。图节点与完整图响应继续精简，PR 内容只由完整 task
-读取获得。
-
-[交互预览](mockups/task-properties.html)使用当前产品 CSS 和本地 fixture，可切换
-多项、单项、空列表、空字符串、长文本、重复、分页与任意地址等数据。预览控制是设计
-工具，产品界面仅包含只读详情；最终实现须使用真实 React 组件和服务接口验收。
-
-## 观测、错误与执行边界
-
-本设计没有后台工作、外部事件订阅、GitHub 请求或新的异步所有权。一次操作沿用
-HTTP request context、请求 ID、project ID、task ID 及既有事务取消路径。
-CLI 使用已有 operation scope、命令期限和错误映射；web 使用已有详情请求生命周期。
-
-输入结构错误复用 `invalid_input`，版本冲突复用 `version_conflict`，持久化编解码
-失败沿原有 cause chain 返回内部错误。日志保留 request_id、操作阶段与错误类别；
-诊断指出如 `properties.pullRequests[1].title` 的字段路径，不回显 URL 或标题。
-不因新增属性日志而改变现有错误响应、关联 ID 或数据可见性。
-
-部署后可发送一次带空数组的版本化更新，并按响应 `X-Request-ID` 查询现有 JSON
-日志的同一 `request_id`，核对 method、route、状态码、完成或失败阶段；然后 GET
-核对数组及版本。此过程不依赖新日志系统，也不能把读取失败解释为空属性。
-
-CLI 的模型可见增量是三个静态选项和输出中的真实 PR 数据，写入仍为现有的
-GET+PATCH 或显式 version 的一次 PATCH，创建仍为一次 POST。没有模型专用新工具；
-不单独估算模型 token 或创建测量工具，真实响应字节预算由现有客户端检查负责。
-
-## 备选方案与代价
-
-| 方案 | 可获得的能力 | 本设计的取舍 |
-|---|---|---|
-| 任意 key/value 与运行时字段定义 | 调用方能自行增加属性、类型和展示方式 | 与有限 server 属性目录的目标冲突；具体类型让扩展需要显式契约变更。 |
-| JSONB 属性列 | PostgreSQL 可查询与索引内部字段 | 会拒绝部分已允许字符串；当前只读写完整值，没有查询收益。 |
-| 关系表逐条保存 PR | 按 PR 查询或独立修改每条关联 | 需要顺序身份与额外读取，text 列同样限制 NUL；现有更新单位是整个列表。 |
-| 文本列保存具体属性 JSON | 接受既定字符串内容，沿用单行事务与快照 | 依赖应用编解码发现存储损坏；将来属性查询需要有明确语义的索引或投影。 |
-| 一项 CLI 参数携带 JSON 数组 | 直接表达 API 数据并方便程序生成 | 手写时有 shell 与 JSON 两层转义；已存在的重复文本选项可表达成对数据。 |
-
-详细决策背景由[决策记录](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)
-拥有。上述取舍不预先承诺属性搜索、逐项修改或运行时扩展能力。
-
-## 范围约束、风险与验证
-
-| 能力 | 当前行为与后续增加代价 |
+| 资源 | 所有权 |
 |---|---|
-| 其他预定义属性 | 未知写入字段被拒绝。增加时修改具体类型、校验、输出与存储迁移；既有行通过迁移补充结构，读取不做旧格式 fallback。 |
-| 属性过滤、排序和反向 PR 查 task | 当前列表支持状态、ready、自动许可、兼容平台及[专用 workerId 归属筛选](daynight-worker-claims.md#进程内客户端候选和恢复)，不提供通用属性查询。完整自有 claim 清单恢复实际归属，已知 taskId 的 GET 核对显式写入；两者不增加 worker 投影或反向索引。通用属性查询仍须定义比较、投影、索引与 cursor 绑定。 |
-| PR 标题抓取与状态同步 | 当前值由调用方维护。未来要定义凭据、网络故障、生命周期及与人工值的所有权，作为独立设计。 |
-| 网页编辑、逐项增删 | 网页只读，CLI 提交完整列表。未来可复用 task version；必须显式处理并发冲突，不能静默合并。 |
+| GET /api/v1/task-properties/schema | 认证后读取全服务定义目录，不触发项目发现 |
+| GET /api/v1/projects/{projectId}/tasks/{taskId}/properties | 父项目读取权限，返回完整 PropertyResource |
+| PUT .../properties/{name} | version/valueText，服务端解析后设置完整单值 |
+| DELETE .../properties/{name} | version，真正删除一项可写属性 |
 
-大量属性会增加完整 task/list 内容，但既有客户端预算保持严格执行；图投影与
-summary 独立避免图容量契约随 PR 内容增长。存储文本缺少数据库 JSON 类型约束，
-通过具体 codec 和真实损坏数据用例暴露错误。更换属性结构需要迁移数据；部署按
-先 server、再新 CLI/web 执行，新客户端不以缺失 properties 推断空列表。已交付
-旧客户端按现有已知字段投影忽略新增属性，其未提供属性的更新保持服务端现值；
-验证这一兼容行为不引入新的格式兼容分支。
+PropertyResource 包含 projectId、taskId、version 和完整 properties；两个 mutation 均返回 200。目录按名称排序，包含真实 worker 完整结构和 readOnly，不声明读时 default。GET/HEAD、no-store、Daynight-User-ID 和方法拒绝沿用现有认证与 HTTP 机制。
 
-验证按 TP-V1–TP-V8 建立数据与可观察结果的映射：真实 PostgreSQL 覆盖迁移、NUL
-转义往返、事务失败及并发；Go HTTP 覆盖严格嵌套结构；CLI 覆盖配对与真实服务输出；
-生产浏览器覆盖展示、导航执行策略和既有焦点。沿用 README 中适用的 Go build/vet/
-race/go-cov、CLI typecheck/test/build、web 覆盖率和生产浏览器门禁。Go 和 web 总
-语句覆盖率均须严格大于 90%。
+~~~json
+{
+  "version":42,
+  "valueText":"[{\"url\":\"https://github.com/owner/repo/pull/123\",\"title\":\"修复同步\"}]"
+}
+~~~
 
-设计交付的验证包括 Markdown 本地链接、文档状态与路径、示例 JSON/SQL/命令
-审查及预览脚本检查。服务端及后续客户端的运行结果随对应源码和 CI 保存。
+valueText 外壳复用正 int64 version、UTF-8 application/json 和严格字段解码。完整外壳沿用 1 MiB 请求限制，二次转义计入实际字节。该限制不等于一个属性可保存 1 MiB 内容；原生 JSON create/PATCH 保留一次事务修改普通字段、依赖和属性的能力，不重新解释 native JSON 字符串。
+
+写入在取得项目行锁后，先对父任务取得 FOR UPDATE，再读取当前属性和版本，验证完整候选并判断 no-op。实际变化在同一事务写属性差异、任务 version/updated_at，以及生命周期相关 Session 变化。任何一步失败完整回滚；新任务先创建父行，再写显式提供的属性。
+
+公开 PATCH 的 omitted key 保留值，提供 key 替换完整值，properties:{} 没有修改意图；null 不承担删除语义。DELETE 的已缺失可写属性为 no-op，但仍先检查版本。相同值设置不改版本，陈旧等值请求仍冲突。未知或只读属性即使不存在也拒绝移除。
+
+## Worker 与 Session fence
+
+没有保留归属时没有 worker 行。Claim/resume 创建 active 对象，摘要更新替换其值，release 与 claim-bound complete 分别保留 released/completed 对象；withdraw 删除 worker 行并原子完成状态、计时及自动许可重置。公开属性入口不能制造、覆盖或移除归属。[认领架构](daynight-worker-claims.md)拥有完整生命周期。
+
+Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。所有属性写入必须先取得不兼容的父任务锁，不能仅锁属性行：缺失 worker 没有可锁行。项目行锁自身不能替代这一 fence。锁序保持项目（如有）→ 父任务 → 属性 → Session/freeze，不出现 Session→父任务的反向顺序。该约束覆盖注册、控制、状态、claim/release/withdraw/complete 与属性修改。
+
+## 迁移与发布
+
+旧属性列最初通过 003_task_properties.sql 增加；016_task_worker.sql 曾插入显式 worker:null。它们和已应用 checksum 保持原字节，原始决策仍保留其当时合理性。属性行迁移使用冻结的旧格式 decoder/normalizer 和事务内数据转换，转换源与 SQL 一并进入新迁移 checksum，不依赖会继续演进的当前 registry。
+
+迁移锁住父任务，在同一事务创建表，分批遍历全部旧任务（含软删除），验证并规范化每个值。所有既有 pullRequests 值保留，包括不能判断来源的 []；非 null worker 保留全部 claim/session/worktree 身份，null 转为无行。旧可选控制模式按旧模型解释并写出新规范形式。未知或损坏数据中止，不填值或丢弃。
+
+每批读完关闭 rows 后再写，避免连接忙。新旧业务值核对、旧列删除和 migration ledger 提交均属于同一事务。任务 version、created_at、updated_at 和执行时间不变化。失败回滚全部结构和数据；运行时只读取新表，不保留旧列或 null 兼容分支。
+
+属性缺失改变完整资源契约，服务端与 CLI/Web 必须协调更新。模型切换使 Web IDB schema 1→2，重建可再生的项目/摘要/详情并轮换 user fence，清理旧必填/null 详情和旧水位；否则旧详情与新值会在相同版本产生冲突。旧客户端需要更新，不通过读时默认值延长旧格式。数据库提交后的回退需恢复数据库或经验证的反向迁移，不能仅更换旧二进制。
+
+## 客户端与现有入口
+
+CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR/Worker reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 键。
+
+CLI 的既有 PR 配对选项仍生成完整 pullRequests 值，--clear-pull-requests 设置 []。它们的参数形状与当前命令由 [CLI 设计](daynight-project-task.md)拥有。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
+
+Web PR 卡、分页、链接策略及焦点保持不变，缺失与空 PR 都显示已有空态。PR 引用按全局下标保留独立条目，不能以 URL 去重或作为吞掉重复项的唯一键。一次合法写入可包含数万条短引用，因此每页最多挂载 100 行，为 DOM/accessibility tree 提供独立上限；完整数组仍留存，原生前后页与页码控件使全部项可访问，不依赖可变行高或额外请求。
+
+完整属性仍不进入普通图和 task-sync 摘要投影；摘要中的版本变化使详情失效，执行身份核对继续 GET 完整任务。缓存内容不授予 live 读取或写入权限。
+
+## 错误与观测
+
+非法输入与非法存储属性值统一映射为 400 invalid_input；数据库连接、查询、事务和其他内部故障为 500 internal_error。服务层通过可识别的属性校验错误区分两类原因，store 包装保留错误链。批量读取不返回部分结果，修改不因坏值部分提交，迁移错误则中止启动迁移。
+
+复用 request context 与 slog JSON 的 request_id/user_id/project_id/task_id、route pattern 和阶段。属性操作记录 component=task_property、phase=schema|get|set|remove；写成功的 outcome 为 changed/unchanged。property_name 只在定义匹配后记录，错误包含固定分类和受限的路径/规则，不记录值、PR 内容或令牌。
+
+可以用响应 X-Request-ID 关联同一请求的属性阶段、清洗原因和最终 HTTP 状态。请求取消传到 service/store；提交后的响应丢失仍是结果不确定，客户端只读回核对而不自动重放。
+
+## 备选与验证
+
+每属性一行对应设置/删除单位，付出的成本是批量装配；整任务 JSON 行仍耦合写入单位，继续拆 PR 项又会引入独立项身份和顺序机制。文本值保留既有字符语义，当前没有任意 JSON 内容 SQL 查询需求。静态 native validator 明确业务规则，schema 只负责发现；对动态属性、全文查询或属性级版本的支持需要独立契约。
+
+验证由需求 TP-V1–TP-V8 约束，覆盖真实 PostgreSQL 的迁移、快照、并发与回滚，HTTP 的 schema/版本/严格值/400 与 500，CLI/Web 的完整对象和缺失读取，Worker inventory/reporting 与 Session 锁交错。保留现有 Go build/vet/race/go-cov、CLI typecheck/test/build 和 Web 覆盖/生产浏览器门禁，不以绿灯代替生命周期证据。文档验证包括本地链接、当前事实/历史记录的界限和新文件。

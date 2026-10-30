@@ -211,8 +211,13 @@ func TestCurrentSessionsAndCredentialRevocation(t *testing.T) {
 	if err != nil || out["status"] != "not_registered" {
 		t.Fatal("missing current descriptor", err)
 	}
-	for _, value := range []string{`{"pullRequests":[],"worker":null}`, stringsReplaceWorkerMode(t, f, "herdr")} {
-		if _, err = f.s.DB.Pool.Exec(ctx, `UPDATE tasks SET properties=$2 WHERE id=$1`, f.task, value); err != nil {
+	for _, value := range []string{"", stringsReplaceWorkerMode(t, f, "herdr")} {
+		if value == "" {
+			_, err = f.s.DB.Pool.Exec(ctx, `DELETE FROM task_properties WHERE task_id=$1 AND name='worker'`, f.task)
+		} else {
+			_, err = f.s.DB.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2) ON CONFLICT(task_id,name) DO UPDATE SET value=excluded.value`, f.task, value)
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 		out, err = f.s.Current(ctx, f.p, f.project, f.task)
@@ -238,11 +243,13 @@ func TestCurrentSessionsAndCredentialRevocation(t *testing.T) {
 func stringsReplaceWorkerMode(t *testing.T, f fixture, mode string) string {
 	t.Helper()
 	var raw []byte
-	if err := f.s.DB.Pool.QueryRow(context.Background(), `SELECT properties FROM tasks WHERE id=$1`, f.task).Scan(&raw); err != nil {
+	if err := f.s.DB.Pool.QueryRow(context.Background(), `SELECT value FROM task_properties WHERE task_id=$1 AND name='worker'`, f.task).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}
 	var doc map[string]any
-	_ = json.Unmarshal(raw, &doc)
-	doc["worker"].(map[string]any)["agentControlMode"] = mode
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc["agentControlMode"] = mode
 	return string(encode(doc))
 }

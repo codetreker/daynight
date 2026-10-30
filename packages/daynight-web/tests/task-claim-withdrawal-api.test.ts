@@ -12,7 +12,7 @@ const time = '2026-10-24T00:00:00Z';
 const version = 9_007_199_254_740_993n;
 const result: TaskDetail = {
   id: taskId, projectId, title: 'Claimed task', description: 'Keep its delivery materials.',
-  properties: { worker: null, pullRequests: [{ title: 'Implementation', url: 'https://example.com/pull/42' }] },
+  properties: { pullRequests: [{ title: 'Implementation', url: 'https://example.com/pull/42' }] },
   status: 'todo', version: version + 1n, requiredPlatform: 'macos', allowAgents: false, ready: true,
   dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time,
 };

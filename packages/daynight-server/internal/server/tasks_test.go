@@ -215,7 +215,7 @@ func TestTaskHTTPDependencyErrorsAndDerivedFields(t *testing.T) {
 			t.Fatal("refused mutation changed task fields, edges, version or time")
 		}
 	}
-	target = updateHTTPTask(t, handler, target, map[string]any{"description": "Additional work can be revised while blocked", "properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "https://example.com/pr", Title: "Draft"}}}})
+	target = updateHTTPTask(t, handler, target, map[string]any{"description": "Additional work can be revised while blocked", "properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, []api.PullRequestProperty{{URL: "https://example.com/pr", Title: "Draft"}})}})
 	if target.Status != "todo" || !slices.Equal(target.BlockedBy, sorted) {
 		t.Fatalf("blocked todo metadata update: %+v", target)
 	}

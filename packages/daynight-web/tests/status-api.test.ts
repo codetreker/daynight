@@ -10,7 +10,7 @@ const taskId = "20000000-0000-0000-0000-00000000000b";
 const otherId = "30000000-0000-0000-0000-00000000000c";
 const time = "2026-10-22T12:34:56.123456Z";
 const task = { requiredPlatform: null, allowAgents: false, startedAt: null, completedAt: null,
-  id: taskId, projectId, title: "A task", description: "", properties: { worker: null, pullRequests: [] }, status: "todo",
+  id: taskId, projectId, title: "A task", description: "", properties: { pullRequests: [] }, status: "todo",
   version: 1n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time,
 };
 const signal = () => new AbortController().signal;

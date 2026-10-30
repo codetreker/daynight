@@ -569,15 +569,15 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(cli.repo, ".daynight")); !errors.Is(err, os.ErrNotExist) {
 			t.Fatal("installed project creation wrote repository binding metadata")
 		}
-		references := api.TaskProperties{PullRequests: []api.PullRequestProperty{
+		references := acceptanceProperties(t, []api.PullRequestProperty{
 			{URL: "", Title: ""},
 			{URL: "-arbitrary=地址, text", Title: "  标题\n\x1b[2J  "},
 			{URL: "-arbitrary=地址, text", Title: "  标题\n\x1b[2J  "},
-		}}
-		pairs := []string{"--pull-request-url=", "--pull-request-title=", "--pull-request-title", references.PullRequests[1].Title, "--pull-request-url=" + references.PullRequests[1].URL, "--pull-request-url=" + references.PullRequests[2].URL, "--pull-request-title", references.PullRequests[2].Title}
+		})
+		pairs := []string{"--pull-request-url=", "--pull-request-title=", "--pull-request-title", acceptancePullRequests(t, references)[1].Title, "--pull-request-url=" + acceptancePullRequests(t, references)[1].URL, "--pull-request-url=" + acceptancePullRequests(t, references)[2].URL, "--pull-request-title", acceptancePullRequests(t, references)[2].Title}
 		created := cli.run(t, filepath.Join(cli.repo, "source"), append([]string{"task", "create", "--title", "前置 Task", "--description", "Persistent description"}, pairs...)...)
 		first := acceptanceCLIResourceID(t, created)
-		if !strings.Contains(created, "Pull requests: 3\n  1. Title: \n     URL: \n") || !strings.Contains(created, "3. Title:   标题\\n\\u001b[2J  \n     URL: -arbitrary=地址, text") || !reflect.DeepEqual(cli.task(t, first).Properties, references) || cli.task(t, first).Status != "todo" || !cli.task(t, first).Ready {
+		if !strings.Contains(created, "Properties: 1\n  pullRequests: ") || !strings.Contains(created, `{"url":"","title":""}`) || !strings.Contains(created, `{"url":"-arbitrary=地址, text","title":"  标题\n\u001b[2J  "}`) || !reflect.DeepEqual(cli.task(t, first).Properties, references) || cli.task(t, first).Status != "todo" || !cli.task(t, first).Ready {
 			t.Fatal("installed CLI create changed raw PR strings, order, duplicates or text output")
 		}
 		bindingPath := filepath.Join(cli.repo, ".daynight", "project.yml")
@@ -590,8 +590,8 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 			t.Fatal("installed discovery left an unexpected metadata file or lock")
 		}
 		second := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Alternate"))
-		if task := cli.task(t, second); task.Properties.PullRequests == nil || len(task.Properties.PullRequests) != 0 {
-			t.Fatal("installed CLI creation without PR options did not read a concrete empty list")
+		if task := cli.task(t, second); len(task.Properties) != 0 {
+			t.Fatal("installed CLI creation without PR options added default properties")
 		}
 		target := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Dependent", "--depends-on", first))
 		blocked := cli.task(t, target)
@@ -669,7 +669,7 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		}
 		cli.run(t, cli.caller, "task", "update", editable, "--project", projectID, "--if-version", strconv.FormatInt(preserved.Version, 10), "--clear-pull-requests")
 		cleared := cli.task(t, editable)
-		if cleared.Properties.PullRequests == nil || len(cleared.Properties.PullRequests) != 0 || cleared.Version != preserved.Version+1 || cleared.Description != preserved.Description {
+		if acceptancePullRequests(t, cleared.Properties) == nil || len(acceptancePullRequests(t, cleared.Properties)) != 0 || cleared.Version != preserved.Version+1 || cleared.Description != preserved.Description {
 			t.Fatal("installed explicit-version PR clear changed other fields or lost the empty list")
 		}
 		cli.run(t, cli.repo, "task", "update", editable, "--clear-pull-requests")
@@ -793,12 +793,12 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		if !reflect.DeepEqual(firstWithPR.Properties, references) {
 			t.Fatal("installed lifecycle actions discarded the created PR list")
 		}
-		references.PullRequests = append(references.PullRequests, api.PullRequestProperty{URL: "\x00 arbitrary\tURL", Title: "标题\x00\n"})
-		firstWithPR = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(firstWithPR), map[string]any{"version": firstWithPR.Version, "properties": api.TaskWritableProperties{PullRequests: references.PullRequests}}, "installed-raw-pr-readback"), http.StatusOK)
+		references = acceptanceProperties(t, append(acceptancePullRequests(t, references), api.PullRequestProperty{URL: "\x00 arbitrary\tURL", Title: "标题\x00\n"}))
+		firstWithPR = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(firstWithPR), map[string]any{"version": firstWithPR.Version, "properties": acceptanceProperties(t, acceptancePullRequests(t, references))}, "installed-raw-pr-readback"), http.StatusOK)
 		if task := cli.task(t, first); !reflect.DeepEqual(task, firstWithPR) {
 			t.Fatal("installed CLI JSON did not preserve HTTP-supplied NUL PR strings")
 		}
-		escapedPR := "4. Title: 标题\\u0000\\n\n     URL: \\u0000 arbitrary\\tURL"
+		escapedPR := `{"url":"\u0000 arbitrary\tURL","title":"标题\u0000\n"}`
 		detail := cli.run(t, cli.repo, "task", "show", first)
 		for _, field := range []string{escapedPR, "Description: " + firstWithPR.Description, "Version: " + strconv.FormatInt(firstWithPR.Version, 10), "Created: " + firstWithPR.CreatedAt.Format(time.RFC3339Nano), "Updated: " + firstWithPR.UpdatedAt.Format(time.RFC3339Nano)} {
 			if !strings.Contains(detail, field) {
@@ -857,7 +857,7 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 					t.Fatal("installed compact task list included full-resource detail fields")
 				}
 			}
-			for _, field := range []string{"Pull requests: 0\n", "Status: todo\n", "Ready: true\nDepends on: none\nExternal dependencies (0): none\nBlocked by: none\n"} {
+			for _, field := range []string{"Properties: 0\n", "Status: todo\n", "Ready: true\nDepends on: none\nExternal dependencies (0): none\nBlocked by: none\n"} {
 				if !strings.Contains(output, field) {
 					t.Fatal("installed compact task list lost task status, PR or dependency fields")
 				}

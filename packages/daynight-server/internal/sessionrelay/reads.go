@@ -42,7 +42,7 @@ func (s *Service) Current(ctx context.Context, p core.Principal, project, taskID
 		if err != nil {
 			return err
 		}
-		w := t.Properties.Worker
+		w := t.Worker
 		if w == nil {
 			out = map[string]any{"status": "not_applicable", "claimId": nil, "agentControlMode": nil}
 			return nil

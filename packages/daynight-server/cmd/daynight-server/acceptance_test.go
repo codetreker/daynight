@@ -45,21 +45,21 @@ func acceptanceWorkflow(t *testing.T, scenario *acceptanceScenario) {
 	second := process.task(t, project, "Second prerequisite")
 	dependencies := []string{first.ID, second.ID}
 	slices.Sort(dependencies)
-	references := api.TaskProperties{PullRequests: []api.PullRequestProperty{
+	references := acceptanceProperties(t, []api.PullRequestProperty{
 		{URL: "", Title: ""},
 		{URL: "  acceptance-secret arbitrary\x00\n地址  ", Title: "\t标题\x00"},
 		{URL: "  acceptance-secret arbitrary\x00\n地址  ", Title: "\t标题\x00"},
-	}}
+	})
 	target := acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPost, acceptanceTasksPath(project.ID), map[string]any{
-		"title": "Target", "dependsOn": []string{second.ID, first.ID}, "properties": api.TaskWritableProperties{PullRequests: references.PullRequests},
+		"title": "Target", "dependsOn": []string{second.ID, first.ID}, "properties": acceptanceProperties(t, acceptancePullRequests(t, references)),
 	}, "create-references"), http.StatusCreated)
-	if !reflect.DeepEqual(target.Properties, references) || first.Properties.PullRequests == nil || len(first.Properties.PullRequests) != 0 {
-		t.Fatal("created properties changed caller strings or default list")
+	if !reflect.DeepEqual(target.Properties, references) || len(first.Properties) != 0 {
+		t.Fatal("created properties changed caller strings or added default attributes")
 	}
 	if first.Description != "" || first.Status != "todo" || !first.Ready || first.DependsOn == nil || first.BlockedBy == nil || target.Ready || !slices.Equal(target.DependsOn, dependencies) || !slices.Equal(target.BlockedBy, dependencies) {
 		t.Fatal("created task defaults or dependency projection are invalid")
 	}
-	noChange := process.update(t, target, map[string]any{"title": target.Title, "dependsOn": dependencies, "properties": api.TaskWritableProperties{PullRequests: references.PullRequests}})
+	noChange := process.update(t, target, map[string]any{"title": target.Title, "dependsOn": dependencies, "properties": acceptanceProperties(t, acceptancePullRequests(t, references))})
 	if !reflect.DeepEqual(noChange, target) {
 		t.Fatal("semantic no-op changed task version or update time")
 	}
@@ -78,7 +78,7 @@ func acceptanceWorkflow(t *testing.T, scenario *acceptanceScenario) {
 	if !ready.Ready || len(ready.BlockedBy) != 0 || ready.Version != target.Version || !ready.UpdatedAt.Equal(target.UpdatedAt) {
 		t.Fatal("prerequisite completion mutated downstream metadata or left it blocked")
 	}
-	target = process.update(t, ready, map[string]any{"description": "acceptance-secret-description", "properties": api.TaskWritableProperties{PullRequests: references.PullRequests}})
+	target = process.update(t, ready, map[string]any{"description": "acceptance-secret-description", "properties": acceptanceProperties(t, acceptancePullRequests(t, references))})
 	target = process.setStatus(t, target, "in_progress")
 	if target.Version != 3 || target.Status != "in_progress" || target.Ready {
 		t.Fatal("status update did not advance the task once")
@@ -404,15 +404,15 @@ func acceptanceVersionRace(t *testing.T, scenario *acceptanceScenario) {
 	task := process.task(t, project, "Original")
 	responses := acceptanceCompete(t, fixture, process, project,
 		func() acceptanceResponse {
-			return process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(task), map[string]any{"version": task.Version, "title": "First", "properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "first", Title: "First"}}}}, "version-first")
+			return process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(task), map[string]any{"version": task.Version, "title": "First", "properties": acceptanceProperties(t, []api.PullRequestProperty{{URL: "first", Title: "First"}})}, "version-first")
 		},
 		func() acceptanceResponse {
-			return process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(task), map[string]any{"version": task.Version, "title": "Second", "properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "second", Title: "Second"}}}}, "version-second")
+			return process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(task), map[string]any{"version": task.Version, "title": "Second", "properties": acceptanceProperties(t, []api.PullRequestProperty{{URL: "second", Title: "Second"}})}, "version-second")
 		},
 	)
 	acceptanceOneWinner(t, responses, "version_conflict")
 	after := process.readTask(t, task)
-	if after.Version != task.Version+1 || after.Title != "First" && after.Title != "Second" || len(after.Properties.PullRequests) != 1 || after.Properties.PullRequests[0].Title != after.Title {
+	if after.Version != task.Version+1 || after.Title != "First" && after.Title != "Second" || len(acceptancePullRequests(t, after.Properties)) != 1 || acceptancePullRequests(t, after.Properties)[0].Title != after.Title {
 		t.Fatal("HTTP version race did not commit exactly one update")
 	}
 	process.signal(t)
@@ -431,7 +431,8 @@ func acceptancePartialFailure(t *testing.T, scenario *acceptanceScenario) {
 		CREATE FUNCTION acceptance_reject_second_edge() RETURNS trigger LANGUAGE plpgsql AS $$
 		BEGIN
 		IF NEW.task_id='%s'::uuid AND NEW.depends_on_task_id='%s'::uuid THEN
-			IF NOT EXISTS (SELECT 1 FROM tasks WHERE id=NEW.task_id AND title='Changed' AND description='Changed' AND version=2 AND properties::jsonb = '{"pullRequests":[{"url":"changed","title":"Changed"}],"worker":null}'::jsonb)
+			IF NOT EXISTS (SELECT 1 FROM tasks WHERE id=NEW.task_id AND title='Changed' AND description='Changed' AND version=2)
+            OR NOT EXISTS (SELECT 1 FROM task_properties WHERE task_id=NEW.task_id AND name='pullRequests' AND value='[{"url":"changed","title":"Changed"}]')
 			OR NOT EXISTS (SELECT 1 FROM task_dependencies WHERE task_id=NEW.task_id AND depends_on_task_id='%s'::uuid) THEN
 				RAISE EXCEPTION USING ERRCODE='P1002', MESSAGE='acceptance-secret barrier was not reached';
 			END IF;
@@ -440,7 +441,7 @@ func acceptancePartialFailure(t *testing.T, scenario *acceptanceScenario) {
 		END IF;
 		RETURN NEW; END $$;
 		CREATE TRIGGER acceptance_reject_second_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION acceptance_reject_second_edge()`, target.ID, dependencies[1], dependencies[0]))
-	response := process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "title": "Changed", "description": "Changed", "dependsOn": dependencies, "properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "changed", Title: "Changed"}}}}, "partial-write")
+	response := process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "title": "Changed", "description": "Changed", "dependsOn": dependencies, "properties": acceptanceProperties(t, []api.PullRequestProperty{{URL: "changed", Title: "Changed"}})}, "partial-write")
 	acceptanceError(t, response, http.StatusInternalServerError, "internal_error")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -455,7 +456,7 @@ func acceptancePartialFailure(t *testing.T, scenario *acceptanceScenario) {
 		t.Fatal("storage failure lost its safe request-correlated cause")
 	}
 	fixture.exec(t, "DROP TRIGGER acceptance_reject_second_edge ON task_dependencies; DROP FUNCTION acceptance_reject_second_edge()")
-	updated := process.update(t, target, map[string]any{"title": "Changed", "description": "Changed", "dependsOn": dependencies, "properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "changed", Title: "Changed"}}}})
+	updated := process.update(t, target, map[string]any{"title": "Changed", "description": "Changed", "dependsOn": dependencies, "properties": acceptanceProperties(t, []api.PullRequestProperty{{URL: "changed", Title: "Changed"}})})
 	if updated.Version != 2 || !slices.Equal(updated.DependsOn, dependencies) {
 		t.Fatal("transaction or lock was unusable after failure rollback")
 	}
@@ -473,7 +474,7 @@ func acceptanceCancellation(t *testing.T, scenario *acceptanceScenario) {
 	defer cancel()
 	results := make(chan acceptanceResponse, 1)
 	go func() {
-		results <- process.request(ctx, http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "title": "Late write", "properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "canceled", Title: "Canceled"}}}}, "canceled-update")
+		results <- process.request(ctx, http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "title": "Late write", "properties": acceptanceProperties(t, []api.PullRequestProperty{{URL: "canceled", Title: "Canceled"}})}, "canceled-update")
 	}()
 	fixture.waitWriters(t, process, 1)
 	independent = process.update(t, independent, map[string]any{"title": "Progressed independently"})

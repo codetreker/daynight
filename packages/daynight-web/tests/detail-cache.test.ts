@@ -1,7 +1,7 @@
 import { openDB, type IDBPDatabase } from "idb";
 import { afterEach, expect, it, vi } from "vitest";
 import type { TaskDetail } from "../src/api/types";
-import { TASK_CACHE_DATABASE, type TaskCacheSchema } from "../src/features/task-cache/database";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from "../src/features/task-cache/database";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { DETAIL_CACHE_LIMITS, detailByteSize, materializeDetail, readCachedDetail, saveDetail } from "../src/features/task-detail/detail-cache";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
@@ -20,12 +20,12 @@ const seed = async (details: readonly TaskDetail[]) => {
   await scope.applySync(await scope.beginSync(projectId, signal()), taskSyncFromGraph(graph, { versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version }), signal());
   return scope;
 };
-const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1); connections.push(connection); return connection; };
+const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(connection); return connection; };
 const record = async (n = 1) => (await inspect()).get("details", [TEST_VIEWER_ID, projectId, taskId(n)]);
 afterEach(() => { scopes.splice(0).forEach((scope) => scope.dispose()); connections.splice(0).forEach((connection) => connection.close()); });
 
 it("stores only intrinsic complete content and exact bigint, without advancing the project watermark", async () => {
-  const detail = body(1, { version: 9_007_199_254_740_993n, description: "汉字🙂", properties: { worker: null, pullRequests: [{ url: "https://example.test/1", title: "PR" }] } });
+  const detail = body(1, { version: 9_007_199_254_740_993n, description: "汉字🙂", properties: { pullRequests: [{ url: "https://example.test/1", title: "PR" }] } });
   const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
   expect(await saveDetail(scope, ticket, detail, signal())).toMatchObject({ kind: "matching" });
   const saved = (await record())!;
@@ -90,6 +90,16 @@ it("rejects captured tickets after snapshot rotation or project invalidation", a
   const active = await scope.beginSync(projectId, signal()); await scope.invalidateProject(projectId, signal());
   await expect(saveDetail(scope, active, detail, signal())).rejects.toMatchObject({ name: "AbortError" });
   expect(await record()).toBeUndefined();
+});
+
+it("rejects malformed cached PR data before publishing it and clears the corrupted details", async () => {
+  const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal()); await saveDetail(scope, ticket, detail, signal());
+  const saved = (await record())!;
+  const malformed = { ...saved.detail, properties: { ...saved.detail.properties, pullRequests: [{ url: 1, title: "Invalid" }] } };
+  await (await inspect()).put("details", { ...saved, detail: malformed, byteSize: detailByteSize(malformed) });
+  await expect(readCachedDetail(scope, ticket, detail.id, signal())).rejects.toMatchObject({ category: "corrupt" });
+  expect(await record()).toBeUndefined();
+  expect(await readCachedDetail(scope, ticket, detail.id, signal())).toBeNull();
 });
 
 it("exposes malformed stored records rather than publishing a private body", async () => {
