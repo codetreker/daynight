@@ -1,5 +1,5 @@
 import { stringifyApiJson } from "../../api/json.js";
-import type { GraphTask, Task, TaskGraph } from "../../api/types.js";
+import type { GraphTask, Task, TaskGraph, TaskPropertyResource, TaskPropertySchema } from "../../api/types.js";
 import { terminalText } from "../../platform/terminal.js";
 
 const identifiers = (values: readonly string[]): string => values.length === 0 ? "none" : values.map(terminalText).join(", ");
@@ -92,3 +92,25 @@ export const renderTaskGraphDependencies = (graph: TaskGraph, json: boolean): st
 export const renderTaskJson = (value: Task | readonly Task[] | TaskGraph): string => `${stringifyApiJson(value)}\n`;
 
 export const renderTaskListJson = (tasks: readonly Task[]): string => `${stringifyApiJson(tasks.map(({ description: _description, ...task }) => task))}\n`;
+
+export const renderTaskPropertyResource = (resource: TaskPropertyResource): string => {
+  const entries = Object.entries(resource.properties).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+  return [
+    `Task: ${terminalText(resource.taskId)}`,
+    `Project: ${terminalText(resource.projectId)}`,
+    `Version: ${resource.version}`,
+    `Properties (${entries.length}):${entries.length === 0 ? " {}" : ""}`,
+    ...entries.map(([name, value]) => `  ${terminalText(name)}: ${terminalText(stringifyApiJson(value))}`),
+    "",
+  ].join("\n");
+};
+
+export const renderTaskPropertySchema = (catalog: TaskPropertySchema): string => Object.entries(catalog.properties)
+  .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+  .map(([name, definition]) => [
+    `Property: ${terminalText(name)}`,
+    `Description: ${terminalText(definition.description)}`,
+    `Read only: ${definition.readOnly}`,
+    `Schema: ${terminalText(stringifyApiJson(definition.schema))}`,
+    "",
+  ].join("\n")).join("\n");

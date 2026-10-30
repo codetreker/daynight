@@ -427,7 +427,8 @@ func acceptanceCLIMutations(process *acceptanceProcess) []acceptanceCLIRequest {
 	for _, event := range process.logs.events {
 		route, _ := event["route"].(string)
 		lifecycle := event["method"] == "PUT" && strings.HasSuffix(route, "/status")
-		if event["type"] == "http_request" && (event["method"] == "PATCH" || lifecycle) {
+		property := (event["method"] == "PUT" || event["method"] == "DELETE") && strings.Contains(route, "/properties/")
+		if event["type"] == "http_request" && (event["method"] == "PATCH" || lifecycle || property) {
 			id, _ := event["request_id"].(string)
 			status, _ := event["status"].(float64)
 			requests = append(requests, acceptanceCLIRequest{RequestID: id, Status: int(status)})
@@ -569,17 +570,29 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(cli.repo, ".daynight")); !errors.Is(err, os.ErrNotExist) {
 			t.Fatal("installed project creation wrote repository binding metadata")
 		}
+		schema := acceptanceCLIJSON[api.TaskPropertySchema](t, cli.run(t, cli.caller, "task", "properties", "--schema", "--json"))
+		pullRequestsDefinition, hasPullRequests := schema.Properties["pullRequests"]
+		workerDefinition, hasWorker := schema.Properties["worker"]
+		if !hasPullRequests || !hasWorker || pullRequestsDefinition.ReadOnly || !workerDefinition.ReadOnly || len(pullRequestsDefinition.Schema) == 0 || len(workerDefinition.Schema) == 0 {
+			t.Fatal("installed schema lookup outside Git lost service-owned definitions or writability")
+		}
 		references := acceptanceProperties(t, []api.PullRequestProperty{
 			{URL: "", Title: ""},
 			{URL: "-arbitrary=地址, text", Title: "  标题\n\x1b[2J  "},
 			{URL: "-arbitrary=地址, text", Title: "  标题\n\x1b[2J  "},
 		})
-		pairs := []string{"--pull-request-url=", "--pull-request-title=", "--pull-request-title", acceptancePullRequests(t, references)[1].Title, "--pull-request-url=" + acceptancePullRequests(t, references)[1].URL, "--pull-request-url=" + acceptancePullRequests(t, references)[2].URL, "--pull-request-title", acceptancePullRequests(t, references)[2].Title}
-		created := cli.run(t, filepath.Join(cli.repo, "source"), append([]string{"task", "create", "--title", "前置 Task", "--description", "Persistent description"}, pairs...)...)
+		propertyValue := string(references["pullRequests"])
+		created := cli.run(t, filepath.Join(cli.repo, "source"), "task", "create", "--title", "前置 Task", "--description", "Persistent description")
 		first := acceptanceCLIResourceID(t, created)
-		if !strings.Contains(created, "Properties: 1\n  pullRequests: ") || !strings.Contains(created, `{"url":"","title":""}`) || !strings.Contains(created, `{"url":"-arbitrary=地址, text","title":"  标题\n\u001b[2J  "}`) || !reflect.DeepEqual(cli.task(t, first).Properties, references) || cli.task(t, first).Status != "todo" || !cli.task(t, first).Ready {
-			t.Fatal("installed CLI create changed raw PR strings, order, duplicates or text output")
+		if initial := cli.task(t, first); initial.Version != 1 || len(initial.Properties) != 0 {
+			t.Fatal("installed creation injected properties before their explicit assignment")
 		}
+		propertyOutput := cli.run(t, filepath.Join(cli.repo, "source"), "task", "set-property", first, "pullRequests", propertyValue)
+		if !strings.Contains(propertyOutput, "Properties (1):\n  pullRequests: ") || !strings.Contains(propertyOutput, `{"url":"","title":""}`) || !strings.Contains(propertyOutput, `{"url":"-arbitrary=地址, text","title":"  标题\n\u001b[2J  "}`) || !reflect.DeepEqual(cli.task(t, first).Properties, references) || cli.task(t, first).Status != "todo" || !cli.task(t, first).Ready {
+			t.Fatal("installed property assignment changed raw PR strings, order, duplicates or text output")
+		}
+		acceptanceCLIPropertyResource(t, cli, cli.task(t, first))
+
 		bindingPath := filepath.Join(cli.repo, ".daynight", "project.yml")
 		binding, err := os.ReadFile(bindingPath)
 		if err != nil || !bytes.Contains(binding, []byte("repoIdentity: git.example/Org/Repo\n")) || !bytes.Contains(binding, []byte("projectId: "+projectID+"\n")) || !bytes.Contains(binding, []byte("serverUrl: "+process.origin+"\n")) || bytes.Contains(binding, []byte(process.token)) {
@@ -591,7 +604,7 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 		}
 		second := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Alternate"))
 		if task := cli.task(t, second); len(task.Properties) != 0 {
-			t.Fatal("installed CLI creation without PR options added default properties")
+			t.Fatal("installed CLI creation added default properties")
 		}
 		target := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Dependent", "--depends-on", first))
 		blocked := cli.task(t, target)
@@ -638,7 +651,7 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 			t.Fatal("installed dependency clear changed todo readiness or left a dependency")
 		}
 		beforeLegacy := len(acceptanceCLIMutations(process))
-		for _, arguments := range [][]string{{"task", "approve", editable}, {"task", "unapprove", editable}, {"task", "claim", editable}, {"task", "complete", editable}, {"task", "set-status", editable, "proposed"}, {"task", "list", "--status", "proposed"}} {
+		for _, arguments := range [][]string{{"task", "approve", editable}, {"task", "unapprove", editable}, {"task", "claim", editable}, {"task", "complete", editable}, {"task", "set-status", editable, "proposed"}, {"task", "list", "--status", "proposed"}, {"task", "create", "--title", "Rejected property flags", "--pull-request-url=https://example.com/retired"}, {"task", "update", editable, "--pull-request-title", "Retired property title"}, {"task", "update", editable, "--clear-pull-requests"}} {
 			result := acceptanceCLIReceive(t, cli.start(t, cli.repo, arguments...))
 			if result.status != 2 || result.stdout != "" || result.stderr == "" || len(acceptanceCLIMutations(process)) != beforeLegacy {
 				t.Fatal("installed deleted command or state reached a mutation or lost its usage failure")
@@ -649,32 +662,69 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 			t.Fatal("installed legacy status option was not rejected before a mutation")
 		}
 		beforeProperties := cli.task(t, editable)
-		cli.run(t, cli.repo, append([]string{"task", "update", editable}, pairs...)...)
+		cli.run(t, cli.repo, "task", "set-property", editable, "pullRequests", propertyValue)
 		replaced := cli.task(t, editable)
 		if replaced.Version != beforeProperties.Version+1 || !reflect.DeepEqual(replaced.Properties, references) || !slices.Equal(replaced.DependsOn, beforeProperties.DependsOn) || replaced.Title != beforeProperties.Title {
 			t.Fatal("installed property-only update did not replace the list in one version")
 		}
-		cli.run(t, cli.repo, append([]string{"task", "update", editable, "--if-version", strconv.FormatInt(replaced.Version, 10)}, pairs...)...)
+		cli.run(t, cli.repo, "task", "set-property", editable, "pullRequests", propertyValue, "--if-version", strconv.FormatInt(replaced.Version, 10))
 		if task := cli.task(t, editable); !reflect.DeepEqual(task, replaced) {
 			t.Fatal("installed identical PR update changed the task version, time or data")
 		}
-		cli.refuse(t, process, "version_conflict", editable, "task", "update", editable, "--clear-pull-requests", "--if-version", strconv.FormatInt(beforeProperties.Version, 10))
+		cli.refuse(t, process, "version_conflict", editable, "task", "remove-property", editable, "pullRequests", "--if-version", strconv.FormatInt(beforeProperties.Version, 10))
 		if task := cli.task(t, editable); !reflect.DeepEqual(task, replaced) {
 			t.Fatal("installed stale PR clear changed the persisted task")
 		}
 		cli.run(t, cli.repo, "task", "update", editable, "--description", "Keep PR references")
 		preserved := cli.task(t, editable)
 		if !reflect.DeepEqual(preserved.Properties, references) || preserved.Version != replaced.Version+1 {
-			t.Fatal("installed update without PR options discarded properties")
+			t.Fatal("installed metadata update discarded properties")
 		}
-		cli.run(t, cli.caller, "task", "update", editable, "--project", projectID, "--if-version", strconv.FormatInt(preserved.Version, 10), "--clear-pull-requests")
+		cli.run(t, cli.caller, "task", "set-property", editable, "pullRequests", "[]", "--project", projectID, "--if-version", strconv.FormatInt(preserved.Version, 10))
 		cleared := cli.task(t, editable)
 		if acceptancePullRequests(t, cleared.Properties) == nil || len(acceptancePullRequests(t, cleared.Properties)) != 0 || cleared.Version != preserved.Version+1 || cleared.Description != preserved.Description {
 			t.Fatal("installed explicit-version PR clear changed other fields or lost the empty list")
 		}
-		cli.run(t, cli.repo, "task", "update", editable, "--clear-pull-requests")
+		cli.run(t, cli.repo, "task", "set-property", editable, "pullRequests", "[]")
 		if task := cli.task(t, editable); !reflect.DeepEqual(task, cleared) {
 			t.Fatal("installed empty PR clear changed the task version, time or data")
+		}
+		removedOutput := cli.run(t, cli.caller, "task", "remove-property", editable, "pullRequests", "--project", projectID, "--if-version", strconv.FormatInt(cleared.Version, 10))
+		removed := cli.task(t, editable)
+		if _, present := removed.Properties["pullRequests"]; present || removed.Version != cleared.Version+1 || removed.Description != cleared.Description || !strings.Contains(removedOutput, "Properties (0): {}") {
+			t.Fatal("installed property removal did not preserve absence and unrelated task fields")
+		}
+		acceptanceCLIPropertyResource(t, cli, removed)
+		cli.run(t, cli.repo, "task", "remove-property", editable, "pullRequests")
+		if after := cli.task(t, editable); !reflect.DeepEqual(after, removed) {
+			t.Fatal("installed repeated removal changed an absent property or task version")
+		}
+		for _, name := range []string{"worker", "worker.claimId", "unknown/value", "unknown%2fvalue", ".", ".."} {
+			before := cli.task(t, editable)
+			count := len(acceptanceCLIMutations(process))
+			result := acceptanceCLIReceive(t, cli.start(t, cli.caller, "task", "remove-property", editable, name, "--project", projectID, "--if-version", strconv.FormatInt(before.Version, 10)))
+			if result.status != 1 || result.stdout != "" {
+				t.Fatal("installed literal property removal did not refuse the invalid operation")
+			}
+			if name == "." || name == ".." {
+				if !strings.Contains(result.stderr, "Property name cannot be represented without changing the request route.") || len(acceptanceCLIMutations(process)) != count {
+					t.Fatal("installed dot-only property name escaped its route or reached a mutation")
+				}
+			} else {
+				requests := acceptanceCLIWaitMutations(t, process, count+1)
+				if !strings.Contains(result.stderr, "invalid_input") || len(requests) != count+1 || requests[count].Status != http.StatusBadRequest {
+					t.Fatal("installed literal property name lost the authoritative server refusal")
+				}
+			}
+			if after := cli.task(t, editable); !reflect.DeepEqual(after, before) {
+				t.Fatal("installed literal property removal modified or deleted the parent task")
+			}
+		}
+		beforeInvalidValue := len(acceptanceCLIMutations(process))
+		invalidValue := acceptanceCLIReceive(t, cli.start(t, cli.caller, "task", "set-property", editable, "pullRequests", `[{"url":"first","url":"second","title":"Duplicate field"}]`, "--project", projectID, "--if-version", strconv.FormatInt(removed.Version, 10)))
+		invalidRequests := acceptanceCLIWaitMutations(t, process, beforeInvalidValue+1)
+		if invalidValue.status != 1 || invalidValue.stdout != "" || !strings.Contains(invalidValue.stderr, "invalid_input") || len(invalidRequests) != beforeInvalidValue+1 || invalidRequests[beforeInvalidValue].Status != http.StatusBadRequest || !reflect.DeepEqual(cli.task(t, editable), removed) {
+			t.Fatal("installed property setter lost duplicate JSON fields before service validation or changed data")
 		}
 		fixture.exec(t, "UPDATE tasks SET version=$1 WHERE id=$2", int64(9_007_199_254_740_993), editable)
 		cli.run(t, cli.caller, "task", "update", editable, "--project", projectID, "--if-version", "9007199254740993", "--title", "Exact version 中文")

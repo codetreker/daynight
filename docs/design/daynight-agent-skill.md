@@ -305,7 +305,7 @@ commit 后继续关闭，默认不增加合并后主线 CI 等待。该循环由
 
 恢复检查点保存原 assignment、授权与范围、配置、工作区、PR/head、验证、评审、
 资源和下一动作，不保存凭据；恢复写入前刷新任务及远端状态。后台执行在已有范围内
-自行决定；缺少完成所需的目标、架构、执行方案、验收条件，遇到设计未覆盖的问题或其他阻塞时，按 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 用 `set-property <task-id> worker.signaling "<reason>"` 记录问题，同时输出终端、保存等待上下文并退出循环等待用户，保持 in_progress 且不选其他任务。反馈后核验原 assignment 和问题已解决，再用 `remove-property <task-id> worker.signaling` 清除并确认移除后恢复；未解决则保留信号等待。信号写入遵守 write-safety，明确暂停、限制与撤回授权继续有效。合并已有充分授权，检查与评审条件满足后
+自行决定；缺少完成所需的目标、架构、执行方案、验收条件，遇到设计未覆盖的问题或其他阻塞时，按 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 用 `daynight task set-property <task-id> worker.signaling "<reason>"` 记录问题，同时输出终端、保存等待上下文并退出循环等待用户，保持 in_progress 且不选其他任务。反馈后核验原 assignment 和问题已解决，再用 `daynight task remove-property <task-id> worker.signaling` 清除并确认移除后恢复；未解决则保留信号等待。信号写入遵守 write-safety，明确暂停、限制与撤回授权继续有效。合并已有充分授权，检查与评审条件满足后
 直接执行，不再请求确认；用户明确的暂停和限制继续生效，授权范围始终是原 assignment。
 
 Goal 讨论以用户确认和自身阶段验收作为共同完成准备。独立代码、文档、原型交付以及

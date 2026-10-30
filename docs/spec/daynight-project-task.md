@@ -12,7 +12,7 @@ Task 命令、安装产物、真实 Go/PostgreSQL 联调及默认预算验收已
 [客户端设计](../design/daynight-project-task.md)，决策见
 [方案决策](../../.agents/notes/archived/architecture/2026-10-20-project-task-cli-design.md)。
 
-[预定义属性需求](daynight-task-properties.md)的 server 接口、CLI PR 引用参数和
+[预定义属性需求](daynight-task-properties.md)的 server 接口、CLI 通用属性命令和
 完整资源输出已实现。[架构](../design/daynight-task-properties.md)拥有属性机制。完整 Task 读取保留通用属性对象及键缺失；没有保留执行归属时没有 worker 键，公开属性写入由服务端定义与保护。进程内 typed ApiClient 的认领及分页操作由[归属架构](../design/daynight-worker-claims.md)拥有；worker 人工管理命令由 [Worker 需求](daynight-worker.md#w-08人工介入与强制撤回)定义。
 
 [附件需求](daynight-task-attachments.md)定义的 `task attachment put/list/read/remove`
@@ -104,7 +104,7 @@ git@github.com:codetreker/day-night.git
 
 ## PT4. Project 选择
 
-所有 task 操作接受可选的 `--project <id>`，按以下顺序选定目标：
+除 `task properties --schema` 外，task 操作接受可选的 `--project <id>`，按以下顺序选定目标。schema 模式直接读取认证服务的全局定义，不读取 Git、项目或本地关联，也不接受 --project：
 
 | 条件 | 必需行为 |
 |---|---|
@@ -207,25 +207,21 @@ daynight task update <task-id> --clear-dependencies
 daynight task set-status <task-id> done --if-version 3
 daynight task delete <task-id> --if-version 3
 daynight task delete <task-id> --remove-depends --if-version 3
-daynight task update <task-id> --pull-request-url <url> --pull-request-title <title>
-daynight task update <task-id> --clear-pull-requests
+daynight task properties <task-id> --json
+daynight task properties --schema --json
+daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"修复同步"}]' --if-version <observed-version>
+daynight task remove-property <task-id> pullRequests --if-version <observed-version>
 daynight task graph <task-id> [--depends-only]
 ```
 
-上述命令均接受 `--project <id>`。`list`、`ready`、`show`、`graph` 接受 `--json`。标题、
+除 properties --schema 外，上述命令均接受 `--project <id>`。`list`、`ready`、`show`、`graph` 和属性读取接受 `--json`。标题、
 描述、repo 地址、ID、状态和版本等 text 选项同时接受 `--option value` 与
 `--option=value`。内联形式只按第一个 `=` 分隔，保留值内后续 `=` 和前导 `-`；
-分离形式的值以 `-` 开始时拒绝，须使用内联形式。描述和 PR 的 URL/title 允许空
-字符串，可写 `--description ""`、`--description=`、`--pull-request-url=` 或
-`--pull-request-title=`。开关不接受内联值；目录选项的
+分离形式的选项值以 `-` 开始时拒绝，须使用内联形式。描述允许空字符串，可写 `--description ""` 或 `--description=`；set-property 的 value 位置参数也允许空字符串。开关不接受内联值；目录选项的
 `--path=value` 继续拒绝。附件上传的 `--path` 是 text 选项，接受内联赋值。
-`project create` 与附件 `put/read/remove` 接受独立 `--` 结束选项解析；该终止符
-用于保留前导连字符的位置参数，其他操作继续使用其声明的语法。
+`project create`、属性 set/remove 和附件 `put/read/remove` 接受独立 `--` 结束选项解析；该终止符用于保留前导连字符的位置参数，选项必须放在终止符之前。其他操作继续使用其声明的语法。
 
-创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、重复的 `--depends-on`、`--external-depends-on` 和
-PR URL/title 配对；省略描述、依赖和 PR 引用分别使用服务规定的空字符串、空集合
-和空数组，平台省略为null，不限制执行平台；新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可选项。PR 标题只要求字符串类型，不使用 task 标题的内容
-校验。任务响应解码接受 `todo`、`in_progress`、`done`，列表默认选择
+创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；未显式设置的属性缺失。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`，列表默认选择
 所有未完成任务；`--all` 选择所有未删除任务的业务状态，
 单个 `--status` 选择指定状态，包括 `done`。`--all` 与 `--status` 互斥，组合使用
 属于参数错误；列表状态值为 `todo`、`in_progress`、`done`，共享语法负责校验和静态候选，
@@ -255,7 +251,7 @@ limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条
 不自动重试写入；不确定结果先 GET 核对，不将取消解释为回滚。输出完整 Task 并保留所有非状态资料。
 [三状态要求](daynight-task-status.md)拥有时间、迁移、依赖和版本细节。旧四动作删除且无别名。
 
-更新至少提供标题、描述、普通/外部依赖、自动执行许可、平台要求或预定义属性中的一个字段。`update --allow-agents true|false` 显式设置许可，省略保留，false 关闭；服务在 in_progress 拒绝实际切换，同值精确版本不改版本或时间。该选项不改变 ready；明确指定执行不要求开启许可。--required-platform windows|linux|macos 设置，--clear-required-platform 发送null，二者互斥；省略均保留。
+元数据 update 至少提供标题、描述、普通/外部依赖、自动执行许可或平台要求中的一个字段；属性由专用通用命令维护。`update --allow-agents true|false` 显式设置许可，省略保留，false 关闭；服务在 in_progress 拒绝实际切换，同值精确版本不改版本或时间。该选项不改变 ready；明确指定执行不要求开启许可。--required-platform windows|linux|macos 设置，--clear-required-platform 发送null，二者互斥；省略均保留。
 精确版本同值不写，旧版本冲突，in_progress实际变化整体拒绝；普通人工setter不按平台筛选。
 `task update --status`
 作为不支持的选项拒绝，帮助引导使用 set-status。省略字段表示保持，空描述表示
@@ -263,14 +259,14 @@ limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条
 只给普通选项会显式清空外部子集，只给外部选项会把完整关系替换为这些外部边，不是追加或仅标记。
 --clear-dependencies 提交两个空数组，与任一依赖声明互斥；两类声明可共同使用。
 ID 逐项提供、不执行 CSV 拆分，正规化及排序后拒绝列表内/跨列表重复，不静默去重或合并旧关系。
-PR URL/title 配对选项仍按输入顺序保留重复记录，其他选项只允许一次。服务继续验证引用、状态、环和项目范围，
+重复关系选项逐项声明 ID，其他元数据选项只允许一次。服务继续验证引用、状态、环和项目范围，
 所有普通与外部前置仍参与执行，拒绝保留原错误码与相关 task ID。
 
-PR 的 `--pull-request-url` 和 `--pull-request-title` 在 create/update 中分别按
-出现顺序配对，两类选项次数必须相等且至少一对；它们无需在命令行相邻。提供配对
-表示替换完整列表，Update 的 `--clear-pull-requests` 表示清空并与任一配对选项互斥。
-没有相关选项时省略属性 patch；重复项、空白与空字符串都保留，不检查 URL 内容。
-配对、互斥和修改字段组合错误必须先于配置、Git 和网络 I/O 失败。
+通用属性命令的 property 是完整字面名称，点号不是对象路径。独立名称 . 或 .. 无法在现有 URL 传输中保持同一资源路径，客户端作为传输错误拒绝且不发请求；可表示的名称仍交由服务端判断。CLI 不维护属性白名单、不获取 schema 作为设置前置，也不解析 value；原始参数作为 valueText 提交。默认 JSON 与字符串 shorthand、可写性、类型和结构都由服务端判断。当前公开可写属性为 pullRequests；其完整数组保留顺序、重复、空白与空字符串。worker 只读保护不因通用命令改变。
+
+properties 仅允许 task ID 或 --schema 一种模式，均缺失、同时给出或 schema 附 --project 在 I/O 前拒绝。schema 一次 GET 全局定义，不读取项目或工作目录。值读取一次 GET 属性资源。set/remove 显式 --if-version 只提交一次写；省略时一次 GET 属性资源取得任务版本，再写一次；显式 --project 直接作用于该属性请求，不额外读取 project。未显式 project 才使用既有 discover。
+
+set-property 替换一个完整属性值，remove-property 删除记录并省略键；设置 [] 与移除不同，null 从不作为删除标记。空 value 允许原样提交，位置参数 -- 后的短横线文本/负数不被解释为选项。未知名、错误 JSON、类型错误和只读写入由服务端返回 400 invalid_input，CLI 不改成用法错误，也不重新获取版本重试。
 
 未传 `--if-version` 时，CLI 先读取 task 的当前 `version`，再将该版本与更新字段
 一起提交。显式指定时，使用该正整数作为期望版本，不用最新版本覆盖它。版本范围为
@@ -302,10 +298,10 @@ PR 的 `--pull-request-url` 和 `--pull-request-title` 在 create/update 中分�
 最终期限检查成功后输出结果。Project 列表逐个输出完整的带标签资源块，包含 ID、名称、
 原始 repo 地址及创建、更新时间；空列表明确说明没有 project。详情和创建结果使用
 相同字段，创建结果另表明服务已确认创建。Task 列表逐个输出带标签的资源块，包括
-ID、所属 project、标题、状态、ready、依赖、外部依赖、阻塞及全部 PR 标题与 URL；列表文本
+ID、所属 project、标题、状态、ready、依赖、外部依赖、阻塞及完整属性 JSON；列表文本
 不显示描述、版本及创建、更新时间，空 task list 明确说明没有 task。详情、ready、
 创建和更新结果显示完整 task 资源，包含上述字段、描述、完整版本及创建、更新时间。
-ready 空结果输出 `No ready tasks.`，创建和更新结果另表明服务已确认操作。
+ready 空结果输出 `No ready tasks.`，创建和更新结果另表明服务已确认操作。属性读取及 set/remove 成功结果包含 task/project ID、精确版本和完整属性；schema 模式保留全部定义与 schema 关键词，按名称输出。
 普通图输出显示 project、全部 summary 字段及每个节点的状态、标题预览、截短标记、ready、
 依赖、外部依赖、阻塞和时间。依赖区统一输出 `External dependencies (N): ...`，
 计数与列表只包含显式外部子集，空值显示 none。所有文本完整显示，资源边界保持清楚，输出空间随字段内容总量
@@ -320,7 +316,7 @@ externalDependsOn，不输出项目、统计、标题、状态或阻塞字段。
 可读资源字段中的 C0/C1 控制字符及 Unicode 行、段分隔符必须转义为可见文本，
 普通 Unicode 与 emoji 保持原样。`--json` 将详情输出为一个完整资源对象、project list
 输出为所有匹配资源的完整字段数组、task list 输出为所有匹配 task 仅省略
-`description` 的数组、ready 输出为所选完整 task 的数组、普通图输出为服务的任务链图响应对象，
+`description` 的数组、ready 输出为所选完整 task 的数组、属性读取输出完整 PropertyResource、schema 输出完整定义目录、普通图输出为服务的任务链图响应对象，
 并以换行结束。Task list 的默认、`--all`、`--status`、`--ready` 及其合法组合
 均使用同一 JSON 字段规则；其余 API 字段全部保留，包括原始 PR 字符串、完整 int64
 版本、创建/更新时间和明确可空的 `startedAt`、`completedAt`；图 JSON 另外保留顶层 `observedAt`。

@@ -111,6 +111,21 @@ export type JsonValue = null | boolean | number | string | readonly JsonValue[] 
 export type TaskProperties = Readonly<Record<string, JsonValue>>;
 export type WritableTaskProperties = TaskProperties;
 
+export type TaskPropertyResource = {
+  readonly projectId: string;
+  readonly taskId: string;
+  readonly version: bigint;
+  readonly properties: TaskProperties;
+};
+export type SetTaskPropertyInput = { readonly version: bigint; readonly valueText: string };
+export type RemoveTaskPropertyInput = { readonly version: bigint };
+export type TaskPropertyDefinition = {
+  readonly description: string;
+  readonly readOnly: boolean;
+  readonly schema: Readonly<Record<string, JsonValue>>;
+};
+export type TaskPropertySchema = { readonly properties: Readonly<Record<string, TaskPropertyDefinition>> };
+
 export type Task = {
   readonly id: string;
   readonly projectId: string;

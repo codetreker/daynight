@@ -1,6 +1,6 @@
 # Task 预定义属性需求
 
-状态：服务端通用属性模型、独立存储、属性 HTTP 资源与客户端读取适配已实现。本文拥有属性的行为与验收；[架构设计](../design/daynight-task-properties.md)解释机制与取舍。现有 [server](daynight-server.md)、[CLI](daynight-project-task.md) 和[看板](daynight-web.md)需求继续拥有各自入口。
+状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令与客户端读取适配已实现。本文拥有属性的行为与验收；[架构设计](../design/daynight-task-properties.md)解释机制与取舍。现有 [server](daynight-server.md)、[CLI](daynight-project-task.md) 和[看板](daynight-web.md)需求继续拥有各自入口。
 
 ## 目标与范围
 
@@ -14,7 +14,7 @@ Task 使用服务端预定义且有明确值结构的属性。属性目录随服
 | TP4 | 创建与 PATCH 支持已定义的可写属性，与普通字段及依赖在任务事务内原子提交。 |
 | TP5 | 属性使用任务整体 version；真实变化增加一次版本，语义相等设置或重复删除保留版本和时间，陈旧版本始终冲突。 |
 | TP6 | 属性移除真正删除记录，完整读取省略该键；缺失、空数组和 JSON null 是不同状态。null 仅在值定义允许时合法。 |
-| TP7 | 服务端提供认证的属性定义目录及项目范围的属性读取、设置和移除资源；值解释与属性校验只由服务端负责。 |
+| TP7 | 服务端提供认证的属性定义目录及项目范围的属性读取、设置和移除资源，CLI 用 properties/set-property/remove-property 暴露它们；值解释与属性校验只由服务端负责。 |
 | TP8 | worker 有记录时必须是合法归属对象，没有保留归属时缺失；公共创建、PATCH、属性设置和属性移除均不能写 worker。 |
 | TP9 | 完整单项、分页列表和修改结果保留全部属性；图与时间窗口摘要继续使用各自精简投影。 |
 | TP10 | 数据迁移保留既有 PR 字符串、顺序及重复项，保留执行归属与任务元数据；旧空 PR 数组保留，旧 worker:null 转为缺失。 |
@@ -80,9 +80,34 @@ PUT 的 valueText 是未经 CLI JSON 解析的原始参数文本：
 
 ## CLI
 
-现有 task create/update 继续使用成对的 --pull-request-url 与 --pull-request-title，按出现位置组成完整 PR 列表，字符串不拆分、不去重、不 trim。update 的 --clear-pull-requests 写入显式空数组，不等同于删除属性。现有版本、配对、互斥和终端参数规则由 [CLI 需求](daynight-project-task.md)拥有。
+~~~text
+daynight task properties <task-id> [--json] [--project <project-id>]
+daynight task properties --schema [--json]
+daynight task set-property <task-id> <property> <value> [--if-version <version>] [--project <project-id>]
+daynight task remove-property <task-id> <property> [--if-version <version>] [--project <project-id>]
+~~~
 
-CLI 通用属性数据读取和资源输出保留全部键；业务字段解析在使用 PR 或 worker 的功能处进行。JSON 输出保留缺失状态，不加入显示占位值；人类输出使用现有终端可见转义。操作系统不能承载的进程参数可通过 HTTP API 提交，传输限制不产生 URL/title 内容规则。
+properties 恰好选择 task ID 或 --schema 一种模式；同时给出、均未给出或 schema 模式附带 --project 是语法错误。schema 直接使用认证服务定义，不进行项目或 Git 发现；完整 Task 仍可通过 task show 查看。
+
+属性名称是完整、区分大小写的字面名称，点号不表示嵌套路径。独立 . 或 .. 若在 URL 规范化中改变资源路径，CLI 在发请求前报告传输错误；不把它转为另一个名称。CLI 不维护名称白名单、不下载 schema 预校验值，也不执行 JSON.parse；服务端拥有类型、结构与只读限制。公开 worker 修改仍拒绝，通用命令不开放自定义属性。
+
+set-property 替换一个完整属性值，value 参数原样编码进 valueText 外壳。默认 JSON 及字符串属性的原始文本规则由服务端解释。空 value 可作为参数提交；以短横线开始的位置参数使用 -- 终止选项解析，选项放在终止符之前。移除真正删除属性，与设置 [] 区分。
+
+~~~bash
+daynight task properties --schema --json
+daynight task properties <task-id> --json
+daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"修复同步"}]' --if-version <observed-version>
+daynight task set-property <task-id> pullRequests '[]' --if-version <observed-version>
+daynight task remove-property <task-id> pullRequests --if-version <observed-version>
+~~~
+
+create/update 不提供 PR 专用选项。创建后的属性通过通用设置命令维护；原生 HTTP create/PATCH 的原子多字段能力保留。设置 PR 时提交完整有序数组，保留仍需要的所有关联。
+
+显式 --if-version 直接提交；省略时先 GET 属性资源取得任务版本，再提交一次修改。版本冲突不重试；预读不能替代先前决定所依据的版本，不确定结果只读回核对后重新决定。
+
+读取 --json 返回完整 PropertyResource 或定义目录；普通读取按名称打印完整属性 JSON，所有输出使用既有终端安全转义。set/remove 成功后输出服务确认的当前 PropertyResource，不推测 no-op 的额外结果字段。非法属性值和非法存储属性的服务端 400 保持操作失败，不改成 CLI 语法错误；数据库故障仍保持 500。所有读取均不补默认值、不截断或静默丢键。
+
+操作系统不能承载的进程参数可通过 HTTP API 提交；传输限制不产生 URL/title 内容规则。[CLI 需求](daynight-project-task.md)拥有共享语法、补全和完整命令契约。
 
 ## 网页详情
 
@@ -111,6 +136,6 @@ CLI 通用属性数据读取和资源输出保留全部键；业务字段解析�
 | TP-V3 | 初始 {}、省略、显式 []、实际删除、重复删除、no-op、重排及过期版本符合存在性和版本规则。 |
 | TP-V4 | 同版本并发写只提交一个；混合字段/依赖/属性失败完整回滚，父任务锁维持 Worker/Session 身份隔离。 |
 | TP-V5 | 历史库和软删除数据迁移不丢失 PR、归属或 Session 身份，旧空数组保留、null worker 缺失，版本时间和历史校验和不变，坏行原子回滚。 |
-| TP-V6 | CLI/Web 通用读取不丢键、不补默认值；精确外壳版本不影响属性内同名 version，旧详情缓存不能造成同版本冲突。 |
+| TP-V6 | CLI 的值/schema 模式、原始值文本、空值、-- 参数、精确版本和补全一致；读写不预取 schema，未知/只读/错误值到达服务端，完整输出不丢键。CLI/Web 不补默认值，精确外壳版本不影响属性内同名 version，旧详情缓存不能造成同版本冲突。 |
 | TP-V7 | PR 展示覆盖缺失、空、重复、空标题、长内容和不可导航地址，以及 100/101 项分页、末页、替换重置、焦点和窄屏。 |
 | TP-V8 | 完整列表保留分页和快照语义；图与摘要保持精简投影；非法存储属性返回 400，数据库故障返回 500，预算失败不截断数据。 |

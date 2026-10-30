@@ -1,11 +1,12 @@
-import { readWorkerClaim } from "./task-properties.js";
+import { parseTaskPropertyResource, parseTaskPropertySchema, readWorkerClaim } from "./task-properties.js";
+import { resourcePath } from "./resource-path.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
 import { canonicalId, parsePage, parseProject, parseProjectMembers, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt } from "./types.js";
+import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt, TaskPropertyResource, TaskPropertySchema, SetTaskPropertyInput, RemoveTaskPropertyInput } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
@@ -59,6 +60,10 @@ export type ApiClient = {
   listProjectMembers(projectId: string): Promise<readonly ProjectMember[]>;
   createTask(projectId: string, input: CreateTaskInput): Promise<Task>;
   getTask(projectId: string, taskId: string): Promise<Task>;
+  getTaskPropertySchema(): Promise<TaskPropertySchema>;
+  getTaskProperties(projectId: string, taskId: string): Promise<TaskPropertyResource>;
+  setTaskProperty(projectId: string, taskId: string, name: string, input: SetTaskPropertyInput): Promise<TaskPropertyResource>;
+  removeTaskProperty(projectId: string, taskId: string, name: string, input: RemoveTaskPropertyInput): Promise<TaskPropertyResource>;
   listTasks(projectId: string, filters?: TaskFilters): Promise<readonly Task[]>;
   listTaskPage(projectId: string, query: TaskPageQuery): Promise<Page<Task>>;
   listReadyTasks(projectId: string, limit: number, filters?: ReadyTaskFilters): Promise<readonly Task[]>;
@@ -400,6 +405,31 @@ export const createApiClient = (options: {
     getTask: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
       return request({ operation: "task.show", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "GET", (value) => parseTask(value, project, task));
+    },
+    getTaskPropertySchema: () => exchange({ operation: "task.properties.schema" }, "/task-properties/schema", "GET", { kind: "json", parse: parseTaskPropertySchema }, [200], undefined, true),
+    getTaskProperties: (projectId, taskId) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      return exchange({ operation: "task.properties", projectId: project, taskId: task }, resourcePath("projects", project, "tasks", task, "properties"), "GET", { kind: "json", parse: (value) => parseTaskPropertyResource(value, project, task) }, [200], undefined, true);
+    },
+    setTaskProperty: (projectId, taskId, name, input) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      taskVersion(input.version);
+      const pathname = resourcePath("projects", project, "tasks", task, "properties", name);
+      return exchange({ operation: "task.set-property", projectId: project, taskId: task }, pathname, "PUT", { kind: "json", parse: (value) => {
+        const result = parseTaskPropertyResource(value, project, task);
+        if ((result.version !== input.version && result.version !== input.version + 1n) || !Object.hasOwn(result.properties, name)) throw new ProtocolError("Task does not confirm the requested property setting.");
+        return result;
+      } }, [200], { kind: "json", value: { version: input.version, valueText: input.valueText } }, true);
+    },
+    removeTaskProperty: (projectId, taskId, name, input) => {
+      const project = resourceId(projectId), task = resourceId(taskId);
+      taskVersion(input.version);
+      const pathname = resourcePath("projects", project, "tasks", task, "properties", name);
+      return exchange({ operation: "task.remove-property", projectId: project, taskId: task }, pathname, "DELETE", { kind: "json", parse: (value) => {
+        const result = parseTaskPropertyResource(value, project, task);
+        if ((result.version !== input.version && result.version !== input.version + 1n) || Object.hasOwn(result.properties, name)) throw new ProtocolError("Task does not confirm the requested property removal.");
+        return result;
+      } }, [200], { kind: "json", value: { version: input.version } }, true);
     },
     listTasks: (projectId, filters = {}) => {
       const project = resourceId(projectId);

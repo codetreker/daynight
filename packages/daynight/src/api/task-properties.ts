@@ -1,6 +1,6 @@
 import { validateWorkerAgentMode } from "./worker-mode.js";
-import { array, fields, id, malformed, record, text, timestamp } from "./validation.js";
-import type { JsonValue, PullRequestProperty, TaskProperties, TaskPlatform, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
+import { array, fields, id, malformed, record, resourceVersion, text, timestamp } from "./validation.js";
+import type { JsonValue, PullRequestProperty, TaskProperties, TaskPropertyResource, TaskPropertySchema, TaskPlatform, WorkerClaim, WorkerHerdr, WorkerPhase } from "./types.js";
 
 const jsonValue = (value: unknown): JsonValue => {
   if (value === null || typeof value === "string" || typeof value === "boolean") return value;
@@ -54,3 +54,20 @@ const sameJsonValue = (left: JsonValue, right: JsonValue): boolean => {
 };
 
 export const sameTaskProperties = (left: TaskProperties, right: TaskProperties): boolean => sameJsonValue(left, right);
+
+export const parseTaskPropertyResource = (value: unknown, projectId: string, taskId: string): TaskPropertyResource => {
+  const data = record(value);
+  const result = { projectId: id(data.projectId), taskId: id(data.taskId), version: resourceVersion(data.version), properties: parseTaskProperties(data.properties) };
+  if (result.projectId !== projectId || result.taskId !== taskId) return malformed();
+  return result;
+};
+
+export const parseTaskPropertySchema = (value: unknown): TaskPropertySchema => {
+  const data = record(value);
+  const definitions = record(data.properties);
+  return { properties: Object.fromEntries(Object.entries(definitions).map(([name, value]) => {
+    const definition = record(value);
+    if (typeof definition.description !== "string" || typeof definition.readOnly !== "boolean") return malformed();
+    return [name, { ...parseTaskProperties(definition), description: definition.description, readOnly: definition.readOnly, schema: parseTaskProperties(definition.schema) }];
+  })) };
+};
