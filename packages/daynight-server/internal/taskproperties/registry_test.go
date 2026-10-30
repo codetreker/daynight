@@ -237,3 +237,27 @@ func TestStringDefinitionsAcceptRawTextAndJSONStringWithoutNewProductProperty(t 
 		t.Fatal("string shorthand test registered a product property")
 	}
 }
+
+func TestInvalidValueSchemaFailsBeforeDefinitionsCanBePublished(t *testing.T) {
+	malformedDefinition := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"worker": json.RawMessage(`{"type":`),
+		},
+	}
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		schemaJSON(malformedDefinition)
+	}()
+	failure, ok := recovered.(error)
+	var marshalFailure *json.MarshalerError
+	if !ok || !errors.As(failure, &marshalFailure) || !strings.Contains(failure.Error(), "encode property definition") {
+		t.Fatalf("malformed definition did not fail with its JSON encoding cause: %#v", recovered)
+	}
+	for name, definition := range Definitions() {
+		if !json.Valid(definition.Schema) {
+			t.Fatalf("failed definition construction corrupted catalog entry %s", name)
+		}
+	}
+}

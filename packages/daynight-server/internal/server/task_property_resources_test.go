@@ -215,3 +215,45 @@ func TestTaskPropertyResourcePreservesProtectedWorker(t *testing.T) {
 		t.Fatal("property mutation changed unrelated task or claim data")
 	}
 }
+
+func TestTaskPropertyResourceRejectsQueriesAndMalformedIDs(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	project := taskProject(t, handler)
+	task := createHTTPTask(t, handler, project.ID, "Resource validation")
+	path := taskPath(task) + "/properties"
+	for _, query := range []string{"?unknown=1", "?"} {
+		for _, request := range []struct{ method, path, body string }{
+			{http.MethodGet, "/api/v1/task-properties/schema" + query, ""},
+			{http.MethodGet, path + query, ""},
+			{http.MethodPut, path + "/pullRequests" + query, `{"version":1,"valueText":"[]"}`},
+			{http.MethodDelete, path + "/pullRequests" + query, `{"version":1}`},
+		} {
+			assertProjectError(t, projectRequest(handler, request.method, request.path, request.body), http.StatusBadRequest, "invalid_input")
+		}
+	}
+	for _, malformed := range []string{
+		taskCollection("not-a-project-id") + "/" + task.ID + "/properties",
+		taskCollection(project.ID) + "/not-a-task-id/properties",
+	} {
+		assertProjectError(t, projectRequest(handler, http.MethodGet, malformed, ""), http.StatusBadRequest, "invalid_input")
+	}
+	if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
+		t.Fatal("refused property resource request changed task")
+	}
+}
+
+func TestWorkerClaimRejectsMalformedResourceIDs(t *testing.T) {
+	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
+	project := taskProject(t, handler)
+	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Claim resource validation"), map[string]any{"allowAgents": true})
+	body := jsonBody(t, workerClaimBody(task.Version))
+	for _, malformed := range []string{
+		taskCollection("not-a-project-id") + "/" + task.ID + "/worker-claim",
+		taskCollection(project.ID) + "/not-a-task-id/worker-claim",
+	} {
+		assertProjectError(t, projectRequest(handler, http.MethodPost, malformed, body), http.StatusBadRequest, "invalid_input")
+	}
+	if !reflect.DeepEqual(readHTTPTask(t, handler, task), task) {
+		t.Fatal("refused worker resource request changed task or created claim")
+	}
+}

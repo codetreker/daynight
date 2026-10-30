@@ -129,3 +129,22 @@ func TestCodecNormalizationPreservesLegacyDecodedTextAndValueSemantics(t *testin
 		t.Fatalf("Encode silently accepted invalid values: %v", err)
 	}
 }
+
+func TestStructuredPatchRejectsMalformedObjectsWithoutLosingValidationIdentity(t *testing.T) {
+	for _, input := range []string{
+		`null`, `[]`, `{`, `{} {}`, `{"pullRequests":[]`,
+		`{"pullRequests":[],"pullRequests":[]}`,
+		`{"private-caller-property":[]}`,
+	} {
+		t.Run(input, func(t *testing.T) {
+			patch, err := DecodePatch([]byte(input))
+			var invalidValue *ValidationError
+			if patch != nil || !errors.As(err, &invalidValue) || invalidValue.Path != "properties" || errors.Unwrap(err) == nil {
+				t.Fatalf("malformed structured patch lost its rejection contract: %#v %v", patch, err)
+			}
+			if strings.Contains(err.Error(), "private-caller-property") {
+				t.Fatal("patch diagnostic echoed an unknown caller-provided field")
+			}
+		})
+	}
+}

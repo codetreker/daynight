@@ -45,7 +45,7 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   expect(enabled.status()).toBe(200);
   const enabledTask = await enabled.json() as Task;
   const claimId = randomUUID();
-  const claimed = await api.post(`${path}/worker-claim`, { data: { version: enabledTask.version, claimId, workerId: randomUUID(), machine: { id: randomUUID(), name: machineName }, platform: 'linux', agent: 'codex', worktreeId: randomUUID() } });
+  const claimed = await api.post(`${path}/worker-claim`, { headers: { 'Daynight-Worker-Protocol': '2' }, data: { version: enabledTask.version, claimId, workerId: randomUUID(), machine: { id: randomUUID(), name: machineName }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: randomUUID() } });
   expect(claimed.status()).toBe(200);
   const current = await claimed.json() as Task;
   const attachment = await api.put(attachmentDownloadUrl(project.id, task.id, 'docs/guide.md'), { headers: { 'Content-Type': 'text/markdown' }, data: '# Claim reader\n\n' + 'The attachment remains readable.\n\n'.repeat(60) });
@@ -61,7 +61,7 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   try {
     for (const state of ['active', 'released'] as const) {
       if (state === 'released') {
-        const response = await api.post(`${path}/worker-claim/release`, { data: { version: current.version, claimId, stoppedConfirmed: true } });
+        const response = await api.post(`${path}/worker-claim/release`, { headers: { 'Daynight-Worker-Protocol': '2' }, data: { version: current.version, claimId, stoppedConfirmed: true } });
         expect(response.status()).toBe(200);
       }
       for (const mode of ['dialog', 'page'] as const) {
