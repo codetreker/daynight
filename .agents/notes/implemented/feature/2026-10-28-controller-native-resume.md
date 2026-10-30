@@ -15,13 +15,21 @@ Daynight execution around the same native session. The launch ticket and journal
 bind its provider, native home, directory, owner and server. Native history feeds
 the new timeline; old input and uncertain operations are never replayed.
 
-A private cross-execution lease serializes writers by native identity. The
-launcher releases it only before launch or after proven process-tree stop.
-An uncertain stale lease requires investigation rather than automatic takeover.
+A private cross-execution lease serializes writers by native identity. Native
+launch requires a successful acquisition; an acquired lease is released only
+before launch or after proven process-tree stop. Unknown or stale ownership
+requires investigation rather than automatic takeover.
 The [SQLite migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
 versions the lease database independently at 1. Any retained row blocks a needed
 format upgrade; acquisition and release check the current format in their own
 write transaction without turning expiry or missing PIDs into reclamation proof.
+If initial format setup commits this invocation's lease but completion reporting
+fails before acquisition returns, no new native launch can yet have begun. With
+known commit and confirmed original close, preparation checks the current format
+on a fresh existing-file connection and removes only its own matching key/nonce.
+A replacement nonce or unknown commit/close retains the lease. Cleanup does not
+turn the failed acquisition into success: the reporting error is rethrown, and a
+cleanup failure is aggregated with it.
 The [requirements](../../../../docs/spec/controller-test-sessions.md) and
 [protocol design](../../../../docs/design/task-session-protocol.md) own the
 user-visible behavior and binding rules.

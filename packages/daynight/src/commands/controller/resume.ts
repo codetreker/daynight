@@ -1,6 +1,6 @@
-import type Database from "better-sqlite3";
+import Database from "better-sqlite3";
 import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
-import type { SqliteOutcome } from "../../platform/sqlite-error.js";
+import { SqliteAccessError, type SqliteOutcome } from "../../platform/sqlite-error.js";
 import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
 import { assertResumeLeaseMigrationAllowed, nativeResumeLeaseFormat } from "./resume-lease-format.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -59,6 +59,24 @@ const get = async (config: { serverUrl: string; serverToken: string }, resource:
   return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
 };
 
+const discardUnreturnedLease = (file: string, key: string, nonce: string): void => {
+  const db = new Database(file, { fileMustExist: true });
+  let failed = false, failure: unknown;
+  try {
+    runSqliteImmediate(db, () => {
+      assertCurrentSqlite(db, nativeResumeLeaseFormat);
+      const existing = db.prepare("SELECT nonce FROM leases WHERE native_key=?").get(key) as { nonce: string } | undefined;
+      if (existing === undefined) return;
+      if (existing.nonce !== nonce) throw new Error("Native resume lease ownership changed; reconciliation is required.");
+      const changed = db.prepare("DELETE FROM leases WHERE native_key=? AND nonce=?").run(key, nonce);
+      if (changed.changes !== 1) throw new Error("Native resume lease ownership changed; reconciliation is required.");
+    });
+  } catch (cause) { failed = true; failure = cause; }
+  try { closeSqliteDatabase(db, { file, format: nativeResumeLeaseFormat }, failed ? sqliteTransactionOutcome(failure) : "committed"); }
+  catch (cleanup) { if (failed) throw new AggregateError([failure, cleanup], "Native resume lease reconciliation and shutdown failed."); throw cleanup; }
+  if (failed) throw failure;
+};
+
 /** Acquire one stopped local Test Session's native writer. The caller releases
  * the lease only after proving its new controller and descendants stopped; an
  * uncertain stop deliberately retains the lease for explicit reconciliation. */
@@ -96,7 +114,7 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
   try { const created = await open(file, "wx", 0o600); await created.close(); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
   await privateFile(file);
   const key = createHash("sha256").update(JSON.stringify([input.provider, nativeHome, nativeSessionId])).digest("hex"), nonce = randomUUID(), processProof = await captureProcessProof(process.pid);
-  let db: Database.Database | undefined, acquired = false;
+  let db: Database.Database | undefined, acquired = false, inserted = false;
   const close = (outcome: SqliteOutcome = "unknown"): void => { if (db !== undefined && db.open) closeSqliteDatabase(db, { file, format: nativeResumeLeaseFormat }, outcome); };
   const release = async (): Promise<void> => {
     if (!acquired) { close("committed"); return; }
@@ -119,6 +137,7 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
       onReady: (db) => {
         if (db.prepare("SELECT native_key FROM leases WHERE native_key=?").get(key)) throw new Error("This native session already has a resume lease. Confirm and reconcile its original execution; an expired or missing launcher is not permission to replace it.");
         db.prepare("INSERT INTO leases VALUES(?,?,?,?,?)").run(key, nonce, ticket.sessionId, JSON.stringify(processProof), new Date().toISOString());
+        inserted = true;
       },
     });
     acquired = true;
@@ -131,7 +150,15 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
     }
     return { ticket: { ...ticket, cwd, nativeHome }, nativeSessionId, release };
   } catch (error) {
-    try { if (acquired) await release(); else close(); }
+    try {
+      if (acquired) await release();
+      else {
+        close();
+        // Completion reporting can fail after INSERT commits but before the
+        // connection is returned. Only our known committed nonce is releasable.
+        if (db === undefined && inserted && error instanceof SqliteAccessError && error.outcome === "committed" && error.connectionClosed) discardUnreturnedLease(file, key, nonce);
+      }
+    }
     catch (cleanup) { throw new AggregateError([error, cleanup], "Native resume preparation and cleanup failed."); }
     throw error;
   }

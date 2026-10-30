@@ -44,8 +44,19 @@ Pure maintenance refuses every preexisting instance lock, including dead or
 uncertain owners. It releases only its own record after the gate and business
 connections have confirmed closure. Ordinary runtime stale-lock recovery keeps
 its existing semantics. Controller migration checks the old writer before DDL;
-startup migration and writer admission share a transaction. Retained native
-leases block migration and are not reclaimed by age or PID disappearance.
+startup migration and writer admission share a transaction. Native lease
+ownership blocks migration whenever any row remains; neither age nor PID
+disappearance establishes permission to reclaim it.
+
+Initial lease setup can commit this invocation's INSERT and then fail completion
+reporting before returning the connection. When that commit and the original
+connection close are both confirmed, preparation reconciles only its own known
+key and nonce through a fresh, existing-file, current-format transaction. The
+acquisition has not returned, so no new native launch can have begun. A missing
+row confirms no retained lease from this attempt; a replacement nonce or unknown
+commit/close outcome retains the row. The original reporting error remains the
+operation failure, with any reconciliation error aggregated. This is cleanup of
+a proven prelaunch acquisition, not stale-lease recovery.
 
 A migration transaction commits all pending SQL/JSON steps and its version
 updates together. Its explicit synchronous boundary preserves the original
