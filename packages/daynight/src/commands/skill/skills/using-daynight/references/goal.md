@@ -1,262 +1,65 @@
 # Goal protocol
 
-Read this reference when starting or registering a Goal, discussing one of its
-stages, or advancing its authorized scope. Use [create-task](create-task.md) for
-registration, [the task content standard](task-content.md) for task definitions
-and results, [shared task execution](task-execution.md) for input,
-delivery, and acceptance rules, and [the handbook](handbook.md) for CLI semantics.
-The selected execution mode owns task lifecycle and return behavior. A Goal uses existing tasks,
-attachments, complete `dependsOn` relationships, their `externalDependsOn`
-classification, and PR properties. It adds no resource, command, or status.
+A Goal expresses a multi-stage objective through ordinary tasks, attachments, dependencies, and PR properties without adding resources, commands, or statuses.
+Follow [create task](create-task.md) for creation, the [task content standard](task-content.md) for material, and [authorization and scope](authorization.md) for operational permissions.
+This file covers only stage progression and Goal-specific requirements.
 
-## Identify the current discussion
+## Stages and confirmation
 
-Use a Goal when a concrete outcome needs requirements discussion, solution or
-architecture discussion, and actual delivery work. Independently understandable
-features, bug fixes, architecture/design assignments, and real breakdown items
-are tasks. Agent-generated commands, file reads, and routine checks stay in the
-session's execution plan, not task descriptions or attachments.
+| Stage | Starting content | Results and completion gate |
+| --- | --- | --- |
+| Requirements discussion | Known problem, expected outcome, scope, constraints, open questions, and completion conditions | Complete requirements and applicable interactive prototypes; the user explicitly confirms the current requirements and directs progression to solution discussion. |
+| Solution discussion | Confirmed requirements and applicable prototypes, design questions, and completion conditions | Architecture, key decisions, and breakdown; the user confirms the solution, and actual delivery tasks have been registered and read back. |
+| Delivery tasks | Defined responsibilities, required designs and prototypes, contracts, and acceptance criteria | Actual results meeting the [shared delivery conditions](task-execution.md#completion-conditions). |
+| Final acceptance | Complete confirmed requirements, actual combined results, and acceptance criteria | A conclusion for the whole Goal under [final acceptance](final-acceptance.md). |
 
-Permission to create a Goal covers its requirements discussion, the later solution
-discussion, and the confirmed in-scope delivery breakdown. Create each only at
-its stage below. Reuse suitable existing tasks after reading their full problem,
-scope, materials, acceptance, and actual context; a title alone is not identity.
-An explicit user or applicable repository tracking/review instruction supplies
-standing creation permission within the confirmed scope. It grants no unrelated
-work, implementation, external communication, deployment, merge, or mainline push
-permission.
+Discussions remain `in_progress` without user confirmation; completed prose, agent confidence, successful reviews, and passing CI cannot replace confirmation.
+Substantive revisions after confirmation require renewed confirmation.
+Discussion acceptance does not automatically add repository PR merge requirements; only repository artifacts or PR delivery explicitly included in that task are subject to the corresponding delivery conditions.
 
-A request to start a Goal discussion authorizes creating and starting
-that discussion task so it becomes `in_progress`. A registration-only request
-creates only the current discussion task in `todo` and returns without execution.
-Goal registration alone does not supply discussion-start or delivery execution
-authorization.
+## From requirements to solution
 
-## Start requirements discussion
+First create or reuse the single requirements-discussion task, titled `[Goal]<outcome>`.
+Register only the current stage; do not create architecture placeholders or delivery items in advance.
+Return for registration-only requests; when explicitly asked to start the discussion, start or resume through [ordinary execution](run-task.md).
 
-Create or reuse only the requirements discussion task, titled `[Goal]<outcome>`.
-The marker is followed directly by the outcome. Do not create an architecture
-placeholder or delivery tasks at this point. Give the task a self-contained Markdown description
-for the known problem, intended outcome, scope, constraints, open
-questions, and observable completion conditions under the shared content
-standard. Include the intended requirements and applicable prototype deliverables
-and the required human-confirmation completion condition. Finished requirements
-and prototypes are outputs, not prerequisites to starting; the session holds the
-discussion plan and process.
+Requirements discussion defines the problem and behavior without deciding architecture or implementing production code.
+This stage produces applicable interactive prototypes for UI Goals under the [prototype requirements for task creation](create-task.md#prepare-content).
+Save and read back current artifacts under the authorization rules before requesting review.
 
-Each task starts in `todo`. For an explicit discussion-start request, read its
-current materials and exact version, use `task set-status <task-id> in_progress`
-with the version observed for that decision and confirm `in_progress`.
-All direct prerequisites must be done. Preserve real external blockers rather
-than removing dependencies to make a discussion ready. An already in-progress
-task is resumed after checking its actual work and context.
+After the user confirms requirements and directs progression to solution discussion, save the accepted requirements, complete the requirements task and verify it is done, then create or reuse the solution-discussion task.
+Use the requirements task as an ordinary prerequisite, prepare the stage brief, and start through ordinary execution.
+If completion is uncertain, reconcile it first; do not create the next stage in advance.
 
-Discuss requirements with the user: the whole problem, desired behavior, scope,
-constraints, exclusions, and whole-Goal acceptance. Keep current material and open
-questions in this task's description or attachments. The description remains a
-task-specific brief and source entrypoint; detailed requirements have one owner.
-Before requesting user review, save the complete current requirements artifact,
-read it back, and provide the task and resource reference. Keep discussion,
-validation, and confirmation processes in the session.
+Solution discussion explains responsibilities, data flow, control flow, interfaces, error behavior, key decisions, verification, and the proposed breakdown.
+Keep the current solution and breakdown in this stage's own material; do not register delivery items before confirmation.
+After the user confirms the solution, perform the registration checks below before completing the solution task.
 
-For a UI Goal, produce a final-style interactive frontend-only prototype with
-working relative resources and relevant populated, empty, loading, failure,
-disabled, long-content, and narrow-screen states. View and exercise it. Prototype
-code is a requirements artifact; this discussion does not implement production
-code or decide the architecture.
+## Register the delivery breakdown
 
-## Confirm requirements and start solution discussion
+The breakdown must collectively cover the confirmed Goal, with independent responsibilities, inputs, deliverables, and observable acceptance criteria for each task.
+Include acceptance in the breakdown when it has an independent result; do not substitute vague placeholders or session execution steps for actual work.
 
-Keep the requirements task `in_progress` until the user explicitly confirms the
-current requirements and directs the next discussion, for example, "Requirements
-are settled; move to architecture discussion." Agent confidence, completed text,
-a review result, or elapsed time does not satisfy this gate.
+Every root delivery task without another ordinary implementation prerequisite must directly depend on the solution task through an ordinary dependency, so all delivery paths inherit the confirmed design's completion conditions.
+Verify cross-chain dependencies and follow [classification and reduction](task-management.md#dependency-classification); external prerequisites cannot replace ordinary design prerequisites.
 
-Keep the accepted requirements and their effective state in the owning task and
-verify they are readable. Preserve the actual confirmation and transition
-authorization in the session. A material revision after confirmation requires
-renewed user confirmation before advancement. When the discussion's acceptance
-is met,
-reread the task, use `task set-status <task-id> done` with its observed version, and confirm done.
-Do not create the solution discussion until that completion is confirmed; reconcile
-an uncertain completion before another mutation.
+**Every delivery task's description must directly identify the architecture task ID and all required architecture source locations, including for indirect successors.**
+Identify the description and applicable sections for inline architecture, list full paths for actual attachments, and retain the owning task ID and verified immutable references for repository sources.
+An index only in an upstream task or inside an attachment is insufficient.
+Read actual sources under the content standard; do not invent attachments or copy the full set of shared material.
 
-Then create or reuse the solution discussion task, with a purpose-specific title
-such as `Architecture discussion: <outcome>`, and an ordinary prerequisite on the
-completed requirements task. The user's direction to start this discussion
-provides its scoped execution authorization. Prepare its stage brief,
-read its current version, set in_progress through the same lifecycle, and
-confirm `in_progress`. This user-directed transition is available to ordinary
-execution only; it does not authorize selection of another unrelated task.
+For example, in `architecture -> A -> B`, B declares only A as a direct dependency and inherits the architecture prerequisite through A, but B's description still directly lists the required architecture sources.
+Source indexes do not create additional execution dependencies.
 
-## Execute the appropriate stage
+Read back every delivery task and its required inputs, checking responsibility coverage, architecture indexes, and source readability.
+Check dependencies through [post-change verification](task-management.md#verify-dependency-changes).
+Keep the solution task in progress while gaps remain; recover partial registration under [write safety](write-safety.md).
+Registration and solution completion do not start delivery or enable automatic-execution permission.
 
-During solution discussion, consume the confirmed requirements and applicable
-prototype. Discuss how to achieve the outcome: responsibilities, data and control
-flow, interfaces, error behavior, key decisions, verification, and the proposed
-breakdown. The solution task owns the current architecture, proposal, and draft
-breakdown. Keep these current artifacts accessible in its description or
-attachments, verify them before user review, and synchronize accepted decisions
-and necessary rationale. The discussion plan, review handling, and confirmation
-process remain in the session.
-Do not register delivery subtasks before the user confirms the current solution.
+## Whole-Goal completion
 
-A discussion task completes from user-confirmed Daynight material and its stated
-stage acceptance. Repository document/code delivery still follows normal PR and
-merge rules, but a generic repository PR rule does not add a merge prerequisite
-to a Daynight discussion. If the user explicitly makes particular repository
-artifacts or PR delivery part of that discussion's acceptance, honor that
-requirement and its delivery permissions. An unresolved user review keeps the
-current discussion `in_progress`. Successful CI or a design review cannot replace
-the user's confirmation.
+Complete each task through the selected execution workflow; reading the Goal protocol does not change the return boundaries of ordinary or managed workflows.
+A single done task, an empty ready page, completed requirements, or a completed solution does not mean the whole Goal has been delivered.
 
-After explicit user confirmation of the current solution, keep the accepted
-solution and its effective state in the owning task, preserve the confirmation
-in the session, and register the delivery breakdown below. Complete
-the solution discussion only after the accepted solution and actual registered delivery tasks,
-their required materials, and their dependencies are read back
-and verified. Use `task set-status <task-id> done` with the observed version and confirm done.
-Completion satisfies dependencies and grants no delivery execution permission. Completing
-either discussion does not establish whole-Goal completion.
-
-## Register the confirmed delivery breakdown
-
-Only after user solution confirmation, create or reuse the concrete delivery tasks
-needed for the agreed outcome. Each description and its actual references must
-satisfy the task content standard, including task-specific responsibility,
-actual required inputs, deliverables and contracts, and observable acceptance.
-Include independently scoped acceptance work when it has its own outcome. A
-[final-acceptance](../SKILL.md#final-acceptance) brief
-identifies the original whole-Goal requirements and confirmed changes, and assesses
-the combined delivery under the shared rule. Do not turn agent-generated execution
-steps into tasks. The combined scope must cover the confirmed Goal, rather than a
-vague placeholder.
-
-Create new delivery tasks in `todo`. Solution confirmation authorizes the
-confirmed breakdown's registration, not implementation, automatic-execution
-permission, publishing, deployment, or merge. Apply any
-separate explicit authorization only within its stated scope. New tasks have
-`allowAgents=false`; registration does not enable it. Only a separately explicit
-[handoff](handoff.md) may review and enable permission; it does not supply delivery
-execution authorization or advance the discussion gate.
-
-Use ordinary dependencies for real within-Goal prerequisites. Every delivery root
-without another ordinary implementation prerequisite depends directly on the
-solution discussion, so each delivery path includes confirmed design completion.
-Mark verified prerequisites owned by another same-project chain as external;
-external prerequisites remain real blockers and do not replace that ordinary
-design gate. Apply [the handbook's dependency reduction rule](handbook.md#dependency-reduction)
-before registering the breakdown: successors inherit prerequisites through
-retained paths and do not repeat those direct edges. Preserve the complete
-necessary relationship sets under the handbook's CLI replacement semantics.
-Do not create dependencies merely to group cards.
-
-Upload needed task-owned resources when their content uses attachments. Keep
-shared requirements with the requirements task and the solution and breakdown with the
-solution task. Consumers reference the owning task ID and the source description
-with applicable sections for inline content, full paths for actual attachments,
-or immutable repository sources. Use `task show --json` for source descriptions
-and the attachment commands for actual attachment contents. Every delivery
-task's description must directly list the architecture task ID and all required
-architecture source locations: description and applicable sections for inline
-design, full paths under the source task for each actual required attachment
-document, and verified immutable repository references for repository documents.
-Do not fabricate an attachment path or copy or relocate inline architecture to
-fit this index. This applies to indirect successors as well as delivery roots;
-a reference only in another task or inside an attachment is insufficient.
-These input references do not add execution dependencies or duplicate shared
-documents.
-
-Read back every task, required attachment, shared input, and dependency before
-reporting the breakdown registered. Verify required paths and the absence of
-redundant direct edges under the handbook's reduction rule. Check each delivery
-task's description, including indirect successors, for the architecture task ID and every required
-document reference; confirm that each reference resolves to the intended readable
-content. Keep the solution discussion `in_progress` when registration is incomplete.
-If the accepted solution materially changes, obtain renewed user confirmation
-before registering or advancing the changed work.
-
-For an illustrative `architecture → A → B` chain, A delivers the upload API and B
-delivers its retry controls. B depends only on A, inherits the architecture
-prerequisite through A, and directly names the architecture inputs in its
-description. The following task ID and paths are hypothetical;
-replace them with verified sources when registering real work:
-
-```markdown
-## Objective and scope
-Implement upload retry controls using the delivered upload API. Preserve the
-selected files and show the confirmed error-specific retry actions.
-
-## Completion conditions
-Retryable failures offer retry; permanent failures explain the required action.
-Successful retry clears the error without losing the selected files.
-
-## Architecture inputs
-Architecture task: `11111111-1111-4111-8111-111111111111`.
-Read these attachments from that task before implementation:
-
-- `design/architecture.md`: upload flow and component responsibilities.
-- `design/upload-errors.md`: error classification and retry behavior.
-
-## Deliverable
-Upload retry controls in the existing upload UI, using the API's error contract;
-no additional task-to-task exchange is introduced.
-```
-
-When the shared architecture is inline, the architecture inputs instead identify
-the same source task ID and its description sections, such as "Upload flow" and
-"Error classification". Read those sections with `task show --json`; list full
-paths only for actual attachment documents that are also required.
-
-## Preserve ownership and recover partial registration
-
-Stage briefs describe the work to produce the stage's outputs; they do not claim
-unfinished results exist. Every stage and delivery task provides a task-specific
-Markdown brief and the complete applicable content, directly or through verified
-references. Complete inline content needs no primary attachment. Save produced
-results at their actual owner and make them discoverable from the task. Keep
-shared inputs at their actual owner. Do not distribute a duplicate whole packet
-to every task. An independently
-needed snapshot records its purpose, original source, and source revision or
-content identity. Existing attachment reads support these references; do not
-invent a URL scheme, cross-task relative links, or fixed service host.
-
-Creation, uploads, metadata changes, and lifecycle actions are independent writes.
-Retain confirmed IDs and resume missing operations after partial success. Read
-actual task fields and attachment contents before retrying an uncertain write;
-a matching title or lost response does not establish success or failure. If the
-identity cannot be established uniquely, preserve the failure and information
-needed to reconcile it rather than creating a duplicate chain.
-
-Bind metadata updates and status changes to the exact version
-observed for that decision. Attachment bytes have independent concurrency and
-must be verified separately; task versions cannot prove the reviewed content is
-unchanged. Generic updates cannot write status. A version conflict requires a
-new decision. Readiness and `in_progress` provide no ownership lock or lease.
-
-## Advance and accept the whole Goal
-
-Ordinary execution processes one specified task and returns after completion or
-external wait. A user-directed requirements-to-solution transition follows the
-confirmation protocol above and the ordinary execution mode. Neither discussion
-completion nor breakdown registration starts delivery or selects later work.
-Existing execution authorization for a fixed Goal scope remains within that
-scope, but does not make the skill discover or continuously select successors.
-CI, review, and merge waits stay with the current delivery task. Other execution
-modes preserve their own return boundary when reading this stage protocol.
-
-Delivery tasks satisfy [shared acceptance readiness](task-execution.md#confirm-acceptance-readiness)
-and complete through their selected execution mode: accepted outcomes, required
-review, all necessary authorized PR merges, and readable task results. To report
-the
-whole Goal complete, inspect the full confirmed delivery scope, every delivery
-task's completion, all required delivery PR merges, and the original whole-Goal
-requirements with their confirmed changes. Apply
-[Final acceptance](../SKILL.md#final-acceptance) to the combined delivery;
-completing or passing temporary helpers does not establish that the Goal is
-complete.
-
-The requirements task being done means only that requirements discussion is
-complete. The solution task being done means the confirmed solution and verified
-breakdown are delivered. An empty ready page or a single delivery result proves
-neither the whole outcome nor completion of all its work.
+Before reporting the whole Goal complete, verify the full confirmed scope, every delivery result, and the actual merge status of all required PRs, and perform final acceptance on the combined results.
+Discussion confirmation, registration, and prerequisite completion do not automatically select successor work.

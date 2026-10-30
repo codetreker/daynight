@@ -39,7 +39,9 @@ architecture-and-breakdown placeholder together. Stage briefs allowed unresolved
 requirements and design to remain outputs of their producing stages. Goal
 description fixed the problem, outcomes, scope, exclusions and verification without
 production implementation or architecture work. Applicable UI requirements included
-a final-style interactive frontend-only prototype. Architecture fixed mechanisms
+a final-style interactive frontend-only prototype. Current prototype constraints
+belong to the [task-creation owner](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/create-task.md#prepare-content).
+Architecture fixed mechanisms
 and registered the actual delivery breakdown before implementation became ready.
 Sequential user-confirmed discussions now govern when those tasks are created
 and completed; the stage-produced-output rule still applies.
@@ -47,7 +49,10 @@ and completed; the stage-produced-output rule still applies.
 Every task description identifies the current task, its responsibility and readable
 sources. Its body and required references jointly provide the task definition
 and existing artifacts under the [task/session content decision](2026-10-28-task-session-content.md);
-a complete description needs no primary attachment. Goal tasks cover their agreed
+a complete description needs no primary attachment unless managed delivery
+requires attachments, as recorded by the
+[reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md).
+Goal tasks cover their agreed
 whole outcome, while implementation and acceptance tasks retain their own assignments.
 Each detailed explanation has one owner. The original brief-plus-primary-attachment
 structure separated stable detail from transient progress; single content ownership
@@ -73,7 +78,7 @@ purpose.
 
 Final acceptance determines whether the complete confirmed task or Goal, including
 confirmed changes, satisfies its requirements. The canonical
-[Final acceptance rule](../../../../packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md#final-acceptance)
+[Final acceptance rule](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/final-acceptance.md)
 owns this shared boundary. Creation identifies the whole acceptance subject and
 requirement sources; Goal breakdown and execution use that same rule. The owning
 task delivers the requirement-based conclusion, defects and unverified items,

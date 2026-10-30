@@ -3,7 +3,7 @@ import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, 
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
-import { inspectInstalledSkill, instructionScenarios, verifyExecutionResourceSeparation, verifyInstructionScenario } from "../fixtures/skill-contract.js";
+import { inspectInstalledSkill } from "../fixtures/skill-contract.js";
 
 const root = path.resolve(import.meta.dirname, "../../../../.tmp/copy-skill-tests");
 const packageDirectory = path.resolve(import.meta.dirname, "../..");
@@ -49,138 +49,25 @@ afterEach(() => {
 });
 
 describe("packaged skill resource copy", () => {
-  it.each([{ name: "LF", lineEnding: "\n" }, { name: "CRLF", lineEnding: "\r\n" }])("preserves installed instruction contracts with $name line endings", async ({ lineEnding }) => {
+  it.each([{ name: "LF", lineEnding: "\n" }, { name: "CRLF", lineEnding: "\r\n" }])("copies all bundled files byte-for-byte with $name line endings", async ({ lineEnding }) => {
     const f = fixture();
-    const source = f.source(bundles[1]);
-    for (const name of files(source).filter((name) => name.endsWith(".md"))) {
-      const file = path.join(source, name);
-      writeFileSync(file, readFileSync(file, "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
+    for (const bundle of bundles) {
+      const source = f.source(bundle);
+      for (const name of files(source).filter((name) => name.endsWith(".md"))) {
+        const file = path.join(source, name);
+        writeFileSync(file, readFileSync(file, "utf8").replaceAll("\r\n", "\n").replaceAll("\n", lineEnding));
+      }
     }
     const copied = f.run();
     expect(copied.status, copied.stderr).toBe(0);
-    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
-    expect(bundle.documents.get("references/run-task.md")!.includes("\r\n")).toBe(lineEnding === "\r\n");
-    for (const instruction of instructionScenarios) verifyInstructionScenario(bundle, instruction);
-    verifyExecutionResourceSeparation(bundle);
-    expect(bundle.documents.has("references/autopilot.md")).toBe(false);
-  });
-
-  it("keeps the shared delivery resource independent from both execution lifecycles", async () => {
-    const f = fixture();
-    const copied = f.run();
-    expect(copied.status, copied.stderr).toBe(0);
-    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
-    for (const { resource, addition } of [
-      { resource: "references/run-task.md", addition: "\n[Managed lifecycle](autopilot-managed-task.md)\n" },
-      { resource: "references/autopilot-managed-task.md", addition: "\n[Ordinary lifecycle](run-task.md)\n" },
-      { resource: "references/task-execution.md", addition: "\n[Ordinary lifecycle](run-task.md)\n" },
-      { resource: "references/task-execution.md", addition: "\ntask set-status <task-id> done\n" },
-    ]) {
-      const documents = new Map(bundle.documents);
-      documents.set(resource, `${documents.get(resource)!}${addition}`);
-      expect(() => verifyExecutionResourceSeparation({ ...bundle, documents })).toThrow();
+    for (const bundle of bundles) {
+      const sourceFiles = files(f.source(bundle));
+      expect(files(f.destination(bundle))).toEqual(sourceFiles);
+      for (const relative of sourceFiles) {
+        expect(readFileSync(path.join(f.destination(bundle), relative))).toEqual(readFileSync(path.join(f.source(bundle), relative)));
+      }
     }
-  });
-
-  it("detects removal of handoff authorization, re-audit and reconciliation safeguards from the copied instructions", async () => {
-    const f = fixture();
-    const copied = f.run();
-    expect(copied.status, copied.stderr).toBe(0);
-    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
-    const mutations = [
-      { scenario: "task-content-organization", resource: "references/task-content.md", before: "Complete inline content needs no primary attachment", after: "Complete inline content requires a primary attachment" },
-      { scenario: "goal-shared-inline-architecture", resource: "references/task-content.md", before: "Do not invent an attachment path for inline content, relocate or copy it merely to satisfy a reference format", after: "Create an attachment and copy inline content before handoff" },
-      { scenario: "handoff-no-implicit-authorization", resource: "references/create-task.md", before: "Creation and breakdown do not enable it", after: "Creation and breakdown may enable it" },
-      { scenario: "handoff-enabled-reaudit", resource: "references/handoff.md", before: "Keep its permission unchanged", after: "Disable its permission immediately" },
-      { scenario: "handoff-state-and-worker-ownership", resource: "references/handoff.md", before: "only through an authorized management decision", after: "automatically after enabling permission" },
-      { scenario: "handoff-concurrency-and-unknown-outcome", resource: "references/handoff.md", before: "reconcile by reads only before considering any new mutation; do not automatically replay it", after: "resubmit the write using the latest version" },
-    ];
-    for (const mutation of mutations) {
-      const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
-      const documents = new Map(bundle.documents);
-      const original = documents.get(mutation.resource)!.replaceAll(/\s+/g, " ");
-      expect(original).toContain(mutation.before);
-      documents.set(mutation.resource, documents.get(mutation.resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
-      expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario), `${mutation.scenario}: ${mutation.before}`).toThrow();
-    }
-  });
-
-  it("detects replacement of task/session separation and genuine input/result obligations", async () => {
-    const f = fixture();
-    const copied = f.run();
-    expect(copied.status, copied.stderr).toBe(0);
-    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
-    const resource = "references/task-content.md";
-    const mutations = [
-      { scenario: "task-session-content-boundary", before: "Keep execution and discussion plans, steps, tool choices, collaboration, operational authorization, progress, blockers, and recovery context in the session", after: "Save execution plans and session recovery context in task attachments" },
-      { scenario: "task-session-content-boundary", before: "Apply this boundary to descriptions, attachments, and referenced task material", after: "Apply this boundary only to descriptions; attachments may contain session context" },
-      { scenario: "task-content-organization", before: "Absence of a session execution plan is not a task-content gap", after: "Absence of a session execution plan makes task content incomplete" },
-      { scenario: "task-content-required-inputs-and-results", before: "A design supplied as a required input or produced as the task's deliverable is task content", after: "Required design inputs and produced designs are session-only methods" },
-      { scenario: "task-content-required-inputs-and-results", before: "A requested migration design, test strategy, or runbook can be a task deliverable", after: "A requested runbook must not enter task material because it contains steps" },
-      { scenario: "task-content-required-inputs-and-results", before: "Save results as they are produced: current reviewable requirements or designs, actual deliverables, acceptance conclusions, defects, and material limitations", after: "Keep design artifacts and acceptance conclusions only in the session" },
-    ];
-    for (const mutation of mutations) {
-      const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
-      const documents = new Map(bundle.documents);
-      const original = documents.get(resource)!.replaceAll(/\s+/g, " ");
-      expect(original).toContain(mutation.before);
-      documents.set(resource, documents.get(resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
-      expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario), `${mutation.scenario}: ${mutation.before}`).toThrow();
-    }
-  });
-
-  it("detects managed assignment, claim fencing and controller ownership regressions in copied instructions", async () => {
-    const f = fixture();
-    const copied = f.run();
-    expect(copied.status, copied.stderr).toBe(0);
-    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
-    const mutations = [
-      { scenario: "worker-managed-context", resource: "references/autopilot-managed-task.md", before: "missing, incomplete, or mismatched, return waiting without task or business writes", after: "context is missing or mismatched, use ordinary task selection" },
-      { scenario: "worker-managed-context", resource: "references/autopilot-managed-task.md", before: "`properties.worker.state=active` with the supplied `claimId`", after: "`properties.worker.state=active` with any available `claimId`" },
-      { scenario: "worker-managed-existing-execution", resource: "references/autopilot-managed-task.md", before: "Do not create, switch, or remove the system-managed worktree or branch", after: "Create a fresh worktree and branch for the task" },
-      { scenario: "worker-managed-existing-execution", resource: "references/autopilot-managed-task.md", before: "do not delete its worktree or close its workspace", after: "delete its worktree and close its workspace" },
-      { scenario: "worker-managed-claim-completion", resource: "references/autopilot-managed-task.md", before: "--project <project-id> --claim-id <claim-id> --if-version <observed-version>", after: "--project <project-id> --if-version <observed-version>" },
-      { scenario: "worker-managed-claim-completion", resource: "references/autopilot-managed-task.md", before: "never falls back to ordinary completion or automatic replay", after: "falls back to ordinary completion after a refusal" },
-      { scenario: "worker-managed-bounded-wait", resource: "references/autopilot-managed-task.md", before: "this mode does not select a successor or advance a Goal stage", after: "this mode selects the next ready successor" },
-    ];
-    for (const mutation of mutations) {
-      const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
-      const documents = new Map(bundle.documents);
-      const original = documents.get(mutation.resource)!.replaceAll(/\s+/g, " ");
-      expect(original).toContain(mutation.before);
-      documents.set(mutation.resource, documents.get(mutation.resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
-      expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario), `${mutation.scenario}: ${mutation.before}`).toThrow();
-    }
-  });
-
-  it("detects premature managed returns and weakened delivery gates in copied instructions", async () => {
-    const f = fixture();
-    const copied = f.run();
-    expect(copied.status, copied.stderr).toBe(0);
-    const bundle = await inspectInstalledSkill(f.destination(bundles[1]));
-    const resource = "references/autopilot-managed-task.md";
-    const mutations = [
-      { scenario: "worker-managed-authorized-delivery", before: "A valid worker-managed assignment already carries sufficient authorization for its in-scope delivery, including PR merge", after: "A valid worker-managed assignment requires additional permission before PR merge" },
-      { scenario: "worker-managed-authorized-delivery", before: "Do not request additional permission for those steps", after: "Request additional permission for each delivery step" },
-      { scenario: "worker-managed-authorized-delivery", before: "Honor explicit user restrictions, pause requests, and revocation", after: "Ignore subsequent restrictions, pause requests, and revocation" },
-      { scenario: "worker-managed-authorized-delivery", before: "merge immediately without requesting additional permission", after: "request user confirmation before merging" },
-      { scenario: "worker-managed-authorized-delivery", before: "successful required checks", after: "checks that appear unrelated may be bypassed" },
-      { scenario: "worker-managed-authorized-delivery", before: "handled blocking review threads", after: "unresolved blocking review threads" },
-      { scenario: "worker-managed-authorized-delivery", before: "actual reviewer approval for the current head", after: "approval from any earlier head" },
-      { scenario: "worker-managed-authorized-delivery", before: "Do not wait for post-merge mainline CI unless the user explicitly requires that verification", after: "Always wait for post-merge mainline CI before completing the claim" },
-      { scenario: "worker-managed-pending-delivery", before: "Pending PR CI or review is ongoing execution, not external intervention", after: "Pending PR CI or review requires returning to the controller" },
-      { scenario: "worker-managed-pending-delivery", before: "A polling timeout ends only that poll; keep waiting and inspecting results", after: "A polling timeout ends execution and returns waiting" },
-      { scenario: "worker-managed-bounded-wait", before: "A demonstrated blocker", after: "Any delay" },
-      { scenario: "worker-managed-bounded-wait", before: "Preserve the assignment in `in_progress`", after: "Mark the assignment done while intervention is pending" },
-    ];
-    for (const mutation of mutations) {
-      const scenario = instructionScenarios.find(({ id }) => id === mutation.scenario)!;
-      const documents = new Map(bundle.documents);
-      const original = documents.get(resource)!.replaceAll(/\s+/g, " ");
-      expect(original).toContain(mutation.before);
-      documents.set(resource, documents.get(resource)!.replace(new RegExp(mutation.before.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")), mutation.after));
-      expect(() => verifyInstructionScenario({ ...bundle, documents }, scenario), `${mutation.scenario}: ${mutation.before}`).toThrow();
-    }
+    await inspectInstalledSkill(f.destination(bundles[1]));
   });
 
   it("rejects packaging the renamed managed reference under its old name", async () => {
@@ -246,38 +133,6 @@ describe("packaged skill resource copy", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("ENOENT");
     for (const bundle of bundles) expect(existsSync(f.destination(bundle))).toBe(false);
-  });
-
-  it("publishes dedicated lifecycle guidance without obsolete generic status writes", () => {
-    const f = fixture();
-    const copied = f.run();
-    expect(copied.status, copied.stderr).toBe(0);
-    const destination = f.destination(bundles[1]);
-    const documents = files(destination).filter((name) => name.endsWith(".md"))
-      .map((name) => readFileSync(path.join(destination, name), "utf8"));
-    const guidance = documents.join("\n");
-    expect(guidance).toContain("task set-status");
-    for (const command of ["task approve", "task unapprove", "task claim", "task complete"]) expect(guidance).not.toContain("`" + command + "`");
-    expect(guidance).toContain("--if-version");
-    expect(guidance).not.toMatch(/task update[^\n]*--status/);
-    expect(guidance).not.toContain("`proposed`");
-    const create = readFileSync(path.join(destination, "references/create-task.md"), "utf8");
-    const run = readFileSync(path.join(destination, "references/run-task.md"), "utf8");
-    const shared = readFileSync(path.join(destination, "references/task-execution.md"), "utf8");
-    const managed = readFileSync(path.join(destination, "references/autopilot-managed-task.md"), "utf8");
-    expect(create).toContain("Create new tasks in `todo`");
-    expect(create).toContain("Registration leaves work todo and does not execute it");
-    expect(shared).toContain("every necessary delivery PR");
-    expect(shared).toContain("is merged");
-    expect(run).toContain("task set-status <task-id> done --if-version");
-    expect(managed).toContain("--claim-id <claim-id>");
-    expect(existsSync(path.join(destination, "references/autopilot.md"))).toBe(false);
-    const goal = readFileSync(path.join(destination, "references/goal.md"), "utf8");
-    expect(goal).toContain("only the requirements discussion task");
-    expect(goal).toMatch(/Each task starts\s+in `todo`/);
-    expect(goal).toContain("stage brief");
-    expect(goal).toContain("Completion satisfies dependencies and grants no delivery execution permission");
-    expect(goal).toContain("actual registered delivery tasks");
   });
 
   it("ships valid skill metadata and resolves every local resource link inside each copied bundle", () => {

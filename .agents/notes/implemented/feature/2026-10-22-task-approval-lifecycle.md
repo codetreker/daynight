@@ -89,6 +89,7 @@ recovery and transition journeys, permitted browser mutations and fixed inventor
 are owned by the production acceptance documentation. The [cross-layer decision](../testing/2026-10-22-task-lifecycle-cross-layer-acceptance.md)
 retains the distinction between real PostgreSQL upgrade/restart, installed-process
 races, production browser journeys and deterministic or offline fixtures.
-Instruction-contract checks verify the published files and workflow consistency,
-without claiming arbitrary Agent compliance. Each runtime receipt remains bound
-to its actual source and artifact.
+The [skill packaging validation decision](../testing/2026-10-30-skill-packaging-validation.md)
+partially supersedes instruction-contract checks: packaging checks validate
+published resources, not workflow semantics or arbitrary Agent compliance. Each
+runtime receipt remains bound to its actual source and artifact.
