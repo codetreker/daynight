@@ -26,23 +26,35 @@ packages/daynight/src/commands/skill/skills/using-daynight/
     goal.md
     task-content.md
     handoff.md
+    authorization.md
+    setup.md
+    project-management.md
+    task-management.md
+    write-safety.md
+    final-acceptance.md
 ```
 
 | 文件 | 职责 |
 |---|---|
-| `SKILL.md` | 共同任务边界、材料、授权与统一终验收规则，按普通请求或 worker prompt 的显式模式路由。 |
+| `SKILL.md` | 概念、setup 导航与按目的读取的资料映射，按普通请求或 worker prompt 的显式模式选择入口。 |
+| `references/authorization.md` | 共同追踪、评审、操作授权与任务范围。 |
+| `references/setup.md` | CLI、登录、项目和仓库指示的连接准备。 |
+| `references/project-management.md` | 项目发现、身份核验、复用与授权登记。 |
+| `references/task-management.md` | 查询、元数据、状态、依赖分类、去冗余、变更后图核验与删除。 |
+| `references/write-safety.md` | 精确版本、冲突、不确定写入与附件并发。 |
+| `references/final-acceptance.md` | 整体验收结论、证据与临时辅助脚本边界。 |
 | `references/goal.md` | 阶段产生时机、用户确认、讨论开始授权、确认后拆分、依赖、恢复与整体验收。 |
 | `references/task-content.md` | 所有阶段共用的任务定义与成果标准、task/session 边界、引用读取和内容唯一所有者。 |
 | `references/handoff.md` | 明确指定的移交审查与许可更新；不替代 Goal 确认和执行门槛。 |
 | `references/create-task.md` | 在授权范围内复用或登记具体工作；仅登记请求返回，明确开始讨论时按协议进入当前阶段。 |
 | `references/run-task.md` | 普通指定任务的开始、恢复、普通完成和返回；拥有用户明确要求的普通 Goal 讨论转场。 |
-| `references/autopilot-managed-task.md` | Worker prompt 显式激活后核对原 assignment，使用当前任务已有的充分交付与合并授权，满足条件后直接合并，最终 claim-bound done；完成或真实外部阻塞时交还 controller。 |
+| `references/autopilot-managed-task.md` | Worker prompt 显式激活后核对原 assignment，拥有按类型的必需附件、独立评审与 review 文件门槛、worker.signaling 交互流程；使用当前任务已有的充分交付与合并授权，最终 claim-bound done。 |
 | `references/task-execution.md` | 两种入口共同读取的任务/阶段输入、范围、交付、成果和完成准备；不包含普通或 managed 状态转换。 |
-| `references/handbook.md` | CLI 命令用途、项目发现、版本与完整替换、附件独立性及不确定写入背景。 |
+| `references/handbook.md` | CLI 命令用途、help 与规则所有者导航。 |
 
 阶段规则只由共享 Goal 协议拥有，各模式按需要读取输入与验收条件，避免通用执行或
 PR 规则覆盖讨论的确认门槛。普通入口执行用户明确要求的讨论转场；managed 入口只
-完成当前已指派阶段并返回 controller，不执行后续阶段创建或开始。Goal 拆分和整体完成引用 [SKILL.md#final-acceptance](../../packages/daynight/src/commands/skill/skills/using-daynight/SKILL.md#final-acceptance)
+完成当前已指派阶段并返回 controller，不执行后续阶段创建或开始。Goal 拆分和整体完成引用 [Final acceptance](../../packages/daynight/src/commands/skill/skills/using-daynight/references/final-acceptance.md)
 的共同终验收规则，不另建验收协议。发布资源仍是完整 allowlist bundle；两种执行文件与共享资料一起复制，安装覆盖清除已移除的调度文件，没有新的安装分支或运行时 Markdown 解析。协议只依赖随包资料与已安装 CLI help，不依赖仓库内部 skill 或本机草稿。
 
 ## 用户可观察的流程
@@ -60,7 +72,7 @@ flowchart TD
     H --> I{用户确认当前方案}
     I -->|继续修改| H
     I -->|确认| J[登记实际 todo 子任务及真实依赖]
-    J --> K[读回全部任务资料和依赖后完成方案讨论]
+    J --> K[读回全部任务资料和依赖图后完成方案讨论]
     K --> L[在明确执行范围内按依赖实施交付任务]
     L --> M[全部交付及原始整体验收满足]
 ```
@@ -99,7 +111,7 @@ flowchart TD
 | session 与本地检查点 | 执行或讨论计划、步骤、工具、协作、操作授权、确认经过、当前 ID、工作位置、阻塞、等待和恢复上下文；不写入任务描述、附件或任务管理专用仓库文件。 |
 
 description 让读者明确当前任务及责任，并定位真实可读的内容来源。内容标准由正文
-与引用的实际内容共同满足，正文完整时无需主附件，详细材料保留唯一拥有位置。
+与引用的实际内容共同满足，未指定附件交付时正文完整无需主附件，详细材料保留唯一拥有位置。managed 按类型交付的报告、完整方案与验收证据附件，以及设计多方独立评审、无 Critical/Major 和另附剩余非阻塞问题 review 文件的要求，由 [Complete delivery standard](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#complete-delivery-standard) 拥有，不能由正文免除。
 当前阶段定义待解决的问题、输入、预期成果及完成条件，不以尚待产出的最终要求或
 架构已经存在为前提，也不要求 agent 的执行计划、独立 solution 或通用证据位置。
 
@@ -136,6 +148,7 @@ description 让读者明确当前任务及责任，并定位真实可读的内�
 需求讨论关注为什么需要、结果和行为、范围与约束、排除项及整体验收，不决定具体
 实现路径。涉及 UI 时讨论最终布局、视觉、交互和代表性数据状态，形成最终样式、
 可纯前端运行的交互原型并查看操作；原型是需求表达的产物，供方案和交付任务复用。
+原型数据与交互状态只保存在当前页面内存，不使用 localStorage、sessionStorage、Cookie、IndexedDB 或其他本地持久化，依赖库也不得间接执行；刷新或重新打开恢复初始状态。完整规则由随包 create-task 的原型要求拥有。
 
 方案讨论产出系统如何工作的具体设计：职责与边界、数据和控制流、接口、错误与恢复、
 关键决策及所需验证能力；session 如何形成方案的计划和过程不成为任务成果。子任务体现实际成果而非命令列表；独立验收有不同结果时可单独拆分。
@@ -155,12 +168,10 @@ done 不能冒充仓库变更已交付，也不授予合并权限。
 ## 依赖与授权
 
 方案讨论通过普通 dependsOn 依赖已完成的需求 task。交付根直接依赖方案 task，其他
-必要直接依赖表达真实成果顺序，每条实施路径都经过方案完成。登记前按 handbook 的
-Dependency reduction 规则检查相关路径，省略已有其他保留路径覆盖的直接边；后继
+必要直接依赖表达真实成果顺序，每条实施路径都经过方案完成。登记前按随包 [Task management 的 Dependency reduction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/task-management.md#dependency-reduction) 规则检查相关路径，省略已有其他保留路径覆盖的直接边；后继
 沿保留路径继承前置，无替代路径的独立前置保持直接关系。普通边只可由全普通路径
 替代，保持链归属与设计门禁；经内容确认归其他同项目链所有的真实前置保留
-externalDependsOn，外部边可由任一类边构成的路径替代，保留边分类不变。登记读回
-核验必要路径与无冗余。两类关系都阻塞执行，不按标题、完成状态或图的入口猜测分类，
+externalDependsOn，外部边可由任一类边构成的路径替代，保留边分类不变。每次创建、替换或清空依赖后必须调用 `task graph` 读取实际图，核验必要路径完整且无冗余。图包含目标的完整双向普通依赖连通分量及其中任务的一层外部前置，不递归展开外部任务；断边后的各分量和需要判断的图外路径分别读取，读取失败或路径未验证时不报告通过。两类关系都阻塞执行，不按标题、完成状态或图的入口猜测分类，
 也不为视觉归组制造依赖。CLI 任一依赖声明编译完整并集和外部子集，更新前须保留
 需要的普通与外部关系。
 
@@ -174,6 +185,7 @@ allowAgents 默认 false，只约束自动发现选择；普通明确指定的�
 复审失败时保持许可并报告，撤销/停止仍需明确授权。自动发现与连续调度归 worker，
 继续要求 allowAgents=true、ready 和真实平台；公开 skill 不提供候选选择循环。
 讨论等待确认时保持当前任务，不能换做后继。整个 Goal 仍须所有实际交付与原始验收完成。
+managed 按 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 将需介入的问题设置为 worker.signaling，同时输出到终端、保存等待上下文并退出执行循环，保持 in_progress；收到反馈后核验原 assignment 与问题已解决，移除信号并确认后才恢复，未解决则保留信号等待。信号写入和移除遵守 write-safety，不执行其他阶段。
 
 ## 写入、恢复与并发
 

@@ -21,7 +21,9 @@ PR as an external wait can end execution while routine CI or review is pending.
 ## Decision
 
 The public `using-daynight` skill keeps one entrypoint and loads only the
-reference selected for the current invocation. Ordinary specified tasks use
+references needed for the current invocation under the
+[reference ownership decision](2026-10-29-daynight-skill-reference-ownership.md).
+Ordinary specified tasks use
 `references/run-task.md`. Only a worker startup prompt that explicitly names the
 `worker-managed` environment, `using-daynight` skill, and
 `autopilot-managed-task` mode selects
@@ -47,8 +49,10 @@ or an unknown result does not select ordinary execution or replay the write.
 `references/task-execution.md` owns the shared task-input, scope, delivery,
 results, and completion-readiness rules. It does not start, reopen, or complete
 an execution, select another task, or impose a claim on ordinary callers.
-The existing task-content standard and Final acceptance rules retain their
-respective ownership. The [task/session content decision](../process/2026-10-28-task-session-content.md)
+The task-content standard and standalone `references/final-acceptance.md` retain
+their respective ownership; managed execution's complete delivery standard adds
+type-specific attachment and separate review-file requirements. The
+[task/session content decision](../process/2026-10-28-task-session-content.md)
 keeps execution methods, operational authorization and recovery in session
 context while task definitions, required inputs and artifacts remain task content. Managed execution does not enter ordinary execution and
 skip selected steps.
@@ -73,7 +77,10 @@ polls. A polling timeout is not a return condition. Demonstrated external
 blockers such as unavailable credentials or reviewers, unmet human gates, and
 explicit user restrictions or revocation preserve the original assignment,
 actual state, minimum needed intervention, and next action before returning
-waiting to the controller. A background executor does not ask the user questions. Its checkpoint retains the
+waiting to the controller. Necessary user intervention follows the
+[managed signaling flow](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction),
+with task-local `worker.signaling` and confirmed removal after resolution before
+resuming the original assignment. Its session checkpoint retains the
 original identities, workspace, authorization, scope, PR head, validation and
 review state, owned resources, and next action without copying secrets. Recovery
 refreshes the same active claim and current remote state before further writes.

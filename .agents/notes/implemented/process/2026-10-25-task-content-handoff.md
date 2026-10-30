@@ -21,8 +21,10 @@ The public `using-daynight` bundle has a `handoff <task-id>` mode and one shared
 `references/task-content.md` standard. The description identifies the current
 task, its responsibility and readable sources. Body content, required referenced
 documents and mixed organization meet the same sufficiency test; a complete
-description needs no primary attachment, and each detailed explanation has one
-owner.
+description needs no primary attachment unless managed delivery explicitly
+requires attachments or a separate review file, as recorded by the
+[reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md).
+Each detailed explanation has one owner.
 
 The original standard used six categories, including a solution, validation
 methods and a designated task-local confirmation/evidence location. Those choices

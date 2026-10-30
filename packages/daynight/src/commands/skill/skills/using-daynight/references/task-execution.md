@@ -1,142 +1,47 @@
 # Shared task execution
 
-Read this reference after the selected execution mode establishes the task's
-identity. It owns required inputs, authorized work, delivery, results, and
-acceptance readiness. The execution mode owns starting or resuming the task,
-its final status operation, and returning to its caller.
+Read this file after identifying the task in both ordinary and managed execution.
+It governs shared inputs, work, results, and completion conditions; the mode-specific files govern startup, final status operations, interaction, and return.
+Managed execution must also meet its [complete delivery standard](autopilot-managed-task.md#complete-delivery-standard).
 
-## Read the task and stage inputs
+## Inputs and readiness
 
-Read the complete task and its actual required references under
-[the task content standard](task-content.md), including the task definition,
-actual required design inputs, acceptance criteria, and existing results. Its
-Markdown description must identify the concrete current work, responsibility,
-and content sources. Complete inline content needs no primary attachment;
-document-owned and mixed organization are valid when their combined contents
-provide the stage-appropriate task definition. A missing session execution plan
-is not a missing task input.
+Read the complete task, actually required references, and existing results under the [task content standard](task-content.md).
+For Goal tasks, also apply the [stage protocol](goal.md) and check responsibilities, stage inputs, and the architecture index.
+Inspect required prototypes with their assets and actually interact with them.
 
-Resolve description-relative links and images from the current task's attachment
-root; links inside a Markdown attachment use its own directory. Resolve real
-shared input references using the owning task ID and description/sections,
-complete paths for actual attachments, or a verified immutable repository
-reference. Read source descriptions through `task show --json` and actual
-attachment contents through the attachment commands; a task read does not load
-attachment inventory or bytes.
+Verify status and all direct prerequisites under [task management](task-management.md), and apply [authorization and scope](authorization.md).
+Execution is not ready when required content or authorization is missing, sources are unreadable, or dependencies are incomplete; report the specific blocker without executing predecessor tasks to bypass it.
 
-For a Goal stage or delivery task, read [the Goal protocol](goal.md) and identify
-its role from the actual task content and context. Apply that stage's input and
-output requirements. Requirements and solution discussions start from their
-stage briefs; the completed requirements, applicable UI prototype, and
-architecture are outputs of the stages that produce them. Delivery tasks
-require the delivered design and applicable prototype. Before implementation,
-read every required architecture source listed in the delivery task's
-description: the owning architecture task's inline description and applicable
-sections, full paths for actual attachment documents, or verified immutable
-repository references. This also applies when the architecture task is only an
-indirect prerequisite. Confirm that the description's references satisfy the
-Goal protocol. When a prototype is a required input, view and exercise it with
-its resources. An unfinished output of the current stage is not a missing input.
+## Work and results
 
-## Verify prerequisites and scope
+Work within the confirmed scope, design, and acceptance criteria, following the target repository's rules for worktrees, implementation, research, review, verification, and delivery.
+For independent final acceptance, apply the [acceptance standard](final-acceptance.md), not inapplicable development workflows.
 
-Check state, every direct prerequisite, authorized scope, and required stage
-inputs. Read `dependsOn` and its `externalDependsOn` subset: ordinary edges
-express same-chain prerequisites, and external marks distinguish verified
-cross-chain ownership. Both kinds must be done before starting or completing
-work. Classification never grants permission to execute a prerequisite, enable
-automatic execution, or remove a blocker.
+When authorized changes occur, coherently rewrite the actual owning material and affected references, preserving the strength of requirements and acceptance criteria; reconfirm material revisions at the corresponding confirmation points.
+Follow [task management](task-management.md) and [write safety](write-safety.md) when updating fields and editing dependencies.
 
-Missing required content, an unreadable required source, or a missing required
-architecture reference or input leaves execution unready. Resolve it within
-existing authorization or return the concrete issue. Do not infer requirements
-from a title or silently invent acceptance criteria. Do not execute prerequisites
-as an implicit expansion of the requested task.
+Save the URLs and titles of all required delivery PRs in the complete `properties.pullRequests` list, preserving existing entries. Save actual deliverables, current conclusions, and acceptance results in the owning task's material; keep implementation steps, CI, reviews, merge handling, and operational authorization in the session or corresponding platform under the content standard.
 
-Before analysis, questions, or proposals, establish this task's confirmed scope
-and acceptance criteria and apply the [shared scope constraint](../SKILL.md#shared-constraints)
-to execution and discussion.
+## Completion conditions
 
-## Execute and maintain continuity
+| Task type | Completion conditions |
+| --- | --- |
+| Goal discussion | The user confirms the current material, and the corresponding Goal stage requirements are met; generic PR rules cannot replace or add confirmation requirements. |
+| PR delivery | The hosting platform confirms that all required delivery PRs are merged, and stage acceptance criteria are met; finished code, passing CI, approval, an open PR, or entry into a merge queue is not enough. |
+| No PR delivery | Meet stage acceptance criteria and the selected mode's delivery requirements, without inventing PRs or unrelated approvals. |
+| Final acceptance | Also meet the [acceptance requirements](final-acceptance.md) for the complete task or Goal. |
 
-Identify [final acceptance](../SKILL.md#final-acceptance) from the task's confirmed
-outcome before applying a development or PR delivery lifecycle. Read the complete
-requirements and actual deliveries for the task or Goal being assessed, and
-apply the shared rule to verification methods, temporary helpers, and result
-ownership.
+Verify actual merges through the hosting platform's native client or API, without assuming a specific platform.
+When the user requires PRs to remain open for review or prohibits merging, deliver reviewable results and keep the task in progress, without enabling auto-merge.
+Completion remains pending when permission is missing, verification is impossible, or merge conditions are unmet.
 
-Follow the target repository's instructions for worktrees, implementation,
-review, validation, and delivery. Use the task's required design inputs and
-acceptance criteria, including applicable final-style prototype interactions.
-Keep the implementation or discussion plan in the session.
-Requirements discussion defines the problem without architecture decisions or
-production implementation. Solution discussion keeps its draft architecture and
-breakdown in its owning task. Preserve the Goal's user-confirmation gates:
-completed text, a review result, or successful checks cannot replace the user's
-confirmation or authorize delivery. Keep an unconfirmed discussion in progress;
-a material revision after confirmation needs renewed user confirmation.
+Before returning to the mode-specific file for completion operations, confirm that required deliverables and acceptance conclusions are readable.
+Completing a stage establishes only that stage's results, not completion of the whole Goal.
 
-Resolve material changes to the agreed solution or acceptance within the current
-authorization. Rewrite the owning artifact and affected task summaries and input
-references coherently. Preserve requirements; do not silently weaken acceptance.
-Descriptions remain self-contained Markdown task summaries. Preserve valid
-syntax, required task content, and actual resource references during full-field
-updates; confirm new or replaced resources before linking them. Apply the content
-boundary to authorized rewrites without modifying unrelated historical tasks.
-Dependency edits
-must follow the handbook's CLI replacement contract: read full D/E, retain needed
-ordinary D−E and external E declarations, submit their intended complete sets
-with the observed version, and read back both. Omit all dependency options for
-unrelated metadata updates. Keep detailed task content and produced results at
-their identified owners; shared inputs remain at their verified source.
+## Waiting context
 
-Advance only this task. Subagents collaborate on it, and waiting for CI, review,
-approval, or merge remains part of it. Keep all required delivery PR URLs and
-titles in the complete `properties.pullRequests` list, preserving existing
-entries. Save actual task results and acceptance conclusions at their owners.
-Use verified artifact locations or immutable revisions when needed to identify
-the final deliverable. Rewrite current results coherently rather than
-accumulating an execution log. Keep operational authorization, implementation
-steps, CI/review/merge handling, progress, blockers, waiting items, and next
-action in the conversation or existing execution checkpoint, retaining the task
-ID and needed PR and workspace references. Recover authorization and assignment
-from that session context, not task material or status.
-
-## Confirm acceptance readiness
-
-Goal requirements and solution discussion tasks use the user-confirmed material
-and stage acceptance in the Goal protocol. A generic repository PR rule does not
-add a PR-merge prerequisite to these Daynight discussions. If particular
-repository artifacts or PR delivery are explicitly part of that discussion
-task's acceptance, honor that requirement under its delivery rules.
-Unconfirmed discussion material keeps its discussion task in progress.
-
-Development tasks and design or documentation delivery tasks with PRs remain
-in progress until the hosting platform confirms **every necessary delivery PR
-is merged** and all stage acceptance criteria are satisfied. Code completion,
-passing CI, approved review, and an open PR do not satisfy this condition. Verify
-actual merge state through the host's native client or API; do not assume a
-particular host.
-
-Completion rules grant no merge, deployment, external communication, or mainline
-push permission. Follow existing authorization without asking again for actions
-it covers. If the user requests an open PR for review or forbids merging, deliver
-the reviewable PR and preserve the waiting checkpoint. Do not enable auto-merge.
-Missing permission, unavailable merge visibility, or an unmet merge check keeps
-completion pending and successors blocked.
-
-For tasks without a development or PR delivery path, use their stated stage
-acceptance. For [final acceptance](../SKILL.md#final-acceptance), also apply the
-shared whole-task or whole-Goal completion rule. In every case, confirm the
-required deliverables and acceptance conclusions are readable before returning
-to the execution mode's completion operation; retain operational verification
-in the session. Discussion completion establishes that stage's accepted
-output; it does not establish whole-Goal completion.
-
-## Preserve waiting context
-
-Continue CI and review waits as this task. When progress requires external
-intervention, preserve the target, actual state, concrete blocker, existing work,
-and next action in the checkpoint, then return the waiting result through the
-selected execution mode. Do not declare completion or select other work to
-bypass a wait. Preserve the task ID through recovery and waiting.
+CI, review, and merge waits belong to the current task; the execution mode defines continued waiting, signaling, and return behavior.
+When intervention is needed, preserve the task ID, actual status, existing work, specific blocker, PR and workspace references, existing authorization, and next step in the session checkpoint, not a task execution log.
+Recover the assignment and authorization from this context, not by inferring them from task status.
+Waiting neither completes the task nor permits selecting other work.

@@ -33,7 +33,11 @@ checkpoint.
 
 Execution and discussion plans, steps, tool choices, collaboration, operational
 authorization, review/CI/merge history, progress, blockers and recovery context
-remain in the session or its existing local checkpoint. An accepted requirement
+remain in the session or its existing local checkpoint. The
+[reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md)
+qualifies this boundary with structured task-local `worker.signaling` for managed
+intervention; full execution logs and checkpoints remain session context.
+An accepted requirement
 or design and its effective state remain task content; the confirmation exchange
 and permission to perform an operation do not. Necessary source revisions can
 identify actual results, and independent acceptance conclusions retain supporting
@@ -78,9 +82,10 @@ those artifacts while excluding the session's plan for producing them.
 
 Task sufficiency does not depend on an agent execution plan. Missing required
 architecture, prototypes, contracts or acceptance decisions still blocks the
-appropriate stage. Descriptions and attachments remain equally valid and shared
-inputs keep their real owners; filename bans and mandatory primary attachments
-are unnecessary.
+appropriate stage. Descriptions and attachments remain valid forms and shared
+inputs keep their real owners. General content sufficiency imposes neither
+filename bans nor universal primary attachments; managed delivery retains its
+explicit attachment requirements.
 
 Session continuity uses existing host state or local checkpoints. The content
 boundary provides no cross-host migration or replacement for missing assignment
