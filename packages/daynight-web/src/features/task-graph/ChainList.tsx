@@ -1,7 +1,9 @@
 import { ListPagination } from "../projects/ListPagination";
 import type { PaginationState } from "../projects/usePagination";
 import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { GraphTask, TaskStatus } from '../../api/types';
+import type { GraphTask } from '../../api/types';
+import { compareTaskStatus } from '../projects/task-order';
+import { timestampNanoseconds } from '../projects/task-visibility';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { useTaskExecution } from '../task-execution/TaskExecutionClock';
 import { TaskExecutionDuration } from '../task-execution/TaskExecutionPresentation';
@@ -9,8 +11,6 @@ import type { GraphIndex } from './model';
 import { TaskChainDialog } from './TaskChainDialog';
 import '../../styles/graph.css';
 import '../../styles/task-status-rows.css';
-
-const statusOrder: Readonly<Record<TaskStatus, number>> = { in_progress: 0, todo: 1, done: 2 };
 
 type ChainListProps = {
   readonly index: GraphIndex;
@@ -60,7 +60,15 @@ const ChainRow = memo(({ index, rootId, open, onOpenChain, onOpenTask }: ChainRo
   const members = useMemo(() => {
     const memberIds = index.components.get(rootId)!.memberIds;
     return [...index.nodes.values()].filter((node) => node.id !== rootId && memberIds.has(node.id))
-      .toSorted((left, right) => statusOrder[left.status] - statusOrder[right.status]);
+      .toSorted((left, right) => {
+        const status = compareTaskStatus(left.status, right.status);
+        if (status !== 0 || left.status !== 'done') return status;
+        if (left.completedAt === null) return right.completedAt === null ? 0 : 1;
+        if (right.completedAt === null) return -1;
+        const leftTime = timestampNanoseconds(left.completedAt);
+        const rightTime = timestampNanoseconds(right.completedAt);
+        return leftTime > rightTime ? -1 : leftTime < rightTime ? 1 : 0;
+      });
   }, [index, rootId]);
   return <li className="root-row goal-row" data-chain-id={rootId} data-task-status={progress.status}>
     <div className="goal-header task-status-surface" data-task-status={progress.status}>

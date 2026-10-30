@@ -805,8 +805,10 @@ unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. A Goal r
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
 ordinary-component member exactly once, with `in_progress` first, then `todo`,
-then `done`; tasks with the same status retain snapshot order. This child
-priority preserves top-level Goal ordering. Other starting tasks in a merge are
+then `done`. Completed children use exact `completedAt` descending order, with
+unknown completion times last. Equal completion times and unknown-time ties retain
+snapshot order, as do children in other status groups. Fresh snapshots recalculate
+this order. Top-level Goal ordering remains independent. Other starting tasks in a merge are
 included, while external prerequisite context is excluded. The
 list always retains `done`, `in_progress` and `todo` children; completed tasks
 remain visible. The chain-level Show all control changes whole-Goal visibility

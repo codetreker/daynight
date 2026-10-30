@@ -37,7 +37,11 @@ standalone placement in the
 The [recent browsing decision](../feature/2026-10-27-recent-task-pages.md)
 retains its time window, whole-component filtering and page capacity, and the
 [Goal list decision](../feature/2026-10-26-goal-task-lists.md) retains complete
-child membership and snapshot-order ties. Required behavior belongs in the
+child membership. Its original within-status snapshot order is retained for
+unfinished children and completion-time ties; the
+[completed-child ordering decision](../feature/2026-10-30-completed-subtask-order.md)
+owns exact completion-time descending order and unknown-time placement.
+Required behavior belongs in the
 [Web requirements](../../../../docs/spec/daynight-web.md); composition belongs in
 the [Web design](../../../../docs/design/daynight-web.md).
 
