@@ -9,7 +9,7 @@ export const workers: WorkersMessages = {
   refresh: 'Refresh', refreshing: 'Refreshing…', retry: 'Retry',
   readError: 'The service could not provide a confirmed Worker observation.', networkError: 'Check your connection and try again.',
   protocolError: 'The service returned an invalid Worker response.', refreshFailed: 'Worker updates could not be synchronized.',
-  retainedState: 'The values and badges show the last confirmed observation.', synchronizing: 'Confirming the latest Worker status…',
+  retainedState: 'The values and badges show the last confirmed observation.',
   lastSynchronized: 'Last synchronized', lastReported: 'Last report', sampledAt: 'Resource sample', checkedAt: 'Checked',
   online: 'online', offline: 'offline', confirmedStatus: ({ status }) => `${status} · last confirmed`,
   count: ({ count }) => `${count} ${count === '1' ? 'Worker' : 'Workers'}`, onlineCount: ({ count }) => `${count} online`, offlineCount: ({ count }) => `${count} offline`,

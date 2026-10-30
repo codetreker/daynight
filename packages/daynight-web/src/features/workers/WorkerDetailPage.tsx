@@ -50,6 +50,7 @@ export const WorkerDetailPage = ({ workerId, readEnabled }: { readonly workerId:
   const recent = worker !== undefined && isWorkerRecent(worker, serverMilliseconds!);
   const online = worker !== undefined && isWorkerOnline(worker, serverMilliseconds!);
   const unavailable = snapshot !== null && !recent;
+  const taskSnapshot = !online || state.stale || worker?.taskObservationState === 'stale';
   const bytes = (value: number) => formatWorkerBytes(value, locale);
   const percent = (value: number) => new Intl.NumberFormat(locale, { maximumFractionDigits: 1 }).format(value);
   return <div className="worker-page">
@@ -86,12 +87,12 @@ export const WorkerDetailPage = ({ workerId, readEnabled }: { readonly workerId:
           <SoftwareRow name="Herdr" probe={worker.telemetry.versions.herdr} /><SoftwareRow name="Codex" probe={worker.telemetry.versions.codex} /><SoftwareRow name="Copilot" probe={worker.telemetry.versions.copilot} />
         </dl></section>
       </div>
-      <section className="worker-panel"><h2 className="worker-panel-heading">{!online || state.stale || worker.taskObservationState === 'stale' ? m.tasksSnapshot : m.tasks}
-        {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}
-        {(!online || state.stale || worker.taskObservationState === 'stale') && <span className="worker-task-snapshot-caption">{m.lastReportSnapshot}</span>}</h2>
+      <section className="worker-panel"><h2 className="worker-panel-heading"><span className="worker-task-heading-label" data-current-label={m.tasks}><span>{taskSnapshot ? m.tasksSnapshot : m.tasks}</span></span>{' '}
+        {worker.activeTaskCount !== null && <span className="worker-count-badge">{format.number(worker.activeTaskCount)}</span>}{' '}
+        <span className="worker-task-snapshot-caption" aria-hidden={!taskSnapshot}>{m.lastReportSnapshot}</span></h2>
         {worker.taskObservationState === 'unavailable' ? <p className="worker-task-empty">{m.tasksPending}</p> : <>
           <div className="worker-task-observation">{worker.taskObservationState === 'stale' && <p>{m.oldInventory}</p>}<p>{m.taskObservedAt}: <WorkerTimestamp value={worker.taskObservedAt!} /></p><p>{m.inventoryObservedAt}: <WorkerTimestamp value={worker.inventoryObservedAt!} /></p></div>
-          {worker.tasks.length > 0 ? <TaskRows tasks={worker.tasks} /> : <p className="worker-task-empty">{!online || state.stale || worker.taskObservationState === 'stale' ? m.snapshotIdle : m.idle}</p>}
+          {worker.tasks.length > 0 ? <TaskRows tasks={worker.tasks} /> : <p className="worker-task-empty">{taskSnapshot ? m.snapshotIdle : m.idle}</p>}
         </>}
       </section><p className="worker-detail-footnote">{m.footer}</p>
     </>}

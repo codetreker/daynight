@@ -70,13 +70,13 @@ describe('Worker list presentation', () => {
     listState = { ...listed(), stale: true, error: new ApiError('network', null, 'network', 'request-42') };
     showList();
     const alert = screen.getByRole('alert'); expect(alert).toHaveTextContent('last confirmed observation'); expect(alert).toHaveTextContent('request-42');
-    expect(screen.getByText('online · last confirmed')).toHaveClass('online'); expect(screen.getByText('1 task · last observed snapshot')).toBeInTheDocument();
+    expect(screen.getByText('online · last confirmed').closest('.worker-status-badge')).toHaveClass('online'); expect(screen.getByText('1 task · last observed snapshot')).toBeInTheDocument();
     fireEvent.click(within(alert).getByRole('button', { name: 'Retry' })); expect(refresh).toHaveBeenCalledOnce();
   });
 
-  it('retains the empty observation and marks visibility/authentication recalibration pending', () => {
+  it('retains the empty observation quietly during visibility/authentication recalibration', () => {
     listState = { ...listed([]), stale: true, refreshing: true };
-    const view = showList(); expect(screen.getByText('Confirming the latest Worker status…')).toBeInTheDocument(); expect(screen.getByText('No active Workers in the last 72 hours')).toBeInTheDocument();
+    const view = showList(); expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect(screen.getByText('No active Workers in the last 72 hours')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
     view.rerender(<WorkersPage readEnabled={false} />); expect(vi.mocked(useWorkers)).toHaveBeenLastCalledWith({ readEnabled: false });
   });
@@ -108,6 +108,39 @@ describe('Worker list presentation', () => {
 });
 
 describe('Worker detail presentation', () => {
+  it('retains data and focus through repeated quiet rechecks while keeping last-confirmed labels', () => {
+    const view = showDetail(), task = screen.getByRole('link', { name: 'Build reliable workers' }), cpu = screen.getByRole('meter', { name: 'CPU usage' });
+    const caption = screen.getByText('State at the last observation'), currentHeading = screen.getByRole('heading', { name: 'Tasks in progress 1' });
+    expect(caption).toHaveAttribute('aria-hidden', 'true'); expect(currentHeading).not.toHaveAccessibleName(/State at the last observation/);
+    task.focus();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      detailState = { ...detailState, stale: true, refreshing: true };
+      view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+      expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect(screen.queryByRole('alert')).toBeNull();
+      expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(screen.getByRole('heading', { name: /Task snapshot/ })).toBeInTheDocument();
+      expect(screen.getByText('State at the last observation')).toBe(caption); expect(caption).toHaveAttribute('aria-hidden', 'false');
+      expect(screen.getByRole('meter', { name: 'CPU usage' })).toBe(cpu); expect(cpu).toHaveAttribute('aria-valuenow', '34.25'); expect(task).toHaveFocus();
+      detailState = shown(); view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+      expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect(screen.getByText('online')).toBeInTheDocument(); expect(task).toHaveFocus();
+      expect(screen.getByRole('heading', { name: 'Tasks in progress 1' })).toBe(currentHeading); expect(caption).toHaveAttribute('aria-hidden', 'true');
+    }
+  });
+
+  it('keeps refresh failures visible during retries and clears them only after a successful observation', () => {
+    detailState = { ...shown(), stale: true, error: new ApiError('network') };
+    const view = showDetail(), alert = screen.getByRole('alert');
+    expect(alert).toHaveTextContent('Worker updates could not be synchronized.'); expect(alert).toHaveTextContent('last confirmed observation');
+    expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(screen.queryByText('offline')).toBeNull();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      detailState = { ...detailState, refreshing: true }; view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+      expect(screen.getByRole('alert')).toBe(alert); expect(within(alert).getByRole('button', { name: 'Refreshing…' })).toBeDisabled();
+      detailState = { ...detailState, refreshing: false }; view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+      expect(within(alert).getByRole('button', { name: 'Retry' })).toBeEnabled();
+    }
+    detailState = shown(); view.rerender(<WorkerDetailPage workerId={id(1)} readEnabled />);
+    expect(screen.queryByRole('alert')).toBeNull(); expect(screen.getByText('online')).toBeInTheDocument();
+  });
+
   it.each(['loading', 'error'] as const)('shows a detail-specific initial %s without a retained machine', status => {
     detailState = { ...shown(), snapshot: null, serverMilliseconds: null, status, error: status === 'error' ? new ApiError('network') : null };
     showDetail(); expect(screen.queryByText('worker-1')).toBeNull();
@@ -130,7 +163,7 @@ describe('Worker detail presentation', () => {
 
   it('shows offline and retained inventory timestamps without presenting old tasks as current', () => {
     detailState = shown({ ...detail(), lastReportedAt: new Date(now - 3600_000).toISOString(), taskObservationState: 'stale' });
-    showDetail(); expect(screen.getByText('offline')).toHaveClass('offline'); expect(screen.getByRole('status')).toHaveTextContent('last reported snapshot');
+    showDetail(); expect(screen.getByText('offline').closest('.worker-status-badge')).toHaveClass('offline'); expect(screen.getByRole('status')).toHaveTextContent('last reported snapshot');
     expect(screen.getByRole('heading', { name: /Task snapshot/ })).toBeInTheDocument(); expect(screen.getByText('The latest report retains an earlier task observation.')).toBeInTheDocument();
     expect(document.querySelector('time[datetime="2026-10-29T11:59:30Z"]')).toBeInTheDocument();
   });
@@ -179,7 +212,13 @@ it('formats byte magnitudes and relative time only from the supplied server obse
   expect(formatWorkerRelative(new Date(now + 20_000).toISOString(), now, 'en')).toBe('in 20 seconds');
 });
 
-it('gives both online and offline badges explicit last-confirmed labels', () => {
-  const view = renderWithLocale(<WorkerStatusBadge online={false} stale />, { locale: 'zh-CN' }); expect(screen.getByText('offline · 上次确认')).toHaveClass('offline');
-  view.rerender(<WorkerStatusBadge online />); expect(screen.getByText('online')).toHaveClass('online');
+it('gives both badges localized last-confirmed labels and reserves that label without duplicating text', () => {
+  const view = renderWithLocale(<WorkerStatusBadge online={false} stale />, { locale: 'zh-CN' });
+  const offline = screen.getByText('offline · 上次确认'); expect(offline.closest('.worker-status-badge')).toHaveClass('offline');
+  expect(offline.parentElement).toHaveAttribute('data-confirmed-label', 'offline · 上次确认');
+  view.rerender(<WorkerStatusBadge online />);
+  const online = screen.getByText('online'); expect(online.closest('.worker-status-badge')).toHaveClass('online');
+  expect(online.parentElement).toHaveAttribute('data-confirmed-label', 'online · 上次确认'); expect(screen.queryByText('online · 上次确认')).toBeNull();
+  view.setLocale('en');
+  expect(online.parentElement).toHaveAttribute('data-confirmed-label', 'online · last confirmed'); expect(online.closest('.worker-status-badge')).toHaveTextContent(/^online$/);
 });
