@@ -94,17 +94,16 @@ they do not replace actual status-changing database requests.
 
 ### Installed instructions and source attribution
 
-The installed skill fixture validates all six resources, YAML frontmatter,
+The installed skill fixture validates the resource inventory, YAML frontmatter,
 contained prose references and content digests on the packed installation and
-published target copies. Fenced task examples remain examples. Bounded
-cross-reference instruction contracts check todo registration without execution, explicit
-execution scope, ready successors, manual fixed queues versus permission-filtered discovery,
-versioned status setting, resume, conflict, unknown outcome, open-PR retention, accepted completion
-and shared Markdown/Goal ownership. Their receipt identifies the input,
-obligation and resource/section evidence, with agentExecution false. Existing
-native terminal installation and byte-copy checks remain distinct. Artifact
-contracts establish shipped instructions and discovery, not actual model
-compliance or live provider behavior.
+published target copies. Fenced task examples remain examples. Existing native
+terminal installation and byte-copy checks remain distinct. The structured
+receipt records `skillBundle.metadata` and `skillBundle.resources`, not
+instruction-contract or instruction-scenario outcomes. The
+[skill packaging validation decision](2026-10-30-skill-packaging-validation.md)
+partially supersedes the instruction-contract verification strategy here.
+Packaging evidence establishes distributed resources, not instruction semantics,
+actual model compliance or live provider behavior.
 
 Existing source receipts add required gitTreeSha from actual
 `git rev-parse HEAD^{tree}`:

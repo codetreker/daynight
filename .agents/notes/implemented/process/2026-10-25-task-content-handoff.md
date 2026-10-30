@@ -21,8 +21,10 @@ The public `using-daynight` bundle has a `handoff <task-id>` mode and one shared
 `references/task-content.md` standard. The description identifies the current
 task, its responsibility and readable sources. Body content, required referenced
 documents and mixed organization meet the same sufficiency test; a complete
-description needs no primary attachment, and each detailed explanation has one
-owner.
+description needs no primary attachment unless managed delivery explicitly
+requires attachments or a separate review file, as recorded by the
+[reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md).
+Each detailed explanation has one owner.
 
 The original standard used six categories, including a solution, validation
 methods and a designated task-local confirmation/evidence location. Those choices
@@ -145,6 +147,9 @@ rewritten in bulk. A stricter certified-content guarantee would require an
 explicit server/reference redesign; leaving the flag without certificate semantics
 keeps that later change visible rather than embedding a false guarantee.
 
-Static instruction contracts, resource copying and isolated installation establish
-published content and files. Independent semantic scenarios assess the workflow's
-decisions separately; neither proves that every Agent follows the instructions.
+Resource copying and isolated installation validate published files under the
+[skill packaging validation decision](../testing/2026-10-30-skill-packaging-validation.md),
+which partially supersedes the static instruction-contract strategy here.
+Independent semantic review assesses workflow decisions separately; packaging
+checks do not test prose semantics or prove that every Agent follows the
+instructions.

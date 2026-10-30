@@ -35,6 +35,9 @@ with one content owner. This replaces the original requirement to keep detailed
 plans in a primary Markdown attachment. The [task/session content decision](2026-10-28-task-session-content.md)
 replaces universal solution and confirmation/evidence requirements with task
 definitions and resulting artifacts while preserving real inputs and review material.
+The [reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md)
+places these rules in dedicated references and qualifies general inline
+sufficiency with managed attachment and separate review-file requirements.
 
 An explicit user or applicable repository tracking/review instruction supplies
 standing creation permission for necessary tasks within the user's confirmed
