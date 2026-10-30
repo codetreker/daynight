@@ -1,8 +1,15 @@
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveReviewPaths } from "../../../src/commands/review/paths.js";
 
 describe("current-user runtime paths", () => {
+  afterEach(() => vi.unstubAllEnvs());
+  it("isolates every local state path under DN_CONFIG_DIR", () => {
+    vi.stubEnv("DN_CONFIG_DIR", "/isolated/daynight-dev");
+    const paths = resolveReviewPaths("/real/home", path.posix);
+    for (const value of Object.values(paths)) expect(value === "/isolated/daynight-dev" || value.startsWith("/isolated/daynight-dev/")).toBe(true);
+  });
+
   it("resolves all state locations from an injected POSIX home", () => {
     expect(resolveReviewPaths("/home/Review User 用户", path.posix)).toEqual({
       stateDirectory: "/home/Review User 用户/.daynight",

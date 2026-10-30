@@ -1,3 +1,6 @@
+import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
+import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
+import { resolveConfigurationPaths } from "../../config/paths.js";
 import { createNativeCommandQueue, assertControlCommand } from "./command-controls.js";
 import { createServer, type Socket } from "node:net";
 import { chmod, mkdir, realpath, unlink } from "node:fs/promises";
@@ -230,12 +233,17 @@ export const runController = async (options: { homeDirectory: string; provider: 
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(ticket.ipcEndpoint, () => { server.off("error", reject); resolve(); }); });
     if (process.platform !== "win32") await chmod(ticket.ipcEndpoint, 0o600);
     if (stopping) return;
-    const env = { ...process.env };
+    const paths = resolveConfigurationPaths(options.homeDirectory);
+    const aliases = await prepareAgentCliAliases({ aliases: await readAgentCliAliases(paths), environment: process.env, stateDirectory: paths.stateDirectory });
+    if (stopping) return;
+    for (const binding of aliases.bindings) diagnostic(`Agent CLI alias ${binding.name} -> ${binding.target} (${binding.executable}).`);
+    const env = { ...aliases.environment };
     for (const key of ["CODEX_THREAD_ID", "CODEX_TURN_ID", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "DAYNIGHT_CONTROLLER_TOKEN"]) delete env[key];
     if (ticket.provider === "codex") env.CODEX_HOME = ticket.nativeHome;
     else if (ticket.provider === "claude") env.CLAUDE_CONFIG_DIR = ticket.nativeHome;
     else env.COPILOT_HOME = ticket.nativeHome;
     const nativeOptions: ProviderOptions = {
+      ...(aliases.bindings.length > 0 ? { agentCliEnvironment: { PATH: env.PATH!, DN_CONFIG_DIR: env.DN_CONFIG_DIR! } } : {}),
       ...(journal.getSnapshot().controlsRevisionFloor ? { controlsRevisionFloor: journal.getSnapshot().controlsRevisionFloor! } : {}),
       cwd: ticket.cwd, model: ticket.configuration.model, args: ticket.configuration.args, resumeNativeSessionId: ticket.resumeNativeSessionId, unattended: ticket.claimId !== undefined, env,
       onDiagnostic: diagnostic,

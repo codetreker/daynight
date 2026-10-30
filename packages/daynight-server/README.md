@@ -986,6 +986,11 @@ description, version and timestamps; `task show` retains those detail fields.
 Both detail and all-status list output preserve visible PR control-character
 escaping without emitting raw terminal controls.
 
+This long journey gives each owned server a two-minute lifetime for the cumulative
+cost of starting over a hundred CLI processes. Individual CLI commands retain
+their 15-second deadline, and server startup, shutdown and cleanup limits remain
+unchanged. Other process scenarios retain the default 45-second lifetime.
+
 The independent [platform/status scenario](cmd/daynight-server/acceptance_platform_cli_test.go),
 `TestInstalledCLIPlatformAcceptance` / `installed_cli_platform_status_workflow`,
 owns a separate PostgreSQL fixture, installed CLI workspace and server process.

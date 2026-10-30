@@ -19,7 +19,7 @@ export const workerDefinition: CommandDefinition = {
     name: "run",
     description: "Run the foreground task worker until interrupted",
     options: [help],
-    details: "Read worker settings from ~/.daynight/config.yml at startup.\nWith no configured repositories, select existing remote Projects interactively before startup.\nFor noninteractive configuration, run daynight worker repo add --project <project-id>.\nState: ~/.daynight/worker/ (fixed to the current user's home directory).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
+    details: "Read worker settings from DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml) at startup.\nWith no configured repositories, select existing remote Projects interactively before startup.\nFor noninteractive configuration, run daynight worker repo add --project <project-id>.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).\nCtrl+C stops the original agents while preserving unfinished claims, worktrees and native history.",
   }, {
     name: "attach",
     description: "Attach an interactive terminal to the running worker's Herdr session",
@@ -64,5 +64,5 @@ export const workerDefinition: CommandDefinition = {
     details: "Stop worker run first. --claim-id identifies the previous released claim. The original owner or a project admin may explicitly resume a ready task, including the manual permission/platform exception. Use a fresh claim, worktree identity and native conversation with this worker's current effective configuration. The source worktree and native history are not required. The exact --if-version is never replaced; uncertain writes are reconciled without replay.",
   }],
   options: [help],
-  details: "Run daynight worker <command> --help for command usage.\nState: ~/.daynight/worker/ (fixed to the current user's home directory).",
+  details: "Run daynight worker <command> --help for command usage.\nState: DN_CONFIG_DIR/worker/ (default: ~/.daynight/worker/).",
 };

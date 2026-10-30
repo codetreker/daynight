@@ -8,7 +8,7 @@
   "scripts": {
     "build": "pnpm --filter @codetreker/daynight build",
     "typecheck": "pnpm --filter @codetreker/daynight typecheck",
-    "test": "pnpm --filter @codetreker/daynight test",
+    "test": "pnpm dev:test && pnpm --filter @codetreker/daynight test",
     "test:apfs": "pnpm --filter @codetreker/daynight test:apfs",
     "acceptance": "pnpm --filter @codetreker/daynight acceptance",
     "check": "pnpm typecheck && pnpm test",
@@ -21,6 +21,8 @@
     "web:build": "pnpm --filter @codetreker/daynight-web build && pnpm --filter @codetreker/daynight-web exec node scripts/publish-assets.mts",
     "completion:acceptance": "pnpm --filter @codetreker/daynight completion:acceptance",
     "web:acceptance:apfs": "pnpm --filter @codetreker/daynight-web test:acceptance:apfs",
-    "web:acceptance": "pnpm --filter @codetreker/daynight-web test:acceptance"
+    "web:acceptance": "pnpm --filter @codetreker/daynight-web test:acceptance",
+    "dev:install": "node scripts/dev-install.mjs",
+    "dev:test": "node --test scripts/dev-install.test.mjs"
   }
 }

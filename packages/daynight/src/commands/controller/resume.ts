@@ -4,6 +4,7 @@ import { chmod, lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import { canonicalId } from "../../api/parse.js";
 import type { CliContext } from "../../cli/context.js";
+import { resolveConfigurationPaths } from "../../config/paths.js";
 import { normalizeServerUrl } from "../../config/server.js";
 import { parseRegistrationResponse } from "../../session/controller-protocol.js";
 import type { SessionProvider } from "../../session/protocol.js";
@@ -21,7 +22,7 @@ const privateFile = async (file: string): Promise<void> => {
 };
 const inventory = async (home: string): Promise<LocalExecution[]> => {
   let files: string[];
-  try { files = await readdir(path.join(home, ".daynight", "controller", "launches")); }
+  try { files = await readdir(path.join(resolveConfigurationPaths(home).stateDirectory, "controller", "launches")); }
   catch (error) { if (missing(error)) return []; throw error; }
   if (files.length > 20_000) throw new Error("Controller launch inventory exceeds its safe bound.");
   const tickets = new Map<string, ControllerLaunchTicket>();
@@ -87,7 +88,7 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
   if (!me || typeof me !== "object" || !("id" in me) || me.id !== ticket.ownerUserId) throw new Error("The configured account does not own the original Test Session.");
   const session = parseRegistrationResponse(await get(config, `/api/v1/test-sessions/${ticket.sessionId}`)).session;
   if (session.sessionId !== ticket.sessionId || session.testExecutionId !== ticket.testExecutionId || session.executionGeneration !== ticket.executionGeneration || session.identity.ownerUserId !== ticket.ownerUserId || session.identity.controllerId !== ticket.controllerId || session.identity.controllerInstanceId !== ticket.controllerInstanceId || session.identity.provider !== ticket.provider || session.identity.nativeSessionId !== nativeSessionId || session.lifecycle !== "archived") throw new Error("The original server Test Session does not confirm the local stopped native identity and owner.");
-  const directory = path.join(home, ".daynight", "controller"); await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
+  const directory = path.join(resolveConfigurationPaths(home).stateDirectory, "controller"); await mkdir(directory, { recursive: true, mode: 0o700 }); await chmod(directory, 0o700);
   const file = path.join(directory, "native-resume-leases.sqlite");
   try { const created = await open(file, "wx", 0o600); await created.close(); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
   await privateFile(file);

@@ -1,3 +1,5 @@
+import { prepareAgentCliAliases } from "../../cli/agent-cli-aliases.js";
+import { readAgentCliAliases } from "../../config/agent-cli-aliases.js";
 import path from "node:path";
 import { maintainWorkerControllerGrants } from "./backends/grant-renewal.js";
 import { openWebExecutionStore } from "./backends/web-store.js";
@@ -81,6 +83,17 @@ const throwFailures = (failures: readonly unknown[]): void => {
 };
 
 
+const prepareWorkerAgentEnvironment = async (paths: WorkerPaths, emit: (event: WorkerEvent) => void, signal: AbortSignal) => {
+  const aliases = await prepareAgentCliAliases({ aliases: await readAgentCliAliases(paths, signal), environment: process.env, stateDirectory: paths.stateDirectory });
+  const agentEnvironment: { PATH?: string; DN_CONFIG_DIR?: string } = {};
+  if (aliases.bindings.length > 0) {
+    if (aliases.environment.PATH !== undefined) agentEnvironment.PATH = aliases.environment.PATH;
+    for (const binding of aliases.bindings) emit({ kind: "agent-cli-alias", message: `${binding.name} -> ${binding.target} (${binding.executable}).` });
+  }
+  if (aliases.environment.DN_CONFIG_DIR !== undefined) agentEnvironment.DN_CONFIG_DIR = aliases.environment.DN_CONFIG_DIR;
+  return { agentEnvironment };
+};
+
 const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void) => {
   const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"));
   try {
@@ -145,8 +158,9 @@ export const runWorker = async (options: {
     const telemetry = createWorkerTelemetryCollector({ paths, homeDirectory: options.homeDirectory, version: options.version, workingDirectory: options.workingDirectory, machine, platform });
     reporter = createWorkerReporter({ signal, collect: operation => telemetry.collect(operation), send: (report, operation) => remote.report(workerId, report, operation), emit: diagnostics.emit });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
+    const agentEnvironment = await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal);
     const lazyHerdr = new Proxy({} as ReturnType<typeof createWorkerHerdr>, { get: (_target, property) => {
-      herdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory }); return Reflect.get(herdr, property);
+      herdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(herdr, property);
     } });
     web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
     renewal = maintainWorkerControllerGrants({ homeDirectory: options.homeDirectory, serverOrigin: serverUrl, store: web.webStore, launcher: web.launcher, signal,
@@ -254,8 +268,9 @@ export const runWorkerControl = async (options: {
     }
     await mkdir(paths.temporaryDirectory, { recursive: true, mode: 0o700 });
     git = createWorkerGitManager({ temporaryDirectory: paths.temporaryDirectory });
+    const agentEnvironment = options.request.kind === "retry" ? await prepareWorkerAgentEnvironment(paths, diagnostics.emit, signal) : {};
     let actualHerdr: ReturnType<typeof createWorkerHerdr> | undefined;
-    const herdr = new Proxy({} as ReturnType<typeof createWorkerHerdr>, { get: (_target, property) => { actualHerdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory }); return Reflect.get(actualHerdr, property); } });
+    const herdr = new Proxy({} as ReturnType<typeof createWorkerHerdr>, { get: (_target, property) => { actualHerdr ??= createWorkerHerdr({ paths, homeDirectory: options.homeDirectory, ...agentEnvironment }); return Reflect.get(actualHerdr, property); } });
     web = await createWebRuntime(options, paths, store, git, serverUrl, serverToken, platform, diagnostics.emit);
     const machine = machineDescription(platform);
     const coordinator = createWorkerCoordinator({

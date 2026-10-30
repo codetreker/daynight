@@ -15,6 +15,8 @@ would make these decisions depend on conflicting persistent facts.
 
 The local store now follows the claim and native-session index in the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Identity, instance exclusion and static resource ownership retain their original owners. The following records the original detailed storage decision and why its stronger restart guarantees were adopted.
 
+The [local development CLI decision](2026-10-29-local-development-cli.md) adds an optional `DN_CONFIG_DIR` root for configuration and companion state. The original default paths below remain the default; resource ownership is unchanged.
+
 ### Original implementation and rationale
 
 The [worker design](../../../../docs/design/daynight-worker.md#配置与目录) fixes
