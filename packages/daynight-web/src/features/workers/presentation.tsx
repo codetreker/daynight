@@ -59,12 +59,12 @@ export const WorkerReadState = ({ status, error, refresh, refreshing, readEnable
 
 export const WorkerReadNotice = ({ stale, error, observedAt, refresh, refreshing, readEnabled }: { readonly stale: boolean; readonly error: unknown; readonly observedAt: string; readonly refresh: () => void; readonly refreshing: boolean; readonly readEnabled: boolean }) => {
   const { messages: { workers: m } } = useI18n();
-  if (!stale) return null;
-  return <section className="worker-sync-notice" role={error === null ? 'status' : 'alert'}>
-    <div><p className="worker-notice-title">{error === null ? m.synchronizing : m.refreshFailed}</p><p>{m.retainedState}</p>
+  if (!stale || error === null) return null;
+  return <section className="worker-sync-notice" role="alert">
+    <div><p className="worker-notice-title">{m.refreshFailed}</p><p>{m.retainedState}</p>
       <p>{m.lastSynchronized}: <WorkerTimestamp value={observedAt} /></p>
-      {error !== null && <WorkerErrorDetail error={error} />}</div>
-    {error !== null && <button className="button" type="button" onClick={refresh} disabled={!readEnabled || refreshing}>{refreshing ? m.refreshing : m.retry}</button>}
+      <WorkerErrorDetail error={error} /></div>
+    <button className="button" type="button" onClick={refresh} disabled={!readEnabled || refreshing}>{refreshing ? m.refreshing : m.retry}</button>
   </section>;
 };
 

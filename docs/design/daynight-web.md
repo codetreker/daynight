@@ -107,13 +107,13 @@ sticky 视口高度和纵向 flex 布局让长页面、短窗口及折叠状态�
 
 列表加载器逐页读取到 nextCursor 为 null，暂存所有摘要并拒绝循环游标或重复 Worker ID。只有整轮成功才一次发布，任何页失败都保留上次完整集合。发布使用最后一页的 observedAt 与该响应接收时的 performance.now 建立统一锚点，再按在线优先、lastReportedAt 倒序和 workerId 稳定排序。摘要只有 machine、platform、上报时间及任务观测/计数，不执行逐 Worker 详情 fan-out，也不推断 OS release。
 
-每个可见页面共享一个 5 秒单飞刷新和一个 1 秒 ticker。纯 observation helper 使用 `observedAt + performance.now() - receivedMonotonic`，以 `< 120000ms` 判 online、`<= 72h` 判近期。页面隐藏、readEnabled 关闭或读取失败时，保留最后已发布时间并标记 stale，停止从旧锚点推进新结论。恢复可见或同账号核验后先发起新读取；成功才替换锚点并恢复 ticker。该生命周期与任务执行耗时不同：睡眠前的 Worker 锚点不能在重新可见时直接快进为当前在线结论。可信当前身份 404 清空详情，协议错误、网络错误及其他失败保留旧快照和“上次确认状态”。
+每个可见页面共享一个 5 秒单飞刷新和一个 1 秒 ticker。纯 observation helper 使用 `observedAt + performance.now() - receivedMonotonic`，以 `< 120000ms` 判 online、`<= 72h` 判近期。页面隐藏、readEnabled 关闭或读取失败时，保留最后已发布时间并标记 stale，停止从旧锚点推进新结论。恢复可见或同账号核验后先发起新读取；成功才替换锚点并恢复 ticker。该生命周期与任务执行耗时不同：睡眠前的 Worker 锚点不能在重新可见时直接快进为当前在线结论。`WorkerReadNotice` 仅在保留快照且已有读取错误时显示警告和重试入口；没有错误的陈旧状态沿用徽标、任务快照说明与来源时间，正常检查不插入提示区域，原内容及焦点保持稳定。重试开始不清除已有错误，成功发布才移除失败提示。可信当前身份 404 清空详情，协议错误、网络错误及其他失败保留旧快照和“上次确认状态”。
 
 详情的资源卡和环境/版本区域只格式化实际 telemetry：OS type/release/version/arch、CPU model/logicalProcessors/usagePercent、内存 bytes、启动工作目录文件系统容量及软件 Probe。总量 0 可展示但不计算除零 meter；没有真实设备字段时不生成设备名。软件 not_installed、Herdr not_running 和 error 分别呈现，checkedAt、sampledAt 和 lastReportedAt 保留来源时间含义。任务数组及计数只消费服务器当前权限过滤后的历史观测，不以项目或任务缓存补齐；stale 清单、offline Worker 和 unavailable 清单各有明确说明。
 
-`WorkerStatusBadge` 复用绿色 online，并以 `#b54708` 文字/圆点和 `#fff0e6` 背景呈现 offline；陈旧读取另标上次确认。列表卡、详情面板和任务行复用工作空间样式与键盘导航，React 使用稳定 Worker/任务标识保持 tick 和刷新中的有效焦点。中英文目录覆盖状态、失败、时间、资源和可访问名称。桌面及 390px 的长机器名、目录和任务名自然换行。
+`WorkerStatusBadge` 复用绿色 online，并以 `#b54708` 文字/圆点和 `#fff0e6` 背景呈现 offline；陈旧读取另标上次确认。徽标的实际文本和隐藏的本地化“上次确认”伪元素叠在同一 grid 单元，预留该完整标签的固有尺寸；状态由当前变为上次确认时，窄屏标题信息不会因徽标扩宽重新换行，也不向可访问文本加入重复标签。任务面板标题同样预留当前任务标题的固有尺寸；快照说明一直保留布局占位，仅在当前观测时以 visibility 隐藏并从可访问名称排除，使重新确认不改变任务表格的位置。列表卡、详情面板和任务行复用工作空间样式与键盘导航，React 使用稳定 Worker/任务标识保持 tick 和刷新中的有效焦点。中英文目录覆盖状态、失败、时间、资源和可访问名称。桌面及 390px 的长机器名、目录和任务名自然换行。
 
-[Web 观测决策](../../.agents/notes/implemented/architecture/2026-10-29-web-worker-observations.md)保存页级读取、单调时钟及陈旧冻结的取舍；[快照设计](daynight-worker-snapshots.md)和[客户端采集设计](daynight-worker-reporting.md)分别拥有服务端归一化与采集口径。
+[Web 观测决策](../../.agents/notes/implemented/architecture/2026-10-29-web-worker-observations.md)保存页级读取、单调时钟及陈旧冻结的取舍；[静默检查决策](../../.agents/notes/implemented/bug-fix/2026-10-30-quiet-worker-rechecks.md)记录正常过渡与实际失败的提示区分；[快照设计](daynight-worker-snapshots.md)和[客户端采集设计](daynight-worker-reporting.md)分别拥有服务端归一化与采集口径。
 
 ### 项目列表 `/projects`
 
