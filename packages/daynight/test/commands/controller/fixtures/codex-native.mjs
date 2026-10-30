@@ -8,6 +8,10 @@ for await (const line of createInterface({input:process.stdin})) {
   const expected=process.env.EXPECT_WORKER_PERMISSIONS==='yes';
   if((m.params.sandbox==='danger-full-access')!==expected || (m.params.approvalPolicy==='never')!==expected) {out({id:m.id,error:{code:-32602,message:'Unexpected native permissions'}});continue;}
  }
+ if(process.env.EXPECT_AGENT_CLI_ENV && (m.method==='thread/start'||m.method==='thread/resume')) {
+  const expected=JSON.parse(process.env.EXPECT_AGENT_CLI_ENV);
+  if (Object.entries(expected).some(([key,value])=>m.params.config?.['shell_environment_policy.set.'+key]!==value)) {out({id:m.id,error:{code:-32602,message:'Agent CLI environment did not override native shell snapshot'}});continue;}
+ }
  if(m.method==='thread/start'||m.method==='thread/resume')out({id:m.id,result:{thread:{id:'native-thread',cwd:process.cwd()}}});
  if(m.method==='thread/items/list')out({id:m.id,result:{data:[{type:'userMessage',id:'history-user',clientId:'persisted-operation',content:[{type:'text',text:'previous'}]}],nextCursor:null}});
  if(m.method==='thread/read')out({id:m.id,result:{thread:{id:'native-thread',turns:[]}}});

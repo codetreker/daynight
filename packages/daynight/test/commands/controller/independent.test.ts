@@ -3,19 +3,28 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, readFile, readdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), resume: vi.fn(), release: vi.fn() }));
+const f = vi.hoisted(() => ({ spawn: vi.fn(), request: vi.fn(), stop: vi.fn(), record: vi.fn(), snapshot: vi.fn(), capture: vi.fn(), archive: vi.fn(), resume: vi.fn(), release: vi.fn() }));
 vi.mock("node:child_process", () => ({ spawn: f.spawn }));
 vi.mock("../../../src/config/server.js", async original => ({ ...await original<typeof import("../../../src/config/server.js")>(), loadServerConfiguration: async () => ({ serverUrl: "https://daynight.example", serverToken: "private-token" }) }));
 vi.mock("../../../src/commands/controller/local-client.js", async original => ({ ...await original<typeof import("../../../src/commands/controller/local-client.js")>(), requestController: f.request }));
 vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readControllerSnapshot: f.snapshot, recordStoppedControllerGeneration: f.record }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: f.capture, stopControllerProcesses: f.stop }));
+vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
+import { resolveControllerIpcEndpoint } from "../../../src/commands/controller/paths.js";
 import { runIndependentController } from "../../../src/commands/controller/independent.js";
 import { SESSION_PROTOCOL } from "../../../src/session/protocol.js";
 import type { CliContext } from "../../../src/cli/context.js";
 const id = "11111111-1111-4111-8111-111111111111";
 const roots: string[] = [];
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllGlobals(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.restoreAllMocks(); vi.unstubAllGlobals();
+  for (const root of roots.splice(0)) {
+    if (process.platform !== "win32") await rm(path.dirname(resolveControllerIpcEndpoint(root, id)), { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
+  }
+  vi.unstubAllEnvs();
+});
 beforeEach(() => vi.clearAllMocks());
 const setup = async (prompt: string | null, archiveFailure = false) => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/ct"); await mkdir(base, { recursive: true });
@@ -32,6 +41,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
       return Response.json({ session });
     }
     if (url.endsWith("controller-grant")) return Response.json({ token: "controller-private-token", expiresAt: new Date(Date.now() + 900_000).toISOString(), sessionId: id, testExecutionId: registration.testExecutionId, executionGeneration: "1", controllerId: registration.controllerId, controllerInstanceId: registration.controllerInstanceId });
+    if (url.endsWith("/archive")) return Response.json({ archive: { state: "pending", sha256: null, byteLength: null, errorCode: null } });
     if (url.endsWith("/stop")) return archiveFailure ? new Response("", { status: 401 }) : Response.json({ session: { ...session, lifecycle: "archived" } });
     throw new Error("Unexpected request");
   }));
@@ -42,6 +52,7 @@ const setup = async (prompt: string | null, archiveFailure = false) => {
   f.snapshot.mockReturnValue({ controllerProcess: proof, nativeProcesses: [] });
   f.record.mockResolvedValue({ stoppedAt: new Date().toISOString() });
   f.stop.mockResolvedValue(undefined);
+  f.archive.mockResolvedValue({ state: "ready" });
   f.request.mockImplementation(async (_ticket, action) => {
     if (action.kind === "stop") { child.exitCode = 0; child.emit("exit", 0); return {}; }
     if (action.kind === "observe") { if (prompt === null) process.emit("SIGINT", "SIGINT"); return { snapshot: { lifecycle: "ready", nativeSessionId: null } }; }
@@ -331,4 +342,111 @@ test.each(["lost-response", "unknown-receipt"] as const)("reconciles terminal in
     expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
     expect(f.spawn).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
   }
+});
+
+
+test("isolates standalone state and child root without changing native home", async () => {
+  const v = await setup(null), root = path.join(v.home, "dev-state");
+  vi.stubEnv("DN_CONFIG_DIR", root);
+  vi.stubEnv("HOME", "/real/user/home");
+  vi.stubEnv("USERPROFILE", "/real/user/profile");
+  vi.stubEnv("CODEX_HOME", undefined);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  const launch = (await readdir(path.join(root, "controller", "launches")))[0]!;
+  const ticket = JSON.parse(await readFile(path.join(root, "controller", "launches", launch), "utf8"));
+  expect(ticket.nativeHome).toBe(path.join(v.home, ".codex"));
+  expect(ticket.credentialFile).toContain(path.join(root, "controller", "executions"));
+  expect(f.spawn.mock.calls[0]![2].env).toMatchObject({ DN_CONFIG_DIR: root, HOME: "/real/user/home", USERPROFILE: "/real/user/profile" });
+  await expect(readdir(path.join(v.home, ".daynight"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+test("history upload failure reports stopped execution and a native-free retry command", async () => {
+  const v = await setup(null);
+  f.archive.mockRejectedValueOnce(new Error("network unavailable"));
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
+  expect(f.archive).toHaveBeenCalledOnce();
+  expect(v.err.join("")).toContain("Native execution stopped; session history upload is pending");
+  expect(v.err.join("")).toContain(`daynight controller codex archive ${id}`);
+  expect(v.err.join("")).not.toContain("stop could not be fully confirmed");
+  expect(v.out.join("")).not.toContain("stopped and archived");
+  const call = f.archive.mock.calls[0]![0];
+  expect(call.serverToken).toBe("private-token");
+  expect(call.signal).toBeUndefined();
+});
+test("unconfirmed server stop never publishes completed content", async () => {
+  const v = await setup(null, true);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(f.archive).not.toHaveBeenCalled();
+  expect(v.err.join("")).toContain(`daynight controller codex archive ${id}`);
+});
+
+test("archive-only retry reuses saved stop proof without starting a process or requiring the old directory", async () => {
+  const v = await setup(null);
+  f.archive.mockRejectedValueOnce(new Error("offline"));
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  const oldProof = v.requests.find(request => request.url.endsWith("/stop"))!.body;
+  const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
+  v.context.workingDirectory = () => { throw new Error("Old worktree no longer exists"); };
+  await retryIndependentArchive({ provider: "codex", sessionId: id }, v.context);
+  expect(f.spawn).toHaveBeenCalledOnce();
+  expect(f.archive).toHaveBeenCalledTimes(2);
+  expect(v.requests.filter(request => request.url.endsWith("/stop")).map(request => request.body)).toEqual([oldProof, oldProof]);
+  expect(v.out.join("")).toContain(`Test Session history archived: https://daynight.example/test-sessions/${id}`);
+});
+
+test("publishes pending history only after native stop and before closing the server session", async () => {
+  const v = await setup(null), fetch = vi.mocked(globalThis.fetch), original = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (...args) => {
+    if (String(args[0]).endsWith("/archive")) {
+      expect(f.record).toHaveBeenCalledOnce();
+      expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+    }
+    return original(...args);
+  });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  const requests = v.requests.filter(request => /\/(archive|stop)$/.test(request.url));
+  expect(requests.map(request => request.url.split("/").at(-1))).toEqual(["archive", "stop"]);
+  const stopped = requests[1]!.body;
+  expect(requests[0]!.body).toEqual({ sessionId: stopped.sessionId, testExecutionId: stopped.testExecutionId, executionGeneration: stopped.executionGeneration, controllerId: stopped.controllerId, controllerInstanceId: stopped.controllerInstanceId, state: "pending", errorCode: null });
+});
+test.each(["http", "network"])("pending metadata %s failure cannot block server stop or history upload", async failure => {
+  const v = await setup(null), fetch = vi.mocked(globalThis.fetch), original = fetch.getMockImplementation()!;
+  fetch.mockImplementation(async (...args) => {
+    if (String(args[0]).endsWith("/archive")) {
+      if (failure === "network") throw new Error("offline");
+      return new Response(null, { status: 503 });
+    }
+    return original(...args);
+  });
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(true);
+  expect(f.archive).toHaveBeenCalledOnce();
+  expect(v.out.join("")).toContain("stopped and archived");
+});
+test("never-started sessions do not announce a pending history archive", async () => {
+  const v = await setup(null), stdout = v.context.stdout;
+  v.context.stdout = text => { stdout(text); if (text.startsWith("Test Session:")) process.emit("SIGINT", "SIGINT"); };
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  expect(v.requests.some(request => request.url.endsWith("/archive"))).toBe(false);
+  expect(f.archive).not.toHaveBeenCalled();
+});
+test("archive-only retry marks pending before stop and tolerates metadata publication failure", async () => {
+  const v = await setup(null);
+  await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
+  const { retryIndependentArchive } = await import("../../../src/commands/controller/independent-archive.js");
+  const fetch = vi.mocked(globalThis.fetch), original = fetch.getMockImplementation()!, order: string[] = [];
+  fetch.mockImplementation(async (...args) => {
+    const url = String(args[0]);
+    if (url.endsWith("/archive")) {
+      expect(f.record).toHaveBeenCalledTimes(2);
+      order.push("pending"); throw new Error("offline");
+    }
+    if (url.endsWith("/stop")) order.push("stop");
+    return original(...args);
+  });
+  await retryIndependentArchive({ provider: "codex", sessionId: id }, v.context);
+  expect(order).toEqual(["pending", "stop"]);
+  expect(f.archive).toHaveBeenCalledTimes(2);
+  expect(f.spawn).toHaveBeenCalledOnce();
 });

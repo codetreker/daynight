@@ -1,4 +1,5 @@
 import type { WorkerPaths } from "./paths.js";
+import type { HerdrWorkspaceEnvironment } from "./herdr/agents.js";
 import { createHerdrAgentManager } from "./herdr/agents.js";
 import { createHerdrInstance } from "./herdr/instance.js";
 import { createHerdrPreflight } from "./herdr/preflight.js";
@@ -23,11 +24,12 @@ export const createWorkerHerdr = (options: {
   homeDirectory: string;
   executable?: string;
   environment?: NodeJS.ProcessEnv;
+  agentEnvironment?: Readonly<{ PATH?: string; DN_CONFIG_DIR?: string }>;
 }) => {
   const inheritedEnvironment = options.environment === undefined ? process.env : options.environment;
   const instance = createHerdrInstance({ ...options, environment: inheritedEnvironment });
   const nativeEnvironment = { ...instance.environment };
-  const workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" };
+  const workspaceEnvironment: { -readonly [K in keyof HerdrWorkspaceEnvironment]: HerdrWorkspaceEnvironment[K] } = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", ...options.agentEnvironment };
   for (const key of ["XDG_CONFIG_HOME", "XDG_STATE_HOME"] as const) {
     const value = inheritedEnvironment[key];
     if (value === undefined) delete nativeEnvironment[key];

@@ -33,7 +33,7 @@ func New(dependencies Dependencies, config Config, logger *slog.Logger) (http.Ha
 	taskRoutes(mux, service.NewTasks(dependencies.Store), auth, logger)
 	taskSyncRoutes(mux, service.NewTaskSync(dependencies.Store, config.TaskSyncOverlap), auth, logger, config.TaskSyncOverlap)
 	attachmentRoutes(mux, service.NewAttachments(dependencies.Store, dependencies.Files), auth, logger)
-	relay := newSessionRoutes(sessionrelay.New(dependencies.Store), auth, logger)
+	relay := newSessionRoutes(sessionrelay.New(dependencies.Store, dependencies.Files), auth, logger)
 	relay.register(mux)
 	healthRoutes(mux, dependencies.Store, logger)
 	uiRoutes(mux, logger)

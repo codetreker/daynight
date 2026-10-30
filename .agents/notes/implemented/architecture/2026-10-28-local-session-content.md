@@ -13,10 +13,14 @@ also used their contents for dispatch and approval validation.
 
 ## Decision
 
-The Controller owns session content in its local execution environment. Its
-SQLite projection retains stable entry order and revisions after transport ACKs;
-local operation records retain full input and native evidence. The service
-forwards authenticated history and resource requests to the online Controller.
+The Controller owns live session content in its local execution environment.
+The original decision kept its projection in SQLite and required the original
+environment to remain online for reading. The
+[file archive decision](2026-10-30-session-file-archives.md) partially supersedes
+that storage and completed-session lifetime: pending files retain timeline and
+resources, SQLite retains order/revision metadata and operation evidence, and
+completed content is uploaded for read-only access. The service still forwards
+authenticated live history and resource requests to the online Controller.
 PostgreSQL retains enumerated control identity and small operation summaries,
 without message text, tool results, resource bytes, control catalogs or native
 error details. Display state and recent events have bounded in-memory caches.
@@ -81,11 +85,13 @@ subsequent events progress without deleting the local content.
 
 ## Consequences
 
-A new browser cannot load session content while its Controller is offline. An
-already-open view can retain its loaded offline picture; controls stay disabled.
-Archived session URLs expose identity and necessary receipts, not server-side
-chat playback. Local data loss has no database content fallback. Native history
-can assist recovery but cannot invent lost approval or operation evidence.
+A new browser cannot load an active session while its Controller is offline.
+An already-open view can retain its loaded offline picture; controls stay
+disabled. The initial decision also excluded completed-session playback because
+continued environment availability was an accepted requirement. Completed file
+archives now provide read-only access under the successor decision, without a
+PostgreSQL content fallback or native resume. Native history can assist recovery
+but cannot invent lost approval or operation evidence.
 
 The service is no longer a durable command-body queue. A relay acceptance means
 temporary receipt; browser drafts remain until native acceptance. Reconnect

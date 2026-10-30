@@ -125,5 +125,5 @@ export const taskDefinition: CommandDefinition = {
     },
   ],
   options: [helpOption],
-  details: "Without --project, resolve the current Git origin to its project using the repository binding.\nText options also accept --option=value; use this form for values starting with a dash.\nServer: https://daynight.cc (optional serverUrl override in ~/.daynight/config.yml)\nRun daynight task <command> --help for command usage.",
+  details: "Without --project, resolve the current Git origin to its project using the repository binding.\nText options also accept --option=value; use this form for values starting with a dash.\nServer: https://daynight.cc (optional serverUrl override in DN_CONFIG_DIR/config.yml (default: ~/.daynight/config.yml))\nRun daynight task <command> --help for command usage.",
 };

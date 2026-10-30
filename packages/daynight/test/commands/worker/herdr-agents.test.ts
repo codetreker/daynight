@@ -25,7 +25,7 @@ const configuration: HerdrAgentConfiguration = { agent: "codex", model: "model-a
 const composerScreen = "  >_ OpenAI Codex (v0.164.0)\n\n› Ask Codex to do anything\n\n  GPT-6.1 Sol default · /task\n";
 const trustScreen = "  Folder access\n  /task\n\n  Trust this folder? Codex can read, edit, and run files here.\n\n› 1. Trust and continue\n  2. Quit\n\n  enter continue · esc quit\n";
 
-const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
+const fixture = async (kind: "codex" | "copilot" | "claude" = "codex", workspaceEnvironment: HerdrWorkspaceEnvironment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "" }) => {
   const scratch = path.resolve(import.meta.dirname, "../../../../../.tmp/herdr-agent-tests"); await mkdir(scratch, { recursive: true });
   const cwd = await mkdtemp(path.join(scratch, "task-")); directories.push(cwd);
   const context: HerdrExecutionContext = { projectId, taskId, claimId, worktreeId, cwd, agent: kind };
@@ -578,4 +578,21 @@ it("does not type into Claude trust even when its native hook and OSC state say 
   f.hook(async method => method === "agent.read" ? { type:"pane_read",read:{pane_id:prepared.paneId,workspace_id:prepared.workspaceId,tab_id:f.panes[0]!.tab_id,source:"visible",format:"text",text:"Do you trust the files in this folder?\n❯ 1. Yes\nEnter to confirm · Esc to cancel",revision:0,truncated:false} } : undefined);
   await expect(f.manager.start(f.context,prepared,{...prepared,configuration:{agent:"claude",model:null,args:[]},prompt:"business"},operation())).rejects.toMatchObject({promptSubmission:"not-submitted"});
   expect(f.prompts).toEqual([]);
+});
+
+
+it("passes explicit CLI routing into each new Herdr workspace without changing native XDG settings", async () => {
+  const environment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "/native/state", PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" };
+  const f = await fixture("codex", environment);
+  await f.manager.prepareWorkspace(f.context, taskTitle, operation());
+  expect(f.calls.find(call => call.method === "workspace.create")?.params.env).toMatchObject(environment);
+});
+
+
+it("binds Codex CLI mappings through native shell policy after all user arguments", async () => {
+  const environment = { XDG_CONFIG_HOME: "", XDG_STATE_HOME: "", PATH: "/private/aliases:/usr/bin", DN_CONFIG_DIR: "/private/dev" };
+  const f = await fixture("codex", environment);
+  await launch(f);
+  const args = f.calls.find(call => call.method === "agent.start")!.params.args as string[];
+  expect(args.slice(-4)).toEqual(["-c", 'shell_environment_policy.set.PATH="/private/aliases:/usr/bin"', "-c", 'shell_environment_policy.set.DN_CONFIG_DIR="/private/dev"']);
 });

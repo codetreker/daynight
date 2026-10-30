@@ -1,8 +1,9 @@
 import { sessionDisplayEntry } from "./wire-display.js";
 import type { SessionControls } from "../../session/controls.js";
 import Database from "better-sqlite3";
+import { openPendingContent, migratePendingContent, reconcilePendingContent } from "./pending-content.js";
 import { createLocalSessionContent } from "./local-content.js";
-import { chmodSync } from "node:fs";
+import { chmodSync, existsSync } from "node:fs";
 import { sessionBinding, type SessionBinding, type InitialInputState, type OperationState, type SessionCapabilities } from "../../session/protocol.js";
 import { controllerPayloadHash, parseLaunchTicket, type ControllerLaunchTicket } from "./launch-ticket.js";
 import { parseSourceEvent, type SourceTimelineEntry } from "../../session/controller-protocol.js";
@@ -33,7 +34,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   const initial: ControllerSnapshot = { executionId: ticket.executionId, ...sessionBinding(ticket), sessionId: ticket.sessionId, executionGeneration: ticket.executionGeneration, controllerInstanceId: ticket.controllerInstanceId, lifecycle: "starting", nativeSessionId: ticket.resumeNativeSessionId, initialInputState: ticket.initialInput === "none" ? "not_required" : "not_submitted", activity: "initializing", currentTurnId: null, capabilities: { send: false, steer: false, cancel: false, respond: false }, controllerProcess: null, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null };
   const atomic = <T>(action: () => T): T => db.transaction(action).immediate();
   try { atomic(() => {
-    const version = db.pragma("user_version", { simple: true }); if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5) throw new Error("Unsupported controller journal version.");
+    const version = db.pragma("user_version", { simple: true }); if (version !== 0 && version !== 1 && version !== 2 && version !== 3 && version !== 4 && version !== 5 && version !== 6) throw new Error("Unsupported controller journal version.");
     if (version === 0) db.exec("CREATE TABLE execution (id INTEGER PRIMARY KEY CHECK(id=1), ticket_hash TEXT NOT NULL, owner_pid INTEGER, snapshot TEXT NOT NULL, last_sequence INTEGER NOT NULL DEFAULT 0); CREATE TABLE operations (id TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE outbox (sequence INTEGER PRIMARY KEY, value TEXT NOT NULL); PRAGMA user_version=1;");
     if (version < 2) db.exec("ALTER TABLE execution ADD COLUMN last_acknowledged INTEGER NOT NULL DEFAULT 0; CREATE TABLE projection (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, revision INTEGER NOT NULL, value TEXT NOT NULL); PRAGMA user_version=2;");
     if (version < 3) db.exec("ALTER TABLE operations ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=3;");
@@ -75,7 +76,17 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
   });
   const outboxBytes = (): number => (db.prepare("SELECT COALESCE(SUM(length(CAST(value AS BLOB))),0) AS bytes FROM outbox").get() as { bytes: number }).bytes;
   const assertInputCapacity = (): void => { if (!options.contentOwnedLocally && outboxBytes() >= maxOutboxBytes * 0.8) throw new Error("Controller outbox capacity reached; native input is paused until durable events are acknowledged."); };
-  const localContent = createLocalSessionContent(db, ticket.sessionId);
+  let pendingContent: ReturnType<typeof openPendingContent>;
+  try {
+    if (Number(db.pragma("user_version", { simple: true })) >= 6 && !existsSync(`${file}.pending-content/manifest.json`)) throw new Error("Pending archive source is missing.");
+    pendingContent = openPendingContent(file, ticket.sessionId);
+    migratePendingContent(db, pendingContent);
+    reconcilePendingContent(db, pendingContent);
+  } catch (error) {
+    db.prepare("UPDATE execution SET owner_pid=NULL WHERE id=1 AND owner_pid=?").run(process.pid);
+    db.close(); throw error;
+  }
+  const localContent = createLocalSessionContent(pendingContent, ticket.sessionId);
   const appendEvent = (payload: unknown): ControllerOutboxEvent => atomic(() => {
     if (options.contentOwnedLocally && payload && typeof payload === "object" && "kind" in payload && payload.kind === "resource" && "payload" in payload) {
       const event = parseSourceEvent({ sourceSeq: "1", ...payload });
@@ -109,7 +120,7 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
         if (Buffer.byteLength(JSON.stringify({kind:"gap",payload:{reason:safeReason + character}})) > 256) break;
         safeReason += character;
       }
-      db.prepare("UPDATE execution SET projection_gap=COALESCE(projection_gap,?) WHERE id=1").run(safeReason);
+      db.prepare("UPDATE execution SET projection_gap=COALESCE(projection_gap,?),archive_incomplete=1 WHERE id=1").run(safeReason);
     },
     drainProjectionGap: (): ControllerOutboxEvent | null => atomic(() => {
       const row = db.prepare("SELECT projection_gap AS reason FROM execution WHERE id=1").get() as {reason:string|null};
@@ -132,13 +143,17 @@ export const openControllerLifecycleStore = (file: string, ticket: ControllerLau
       const { revision: ignored, entrySeq: ignoredSequence, ...content } = entry;
       void ignored; void ignoredSequence;
       const contentHash = controllerPayloadHash(content);
-      const previous = db.prepare("SELECT content_hash, CAST(revision AS TEXT) AS revision, CAST(rowid AS TEXT) AS entrySeq FROM projection WHERE id=?").get(entry.entryId) as { content_hash: string; revision: string; entrySeq: string } | undefined;
-      if (previous?.content_hash === contentHash) return null;
+      const previous = pendingContent.entries.get(entry.entryId);
+      const previousContent = previous ? (({ revision, entrySeq, ...value }) => { void revision; void entrySeq; return value; })(previous) : null;
+      if (previousContent !== null && controllerPayloadHash(previousContent) === contentHash) return null;
       const revision = String(previous === undefined ? 1n : BigInt(previous.revision) + 1n);
-      const entrySeq = previous?.entrySeq ?? (db.prepare("SELECT CAST(COALESCE(MAX(rowid),0)+1 AS TEXT) AS value FROM projection").get() as { value: string }).value;
+      const entrySeq = previous?.entrySeq ?? pendingContent.nextEntrySequence();
       const payload = { ...content, revision, ...(options.contentOwnedLocally ? { entrySeq } : {}) } as SourceTimelineEntry;
       parseSourceEvent({ sourceSeq: "1", kind: "timeline_upsert", payload });
-      db.prepare("INSERT INTO projection(id,content_hash,revision,value) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_hash=excluded.content_hash,revision=excluded.revision,value=excluded.value").run(entry.entryId, contentHash, BigInt(revision), JSON.stringify(payload));
+      // Durable file first: a failed SQL outbox commit still rehydrates the latest content.
+      const durableEntry = { ...payload, entrySeq } as import("../../session/protocol.js").TimelineEntry;
+      pendingContent.saveEntry(durableEntry);
+      db.prepare("INSERT INTO content_index VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET content_hash=excluded.content_hash,revision=excluded.revision,entry_seq=excluded.entry_seq").run(entry.entryId, controllerPayloadHash(durableEntry), revision, entrySeq);
       return appendEvent({ kind: "timeline_upsert", payload: options.contentOwnedLocally ? sessionDisplayEntry(payload) : payload });
     }),
     prepareOperation: (input: Pick<ControllerOperation, "operationId" | "kind" | "payload">): ControllerOperation => atomic(() => {

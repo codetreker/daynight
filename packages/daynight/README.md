@@ -13,6 +13,7 @@ its exact usage. Review execution additionally requires Git, an authenticated
 GitHub CLI and Copilot CLI on `PATH`.
 
 - [Install and update](#install-and-update)
+- [Configuration root](#configuration-root)
 - [Client commands](#client-commands)
 - [Agent skill installation](#agent-skill-installation)
 - [Shell completion](#shell-completion)
@@ -87,6 +88,28 @@ on Windows, a reviewer or worker holding a native addon open can prevent npm fro
 that file and cause the update to fail. The
 [self-update decision](../../.agents/notes/archived/feature/2026-10-20-cli-self-update.md)
 records installation ownership and verification requirements.
+
+## Configuration root
+
+`DN_CONFIG_DIR` selects the absolute directory containing `config.yml` and all
+Daynight user-local state. When unset, it remains `~/.daynight`. Empty or relative
+values and paths containing control characters are rejected; use an expanded
+absolute path such as `DN_CONFIG_DIR="$HOME/.daynight-test"`. Paths shown under
+`~/.daynight` in this manual describe that default and follow the selected root.
+
+The root includes credentials, worker identity, Worker/Review SQLite databases,
+locks, logs, caches, Controller launch tickets, journals, content and resume leases.
+Controller IPC identities are scoped to this root; long Unix socket paths use a
+private owner-checked temporary directory. Herdr retains its native socket length
+limit and reports an error for overly long roots; select a shorter root for
+Herdr mode. Native home and Provider session directories remain unchanged.
+Project `.daynight` bindings, Git worktrees, installed skills, npm installations
+and remote service data are not isolated by this setting.
+
+Top-level `agentCliAliases` optionally maps `daynight` and/or `dn` to another
+executable for newly launched Worker/Controller Agents. It defaults to disabled.
+The [development channel guide](../../docs/development.md#keep-the-skills-command-spelling)
+explains the mapping, platform limits, fixed build lifetime and shell verification.
 
 ## Client commands
 
@@ -1020,7 +1043,7 @@ daynight worker run
 ```
 
 First use generates and atomically saves stable root workerId. One instance owns
-fixed `~/.daynight/worker/` state, its SQLite, lock, logs, temporary resources and
+`worker/` state under the selected configuration root (default `~/.daynight/worker/`), its SQLite, lock, logs, temporary resources and
 private Herdr. Each task uses branch `daynight/<task-id>` and directory
 `<repository>/.worktrees/daynight/<task-id>`. Valid claims retain their dirty
 worktree; task branches and commits remain after terminal cleanup.
@@ -1313,18 +1336,35 @@ for its supported options. These commands do not implement a native TUI or chang
 The command prints the Test Session URL and remains in the foreground. Sign in
 to Daynight as the account that started it; the URL itself grants no access.
 The service's `/test-sessions` page lists that account's online Test Sessions.
-Archived history remains available through the original URL and local resume. Use the sidebar or the Session page's back link to
-return to the list; session IDs do not need to be copied manually.
+Completed history is available through the original URL after its file archive
+is ready. Native resume creates a separate execution. Use the sidebar or the
+Session page's back link to return to the list; session IDs do not need to be
+copied manually.
 The page, history, resources, WebSocket and commands all enforce that ownership.
 An expired or revoked credential cannot continue authorizing access. Tokens stay
 in private local files and never appear in the URL.
 
 Task and Test pages share the same timeline, composer and interaction handling.
 Refreshing or closing a browser does not create or stop an Agent. Ctrl+C stops
-the owned execution; the service retains its archived history as read-only when
-shutdown registration succeeds. Service unavailability does not prevent local
-process cleanup, but leaves remote archival unconfirmed. The current directory
-and user files are never removed by the launcher.
+the owned execution. Once the service confirms shutdown, the launcher uploads
+its recorded timeline and resources to file storage for read-only access. The
+service database stores archive metadata, not conversation payloads. Service
+unavailability does not prevent local process cleanup; failed uploads retain
+their private local source. The current directory and user files are never
+removed by the launcher.
+
+Retry a failed upload without starting or resuming the Agent:
+
+```sh
+daynight controller codex archive <test-session-id>
+```
+
+The same command supports `claude` and `copilot`. It verifies the original local
+execution and stop evidence, and does not require the old working directory to
+still exist. Use `-- archive` to send the literal word as an initial prompt.
+Archives are limited to 64 MiB including resource encoding, with at most 8 MiB
+per resource; incomplete or oversized archives fail explicitly and retain their
+source. Completed pages disable all Agent controls.
 
 Resume a stopped Test Session with its native context:
 
@@ -1426,8 +1466,7 @@ daynight review run
 ```
 
 For a local build, run `pnpm daynight review run` from the repository root.
-These commands select `~/.daynight/config.yml` using the current OS user's home
-directory. `review add-repo`
+These commands select `config.yml` under the [configuration root](#configuration-root). `review add-repo`
 creates the configuration when absent. It reads, validates and saves configuration;
 cloning, authentication checks, GitHub calls, SQLite initialization and PR boundary
 selection belong to review startup. An already running reviewer keeps its loaded
@@ -1510,7 +1549,7 @@ This observes actual case and Unicode rules. Validation removes only the
 directories it created, using nonrecursive removal. Probe permission, inspection,
 or cleanup failures stop validation with an error.
 
-The selected retained-state location is `~/.daynight/` for SQLite, sessions,
+The selected retained-state location is `DN_CONFIG_DIR` (default `~/.daynight/`) for SQLite, sessions,
 locks, logs, cache, and temporary files. PR worktrees belong to each monitored
 repository root's `.worktrees/` directory. `maxConcurrentWorker` limits concurrent
 review preparation and execution. Startup acquires an exclusive instance lock,

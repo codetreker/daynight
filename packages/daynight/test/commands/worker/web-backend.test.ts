@@ -120,3 +120,38 @@ it("preserves an existing cleanup deadline and gives an expired first terminal c
   expect(request).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
 });
+
+it("retains the stopped task worktree on archive failure and retries without relaunching business work", async () => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never), 3);
+  task = f.store.initializeWebExecution(task, 4);
+  task = f.store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "managed", launchSubmission: "acknowledged" }, 5);
+  task = f.store.beginCleanup(task, { kind: "terminal", deadline: 10 }, 6);
+  task = f.store.recordCleanupResult(task, "completed", null, 7);
+  task = f.store.confirmAgentStopped(task, { agentStopped: true }, 8);
+  task = f.store.confirmBackendResourcesClosed(task, { controllerStopped: true, endpointClosed: true }, 9);
+  const archive = vi.fn().mockRejectedValueOnce(new Error("archive offline")).mockResolvedValue(undefined);
+  const launcher = { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() };
+  const request = vi.fn<typeof requestController>();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive, request });
+  await expect(backend.cleanup(task, "terminal", 30)).rejects.toThrow("archive offline");
+  expect(f.git.removeWorktree).not.toHaveBeenCalled();
+  expect(f.store.getTask(task)?.cleanup).toMatchObject({ agentStopped: true, worktreeDeleted: false });
+  const result = await backend.cleanup(task, "terminal", 30);
+  expect(result.cleanup?.worktreeDeleted).toBe(true);
+  expect(archive).toHaveBeenCalledTimes(2);
+  expect(f.git.removeWorktree).toHaveBeenCalledOnce();
+  expect(launcher.launch).not.toHaveBeenCalled(); expect(request).not.toHaveBeenCalled();
+});
+it("ordinary shutdown retains history without publishing an ended archive", async () => {
+  const f = await fixture(); let task = f.store.initializeWebExecution(f.store.getTask(f.identity)!, 3);
+  task = f.store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "managed", launchSubmission: "acknowledged" }, 4);
+  task = f.store.beginCleanup(task, { kind: "shutdown", deadline: 10 }, 5);
+  task = f.store.recordCleanupResult(task, "completed", null, 6);
+  task = f.store.confirmAgentStopped(task, { agentStopped: true }, 7);
+  task = f.store.confirmBackendResourcesClosed(task, { controllerStopped: true, endpointClosed: true }, 8);
+  const archive = vi.fn();
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 20, archive });
+  await backend.cleanup(task, "shutdown", 30);
+  expect(archive).not.toHaveBeenCalled(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+});
