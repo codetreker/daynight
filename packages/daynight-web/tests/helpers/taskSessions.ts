@@ -1,15 +1,16 @@
-import type { GraphTask, TaskDetail, TaskGraph } from '../../src/api/types';
+import type { GraphTask, TaskDetail, TaskGraph, TaskProperties } from '../../src/api/types';
 import { createTaskCacheScope, type TaskCacheScope } from '../../src/features/task-cache/TaskCacheProvider';
 import type { CachedProject } from '../../src/features/task-cache/project-cache';
 import { graphFixture } from './taskDetail';
 import { taskSyncEpoch, taskSyncFromGraph, TEST_VIEWER_ID } from './taskSync';
 
-export const admitTaskGraph = async (scope: TaskCacheScope, graph: TaskGraph, { versionForTask, epoch = taskSyncEpoch(graph.project.id) }: {
+export const admitTaskGraph = async (scope: TaskCacheScope, graph: TaskGraph, { versionForTask, propertiesForTask, epoch = taskSyncEpoch(graph.project.id) }: {
   readonly versionForTask: (task: GraphTask) => bigint;
+  readonly propertiesForTask?: (task: GraphTask) => TaskProperties;
   readonly epoch?: string;
 }): Promise<CachedProject> => {
   const ticket = await scope.beginSync(graph.project.id, scope.signal);
-  const sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask });
+  const sync = taskSyncFromGraph(graph, { epoch, query: ticket.epoch === null ? {} : { epoch: ticket.epoch }, versionForTask, ...(propertiesForTask === undefined ? {} : { propertiesForTask }) });
   return (await scope.applySync(ticket, sync, scope.signal)).project;
 };
 
@@ -31,7 +32,7 @@ export const createTaskSessionWorld = ({ viewerId = TEST_VIEWER_ID, onIdentityMi
       }
       for (const projectId of changedProjects) {
         const project = projects.get(projectId)!;
-        await admitTaskGraph(scope, graphFixture([...project.details.values()]), { epoch: project.epoch, versionForTask: (task) => project.details.get(task.id)!.version });
+        await admitTaskGraph(scope, graphFixture([...project.details.values()]), { epoch: project.epoch, versionForTask: (task) => project.details.get(task.id)!.version, propertiesForTask: (task) => project.details.get(task.id)!.properties });
       }
     },
     node: (projectId: string, taskId: string): GraphTask => {

@@ -39,7 +39,11 @@ explicit GET recovery paths.
 
 Network results carry the lifecycle ticket captured before dispatch. Guarded
 transactions compare the current summary and stored detail versions before
-installation. Older bodies cannot replace newer content. The feed exposes
+installation. Summary comparison retains complete current properties and uses
+semantic JSON equality, so object key order is irrelevant while missing keys and
+array order remain observable. The
+[full-property synchronization decision](2026-10-30-task-property-sync.md) owns
+that feed expansion and schema-3 rebuild. Older bodies cannot replace newer content. The feed exposes
 current task rows and may skip intermediate business versions. A newer GET
 waits while its version is ahead of the summary and is admitted on an exact
 match. If the summary overtakes a pending payload, the session discards that

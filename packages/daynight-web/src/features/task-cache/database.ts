@@ -2,7 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Project, TaskDetail, TaskSummary } from "../../api/types";
 
 export const TASK_CACHE_DATABASE = "daynight-task-cache";
-export const TASK_CACHE_SCHEMA = 2;
+export const TASK_CACHE_SCHEMA = 3;
 export const TASK_CACHE_STORES = ["userScopes", "projects", "summaries", "details"] as const;
 export type UserScopeRecord = { readonly userId: string; readonly userFence: string };
 export type ProjectRecord = {

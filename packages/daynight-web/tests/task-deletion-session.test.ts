@@ -91,7 +91,7 @@ describe('task-local soft-delete ownership', () => {
   it('keeps terminal deletion through an epoch replacement and never reloads retained data', async () => {
     const sessions = createSessions(); await open(sessions); writes.mockResolvedValueOnce(); remove(sessions); await expectDeleted(sessions);
     const world = worlds.get(sessions)!; const surviving = detailFixture(project, sibling);
-    await admitTaskGraph(world.scope, graphFixture([surviving]), { epoch: crypto.randomUUID(), versionForTask: () => 1n });
+    await admitTaskGraph(world.scope, graphFixture([surviving]), { epoch: crypto.randomUUID(), versionForTask: () => 1n, propertiesForTask: () => surviving.properties });
     sessions.observe(project, task, undefined); sessions.load(project, task, 2, 'automatic'); sessions.requireOpeningRead(project, task); sessions.load(project, task, 3, 'open');
     expect(sessions.snapshot(project, task).status).toBe('deleted'); expect(sessions.snapshot(project, task).detail).toBeNull(); expect(reads).toHaveBeenCalledOnce(); expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(sibling)).toBe(true);
   });
@@ -102,7 +102,7 @@ describe('task-local soft-delete ownership', () => {
     expect(sessions.snapshot(project, task).mutation.phase).toBe('unknown'); expect(sessions.snapshot(project, task).mutation.reconciling).toBe(true);
     const readSignal = reads.mock.calls[1]![2]; const world = worlds.get(sessions)!; const revoke = vi.spyOn(world.scope, 'revokeProject');
     const surviving = detailFixture(project, sibling);
-    await admitTaskGraph(world.scope, graphFixture([surviving]), { epoch: crypto.randomUUID(), versionForTask: () => 1n });
+    await admitTaskGraph(world.scope, graphFixture([surviving]), { epoch: crypto.randomUUID(), versionForTask: () => 1n, propertiesForTask: () => surviving.properties });
     sessions.observe(project, task, undefined, true); await expectDeleted(sessions);
     expect(readSignal.aborted).toBe(true); expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(sessions.snapshot(project, task).mutation.reconciling).toBe(false);
     expect(revoke).not.toHaveBeenCalled(); expect(world.scope.getAuthorizedProject(project)?.index.nodes.has(sibling)).toBe(true);
@@ -112,7 +112,7 @@ describe('task-local soft-delete ownership', () => {
   it('keeps disappearance settled when the pending DELETE later loses its response', async () => {
     const sessions = createSessions(); await open(sessions); const pending = deferred<void>(); writes.mockReturnValueOnce(pending.promise); remove(sessions);
     await waitFor(() => expect(writes).toHaveBeenCalledOnce()); const world = worlds.get(sessions)!;
-    await admitTaskGraph(world.scope, graphFixture([detailFixture(project, sibling)]), { epoch: crypto.randomUUID(), versionForTask: () => 1n });
+    await admitTaskGraph(world.scope, graphFixture([detailFixture(project, sibling)]), { epoch: crypto.randomUUID(), versionForTask: () => 1n, propertiesForTask: () => detailFixture(project, sibling).properties });
     sessions.observe(project, task, undefined, true); await expectDeleted(sessions);
     pending.reject(new ApiError('network')); await new Promise((resolve) => setTimeout(resolve, 0));
     expect(sessions.snapshot(project, task).status).toBe('deleted'); expect(sessions.snapshot(project, task).mutation.phase).toBe('reconciled'); expect(sessions.snapshot(project, task).mutation.reconciling).toBe(false);

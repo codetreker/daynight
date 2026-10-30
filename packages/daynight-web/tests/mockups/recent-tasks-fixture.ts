@@ -105,7 +105,7 @@ export const createRecentFixture = () => {
         if (request.signal.aborted) abort();
         else request.signal.addEventListener('abort', abort, { once: true });
       });
-      return taskSyncResponse(graph, { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(url), versionForTask: () => 1n });
+      return taskSyncResponse(graph, { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(url), versionForTask: () => 1n, propertiesForTask: () => ({ pullRequests: [] }) });
     }
     if (match[4] === '/attachments') return wireResponse({ items: [], nextCursor: null }, { headers: viewerHeaders(TEST_VIEWER_ID) });
     const value = graph.tasks.find((item) => item.id === match[3]);

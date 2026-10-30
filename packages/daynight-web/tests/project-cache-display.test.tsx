@@ -70,18 +70,20 @@ it("publishes cold durable data before sync, keeps online admission separate, an
   expect(cache.getAuthorizedProject(projectId)).not.toBeNull();
 });
 
-it.each([new ApiError("network"), new ApiError("server", 500, "internal_error")])("retains cached data and exposes a failed background sync %#", async (failure) => {
-  await seed(); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
-  const { result } = mount();
+it.each([new ApiError("network"), new ApiError("server", 400, "invalid_input"), new ApiError("server", 500, "internal_error")])("retains cached data and exposes a failed background sync %#", async (failure) => {
+  await seed(); const cache = scope(); const pending = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(pending.promise);
+  const { result } = mount(cache);
   await waitFor(() => expect(result.current.snapshot?.revision).toBe(0));
   const data = result.current.snapshot!.graph;
   await act(async () => { pending.reject(failure); });
   await waitFor(() => expect(result.current.error).toBe(failure));
   expect(result.current.status).toBe("ready"); expect(result.current.snapshot!.graph).toBe(data);
   expect(result.current.snapshot!.receivedAt).toBeNull();
+  expect((await cache.readProject(projectId, new AbortController().signal))!.manifest.maxUpdatedAt).toBe(graph().tasks[0]!.updatedAt);
   const retried = deferred<TaskSync>(); vi.mocked(getTaskSync).mockReturnValueOnce(retried.promise);
   act(() => { result.current.refresh(); });
   await waitFor(() => expect(getTaskSync).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(getTaskSync).mock.calls[1]![1]).toEqual(vi.mocked(getTaskSync).mock.calls[0]![1]);
   expect(result.current).toMatchObject({ status: "ready", refreshing: true, error: failure });
   expect(result.current.snapshot!.graph).toBe(data);
   await act(async () => { retried.resolve(sync(graph())); });

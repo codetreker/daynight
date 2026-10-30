@@ -81,6 +81,10 @@ func (s *TaskSync) Get(ctx context.Context, principal core.Principal, projectID 
 			}
 		}
 		result.Tasks, err = snapshot.TaskSyncTasks(ctx, projectID, lower, graphTitlePreviewCharacters)
+		if validation := propertyValidationFault(err); validation != nil {
+			refusal = validation
+			return nil
+		}
 		if err != nil {
 			return err
 		}

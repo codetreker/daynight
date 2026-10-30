@@ -16,7 +16,7 @@ const taskId = (n: number) => `40000000-0000-0000-0000-${n.toString().padStart(1
 const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: taskId(n), version: 1n, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
+const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
 const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ mode: "delta", epoch, project, observedAt: later, tasks, ...changes });
 const signal = () => new AbortController().signal;
 const scopes: TaskCacheScope[] = [];
@@ -375,4 +375,52 @@ it("repairs a missing user record without retaining orphaned private rows or mal
   expect(ticket.epoch).toBeNull(); expect(await database.getAllFromIndex("summaries", "by-user", userId)).toEqual([]);
   expect(await database.get("projects", [userId, "malformed-project-key"])).toBeUndefined();
   expect(await database.get("projects", [userId, projectId])).toMatchObject({ state: "invalidated", userFence: ticket.userFence });
+});
+
+it("replaces deleted properties across tabs and prevents late values from resurrecting them", async () => {
+  const first = scope(); const second = scope();
+  const original = task(1, { properties: { pullRequests: [{ url: "opaque", title: "PR" }], future: { version: 42 } } });
+  await seed(first, [original]); await delta(second, []);
+  const late = await second.beginSync(projectId, signal());
+  await delta(first, [task(1, { version: 2n, updatedAt: later, properties: {} })]);
+  await vi.waitFor(() => expect(second.getAuthorizedProject(projectId)!.summaries.get(taskId(1))!.properties).toEqual({}));
+  const replay = await second.applySync(late, response([original]), signal());
+  expect(replay.changed).toBe(false);
+  expect(replay.project.summaries.get(taskId(1))!.properties).toEqual({});
+  expect(replay.project.manifest.maxUpdatedAt).toBe(later);
+  expect(replay.project.index.nodes.get(taskId(1))).not.toHaveProperty("properties");
+  const database = await inspect();
+  expect((await database.get("summaries", [userId, projectId, taskId(1)]))!.summary.properties).toEqual({});
+});
+
+it("keeps reordered equivalent properties write-free but rejects same-version property contradictions atomically", async () => {
+  const cache = scope();
+  const original = task(1, { properties: { future: { first: 1, second: ["a", "b"] }, pullRequests: [] } });
+  const initial = await seed(cache, [original, task(2)]); const counts = putCounts(); Channel.hints = [];
+  const duplicate = await delta(cache, [task(1, { properties: { pullRequests: [], future: { second: ["a", "b"], first: 1 } } })]);
+  expect(duplicate.changed).toBe(false); expect([...counts]).toEqual([]); expect(Channel.hints).toEqual([]);
+  expect(duplicate.project.summaries.get(taskId(1))).toBe(initial.project.summaries.get(taskId(1)));
+  for (const properties of [{}, { pullRequests: [] }, { future: null }]) {
+    await expect(delta(cache, [task(2, { version: 2n, updatedAt: later, properties: { changed: true } }), task(1, { properties })])).rejects.toMatchObject({ kind: "protocol" });
+    const stored = (await cache.readProject(projectId, signal()))!;
+    expect(stored.summaries.get(taskId(1))!.properties).toEqual(original.properties);
+    expect(stored.summaries.get(taskId(2))!.version).toBe(1n);
+    expect(stored.manifest).toEqual(initial.project.manifest);
+  }
+});
+
+it("rolls property replacements and the watermark back together after a partial summary write hits quota", async () => {
+  const cache = scope();
+  const original = [task(1, { properties: { pullRequests: [] } }), task(2, { properties: { future: { saved: true } } })];
+  const initial = await seed(cache, original); const put = fake.IDBObjectStore.prototype.put;
+  const failure = vi.spyOn(fake.IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
+    if (this.name === "summaries" && (args[0] as { taskId: string }).taskId === taskId(2)) throw new DOMException("Quota exceeded", "QuotaExceededError");
+    return put.apply(this, args);
+  });
+  await expect(delta(cache, original.map((row) => ({ ...row, version: 2n, updatedAt: later, properties: {} })))).rejects.toMatchObject({ category: "storage", cause: { name: "QuotaExceededError" } });
+  failure.mockRestore();
+  const database = await inspect();
+  expect((await database.get("summaries", [userId, projectId, taskId(1)]))!.summary.properties).toEqual(original[0]!.properties);
+  expect((await database.get("summaries", [userId, projectId, taskId(2)]))!.summary.properties).toEqual(original[1]!.properties);
+  expect(await database.get("projects", [userId, projectId])).toEqual(initial.project.manifest);
 });

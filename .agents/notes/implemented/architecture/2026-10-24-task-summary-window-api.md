@@ -27,9 +27,12 @@ read-only repeatable-read transaction for membership, Project, epoch, full graph
 size, intrinsic summaries and observedAt. Domain refusals are returned only after
 successful transaction completion. Task versions become decimal strings at the
 API boundary. The summary preserves the current three states, execution platform,
-Agent permission, timing and both dependency sets, without descriptions,
-properties or derived readiness. Nanosecond lower bounds are rounded upward to
-PostgreSQL microseconds before pgx binding to preserve the exact inclusive set.
+Agent permission, timing, both dependency sets and complete current properties,
+without descriptions or derived readiness. Task rows and batched properties share
+the same snapshot. Invalid stored properties are saved as a domain refusal inside
+the snapshot callback; query and transaction-completion errors take precedence
+and retain their internal-error classification. Nanosecond lower bounds are
+rounded upward to PostgreSQL microseconds before pgx binding to preserve the exact inclusive set.
 
 The existing project lock is acquired before assigning task statement timestamps.
 Under normal nondecreasing database time, the maximum task time actually consumed
@@ -81,6 +84,14 @@ can replace cookies between requests. The actual authenticated response identity
 is available at the existing middleware boundary and avoids guessed ownership.
 
 ## Consequences
+
+The initial API omitted properties to keep its graph/list feed compact while
+detail GETs owned complete content. The later
+[full-property synchronization decision](2026-10-30-task-property-sync.md)
+partially supersedes that projection: complete current properties now travel in
+snapshot and delta records, with the original time-window selection, authorization
+and transaction boundaries preserved. It explicitly accepts content-dependent
+transport and storage costs; graph node limits are not a property-byte bound.
 
 The API supplies latest bounded task summaries. Its original delivery left the
 complete-graph and CLI resource shapes unchanged. The later

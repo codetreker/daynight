@@ -23,7 +23,7 @@ const sessions: TaskDetailSessions[] = [];
 const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (error: unknown) => void; const promise = new Promise<T>((done, fail) => { resolve = done; reject = fail; }); return { promise, resolve, reject }; };
 const apply = async (scope: TaskCacheScope, details: readonly TaskDetail[], snapshot = false) => {
   const ticket = await scope.beginSync(projectId, signal());
-  return scope.applySync(ticket, taskSyncFromGraph(graphFixture(details), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version }), signal());
+  return scope.applySync(ticket, taskSyncFromGraph(graphFixture(details), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version, propertiesForTask: (task) => details.find((detail) => detail.id === task.id)!.properties }), signal());
 };
 const seed = async (details: readonly TaskDetail[]) => {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope); await apply(scope, details); return scope;

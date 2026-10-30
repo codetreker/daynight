@@ -242,7 +242,8 @@ Worker 资源归属来自认证 principal，报告不能提供 userId 或权威�
 
 Project、缓存 epoch、完整容量检查、匹配任务和 observedAt 来自一次只读快照；
 即使窗口只命中少量任务，项目超过 1,000/5,000 上限也明确拒绝。摘要的业务 version
-使用精确十进制字符串，包含 requiredPlatform，省略 description/properties 及派生 ready/blockedBy。
+使用精确十进制字符串，包含 requiredPlatform 与完整 properties，省略 description 及派生 ready/blockedBy。
+任务行与批量属性来自同一快照，缺失属性不补默认值。非法存储属性使整个请求返回 400 invalid_input；数据库或事务完成故障仍返回 500 internal_error，且优先于已发现的属性拒绝。
 纳秒下界向上对齐到 PostgreSQL 微秒精度，避免驱动截断造成边界外记录进入结果。
 身份/权限、HEAD、no-store 和错误优先级服从既有合同。完整行为由
 [任务缓存需求](daynight-task-sync.md)拥有；Web 已使用持久摘要及本地完整图投影。

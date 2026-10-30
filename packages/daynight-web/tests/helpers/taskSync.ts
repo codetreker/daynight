@@ -1,4 +1,4 @@
-import type { GraphTask, TaskGraph, TaskSummary, TaskSync } from '../../src/api/types';
+import type { GraphTask, TaskGraph, TaskProperties, TaskSummary, TaskSync } from '../../src/api/types';
 import { stringifyWireJson, wireResponse } from './wireJson';
 
 export const TEST_VIEWER_ID = '00000000-0000-4000-8000-000000000201';
@@ -20,6 +20,7 @@ export type TaskSyncFixtureOptions = {
   readonly query?: { readonly epoch?: string; readonly since?: string };
   readonly epoch?: string;
   readonly versionForTask: (task: GraphTask) => bigint;
+  readonly propertiesForTask?: (task: GraphTask) => TaskProperties;
 };
 type WireTaskSync = Omit<TaskSync, 'tasks'> & {
   readonly tasks: readonly (Omit<TaskSummary, 'version'> & { readonly version: string })[];
@@ -31,11 +32,11 @@ const nanoseconds = (timestamp: string): bigint => {
   return BigInt(Date.parse(`${match[1]}Z`)) * 1_000_000n + BigInt((match[2] ?? '').padEnd(9, '0'));
 };
 
-export const taskSyncFixture = (graph: TaskGraph, { query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask }: TaskSyncFixtureOptions): WireTaskSync => {
+export const taskSyncFixture = (graph: TaskGraph, { query = {}, epoch = taskSyncEpoch(graph.project.id), versionForTask, propertiesForTask = () => ({}) }: TaskSyncFixtureOptions): WireTaskSync => {
   const mode = query.epoch === epoch ? 'delta' : 'snapshot';
   const lowerBound = mode === 'delta' && query.since !== undefined ? nanoseconds(query.since) - 10_000_000_000n : null;
   const tasks = graph.tasks.filter((task) => lowerBound === null || nanoseconds(task.updatedAt) >= lowerBound).map((task) => ({
-    id: task.id, version: versionForTask(task).toString(), titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
+    id: task.id, version: versionForTask(task).toString(), properties: propertiesForTask(task), titlePreview: task.titlePreview, titleTruncated: task.titleTruncated,
     status: task.status, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn,
     allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, startedAt: task.startedAt, completedAt: task.completedAt,
     createdAt: task.createdAt, updatedAt: task.updatedAt,
@@ -56,7 +57,7 @@ export const taskSyncFromGraph = (graph: TaskGraph, options: TaskSyncFixtureOpti
   return { ...sync, tasks: sync.tasks.map((task) => ({ ...task, version: BigInt(task.version) })) };
 };
 
-export const createGraphSyncFixture = () => {
+export const createGraphSyncFixture = ({ propertiesForTask = () => ({}) }: { readonly propertiesForTask?: (task: GraphTask, projectId: string) => TaskProperties } = {}) => {
   const projects = new Map<string, Map<string, { version: bigint; signature: string }>>();
   const epochs = new Map<string, string>();
   let generation = 0;
@@ -65,7 +66,8 @@ export const createGraphSyncFixture = () => {
     toSync: (graph: TaskGraph, query: NonNullable<TaskSyncFixtureOptions['query']> = {}, epochOverride?: string): TaskSync => {
       let versions = projects.get(graph.project.id);
       if (versions === undefined) { versions = new Map(); projects.set(graph.project.id, versions); }
-      const fixture = taskSyncFixture(graph, { versionForTask: () => 1n });
+      const properties = (task: GraphTask) => propertiesForTask(task, graph.project.id);
+      const fixture = taskSyncFixture(graph, { versionForTask: () => 1n, propertiesForTask: properties });
       const current = new Map<string, bigint>();
       for (const { version: _version, ...task } of fixture.tasks) {
         const signature = stringifyWireJson(task);
@@ -76,7 +78,7 @@ export const createGraphSyncFixture = () => {
       }
       const epoch = epochOverride ?? epochs.get(graph.project.id) ?? taskSyncEpoch(generation === 0 ? graph.project.id : `${graph.project.id}:${generation}`);
       epochs.set(graph.project.id, epoch);
-      return taskSyncFromGraph(graph, { query, epoch, versionForTask: (task) => current.get(task.id)! });
+      return taskSyncFromGraph(graph, { query, epoch, versionForTask: (task) => current.get(task.id)!, propertiesForTask: properties });
     },
   };
 };

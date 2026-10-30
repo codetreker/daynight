@@ -66,7 +66,7 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
   const epoch = crypto.randomUUID();
   let snapshot = build();
   const admit = async (next: GraphSnapshot) => {
-    const current = await admitTaskGraph(scope, next.graph, { epoch, versionForTask: (task) => tasks.get(task.id)!.version });
+    const current = await admitTaskGraph(scope, next.graph, { epoch, versionForTask: (task) => tasks.get(task.id)!.version, propertiesForTask: (task) => tasks.get(task.id)!.properties });
     return { ...next, graph: current.graph, index: current.index };
   };
   const ready = admit(snapshot).then((current) => { snapshot = current; });

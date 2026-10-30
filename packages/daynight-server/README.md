@@ -49,10 +49,24 @@ and [architecture](../../docs/design/daynight-task-sync.md) define the implement
 `GET /api/v1/projects/{projectId}/task-sync` endpoint. It returns a complete summary
 snapshot or current records whose `updatedAt` is at least the supplied task
 watermark minus `DAYNIGHT_TASK_SYNC_OVERLAP` (default `10s`). Task versions use
-exact decimal strings; derived blockers and readiness remain outside these
-intrinsic summaries. A stored project epoch invalidates caches after supported
+exact decimal strings; each intrinsic summary includes the complete current
+properties object, while descriptions, derived blockers and readiness remain
+outside these summaries. Task rows and batched property rows share one
+repeatable-read snapshot. Missing keys propagate removal through whole-summary
+replacement; ordinary property changes preserve the epoch. Invalid stored
+properties fail the complete request with 400 invalid_input. Database and
+transaction-completion faults remain 500 internal_error and take precedence over
+a saved property validation refusal. A stored project epoch invalidates caches after supported
 history replacement and transactional task soft deletion. The Web persists
-summaries and details and replaces them atomically after an epoch change.
+summaries and details and replaces them atomically after an epoch change. Its
+schema-3 upgrade rebuilds project, summary and detail stores, rotates user fences
+and clears old watermarks before a complete snapshot; absent properties in old
+summaries cannot be inferred as an empty object. Graph nodes omit properties,
+and cached values grant no detail or mutation admission. Complete properties
+increase transport, parsing and summary storage costs: node/edge limits and the
+detail-cache byte budget do not bound total summary bytes. Network, decoding and
+quota failures retain the previous valid cache without partial publication or
+watermark advancement.
 The [task deletion requirements](../../docs/spec/daynight-task-deletion.md) and
 [design](../../docs/design/daynight-task-deletion.md) define versioned DELETE,
 retained task/attachment data and active target-worker protection. Omitted or

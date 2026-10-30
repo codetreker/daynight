@@ -1,4 +1,5 @@
 import { isTaskVersion } from "./json";
+import { parseTaskProperties } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
 import type { TaskSummary, TaskSync } from "./types";
 
@@ -19,7 +20,7 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   if (externalDependsOn.some((dependency) => !dependsOn.includes(dependency))) return malformed();
   if (data.status !== "todo" && data.status !== "in_progress" && data.status !== "done") return malformed();
   return {
-    id: id(data.id), version,
+    id: id(data.id), version, properties: parseTaskProperties(data.properties),
     titlePreview: string(data.titlePreview), titleTruncated: boolean(data.titleTruncated),
     status: data.status, dependsOn, externalDependsOn,
     allowAgents: boolean(data.allowAgents),

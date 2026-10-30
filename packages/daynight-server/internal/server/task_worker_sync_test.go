@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"reflect"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +20,12 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	epoch, observed := baseline.Epoch, baseline.ObservedAt
 	assertSummary := func(full api.Task) {
 		t.Helper()
+		// Synchronization carries canonical properties even when the ordinary task
+		// request uses the legacy Worker projection.
+		properties := propertyResource(t, handler, http.MethodGet, taskPath(full)+"/properties", nil)
+		if properties.Version != full.Version {
+			t.Fatal("worker property resource advanced unexpectedly")
+		}
 		query := "?epoch=" + epoch + "&since=" + url.QueryEscape(observed.Format(time.RFC3339Nano))
 		response := projectRequest(handler, http.MethodGet, syncPath(project.ID)+query, "")
 		window := decodeResponse[api.TaskSync](t, response, http.StatusOK)
@@ -33,17 +38,12 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 				continue
 			}
 			found = true
-			if summary.AllowAgents != full.AllowAgents || summary.Status != full.Status || summary.Version != strconv.FormatInt(full.Version, 10) || !summary.UpdatedAt.Equal(full.UpdatedAt) || !reflect.DeepEqual(summary.StartedAt, full.StartedAt) || !reflect.DeepEqual(summary.CompletedAt, full.CompletedAt) {
+			if summary.AllowAgents != full.AllowAgents || summary.Status != full.Status || summary.Version != strconv.FormatInt(full.Version, 10) || !summary.UpdatedAt.Equal(full.UpdatedAt) || !reflect.DeepEqual(summary.StartedAt, full.StartedAt) || !reflect.DeepEqual(summary.CompletedAt, full.CompletedAt) || summary.Properties == nil || !reflect.DeepEqual(summary.Properties, properties.Properties) {
 				t.Fatalf("worker change summary disagrees with the full task: summary=%+v task=%+v", summary, full)
 			}
 		}
 		if !found {
 			t.Fatal("summary overlap window omitted the recently changed worker task")
-		}
-		for _, field := range []string{`"properties"`, `"worker"`, `"herdr"`, `"nativeSessionId"`, "private-native-session", "private-pane"} {
-			if strings.Contains(response.Body.String(), field) {
-				t.Fatal("summary projection exposed worker properties or execution sessions")
-			}
 		}
 		observed = window.ObservedAt
 	}

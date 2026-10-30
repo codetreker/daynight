@@ -182,11 +182,14 @@ func TestTaskSyncOperationalFailuresAndCompletionPrecedence(t *testing.T) {
 		missing, limit, complete bool
 	}{
 		{"project", "FROM projects WHERE id =", false, false, false}, {"epoch", "SELECT task_cache_epoch::text", false, false, false},
-		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
+		{"count", "SELECT count(*) FROM tasks", false, false, false}, {"rows", "left(t.title, $2)", false, false, false}, {"properties", "SELECT task_id::text,name,value FROM task_properties", false, false, false}, {"clock", "SELECT statement_timestamp()", false, false, false},
 		{"missing completion", "FROM project_members m", true, false, true}, {"limit completion", "SELECT count(*) FROM tasks", false, true, true}, {"success completion", "SELECT statement_timestamp()", false, false, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, database, project, url, principal := taskService(t)
+			tasks, database, project, url, principal := taskService(t)
+			if test.name == "properties" {
+				createTask(t, tasks, principal, project.ID, "Property read")
+			}
 			if test.limit {
 				seedGraph(t, database, project.ID, 1001, 0)
 			}

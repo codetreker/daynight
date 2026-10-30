@@ -24,7 +24,7 @@ class Channel {
 const scope = (userId = TEST_VIEWER_ID) => { const cache = createTaskCacheScope({ userId, onIdentityMismatch: vi.fn() }); scopes.push(cache); return cache; };
 const apply = async (cache: TaskCacheScope, value = detail(), snapshot = false) => {
   const ticket = await cache.beginSync(value.projectId, signal());
-  return cache.applySync(ticket, taskSyncFromGraph(graphFixture([value]), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: () => value.version }), signal());
+  return cache.applySync(ticket, taskSyncFromGraph(graphFixture([value]), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: () => value.version, propertiesForTask: () => value.properties }), signal());
 };
 const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(connection); return connection; };
 const failPurge = () => {
@@ -95,7 +95,7 @@ it("rejects publication of an in-flight delta that commits after its ticket is r
   vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {
     if (this.name === "summaries" && revoke === null) revoke = cache.revokeProject(ticket, signal()); return original.apply(this, args);
   });
-  await expect(cache.applySync(ticket, taskSyncFromGraph(graphFixture([value]), { query: { epoch: ticket.epoch! }, versionForTask: () => value.version }), signal())).rejects.toMatchObject({ name: "AbortError" });
+  await expect(cache.applySync(ticket, taskSyncFromGraph(graphFixture([value]), { query: { epoch: ticket.epoch! }, versionForTask: () => value.version, propertiesForTask: () => value.properties }), signal())).rejects.toMatchObject({ name: "AbortError" });
   expect(revoke).not.toBeNull(); await revoke; expect(cache.getAuthorizedProject(projectId)).toBeNull(); expect(await (await inspect()).countFromIndex("summaries", "by-project", [TEST_VIEWER_ID, projectId])).toBe(0);
 });
 
