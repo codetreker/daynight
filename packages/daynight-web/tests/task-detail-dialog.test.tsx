@@ -347,8 +347,9 @@ describe('task detail dialog', () => {
       { title: '  标题\n第二行\t\0', url: '  arbitrary\naddress\0  ' },
       { title: '很长的标题'.repeat(200), url: 'x'.repeat(5000) },
     ];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail(1, { properties: { pullRequests } }))));
-    await open();
+    const reviewed = detail(1, { properties: { pullRequests } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));
+    await open(props({ snapshot: snapshot([reviewed]) }));
     const region = await screen.findByRole('region', { name: '关联 PR' });
     expect(within(region).getByRole('heading')).toHaveTextContent('关联 PR · 5');
     const items = within(region).getAllByRole('listitem');
@@ -371,8 +372,9 @@ describe('task detail dialog', () => {
       { title: '损坏地址', url: 'http://[' },
       { title: '保留原值', url: '  HTTP://EXAMPLE.COM/pull/2  ' },
     ];
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(detail(1, { properties: { pullRequests } }))));
-    await open();
+    const reviewed = detail(1, { properties: { pullRequests } });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(reviewed)));
+    await open(props({ snapshot: snapshot([reviewed]) }));
     const region = await screen.findByRole('region', { name: '关联 PR' });
     const links = within(region).getAllByRole('link');
     expect(links).toHaveLength(2);
