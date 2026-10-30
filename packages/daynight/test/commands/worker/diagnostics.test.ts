@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { createWorkerDiagnostics } from "../../../src/commands/worker/diagnostics.js";
+import { createWorkerDiagnostics, workerSqliteMigrationEvent } from "../../../src/commands/worker/diagnostics.js";
+import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 
 const directories: string[] = [];
@@ -70,4 +71,28 @@ it("reports an output failure at flush without letting diagnostics prevent shutd
   await expect(logger.flush()).rejects.toBe(failure);
   expect(() => logger.emit({ kind: "shutdown", message: "Cleanup must still run." })).not.toThrow();
   await expect(logger.flush()).rejects.toBe(failure);
+});
+
+it("retains queryable SQLite migration metadata while rejecting extra payload and unsafe cause text", async () => {
+  const root = path.resolve("../../.tmp/worker-diagnostic-tests");
+  await mkdir(root, { recursive: true });
+  const home = await mkdtemp(path.join(root, "d-"));
+  directories.push(home);
+  const output: string[] = [];
+  const logger = await createWorkerDiagnostics({ paths: resolveWorkerPaths(home), workerId: "00000000-0000-4000-8000-000000000001", platform: "linux", log: text => { output.push(text); } });
+  const migration = { migrationId: "00112233-4455-6677-8899-aabbccddeeff", database: "web", file: path.join(home, "state.sqlite"), kind: "completed", phase: "commit", fromVersion: 0, toVersion: 1, durationMs: 8, outcome: "committed", prompt: "private-extra-payload" } as const;
+  const cause = Object.assign(new Error("SQL parameter private-raw-value"), { code: "SQLITE_FULL" });
+  const error = new SqliteAccessError("cleanup-failed", { database: "web", phase: "close", fromVersion: 0, toVersion: 1 }, { cause, outcome: "committed" });
+  logger.emit(workerSqliteMigrationEvent(migration));
+  logger.emit({ kind: "sqlite-migration-failed", message: "SQLite close failed after commit.", sqlite: { ...migration, kind: "failed", phase: "close" }, error });
+  await logger.flush();
+  const text = await readFile(logger.filename, "utf8");
+  const records = text.trim().split("\n").map(line => JSON.parse(line));
+  expect(records[0].sqlite).toMatchObject({ migrationId: migration.migrationId, database: "web", phase: "commit", fromVersion: 0, toVersion: 1, durationMs: 8, outcome: "committed" });
+  expect(records[0].sqlite).not.toHaveProperty("prompt");
+  expect(records[1].error).toMatchObject({ database: "web", phase: "close", fromVersion: 0, toVersion: 1, outcome: "committed", cause: { name: "Error", sqliteCode: "SQLITE_FULL" } });
+  expect(text).not.toContain("private-raw-value");
+  expect(text).not.toContain("private-extra-payload");
+  expect(output.join("\n")).not.toContain("private-raw-value");
+  expect(error.cause).toBe(cause);
 });

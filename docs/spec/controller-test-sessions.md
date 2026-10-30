@@ -48,6 +48,8 @@ Session View 内容遵守 [Task Session 的本机内容归属](task-sessions.md#
 
 意外原生断开必须显示真实失败并清理拥有的进程，不静默新建会话替代原会话。独立入口不承担后台 daemon、任务调度或自动恢复循环；Task 的 worker 恢复责任继续由 [共享实现设计](../design/task-session-protocol.md)定义。
 
+本机 journal 和 native resume lease 分别遵守 [SQLite 升级需求](cli-sqlite-migrations.md)。读取受支持旧 journal 时自动升级，当前格式读取不认领 writer；明确缺失与权限、损坏或版本错误分开。升级失败不能被当成无 journal，也不能阻止停止自己已启动的进程。停止证明、journal 身份及持久化 stopped 状态未完整成立时，不得伪造 nativeStopped、归档或释放原 lease。已有任意保留 lease 阻止其数据库迁移，不能因 PID 消失或时间过期删除记录。
+
 ## 验收边界
 
 真实测试覆盖三个 Provider 的启动、有无 prompt、创建参数、消息和工具、审批/提问/表单、取消、刷新、多页面、窄屏、中文输入、长内容及清理。至少用该入口完成一段多轮小应用开发，独立检查文件、测试结果与应用行为；不能仅依靠 Agent 自述。

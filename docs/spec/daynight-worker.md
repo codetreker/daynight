@@ -113,7 +113,7 @@ Web 人工输入通过 Task Session，Herdr 使用 attach。Retry/release/resume
 - 远端实际 claim 缺少本机行时补 pending；确认可以启动先提交 active 后建资源；成功完整清单缺少原 claim 时统一清理。资源发现覆盖历史 done 行及遗留受管资源，旧资源未收尾前同 task 新 claim 等待。清理或退出关闭已验证归属的 Herdr workspace 前，缺失本机行的 claim 必须以实际观察的 agent 类型登记 pending，存活 agent 的已知原生会话 ID 一并保存；重启后继续清理保留的 worktree，再允许同 task 后继执行。无法确认原 agent 类型时保留 workspace 并报告错误，不从当前配置猜测。未证明归属的 Git-only 资源不得据此登记。
 - Herdr 的配置、启动/输入回执、PID 观察、恢复次数、清理进度、原期限和管理意图不持久保存或转存其他台账。日志不作为恢复输入。恢复使用当前适用设置；计数和超限等待只在当前进程内，重启清零。
 - Ctrl+C 的根取消信号同步停止报告触发、新领取和调度，并取消报告及所有运行中的 job（包括终止清理 job），在等待报告收尾前完成取消。等待报告期间终止清理不能继续删除 worktree 或把未完成行置 done；报告与 job 全部收尾后直接中断并停止受管 agent、关闭 workspace。进程退出不发送清理 prompt，也不等待 agent 清理轮；工作区外临时资源可能遗留。保留 claim、worktree、原生 session ID 与所有未完成 active/pending 行，包括归属已经结束的任务；退出不删除 worktree、不把未完成行置 done。重启后按正常完整清单对账，为已结束归属的剩余资源重新进入终止清理。待确认的停止操作收尾后才停止私有实例；停止错误保持可见，无法确认停止时保留私有 Herdr 与相关资源。正常完成、release、强制撤回和人工管理仍使用原有通知及清理时序。
-- 最小索引 schema 的升级保留原记录并补充默认 herdr 模式；不迁移旧详细状态库，不自动删除真实数据库。操作者停止旧 worker 后删除旧 SQLite，再启动重建。原生历史与 workerId 保留原有位置。
+- 主索引独立记录 `user_version=5`。已知无版本六列或七列最小索引自动接入并保留原记录；缺少冻结模式列时按既有语义补 herdr。旧详细状态库 1–4 不接入，不自动删除真实数据库；操作者停止旧 worker 后自行移除该旧库再启动。Web 执行状态库独立使用版本 1，Controller journal 使用版本 5。两库分别保证单库原子性，任何所需库打开失败都不启动协调业务。[SQLite 升级需求](cli-sqlite-migrations.md)定义共同的版本、查询、准入和错误约束。原生历史与 workerId 保留原有位置。
 
 ### W-10：Agent 完成与资源清理
 

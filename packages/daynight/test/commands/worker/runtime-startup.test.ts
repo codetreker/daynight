@@ -2,6 +2,7 @@ import path from "node:path";
 import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stringify } from "yaml";
+import Database from "better-sqlite3";
 import * as configurationFiles from "../../../src/config/files.js";
 import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
@@ -192,4 +193,35 @@ describe("worker repository preparation lifecycle", () => {
     expect(f.store!.getTask(pending)?.status).toBe("active");
     expect(f.store!.getProject(binding)).toEqual(binding);
   });
+});
+
+
+it("retains a committed Worker upgrade when Web state fails and resumes after its cause is corrected", async () => {
+  const f = await fixture(false, true);
+  await mkdir(f.paths.workerDirectory, { recursive: true });
+  const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
+  const invalid = new Database(webFile);
+  invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original')");
+  invalid.close();
+  await expect(runWorker(f)).rejects.toThrow("invalid-format");
+  expect(mocks.coordinator).not.toHaveBeenCalled();
+  const worker = new Database(f.paths.databaseFile);
+  expect(worker.pragma("user_version", { simple: true })).toBe(5);
+  expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 });
+  worker.close();
+  const web = new Database(webFile);
+  expect(web.pragma("user_version", { simple: true })).toBe(0);
+  expect(web.prepare("SELECT value FROM retained").get()).toEqual({ value: "original" });
+  web.exec("DROP TABLE retained; CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT;");
+  web.close();
+  const controller = new AbortController();
+  mocks.coordinator.mockReturnValue(coordinator(async () => { controller.abort(new Error("Repaired state observed.")); }));
+  await runWorker({ ...f, signal: controller.signal });
+  expect(mocks.coordinator).toHaveBeenCalledOnce();
+  const upgradedWeb = new Database(webFile);
+  expect(upgradedWeb.pragma("user_version", { simple: true })).toBe(1);
+  upgradedWeb.close();
+  const unchangedWorker = new Database(f.paths.databaseFile);
+  expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(5);
+  unchangedWorker.close();
 });

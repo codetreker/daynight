@@ -1,13 +1,14 @@
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openStore, type Store } from "../../../src/commands/review/store.js";
 import type { PullRequestObservation, ReviewState } from "../../../src/commands/review/model.js";
 
 const fixtures = path.resolve(import.meta.dirname, "../../../../../.tmp/store-tests");
 const directories: string[] = [];
 const stores = new Set<Store>();
+const schemaV1 = readFileSync(new URL("./fixtures/schema-v1.sql", import.meta.url), "utf8");
 const connections = new Set<Database.Database>();
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const repository = { host: "github.com", githubId: "42" };
@@ -20,7 +21,7 @@ const connect = (file: string): Database.Database => {
   return connection;
 };
 const open = (file: string, options?: { busyTimeoutMs?: number }): Store => {
-  const store = openStore(file, options);
+  const store = openStore(file, { ...options, onMigration: () => {} });
   stores.add(store);
   return store;
 };
@@ -54,6 +55,7 @@ const fixture = () => {
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const store of stores) store.close();
   stores.clear();
   for (const connection of connections) if (connection.open) connection.close();
@@ -79,18 +81,18 @@ describe("durable SQLite initialization", () => {
     const sql = connect(file);
     sql.pragma("user_version = 3");
     sql.exec("CREATE TABLE future_data (value TEXT); INSERT INTO future_data VALUES ('preserved')");
-    expect(() => openStore(file)).toThrow("newer than supported");
+    expect(() => openStore(file)).toThrow("unsupported-version");
     expect(sql.pragma("user_version", { simple: true })).toBe(3);
     expect(sql.prepare("SELECT value FROM future_data").get()).toEqual({ value: "preserved" });
   });
 
-  it("rolls back all migration DDL and its version when schema creation fails", () => {
+  it("rejects an unknown unversioned structure before creating schema objects", () => {
     const { file, store } = fixture();
     close(store);
     const sql = connect(file);
     sql.exec("DROP TABLE repositories; DROP TABLE pull_requests; DROP TABLE reviews; DROP TABLE review_publications; CREATE TABLE reviews (sentinel TEXT); INSERT INTO reviews VALUES ('retained')");
     sql.pragma("user_version = 0");
-    expect(() => openStore(file)).toThrow("reviews already exists");
+    expect(() => openStore(file)).toThrow("invalid-format");
     expect(sql.pragma("user_version", { simple: true })).toBe(0);
     expect(sql.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "reviews" }]);
     expect(sql.prepare("SELECT sentinel FROM reviews").get()).toEqual({ sentinel: "retained" });
@@ -117,13 +119,63 @@ describe("durable SQLite initialization", () => {
     expect(migrated.getReviewPublication(active.id)).toEqual({ phase: "prepared", publisherId: null, identityFormat: "legacy", outcome: null, remoteReviewId: null, threadIds: [], followupConsumed: false });
   });
 
-  it("rolls back a schema1 publication migration without altering its data when DDL fails", () => {
+  it("rejects schema1 with an unexpected publication table without altering its data", () => {
     const f = fixture(); f.initialize(); f.observe(); const before = f.store.getPullRequest(pr); close(f.store);
     const sql = connect(f.file); sql.pragma("user_version = 1");
-    expect(() => openStore(f.file)).toThrow("review_publications already exists");
+    expect(() => openStore(f.file)).toThrow("invalid-format");
     expect(sql.pragma("user_version", { simple: true })).toBe(1);
     expect(sql.prepare("SELECT head_sha FROM pull_requests").get()).toEqual({ head_sha: before!.headSha });
     expect(sql.prepare("SELECT count(*) AS count FROM review_publications").get()).toEqual({ count: 0 });
+  });
+
+  it("migrates an independent schema1 lifecycle fixture without fabricating publisher identities", () => {
+    mkdirSync(fixtures, { recursive: true });
+    const directory = mkdtempSync(path.join(fixtures, "schema1-lifecycle-")); directories.push(directory);
+    const file = path.join(directory, "state.sqlite");
+    const sql = connect(file); sql.exec(schemaV1);
+    const statuses = ["completed", "preparing", "running", "retry_wait", "interrupted", "failed", "superseded"] as const;
+    const insert = sql.prepare(`INSERT INTO reviews(id,host,github_id,number,revision,head_sha,base_ref,base_sha,status,
+      attempt_count,max_attempts,retry_at,process_owner,stdout_log_path,stderr_log_path,created_at,updated_at)
+      VALUES(?, 'github.com','42',?,1,'head','main','pinned-base',?,1,3,?,'original-owner','stdout.log','stderr.log',10,20)`);
+    statuses.forEach((status, index) => insert.run(`original-${status}`, index + 1, status, status === "retry_wait" ? 100 : null));
+    const before = sql.prepare("SELECT * FROM reviews ORDER BY id").all();
+    const migrated = open(file);
+    expect(sql.pragma("user_version", { simple: true })).toBe(2);
+    expect(sql.prepare("SELECT * FROM reviews ORDER BY id").all()).toEqual(before);
+    for (const status of statuses) {
+      const publication = migrated.getReviewPublication(`original-${status}`);
+      if (status === "failed" || status === "superseded") expect(publication).toBeNull();
+      else expect(publication).toEqual({
+        phase: status === "completed" ? "legacy" : "prepared", publisherId: null, identityFormat: "legacy",
+        outcome: null, remoteReviewId: null, threadIds: [], followupConsumed: false,
+      });
+    }
+  });
+
+  it("rolls back a publication migration that fails after its DDL has executed", () => {
+    mkdirSync(fixtures, { recursive: true });
+    const directory = mkdtempSync(path.join(fixtures, "independent-v1-")); directories.push(directory);
+    const file = path.join(directory, "state.sqlite");
+    const sql = connect(file); sql.exec(schemaV1);
+    sql.exec("INSERT INTO repositories VALUES ('github.com','42','https://github.com/o/r.git','/original',0,1,2,NULL)");
+    const exec = Database.prototype.exec;
+    const failure = new Error("publication conversion failed after DDL");
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, statement: string) {
+      const result = exec.call(this, statement);
+      if (statement.includes("CREATE TABLE review_publications")) throw failure;
+      return result;
+    });
+    expect(() => openStore(file, { onMigration: () => {} })).toThrow("migration-failed");
+    expect(sql.pragma("user_version", { simple: true })).toBe(1);
+    expect(sql.prepare("SELECT name FROM sqlite_schema WHERE name='review_publications'").get()).toBeUndefined();
+    expect(sql.prepare("SELECT local_path FROM repositories").get()).toEqual({ local_path: "/original" });
+  });
+
+  it("refuses a runtime write after another actor changes the declared format", () => {
+    const { file, store } = fixture();
+    const sql = connect(file); sql.pragma("user_version=3");
+    expect(() => store.registerRepository({ ...repository, remote: "https://github.com/o/r.git", localPath: path.dirname(file) })).toThrow("unsupported-version");
+    expect(sql.prepare("SELECT count(*) AS count FROM repositories").get()).toEqual({ count: 0 });
   });
 
   it("exposes real write contention and leaves no partial observation", () => {
@@ -168,13 +220,13 @@ describe("atomic repository poll commits", () => {
     expect(() => store.applyRepositoryPoll(repository, { kind: "snapshot", observations: observations("new") }, 30)).toThrow("snapshot rejected");
     store.recordPollError(repository, "snapshot rejected");
     close(store);
+    sql.exec("DROP TRIGGER reject_snapshot");
     const reopened = open(file);
     expect(reopened.listPullRequests(repository).map(({ number, headSha, desiredRevision }) => ({ number, headSha, desiredRevision }))).toEqual([
       { number: 101, headSha: "old", desiredRevision: 1 },
       { number: 102, headSha: "old", desiredRevision: 1 },
     ]);
     expect(reopened.getRepository(repository)).toMatchObject({ lastPollAt: 20, lastPollError: "snapshot rejected" });
-    sql.exec("DROP TRIGGER reject_snapshot");
     expect(reopened.applyRepositoryPoll(repository, { kind: "snapshot", observations: observations("new") }, 31)).toMatchObject({ lastPollAt: 31, lastPollError: null });
     expect(reopened.listPullRequests(repository).map(({ desiredRevision }) => desiredRevision)).toEqual([2, 2]);
   });

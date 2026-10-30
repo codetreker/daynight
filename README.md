@@ -101,7 +101,11 @@ explains task creation, handoff, execution and Goal workflows.
 
 `dn` is an alias for `daynight`. Use `daynight --help` and each command's
 `--help` for syntax, `daynight update` to update an npm global installation,
-and the [CLI manual](packages/daynight/README.md) for detailed usage. The complete
+and the [CLI manual](packages/daynight/README.md) for detailed usage. Local business
+SQLite databases upgrade automatically when an accessed file needs migration,
+including through query commands. Current-format reads retain their read-only
+snapshot behavior; the [migration requirements](docs/spec/cli-sqlite-migrations.md)
+define supported formats, ownership blockers and failure preservation. The complete
 [configuration example](packages/daynight/config.example.yml) covers service,
 review and worker settings; the
 [configuration guide](packages/daynight/README.md#configuration-setup) explains

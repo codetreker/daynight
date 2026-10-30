@@ -1142,7 +1142,7 @@ The local database has exactly these business fields:
 
 ```text
 projects(project_id, repo_url, local_path)
-tasks(project_id, task_id, claim_id, status, agent, session_id)
+tasks(project_id, task_id, claim_id, status, agent, session_id, agent_control_mode)
 ```
 
 Status is pending, active or done. Pending is an actual acquired claim waiting
@@ -1156,9 +1156,14 @@ The state directory belongs to the configured single service, Daynight account
 and workerId. Finish old executions before changing those identities and
 rebuilding local state. The running process pins its startup authenticated user;
 the claim-index database does not retain prior-service or prior-account recovery
-scopes. Existing detailed worker databases are not migrated: stop the old worker,
-remove its old SQLite database yourself, and let the next run create the new
-schema. The CLI never deletes it automatically. Keep workerId and native history.
+scopes. The claim index has its own `user_version=5`. Known unversioned minimal
+six-column or seven-column task indexes are adopted automatically, retaining
+records and assigning the existing `herdr` mode where the column was absent.
+Detailed worker formats 1–4 remain unsupported: stop the old worker and remove
+that old SQLite database yourself before new-schema startup. The CLI never deletes
+it automatically. Keep workerId and native history. Each business database owns
+its migration sequence; the [SQLite migration requirements](../../docs/spec/cli-sqlite-migrations.md)
+define atomicity, ownership blockers and supported starting formats.
 
 Each reconciliation obtains the complete own-claim inventory for configured and
 saved Projects. Still-owned local active tasks are queued for fresh target
@@ -1362,8 +1367,11 @@ resolved by matching historical text. Provider-specific runtime evidence is
 required separately from protocol tests.
 
 The primary worker database retains its claim and native-session index. Web
-execution evidence lives separately in `~/.daynight/worker/web-executions.sqlite`;
-private launch tickets and Controller journals live under `~/.daynight/controller/`.
+execution state lives separately in `~/.daynight/worker/web-executions.sqlite`
+with its own format version 1. Its existing unversioned JSON records are validated
+without rewriting their stored strings. Private launch tickets and Controller
+journals live under `~/.daynight/controller/`; journals retain their independent
+format version 5. Both Worker stores must open successfully before scheduling.
 Web restart reconnects to a surviving Controller. Starting a new generation
 requires proof that the original native processes stopped and the exact native
 session ID. A missing journal or ID cannot authorize a replacement conversation.
@@ -1647,13 +1655,20 @@ With no current review, an open non-Draft row shows `Pending (cleanup blocked)`;
 Draft remains `Paused`. Older active reviews retain their separate details. The
 listing reports the barrier without attempting cleanup or recovery.
 
-The command loads the current configuration and opens an existing SQLite database
-read-only for one consistent transaction. It needs no Git, GitHub CLI or Copilot
-execution, instance lock, clone or review startup. It does not create an absent
-database, migrate a schema, recover interrupted work or update application state.
-SQLite may create or update its WAL coordination sidecar files while reading an
-existing database. Missing or invalid configuration, unreadable or corrupt state,
-and unsupported schema versions fail visibly. The
+The command loads the current configuration and reads a consistent SQLite
+snapshot. A current-format database is opened read-only without an instance lock
+or additional migration write permission. If the existing database needs an
+upgrade, the command closes that read connection, obtains a maintenance permit,
+upgrades through a short writable connection, then reopens and checks the current
+read-only snapshot before querying. Any existing instance lock blocks this pure
+maintenance operation, including a dead or uncertain owner; it is retained.
+
+Listing needs no Git, GitHub CLI or Copilot execution, clone or review startup.
+It does not create an absent database, recover interrupted work or change review
+business state. SQLite may create or update its WAL coordination sidecar files
+while reading an existing database. Missing or invalid configuration, unreadable
+or corrupt state, uninitialized existing files, unsupported versions and real
+upgrade blockers fail visibly. The
 [listing decision](../../.agents/notes/archived/feature/2026-10-18-review-status-listing.md)
 records status attribution and snapshot limits.
 
@@ -1663,8 +1678,9 @@ The command and source layout preserve existing YAML fields, retained-state
 locations and resource identities. Runtime opening explicitly migrates earlier
 SQLite state to retain verified review publications and conversation follow-ups;
 existing cutoffs, revision budgets, sessions, process evidence and worktrees remain
-owned by their original records. Read-only listing does not migrate state. The
-review module owns its domain types independently of its SQLite implementation.
+owned by their original records. Listing automatically migrates a supported older
+format before reading, while current version 2 remains read-only. The review
+module owns its domain types independently of its SQLite implementation.
 
 The SQLite module keeps repository identity, the permanent startup PR boundary,
 observed PRs, captured review targets, completion revisions, sessions, worktree
@@ -1679,16 +1695,20 @@ fresh snapshot confirming that exact remote review is still `APPROVED`, with the
 captured actor, commit and stable identity. A dismissed historical review cannot
 suppress that pending work.
 
-Runtime database opening applies explicit schema migrations and enables WAL with
-FULL synchronization and a bounded busy timeout. The listing reader checks the
-existing schema, accepting versions 1 and 2 without applying migrations. The
-instance lock checks whether its recorded CLI owner still exists; that check does not establish whether its agents
+Runtime database opening applies the database's independent 1→2 migration and
+enables WAL with FULL synchronization and a bounded busy timeout. Listing uses
+the same format definition, upgrades version 1 when permitted and reads current
+version 2 in one consistent snapshot. Query migration never takes over a retained
+instance lock. The ordinary runtime instance lock checks whether its recorded CLI
+owner still exists; that check does not establish whether its agents
 or tools have stopped. Interrupted reviews and pending cleanup remain blocked
 after automatic lock recovery until process exclusion is explicitly confirmed.
 Database state does not replace physical Git/worktree or session-history
 verification.
 
-See the [review architecture](../../docs/design/daynight-review.md) for transitions and the
+The shared [SQLite migration design](../../docs/design/cli-sqlite-migrations.md)
+explains per-store versions, connection lifecycle and failure handling. See the
+[review architecture](../../docs/design/daynight-review.md) for transitions and the
 [state decision](../../.agents/notes/archived/architecture/2026-10-17-durable-review-state.md)
 for persistence choices. The coordinator opens this state before scheduling work
 and advances only the revision captured by each completed attempt.

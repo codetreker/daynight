@@ -1,4 +1,8 @@
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
+import { closeSqliteDatabase, openSqliteDatabase, runSqliteImmediate, sqliteTransactionOutcome } from "../../platform/sqlite-access.js";
+import type { SqliteOutcome } from "../../platform/sqlite-error.js";
+import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
+import { assertResumeLeaseMigrationAllowed, nativeResumeLeaseFormat } from "./resume-lease-format.js";
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, lstat, mkdir, open, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
@@ -92,19 +96,32 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
   try { const created = await open(file, "wx", 0o600); await created.close(); } catch (error) { if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error; }
   await privateFile(file);
   const key = createHash("sha256").update(JSON.stringify([input.provider, nativeHome, nativeSessionId])).digest("hex"), nonce = randomUUID(), processProof = await captureProcessProof(process.pid);
-  const db = new Database(file); let acquired = false;
+  let db: Database.Database | undefined, acquired = false;
+  const close = (outcome: SqliteOutcome = "unknown"): void => { if (db !== undefined && db.open) closeSqliteDatabase(db, { file, format: nativeResumeLeaseFormat }, outcome); };
   const release = async (): Promise<void> => {
-    if (!acquired) return;
-    try { const changed = db.prepare("DELETE FROM leases WHERE native_key=? AND nonce=?").run(key, nonce); if (changed.changes !== 1) throw new Error("Native resume lease ownership changed; reconciliation is required."); acquired = false; }
-    finally { db.close(); }
+    if (!acquired) { close("committed"); return; }
+    let failed = false, failure: unknown;
+    try {
+      runSqliteImmediate(db!, () => {
+        assertCurrentSqlite(db!, nativeResumeLeaseFormat);
+        const changed = db!.prepare("DELETE FROM leases WHERE native_key=? AND nonce=?").run(key, nonce);
+        if (changed.changes !== 1) throw new Error("Native resume lease ownership changed; reconciliation is required.");
+      });
+      acquired = false;
+    } catch (cause) { failed = true; failure = cause; }
+    try { close(failed ? sqliteTransactionOutcome(failure) : "committed"); }
+    catch (cleanup) { if (failed) throw new AggregateError([failure, cleanup], "Native resume lease release and shutdown failed."); throw cleanup; }
+    if (failed) throw failure;
   };
   try {
-    db.pragma("journal_mode = WAL"); db.pragma("synchronous = FULL");
-    db.exec("CREATE TABLE IF NOT EXISTS leases (native_key TEXT PRIMARY KEY, nonce TEXT NOT NULL, source_session_id TEXT NOT NULL, launcher_proof TEXT NOT NULL, created_at TEXT NOT NULL)");
-    db.transaction(() => {
-      if (db.prepare("SELECT native_key FROM leases WHERE native_key=?").get(key)) throw new Error("This native session already has a resume lease. Confirm and reconcile its original execution; an expired or missing launcher is not permission to replace it.");
-      db.prepare("INSERT INTO leases VALUES(?,?,?,?,?)").run(key, nonce, ticket.sessionId, JSON.stringify(processProof), new Date().toISOString()); acquired = true;
-    }).immediate();
+    db = openSqliteDatabase({ file, format: nativeResumeLeaseFormat, allowEmpty: true,
+      assertMigrationAllowed: assertResumeLeaseMigrationAllowed,
+      onReady: (db) => {
+        if (db.prepare("SELECT native_key FROM leases WHERE native_key=?").get(key)) throw new Error("This native session already has a resume lease. Confirm and reconcile its original execution; an expired or missing launcher is not permission to replace it.");
+        db.prepare("INSERT INTO leases VALUES(?,?,?,?,?)").run(key, nonce, ticket.sessionId, JSON.stringify(processProof), new Date().toISOString());
+      },
+    });
+    acquired = true;
     // Another continuation may have been launched since selection. Reinspect
     // every execution for this native identity while the shared lease is held.
     for (const item of await inventory(home)) {
@@ -113,5 +130,9 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
       await assertStopped(item);
     }
     return { ticket: { ...ticket, cwd, nativeHome }, nativeSessionId, release };
-  } catch (error) { if (acquired) await release(); else db.close(); throw error; }
+  } catch (error) {
+    try { if (acquired) await release(); else close(); }
+    catch (cleanup) { throw new AggregateError([error, cleanup], "Native resume preparation and cleanup failed."); }
+    throw error;
+  }
 };

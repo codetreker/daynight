@@ -11,6 +11,7 @@ vi.mock("../../../src/commands/controller/lifecycle-store.js", () => ({ readCont
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ captureProcessProof: f.capture, stopControllerProcesses: f.stop }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
 import { runIndependentController } from "../../../src/commands/controller/independent.js";
+import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { SESSION_PROTOCOL } from "../../../src/session/protocol.js";
 import type { CliContext } from "../../../src/cli/context.js";
 const id = "11111111-1111-4111-8111-111111111111";
@@ -331,4 +332,30 @@ test.each(["lost-response", "unknown-receipt"] as const)("reconciles terminal in
     expect(f.request.mock.calls.filter(([, action]) => action.kind === "submit_initial")).toHaveLength(1);
     expect(f.spawn).toHaveBeenCalledOnce(); expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce();
   }
+});
+
+
+test("journal observation failure still stops its owned child without fabricating stop evidence", async () => {
+  const v = await setup(null), failure = new Error("Journal format upgrade failed");
+  f.resume.mockResolvedValue({ nativeSessionId: id, ticket: { sessionId: id, nativeHome: v.home, configuration: { args: [] } }, release: f.release });
+  f.snapshot.mockImplementation(() => { throw failure; });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context)).rejects.toBe(failure);
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("journal and local-stop failures remain independently visible", async () => {
+  const v = await setup(null), journal = new Error("Journal unsupported version"), stopping = new Error("Local stopping failed");
+  f.snapshot.mockImplementation(() => { throw journal; }); f.stop.mockRejectedValue(stopping);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([journal, stopping]);
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("terminal cancellation does not hide a database failure while acquiring resume", async () => {
+  const v = await setup(null), failure = new SqliteAccessError("unsupported-version", { database: "controller-journal", phase: "inspect", fromVersion: 6, toVersion: 5 });
+  f.resume.mockImplementationOnce(async () => { process.emit("SIGINT", "SIGINT"); throw failure; });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context)).rejects.toBe(failure);
+  expect(f.spawn).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
 });

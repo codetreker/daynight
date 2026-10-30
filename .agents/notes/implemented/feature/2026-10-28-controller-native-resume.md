@@ -18,6 +18,10 @@ the new timeline; old input and uncertain operations are never replayed.
 A private cross-execution lease serializes writers by native identity. The
 launcher releases it only before launch or after proven process-tree stop.
 An uncertain stale lease requires investigation rather than automatic takeover.
+The [SQLite migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
+versions the lease database independently at 1. Any retained row blocks a needed
+format upgrade; acquisition and release check the current format in their own
+write transaction without turning expiry or missing PIDs into reclamation proof.
 The [requirements](../../../../docs/spec/controller-test-sessions.md) and
 [protocol design](../../../../docs/design/task-session-protocol.md) own the
 user-visible behavior and binding rules.

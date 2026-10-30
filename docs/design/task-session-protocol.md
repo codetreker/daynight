@@ -47,6 +47,8 @@ Web 目录固定请求 `GET /api/v1/test-sessions?online=true`。服务在排序
 
 `controller <provider> resume [test-session-id]` 从私有 launch ticket 与 journal 建立来源绑定，核对 provider、native ID、native home、真实 cwd、server origin、owner 与停止证据。候选选择后再次核验服务端归档身份，并取得以 provider、规范 native home 和 native ID 为键的本机跨执行锁；加锁后重新检查同原生会话的全部已登记执行，防止选择期间状态变化。
 
+本机 native resume lease 库独立使用版本 1。申请在同一同步事务中检查格式、必要时接入、查重并写入 lease；存在任何保留记录时阻止迁移。释放先在事务内确认当前格式，再按原 native_key 与 nonce 删除，不进入自动升级或过期回收。格式和关闭失败保留错误与原归属。共同机制见 [SQLite 升级设计](cli-sqlite-migrations.md)。
+
 恢复注册新的 Test Session 和 execution，使用新的凭据、journal 和操作身份，ticket 的 resumeNativeSessionId 指向原生历史且 initialInput 固定为 none。新 URL 从原生历史投影 timeline，旧 Session 的归档和回执保持不变。已有 Provider 原生恢复负责准确身份与历史加载，不重发旧操作。锁贯穿 launcher 的执行和清理；未启动或完整停止证明允许释放，未知结果保留租约。该流程不放宽服务端 archived grant 拒绝，也不承担外部原生 TUI 的抢占。
 
 ## Test Session 注册与权限
@@ -71,7 +73,11 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 ## Controller 与原生会话
 
-worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、投影修订及 outbox。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
+worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用独立版本 5 的单写者 SQLite journal 保存执行身份、输入结果、投影修订及 outbox。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
+
+Journal 的 1→5 迁移由本库定义持有。启动在同一事务中先检查旧 owner，再升级及执行原 ticket/generation 认领；纯读取需要迁移时只升级格式，不启动 Controller 或认领 writer。当前格式在同一只读快照内检查并读取。独立 stopped writer 在事务外验证进程树，最终事务重查格式及 snapshot 后写停止状态；close 清除 owner_pid 也是受格式检查的写入口。
+
+本地数据库更新与 IPC 请求使用不同的错误边界，更新失败不能被解释成不可达而创建新 generation 或重放输入。独立 launcher 的退出保留 journal 错误，同时继续尝试停止已归属 child；完整停止及 journal 证明缺失时保留 native lease 和未确认结果。
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并分页读取原生 items。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
