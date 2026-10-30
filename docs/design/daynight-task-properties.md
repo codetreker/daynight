@@ -1,6 +1,6 @@
 # Task 预定义属性设计
 
-状态：服务端通用属性模型、独立存储、属性 HTTP 资源和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)。[交互预览](mockups/task-properties.html)继续拥有只读 PR 区域的视觉示例。
+状态：服务端通用属性模型、独立存储、属性 HTTP 资源、通用 CLI 命令和客户端读取适配已实现。[属性需求](../spec/daynight-task-properties.md)拥有行为与验收；[属性行决策](../../.agents/notes/implemented/architecture/2026-10-30-task-property-rows.md)保存取舍，并链接不可变的[原属性列决策](../../.agents/notes/archived/architecture/2026-10-21-task-properties-design.md)。[交互预览](mockups/task-properties.html)继续拥有只读 PR 区域的视觉示例。
 
 ## 职责与数据流
 
@@ -98,7 +98,7 @@ Session relay 先锁父任务 FOR SHARE，再读取 worker 和对应 Session。�
 
 CLI/Web generic parser 保留所有属性键，业务访问通过 typed PR/Worker reader。缺失返回明确 absent 状态；存在但格式非法暴露错误。完整材料比较覆盖完整属性对象，具体 Worker 操作只排除其获准改变的 worker 键。
 
-CLI 的既有 PR 配对选项仍生成完整 pullRequests 值，--clear-pull-requests 设置 []。它们的参数形状与当前命令由 [CLI 设计](daynight-project-task.md)拥有。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
+CLI 使用 properties 查看当前值或 --schema 定义，以 set-property/remove-property 修改一个完整属性；create/update 没有 PR 专用参数。property dispatch 在项目发现之前处理 schema 模式，修改只把原始参数作为 valueText 交给既有 ApiClient exchange。显式版本直接写，默认先读属性资源；不先取得 schema，不解析值或拆分字面属性名。参数、补全和 PropertyResource 输出由 [CLI 设计](daynight-project-task.md)拥有，[命令决策](../../.agents/notes/implemented/architecture/2026-10-30-generic-task-property-commands.md)保存取舍。文本资源使用通用属性输出，JSON 不补默认值或显示标记。外壳版本的精确解码只处理资源规定的位置，属性内部同名 version 不被递归改写。
 
 Web PR 卡、分页、链接策略及焦点保持不变，缺失与空 PR 都显示已有空态。PR 引用按全局下标保留独立条目，不能以 URL 去重或作为吞掉重复项的唯一键。一次合法写入可包含数万条短引用，因此每页最多挂载 100 行，为 DOM/accessibility tree 提供独立上限；完整数组仍留存，原生前后页与页码控件使全部项可访问，不依赖可变行高或额外请求。
 

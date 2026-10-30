@@ -68,9 +68,9 @@ Inspect new results and handle failures, feedback, and conflicts; ordinary waits
 Request user intervention when a goal, architecture, execution plan, or acceptance criteria necessary to complete the task are missing, when a problem is not covered by the design, or when another blocker arises.
 Do not invent missing decisions or treat the problem as completion.
 
-1. Record the specific issue on the current task: `set-property <task-id> worker.signaling "<reason>"`.
+1. Record the specific issue on the current task: `daynight task set-property <task-id> worker.signaling "<reason>"`.
 2. Also print the issue to the terminal, preserve the [waiting context](task-execution.md#waiting-context), exit the execution loop, and wait for the user to address it; keep the task `in_progress` and do not select other work.
-3. After receiving feedback, verify the original assignment and confirm that the problem is solved, then clear the signal with `remove-property <task-id> worker.signaling`.
+3. After receiving feedback, verify the original assignment and confirm that the problem is solved, then clear the signal with `daynight task remove-property <task-id> worker.signaling`.
 4. Confirm the removal before resuming automatic execution of the current task. If the problem remains unresolved, retain the signal and keep waiting.
 
 Signal writes and removal also follow [write safety](write-safety.md).

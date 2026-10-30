@@ -495,30 +495,34 @@ Preserve the full Markdown and PR reference.',$4,$5,$6,$7,$8,$9,$10,$11)`, ids[i
 			t.Fatal("installed graph did not project converted task readiness")
 		}
 		create := func(title string, dependencies ...string) api.Task {
-			arguments := []string{"task", "create", "--project", projectID, "--title", title, "--description", "Complete status plan. Attachment: plans/lifecycle.md\nPreserve this full description.", "--pull-request-url", acceptancePullRequests(t, properties)[0].URL, "--pull-request-title", acceptancePullRequests(t, properties)[0].Title}
+			arguments := []string{"task", "create", "--project", projectID, "--title", title, "--description", "Complete status plan. Attachment: plans/lifecycle.md\nPreserve this full description."}
 			for _, id := range dependencies {
 				arguments = append(arguments, "--depends-on", id)
 			}
 			id := acceptanceCLIResourceID(t, cli.run(t, cli.caller, arguments...))
 			task := acceptanceCLITaskResource(t, cli.run(t, cli.caller, "task", "show", id, "--project", projectID, "--json"))
-			if task.Status != "todo" || task.Version != 1 || task.Ready != (len(dependencies) == 0) || task.AllowAgents || task.StartedAt != nil || task.CompletedAt != nil || !reflect.DeepEqual(task.Properties, properties) {
-				t.Fatal("installed creation after genuine upgrade did not produce todo work")
+			if task.Status != "todo" || task.Version != 1 || task.Ready != (len(dependencies) == 0) || task.AllowAgents || task.StartedAt != nil || task.CompletedAt != nil || len(task.Properties) != 0 {
+				t.Fatal("installed creation after genuine upgrade did not produce empty-property todo work")
 			}
-			return task
+			assigned := acceptanceCLISetPullRequests(t, cli, task, properties)
+			if assigned.Version != task.Version+1 || !reflect.DeepEqual(assigned.Properties, properties) {
+				t.Fatal("installed post-migration property setup did not preserve the exact value and version")
+			}
+			return assigned
 		}
 		prerequisite := create("Migrated prerequisite")
 		prerequisiteMetadata, prerequisiteContent := acceptanceLifecycleAttachment(t, cli, prerequisite)
 		dependent := create("Migrated dependent", prerequisite.ID)
 		metadata, content := acceptanceLifecycleAttachment(t, cli, dependent)
 		dependent = acceptanceCLISetStatus(t, cli, process, evidence, dependent, "todo")
-		acceptanceCLIRefusal(t, cli, process, evidence, dependent, "dependency_unsatisfied", "task", "set-status", dependent.ID, "in_progress", "--project", projectID, "--if-version", "1")
+		acceptanceCLIRefusal(t, cli, process, evidence, dependent, "dependency_unsatisfied", "task", "set-status", dependent.ID, "in_progress", "--project", projectID, "--if-version", strconv.FormatInt(dependent.Version, 10))
 		prerequisite = acceptanceCLISetStatus(t, cli, process, evidence, prerequisite, "done")
 		ready := cli.task(t, dependent.ID)
 		if !ready.Ready || ready.Version != dependent.Version || !ready.UpdatedAt.Equal(dependent.UpdatedAt) || len(ready.BlockedBy) != 0 {
 			t.Fatal("prerequisite completion changed dependent version or failed to make todo work ready")
 		}
 		dependent = acceptanceCLISetStatus(t, cli, process, evidence, ready, "in_progress")
-		acceptanceCLIRefusal(t, cli, process, evidence, dependent, "version_conflict", "task", "set-status", dependent.ID, "in_progress", "--project", projectID, "--if-version", "1")
+		acceptanceCLIRefusal(t, cli, process, evidence, dependent, "version_conflict", "task", "set-status", dependent.ID, "in_progress", "--project", projectID, "--if-version", strconv.FormatInt(ready.Version, 10))
 		dependent = acceptanceCLISetStatus(t, cli, process, evidence, dependent, "in_progress")
 		dependent = acceptanceCLISetStatus(t, cli, process, evidence, dependent, "todo")
 		dependent = acceptanceCLISetStatus(t, cli, process, evidence, dependent, "done")
@@ -601,8 +605,8 @@ func TestInstalledCLIStatusRacesAcceptance(t *testing.T) {
 			cli.configure(t, process)
 			projectID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "project", "create", "Installed status race"))
 			prerequisiteID := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Unfinished prerequisite"))
-			id := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Competing task", "--description", "Complete preserved description. Attachment: plans/lifecycle.md\nReview before execution.", "--pull-request-url", "https://github.com/example/race/pull/9", "--pull-request-title", "Preserved PR reference"))
-			before := cli.task(t, id)
+			id := acceptanceCLIResourceID(t, cli.run(t, cli.repo, "task", "create", "--title", "Competing task", "--description", "Complete preserved description. Attachment: plans/lifecycle.md\nReview before execution."))
+			before := acceptanceCLISetPullRequests(t, cli, cli.task(t, id), acceptanceProperties(t, []api.PullRequestProperty{{URL: "https://github.com/example/race/pull/9", Title: "Preserved PR reference"}}))
 			metadata, content := acceptanceLifecycleAttachment(t, cli, before)
 			version := strconv.FormatInt(before.Version, 10)
 			count := len(acceptanceCLIMutations(process))

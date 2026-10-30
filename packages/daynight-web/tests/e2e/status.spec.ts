@@ -109,8 +109,10 @@ test('task-status', { annotation: { type: 'scenario', description: 'task-status'
   const lifecycle = await actor(page, info, 'task-status');
   try {
     const project = resourceId(await lifecycle.success(['project', 'create', `Status ${randomUUID()}`, '--repo', `https://example.com/status/${randomUUID()}`]));
-    const id = resourceId(await lifecycle.success(['task', 'create', '--project', project, '--title', '完整任务标题 '.repeat(20), '--description', '# 状态交付\n\n保留正文、PR、附件与阅读位置。', '--pull-request-url', 'https://example.com/pull/1', '--pull-request-title', 'Preserved reference', '--required-platform', 'macos']));
-    const created = await lifecycle.show(project, id, 'created'); expect(created).toMatchObject({ status: 'todo', version: 1n, ready: true, allowAgents: false, requiredPlatform: 'macos', startedAt: null, completedAt: null });
+    const id = resourceId(await lifecycle.success(['task', 'create', '--project', project, '--title', '完整任务标题 '.repeat(20), '--description', '# 状态交付\n\n保留正文、PR、附件与阅读位置。', '--required-platform', 'macos']));
+    const initial = await lifecycle.show(project, id, 'created'); expect(initial).toMatchObject({ status: 'todo', version: 1n, properties: {}, ready: true, allowAgents: false, requiredPlatform: 'macos', startedAt: null, completedAt: null });
+    await lifecycle.success(['task', 'set-property', id, 'pullRequests', JSON.stringify([{ url: 'https://example.com/pull/1', title: 'Preserved reference' }]), '--project', project, '--if-version', String(initial.version)]);
+    const created = await lifecycle.show(project, id, 'property-assigned'); expect(created.version).toBe(initial.version + 1n);
     const content = Buffer.from('状态修改前后的附件内容一致。\n');
     const attachment = attachmentDownloadUrl(project, id, 'plan.md');
     expect((await api.put(attachment, { data: content, headers: { 'Content-Type': 'text/markdown' } })).status()).toBe(201);

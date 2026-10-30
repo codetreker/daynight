@@ -55,8 +55,8 @@ Git、GitHub CLI、Copilot、npm 或网络请求，不修改 shell 启动文件�
 | 选项的 `value.choices` | 参数校验、分离及内联值补全共享固定允许值；帮助显示选项说明 |
 | 选项的 `repeatable` | 从第一次出现起生成有序数组，保留重复值；使用后仍可继续补全 |
 | 选项的 `required` | 解析完参数后检查是否提供；帮助中的必填选项不加方括号 |
-| 位置参数名称、说明与固定候选 | 所有声明的位置参数均必填；只有声明的 choices 提供固定候选 |
-| 命令的 `allowOptionsTerminator` | 显式允许 `--` 结束选项解析；只有 `project create` 声明，后续词按位置参数处理 |
+| 位置参数名称、说明、optional、allowEmpty 与固定候选 | optional 只能形成连续末尾参数，决定最少参数数；allowEmpty 明确允许空字符串，只有声明的 choices 提供固定候选 |
+| 命令的 `allowOptionsTerminator` | 显式允许 `--` 结束选项解析；project create、属性 set/remove 和附件 put/read/remove 声明，后续词按位置参数处理 |
 | 命令补充说明及选项 `description` | 帮助；不会自动枚举 `value.choices` |
 
 解析结果使用按首个选项名索引的只读 Map：开关为 `true`，标量值为字符串，
@@ -66,8 +66,7 @@ list 的 `--status` 与 set-status 的目标位置参数声明 `todo`、`in_prog
 update 不声明状态选项；set-status 声明 task ID、目标状态、project 和 if-version。update、list 和 ready 的 `--allow-agents` 声明 true/false choices，既有 Bash/zsh 生成器从该枚举产生静态候选；create 不声明此字段。
 `--depends-on` 声明
 repeatable。`project create` 的名称是一个必填位置参数，`--repo` 是可选 text 选项，
-查询 `--json` 为开关。位置参数在语法层拒绝缺失和空字符串，业务文本规则由命令
-在 I/O 前校验；名称原值不会被 JavaScript `trim()` 提前裁决。
+查询 `--json` 为开关。语法层按共享定义检查必填位置参数和空字符串许可；properties 的末尾 task ID 为 optional，set-property 的 value 为 allowEmpty。属性名称和值都没有静态 choices。通用属性值只原样传递，名称原值不会被 JavaScript `trim()` 提前裁决；项目名称等独立业务文本仍由对应命令校验。
 省略 repo 时的 Git 发现和服务 project 列表预检属于执行行为，补全仍只提供静态语法。
 
 text 值接受分离及内联赋值。`--option=value` 按第一个 `=` 分割，保留值的前导
@@ -121,7 +120,7 @@ flowchart LR
 待输入值时保留具体选项身份，以便读取 `allowEmpty`、`choices` 和 `repeatable`。
 directory 使用目录枚举；text 声明 choices 时只给出固定候选，自由 text 返回空
 候选。分离和内联状态值均可补全；内联补全只替换当前值片段，不重复插入选项前缀，
-也不修改全局 `COMP_WORDBREAKS`。合法空描述及内联值消费后恢复后续选项状态。
+也不修改全局 `COMP_WORDBREAKS`。合法空描述、允许的空位置参数及内联值消费后恢复后续选项状态。optional 参数的最小/最大位置数由定义派生，properties 的 task ID 可选时仍能显示 --schema；模式互斥由命令层判断，不生成第二份属性规则。
 已使用的标量选项不再出现，repeatable 依赖仍可出现；消耗过的位置参数不重复
 提供候选。remote、project/task ID 和依赖 ID 不提供远端或文件候选。
 
@@ -134,7 +133,7 @@ directory 使用目录枚举；text 声明 choices 时只给出固定候选，�
 `_arguments`、`_describe` 和 `_files -/` 表达语法、候选说明和目录。自由 text 选项使用
 明确的值状态，通过 `_message` 显示值说明并成功返回，不产生候选；choices 值使用
 声明的静态候选。repeatable 选项使用允许重复的原生声明，不加入自身排除项。
-前缀校验同时理解空描述、重复依赖和 text 内联赋值，directory 继续使用 `_files -/`。脚本显式
+前缀校验同时理解空描述、allowEmpty 位置参数、末尾 optional、重复依赖和 text 内联赋值，directory 继续使用 `_files -/`。脚本显式
 调用 `compdef` 将根命令名称及其 `aliases`（`daynight` 和 `dn`）关联到同一函数；仅输出 `#compdef daynight` 注释不足以支持直接 source。
 
 自由文本位置参数尚未开始且当前词为空时，生成器暂不向 `_arguments` 提供该位置的
@@ -299,7 +298,7 @@ project 场景覆盖 create/list/show、必填位置名称、可选 `--repo`、`
 待输入时，包括引号输入及以选项前缀开始的当前词，保持输入且不生成文件或选项候选。
 Task 场景
 覆盖重复依赖仍可输入、标量已用后隐藏、分离及内联状态候选、空描述后的选项恢复、
-内联值片段替换及自由标题、描述、ID 不回落文件候选。
+内联值片段替换及自由标题、描述、ID 不回落文件候选。属性命令覆盖可选 task ID 后的 --schema、空 value 后的选项、-- 后短横线值，以及属性名/值没有文件或远端目录候选；退出属性专用 PR 选项。
 
 Bash 4.2 是明确下限，需要真实 4.2 执行验证；现代 Bash 和 zsh 也必须有真实证据。
 Linux 准备脚本在仓库 `.tmp/` 中校验固定 SHA-256 的 GNU Bash 4.2 源码并构建所需

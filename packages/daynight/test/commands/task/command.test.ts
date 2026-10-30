@@ -16,6 +16,8 @@ const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
+const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
+const propertySchema = { properties: { future: { description: "Future definition", readOnly: false, schema: { type: "string", custom: { version: 7 } } } } };
 const operations: Operation[] = [];
 afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose()); });
 const fixture = (operation = createOperation()) => {
@@ -24,6 +26,10 @@ const fixture = (operation = createOperation()) => {
     getCurrentUser: vi.fn<ApiClient["getCurrentUser"]>(),
     reportWorker: vi.fn<ApiClient["reportWorker"]>(),
     listProjectMembers: vi.fn<ApiClient["listProjectMembers"]>(),
+    getTaskPropertySchema: vi.fn<ApiClient["getTaskPropertySchema"]>().mockResolvedValue(propertySchema),
+    getTaskProperties: vi.fn<ApiClient["getTaskProperties"]>().mockResolvedValue(propertyResource),
+    setTaskProperty: vi.fn<ApiClient["setTaskProperty"]>().mockResolvedValue(propertyResource),
+    removeTaskProperty: vi.fn<ApiClient["removeTaskProperty"]>().mockResolvedValue({ ...propertyResource, properties: {} }),
     createProject: vi.fn<ApiClient["createProject"]>(), listProjects: vi.fn<ApiClient["listProjects"]>(),
     getProject: vi.fn<ApiClient["getProject"]>().mockResolvedValue(project),
     createTask: vi.fn<ApiClient["createTask"]>().mockResolvedValue(task), getTask: vi.fn<ApiClient["getTask"]>().mockResolvedValue(task),
@@ -56,18 +62,14 @@ const fixture = (operation = createOperation()) => {
 };
 
 describe("task parameter boundaries", () => {
-  it.each([[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
+  it.each([[], ["--help"], ...["create", "list", "ready", "show", "update", "set-status", "delete", "graph", "properties", "set-property", "remove-property"].map((name) => [name, "--help"])].map((args) => ({ args })))("renders help without business dependencies: $args", async ({ args }) => {
     const f = fixture();
     await runTaskCommand(args, f.context, f.dependencies);
     expect(f.context.stdout).toHaveBeenCalledOnce();
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Usage: daynight task");
     if (args[0] === "create" || args[0] === "update") {
       const output = f.context.stdout.mock.calls[0]![0];
-      expect(output).toContain("[--pull-request-url <text>...]");
-      expect(output).toContain("[--pull-request-title <text>...]");
-      expect(output).toContain("the nth URL pairs with the nth title");
-      if (args[0] === "update") expect(output).toContain("--clear-pull-requests");
-      else expect(output).not.toContain("--clear-pull-requests");
+      for (const option of ["--pull-request-url", "--pull-request-title", "--clear-pull-requests"]) expect(output).not.toContain(option);
     }
     if (args[0] === "set-status") {
       expect(f.context.stdout.mock.calls[0]![0]).toContain("[--claim-id <claim-id>]");
@@ -79,6 +81,15 @@ describe("task parameter boundaries", () => {
   });
 
   it.each([
+    ["properties"], ["properties", taskId, "--schema"], ["properties", "--schema", "--project", projectId],
+    ["properties", "invalid"], ["properties", taskId, "--project", "invalid"],
+    ["set-property"], ["set-property", taskId, "future"], ["set-property", taskId, "", "value"],
+    ["set-property", "invalid", "future", "value"], ["remove-property", "invalid", "future"],
+    ["remove-property", taskId, ""], ["remove-property", taskId],
+    ...["0", "1.5", "9223372036854775808"].flatMap((version) => [
+      ["set-property", taskId, "future", "value", "--if-version", version],
+      ["remove-property", taskId, "future", "--if-version", version],
+    ]),
     ["create"], ["create", "--title", "\u0085"], ["create", "--title", "\0"], ["create", "--title", "\ud800"],
     ["create", "--title", "Title", "--description", "\ud800"], ["create", "--title", "Title", "--description", "\0"],
     ["create", "--title", "Title", "--external-depends-on", "invalid"], ["update", taskId, "--external-depends-on", "invalid"],
@@ -380,22 +391,6 @@ describe("task request contracts", () => {
     expect(unfiltered.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, {});
   });
 
-  it.each(["create", "update"])("pairs %s PR references by occurrence while preserving all string values", async (command) => {
-    const f = fixture();
-    const base = command === "create" ? [command, "--title", "Title"] : [command, taskId];
-    const pullRequests = [{ url: "", title: "\0\n\u001b[2J" }, { url: "-url=a,b", title: "  标题  " }, { url: "-url=a,b", title: "  标题  " }];
-    await runTaskCommand([...base, "--pull-request-title", pullRequests[0]!.title, "--pull-request-url=", "--pull-request-url=-url=a,b", "--pull-request-url=-url=a,b", "--pull-request-title", "  标题  ", "--pull-request-title", "  标题  ", "--project", projectId], f.context, f.dependencies);
-    if (command === "create") expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Title", properties: { pullRequests } });
-    else expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { properties: { pullRequests }, version: task.version });
-  });
-
-  it("clears PR references as the sole update using an explicit version", async () => {
-    const f = fixture();
-    await runTaskCommand(["update", taskId, "--clear-pull-requests", "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
-    expect(f.api.getTask).not.toHaveBeenCalled();
-    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { properties: { pullRequests: [] }, version: 9_223_372_036_854_775_807n });
-  });
-
   it.each([{ args: [], limit: 10 }, { args: ["--limit", "1"], limit: 1 }, { args: ["--limit=100"], limit: 100 }, { args: ["--limit=002"], limit: 2 }])("requests a bounded ready page with limit $limit", async ({ args, limit }) => {
     const f = fixture();
     await runTaskCommand(["ready", ...args, "--project", projectId], f.context, f.dependencies);
@@ -446,7 +441,7 @@ describe("task request contracts", () => {
     const f = fixture();
     const failure = new ApiError({ operation: "task.update", projectId, taskId }, "response", { cause: new Error("Conflict"), status: 409, serverError: { code: "version_conflict", message: "Conflict", requestId: "conflict-request", details: { taskIds: [taskId] } }, confirmedRefusal: true });
     f.api.updateTask.mockRejectedValue(failure);
-    await expect(runTaskCommand(["update", taskId, "--pull-request-url=", "--pull-request-title=", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
+    await expect(runTaskCommand(["update", taskId, "--description=", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
     expect(f.api.getTask).toHaveBeenCalledOnce(); expect(f.api.updateTask).toHaveBeenCalledOnce();
     expect(f.context.stdout).not.toHaveBeenCalled();
   });
@@ -554,5 +549,96 @@ describe("task output contracts", () => {
       contentLength += current.id.length + current.projectId.length + current.title.length + current.description.length + current.status.length + current.version.toString().length + current.createdAt.length + current.updatedAt.length + `Automatic execution: ${current.allowAgents}\nRequired platform: ${current.requiredPlatform === null ? "any" : current.requiredPlatform}\n`.length;
     }
     expect(output.length).toBeLessThanOrEqual(contentLength + 190 * tasks.length);
+  });
+});
+
+
+describe("generic task property commands", () => {
+  it("loads server definitions without project preparation or task reads", async () => {
+    const f = fixture();
+    await runTaskCommand(["properties", "--schema", "--json"], f.context, f.dependencies);
+    expect(f.api.getTaskPropertySchema).toHaveBeenCalledOnce();
+    expect(f.api.getTaskProperties).not.toHaveBeenCalled();
+    expect(f.api.getTask).not.toHaveBeenCalled(); expect(f.api.getProject).not.toHaveBeenCalled(); expect(f.api.listProjects).not.toHaveBeenCalled();
+    expect(f.context.workingDirectory).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(propertySchema);
+  });
+
+  it("reads current values with exact identity and no redundant project read", async () => {
+    const f = fixture();
+    const expected = { ...propertyResource, properties: { future: { version: 7, enabled: true }, empty: [] } };
+    f.api.getTaskProperties.mockResolvedValue(expected);
+    await runTaskCommand(["properties", taskId.toUpperCase(), "--project", projectId.toUpperCase(), "--json"], f.context, f.dependencies);
+    expect(f.api.getTaskProperties).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.api.getTask).not.toHaveBeenCalled(); expect(f.api.getProject).not.toHaveBeenCalled(); expect(f.api.getTaskPropertySchema).not.toHaveBeenCalled();
+    expect(f.context.workingDirectory).not.toHaveBeenCalled(); expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual(expected);
+  });
+
+  it("uses repository discovery only when no project was supplied", async () => {
+    const f = fixture();
+    await runTaskCommand(["properties", taskId], f.context, f.dependencies);
+    expect(f.context.workingDirectory).toHaveBeenCalledOnce(); expect(f.dependencies.resolveProject).toHaveBeenCalledOnce();
+    expect(f.api.getProject).not.toHaveBeenCalled(); expect(f.api.getTaskProperties).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.context.stdout.mock.calls[0]![0]).toContain(`Version: ${task.version}`);
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("pullRequests: []");
+  });
+
+  it.each(["", "abc", "123", "true", "null", '"quoted"', '{"duplicate":1,"duplicate":2}', ' \n[1,2]\t '])("forwards raw input without parsing or schema requests: %#", async (valueText) => {
+    const f = fixture();
+    await runTaskCommand(["set-property", taskId, "future.name", valueText, "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.setTaskProperty).toHaveBeenCalledExactlyOnceWith(projectId, taskId, "future.name", { version: 9_223_372_036_854_775_807n, valueText });
+    expect(f.api.getTaskProperties).not.toHaveBeenCalled(); expect(f.api.getTask).not.toHaveBeenCalled(); expect(f.api.getProject).not.toHaveBeenCalled(); expect(f.api.getTaskPropertySchema).not.toHaveBeenCalled();
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("Task property set.");
+  });
+
+  it.each(["-123", "-text"])("preserves a dash-prefixed value after the option terminator: %s", async (valueText) => {
+    const f = fixture();
+    await runTaskCommand(["set-property", taskId, "future", "--project", projectId, "--", valueText], f.context, f.dependencies);
+    expect(f.api.setTaskProperty).toHaveBeenCalledExactlyOnceWith(projectId, taskId, "future", { version: task.version, valueText });
+    expect(f.api.getTaskProperties).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+  });
+
+  it.each(["set-property", "remove-property"])("reads the property version once before default-version %s", async (name) => {
+    const f = fixture();
+    await runTaskCommand([name, taskId, "pullRequests", ...(name === "set-property" ? ["[]"] : []), "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getTaskProperties).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    const mutation = name === "set-property" ? f.api.setTaskProperty : f.api.removeTaskProperty;
+    expect(mutation).toHaveBeenCalledOnce();
+    expect(f.api.getTaskProperties.mock.invocationCallOrder[0]!).toBeLessThan(mutation.mock.invocationCallOrder[0]!);
+    expect(f.api.getTask).not.toHaveBeenCalled(); expect(f.api.getProject).not.toHaveBeenCalled(); expect(f.api.getTaskPropertySchema).not.toHaveBeenCalled();
+  });
+
+  it("removes a whole literal key using an explicit version and prints actual missing-key values", async () => {
+    const f = fixture();
+    await runTaskCommand(["remove-property", taskId, "future.name", "--if-version", "9007199254740993", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.removeTaskProperty).toHaveBeenCalledExactlyOnceWith(projectId, taskId, "future.name", { version: task.version });
+    expect(f.api.getTaskProperties).not.toHaveBeenCalled(); expect(f.api.getTask).not.toHaveBeenCalled(); expect(f.api.getProject).not.toHaveBeenCalled();
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("Task property removed.");
+    expect(f.context.stdout.mock.calls[0]![0]).not.toContain("pullRequests: []");
+  });
+
+  it.each([
+    { code: "invalid_input", status: 400, unknown: false },
+    { code: "version_conflict", status: 409, unknown: false },
+    { code: "internal_error", status: 500, unknown: true },
+  ])("propagates $code without replay, schema reads, or a fresh-version retry", async ({ code, status, unknown }) => {
+    const f = fixture();
+    const failure = new ApiError({ operation: "task.property.set", projectId, taskId }, "response", { cause: new Error(code), status, serverError: { code, message: "Property refused", requestId: "property-refusal" }, outcomeUnconfirmed: unknown, confirmedRefusal: !unknown });
+    f.api.setTaskProperty.mockRejectedValue(failure);
+    await expect(runTaskCommand(["set-property", taskId, "worker", "not JSON", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
+    expect(f.api.getTaskProperties).toHaveBeenCalledOnce(); expect(f.api.setTaskProperty).toHaveBeenCalledOnce();
+    expect(f.api.getTaskPropertySchema).not.toHaveBeenCalled(); expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("does not write after a failed or cancelled property version read", async () => {
+    const failure = new Error("Properties unavailable");
+    const f = fixture(); f.api.getTaskProperties.mockRejectedValue(failure);
+    await expect(runTaskCommand(["remove-property", taskId, "future", "--project", projectId], f.context, f.dependencies)).rejects.toBe(failure);
+    expect(f.api.removeTaskProperty).not.toHaveBeenCalled();
+    const cancellation = new AbortController(); const cancelled = fixture(createOperation({ signal: cancellation.signal }));
+    cancelled.api.getTaskProperties.mockImplementation(async () => { cancellation.abort(); return propertyResource; });
+    await expect(runTaskCommand(["set-property", taskId, "future", "raw", "--project", projectId], cancelled.context, cancelled.dependencies)).rejects.toThrow("cancelled");
+    expect(cancelled.api.setTaskProperty).not.toHaveBeenCalled(); expect(cancelled.context.stdout).not.toHaveBeenCalled();
   });
 });

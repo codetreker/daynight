@@ -944,6 +944,10 @@ For example, after running `daynight login` and obtaining a project ID:
 daynight task create --project PROJECT_ID --title "Implement API"
 daynight task set-status TASK_ID in_progress --project PROJECT_ID --if-version 1
 daynight task set-status TASK_ID done --project PROJECT_ID --if-version 2
+daynight task properties --schema --json
+daynight task properties TASK_ID --project PROJECT_ID --json
+daynight task set-property TASK_ID pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"Fix synchronization"}]' --project PROJECT_ID --if-version 3
+daynight task remove-property TASK_ID pullRequests --project PROJECT_ID --if-version 4
 ```
 
 To inspect a failure, match its response `requestId` with JSON logs on stderr:

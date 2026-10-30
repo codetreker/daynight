@@ -589,32 +589,36 @@ describe("compiled task commands", () => {
     } finally { await f.close(); }
   }, 60_000);
 
-  it("preserves ordered raw PR lists and full JSON through mutations, full task reads, and compact lists", async () => {
+  it("preserves raw property values through setting, current-value reads, task reads and removal", async () => {
     const f = await fixture();
     try {
-      const supplied = [{ url: "", title: "" }, { url: "-arbitrary=a,b", title: " 标题\n\u001b[2J " }, { url: "-arbitrary=a,b", title: " 标题\n\u001b[2J " }];
-      const returned = { pullRequests: [...supplied, { url: "\0not a URL", title: "\0" }] };
-      let current = task({ title: "Task 中文\n\u001b[2J", description: "Full description\n\u001b[2J", properties: returned, version: 9_223_372_036_854_775_807n });
+      const supplied = [{ url: "", title: "" }, { url: "-arbitrary=a,b", title: " 标题\n\u001b[2J " }, { url: "-arbitrary=a,b", title: " 标题\n\u001b[2J " }, { url: "\0not a URL", title: "\0" }];
+      const valueText = JSON.stringify(supplied);
+      let current = task({ title: "Task 中文\n\u001b[2J", description: "Full description\n\u001b[2J", properties: { future: { version: 7 } }, version: 9_007_199_254_740_993n });
       let conflict = false;
+      const resource = () => ({ projectId, taskId, version: current.version, properties: current.properties });
       const { requests } = await f.serve((request, response) => {
-        if (request.method === "POST") respond(response, current, 201);
-        else if (request.method === "PATCH") {
-          if (conflict) refuse(response, "version_conflict", "pr-conflict", 409);
-          else {
-            const input = request.body as { readonly properties?: { readonly pullRequests: Task["properties"]["pullRequests"] } };
-            current = { ...current, ...(request.body as object), ...(input.properties === undefined ? {} : { properties: { ...current.properties, ...input.properties } }) };
-            respond(response, current);
-          }
+        if (request.pathname === `${taskPath}/${taskId}/properties`) respond(response, resource());
+        else if (request.pathname === `${taskPath}/${taskId}/properties/pullRequests`) {
+          if (conflict) { refuse(response, "version_conflict", "property-conflict", 409); return; }
+          const input = request.body as { version: bigint; valueText?: string };
+          const properties = Object.fromEntries(Object.entries(current.properties).filter(([name]) => name !== "pullRequests"));
+          current = { ...current, version: input.version + 1n, properties: request.method === "DELETE" ? properties : { ...properties, pullRequests: JSON.parse(input.valueText!) } };
+          respond(response, resource());
         } else if (request.pathname === taskPath) respond(response, { items: [current], nextCursor: null });
         else respond(response, current);
       });
-      const pairs = ["--pull-request-url=", "--pull-request-title=", "--pull-request-url=-arbitrary=a,b", "--pull-request-url=-arbitrary=a,b", "--pull-request-title", supplied[1]!.title, "--pull-request-title", supplied[2]!.title];
-      const created = await f.invoke(["create", "--title", "Title", ...pairs, ...explicit]);
-      expect(created.code, created.stderr).toBe(0);
-      expect(requests.find(({ method }) => method === "POST")!.body).toEqual({ title: "Title", properties: { pullRequests: supplied } });
-      expect(created.stdout).toContain("Properties: 1");
-      expect(created.stdout).toContain('"url":"\\u0000not a URL","title":"\\u0000"');
-      for (const field of ["Description: Full description\\n\\u001b[2J", "Version: 9223372036854775807", `Created: ${time}`, `Updated: ${time}`]) expect(created.stdout).toContain(field);
+      const set = await f.invoke(["set-property", taskId, "pullRequests", valueText, ...explicit]);
+      expect(set.code, set.stderr).toBe(0);
+      expect(requests.map(({ method, pathname }) => [method, pathname])).toEqual([
+        ["GET", `${taskPath}/${taskId}/properties`], ["PUT", `${taskPath}/${taskId}/properties/pullRequests`],
+      ]);
+      expect(requests.at(-1)!.body).toEqual({ version: 9_007_199_254_740_993n, valueText });
+      expect(set.stdout).toContain("Task property set.");
+      expect(set.stdout).toContain('"url":"\\u0000not a URL","title":"\\u0000"');
+      expect(set.stdout).not.toContain("Description:");
+      const values = await f.invoke(["properties", taskId, "--json", ...explicit]);
+      expect(values.code, values.stderr).toBe(0); expect(parseApiJson(values.stdout)).toEqual(resource());
       for (const command of [["show", taskId], ["list"]]) {
         const json = await f.invoke([...command, "--json", ...explicit]);
         expect(json.code, json.stderr).toBe(0);
@@ -622,37 +626,41 @@ describe("compiled task commands", () => {
         expect(parsed).toEqual(command[0] === "list" ? [taskListItem(current)] : current);
         if (command[0] === "list") expect((parsed as Record<string, unknown>[])[0]).not.toHaveProperty("description");
         else expect(parsed).toHaveProperty("description", current.description);
-        expect(json.stdout).toContain('"version":9223372036854775807');
+        expect(json.stdout).toContain(`"version":${current.version}`);
         const text = await f.invoke([...command, ...explicit]);
         expect(text.code, text.stderr).toBe(0);
-        expect(text.stdout).toContain(" 标题\\n\\u001b[2J ");
-        expect(text.stdout).toContain("\\u0000not a URL");
-        for (const field of [`ID: ${taskId}`, `Project: ${projectId}`, "Title: Task 中文\\n\\u001b[2J", "Properties: 1", "Status: todo", "Ready: true", "Depends on: none", "Blocked by: none"]) expect(text.stdout).toContain(field);
-        for (const field of ["Description:", "Version:", "Created:", "Updated:"]) {
-          if (command[0] === "list") expect(text.stdout).not.toContain(field);
-          else expect(text.stdout).toContain(field);
-        }
-        expect(text.stdout).not.toContain("\u001b");
+        expect(text.stdout).toContain(" 标题\\n\\u001b[2J "); expect(text.stdout).toContain("\\u0000not a URL");
+        expect(text.stdout).toContain('future: {"version":7}'); expect(text.stdout).not.toContain("\u001b");
       }
-      const before = requests.length;
-      const replaced = await f.invoke(["update", taskId, ...pairs, ...explicit]);
-      expect(replaced.code, replaced.stderr).toBe(0);
-      for (const field of ["Description: Full description\\n\\u001b[2J", "Version: 9223372036854775807", `Created: ${time}`, `Updated: ${time}`]) expect(replaced.stdout).toContain(field);
-      expect(requests.slice(before).map(({ method }) => method)).toEqual(["GET", "GET", "PATCH"]);
-      expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, properties: { pullRequests: supplied } });
       const clearAt = requests.length;
-      const cleared = await f.invoke(["update", taskId, "--clear-pull-requests", "--if-version", "9223372036854775807", ...explicit]);
-      expect(cleared.code, cleared.stderr).toBe(0);
-      expect(cleared.stdout).toContain("  pullRequests: []");
-      expect(requests.slice(clearAt).map(({ method }) => method)).toEqual(["GET", "PATCH"]);
-      expect(requests.at(-1)!.body).toEqual({ version: 9_223_372_036_854_775_807n, properties: { pullRequests: [] } });
+      const clearVersion = current.version;
+      const cleared = await f.invoke(["set-property", taskId, "pullRequests", "[]", "--if-version", String(clearVersion), ...explicit]);
+      expect(cleared.code, cleared.stderr).toBe(0); expect(cleared.stdout).toContain("pullRequests: []");
+      expect(requests.slice(clearAt).map(({ method }) => method)).toEqual(["PUT"]);
+      expect(requests.at(-1)!.body).toEqual({ version: clearVersion, valueText: "[]" });
+      const removeAt = requests.length;
+      const removed = await f.invoke(["remove-property", taskId, "pullRequests", "--if-version", String(current.version), ...explicit]);
+      expect(removed.code, removed.stderr).toBe(0); expect(removed.stdout).toContain("Task property removed.");
+      expect(removed.stdout).not.toContain("pullRequests:"); expect(requests.slice(removeAt).map(({ method }) => method)).toEqual(["DELETE"]);
+      expect(current.properties).toEqual({ future: { version: 7 } });
       conflict = true;
       const conflictAt = requests.length;
-      const refused = await f.invoke(["update", taskId, ...pairs, ...explicit]);
-      expect(refused.code).toBe(1); expect(refused.stdout).toBe(""); expect(refused.stderr).toContain("pr-conflict");
-      expect(requests.slice(conflictAt).map(({ method }) => method)).toEqual(["GET", "GET", "PATCH"]);
+      const refused = await f.invoke(["set-property", taskId, "pullRequests", valueText, ...explicit]);
+      expect(refused.code).toBe(1); expect(refused.stdout).toBe(""); expect(refused.stderr).toContain("property-conflict");
+      expect(requests.slice(conflictAt).map(({ method }) => method)).toEqual(["GET", "PUT"]);
     } finally { await f.close(); }
   }, 60_000);
+
+  it("reads the server schema outside Git without loading repository modules", async () => {
+    const f = await fixture();
+    try {
+      const schema = { properties: { future: { description: "Future definition", readOnly: false, schema: { type: "string", custom: { version: 7 } } } } };
+      const { requests } = await f.serve((_request, response) => respond(response, schema));
+      const result = await f.invoke(["properties", "--schema", "--json"]);
+      expect(result.code, result.stderr).toBe(0); expect(parseApiJson(result.stdout)).toEqual(schema);
+      expect(requests.map(({ method, pathname }) => [method, pathname])).toEqual([["GET", "/api/v1/task-properties/schema"]]);
+    } finally { await f.close(); }
+  });
 
   it("requests a single bounded ready page and preserves full task JSON and empty output", async () => {
     const f = await fixture();

@@ -1,6 +1,6 @@
 # Write safety
 
-Applies to creation, metadata updates, status changes, deletion, and attachment operations.
+Applies to creation, metadata updates, property setting and removal, status changes, deletion, and attachment operations.
 See the corresponding `--help` for command syntax.
 
 ## Decisions and versions

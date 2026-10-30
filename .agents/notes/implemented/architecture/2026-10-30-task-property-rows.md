@@ -58,12 +58,14 @@ Public property mutations cannot set or remove worker.
 
 CLI and Web generic readers adopt absence at the same model boundary. The Web
 cache schema rebuild invalidates old null/required-property details before
-same-version comparisons. Existing PR command options still write an explicit
-array. The row-model delivery retained the compact property-free task-sync
-projection; the later
-[full-property synchronization decision](2026-10-30-task-property-sync.md)
-adds complete properties to that feed and rebuilds old summaries with schema 3.
-Graph nodes retain their property-free projection.
+same-version comparisons. The
+[generic property commands](2026-10-30-generic-task-property-commands.md) own CLI
+value setting, removal and schema discovery; create/update no longer expose
+PR-specific options. The row-model delivery retained the compact property-free
+task-sync projection. The later
+[full-property synchronization decision](2026-10-30-task-property-sync.md) adds
+complete properties to snapshot and delta records and rebuilds old summaries with
+schema 3. Graph nodes retain their property-free projection.
 
 ## Alternatives
 
