@@ -1,3 +1,4 @@
+import { sameTaskProperties } from "../../api/task-properties";
 import { ApiError } from "../../api/client";
 import { stringifyApiJson } from "../../api/json";
 import { parseTaskDetail } from "../../api/parse";
@@ -17,7 +18,7 @@ const summaryOf = (detail: TaskIntrinsicDetail): TaskSummary => {
 };
 const sameIntrinsicDetail = (left: TaskIntrinsicDetail, right: TaskIntrinsicDetail): boolean =>
   left.projectId === right.projectId && left.title === right.title && left.description === right.description &&
-  JSON.stringify(left.properties) === JSON.stringify(right.properties) && sameSummary(summaryOf(left), summaryOf(right));
+  sameTaskProperties(left.properties, right.properties) && sameSummary(summaryOf(left), summaryOf(right));
 
 const validateRecord = (value: DetailRecord, ticket: SyncTicket, manifest: ProjectRecord, summaries: ReadonlyMap<string, TaskSummary>): DetailRecord => {
   try {

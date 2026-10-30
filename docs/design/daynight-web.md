@@ -291,9 +291,9 @@ Escape/Tab；隐藏附件页签关闭未提交的删除状态。上传目标初�
 
 包含归属的 `task-detail-heading` 保留 flex 收缩、零最小高度和自身 `overflow:auto`，最大高度为 `min(50%, max(32px, calc(100% - 120px)))`，相对详情 body 保留页签和阅读空间，同时给极短视口留下可操作的头部滚动窗口。头部可聚焦并支持键盘/滚轮滚动，用户名称、账号与机器名称保留完整文字，聚焦内部操作会带入可见区域。高度不超过 500px 的带归属详情隐藏静态说明 footer；普通视图复用短全屏的紧凑页签、附件内边距和预览标题布局；带归属独立页的辅助返回/语言栏使用较紧的内边距与间距，在 320px 宽度下保留中英文完整返回链接和语言选择器的同排布局，避免导航换行挤没正文。普通/全屏、弹窗/独立页使用相同的归属高度约束，完整信息与操作在头部局部滚动，概览和附件正文保留各自的阅读空间。
 
-Active/released 归属的原 owner 或项目管理员可以选择“强制撤回”。确认复用 TaskConfirmation，冻结完整 task/claim 和精确 version；说明返回 todo、清空归属与执行时间并设置 allowAgents=false，也明确远端 agent 无法保证立即停止，worker 下次成功同步后开始收尾。取消和 Escape 不提交；已知后台变化关闭失效确认。Completed/null 不提供撤回。操作成功后状态、许可和归属共同更新，不做乐观清空。
+Active/released 归属的原 owner 或项目管理员可以选择“强制撤回”。确认复用 TaskConfirmation，冻结完整 task/claim 和精确 version；说明返回 todo、清空归属与执行时间并设置 allowAgents=false，也明确远端 agent 无法保证立即停止，worker 下次成功同步后开始收尾。取消和 Escape 不提交；已知后台变化关闭失效确认。Completed 或缺失 worker 不提供撤回。操作成功后状态、许可和归属共同更新，不做乐观清空。
 
-TaskDetailSession 将 withdraw 纳入同一单任务 operation，与状态、许可、平台及删除共享 pending/未知结果禁写。API 使用 POST /worker-claim/withdraw，只发送 version 和 claimId。成功校验身份、单次版本增长、todo、worker:null、allowAgents:false 及空起止时间，并核对标题、说明、依赖、平台和 PR 等保留资料；随后安装完整详情并刷新图。冲突重新读取、要求新决定；网络、5xx、协议错误或响应丢失只用 GET 核对，不重发请求，不把后来观察到的状态归因于未知提交。确认与反馈沿用详情焦点恢复、分层 Escape 和浮动提示规则。[归属协议](daynight-worker-claims.md)拥有事务、权限及清理边界，[强制撤回决策](../../.agents/notes/implemented/architecture/2026-10-27-worker-force-withdrawal.md)保存取舍。
+TaskDetailSession 将 withdraw 纳入同一单任务 operation，与状态、许可、平台及删除共享 pending/未知结果禁写。API 使用 POST /worker-claim/withdraw，只发送 version 和 claimId。成功校验身份、单次版本增长、todo、worker 键缺失、allowAgents:false 及空起止时间，并核对标题、说明、依赖、平台和除本次 worker 变更之外的完整属性等保留资料；随后安装完整详情并刷新图。冲突重新读取、要求新决定；网络、5xx、协议错误或响应丢失只用 GET 核对，不重发请求，不把后来观察到的状态归因于未知提交。确认与反馈沿用详情焦点恢复、分层 Escape 和浮动提示规则。[归属协议](daynight-worker-claims.md)拥有事务、权限及清理边界，[强制撤回决策](../../.agents/notes/implemented/architecture/2026-10-27-worker-force-withdrawal.md)保存取舍。
 
 ### 平台要求与确认下拉框
 

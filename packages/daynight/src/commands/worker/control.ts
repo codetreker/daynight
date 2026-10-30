@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../api/task-properties.js";
 import { requireImplementedWorkerBackend } from "./backend.js";
 import type { WorkerSessionApi } from "./backends/session-api.js";
 import { randomUUID } from "node:crypto";
@@ -21,8 +22,8 @@ type ControlCoordinator = {
 };
 const matchesTask = (task: Task, identity: { projectId: string; taskId: string }): boolean => task.projectId === identity.projectId && task.id === identity.taskId;
 const matchesGrant = (task: Task, identity: { projectId: string; taskId: string }, descriptor: WorkerClaimDescriptor, userId: string): boolean => {
-  const worker = task.properties.worker;
-  return matchesTask(task, identity) && task.status === "in_progress" && worker !== null && worker.state === "active"
+  const worker = readWorkerClaim(task.properties);
+  return matchesTask(task, identity) && task.status === "in_progress" && worker !== undefined && worker.state === "active"
     && worker.claimId === descriptor.claimId && worker.workerId === descriptor.workerId && worker.worktreeId === descriptor.worktreeId
     && worker.userId === userId && worker.agent === descriptor.agent && worker.agentControlMode === (descriptor.agentControlMode ?? "herdr") && worker.platform === descriptor.platform
     && worker.machine.id === descriptor.machine.id && worker.machine.name === descriptor.machine.name;
@@ -47,7 +48,7 @@ export const submitWorkerControl = async (options: {
   const principal = await remote.currentUserId(signal);
   const observed = await remote.readTask(projectId, request.taskId, signal);
   if (!matchesTask(observed, identity)) throw new Error("The observed task does not match the requested project and task.");
-  const worker = observed.properties.worker;
+  const worker = readWorkerClaim(observed.properties);
   const exactVersion = (): void => {
     if (request.kind !== "retry" && observed.version !== request.version) throw new Error("The explicit task version no longer matches; make a new decision with the observed version.");
   };
@@ -68,7 +69,7 @@ export const submitWorkerControl = async (options: {
   };
   if (request.kind === "resume") {
     exactVersion();
-    if (worker === null || worker.state !== "released" || worker.claimId !== request.claimId) throw new Error("Resume requires the exact released previous claim.");
+    if (worker === undefined || worker.state !== "released" || worker.claimId !== request.claimId) throw new Error("Resume requires the exact released previous claim.");
     const project = store.getProject(identity);
     const repository = options.repositories.find((entry) => entry.project.projectId === projectId);
     if (project === null || repository === undefined) throw new Error("Resume requires a configured repository and its current agent settings.");
@@ -85,7 +86,7 @@ export const submitWorkerControl = async (options: {
     return { task, message: `New resume claim ${task.claimId} committed as pending; worker run will start its new execution.` };
   }
   if (source === undefined || source.status === "done") throw new Error("Management requires the original unfinished local execution.");
-  if (worker === null || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent || worker.agentControlMode !== (source.agentControlMode ?? "herdr")) throw new Error("The source claim is no longer the exact active execution on this worker.");
+  if (worker === undefined || observed.status !== "in_progress" || worker.state !== "active" || worker.claimId !== request.claimId || worker.workerId !== options.workerId || worker.agent !== source.agent || worker.agentControlMode !== (source.agentControlMode ?? "herdr")) throw new Error("The source claim is no longer the exact active execution on this worker.");
   await remote.authorizeControl(projectId, worker.userId, signal);
   if (request.kind === "retry") {
     if (principal !== worker.userId) throw new Error("Retry requires the original authenticated execution owner.");
@@ -99,7 +100,10 @@ export const submitWorkerControl = async (options: {
   const owner = await coordinator.cleanupSource(identity, { deleteWorktree: false });
   await confirmMutation(
     () => remote.release(projectId, request.taskId, { claimId: request.claimId, version: request.version, stoppedConfirmed: true }, signal),
-    (task) => matchesTask(task, identity) && task.status === "todo" && task.properties.worker?.claimId === request.claimId && task.properties.worker.state === "released", "release",
+    (task) => {
+      const released = readWorkerClaim(task.properties);
+      return matchesTask(task, identity) && task.status === "todo" && released?.claimId === request.claimId && released.state === "released";
+    }, "release",
   );
   await coordinator.completeSource(owner);
   return { task: store.getTask(identity), message: `${request.kind} completed for claim ${request.claimId}; its local resources were removed.` };

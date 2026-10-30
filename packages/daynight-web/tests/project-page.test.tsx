@@ -98,8 +98,8 @@ beforeEach(() => {
   detailRequest.mockImplementation(async (project, id): Promise<TaskDetail> => {
     const task = servedGraphs.get(project)!.tasks.find((item) => item.id === id);
     if (id === X) return { requiredPlatform: null, allowAgents: false, externalDependsOn: [], startedAt: null, completedAt: null,
-      id, projectId: project, title: 'New task', description: '文本', properties: { worker: null, pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
-    return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { worker: null, pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
+      id, projectId: project, title: 'New task', description: '文本', properties: { pullRequests: [] }, status: 'todo', version: 1n, dependsOn: [], blockedBy: [], ready: true, createdAt: time, updatedAt: time };
+    return { ...task!, id, projectId: project, title: task!.titlePreview, description: '文本', properties: { pullRequests: [] }, version: servedVersions.get(`${project}/${id}`)! };
   });
 });
 

@@ -33,32 +33,32 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	project := taskProject(t, handler)
 	task := createHTTPTask(t, handler, project.ID, "Worker task")
 	read := projectRequest(handler, http.MethodGet, taskPath(task), "")
-	if !strings.Contains(read.Body.String(), `"worker":null`) {
-		t.Fatal("task properties do not declare the unclaimed worker value")
+	if _, exists := decodeResponse[api.Task](t, read, http.StatusOK).Properties["worker"]; exists {
+		t.Fatal("unclaimed task contains a worker property")
 	}
 	body := workerClaimBody(task.Version)
 	assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim", jsonBody(t, body)), http.StatusConflict, "invalid_transition")
 	task = updateHTTPTask(t, handler, task, map[string]any{"allowAgents": true})
 	claimed := claimHTTPWorker(t, handler, task, body)
-	worker := claimed.Properties.Worker
+	worker := apiWorker(t, claimed.Properties)
 	if worker == nil || worker.State != "active" || worker.ClaimID != body["claimId"] || worker.WorkerID != body["workerId"] || worker.UserID != handler.principal.UserID || worker.Agent != "codex" || worker.Platform != "linux" || worker.Phase != "preparing" || worker.Herdr != nil || worker.NativeSessionID != nil || worker.ClaimedAt.IsZero() || claimed.StartedAt == nil || claimed.Status != "in_progress" || claimed.Version != task.Version+1 {
 		t.Fatalf("claim response lost ownership or server timestamps: %+v", claimed)
 	}
-	claimed = updateHTTPTask(t, handler, claimed, map[string]any{"properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "opaque\x00", Title: "Existing evidence"}}}})
-	if !reflect.DeepEqual(claimed.Properties.Worker, worker) {
+	claimed = updateHTTPTask(t, handler, claimed, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, []api.PullRequestProperty{{URL: "opaque\x00", Title: "Existing evidence"}})}})
+	if !reflect.DeepEqual(apiWorker(t, claimed.Properties), worker) {
 		t.Fatal("ordinary PR update replaced the worker claim")
 	}
 	claimPath := taskPath(claimed) + "/worker-claim"
 	updated := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPatch, claimPath, jsonBody(t, map[string]any{
 		"version": claimed.Version, "claimId": worker.ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "pane"}, "nativeSessionId": "native-session",
 	})), http.StatusOK)
-	if updated.Properties.Worker.Herdr == nil || updated.Properties.Worker.Herdr.PaneID != "pane" || updated.Properties.Worker.NativeSessionID == nil || *updated.Properties.Worker.NativeSessionID != "native-session" || updated.Properties.Worker.Phase != "executing" || !reflect.DeepEqual(updated.Properties.PullRequests, claimed.Properties.PullRequests) || !reflect.DeepEqual(updated.StartedAt, claimed.StartedAt) {
+	if apiWorker(t, updated.Properties).Herdr == nil || apiWorker(t, updated.Properties).Herdr.PaneID != "pane" || apiWorker(t, updated.Properties).NativeSessionID == nil || *apiWorker(t, updated.Properties).NativeSessionID != "native-session" || apiWorker(t, updated.Properties).Phase != "executing" || !reflect.DeepEqual(apiPullRequests(t, updated.Properties), apiPullRequests(t, claimed.Properties)) || !reflect.DeepEqual(updated.StartedAt, claimed.StartedAt) {
 		t.Fatal("claim session update lost resources, task timing, or PR properties")
 	}
 	cleared := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPatch, claimPath, jsonBody(t, map[string]any{
 		"version": updated.Version, "claimId": worker.ClaimID, "herdr": nil, "nativeSessionId": nil,
 	})), http.StatusOK)
-	if cleared.Properties.Worker.Herdr != nil || cleared.Properties.Worker.NativeSessionID != nil {
+	if apiWorker(t, cleared.Properties).Herdr != nil || apiWorker(t, cleared.Properties).NativeSessionID != nil {
 		t.Fatal("explicit null session update did not clear its supplied fields")
 	}
 	for _, test := range []struct{ target, code string }{{"todo", "invalid_transition"}, {"done", "claim_conflict"}} {
@@ -67,7 +67,7 @@ func TestWorkerHTTPClaimUpdatesAndCompletion(t *testing.T) {
 	wrong := uuid.NewString()
 	assertProjectError(t, projectRequest(handler, http.MethodPut, taskPath(cleared)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: cleared.Version, Status: "done", ClaimID: &wrong})), http.StatusConflict, "claim_conflict")
 	done := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPut, taskPath(cleared)+"/status", jsonBody(t, api.TaskStatusUpdateRequest{Version: cleared.Version, Status: "done", ClaimID: &worker.ClaimID})), http.StatusOK)
-	if done.Status != "done" || done.Properties.Worker.State != "completed" || done.CompletedAt == nil || !reflect.DeepEqual(done.StartedAt, cleared.StartedAt) {
+	if done.Status != "done" || apiWorker(t, done.Properties).State != "completed" || done.CompletedAt == nil || !reflect.DeepEqual(done.StartedAt, cleared.StartedAt) {
 		t.Fatal("claim-bound status completion did not finish the current execution")
 	}
 	if !strings.Contains(logs.String(), `"claim_id":"`+worker.ClaimID+`"`) || !strings.Contains(logs.String(), `"component":"worker_claim"`) || strings.Contains(logs.String(), "native-session") || strings.Contains(logs.String(), "Existing evidence") {
@@ -153,18 +153,18 @@ func TestWorkerHTTPReleaseAndExplicitManualResume(t *testing.T) {
 	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Resume worker task"), map[string]any{"allowAgents": true})
 	body := workerClaimBody(task.Version)
 	task = claimHTTPWorker(t, handler, task, body)
-	old := task.Properties.Worker.ClaimID
+	old := apiWorker(t, task.Properties).ClaimID
 	for _, confirmation := range []any{nil, "true", false} {
 		assertProjectError(t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": old, "stoppedConfirmed": confirmation})), http.StatusBadRequest, "invalid_input")
 	}
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": old, "stoppedConfirmed": true})), http.StatusOK)
-	if task.Status != "todo" || task.Properties.Worker.State != "released" || task.Properties.Worker.WorktreeID != body["worktreeId"] || task.StartedAt != nil || task.CompletedAt != nil {
+	if task.Status != "todo" || apiWorker(t, task.Properties).State != "released" || apiWorker(t, task.Properties).WorktreeID != body["worktreeId"] || task.StartedAt != nil || task.CompletedAt != nil {
 		t.Fatal("release lost historical resource identity or failed to reset task timing")
 	}
 	task = updateHTTPTask(t, handler, task, map[string]any{"allowAgents": false, "requiredPlatform": "windows"})
 	body["version"], body["claimId"], body["previousClaimId"], body["worktreeId"], body["agent"] = task.Version, uuid.NewString(), old, uuid.NewString(), "copilot"
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/resume", jsonBody(t, body)), http.StatusOK)
-	if task.Status != "in_progress" || task.Properties.Worker.State != "active" || task.Properties.Worker.ClaimID != body["claimId"] || task.Properties.Worker.WorktreeID != body["worktreeId"] || task.Properties.Worker.Agent != "copilot" || task.AllowAgents || task.RequiredPlatform == nil || *task.RequiredPlatform != "windows" || task.Properties.Worker.Platform != "linux" {
+	if task.Status != "in_progress" || apiWorker(t, task.Properties).State != "active" || apiWorker(t, task.Properties).ClaimID != body["claimId"] || apiWorker(t, task.Properties).WorktreeID != body["worktreeId"] || apiWorker(t, task.Properties).Agent != "copilot" || task.AllowAgents || task.RequiredPlatform == nil || *task.RequiredPlatform != "windows" || apiWorker(t, task.Properties).Platform != "linux" {
 		t.Fatal("explicit manual resume incorrectly applied automatic eligibility filters")
 	}
 	assertProjectError(t, projectRequest(handler, http.MethodPatch, taskPath(task)+"/worker-claim", jsonBody(t, map[string]any{"version": task.Version, "claimId": old, "phase": "executing"})), http.StatusConflict, "claim_conflict")
@@ -202,7 +202,7 @@ func TestWorkerHTTPWithdrawalReturnsClearedClaim(t *testing.T) {
 	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Force withdrawal"), map[string]any{"allowAgents": true})
 	body := workerClaimBody(task.Version)
 	task = claimHTTPWorker(t, handler, task, body)
-	claimID := task.Properties.Worker.ClaimID
+	claimID := apiWorker(t, task.Properties).ClaimID
 	path := taskPath(task) + "/worker-claim/withdraw"
 	assertProjectError(t, projectRequest(handler, http.MethodPost, path, jsonBody(t, map[string]any{"version": task.Version - 1, "claimId": claimID})), http.StatusConflict, "version_conflict")
 	assertProjectError(t, projectRequest(handler, http.MethodPost, path, jsonBody(t, map[string]any{"version": task.Version, "claimId": uuid.NewString()})), http.StatusConflict, "claim_conflict")
@@ -211,11 +211,11 @@ func TestWorkerHTTPWithdrawalReturnsClearedClaim(t *testing.T) {
 		t.Fatal("withdrawal response can be cached")
 	}
 	withdrawn := decodeResponse[api.Task](t, response, http.StatusOK)
-	if withdrawn.Status != "todo" || withdrawn.AllowAgents || withdrawn.Properties.Worker != nil || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil || withdrawn.Version != task.Version+1 {
+	if withdrawn.Status != "todo" || withdrawn.AllowAgents || apiWorker(t, withdrawn.Properties) != nil || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil || withdrawn.Version != task.Version+1 {
 		t.Fatalf("withdrawal response retained execution state: %#v", withdrawn)
 	}
-	if !strings.Contains(response.Body.String(), `"worker":null`) || !reflect.DeepEqual(readHTTPTask(t, handler, withdrawn), withdrawn) {
-		t.Fatal("withdrawal did not persist its complete task response")
+	if _, exists := withdrawn.Properties["worker"]; exists || !reflect.DeepEqual(readHTTPTask(t, handler, withdrawn), withdrawn) {
+		t.Fatal("withdrawal did not persist its complete task response with absent worker")
 	}
 	if !strings.Contains(logs.String(), `"phase":"withdraw"`) || !strings.Contains(logs.String(), `"claim_id":"`+claimID+`"`) {
 		t.Fatal("withdrawal log lost execution correlation")

@@ -1,37 +1,10 @@
-import { validateWorkerAgentMode, workerAgentControlMode } from "./worker-mode.js";
-import { isNonemptyText, isText } from "../platform/text.js";
-import type { ErrorDetails, GraphTask, Page, Project, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskProperties, TaskStatus, User, WorkerClaim, WorkerHerdr, WorkerPhase, WorkerReportReceipt } from "./types.js";
+import { isText } from "../platform/text.js";
+import type { ErrorDetails, GraphTask, Page, Project, ProjectMember, ServerError, Task, TaskAttachment, TaskGraph, TaskGraphSummary, TaskPlatform, TaskStatus, User, WorkerReportReceipt } from "./types.js";
 
-export class ProtocolError extends Error {
-  constructor(message = "The server returned an invalid response.") { super(message); this.name = "ProtocolError"; }
-}
-const malformed = (): never => { throw new ProtocolError(); };
-const record = (value: unknown): Record<string, unknown> => {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return malformed();
-  return value as Record<string, unknown>;
-};
-const text = (value: unknown, nonempty = false): string => {
-  if (!isText(value) || (nonempty && !isNonemptyText(value))) return malformed();
-  return value;
-};
-const bool = (value: unknown): boolean => typeof value === "boolean" ? value : malformed();
-const count = (value: unknown): number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : malformed();
-const resourceVersion = (value: unknown): bigint => typeof value === "bigint" && value >= 1n && value <= 9_223_372_036_854_775_807n ? value : malformed();
-export const canonicalId = (value: string): string | null => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value) ? value.toLowerCase() : null;
-const id = (value: unknown): string => {
-  const parsed = text(value);
-  if (canonicalId(parsed) !== parsed) return malformed();
-  return parsed;
-};
-const timestamp = (value: unknown): string => {
-  const parsed = text(value);
-  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?Z$/.test(parsed)) return malformed();
-  const milliseconds = Date.parse(parsed);
-  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString().slice(0, 19) !== parsed.slice(0, 19)) return malformed();
-  return parsed;
-};
-const nullableTimestamp = (value: unknown): string | null => value === null ? null : timestamp(value);
-const array = <T>(value: unknown, parse: (item: unknown) => T): T[] => Array.isArray(value) ? value.map((item) => parse(item)) : malformed();
+export { canonicalId, ProtocolError } from "./validation.js";
+import { array, bool, canonicalId, count, fields, id, malformed, nullableTimestamp, record, resourceVersion, text, timestamp } from "./validation.js";
+import { parseTaskProperties, readWorkerClaim } from "./task-properties.js";
+
 const ids = (value: unknown): string[] => {
   const parsed = array(value, id);
   if (new Set(parsed).size !== parsed.length) return malformed();
@@ -82,12 +55,6 @@ const dependencyState = (data: Record<string, unknown>) => {
   return parsed;
 };
 
-const rawString = (value: unknown): string => typeof value === "string" ? value : malformed();
-const fields = (value: unknown, names: readonly string[]): Record<string, unknown> => {
-  const data = record(value);
-  if (Object.keys(data).some((key) => !names.includes(key))) return malformed();
-  return data;
-};
 export const parseWorkerReportReceipt = (value: unknown): WorkerReportReceipt => {
   const data = fields(value, ["observedAt", "lastReportedAt"]);
   const parsed = { observedAt: timestamp(data.observedAt), lastReportedAt: timestamp(data.lastReportedAt) };
@@ -119,44 +86,14 @@ export const parseProjectMembers = (value: unknown, projectId: string): readonly
   if (new Set(members.map(({ userId }) => userId)).size !== members.length) return malformed();
   return members;
 };
-const workerPhase = (value: unknown): WorkerPhase => value === "preparing" || value === "executing" || value === "verifying" || value === "completing" || value === "waiting" || value === "paused" ? value : malformed();
-const workerHerdr = (value: unknown): WorkerHerdr | null => {
-  if (value === null) return null;
-  const data = fields(value, ["session", "workspaceId", "paneId"]);
-  return { session: text(data.session, true), workspaceId: text(data.workspaceId, true), paneId: text(data.paneId, true) };
-};
-const parseWorkerClaim = (value: unknown): WorkerClaim | null => {
-  if (value === null) return null;
-  const data = fields(value, ["claimId", "state", "userId", "workerId", "machine", "platform", "agent", "agentControlMode", "worktreeId", "phase", "herdr", "nativeSessionId", "claimedAt"]);
-  const machine = fields(data.machine, ["id", "name"]);
-  const platform = requiredPlatform(data.platform);
-  if (platform === null) return malformed();
-  let agentControlMode;
-  let agent;
-  try { agentControlMode = workerAgentControlMode(data); agent = validateWorkerAgentMode(data.agent, agentControlMode); } catch { return malformed(); }
-  if (agentControlMode === "web" && data.herdr !== null) return malformed();
-  return {
-    claimId: id(data.claimId), state: data.state === "active" || data.state === "released" || data.state === "completed" ? data.state : malformed(),
-    userId: id(data.userId), workerId: id(data.workerId), machine: { id: id(machine.id), name: text(machine.name, true) }, platform,
-    agent, agentControlMode, worktreeId: id(data.worktreeId), phase: workerPhase(data.phase),
-    herdr: workerHerdr(data.herdr), nativeSessionId: data.nativeSessionId === null ? null : text(data.nativeSessionId, true), claimedAt: timestamp(data.claimedAt),
-  };
-};
-const properties = (value: unknown): TaskProperties => {
-  const data = record(value);
-  return { pullRequests: array(data.pullRequests, (item) => {
-    const pullRequest = record(item);
-    return { url: rawString(pullRequest.url), title: rawString(pullRequest.title) };
-  }), worker: parseWorkerClaim(data.worker) };
-};
-
 export const parseTask = (value: unknown, projectId: string, taskId?: string): Task => {
   const data = record(value);
   const version = resourceVersion(data.version);
-  const parsed = { ...dependencyState(data), projectId: id(data.projectId), title: text(data.title, true), description: text(data.description), properties: properties(data.properties), version };
+  const parsed = { ...dependencyState(data), projectId: id(data.projectId), title: text(data.title, true), description: text(data.description), properties: parseTaskProperties(data.properties), version };
   if (parsed.projectId !== projectId || (taskId !== undefined && parsed.id !== taskId)) return malformed();
-  if (parsed.properties.worker?.state === "active" && parsed.status !== "in_progress") return malformed();
-  if (parsed.properties.worker?.state === "released" && parsed.status !== "todo") return malformed();
+  const worker = readWorkerClaim(parsed.properties);
+  if (worker?.state === "active" && parsed.status !== "in_progress") return malformed();
+  if (worker?.state === "released" && parsed.status !== "todo") return malformed();
   return parsed;
 };
 

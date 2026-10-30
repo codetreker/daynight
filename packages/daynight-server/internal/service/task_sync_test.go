@@ -81,7 +81,7 @@ func TestTaskSyncModesWindowAndMutationSignals(t *testing.T) {
 		t.Fatal(err)
 	}
 	properties := []core.PullRequestProperty{{URL: "https://github.com/org/repo/pull/1", Title: "Change"}}
-	a, err = tasks.Update(ctx, principal, project.ID, a.ID, UpdateTask{Version: a.Version, Properties: core.TaskPropertiesPatch{PullRequests: &properties}})
+	a, err = tasks.Update(ctx, principal, project.ID, a.ID, UpdateTask{Version: a.Version, Properties: propertyPatch(properties...)})
 	if err != nil {
 		t.Fatal(err)
 	}

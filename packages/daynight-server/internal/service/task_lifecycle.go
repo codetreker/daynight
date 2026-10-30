@@ -6,6 +6,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
 type SetTaskStatus struct {
@@ -53,7 +54,11 @@ func (s *Tasks) SetStatus(ctx context.Context, principal core.Principal, project
 		if current.Version != input.Version {
 			return taskMutation{}, &Fault{Code: "version_conflict", Message: "Task version does not match."}
 		}
-		if err := requireCompatibleWorker(ctx, current.Properties.Worker); err != nil {
+		worker, err := taskproperties.Worker(current.Properties)
+		if err != nil {
+			return taskMutation{}, err
+		}
+		if err := requireCompatibleWorker(ctx, worker); err != nil {
 			return taskMutation{}, err
 		}
 		if current.Status == input.Status {
@@ -72,7 +77,6 @@ func (s *Tasks) SetStatus(ctx context.Context, principal core.Principal, project
 			}
 		}
 		values := currentTaskWrite(current)
-		worker := current.Properties.Worker
 		if worker != nil && worker.State == core.WorkerActive {
 			if input.Status != core.TaskDone {
 				return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Active worker execution must be stopped through release."}
@@ -85,7 +89,10 @@ func (s *Tasks) SetStatus(ctx context.Context, principal core.Principal, project
 			}
 			next := *worker
 			next.State = core.WorkerCompleted
-			values.Properties.Worker = &next
+			values.Properties, err = taskproperties.WithWorker(values.Properties, &next)
+			if err != nil {
+				return taskMutation{}, err
+			}
 		} else {
 			if input.ClaimID != nil {
 				return taskMutation{}, claimConflict()

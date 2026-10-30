@@ -7,7 +7,7 @@ import { pauseAuthRequests } from "../src/api/client";
 import { TaskCacheProvider } from "../src/features/task-cache/TaskCacheProvider";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { TaskDetailSessionProvider, TaskDetailSessions, useTaskDetailSessions } from "../src/features/task-detail/TaskDetailSession";
-import { TaskCacheError } from "../src/features/task-cache/database";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, TaskCacheError } from "../src/features/task-cache/database";
 import { saveDetail } from "../src/features/task-detail/detail-cache";
 import { useTaskDetail } from "../src/features/task-detail/useTaskDetail";
 import { detailFixture, graphFixture, resourceResponse } from "./helpers/taskDetail";
@@ -91,6 +91,19 @@ it("refreshes description-only versions even when a cross-tab graph update retai
   await waitFor(() => expect(result.current.canSetStatus).toBe(true));
   await act(async () => { await apply(scope, [next]); }); rerender({ observed: node(scope) });
   await waitFor(() => expect(result.current.detail?.description).toBe("New")); expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("retains complete raw PR values when nested metadata changes during a refresh", async () => {
+  const first = body({ properties: { pullRequests: [{ url: "https://example.test/pr", title: "A PR", metadata: { state: "old" } }] } });
+  const next = { ...first, version: 6n, properties: { pullRequests: [{ url: "https://example.test/pr", title: "A PR", metadata: { state: "new" } }] } };
+  const scope = await seed([first]);
+  const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(first, TEST_VIEWER_ID)).mockResolvedValueOnce(resourceResponse(next, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch);
+  const { result, rerender } = renderHook(({ observed }) => useTaskDetail(projectId, taskId, 1, observed), { initialProps: { observed: node(scope) }, wrapper: wrapper(scope) });
+  await waitFor(() => expect(result.current.canSetStatus).toBe(true));
+  await act(async () => { await apply(scope, [next]); }); rerender({ observed: node(scope) });
+  await waitFor(() => expect(result.current.detail?.version).toBe(next.version));
+  expect(result.current.detail?.properties.pullRequests).toEqual(next.properties.pullRequests);
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 it("rematerializes same-version dependency readiness without downloading the successor", async () => {
@@ -204,7 +217,7 @@ it("shows a valid confirmed write's raw authoritative body while summary sync is
   await waitFor(() => expect(session.snapshot(projectId, taskId).mutation.phase).toBe("confirmed"));
   expect(session.snapshot(projectId, taskId)).toMatchObject({ detail: { version: 6n, status: "in_progress", ready: false }, requiresFreshRead: true, graphMismatch: true });
   expect(scope.getSummaryVersion(projectId, taskId)).toBe(5n); expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(watermark);
-  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1);
+  const { openDB } = await import("idb"); const connection = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   expect((await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).detail.version).toBe(5n); connection.close();
   await apply(scope, [saved]); session.observe(projectId, taskId, node(scope));
   await waitFor(() => expect(session.snapshot(projectId, taskId)).toMatchObject({ requiresFreshRead: false, graphMismatch: false })); expect(fetch).toHaveBeenCalledTimes(2);
@@ -226,8 +239,8 @@ it("retains already admitted content during same-user foreground identity revali
 
 
 it("clears same-version private content immediately on a new generation and keeps it absent through GET failure", async () => {
-  const old = body({ description: "E1 private description", properties: { worker: null, pullRequests: [{ url: "https://example.test/old", title: "E1 private PR" }] } });
-  const restored = { ...old, description: "E2 restored description", properties: { worker: null, pullRequests: [{ url: "https://example.test/new", title: "E2 restored PR" }] } };
+  const old = body({ description: "E1 private description", properties: { pullRequests: [{ url: "https://example.test/old", title: "E1 private PR" }] } });
+  const restored = { ...old, description: "E2 restored description", properties: { pullRequests: [{ url: "https://example.test/new", title: "E2 restored PR" }] } };
   const scope = await seed([old]); const held = deferred<Response>();
   const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(old, TEST_VIEWER_ID)).mockReturnValueOnce(held.promise).mockResolvedValueOnce(resourceResponse(restored, TEST_VIEWER_ID)); vi.stubGlobal("fetch", fetch);
   const { result, rerender } = renderHook(({ revision, observed }) => useTaskDetail(projectId, taskId, revision, observed), { initialProps: { revision: 1, observed: node(scope) }, wrapper: wrapper(scope) });
@@ -329,7 +342,7 @@ it.each(["done", "todo"] as const)("reconciles a lost write when current summari
   const initial = body();
   const intermediate = { ...initial, version: 6n, status: "done" as const, ready: false, completedAt: "2026-10-22T10:00:20Z", updatedAt: "2026-10-22T10:00:20Z" };
   const current = { ...intermediate, version: 7n, status, ready: status === "todo", completedAt: status === "done" ? intermediate.completedAt : null,
-    description: "Current content after another edit", properties: { worker: null, pullRequests: [{ url: "https://example.test/current", title: "Current PR" }] }, updatedAt: "2026-10-22T10:00:21Z" };
+    description: "Current content after another edit", properties: { pullRequests: [{ url: "https://example.test/current", title: "Current PR" }] }, updatedAt: "2026-10-22T10:00:21Z" };
   const scope = await seed([initial]); const fresh = deferred<Response>();
   const fetch = vi.fn().mockResolvedValueOnce(resourceResponse(initial, TEST_VIEWER_ID)).mockRejectedValueOnce(new Error("Write result lost"))
     .mockResolvedValueOnce(resourceResponse(intermediate, TEST_VIEWER_ID)).mockReturnValueOnce(fresh.promise); vi.stubGlobal("fetch", fetch);
@@ -342,7 +355,7 @@ it.each(["done", "todo"] as const)("reconciles a lost write when current summari
   await act(async () => { await apply(scope, [current]); }); rerender({ revision: 4, observed: node(scope) });
   await waitFor(() => expect(fetch).toHaveBeenCalledTimes(4)); expect(result.current.canSetStatus).toBe(false);
   expect(result.current.mutation).toMatchObject({ operation: { action: "status", status: "done", version: initial.version }, phase: "unknown", reconciling: true });
-  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1);
+  const { openDB } = await import("idb"); const connection = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined();
   fresh.resolve(resourceResponse(current, TEST_VIEWER_ID));
   await waitFor(() => expect(result.current.mutation).toMatchObject({ phase: "reconciled", reconciling: false, reconciliationError: null }));
@@ -473,7 +486,7 @@ it("revokes known cached detail admission after a trusted 404 before an offline 
   const session = await open(scope); session.load(projectId, taskId, 2, "open");
   await waitFor(() => expect(session.snapshot(projectId, taskId).detail).toBeNull()); await waitFor(() => expect(scope.getAuthorizedProject(projectId)).toBeNull());
   session.load(projectId, taskId, 3, "refresh"); expect(session.snapshot(projectId, taskId).detail).toBeNull(); expect(fetch).toHaveBeenCalledTimes(2);
-  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1);
+  const { openDB } = await import("idb"); const connection = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA);
   await waitFor(async () => expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeUndefined()); connection.close();
 });
 
@@ -515,7 +528,7 @@ it("keeps a nonexistent task's trusted 404 local to that task without revoking i
   const missingId = "20000000-0000-4000-8000-000000000099"; const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: "not_found", message: "Not found", requestId: "unknown-task" } }), { status: 404, headers: viewerHeaders(TEST_VIEWER_ID, { "Content-Type": "application/json" }) })); vi.stubGlobal("fetch", fetch);
   const session = new TaskDetailSessions(scope); sessions.push(session); session.observe(projectId, missingId, undefined); session.load(projectId, missingId, 1, "open");
   await waitFor(() => expect(session.snapshot(projectId, missingId).error).toMatchObject({ kind: "server", code: "not_found" })); expect(scope.getAuthorizedProject(projectId)).not.toBeNull();
-  const { openDB } = await import("idb"); const connection = await openDB("daynight-task-cache", 1); expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeDefined(); connection.close();
+  const { openDB } = await import("idb"); const connection = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); expect(await connection.get("details", [TEST_VIEWER_ID, projectId, taskId])).toBeDefined(); connection.close();
 });
 
 it.each(["status", "allowAgents", "requiredPlatform"] as const)("withdraws the live scope and peer cache after a disposed session's trusted %s write 404", async (action) => {

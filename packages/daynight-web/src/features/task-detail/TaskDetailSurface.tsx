@@ -1,3 +1,4 @@
+import { readPullRequests, readWorkerClaim } from "../../api/task-properties";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
 import { taskDetailUrl, type TaskDetailNavigation } from '../../app/router';
@@ -92,8 +93,8 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const m = messages.inspection.detail;
   const task = useTaskDetail(projectId, taskId, snapshot.revision, snapshot.index.nodes.get(taskId));
   const { detail, status, error, retry } = task;
-  const worker = detail?.properties.worker;
-  const currentClaim = worker !== undefined && worker !== null && worker.state !== 'completed' ? worker : null;
+  const worker = detail === null ? undefined : readWorkerClaim(detail.properties);
+  const currentClaim = worker !== undefined && worker.state !== 'completed' ? worker : null;
   const membership = useProjectMembers(projectId, currentClaim !== null);
   const viewer = useTaskCacheScope();
   const mayWithdraw = currentClaim !== null && membership.status === 'ready' && mayWithdrawClaim(currentClaim, viewer.userId, membership.members);
@@ -265,7 +266,7 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                       <TaskPlatformSelect detail={detail} disabled={!task.canSetRequiredPlatform} describedBy={platformFeedbackId}
                         onReview={(requiredPlatform) => requestConfirmation({ kind: 'requiredPlatform', detail, requiredPlatform })} />
                     </div>
-                    {detail.properties.worker !== null && <span className="task-detail-execution-mode">{detail.properties.worker.agentControlMode === 'web' ? sessionMessages.web : sessionMessages.herdr}</span>}
+                    {worker !== undefined && <span className="task-detail-execution-mode">{worker.agentControlMode === 'web' ? sessionMessages.web : sessionMessages.herdr}</span>}
                     {detail.status === 'todo' && <span className={detail.ready ? 'task-detail-ready' : 'task-detail-blocked'}>{detail.ready ? m.ready : m.blocked}</span>}
                   </div>
                   <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
@@ -274,14 +275,14 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry}
                   canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => requestConfirmation({ kind: 'withdraw', detail, claimId: currentClaim.claimId }) } : {})} />}
               </div>
-              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} {...(detail.properties.worker?.agentControlMode === 'web' ? { session: (active: boolean) => <TaskAgentSession key={detail.properties.worker!.claimId} projectId={projectId} taskId={taskId} claimId={detail.properties.worker!.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
+              <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} {...(worker?.agentControlMode === 'web' ? { session: (active: boolean) => <TaskAgentSession key={worker!.claimId} projectId={projectId} taskId={taskId} claimId={worker!.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
                 <div className="task-detail-columns">
                   <div className="task-detail-main">
                     <section className="task-detail-section" aria-label={m.description}>
                       <h4>{m.description}</h4>
                       {description}
                     </section>
-                    <TaskPullRequests pullRequests={detail.properties.pullRequests} />
+                    <TaskPullRequests pullRequests={readPullRequests(detail.properties)} />
                   </div>
                   <aside className="task-detail-aside" aria-label={m.relationsMetadata}>
                     <section className="task-detail-section" aria-label={m.dependencies}>

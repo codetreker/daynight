@@ -133,28 +133,46 @@ func member(ctx context.Context, tx pgx.Tx, p core.Principal, project string, no
 }
 
 type task struct {
-	Properties core.TaskProperties
-	Status     string
+	Worker *core.WorkerClaim
+	Status string
 }
 
 func lockTask(ctx context.Context, tx pgx.Tx, project, id string) (task, error) {
 	var t task
-	var raw string
-	err := tx.QueryRow(ctx, `SELECT status,properties FROM tasks WHERE project_id=$1 AND id=$2 AND deleted_at IS NULL FOR SHARE`, project, id).Scan(&t.Status, &raw)
-	if err == nil {
-		t.Properties, err = taskproperties.Decode([]byte(raw))
+	if err := tx.QueryRow(ctx, `SELECT status FROM tasks WHERE project_id=$1 AND id=$2 AND deleted_at IS NULL FOR SHARE`, project, id).Scan(&t.Status); err != nil {
+		return task{}, err
 	}
+	rows, err := tx.Query(ctx, `SELECT name,value FROM task_properties WHERE task_id=$1 ORDER BY name`, id)
+	if err != nil {
+		return task{}, err
+	}
+	defer rows.Close()
+	properties := core.TaskProperties{}
+	for rows.Next() {
+		var name, value string
+		if err := rows.Scan(&name, &value); err != nil {
+			return task{}, err
+		}
+		properties[name], err = taskproperties.NormalizeValue(name, json.RawMessage(value), false)
+		if err != nil {
+			return task{}, err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return task{}, err
+	}
+	t.Worker, err = taskproperties.Worker(properties)
 	return t, err
 }
 func current(t task, r *record) bool {
 	if r.Snapshot.TestExecutionID != "" {
 		return true
 	}
-	w := t.Properties.Worker
+	w := t.Worker
 	return w != nil && w.ClaimID == r.Snapshot.ClaimID && w.AgentControlMode == core.AgentControlModeWeb
 }
 func active(t task, r *record) bool {
-	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Properties.Worker.State == core.WorkerActive)
+	return r.Snapshot.Lifecycle == "active" && (r.Snapshot.TestExecutionID != "" || current(t, r) && t.Status == "in_progress" && t.Worker.State == core.WorkerActive)
 }
 func (s *Service) browser(ctx context.Context, p core.Principal, project, taskID, id string, fn func(pgx.Tx, *record, task, bool) error) error {
 	return s.transact(ctx, func(tx pgx.Tx) error {
@@ -269,7 +287,7 @@ func (s *Service) Register(ctx context.Context, p core.Principal, project, taskI
 		if _, err = member(ctx, tx, p, project, s.now()); err != nil {
 			return err
 		}
-		w := t.Properties.Worker
+		w := t.Worker
 		if w == nil || t.Status != "in_progress" || w.State != core.WorkerActive || w.AgentControlMode != core.AgentControlModeWeb || w.UserID != p.UserID || w.ClaimID != input.ClaimID || w.WorkerID != input.WorkerID || w.WorktreeID != input.WorktreeID || string(w.Agent) != input.Provider {
 			return conflict()
 		}

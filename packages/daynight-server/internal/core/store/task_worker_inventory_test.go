@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
-	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
 func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *testing.T) {
@@ -21,9 +20,9 @@ func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 		if number < 12 {
 			claim.UserID = queryID(5)
 		}
-		properties := taskproperties.Encode(core.TaskProperties{PullRequests: []core.PullRequestProperty{}, Worker: claim})
-		properties = strings.Replace(properties, `"pullRequests":[]`, `"pullRequests":[{"url":"\u0000","title":"\ud800"}]`, 1)
-		mustQueryExec(t, database, `UPDATE tasks SET properties=$2 WHERE id=$1`, queryID(number), properties)
+		properties := fixtureTaskProperties(t, claim)
+		putTaskPropertyFixture(t, database, queryID(number), "worker", properties["worker"])
+		putTaskPropertyFixture(t, database, queryID(number), "pullRequests", []byte(`[{"url":"\u0000","title":"\ud800"}]`))
 	}
 	query := TaskQuery{Page: Page{Limit: 1}, Worker: &WorkerQuery{UserID: owner, WorkerID: workerID}}
 	for _, number := range []int{12, 13} {
@@ -36,11 +35,12 @@ func TestWorkerInventoryReadsOpaquePropertiesWithoutPostgresJSONConversion(t *te
 		if err != nil || len(page.Items) != 1 || page.Items[0].ID != queryID(number) || page.HasMore != (number == 12) {
 			t.Fatalf("opaque ownership page %d: %#v, %v", number, page, err)
 		}
-		if page.Items[0].Properties.PullRequests[0].URL != "\x00" {
-			t.Fatal("opaque PR string changed")
+		prs := fixturePullRequests(t, page.Items[0].Properties)
+		if len(prs) != 1 || prs[0].URL != "\x00" || prs[0].Title != "\ufffd" {
+			t.Fatalf("opaque PR string semantics changed: %#v", prs)
 		}
 		var stored string
-		if err := database.Pool.QueryRow(context.Background(), `SELECT properties FROM tasks WHERE id=$1`, queryID(number)).Scan(&stored); err != nil || !strings.Contains(stored, `"title":"\ud800"`) {
+		if err := database.Pool.QueryRow(context.Background(), `SELECT value FROM task_properties WHERE task_id=$1 AND name='pullRequests'`, queryID(number)).Scan(&stored); err != nil || !strings.Contains(stored, `"title":"\ud800"`) {
 			t.Fatalf("read changed unpaired Unicode bytes: %q %v", stored, err)
 		}
 		query.Page.After = &Position{CreatedAt: page.Items[0].CreatedAt, ID: page.Items[0].ID}

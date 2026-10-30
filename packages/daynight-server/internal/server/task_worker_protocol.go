@@ -3,10 +3,10 @@ package server
 import (
 	"context"
 	"net/http"
-	"slices"
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
 func extendedWorkerProtocol(request *http.Request) bool {
@@ -37,7 +37,17 @@ func (h *taskHandler) listWorkerCompatibleTasks(request *http.Request, principal
 		if err != nil || !legacyCandidates {
 			return page, err
 		}
-		page.Items = slices.DeleteFunc(page.Items, func(task core.Task) bool { return !legacyWorkerCompatible(task.Properties.Worker) })
+		items := make([]core.Task, 0, len(page.Items))
+		for _, task := range page.Items {
+			worker, err := taskproperties.Worker(task.Properties)
+			if err != nil {
+				return service.TaskPage{}, err
+			}
+			if legacyWorkerCompatible(worker) {
+				items = append(items, task)
+			}
+		}
+		page.Items = items
 		if len(page.Items) > 0 || page.NextCursor == nil {
 			return page, nil
 		}

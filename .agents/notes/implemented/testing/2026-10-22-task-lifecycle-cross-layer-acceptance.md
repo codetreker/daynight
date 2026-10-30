@@ -55,13 +55,18 @@ every interleaving.
 
 The installed platform/status matrix runs independently as
 `TestInstalledCLIPlatformAcceptance` / `installed_cli_platform_status_workflow`.
-It retains all four platform values across nine status pairs and the original
-project/task workflow retains its assertions. Separate owned database, installed
-CLI workspace and server fixtures give each scenario the existing 45-second
-server lifetime; the matrix does not consume the main workflow's process budget.
-The platform scenario requires graceful SIGTERM exit 0 and normal cleanup evidence.
-Its source-bound runtime receipt remains distinct from source inspection or this
-scenario description.
+It retains all four platform values across nine status pairs and the
+project/task workflow retains its assertions. The matrix originally used a
+separate server to give each scenario its own 45-second process budget. Its
+database, installed CLI workspace and server remain independently owned.
+
+Each scenario now keeps its server until fixture cleanup under the owning Go
+test's deadline. The process context derives from `context.Background` and is
+cancelled by cleanup, preserving graceful shutdown ownership; the bounded outer test timeout
+provides the final lifetime guard. Startup, request, CLI-operation and shutdown
+bounds remain independent. The platform scenario requires graceful SIGTERM exit
+0 and normal cleanup evidence. Its source-bound runtime receipt remains distinct
+from source inspection or this scenario description.
 
 ### One task graph across CLI and browser
 

@@ -58,14 +58,14 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 	claim["workerId"] = id
 	claim["agent"] = "claude"
 	task = claimHTTPWorker(t, handler, task, claim)
-	task = updateHTTPTask(t, handler, task, map[string]any{"properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "opaque\x00", Title: "Opaque evidence"}}}})
-	body["taskInventory"] = map[string]any{"observedAt": "2026-10-29T00:00:00Z", "claims": []any{map[string]any{"projectId": project.ID, "taskId": task.ID, "claimId": task.Properties.Worker.ClaimID}}}
+	task = updateHTTPTask(t, handler, task, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, []api.PullRequestProperty{{URL: "opaque\x00", Title: "Opaque evidence"}})}})
+	body["taskInventory"] = map[string]any{"observedAt": "2026-10-29T00:00:00Z", "claims": []any{map[string]any{"projectId": project.ID, "taskId": task.ID, "claimId": apiWorker(t, task.Properties).ClaimID}}}
 	reportSnapshotHTTP(t, handler, id, body)
 	active := snapshotDetailHTTP(t, handler, id)
 	if active.Worker.ActiveTaskCount == nil || *active.Worker.ActiveTaskCount != 1 || len(active.Worker.Tasks) != 1 || active.Worker.Tasks[0].Agent != "claude" || active.Worker.Tasks[0].Title != task.Title {
 		t.Fatalf("authorized task snapshot missing: %+v", active)
 	}
-	done := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPut, taskPath(task)+"/status", jsonBody(t, map[string]any{"version": task.Version, "status": "done", "claimId": task.Properties.Worker.ClaimID})), http.StatusOK)
+	done := decodeResponse[api.Task](t, projectRequest(handler, http.MethodPut, taskPath(task)+"/status", jsonBody(t, map[string]any{"version": task.Version, "status": "done", "claimId": apiWorker(t, task.Properties).ClaimID})), http.StatusOK)
 	if done.Status != "done" {
 		t.Fatal("task not completed")
 	}

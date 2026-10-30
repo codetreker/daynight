@@ -5,6 +5,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
 type DeleteTask struct {
@@ -14,7 +15,11 @@ type DeleteTask struct {
 
 func (s *Tasks) Delete(ctx context.Context, principal core.Principal, projectID, id string, input DeleteTask) error {
 	_, err := s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
-		if current.Properties.Worker != nil && current.Properties.Worker.State == core.WorkerActive {
+		worker, err := taskproperties.Worker(current.Properties)
+		if err != nil {
+			return taskMutation{}, err
+		}
+		if worker != nil && worker.State == core.WorkerActive {
 			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Release the active worker execution before deleting the task."}
 		}
 		if !input.RemoveDepends {

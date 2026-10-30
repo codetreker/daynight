@@ -8,7 +8,7 @@ const timestamp = '2026-10-22T10:00:00Z';
 export const detailFixture = (projectId: string, taskId: string, changes: Partial<TaskDetail> = {}): TaskDetail => ({
   id: taskId, projectId, title: '完整任务详情', description: '', status: 'todo', version: 1n,
   allowAgents: false, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true,
-  startedAt: null, completedAt: null, properties: { worker: null, pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp, ...changes,
+  startedAt: null, completedAt: null, properties: { pullRequests: [] }, createdAt: timestamp, updatedAt: timestamp, ...changes,
 });
 export const graphFixture = (details: readonly TaskDetail[]): TaskGraph => {
   const projectId = details[0]!.projectId;

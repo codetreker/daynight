@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -25,7 +26,7 @@ const configuration: ExecutionConfiguration = { agent: "codex", model: "current-
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const store of stores.splice(0)) store.close(); await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
-const task = (projectId: string, id: string): Task => ({ id, projectId, title: id, description: "task", status: "todo", allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, version: 1n, properties: { worker: null, pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+const task = (projectId: string, id: string): Task => ({ id, projectId, title: id, description: "task", status: "todo", allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const eventually = (check: () => void) => vi.waitFor(check, { timeout: 3500, interval: 10 });
 const fixture = async (maxConcurrent = 1) => {
   const base = path.resolve("../../.tmp/minimal-coordinator-tests"); await mkdir(base, { recursive: true });
@@ -94,7 +95,7 @@ const fixture = async (maxConcurrent = 1) => {
     candidates: vi.fn(async function* (projectId: string) { for (const candidate of candidates) if (candidate.projectId === projectId && ![...grants.values()].some((value) => value.id === candidate.id)) yield candidate; }),
     claim: vi.fn(async (candidate: Task, descriptor: WorkerClaimDescriptor) => grant(candidate, descriptor)),
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find((value) => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
-    update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker!, ...update } } }; grants.set(current.properties.worker!.claimId, result); return result; }),
+    update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...readWorkerClaim(current.properties)!, ...update } } }; grants.set(readWorkerClaim(current.properties)!.claimId, result); return result; }),
   } as unknown as WorkerRemote;
   const options = { store, git, herdr, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, buildPrompt: vi.fn((_assignment: ManagedAssignment) => "worker-managed using-daynight autopilot-managed-task"), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   const reopenStore = () => {
@@ -834,18 +835,18 @@ describe("minimal worker resource reconciliation", () => {
   it("retries using the exact validated original claim observation", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const original = f.grants.get(row.claimId)!; f.resources.clear();
-    const replacement: Task = { ...original, properties: { ...original.properties, worker: { ...original.properties.worker!, claimId: uuid(950), workerId: uuid(951), worktreeId: uuid(952) } } };
+    const replacement: Task = { ...original, properties: { ...original.properties, worker: { ...readWorkerClaim(original.properties)!, claimId: uuid(950), workerId: uuid(951), worktreeId: uuid(952) } } };
     vi.mocked(f.remote.readTask).mockResolvedValueOnce(original).mockResolvedValueOnce(replacement);
     await f.coordinator.advanceRetry(row);
     expect(f.remote.readTask).toHaveBeenCalledOnce();
     expect(f.tasks.start.mock.calls.at(-1)![0].claimId).toBe(row.claimId);
-    expect(f.tasks.start.mock.calls.at(-1)![0].worktreeId).toBe(original.properties.worker!.worktreeId);
+    expect(f.tasks.start.mock.calls.at(-1)![0].worktreeId).toBe(readWorkerClaim(original.properties)!.worktreeId);
   });
 
   it.each(["claim", "worker"])("rejects a retry after the original %s identity changes", async (field) => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const original = f.grants.get(row.claimId)!;
-    const worker = { ...original.properties.worker!, ...(field === "claim" ? { claimId: uuid(950) } : { workerId: uuid(951) }) };
+    const worker = { ...readWorkerClaim(original.properties)!, ...(field === "claim" ? { claimId: uuid(950) } : { workerId: uuid(951) }) };
     vi.mocked(f.remote.readTask).mockResolvedValue({ ...original, properties: { ...original.properties, worker } });
     await expect(f.coordinator.advanceRetry(row)).rejects.toThrow("no longer active on this worker");
     expect(f.tasks.start).toHaveBeenCalledOnce();
@@ -954,7 +955,7 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.store.listTasks()[0]?.sessionId).toEqual(expect.any(String)));
     const row = f.store.listTasks()[0]!;
     const original = f.grants.get(row.claimId)!;
-    const withdrawn: Task = { ...original, status: "todo", allowAgents: false, startedAt: null, completedAt: null, version: original.version + 1n, properties: { ...original.properties, worker: null } };
+    const withdrawn: Task = { ...original, status: "todo", allowAgents: false, startedAt: null, completedAt: null, version: original.version + 1n, properties: Object.fromEntries(Object.entries(original.properties).filter(([name]) => name !== "worker")) };
     f.grants.clear(); f.candidates.splice(0);
     vi.mocked(f.remote.readTask).mockResolvedValue(withdrawn);
     await f.coordinator.tick();

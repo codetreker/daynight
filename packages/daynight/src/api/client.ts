@@ -1,10 +1,11 @@
+import { readWorkerClaim } from "./task-properties.js";
 import { performance } from "node:perf_hooks";
 import { parseApiJson, stringifyApiJson } from "./json.js";
 import { OperationError } from "./operation.js";
 import { validateServerToken, validateTokenTransport } from "../config/server-token.js";
 import type { Operation } from "./operation.js";
 import { canonicalId, parsePage, parseProject, parseProjectMembers, parseServerError, parseTask, parseTaskGraph, parseTaskAttachment, parseUser, parseWorkerReportReceipt, ProtocolError, validateAttachmentPath } from "./parse.js";
-import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WritableTaskProperties, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt } from "./types.js";
+import type { AttachmentConsumer, CreateProjectInput, CreateTaskInput, DeleteTaskInput, ErrorDetails, Project, ProjectMember, PutTaskAttachmentInput, ReadyTaskFilters, ServerError, Task, SetTaskStatusInput, TaskAttachment, TaskFilters, TaskGraph, UpdateTaskInput, ClaimWorkerTaskInput, CompleteWorkerTaskInput, ReleaseWorkerClaimInput, ResumeWorkerTaskInput, WithdrawWorkerClaimInput, UpdateWorkerClaimInput, User, WorkerClaim, WorkerClaimDescriptor, WorkerHerdr, Page, TaskPageQuery, WorkerReport, WorkerReportReceipt } from "./types.js";
 
 type Context = { readonly operation: string; readonly projectId?: string; readonly taskId?: string };
 export type ApiPhase = "prepare" | "request" | "response" | "protocol" | "pagination";
@@ -342,30 +343,28 @@ export const createApiClient = (options: {
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters): Task => {
     const task = parseTask(value, project);
+    const worker = readWorkerClaim(task.properties);
     if (
       (filters.status !== undefined && task.status !== filters.status)
       || (filters.ready !== undefined && task.ready !== filters.ready)
       || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents)
       || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)
-      || (filters.workerId !== undefined && (task.properties.worker === null || task.properties.worker.state !== "active" || task.properties.worker.workerId !== canonicalId(filters.workerId)))
+      || (filters.workerId !== undefined && (worker === undefined || worker.state !== "active" || worker.workerId !== canonicalId(filters.workerId)))
     ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
-  };
-  const writableProperties = (properties: WritableTaskProperties | undefined): void => {
-    if (properties !== undefined && Object.hasOwn(properties, "worker")) throw new Error("Worker ownership cannot be supplied through ordinary task properties.");
   };
   const taskVersion = (version: bigint): void => {
     if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
   };
   const herdrMatches = (actual: WorkerHerdr | null, expected: WorkerHerdr | null): boolean => actual === null || expected === null ? actual === expected : actual.session === expected.session && actual.workspaceId === expected.workspaceId && actual.paneId === expected.paneId;
   const descriptorMatches = (worker: WorkerClaim, descriptor: WorkerClaimDescriptor): boolean => worker.claimId === canonicalId(descriptor.claimId) && worker.workerId === canonicalId(descriptor.workerId) && worker.machine.id === canonicalId(descriptor.machine.id) && worker.machine.name === descriptor.machine.name && worker.platform === descriptor.platform && worker.agent === descriptor.agent && worker.agentControlMode === (descriptor.agentControlMode ?? "herdr") && worker.worktreeId === canonicalId(descriptor.worktreeId);
-  const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim | null) => boolean, sameValue = false): Promise<Task> => {
+  const workerMutation = <T extends { readonly version: bigint }>(projectId: string, taskId: string, action: string, suffix: string, method: "POST" | "PATCH" | "PUT", input: T, matches: (task: Task, worker: WorkerClaim | undefined) => boolean, sameValue = false): Promise<Task> => {
     if (Object.hasOwn(input, "continuityConfirmed")) throw new Error("continuityConfirmed is no longer accepted. New executions require fresh claim and worktree IDs.");
     const project = resourceId(projectId), task = resourceId(taskId);
     taskVersion(input.version);
     return exchange({ operation: action, projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}${suffix}`, method, { kind: "json", parse: (value) => {
       const result = parseTask(value, project, task);
-      const worker = result.properties.worker;
+      const worker = readWorkerClaim(result.properties);
       if ((result.version !== input.version + 1n && !(sameValue && result.version === input.version)) || !matches(result, worker)) throw new ProtocolError("Task does not match the requested worker operation.");
       return result;
     } }, [200], { kind: "json", value: input }, true);
@@ -389,7 +388,6 @@ export const createApiClient = (options: {
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);
-      writableProperties(input.properties);
       return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => parseTask(value, project), {
         title: input.title,
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
@@ -435,7 +433,6 @@ export const createApiClient = (options: {
     },
     updateTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      writableProperties(input.properties);
       return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => parseTask(value, project, task), {
         version: input.version,
         ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
@@ -463,15 +460,15 @@ export const createApiClient = (options: {
         return result;
       } }, [200], { kind: "json", value: { version: input.version, status: input.status } }, true);
     },
-    claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => worker !== null && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
-    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== null && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId), true),
-    completeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.complete", "/status", "PUT", { ...input, status: "done" }, (task, worker) => worker !== null && task.status === "done" && worker.state === "completed" && worker.claimId === canonicalId(input.claimId), true),
-    releaseWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.release", "/worker-claim/release", "POST", input, (task, worker) => worker !== null && task.status === "todo" && worker.state === "released" && worker.claimId === canonicalId(input.claimId)),
+    claimWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.claim", "/worker-claim", "POST", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
+    updateWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.update", "/worker-claim", "PATCH", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && worker.claimId === canonicalId(input.claimId) && (input.phase === undefined || worker.phase === input.phase) && (input.herdr === undefined || herdrMatches(worker.herdr, input.herdr)) && (input.nativeSessionId === undefined || worker.nativeSessionId === input.nativeSessionId), true),
+    completeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.complete", "/status", "PUT", { ...input, status: "done" }, (task, worker) => worker !== undefined && task.status === "done" && worker.state === "completed" && worker.claimId === canonicalId(input.claimId), true),
+    releaseWorkerClaim: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.release", "/worker-claim/release", "POST", input, (task, worker) => worker !== undefined && task.status === "todo" && worker.state === "released" && worker.claimId === canonicalId(input.claimId)),
     withdrawWorkerClaim: (projectId, taskId, input) => {
       resourceId(input.claimId);
-      return workerMutation(projectId, taskId, "worker.withdraw", "/worker-claim/withdraw", "POST", input, (task, worker) => worker === null && task.status === "todo" && !task.allowAgents && task.startedAt === null && task.completedAt === null);
+      return workerMutation(projectId, taskId, "worker.withdraw", "/worker-claim/withdraw", "POST", input, (task, worker) => worker === undefined && task.status === "todo" && !task.allowAgents && task.startedAt === null && task.completedAt === null);
     },
-    resumeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.resume", "/worker-claim/resume", "POST", input, (task, worker) => worker !== null && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
+    resumeWorkerTask: (projectId, taskId, input) => workerMutation(projectId, taskId, "worker.resume", "/worker-claim/resume", "POST", input, (task, worker) => worker !== undefined && task.status === "in_progress" && worker.state === "active" && descriptorMatches(worker, input)),
     putTaskAttachment: (projectId, taskId, path, input) => {
       const project = resourceId(projectId), task = resourceId(taskId), attachmentPath = validateAttachmentPath(path);
       return exchange({ operation: "task.attachment.put", projectId: project, taskId: task }, `${attachmentPrefix(project, task)}/files/${encodeAttachmentPath(attachmentPath)}`, "PUT", { kind: "json", parse: (value) => parseTaskAttachment(value, attachmentPath) }, [200, 201], { kind: "bytes", value: input.body, contentType: input.contentType }, true);

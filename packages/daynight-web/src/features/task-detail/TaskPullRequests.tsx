@@ -13,7 +13,10 @@ const isWebLink = (value: string): boolean => {
   }
 };
 
-export const TaskPullRequests = ({ pullRequests }: { readonly pullRequests: readonly PullRequestProperty[] }) => {
+const noPullRequests: readonly PullRequestProperty[] = [];
+
+export const TaskPullRequests = ({ pullRequests: value }: { readonly pullRequests: readonly PullRequestProperty[] | undefined }) => {
+  const pullRequests = value === undefined ? noPullRequests : value;
   const { messages, format } = useI18n();
   const m = messages.inspection.pr;
   const [selection, setSelection] = useState({ collection: pullRequests, page: 0 });

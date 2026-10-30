@@ -35,7 +35,7 @@ func TestTaskPropertiesMigrationPreservesExistingResource(t *testing.T) {
 	}
 	database := &Store{Pool: pool}
 	task := snapshotTask(t, database, projectID, taskID)
-	if task.Title != "Existing task" || task.Description != "Existing description" || task.Status != core.TaskDone || task.Version != 17 || !task.CreatedAt.Equal(created) || !task.UpdatedAt.Equal(updated) || task.Properties.PullRequests == nil || len(task.Properties.PullRequests) != 0 {
+	if task.Title != "Existing task" || task.Description != "Existing description" || task.Status != core.TaskDone || task.Version != 17 || !task.CreatedAt.Equal(created) || !task.UpdatedAt.Equal(updated) || fixturePullRequests(t, task.Properties) == nil || len(fixturePullRequests(t, task.Properties)) != 0 {
 		t.Fatalf("migration changed old resource: %#v", task)
 	}
 	var applied time.Time

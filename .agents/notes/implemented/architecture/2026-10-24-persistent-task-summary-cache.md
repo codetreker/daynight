@@ -20,7 +20,12 @@ existing GraphIndex locally. Network decoding and authentication happen outside
 the transaction; publication follows transaction completion. Equal versions must
 have identical intrinsic content. Older rows cannot advance coverage.
 
-The origin-local daynight-task-cache database uses schema 1 and idb 8.0.4. Its
+The origin-local daynight-task-cache database uses schema 2 and idb 8.0.4. The
+[property-row model](2026-10-30-task-property-rows.md) makes property absence
+observable without changing task versions during migration. The 1-to-2 upgrade
+therefore clears rebuildable project/summary/detail stores and rotates user
+fences alongside that model change, avoiding same-version conflicts with old
+worker:null or mandatory-PR details. Summary rows still omit properties. Its
 userScopes store owns durable user fences; projects owns project manifests and
 cache generations; summaries owns intrinsic task rows; details establishes the
 shared intrinsic-detail record and transaction shape. Manifest counts, edges,

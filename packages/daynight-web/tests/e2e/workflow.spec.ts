@@ -1,3 +1,4 @@
+import { readPullRequests } from '../../src/api/task-properties';
 import { readProjectSnapshot } from './project-snapshot';
 import { closeChain, expectClosedChain, expectOpenChain, openChain } from './chain-dialog';
 import { selectOverview, selectTaskList } from './project-view';
@@ -1626,7 +1627,7 @@ test('keyboard-focus', scenario('keyboard-focus'), async ({ page, api: request }
   await page.keyboard.press('Tab');
   await expect(overviewTab).toBeFocused();
   await page.keyboard.press('Tab');
-  await expect(dialog.getByRole('link', { name: b.properties.pullRequests[0]!.url, exact: true })).toBeFocused();
+  await expect(dialog.getByRole('link', { name: readPullRequests(b.properties)![0]!.url, exact: true })).toBeFocused();
   await page.keyboard.press('Shift+Tab');
   await expect(overviewTab).toBeFocused();
   await page.keyboard.press('Shift+Tab');

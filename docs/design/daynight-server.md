@@ -28,8 +28,7 @@
 现有 `packages/daynight/` TypeScript CLI、YAML 配置和 SQLite review 状态继续独立
 运行。服务不读取或迁移这些状态；注册 project 也不启动现有 review 协调器。
 
-[预定义属性设计](daynight-task-properties.md)为完整 task 提供固定结构的 PR
-引用，服务端已沿用本文的事务与版本机制实现存储、迁移和 HTTP 操作。其
+[预定义属性设计](daynight-task-properties.md)为完整 task 提供通用属性对象、服务端静态定义与独立属性表。pullRequests 是公开可写的 PR 列表，worker 是服务端受保护的执行归属；缺失不补默认值。
 [需求](../spec/daynight-task-properties.md)拥有扩展行为。
 
 [执行计时架构](daynight-task-timing.md)的起止事实与图数据库时间样本已接入相同事务和读取模型。
@@ -141,7 +140,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 | 对象 | 字段与含义 |
 |---|---|
 | Project | `id`、非空 `name`、`repoUrl`、`createdAt`、`updatedAt`，以及具体 `settings`（正 int64 version、正 int32 executionWarningMinutes） |
-| Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、具体 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt` |
+| Task | `id`、`projectId`、非空 `title`、`description`、`status`、布尔 `allowAgents`、可空平台枚举 `requiredPlatform`、通用属性对象 `properties`、`version`、`createdAt`、`updatedAt`，以及可空 `startedAt`、`completedAt` |
 | TaskDependency | `projectId`、`taskId`、`dependsOnTaskId`、非空布尔 `external`（默认 false） |
 | WorkerSnapshot | 认证 userId 与 workerId、不可变创建时刻、服务端最近报告时刻、typed telemetry 与规范化任务观测；[独立机制](daynight-worker-snapshots.md) |
 
@@ -149,10 +148,7 @@ index 后由前端显示未找到页面。独立附件命名空间复用原始�
 图；不同 project 可以关联相同仓库地址，`repoUrl` 不作为 project 唯一键。当前 API
 没有修改 project 仓库或删除资源的操作。
 
-任务图核心使用 `projects`、`tasks`、`task_dependencies` 三张表；账号级 Worker 观测使用独立 `workers` 表。`tasks.properties` 用 text
-保存固定属性 DTO 的序列化 JSON；属性不增加关联表，完整 task 同行读写，图查询
-保持显式精简投影。主键分别为 `id`、`id`、
-`(project_id, task_id, depends_on_task_id)`。数据库使用非空、状态枚举检查、正版本
+任务和关系使用 `projects`、`tasks`、`task_dependencies`，属性使用独立 `task_properties` 表；账号级 Worker 观测使用 `workers`。属性主键为 `(task_id,name)`，value 保存完整 JSON 文本，不重复 project_id，不具有独立版本、时间或删除标记。完整任务先取得可见父行，再在同一快照批量加载属性；图查询保持显式精简投影。其他主键分别为 `id`、`id`、`(project_id, task_id, depends_on_task_id)`。数据库使用非空、状态枚举检查、正版本
 检查、非自身依赖检查及主键唯一性保证可局部表达的约束。索引支持以下访问：
 
 - project 按 `(created_at, id)` 列表；
@@ -290,7 +286,7 @@ callback 不执行写入并正常结束；只有外层事务成功后才返回�
 
 创建 project 的输入为 `name` 和 `repoUrl`。创建 task 的输入为 `title`、可省略的
 `description`、`dependsOn`、`externalDependsOn` 与 `properties`；省略描述表示空字符串，省略依赖和
-PR 引用表示空数组。创建成功
+属性表示没有对应行，完整属性对象为空时返回 {}。创建成功
 返回 `201`、资源体和对应资源的 `Location`；读取、更新及全部 worker 操作成功返回 `200`。Worker DTO/授权/事务规则由[认领架构](daynight-worker-claims.md)拥有；普通 create/PATCH 不能提供 properties.worker，PR 更新保留它。
 
 项目设置 PATCH 独立接受必填正 int64 `version` 和 `1..2147483647` 的 `executionWarningMinutes`，
@@ -342,7 +338,7 @@ project 中存在的 `taskId` 仍返回 `not_found`。依赖输入中的缺失�
 下一页时后者为 `null`。
 task 列表接受 `status`、`ready`、`allowAgents`、`compatiblePlatform` 和可选规范 UUID `workerId`，显式条件按 AND 组合。许可、平台和 ready 等普通条件在 SQL 中过滤；workerId 由 service 与认证 principal.UserID 组成一对内部筛选，只匹配解码后 worker 的 active/userId/workerId，不按 task 状态推断归属。
 
-普通列表保留 SQL limit；指定 workerId 时，store 按原 keyset 顺序扫描 SQL 候选，用既有 task properties codec 解码并匹配归属，收集到 page limit+1 个匹配项或结束。最终分页和 lookahead 在归属筛选后计算，cursor 来自最后返回的匹配项。该路径可能扫描更多非匹配行，但不转换整段 opaque TEXT properties，不新增投影列或 claim 表；合法 PR 的 NUL/Unicode 转义继续由原 codec 处理。
+普通列表保留 SQL limit；指定 workerId 时，store 按原 keyset 顺序读取候选及其唯一 worker 属性，在 Go 中解码并匹配归属，收集到 page limit+1 个匹配项或结束。最终分页和 lookahead 在归属筛选后计算，cursor 来自最后返回的匹配项。选中任务再批量加载全部属性，保持一致快照；不通过 SQL JSON 转换 PR 文本，也不引入独立 claim 权威表。
 
 Cursor 绑定全部显式筛选，workerId 还绑定隐式认证 userId；未指定 worker 时保持原用户无关列表范围。更换用户、worker 或其他筛选不能沿用旧 cursor。
 
@@ -364,7 +360,7 @@ service 返回可识别的领域错误；server 负责唯一的 HTTP 映射。�
 
 | 错误码 | HTTP | 情形 |
 |---|---|---|
-| `invalid_input` | `400` | JSON、字段、分页、地址或依赖引用非法，含自身及重复依赖 |
+| `invalid_input` | `400` | JSON、字段、分页、地址或依赖引用非法，含自身及重复依赖，以及非法存储属性值 |
 | `unauthenticated` | `401` | 会话或 PAT 缺失、失效或撤销 |
 | `forbidden` | `403` | 缺少项目管理员角色或 Cookie 会话写请求来源不合法 |
 | `not_found` | `404` | 指定 project 不存在、调用者不是成员或其范围内的 task 不存在 |

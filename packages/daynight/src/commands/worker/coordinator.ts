@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../api/task-properties.js";
 import type { WebExecutionBackend } from "./backends/web.js";
 import type { WebExecutionStore } from "./backends/web-store.js";
 import type { WorkerSessionApi } from "./backends/session-api.js";
@@ -31,8 +32,8 @@ type Snapshot = { herdr: HerdrOwnedWorkspace[]; owners: Map<string, ResourceOwne
 const key = (identity: ClaimIdentity): string => `${identity.projectId}/${identity.taskId}/${identity.claimId}`;
 const taskKey = (identity: Pick<ClaimIdentity, "projectId" | "taskId">): string => `${identity.projectId}/${identity.taskId}`;
 const remoteOwner = (task: Task): ResourceOwner => {
-  const claim = task.properties.worker;
-  if (claim === null || claim.state !== "active") throw new Error("An actual active remote claim is required.");
+  const claim = readWorkerClaim(task.properties);
+  if (claim === undefined || claim.state !== "active") throw new Error("An actual active remote claim is required.");
   return { projectId: task.projectId, taskId: task.id, claimId: claim.claimId, worktreeId: claim.worktreeId };
 };
 
@@ -124,15 +125,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const result = new Map<string, Task>();
     for (const task of tasks) {
       const owner = remoteOwner(task);
-      if (task.properties.worker!.workerId !== options.workerId) throw new Error("The claim inventory contains another worker's claim.");
+      if (readWorkerClaim(task.properties)!.workerId !== options.workerId) throw new Error("The claim inventory contains another worker's claim.");
       if (result.has(key(owner))) throw new Error("The claim inventory contains duplicate claims.");
       result.set(key(owner), task);
-      options.store.registerPending({ projectId: task.projectId, taskId: task.id, claimId: owner.claimId, agent: task.properties.worker!.agent, agentControlMode: task.properties.worker!.agentControlMode });
+      options.store.registerPending({ projectId: task.projectId, taskId: task.id, claimId: owner.claimId, agent: readWorkerClaim(task.properties)!.agent, agentControlMode: readWorkerClaim(task.properties)!.agentControlMode });
     }
     return result;
   };
   const publishSummary = async (task: LocalTask, observed: HerdrAgentObservation, remoteTask: Task, signal: AbortSignal): Promise<void> => {
-    const worker = remoteTask.properties.worker!;
+    const worker = readWorkerClaim(remoteTask.properties)!;
     const herdr = { session: observed.binding.session, workspaceId: observed.binding.workspaceId, paneId: observed.binding.paneId };
     const phase = observed.status === "blocked" ? "waiting" as const : "executing" as const;
     const nativeSessionId = observed.nativeSession?.sessionId ?? task.sessionId;
@@ -227,7 +228,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const ensure = async (task: LocalTask, remoteTask: Task, signal: AbortSignal, execute = true): Promise<void> => {
     if (ending.has(key(task))) return;
     const owner = remoteOwner(remoteTask);
-    if (!sameClaim(task, owner) || remoteTask.properties.worker!.workerId !== options.workerId || remoteTask.properties.worker!.agent !== task.agent || remoteTask.properties.worker!.agentControlMode !== (task.agentControlMode ?? "herdr")) throw new Error("The local execution does not match the observed original worker claim.");
+    if (!sameClaim(task, owner) || readWorkerClaim(remoteTask.properties)!.workerId !== options.workerId || readWorkerClaim(remoteTask.properties)!.agent !== task.agent || readWorkerClaim(remoteTask.properties)!.agentControlMode !== (task.agentControlMode ?? "herdr")) throw new Error("The local execution does not match the observed original worker claim.");
     if (task.agentControlMode === "web") {
       if (!execute) return;
       if (!options.webStore || !options.webBackend) throw new Error("The Web execution backend is unavailable.");
@@ -237,15 +238,15 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
       if (options.webStore.getTask(task) === null) {
         if (!options.verifyWebUnregistered) throw new Error("Web launch provenance cannot be verified.");
         await options.verifyWebUnregistered(task, signal);
-        if (task.sessionId !== null || remoteTask.properties.worker!.nativeSessionId !== null) throw new Error("The original native identity has no local Web execution evidence.");
+        if (task.sessionId !== null || readWorkerClaim(remoteTask.properties)!.nativeSessionId !== null) throw new Error("The original native identity has no local Web execution evidence.");
       }
-      let record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: remoteTask.properties.worker!.userId, configuration }, now());
+      let record = options.webStore.register({ ...owner, project: projectFor(task), serverOrigin: options.serverOrigin, workerId: options.workerId, userId: readWorkerClaim(remoteTask.properties)!.userId, configuration }, now());
       if (record.cleanup !== null) record = options.webStore.clearShutdown(record, now());
       const result = await options.webBackend.advance(record, signal);
       const nativeSessionId = result.resources.nativeSession?.sessionId ?? task.sessionId;
       if (nativeSessionId !== null) options.store.setSessionId(task, nativeSessionId);
       const phase = "executing" as const;
-      const worker = remoteTask.properties.worker!;
+      const worker = readWorkerClaim(remoteTask.properties)!;
       if (worker.phase !== phase || worker.nativeSessionId !== nativeSessionId || worker.herdr !== null) {
         try { await options.remote.update(remoteTask, { phase, nativeSessionId, herdr: null }, signal); }
         catch (error) { if (isWorkerCancellation(error, signal)) throw error; options.emit({ kind: "summary-error", task, message: "The Web execution summary was not confirmed; the next round will read it again.", error }); }
@@ -275,7 +276,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     launchCleanups();
     await options.remote.currentUserId(normalSignal);
     const inventory = await ownInventory(normalSignal);
-    options.onInventory?.({ observedAt: new Date(now()).toISOString(), claims: [...inventory.values()].map(task => ({ projectId: task.projectId, taskId: task.id, claimId: task.properties.worker!.claimId })) });
+    options.onInventory?.({ observedAt: new Date(now()).toISOString(), claims: [...inventory.values()].map(task => ({ projectId: task.projectId, taskId: task.id, claimId: readWorkerClaim(task.properties)!.claimId })) });
     // Ownership loss is authoritative even when the following resource observations fail.
     for (const local of options.store.listUnfinishedTasks()) {
       if (inventory.has(key(local))) continue;
@@ -357,7 +358,7 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         try {
           const granted = await options.remote.claim(candidate, { claimId, workerId: options.workerId, machine: options.machine, platform: options.platform, agent: repository.configuration.agent, ...(repository.configuration.agentControlMode === "web" ? { agentControlMode: "web" as const } : {}), worktreeId: randomUUID() }, normalSignal);
           const owner = remoteOwner(granted);
-          const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: granted.properties.worker!.agent, agentControlMode: granted.properties.worker!.agentControlMode });
+          const local = options.store.registerPending({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId, agent: readWorkerClaim(granted.properties)!.agent, agentControlMode: readWorkerClaim(granted.properties)!.agentControlMode });
           options.onClaim?.({ projectId: granted.projectId, taskId: granted.id, claimId: owner.claimId });
           if (!blockedByOldClaim(local, resources.owners.values()) && capacity(resources) < options.maxConcurrent) schedule(options.store.activateTask(local), granted);
         } catch (error) {
@@ -374,8 +375,8 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
     const task = options.store.getTask(identity);
     if (task === null || task.status === "done") throw new Error("The original unfinished local claim is missing.");
     const remoteTask = await options.remote.readTask(identity.projectId, identity.taskId, normalSignal);
-    const worker = remoteTask.properties.worker;
-    if (worker === null || worker.claimId !== identity.claimId || worker.workerId !== options.workerId || worker.state !== "active") throw new Error("The original claim is no longer active on this worker.");
+    const worker = readWorkerClaim(remoteTask.properties);
+    if (worker === undefined || worker.claimId !== identity.claimId || worker.workerId !== options.workerId || worker.state !== "active") throw new Error("The original claim is no longer active on this worker.");
     return { task, owner: remoteOwner(remoteTask), remoteTask };
   };
   return {

@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,12 +38,12 @@ const fixture = (local = true) => {
   const coordinator = {
     advanceRetry: vi.fn(async () => { order.push("retry"); store.setSessionId(identity, uuid(40)); }),
     cleanupSource: vi.fn(async (_identity: typeof identity, settings: { deleteWorktree?: boolean }) => { expect(settings.deleteWorktree).toBe(false); order.push("stop-close"); return resourceOwner; }),
-    completeSource: vi.fn(async (actualOwner: ResourceOwner) => { expect(actualOwner).toBe(resourceOwner); order.push("delete-done"); expect(observed.properties.worker?.claimId !== claimId || observed.properties.worker.state !== "active").toBe(true); store.completeTask(identity); }),
+    completeSource: vi.fn(async (actualOwner: ResourceOwner) => { expect(actualOwner).toBe(resourceOwner); order.push("delete-done"); const worker = readWorkerClaim(observed.properties); expect(worker?.claimId !== claimId || worker.state !== "active").toBe(true); store.completeTask(identity); }),
   };
   const remote: WorkerRemote = {
     serverOrigin: origin, currentUserId: vi.fn(async () => owner), readTask: vi.fn(async () => observed), authorizeControl: vi.fn(async () => {}),
     release: vi.fn(async (_projectId, _taskId, input) => { expect(store.getTask(identity)?.status).toBe("active"); order.push("release"); observed = remoteTask({ ...claim, state: "released" }, input.version + 1n); return observed; }),
-    resume: vi.fn(async (_projectId, _taskId, input) => { order.push("resume"); observed = remoteTask({ ...claim, ...input, agentControlMode: input.agentControlMode ?? "herdr", userId: owner, state: "active", phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
+    resume: vi.fn(async (_projectId, _taskId, input) => { const { version: _version, previousClaimId: _previousClaim, ...grant } = input; order.push("resume"); observed = remoteTask({ ...claim, ...grant, agentControlMode: input.agentControlMode ?? "herdr", userId: owner, state: "active", phase: "preparing", herdr: null, nativeSessionId: null }, input.version + 1n); return observed; }),
     report: vi.fn(), resolveProject: vi.fn(), ownInventory: vi.fn(), candidates: vi.fn(), claim: vi.fn(), update: vi.fn(),
   };
   const options = { store, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine, repositories: [{ project, configuration }], signal: new AbortController().signal, coordinator, emit: (event: WorkerEvent) => { events.push(event); order.push(event.kind); } };
@@ -199,7 +200,7 @@ describe("worker explicit resume grants", () => {
   it("keeps unknown resume unregistered and refuses a grant for another principal", async () => {
     const f = fixture(false); f.observe(remoteTask({ ...claim, state: "released" }));
     const original = vi.mocked(f.remote.resume).getMockImplementation()!;
-    vi.mocked(f.remote.resume).mockImplementationOnce(async (...args) => { const granted = await original(...args); const other = { ...granted, properties: { ...granted.properties, worker: { ...granted.properties.worker!, userId: uuid(90) } } }; f.observe(other); return other; });
+    vi.mocked(f.remote.resume).mockImplementationOnce(async (...args) => { const granted = await original(...args); const other = { ...granted, properties: { ...granted.properties, worker: { ...readWorkerClaim(granted.properties)!, userId: uuid(90) } } }; f.observe(other); return other; });
     await expect(f.submit({ kind: "resume", taskId, claimId, version: 8n })).rejects.toThrow("result is unknown");
     expect(f.store.listTasks()).toEqual([]); expect(f.remote.resume).toHaveBeenCalledOnce();
   });

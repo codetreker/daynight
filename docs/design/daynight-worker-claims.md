@@ -4,7 +4,7 @@
 
 ## 资源和属性所有权
 
-完整 Task 的 `properties` 必须包含 `pullRequests` 与 `worker`。`worker` 为 null 表示当前没有保留的执行归属记录，包括从未认领或已经强制撤回；非 null 时是最后一条认领记录，`state` 为 `active`、`released` 或 `completed`。历史任务通过迁移取得显式 null，读取器不以缺失字段代替 null。图保持原有精简投影，不包含属性。
+完整 Task 的 `properties` 是保留所有键的通用 JSON 对象。`worker` 缺失表示没有保留的执行归属，包括从未认领或已经强制撤回；存在时是最后一条合法认领记录，`state` 为 `active`、`released` 或 `completed`。读取不补 null，现有旧 worker:null 在属性行迁移中转为缺失。图保持原有精简投影，不包含属性。
 
 ```json
 {
@@ -28,13 +28,13 @@
 
 初始认领和人工接续的 userId 来自服务端认证用户。`claimedAt` 使用数据库时间。机器、实际平台和资源关联由调用方报告，不构成机器认证、在线保证或硬件证明。released/completed 保留最后身份、工作区及会话信息作为历史，不自动过期；字段存在不证明原资源仍存活，也不要求新执行复用它们。
 
-存储/读取 codec 与公共属性写入 codec 分开。普通 create/PATCH 提供 worker 字段时，即使为 null 或与现值相同也返回 invalid_input。PR 列表修改保留 worker，worker 操作保留 PR 及其他任务资料。016_task_worker.sql 在规范 JSON 文本末尾插入 worker:null 并调整默认值，保留版本和时间；不经过 PostgreSQL JSON/JSONB 转换，以保留既有 PR 字符串中的 NUL 转义和 Unicode 语义。
+属性定义注册表将 worker 标记为 readOnly；普通 create/PATCH 以及通用属性设置/删除均拒绝公开写入它，即使值与现值相同。PR 修改保留 worker，worker 操作保留其他完整属性。worker 对象作为 task_properties 的一行 JSON 文本保存，类型读取器在业务使用时校验。历史 016_task_worker.sql 曾插入显式 null；属性行迁移冻结旧格式规范化，把 null 转为无行，保留非 null 记录、版本、时间及 PR 字符语义，不做 PostgreSQL JSON 转换。
 
 ## 执行模式兼容
 
-旧请求与旧记录缺少 agentControlMode 时规范化为 herdr；显式 null、空串或未知枚举拒绝。新响应总是返回实际模式，配置重载不能改变既有 claim。人工 resume 的新 claim 可以指定另一模式；强制撤回不创建目标执行，后续认领使用新身份。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
+既有请求协议允许省略 agentControlMode 并按其 Herdr 语义处理；显式 null、空串或未知枚举拒绝。新的存储属性必须明确包含 agentControlMode；只有冻结的旧格式迁移将旧记录缺失模式规范化为 herdr，运行时不为坏行补值。协商后的响应遵守既有 Worker 协议规则，配置重载不能改变既有 claim。人工 resume 的新 claim 可以指定另一模式；强制撤回不创建目标执行，后续认领使用新身份。通用 task properties 与执行摘要 PATCH 均不能改写该字段。
 
-迁移为非 null worker 文档补充 herdr，保留 null worker、任务版本、时间及 PR 字符串原文。客户端与服务端共同校验 mode/provider 组合。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
+属性行迁移为旧非 null worker 文档补充规范模式，把旧 null worker 转为缺失，保留任务版本、时间及 PR 已解码字符串内容。客户端与服务端共同校验 mode/provider 组合。协议与运行能力分开：存在 web 元数据不证明 Controller 已启动或 Session 可用。见[会话契约](task-session-protocol.md)。
 
 Web 认领前通过认证 session-capabilities 请求核验协议、schema/projection 版本和 provider。Claim 的 herdr 始终为 null，phase/nativeSessionId 是执行摘要，不能证明在线或允许换 writer。Session registration 与 controller grant 另受当前 claim、owner 和 generation fence 约束，完整契约见[Task Session](task-session-protocol.md)。丢失 Web 执行证据的 claim 不因 preparing 或 nativeSessionId=null 变成首次启动；保留原模式并暂停，等待原执行来源证明。
 
@@ -51,7 +51,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 | POST `/worker-claim/withdraw` | version、claimId；原 owner/admin 强制撤回 active 或 released 归属，原子清除 worker、返回 todo、清空起止时间并设置 allowAgents=false。 |
 | POST `/worker-claim/resume` | 自动认领的身份字段，加 previousClaimId；显式人工安排已释放 task 的新执行。 |
 
-强制撤回要求调用者仍为项目成员，并且是记录的原 owner 或项目管理员；claimId 必须匹配当前 active/released 记录。completed 历史及 null 不能撤回。该操作不接受 stoppedConfirmed，不等待原 worker 在线，也不创建目标执行。
+强制撤回要求调用者仍为项目成员，并且是记录的原 owner 或项目管理员；claimId 必须匹配当前 active/released 记录。completed 历史及缺失 worker 不能撤回。该操作不接受 stoppedConfirmed，不等待原 worker 在线，也不创建目标执行。
 
 ### 自动认领和终止后新执行
 
@@ -71,7 +71,7 @@ Web 认领前通过认证 session-capabilities 请求核验协议、schema/proje
 |---|---|
 | active | done 必须提供匹配 claimId 且由 owner 提交；同时标记 completed。回到 todo 使用 release 或强制撤回；后者同时清除归属并关闭自动执行。 |
 | released | 普通 todo→in_progress/done 被拒绝；通过满足资格的自动认领或显式人工 resume 开始新执行。 |
-| completed 或 null | 普通三状态设置保持原行为；completed 历史记录不会因状态重开而变成 active。 |
+| completed 或缺失 | 普通三状态设置保持原行为；completed 历史记录不会因状态重开而变成 active。 |
 
 非当前 claim 引用不能完成或更新执行。管理员可以 release/withdraw，但不以管理员身份代替 owner 完成当前执行。metadata PATCH 没有 status，也不能写 worker。[显式解除引用并删除其他目标](daynight-task-deletion.md)允许源任务仍持有 active claim：只移除其指向目标的依赖并增加源任务版本，保留 claim、状态和计时。源 worker 的下一次写入须核对新版本，该操作不表示 release、停止或撤回执行；active 目标任务自身仍禁止删除。
 
@@ -87,11 +87,11 @@ stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代�
 
 ## 事务、错误和身份范围
 
-全部写入复用现有 Tasks 服务和项目行锁，同一事务内核验成员、版本、依赖、归属并写入属性、状态、计时和版本。失败、取消或数据库错误完整回滚。许可或平台编辑与认领同版本竞争只能提交一个有效结果。无需归属查询投影、索引或独立 claim 表。
+全部写入复用现有 Tasks 服务和项目行锁，并在读取/修改属性前锁定父任务 FOR UPDATE，同一事务核验成员、版本、依赖、归属并写入属性、状态、计时和版本。Session relay 先取父任务 FOR SHARE，再读取 worker 和 Session；属性缺失时仍由父任务锁维持 fence。锁序保持项目（如有）→父任务→属性→Session，不引入反向锁序。失败、取消或数据库错误完整回滚。许可或平台编辑与认领同版本竞争只能提交一个有效结果，不增加独立 claim 权威表。
 
 真实 worker 修改沿用同一事务的 task.version 与 updatedAt；[时间窗口摘要](daynight-task-sync.md)因此能观察到其业务版本变化，同值 no-op 保持原值。摘要只读且不包含 properties，不携带 worker 归属；需要核对执行身份时仍按已知 taskId GET 完整 Task。现有同步窗口和更新时间索引继续由摘要能力拥有，不增加 worker 查询投影或反向索引。
 
-沿用 invalid_input、认证/forbidden/not_found、version_conflict、dependency_unsatisfied、invalid_transition，并用 claim_conflict 表达非当前归属。非成员读取和写入按现有规则隐藏任务。错误保持原有链和诊断，不转换为空候选或成功。
+沿用 invalid_input、认证/forbidden/not_found、version_conflict、dependency_unsatisfied、invalid_transition，并用 claim_conflict 表达非当前归属。非成员读取和写入按现有规则隐藏任务。非法存储属性值以保留错误链的属性校验错误返回 400 invalid_input，数据库及其他内部故障仍返回 500。错误不转换为空候选、局部资源或成功。
 
 归属记录保留期间，服务端拒绝再次使用其 claimId；强制撤回会清除这条服务端记录。调用方 SQLite 保留结束 claim 的索引行。任务版本保护每次写入，新 ID 由调用方按从不复用的规则生成。该模型不建立历史 claim ID 注册表、另一个版本计数器或秘密执行凭据。
 
@@ -119,7 +119,7 @@ Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 workerId；listTasks 成功
 
 ## 关联与诊断
 
-服务端复用现有 RequestID、请求 context 和任务资源 logger，日志关联键为 user_id、project_id、task_id、request_id。worker-claim 系列操作成功时记录 component=worker_claim、phase 和请求的 claim_id；返回归属非 null 时另记录 worker_id、state。claim-bound 完成沿用状态接口的 set_status 阶段和 changed/unchanged 结果。错误进入现有 LogFailure，保留已知错误码、cause 和脱敏 diagnostic，不记录凭据、请求正文或驱动敏感信息。
+服务端复用现有 RequestID、请求 context 和任务资源 logger，日志关联键为 user_id、project_id、task_id、request_id。worker-claim 系列操作成功时记录 component=worker_claim、phase 和请求的 claim_id；返回归属存在时另记录 worker_id、state。claim-bound 完成沿用状态接口的 set_status 阶段和 changed/unchanged 结果。错误进入现有 LogFailure，保留已知错误码、cause 和脱敏 diagnostic，不记录凭据、请求正文或驱动敏感信息。
 
 按响应的请求 ID 和已知任务定位一次认领写入，例如：
 

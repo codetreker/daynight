@@ -37,7 +37,7 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		}
 		response := projectRequest(handler, http.MethodGet, path, "")
 		page := decodeResponse[api.TaskPage](t, response, http.StatusOK)
-		if response.Header().Get("Cache-Control") != "no-store" || len(page.Items) != 1 || page.Items[0].Properties.Worker == nil || page.Items[0].Properties.Worker.WorkerID != workerID || page.Items[0].Properties.Worker.State != "active" {
+		if response.Header().Get("Cache-Control") != "no-store" || len(page.Items) != 1 || apiWorker(t, page.Items[0].Properties) == nil || apiWorker(t, page.Items[0].Properties).WorkerID != workerID || apiWorker(t, page.Items[0].Properties).State != "active" {
 			t.Fatalf("wrong inventory page: %s", response.Body)
 		}
 		ids = append(ids, page.Items[0].ID)

@@ -465,7 +465,7 @@ func TestAttachmentHTTPPendingTaskAndLifecyclePreserveAttachment(t *testing.T) {
 	project := taskProject(t, handler)
 	prerequisite := createHTTPTask(t, handler, project.ID, "Prerequisite")
 	task := createHTTPTask(t, handler, project.ID, "Attached todo task", prerequisite.ID)
-	task = updateHTTPTask(t, handler, task, map[string]any{"properties": api.TaskWritableProperties{PullRequests: []api.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Implementation"}}}})
+	task = updateHTTPTask(t, handler, task, map[string]any{"properties": api.TaskWritableProperties{"pullRequests": rawProperty(t, []api.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Implementation"}})}})
 	location := attachmentFilePath(task, "plan.md")
 	created := decodeResponse[api.Attachment](t, attachmentRequest(handler, http.MethodPut, location, "text/markdown", []byte("Acceptance criteria")), http.StatusCreated)
 	if actual := readHTTPTask(t, handler, task); !reflect.DeepEqual(actual, task) || actual.Status != "todo" || len(actual.BlockedBy) != 1 {
@@ -478,7 +478,7 @@ func TestAttachmentHTTPPendingTaskAndLifecyclePreserveAttachment(t *testing.T) {
 	prerequisite = setHTTPTask(t, handler, prerequisite, "done")
 	for _, action := range []string{"in_progress", "done"} {
 		task = setHTTPTask(t, handler, task, action)
-		if !slices.Equal(task.Properties.PullRequests, []api.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Implementation"}}) {
+		if !slices.Equal(apiPullRequests(t, task.Properties), []api.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Implementation"}}) {
 			t.Fatalf("%s changed PR properties: %+v", action, task)
 		}
 		page := decodeResponse[api.AttachmentPage](t, attachmentRequest(handler, http.MethodGet, taskPath(task)+"/attachments", "", nil), http.StatusOK)

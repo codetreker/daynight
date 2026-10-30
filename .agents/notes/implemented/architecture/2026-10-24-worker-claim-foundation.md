@@ -14,11 +14,14 @@ cannot establish whether ownership changed.
 
 The [claim foundation](../../../../docs/design/daynight-worker-claims.md) stores
 the latest typed worker record in task properties and applies every ownership
-mutation within the existing project write transaction. Read/stored properties
-and public property patches have separate codecs: public create/PATCH rejects
-worker even when its value is unchanged, while PR and worker updates preserve
-each other. The text migration inserts explicit null without JSON/JSONB
-conversion, preserving opaque PR strings, task versions and timestamps.
+mutation within the existing project write transaction. The property definition
+registry protects worker from public create/PATCH and single-property mutations,
+while PR and worker updates preserve each other. The
+[property-row decision](2026-10-30-task-property-rows.md) moves each value into an
+independent JSON-text row and represents no retained claim by absence. Its frozen
+migration preserves opaque PR strings, task versions and timestamps. The
+foundation originally inserted explicit null into the complete text document;
+that historical migration remains immutable.
 
 The [session mode contract](2026-10-27-task-session-mode-contract.md) extends the
 protected claim with its frozen execution mode. Legacy records retain Herdr
@@ -76,9 +79,10 @@ express stopped-resource and continuity checks. A protected worker record keeps
 ownership explicit while reusing task state and timing.
 
 **Expose stored properties through the public writable codec.** Read responses
-must contain worker, but accepting that same structure as a patch would allow
-ordinary metadata writes to forge ownership. Separate concrete read and patch
-types preserve the existing PR replacement contract.
+expose retained worker claims, but accepting protected values through ordinary
+metadata mutations would allow forged ownership. The server definition registry
+separates public writability from generic read representation and preserves the
+whole-value PR replacement contract.
 
 **Add a claim generation or historical claim table.** These would enforce a
 larger historical identity protocol and require another persisted counter or

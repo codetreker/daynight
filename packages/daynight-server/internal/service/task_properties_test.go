@@ -12,10 +12,6 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 )
 
-func propertyPatch(items ...core.PullRequestProperty) core.TaskPropertiesPatch {
-	return core.TaskPropertiesPatch{PullRequests: pointer(append([]core.PullRequestProperty{}, items...))}
-}
-
 func TestTaskPropertiesCandidateFailureAndPartialWriteRollback(t *testing.T) {
 	tasks, database, project, databaseURL, principal := taskService(t)
 	ctx := context.Background()
@@ -24,7 +20,7 @@ func TestTaskPropertiesCandidateFailureAndPartialWriteRollback(t *testing.T) {
 
 	old = startTask(t, tasks, principal, old)
 	old = finishTask(t, tasks, principal, old)
-	target, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Original", DependsOn: []string{old.ID}, Properties: core.TaskProperties{PullRequests: []core.PullRequestProperty{{URL: "old\x00", Title: "Old"}}}})
+	target, err := tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Original", DependsOn: []string{old.ID}, Properties: propertyPatch([]core.PullRequestProperty{{URL: "old\x00", Title: "Old"}}...)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +54,7 @@ func TestTaskPropertiesCandidateFailureAndPartialWriteRollback(t *testing.T) {
 	_, err = tasks.Update(ctx, principal, project.ID, target.ID, UpdateTask{Version: target.Version, Title: pointer("Changed"), Description: pointer("Changed"), DependsOn: pointer([]string{prerequisite.ID}), Properties: properties})
 	assertOperational(t, err)
 	assertTaskUnchanged(t, tasks, principal, target)
-	_, err = tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Rejected", DependsOn: []string{prerequisite.ID}, Properties: core.TaskProperties{PullRequests: *properties.PullRequests}})
+	_, err = tasks.Create(ctx, principal, project.ID, CreateTask{Title: "Rejected", DependsOn: []string{prerequisite.ID}, Properties: properties})
 	assertOperational(t, err)
 	page, err := tasks.List(ctx, principal, project.ID, TaskListRequest{PageRequest: PageRequest{Limit: 100}})
 	if err != nil || len(page.Items) != 3 {
@@ -79,14 +75,14 @@ func TestTaskPropertiesConcurrentVersionAndSnapshot(t *testing.T) {
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
 	before, err := tasks.Get(context.Background(), principal, project.ID, target.ID)
-	if err != nil || before.Version != target.Version+1 || !(slices.Equal(before.Properties.PullRequests, *first.PullRequests) || slices.Equal(before.Properties.PullRequests, *second.PullRequests)) {
+	if err != nil || before.Version != target.Version+1 || !(slices.Equal(testPRs(t, before.Properties), testPRs(t, first)) || slices.Equal(testPRs(t, before.Properties), testPRs(t, second))) {
 		t.Fatalf("concurrent property result: %+v, %v", before, err)
 	}
 	traced := tracedTasks(t, databaseURL, taskQueryAction{
 		match: func(sql string) bool { return strings.Contains(sql, "FROM project_members m") },
 		end: func() {
 			if err := database.WriteProject(context.Background(), project.ID, func(tx *store.ProjectTx) error {
-				_, err := tx.UpdateTask(context.Background(), before.ID, store.TaskWrite{Title: "New snapshot", Status: before.Status, Properties: core.TaskProperties{PullRequests: []core.PullRequestProperty{{URL: "new", Title: "New"}}}})
+				_, err := tx.UpdateTask(context.Background(), before.ID, store.TaskWrite{Title: "New snapshot", Status: before.Status, Properties: propertyPatch([]core.PullRequestProperty{{URL: "new", Title: "New"}}...)})
 				return err
 			}); err != nil {
 				t.Fatal(err)
@@ -98,7 +94,7 @@ func TestTaskPropertiesConcurrentVersionAndSnapshot(t *testing.T) {
 		t.Fatalf("snapshot mixed task fields and properties: %+v, %v", read, err)
 	}
 	after, err := tasks.Get(context.Background(), principal, project.ID, target.ID)
-	if err != nil || after.Title != "New snapshot" || after.Version != before.Version+1 || !slices.Equal(after.Properties.PullRequests, []core.PullRequestProperty{{URL: "new", Title: "New"}}) {
+	if err != nil || after.Title != "New snapshot" || after.Version != before.Version+1 || !slices.Equal(testPRs(t, after.Properties), []core.PullRequestProperty{{URL: "new", Title: "New"}}) {
 		t.Fatalf("fresh properties snapshot: %+v, %v", after, err)
 	}
 }

@@ -14,21 +14,17 @@ func encodedWorkerMode(t *testing.T, properties core.TaskProperties) string {
 			Mode string `json:"agentControlMode"`
 		} `json:"worker"`
 	}
-	if err := json.Unmarshal([]byte(Encode(properties)), &document); err != nil {
+	if err := json.Unmarshal([]byte(encodedProperties(t, properties)), &document); err != nil {
 		t.Fatal(err)
 	}
 	return document.Worker.Mode
 }
 
-func TestWorkerModeLegacyDocumentsBecomeExplicitHerdr(t *testing.T) {
+func TestWorkerModeReadRequiresCanonicalControlMode(t *testing.T) {
 	worker := workerJSON(t)
 	delete(worker, "agentControlMode")
-	properties, err := Decode(workerPropertiesJSON(t, worker))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := encodedWorkerMode(t, properties); got != "herdr" {
-		t.Fatalf("legacy execution must encode an explicit herdr mode, got %q", got)
+	if _, err := Decode(workerPropertiesJSON(t, worker)); err == nil {
+		t.Fatal("stored worker without control mode was accepted")
 	}
 }
 

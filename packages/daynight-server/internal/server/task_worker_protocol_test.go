@@ -40,7 +40,7 @@ func TestWorkerProtocolLegacyAndExtendedResponses(t *testing.T) {
 	if strings.Contains(response.Body.String(), "agentControlMode") {
 		t.Fatal("legacy claim received a field rejected by the old strict parser")
 	}
-	if claimed.Properties.Worker == nil {
+	if apiWorker(t, claimed.Properties) == nil {
 		t.Fatal("legacy Herdr claim disappeared")
 	}
 	for _, protocol := range []string{"", "1", "unexpected"} {
@@ -64,17 +64,17 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 			body["agent"], body["agentControlMode"] = configuration.provider, configuration.mode
 			assertProjectError(t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim", jsonBody(t, body), ""), http.StatusConflict, "invalid_transition")
 			unchanged := decodeResponse[api.Task](t, protocolRequest(handler, "GET", taskPath(task), "", "2"), http.StatusOK)
-			if unchanged.Version != task.Version || unchanged.Properties.Worker != nil {
+			if unchanged.Version != task.Version || apiWorker(t, unchanged.Properties) != nil {
 				t.Fatal("unnegotiated extended launch mutated task")
 			}
 			task = decodeResponse[api.Task](t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim", jsonBody(t, body), "2"), http.StatusOK)
-			claim := task.Properties.Worker
+			claim := apiWorker(t, task.Properties)
 			legacy := decodeResponse[api.Task](t, protocolRequest(handler, "GET", taskPath(task), "", ""), http.StatusOK)
-			if legacy.Properties.Worker != nil || legacy.Status != "in_progress" || legacy.Ready || legacy.Version != task.Version {
+			if apiWorker(t, legacy.Properties) != nil || legacy.Status != "in_progress" || legacy.Ready || legacy.Version != task.Version {
 				t.Fatal("legacy projection changed task lifecycle or exposed unsupported worker")
 			}
 			page := decodeResponse[api.TaskPage](t, protocolRequest(handler, "GET", "/api/v1/projects/"+project.ID+"/tasks", "", ""), http.StatusOK)
-			if len(page.Items) != 1 || page.Items[0].Properties.Worker != nil {
+			if len(page.Items) != 1 || apiWorker(t, page.Items[0].Properties) != nil {
 				t.Fatal("ordinary legacy list did not preserve task")
 			}
 			assertProjectError(t, protocolRequest(handler, "GET", "/api/v1/projects/"+project.ID+"/tasks?workerId="+claim.WorkerID, "", ""), http.StatusConflict, "invalid_transition")
@@ -94,7 +94,7 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 				assertProjectError(t, protocolRequest(handler, op.method, taskPath(task)+op.suffix, jsonBody(t, op.body), ""), http.StatusConflict, "invalid_transition")
 			}
 			read := decodeResponse[api.Task](t, protocolRequest(handler, "GET", taskPath(task), "", "2"), http.StatusOK)
-			if read.Version != task.Version || read.Properties.Worker.ClaimID != claim.ClaimID || read.Title != task.Title {
+			if read.Version != task.Version || apiWorker(t, read.Properties).ClaimID != claim.ClaimID || read.Title != task.Title {
 				t.Fatal("legacy write changed extended claim")
 			}
 			task = decodeResponse[api.Task](t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": claim.ClaimID, "stoppedConfirmed": true}), "2"), http.StatusOK)
@@ -103,14 +103,14 @@ func TestWorkerProtocolLegacyReadsRemainAvailableWithoutControllingExtendedClaim
 			fresh["previousClaimId"] = claim.ClaimID
 			assertProjectError(t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim/resume", jsonBody(t, fresh), ""), http.StatusConflict, "invalid_transition")
 			read = decodeResponse[api.Task](t, protocolRequest(handler, "GET", taskPath(task), "", "2"), http.StatusOK)
-			if read.Version != task.Version || read.Properties.Worker.ClaimID != claim.ClaimID {
+			if read.Version != task.Version || apiWorker(t, read.Properties).ClaimID != claim.ClaimID {
 				t.Fatal("legacy reclaim replaced extended claim")
 			}
 			fresh["agent"], fresh["agentControlMode"] = configuration.provider, configuration.mode
 			task = decodeResponse[api.Task](t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim/resume", jsonBody(t, fresh), "2"), http.StatusOK)
-			task = decodeResponse[api.Task](t, protocolRequest(handler, "PUT", taskPath(task)+"/status", jsonBody(t, map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "status": "done"}), "2"), http.StatusOK)
+			task = decodeResponse[api.Task](t, protocolRequest(handler, "PUT", taskPath(task)+"/status", jsonBody(t, map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "status": "done"}), "2"), http.StatusOK)
 			legacy = decodeResponse[api.Task](t, protocolRequest(handler, "GET", taskPath(task), "", ""), http.StatusOK)
-			if legacy.Properties.Worker != nil || legacy.Status != "done" || legacy.Version != task.Version {
+			if apiWorker(t, legacy.Properties) != nil || legacy.Status != "done" || legacy.Version != task.Version {
 				t.Fatal("completed extended history is not readable")
 			}
 			assertProjectError(t, protocolRequest(handler, "PUT", taskPath(task)+"/status", jsonBody(t, map[string]any{"version": task.Version, "status": "todo"}), ""), http.StatusConflict, "invalid_transition")
@@ -129,7 +129,7 @@ func TestWorkerProtocolLegacyCandidatesAdvanceAcrossUnsupportedPages(t *testing.
 		body := workerClaimBody(task.Version)
 		body["agentControlMode"] = "web"
 		task = decodeResponse[api.Task](t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim", jsonBody(t, body), "2"), http.StatusOK)
-		return decodeResponse[api.Task](t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "stoppedConfirmed": true}), "2"), http.StatusOK)
+		return decodeResponse[api.Task](t, protocolRequest(handler, "POST", taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "stoppedConfirmed": true}), "2"), http.StatusOK)
 	}
 	for range 3 {
 		makeTask(true)

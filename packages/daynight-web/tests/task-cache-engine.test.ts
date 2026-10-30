@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { pauseAuthRequests } from "../src/api/client";
 import type { Project, TaskSummary, TaskSync } from "../src/api/types";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
-import { TASK_CACHE_DATABASE, type TaskCacheSchema, type TaskIntrinsicDetail } from "../src/features/task-cache/database";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema, type TaskIntrinsicDetail } from "../src/features/task-cache/database";
 
 const userId = "10000000-0000-0000-0000-000000000001";
 const otherUser = "10000000-0000-0000-0000-000000000002";
@@ -35,7 +35,7 @@ class Channel {
 const scope = (identity = userId, onIdentityMismatch = vi.fn()) => {
   const value = createTaskCacheScope({ userId: identity, onIdentityMismatch }); scopes.push(value); return value;
 };
-const inspect = async () => { const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1); connections.push(database); return database; };
+const inspect = async () => { const database = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(database); return database; };
 const seed = async (cache: TaskCacheScope, tasks: readonly TaskSummary[] = [task(1)], ownerProject = project) => {
   const ticket = await cache.beginSync(ownerProject.id, signal());
   return cache.applySync(ticket, response(tasks, { mode: "snapshot", project: ownerProject }), signal());
@@ -194,7 +194,7 @@ it("re-reads hints for authorized projects and never relays hints or repeated co
 
 it("exposes fenced detail transactions whose detail timestamps cannot advance the project maximum", async () => {
   const cache = scope(); await seed(cache); const ticket = await cache.beginSync(projectId, signal());
-  const detail: TaskIntrinsicDetail = { id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { worker: null, pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: later };
+  const detail: TaskIntrinsicDetail = { id: taskId(1), projectId, title: "Task 1", description: "Body", properties: { pullRequests: [] }, version: 1n, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: later };
   await cache.detailTransaction(ticket, signal(), async (details, manifest, summaries) => {
     expect(summaries.get(taskId(1))!.version).toBe(1n);
     await details.put({ userId, projectId, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration, detail, byteSize: 100, lastUsedAt: 1 });
@@ -298,7 +298,7 @@ const addStoredDetail = async (database: IDBPDatabase<TaskCacheSchema>, owner: s
   const manifest = (await database.get("projects", [owner, ownerProject]))!;
   const { titlePreview: _preview, titleTruncated: _truncated, ...intrinsic } = task(1);
   await database.put("details", { userId: owner, projectId: ownerProject, taskId: taskId(1), userFence: manifest.userFence, cacheGeneration: manifest.cacheGeneration,
-    detail: { ...intrinsic, projectId: ownerProject, title: "Task", description: "Body", properties: { worker: null, pullRequests: [] } }, byteSize: 100, lastUsedAt: 1 });
+    detail: { ...intrinsic, projectId: ownerProject, title: "Task", description: "Body", properties: { pullRequests: [] } }, byteSize: 100, lastUsedAt: 1 });
 };
 
 it("repairs a cold user's damaged fence atomically across projects and four stores while preserving another user", async () => {

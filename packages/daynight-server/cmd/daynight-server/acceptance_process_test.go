@@ -477,7 +477,13 @@ func (f *acceptanceFixture) launch(t *testing.T, configuration map[string]string
 	for key, value := range configuration {
 		values[key] = value
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		t.Fatal("acceptance processes require a bounded test deadline")
+	}
+	// The scenario owns the binary until cleanup. Readiness and shutdown retain
+	// their own bounds; the test deadline is the final process-lifetime guard.
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	process := &acceptanceProcess{logs: &acceptanceLogs{ready: make(chan string, 1)}, application: application, done: make(chan struct{}), cancel: cancel, scenario: f.scenario, fixture: f, configuration: configuration, origin: origin, appSecret: gateway.AppSecret, gateway: gateway}
 	process.command = exec.CommandContext(ctx, binaryAcceptance.Binary)
 	process.command.Env, process.command.Stdout, process.command.Stderr = acceptanceEnvironment(values), process.logs, process.logs

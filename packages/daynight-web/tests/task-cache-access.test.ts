@@ -4,7 +4,7 @@ import { waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, pauseAuthRequests } from "../src/api/client";
 import type { TaskDetail } from "../src/api/types";
-import { TASK_CACHE_DATABASE, type TaskCacheSchema } from "../src/features/task-cache/database";
+import { TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA, type TaskCacheSchema } from "../src/features/task-cache/database";
 import { createTaskCacheScope, type TaskCacheScope } from "../src/features/task-cache/project-cache";
 import { saveDetail } from "../src/features/task-detail/detail-cache";
 import { detailFixture, graphFixture } from "./helpers/taskDetail";
@@ -26,7 +26,7 @@ const apply = async (cache: TaskCacheScope, value = detail(), snapshot = false) 
   const ticket = await cache.beginSync(value.projectId, signal());
   return cache.applySync(ticket, taskSyncFromGraph(graphFixture([value]), { query: snapshot || ticket.epoch === null ? {} : { epoch: ticket.epoch }, ...(snapshot ? { epoch: "30000000-0000-4000-8000-000000000002" } : {}), versionForTask: () => value.version }), signal());
 };
-const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, 1); connections.push(connection); return connection; };
+const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(connection); return connection; };
 const failPurge = () => {
   const original = IDBObjectStore.prototype.put;
   return vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (this: IDBObjectStore, ...args) {

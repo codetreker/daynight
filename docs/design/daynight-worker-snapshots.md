@@ -21,13 +21,13 @@ flowchart LR
 
 迁移 `025_worker_snapshots.sql` 创建 workers，包含 user_id、worker_id、created_at、last_seen_at、telemetry 和 task_snapshot。主键为 `(user_id,worker_id)`；`workers_recent(user_id,last_seen_at DESC,worker_id)` 支持账号近期筛选。telemetry、task_snapshot 具有 JSON object 约束，created_at 首次写入后保持不变。
 
-此表没有 FK、历史报告或持久化 online 布尔值。旧 claim 和 task 时间不能证明机器仍在运行，因此迁移不回填快照。`tasks.properties` 保持 text；其中 opaque PR 字符串继续由既有 Go codec 处理，不经过 PostgreSQL JSON cast。
+此表没有 FK、历史报告或持久化 online 布尔值。旧 claim 和 task 时间不能证明机器仍在运行，因此迁移不回填快照。任务属性使用独立 task_properties 行，完整 JSON 文本由 Go codec 处理，不经过 PostgreSQL JSON cast。
 
 ## 报告事务
 
 `Store.WriteWorker` 使用独立 READ COMMITTED 事务，不进入会锁 project 的 WriteProject。service 先取得数据库 statement_timestamp，按输入 task ID 的主键集合批量读取任务，JOIN 当前成员关系及项目名，排除软删除记录。
 
-properties 在 Go 中解码。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。现有 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。普通完成、撤回或失权竞态省略引用；损坏的持久化内容仍使操作失败。
+按已准入的 task IDs 批量读取唯一 worker 属性，在 Go 中校验并解码。只有 project、task、claim、当前认证账号与 workerId 相符，claim active 且 task in_progress 才产生规范化任务项。属性 codec 负责完整 claim 格式及 Agent/控制模式，快照只提取需要的字段。缺失归属、普通完成、撤回或失权竞态省略引用；非法持久化属性使整个请求返回 400 invalid_input，数据库故障仍返回 500。
 
 UPSERT 同时写 last_seen_at、telemetry、task_snapshot，只竞争该 Worker 行，并以 `workers.last_seen_at < EXCLUDED.last_seen_at` 拒绝旧 observation。已知清单完整替换任务快照；null 清单根据旧状态保留 observed/stale 的任务与原时刻，并变为 stale，旧 unavailable 保持 unavailable。
 

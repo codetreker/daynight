@@ -50,7 +50,7 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 	body := workerClaimBody(task.Version)
 	task = claimHTTPWorker(t, handler, task, body)
 	assertSummary(task)
-	update := map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "private-pane"}, "nativeSessionId": "private-native-session"}
+	update := map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "phase": "executing", "herdr": map[string]any{"session": "w", "workspaceId": "workspace", "paneId": "private-pane"}, "nativeSessionId": "private-native-session"}
 	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPatch, taskPath(task)+"/worker-claim", jsonBody(t, update)), http.StatusOK)
 	assertSummary(task)
 	update["version"] = task.Version
@@ -59,17 +59,17 @@ func TestWorkerHTTPChangesAppearInTaskSync(t *testing.T) {
 		t.Fatal("same-value worker update changed task version, timing or summary-relevant fields")
 	}
 	assertSummary(noop)
-	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID, "stoppedConfirmed": true})), http.StatusOK)
+	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/release", jsonBody(t, map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID, "stoppedConfirmed": true})), http.StatusOK)
 	assertSummary(task)
 	if task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
 		t.Fatal("release did not retain the task status timing contract")
 	}
-	if current := readHTTPTask(t, handler, task); !reflect.DeepEqual(current, task) || current.Properties.Worker.NativeSessionID == nil || *current.Properties.Worker.NativeSessionID != "private-native-session" {
+	if current := readHTTPTask(t, handler, task); !reflect.DeepEqual(current, task) || apiWorker(t, current.Properties).NativeSessionID == nil || *apiWorker(t, current.Properties).NativeSessionID != "private-native-session" {
 		t.Fatal("summary projection unexpectedly changed the full execution resource")
 	}
-	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/withdraw", jsonBody(t, map[string]any{"version": task.Version, "claimId": task.Properties.Worker.ClaimID})), http.StatusOK)
+	task = decodeResponse[api.Task](t, projectRequest(handler, http.MethodPost, taskPath(task)+"/worker-claim/withdraw", jsonBody(t, map[string]any{"version": task.Version, "claimId": apiWorker(t, task.Properties).ClaimID})), http.StatusOK)
 	assertSummary(task)
-	if task.Properties.Worker != nil || task.AllowAgents || task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
+	if apiWorker(t, task.Properties) != nil || task.AllowAgents || task.Status != "todo" || task.StartedAt != nil || task.CompletedAt != nil {
 		t.Fatal("withdrawal did not clear the released record and automatic permission")
 	}
 

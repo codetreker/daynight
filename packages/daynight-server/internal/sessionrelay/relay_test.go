@@ -171,6 +171,10 @@ func setup(t *testing.T) fixture {
 	t.Cleanup(db.Close)
 	f := fixture{s: New(db), p: core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}, project: uuid.NewString(), task: uuid.NewString()}
 	f.r = sp.Registration{Protocol: sp.Protocol, RegistrationID: uuid.NewString(), ClaimID: uuid.NewString(), WorkerID: uuid.NewString(), WorktreeID: uuid.NewString(), Provider: "codex", ControllerID: uuid.NewString(), ControllerInstanceID: uuid.NewString()}
+	properties, err := taskproperties.WithWorker(core.TaskProperties{}, &core.WorkerClaim{ClaimID: f.r.ClaimID, UserID: f.p.UserID, WorkerID: f.r.WorkerID, WorktreeID: f.r.WorktreeID, State: core.WorkerActive, Agent: core.AgentCodex, AgentControlMode: core.AgentControlModeWeb, Machine: core.WorkerMachine{ID: uuid.NewString(), Name: "test"}, Platform: core.PlatformLinux, Phase: core.WorkerExecuting, ClaimedAt: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
 	hash := sha256.Sum256([]byte("fixture"))
 	for _, statement := range []struct {
 		sql  string
@@ -180,7 +184,8 @@ func setup(t *testing.T) fixture {
 		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'relay',now(),now()+interval '1 day')`, []any{f.p.CredentialID, f.p.UserID, hash[:]}},
 		{`INSERT INTO projects(id,name,repo_url) VALUES($1,'Relay','https://github.com/example/relay.git')`, []any{f.project}},
 		{`INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, f.p.UserID}},
-		{`INSERT INTO tasks(id,project_id,title,status,properties) VALUES($1,$2,'Relay','in_progress',$3)`, []any{f.task, f.project, taskproperties.Encode(core.TaskProperties{PullRequests: []core.PullRequestProperty{}, Worker: &core.WorkerClaim{ClaimID: f.r.ClaimID, UserID: f.p.UserID, WorkerID: f.r.WorkerID, WorktreeID: f.r.WorktreeID, State: core.WorkerActive, Agent: core.AgentCodex, AgentControlMode: core.AgentControlModeWeb, Machine: core.WorkerMachine{ID: uuid.NewString(), Name: "test"}, Platform: core.PlatformLinux, Phase: core.WorkerExecuting, ClaimedAt: time.Now()}})}},
+		{`INSERT INTO tasks(id,project_id,title,status) VALUES($1,$2,'Relay','in_progress')`, []any{f.task, f.project}},
+		{`INSERT INTO task_properties(task_id,name,value) VALUES($1,'worker',$2)`, []any{f.task, string(properties["worker"])}},
 	} {
 		if _, err = db.Pool.Exec(ctx, statement.sql, statement.args...); err != nil {
 			t.Fatal(err)
@@ -349,7 +354,7 @@ func TestForcedWorkerWithdrawalFreezesWebSessionWithoutStopClaim(t *testing.T) {
 	publishState(t, f, v, idleState())
 	command := submitText(t, f, v)
 	task, err := service.NewTasks(f.s.DB).WithdrawWorker(ctx, f.p, f.project, f.task, service.WithdrawWorker{Version: 1, ClaimID: v.ClaimID})
-	if err != nil || task.Properties.Worker != nil || task.AllowAgents || task.Status != core.TaskTodo {
+	if _, present := task.Properties["worker"]; err != nil || present || task.AllowAgents || task.Status != core.TaskTodo {
 		t.Fatal("withdrawal retained ownership", task, err)
 	}
 	var raw []byte
@@ -378,5 +383,30 @@ func synchronizeFixture(t *testing.T, f fixture, v sp.Snapshot) {
 	state := sp.State{NativeSessionID: v.Identity.NativeSessionID, InitialInputState: v.InitialInputState, Synchronized: true, Activity: "initializing"}
 	if _, err := f.s.Handle(context.Background(), sp.ControllerMessage{Type: "sync_state", ControllerFence: v.ControllerFence, State: &state, PendingInteractions: []sp.TimelineEntry{}}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestSessionReadsRejectInvalidStoredProperties(t *testing.T) {
+	for _, input := range []struct {
+		name  string
+		value string
+	}{
+		{name: "worker", value: "null"},
+		{name: "pullRequests", value: "["},
+		{name: "pullRequests", value: "null"},
+		{name: "unknown", value: "{}"},
+	} {
+		t.Run(input.name+"/"+input.value, func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			if _, err := f.s.DB.Pool.Exec(ctx, `INSERT INTO task_properties(task_id,name,value) VALUES($1,$2,$3) ON CONFLICT(task_id,name) DO UPDATE SET value=excluded.value`, f.task, input.name, input.value); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.s.Current(ctx, f.p, f.project, f.task)
+			var invalid *taskproperties.ValidationError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("stored property did not retain validation error: %v", err)
+			}
+		})
 	}
 }

@@ -1,4 +1,5 @@
 import type { TaskDetail, TaskGraph, WorkerClaim } from '../../src/api/types';
+import { readWorkerClaim } from '../../src/api/task-properties';
 import { stringifyApiJson } from '../../src/api/json';
 import type { GraphSnapshot } from '../../src/features/projects/useTaskGraph';
 import { buildGraphIndex } from '../../src/features/task-graph/model';
@@ -14,7 +15,7 @@ const task = (id: string, title: string, status: TaskDetail['status']): TaskDeta
   id, projectId: detailProjectId, title, description: '# 任务交付\n\n使用同一套完整任务详情查看资料与操作。\n\n- [方案与验收](docs/guide.md)\n- [交互原型](site/index.html)\n- [长文档](docs/tall.md)',
   status, version: 1n, allowAgents: false, requiredPlatform: null, dependsOn: [], externalDependsOn: [], blockedBy: [],
   ready: status === 'todo', startedAt: null, completedAt: status === 'done' ? timestamp : null,
-  properties: { worker: null, pullRequests: [{ title: 'Share complete task details between dialog and page', url: 'https://github.com/example/project/pull/42' }] },
+  properties: { pullRequests: [{ title: 'Share complete task details between dialog and page', url: 'https://github.com/example/project/pull/42' }] },
   createdAt: timestamp, updatedAt: timestamp,
 });
 
@@ -33,7 +34,7 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
   const member = (userId: string, name: string, role: string) => ({ projectId: detailProjectId, userId, name: options.longClaim ? 'Claim owner '.repeat(16) + 'complete' : name, email: `${options.longClaim ? 'account'.repeat(24) : userId === TEST_VIEWER_ID ? 'jianjun' : 'teammate'}@example.com`, avatarUrl: null, role, version: 1, createdAt: timestamp, updatedAt: timestamp });
   const members = [member(TEST_VIEWER_ID, 'Jianjun', viewerRole), ...(claimOwner === otherOwnerId && options.claim !== 'former' ? [member(otherOwnerId, 'Alex Chen', 'member')] : [])];
   const firstBase = task(detailTaskId, 'Markdown 流程图与完整任务详情', options.claim === undefined ? options.initialStatus ?? 'todo' : worker!.state === 'active' ? 'in_progress' : worker!.state === 'completed' ? 'done' : 'todo');
-  const first: TaskDetail = { ...firstBase, properties: { ...firstBase.properties, worker }, allowAgents: options.claim !== undefined, startedAt: worker?.state === 'active' ? timestamp : null,
+  const first: TaskDetail = { ...firstBase, properties: { ...firstBase.properties, ...(worker === null ? {} : { worker }) }, allowAgents: options.claim !== undefined, startedAt: worker?.state === 'active' ? timestamp : null,
     description: `${flowcharts.replaceAll('(../', '(').replace('(guide.md)', '(docs/guide.md)')}\n\n[在附件页阅读相同内容](docs/flowcharts.md)` };
   const prior = task(priorId, '完成资料准备与需求确认', 'done');
   const next = task(nextId, '验证任务详情与附件交互', 'todo');
@@ -92,9 +93,11 @@ export const createTaskDetailFixture = (options: { readonly initialStatus?: Task
       const patch = JSON.parse(String(options.body));
       if (BigInt(patch.version) !== current.version) return json({ error: { code: 'version_conflict', message: 'Fixture version changed.', requestId: 'fixture-version' } }, 409);
       if (match![2] === 'worker-claim/withdraw') {
-        if (current.properties.worker === null || current.properties.worker.state === 'completed' || patch.claimId !== current.properties.worker.claimId) return json({ error: { code: 'claim_conflict', message: 'Fixture claim changed.', requestId: 'fixture-claim' } }, 409);
-        if (current.properties.worker.userId !== TEST_VIEWER_ID && viewerRole !== 'admin') return json({ error: { code: 'forbidden', message: 'Fixture withdrawal refused.', requestId: 'fixture-permission' } }, 403);
-        const updated: TaskDetail = { ...current, status: 'todo', allowAgents: false, startedAt: null, completedAt: null, properties: { ...current.properties, worker: null }, version: current.version + 1n, updatedAt: new Date().toISOString() };
+        const worker = readWorkerClaim(current.properties);
+        if (worker === undefined || worker.state === 'completed' || patch.claimId !== worker.claimId) return json({ error: { code: 'claim_conflict', message: 'Fixture claim changed.', requestId: 'fixture-claim' } }, 409);
+        if (worker.userId !== TEST_VIEWER_ID && viewerRole !== 'admin') return json({ error: { code: 'forbidden', message: 'Fixture withdrawal refused.', requestId: 'fixture-permission' } }, 403);
+        const { worker: _worker, ...properties } = current.properties;
+        const updated: TaskDetail = { ...current, status: 'todo', allowAgents: false, startedAt: null, completedAt: null, properties, version: current.version + 1n, updatedAt: new Date().toISOString() };
         tasks.set(current.id, updated); await refresh();
         return json(tasks.get(current.id)!);
       }

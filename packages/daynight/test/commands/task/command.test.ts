@@ -14,7 +14,7 @@ const otherDependencyId = "abcdefab-4444-4222-8333-123456789abc";
 const claimId = "abcdefab-5555-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
 const operations: Operation[] = [];
 afterEach(() => { operations.splice(0).forEach((operation) => operation.dispose()); });
@@ -471,13 +471,13 @@ describe("task request contracts", () => {
 describe("task output contracts", () => {
   it.each(["create", "show", "update"])("renders every task field in %s human output", async (command) => {
     const f = fixture();
-    const current = { ...task, properties: { worker: null, pullRequests: [{ title: "First", url: "arbitrary text" }, { title: "First", url: "arbitrary text" }, { title: "", url: "" }] }, dependsOn: [dependencyId], externalDependsOn: [dependencyId], blockedBy: [dependencyId], ready: false };
+    const current = { ...task, properties: { pullRequests: [{ title: "First", url: "arbitrary text" }, { title: "First", url: "arbitrary text" }, { title: "", url: "" }] }, dependsOn: [dependencyId], externalDependsOn: [dependencyId], blockedBy: [dependencyId], ready: false };
     f.api.createTask.mockResolvedValue(current); f.api.getTask.mockResolvedValue(current); f.api.updateTask.mockResolvedValue(current);
     const base = command === "create" ? [command, "--title", "Title"] : command === "update" ? [command, taskId, "--description="] : [command, taskId];
     await runTaskCommand([...base, "--project", projectId], f.context, f.dependencies);
     const output = f.context.stdout.mock.calls[0]![0];
     for (const field of [`ID: ${taskId}`, `Project: ${projectId}`, `Title: ${task.title}`, `Description: ${task.description}`, `Status: ${task.status}`, "Automatic execution: false", `Version: ${task.version}`, "Ready: false", `Depends on: ${dependencyId}`, `External dependencies (1): ${dependencyId}`, `Blocked by: ${dependencyId}`, `Created: ${time}`, `Updated: ${time}`]) expect(output).toContain(field);
-    expect(output).toContain("Pull requests: 3\n  1. Title: First\n     URL: arbitrary text\n  2. Title: First\n     URL: arbitrary text\n  3. Title: \n     URL: \n");
+    expect(output).toContain('Properties: 1\n  pullRequests: [{"title":"First","url":"arbitrary text"},{"title":"First","url":"arbitrary text"},{"title":"","url":""}]\n');
   });
 
   it.each(["list", "ready", "show", "graph"])("preserves %s JSON fields with numeric full-int64 versions", async (command) => {
@@ -521,12 +521,12 @@ describe("task output contracts", () => {
 
   it("keeps terminal control characters visible and preserves raw JSON strings", async () => {
     const f = fixture();
-    const raw = { ...task, title: "First\nSecond\u001b[2J", description: "Tab\tReturn\r\u0085", properties: { worker: null, pullRequests: [{ title: "\0\n\u001b[2J", url: "Tab\tReturn\r\u0085" }, { title: "", url: "" }] } };
+    const raw = { ...task, title: "First\nSecond\u001b[2J", description: "Tab\tReturn\r\u0085", properties: { pullRequests: [{ title: "\0\n\u001b[2J", url: "Tab\tReturn\r\u0085" }, { title: "", url: "" }] } };
     f.api.getTask.mockResolvedValue(raw);
     await runTaskCommand(["show", taskId, "--project", projectId], f.context, f.dependencies);
     expect(f.context.stdout.mock.calls[0]![0]).toContain("First\\nSecond\\u001b[2J");
     expect(f.context.stdout.mock.calls[0]![0]).toContain("Tab\\tReturn\\r\\u0085");
-    expect(f.context.stdout.mock.calls[0]![0]).toContain("1. Title: \\u0000\\n\\u001b[2J");
+    expect(f.context.stdout.mock.calls[0]![0]).toContain('"title":"\\u0000\\n\\u001b[2J"');
     await runTaskCommand(["show", taskId, "--project", projectId, "--json"], f.context, f.dependencies);
     expect(parseApiJson(f.context.stdout.mock.calls[1]![0])).toEqual(raw);
   });

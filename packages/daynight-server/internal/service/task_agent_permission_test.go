@@ -27,7 +27,7 @@ func TestTaskAgentPermissionUpdatesAndStatusRemainIndependent(t *testing.T) {
 		}
 		_, err := tasks.Update(ctx, principal, project.ID, task.ID, UpdateTask{Version: task.Version + 1, AllowAgents: &allowed})
 		requireFault(t, err, "version_conflict")
-		task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved metadata"), Properties: core.TaskPropertiesPatch{PullRequests: pointer([]core.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}})}})
+		task = updateTask(t, tasks, principal, task, UpdateTask{Description: pointer("Preserved metadata"), Properties: propertyPatch([]core.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Evidence"}}...)})
 
 		if !task.Ready || task.AllowAgents != allowed {
 			t.Fatal("metadata edit changed permission or readiness")
