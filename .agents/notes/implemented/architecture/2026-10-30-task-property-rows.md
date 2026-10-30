@@ -58,8 +58,9 @@ Public property mutations cannot set or remove worker.
 
 CLI and Web generic readers adopt absence at the same model boundary. The Web
 cache schema rebuild invalidates old null/required-property details before
-same-version comparisons. Existing PR command options still write an explicit
-array, and task-sync retains its compact property-free projection.
+same-version comparisons. The [generic property commands](2026-10-30-generic-task-property-commands.md)
+now own CLI value setting, removal and schema discovery. Task-sync retains its
+compact property-free projection.
 
 ## Alternatives
 

@@ -51,7 +51,7 @@ describe("Bash completion rendering", () => {
   it("offers unified status command and three-state filtering without metadata status updates", () => {
     const script = renderBashCompletion(commandTree);
     expect(script).toContain("complete -F _daynight_completion 'daynight' 'dn'\n");
-    expect(script).toContain("dn_children=('create' 'list' 'ready' 'show' 'update' 'set-status' 'delete' 'graph' 'attachment')");
+    expect(script).toContain("dn_children=('create' 'list' 'ready' 'show' 'properties' 'set-property' 'remove-property' 'update' 'set-status' 'delete' 'graph' 'attachment')");
     expect(script).toContain("dn_value_choices=('todo' 'in_progress' 'done')");
     const update = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "update")!);
     expect(update).not.toContain("'--status'");
@@ -186,4 +186,24 @@ describe("Bash completion rendering", () => {
     expect(script).toContain('dn_fragment="${COMP_WORDS[COMP_CWORD]}"');
     expect(script).not.toContain("COMP_WORDBREAKS=");
   });
+
+  it("carries generic property syntax and allowed empty positional values", () => {
+    const script = renderBashCompletion(commandTree);
+    expect(script).toContain("'properties' 'set-property' 'remove-property'");
+    expect(script).toContain("dn_options=('--schema' '--project' '--json' '-h' '--help')");
+    const set = renderBashCompletion(taskDefinition.commands!.find(({ name }) => name === "set-property")!);
+    expect(set).toContain("dn_argument_count=3");
+    expect(set).toContain("dn_argument_empty=('0' '0' '1')");
+    expect(set).toContain('"${dn_argument_empty[dn_position]}" == 1');
+    expect(set).toContain("dn_allow_terminator=1");
+    expect(set).toContain("dn_choices=()");
+    expect(script).not.toContain("--pull-request-url");
+    expect(script).not.toContain("--pull-request-title");
+    expect(script).not.toContain("--clear-pull-requests");
+  });
+
+  it("rejects ambiguous optional argument definitions", () => {
+    expect(() => renderBashCompletion({ name: "invalid", description: "", arguments: [{ name: "a", description: "", optional: true }, { name: "b", description: "" }] })).toThrow("required argument after an optional argument");
+  });
+
 });

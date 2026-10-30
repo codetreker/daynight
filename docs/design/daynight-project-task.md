@@ -16,8 +16,7 @@ JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplif
 CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
 
-[预定义属性设计](daynight-task-properties.md)的 server 接口、CLI 成对 PR 引用
-参数与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
+[预定义属性设计](daynight-task-properties.md)的 server 接口、通用 CLI 属性命令与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
 [附件架构](daynight-task-attachments.md)中的 `task attachment put/list/read/remove`
 及二进制传输通道已实现，行为见[附件需求](../spec/daynight-task-attachments.md)。
@@ -88,11 +87,10 @@ Project 的定义由 [`definition.ts`](../../packages/daynight/src/commands/proj
 拥有，解析、帮助及 Bash/zsh 补全消费同一语法；补全机制由
 [补全设计](daynight-completion.md)拥有。命令组先解析参数和帮助，校验名称及详情
 UUID，再惰性加载共享 server runtime 和业务渲染。Task 的 definition、command 和
-rendering 分别拥有语法、API/仓库关联组合及可读/JSON 输出，复用同一 server session。
+rendering 分别拥有语法、API/仓库关联组合及可读/JSON 输出，属性 dispatch 组合相同 server session 和版本化属性资源。
 `project create` 将名称声明为一个必填位置参数，`--repo` 声明为可选 text 选项。该定义声明
 `allowOptionsTerminator`，使 `--` 后的词按位置参数处理，因而前导 `-` 的名称也能
-原样提交。语法层只校验位置参数的存在性、非空字符串及声明的固定候选；名称的
-Unicode 文本语义由 Project 命令在业务加载之前校验。
+原样提交。语法层按共享定义检查位置参数的最小/最大数量、allowEmpty 和固定候选；optional 参数只能组成连续的末尾后缀。properties 的 task ID 可选性由 --schema 模式决定，set-property 的 value 明确允许空字符串。名称的 Unicode 文本语义由 Project 命令在业务加载之前校验；通用属性值不套用此规则。
 共享语法通过 `value.allowEmpty` 表达描述空值，通过 `value.choices` 表达状态允许值，
 通过 `repeatable` 表达有序依赖数组；解析与静态补全消费这些事实，帮助使用定义中
 的名称、值名、必填性与选项说明。
@@ -415,11 +413,15 @@ compileDependencies 只在关系选项出现时加载 UUID 校验；普通 N 与
 列表内或跨列表重复、非法 ID、无修改字段、已移除 status 或非法版本在配置、Git、网络前拒绝。
 `--description ""` 与 `--description=` 均为明确的空字符串。
 
-可重复的 `--pull-request-url` 与 `--pull-request-title` 使用 `allowEmpty`，各自
-保留出现顺序，第 n 个 URL 对应第 n 个标题；次数必须相等，字符串不作内容校验。
-配对值写为 `properties.pullRequests` 完整替换数组；`--clear-pull-requests` 写
-空数组并与任一配对选项互斥。省略这些选项时不生成属性 patch，只有属性修改也
-满足 update 的修改字段要求。次数和互斥校验在任何 I/O 之前完成。
+properties 的 task ID 与 --schema 恰好选一种，schema 模式不能附带 --project。该分支在 resolveProject、工作目录或项目请求之前调用 getTaskPropertySchema，只使用认证服务、同一 Operation 和既有 exchange。其它属性操作没有显式项目时才复用普通 discover；显式项目直接进入属性 API，由服务端检查项目/任务权限。
+
+set-property/remove-property 不读取属性目录，property 只作完整路径段编码，不拆点或判断名称是否合法。resourcePath 在构造 URL 时核对 WHATWG URL 规范化没有改变路径；独立 . 或 .. 即使编码仍会被 URL 处理为导航段，因此在发请求前以传输错误拒绝，不能双重编码成另一个字面名字。普通含点名称、斜线或百分号按精确段编码传递，服务端决定是否为合法属性。value 直接取共享解析器保存的原始参数，外壳经 stringifyApiJson 编码为 version/valueText。CLI 不解析 JSON、不根据 schema 判断 string，也不使用 PR/Worker 类型 reader 校验通用写值。
+
+ApiClient 的属性目录、值读取、设置与移除均复用现有认证、取消、期限、响应预算和错误分类。属性 DELETE 返回 200 及 PropertyResource，不能复用任务删除的 204/无正文处理。显式版本的一次 mutation 不预读；默认先 GET 属性资源取得任务版本再写；两者都不重放失败或冲突请求。原生 createTask/updateTask 仍可传完整 properties JSON，CLI create/update 只拥有普通元数据。
+
+set-property 的 value 允许空串，set/remove 使用 -- 后的位置参数接收短横线值。共享 schema、帮助和 Bash/zsh 补全消费同样的 optional/allowEmpty 规则；补全不联网请求名称或类型，也不把任意属性文本回退为文件名。完整空参数不能改变之后合法选项的位置解释。
+
+属性读写返回完整 PropertyResource，普通输出标明 task、project、version 和按名称排序的完整属性 JSON；空对象仍明确显示。--json 读取输出完整资源，schema 模式保留全部定义与 schema 关键词。写入打印服务确认的资源，no-op 沿用返回版本，不推断额外变化标记。所有终端内容经过现有可见转义，所有 JSON 保留原值和属性存在性。
 
 Windows 的 .cmd 启动器经 CMD 转发参数，字面 CR/LF 不能作为可靠的单参数表示。[Node 子进程文档](https://nodejs.org/docs/latest-v24.x/api/child_process.html#spawning-bat-and-cmd-files-on-windows)说明该入口依赖命令解释器；[cross-spawn 转义](https://github.com/moxystudio/node-cross-spawn/blob/77cd97f3ca7b62c904a63a698fc4a79bf41977d0/lib/util/escape.js#L3-L38)保留字面换行。安装验收分别覆盖原生 launcher 能承载的参数和同一产物 Node 入口的 CR/LF/控制字符；无法作为进程参数传递的 NUL 等内容通过 HTTP 提供。该传输边界不改变属性字符串的服务端语义。
 
@@ -428,7 +430,7 @@ Windows 的 .cmd 启动器经 CMD 转发参数，字面 CR/LF 不能作为可靠
 最新值替代。CLI 不重放 PATCH，不将旧版本冲突改成成功；语义无变化的响应也直接
 按服务返回渲染。生命周期操作复用相同 project 解析、Operation、int64 序列化和
 完整 mutation 渲染器；显式版本直接 PUT status，省略时仅 GET 一次，无冲突重试。当前版本同状态 +0，实际改变 +1。
-显式 claim UUID 仅允许 set-status done，在配置、Git 和网络前校验/规范化；带 claim 调用现有 completeWorkerTask，否则普通 setter，不推断或失败回退。显式 project UUID、show/update/set-status/delete 的 task UUID、标题、描述、
+显式 claim UUID 仅允许 set-status done，在配置、Git 和网络前校验/规范化；带 claim 调用现有 completeWorkerTask，否则普通 setter，不推断或失败回退。显式 project UUID、show/update/set-status/delete 及属性操作的 task UUID、标题、描述、
 版本及修改字段组合在配置、Git 和网络前验证；依赖选项存在时才懒加载 canonicalId，并在本地正规化、排序及拒绝非法/重复 UUID。显式 `--project` 直接 GET project，不读取工作目录或
 加载仓库模块；自动分支将 `serverUrl`、同一 `Operation`、API 和工作目录交给
 `resolveProject`。解析返回后才发送 task 请求，因此本地准备失败没有 task mutation。

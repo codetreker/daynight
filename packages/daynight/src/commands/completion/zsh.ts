@@ -1,4 +1,4 @@
-import type { CommandDefinition, CommandOption } from "../../cli/schema.js";
+import { validateCommandArguments, type CommandDefinition, type CommandOption } from "../../cli/schema.js";
 
 const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const escapeSpecification = (value: string): string => value.replaceAll(/([\\\[\]:])/g, "\\$1");
@@ -20,6 +20,7 @@ const valueValidation = (option: CommandOption, variable: string, indentation: s
 
 // _arguments tolerates unknown options and excess positionals; completion must retain the CLI's grammar.
 const renderPrefixValidation = (command: CommandDefinition): string => {
+  validateCommandArguments(command);
   if (command.commands !== undefined) {
     const names = command.commands.flatMap((child) => [child.name, ...(child.aliases ?? [])]);
     return `  if (( CURRENT > 2 )); then
@@ -33,14 +34,12 @@ const renderPrefixValidation = (command: CommandDefinition): string => {
 
   const options = command.options?.filter((option) => option.action === undefined) ?? [];
   const arguments_ = command.arguments ?? [];
-  const positionalValidation = arguments_.length === 0 ? "          return 1" : `          [[ -n "$word" ]] || return 1
-          case "$positional_count" in
-${arguments_.map((argument, index) => `            ${index})${argument.choices === undefined ? " ;;" : `
-              case "$word" in
+  const positionalValidation = arguments_.length === 0 ? "          return 1" : `          case "$positional_count" in
+${arguments_.map((argument, index) => `            ${index})
+${argument.allowEmpty === true ? "" : `              [[ -n "$word" ]] || return 1\n`}${argument.choices === undefined ? "" : `              case "$word" in
                 ${argument.choices.map(quote).join("|")}) ;;
                 *) return 1 ;;
-              esac
-              ;;`}`).join("\n")}
+              esac\n`}              ;;`).join("\n")}
             *) return 1 ;;
           esac
           (( positional_count++ ))`;
@@ -120,7 +119,7 @@ ${children.map(({ command: child, functionName: childFunction }) => `        ${[
     } else {
       for (const [index, argument] of (command.arguments ?? []).entries()) {
         const state = `argument_${index + 1}`;
-        const specification = `${index + 1}:${escapeSpecification(argument.description)}:->${state}`;
+        const specification = `${index + 1}${argument.optional === true ? "::" : ":"}${escapeSpecification(argument.description)}:->${state}`;
         if (argument.choices === undefined) {
           // zsh hides options beside a positional state unless the option prefix is present.
           // An unstarted free-form value has no candidates, so omit its state until needed.

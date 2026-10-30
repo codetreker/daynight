@@ -18,7 +18,7 @@ Use the `daynight` CLI to operate it and [Daynight](https://daynight.cc) to brow
 | Attachment | A task's independent attachment area for inputs and results such as documents, prototypes, and images. |
 | worker-managed | An execution environment assigned and managed by `daynight worker`; the agent executes only its explicit assignment. |
 
-The CLI supports project registration and lookup, task creation and filtering, status and dependency management, attachment reads and writes, and worker-managed execution.
+The CLI supports project registration and lookup, task creation and filtering, status and dependency management, property values and definitions, attachment reads and writes, and worker-managed execution.
 Creation, execution, and handoff are separate operations; see [authorization and scope](references/authorization.md).
 
 ## Setup and CLI
@@ -39,7 +39,7 @@ Read only the files and required references for the current operation, not every
 | Connect the current repository | [Setup](references/setup.md): CLI, sign-in, project, and repository-instruction setup |
 | Find commands | [CLI handbook](references/handbook.md): command map and help discovery |
 | Discover, select, or register projects | [Project management](references/project-management.md): project identity and reuse |
-| Query tasks, edit metadata, status, or dependencies, or delete tasks | [Task management](references/task-management.md): fields, lifecycle, and relationship semantics |
+| Query tasks, edit metadata, properties, status, or dependencies, or delete tasks | [Task management](references/task-management.md): fields, lifecycle, and relationship semantics |
 | Submit and reconcile writes safely | [Write safety](references/write-safety.md): versions, conflicts, uncertain results, and attachment concurrency |
 | Write or read descriptions, attachments, and shared inputs | [Task content standard](references/task-content.md): boundaries, ownership, references, and sufficiency |
 | Create or register work | [Create task](references/create-task.md): duplicate checks, preparation, registration, and readback |

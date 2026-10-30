@@ -24,7 +24,7 @@ Follow [task management](task-management.md) and [write safety](write-safety.md)
 When creating a PR, its description must clearly explain the problem being solved and how the change addresses it.
 If the PR is associated with a Daynight task, include the task's ID and title.
 
-Save the URLs and titles of all required delivery PRs in the complete `properties.pullRequests` list, preserving existing entries. Save actual deliverables, current conclusions, and acceptance results in the owning task's material; keep implementation steps, CI, reviews, merge handling, and operational authorization in the session or corresponding platform under the content standard.
+Save the URLs and titles of all required delivery PRs in the complete `properties.pullRequests` list with [property setting](task-management.md#properties), preserving existing entries. Save actual deliverables, current conclusions, and acceptance results in the owning task's material; keep implementation steps, CI, reviews, merge handling, and operational authorization in the session or corresponding platform under the content standard.
 
 ## Completion conditions
 
