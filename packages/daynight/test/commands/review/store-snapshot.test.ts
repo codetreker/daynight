@@ -101,7 +101,14 @@ describe("review listing snapshots and automatic upgrades", () => {
       expect(target).toBe(databaseFile);
       throw Object.assign(new Error("Windows reports a missing path below a file"), { code: "ENOENT" });
     });
-    expect(() => readSnapshot(databaseFile)).toThrow("ancestor is not a directory");
+    let failure: unknown;
+    try { readSnapshot(databaseFile); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(SqliteAccessError);
+    expect(failure).toMatchObject({
+      kind: "migration-failed", context: { database: "Review", phase: "inspect-path", file: databaseFile },
+    });
+    expect((failure as SqliteAccessError).cause).toBeInstanceOf(Error);
+    expect(((failure as SqliteAccessError).cause as Error).message).toContain("ancestor is not a directory");
     expect(vi.mocked(lstatSync).mock.calls.map(([target]) => target)).toEqual([databaseFile, file]);
   });
 
@@ -124,11 +131,25 @@ describe("review listing snapshots and automatic upgrades", () => {
     const databaseFile = path.join(location, "state.sqlite");
     const rootError = Object.assign(new Error("filesystem root is unavailable"), { code: "ENOENT" });
     vi.mocked(lstatSync).mockImplementation(() => { throw rootError; });
-    expect(() => readSnapshot(databaseFile)).toThrow(rootError);
+    let rootFailure: unknown;
+    try { readSnapshot(databaseFile); } catch (error) { rootFailure = error; }
+    expect(rootFailure).toBeInstanceOf(SqliteAccessError);
+    expect(rootFailure).toMatchObject({
+      kind: "migration-failed", context: { database: "Review", phase: "inspect-path", file: databaseFile },
+    });
+    expect((rootFailure as SqliteAccessError).cause).toBe(rootError);
+    expect((rootFailure as SqliteAccessError).cause).toMatchObject({ code: "ENOENT" });
     expect(vi.mocked(lstatSync).mock.calls.at(-1)?.[0]).toBe(path.parse(databaseFile).root);
     const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
     vi.mocked(lstatSync).mockImplementation(() => { throw permissionError; });
-    expect(() => readSnapshot(databaseFile)).toThrow(permissionError);
+    let permissionFailure: unknown;
+    try { readSnapshot(databaseFile); } catch (error) { permissionFailure = error; }
+    expect(permissionFailure).toBeInstanceOf(SqliteAccessError);
+    expect(permissionFailure).toMatchObject({
+      kind: "migration-failed", context: { database: "Review", phase: "inspect-path", file: databaseFile },
+    });
+    expect((permissionFailure as SqliteAccessError).cause).toBe(permissionError);
+    expect((permissionFailure as SqliteAccessError).cause).toMatchObject({ code: "EACCES" });
     expect(readdirSync(location)).toEqual([]);
   });
 
