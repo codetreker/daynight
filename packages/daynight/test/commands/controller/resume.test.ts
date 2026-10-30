@@ -213,10 +213,13 @@ test("a committed acquisition with an unconfirmed connection close retains its l
 
 test("an acquisition whose commit result is unknown retains its nonce even after a confirmed close", async () => {
   const f = await fixture(), file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite"), commitFailure = new Error("Commit acknowledgment lost"), originalExec = Database.prototype.exec;
-  let first = true;
+  let first = true, acquisition = false;
   const committing = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    const target = this.name === file, loseAcknowledgment = target && sql === "COMMIT" && acquisition && first;
     const result = originalExec.call(this, sql);
-    if (this.name === file && sql === "COMMIT" && first) { first = false; throw commitFailure; }
+    if (target && sql === "BEGIN IMMEDIATE") acquisition = true;
+    if (target && (sql === "COMMIT" || sql === "ROLLBACK")) acquisition = false;
+    if (loseAcknowledgment) { first = false; throw commitFailure; }
     return result;
   });
   try {
