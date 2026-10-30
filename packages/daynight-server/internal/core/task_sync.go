@@ -3,6 +3,7 @@ package core
 import "time"
 
 type TaskViewRecord struct {
+	Properties        TaskProperties
 	ID                string
 	TitlePreview      string
 	TitleTruncated    bool

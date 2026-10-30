@@ -97,7 +97,7 @@ const installFixture = () => {
       while (fixture.response === 'loading') await delay(100, signal);
       if (fixture.response === 'error') return Response.json({ error: { code: 'internal_error', message: 'Preview service is temporarily unavailable.', requestId: 'preview-auto-refresh' } }, { status: 500 });
       const snapshot = graph();
-      if (graphRequest) return taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: taskSyncEpoch(`${fixtureEpoch}:${fixture.content}`), versionForTask: (task) => BigInt(taskRevision(task)), viewerId: TEST_VIEWER_ID });
+      if (graphRequest) return taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: taskSyncEpoch(`${fixtureEpoch}:${fixture.content}`), versionForTask: (task) => BigInt(taskRevision(task)), propertiesForTask: (task) => detail(task).properties, viewerId: TEST_VIEWER_ID });
       const task = snapshot.tasks.find((candidate) => candidate.id === taskRequest![1]);
       return task === undefined ? Response.json({ error: { code: 'not_found', message: 'Task no longer exists.', requestId: 'preview-task-missing' } }, { status: 404 }) : new Response(stringifyApiJson(detail(task)), { headers: { 'Content-Type': 'application/json' } });
     }

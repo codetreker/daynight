@@ -77,11 +77,11 @@ HTTP 接受且仅接受一个必填 taskId query，返回 no-store，沿用 requ
 `task_cache_epoch`、完整图容量、窗口摘要与数据库时钟。域拒绝在事务成功结束后返回，
 操作和清理失败优先，与任务链图查询相同。
 
-store 只投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、时间和两类依赖；
-不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
+store 先投影任务自身的 160 字符标题预览、业务 version、状态、许可/平台、时间和两类依赖，
+关闭任务 rows 后复用 loadTaskProperties 批量装配完整属性；不读取正文或计算阻塞字段。下界由原始 since 减配置 overlap，非微秒对齐时向上取整再绑定，
 保持准确的包含边界选择。迁移为项目生成稳定缓存 epoch 并创建 `(project_id, updated_at, id)`
 索引，不新增同步计数。HTTP 以十进制字符串编码业务版本。完整协议及后续客户端责任见
-[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属修改沿用已有 version/updatedAt 事务，因此摘要可见其版本变化；摘要不包含 properties，身份核对仍 GET 已知任务，不增加 worker 查询投影。
+[时间窗口架构](daynight-task-sync.md)；当前 Web 消费 task-sync 并在本地物化完整项目图。Worker 归属及其他属性修改沿用已有 version/updatedAt 事务，snapshot/delta 都携带同快照的完整属性，普通属性变化不轮换 epoch。服务在快照回调内保存属性校验拒绝，正常完成后才返回 400；数据库和事务完成错误优先，保持 500。身份核对仍 GET 已知任务，不以缓存属性授予操作权。
 
 ## 目录与调用方向
 

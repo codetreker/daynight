@@ -60,7 +60,7 @@ beforeEach(() => {
   serverDetails.clear();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, userId, signal) => {
     expect(userId).toBe(currentUser.id);
-    return taskSyncFromGraph(await graphRequest(projectId, signal), { query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version });
+    return taskSyncFromGraph(await graphRequest(projectId, signal), { query, epoch: taskSyncEpoch(`${currentUser.id}:${projectId}`), versionForTask: () => serverDetail(projectId).version, propertiesForTask: () => serverDetail(projectId).properties });
   });
 });
 

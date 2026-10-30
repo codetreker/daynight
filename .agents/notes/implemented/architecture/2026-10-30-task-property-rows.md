@@ -59,7 +59,11 @@ Public property mutations cannot set or remove worker.
 CLI and Web generic readers adopt absence at the same model boundary. The Web
 cache schema rebuild invalidates old null/required-property details before
 same-version comparisons. Existing PR command options still write an explicit
-array, and task-sync retains its compact property-free projection.
+array. The row-model delivery retained the compact property-free task-sync
+projection; the later
+[full-property synchronization decision](2026-10-30-task-property-sync.md)
+adds complete properties to that feed and rebuilds old summaries with schema 3.
+Graph nodes retain their property-free projection.
 
 ## Alternatives
 
@@ -94,8 +98,9 @@ Immutable candidate maps avoid contaminating current snapshots during writes.
 The row model adds one batched value query to ordinary full reads. It does not
 introduce arbitrary custom attributes, JSON filtering, a claim history table or
 a new synchronization protocol. Those capabilities need their own semantics if
-required. Complete task/list payloads still grow with property content and retain
-the existing explicit response limits.
+required. Complete task/list and synchronization payloads grow with property content.
+Existing client response limits remain explicit failure boundaries, and summary
+node/edge capacity does not imply a property-byte limit.
 
 The storage transition changes the full-resource contract and requires
 coordinated server/client upgrades. Task-level versions and timestamps stay

@@ -9,7 +9,7 @@ const userId = "30000000-0000-0000-0000-000000000001";
 const epoch = "40000000-0000-0000-0000-000000000001";
 const time = "2026-10-20T12:34:56.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 9_223_372_036_854_775_807n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { id: taskId, version: "9007199254740993", titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const task = { id: taskId, version: "9007199254740993", properties: {}, titlePreview: "Task", titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
 const sync = { mode: "snapshot", epoch, project, observedAt: time, tasks: [task] };
 const signal = () => new AbortController().signal;
 const response = (value: unknown, status = 200, principal: string | null = userId) => wireResponse(value, { status, headers: principal === null ? {} : { "Daynight-User-ID": principal } });
@@ -36,11 +36,12 @@ describe("strict summary protocol", () => {
   it.each([undefined, null, 1, 1n, "", "0", "-1", "+1", "01", "1.0", "1e1", "9223372036854775808"])("rejects noncanonical versions %#", (version) => {
     expect(() => parseTaskSummary({ ...task, version })).toThrow("invalid response");
   });
-  it.each(["requiredPlatform", "startedAt", "completedAt", "externalDependsOn", "allowAgents", "updatedAt", "version"])("requires %s", (field) => {
+  it.each(["requiredPlatform", "startedAt", "completedAt", "externalDependsOn", "allowAgents", "updatedAt", "version", "properties"])("requires %s", (field) => {
     const incomplete: Record<string, unknown> = { ...task }; delete incomplete[field];
     expect(() => parseTaskSummary(incomplete)).toThrow("invalid response");
   });
   it.each([
+    { properties: null }, { properties: [] }, { properties: 17 },
     { status: "proposed" }, { requiredPlatform: "android" }, { dependsOn: [taskId, taskId] },
     { externalDependsOn: [projectId] }, { updatedAt: "2026-02-30T00:00:00Z" },
     { createdAt: "2026-10-20T00:00:00.1234567890Z" }, { startedAt: "2026-10-20T00:00:00+00:00" },
@@ -90,4 +91,14 @@ it("shares the foreground gate and cancels an old identity's pending read", asyn
   invalidateAuthRequests(); resume();
   await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   expect(fetch).not.toHaveBeenCalled();
+});
+
+it("retains complete generic properties and ordinary nested version fields in sync responses", async () => {
+  const properties = { pullRequests: [], future: { version: 42, nested: [null, "\u0000中文", { enabled: true }] } };
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response({ ...sync, tasks: [{ ...task, properties }] })));
+  const result = await getTaskSync(projectId, {}, userId, signal());
+  expect(result.tasks[0]!.properties).toEqual(properties);
+  expect(result.tasks[0]!.properties.future).toMatchObject({ version: 42 });
+  expect(result.tasks[0]!.version).toBe(9_007_199_254_740_993n);
+  expect(parseTaskSummary({ ...task, properties: {} }).properties).toEqual({});
 });

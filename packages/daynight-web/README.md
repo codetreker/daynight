@@ -408,8 +408,11 @@ edit changes task time or graph geometry.
 `TaskCacheProvider` wraps every authenticated route outside the shared detail
 session. Its scope follows the user and session generation, including standalone
 task and attachment routes. The origin-local `daynight-task-cache` database uses
-schema 1 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
-stores. User fences, project generations and validated manifests guard late
+schema 3 and idb 8.0.4, with `userScopes`, `projects`, `summaries` and `details`
+stores. Upgrades from schema 2 or directly from 1 rebuild projects, summaries and
+details, rotate user fences and clear old epochs/watermarks before a complete
+snapshot. Old summaries without properties cannot be inferred as empty objects.
+Upgrade failures roll back, and old connections close on versionchange. User fences, project generations and validated manifests guard late
 responses and cross-tab transactions. `lifecycle.ts` checks ownership, canonical
 fences/generations and bounded counts for both active and invalidated manifests.
 An invalidated manifest has a recognized reason, null epoch/Project/watermark and
@@ -419,12 +422,27 @@ bounded LRU and business-version-driven detail reads.
 
 `beginSync` reads the epoch and greatest exact accepted summary `updatedAt`;
 `applySync` validates the transaction's complete durable set and atomically saves
-changed summaries with that watermark. Only project-sync summaries advance it.
+changed summaries with that watermark. Every snapshot/delta record contains its
+complete current properties from the task row's database snapshot. Higher task
+versions replace whole summaries and property maps; missing keys remove old
+values without property tombstones or ordinary epoch changes. Equal-version
+content must match all own property keys and JSON values: object order is
+irrelevant, array order matters, and missing differs from null or an empty array.
+Older responses cannot revive removed properties. Graph projections explicitly
+drop properties while the summary map retains them. Only project-sync summaries
+advance the watermark.
 Details, mutations, request time, Project time and `observedAt` cannot establish
 project coverage. UTC seconds plus nine fractional digits preserve ordering;
 business versions remain bigint. The default ten-second server overlap can
 repeat its final rows indefinitely, and old/equal rows do not rewrite storage,
-invalidate detail records, replace published indexes or broadcast.
+invalidate detail records, replace published indexes or broadcast. Network,
+HTTP, decoding, quota and IDB-completion errors preserve the prior valid cache
+and watermark without partial publication. Invalid stored properties fail the
+complete sync request with 400 invalid_input; database and transaction-completion
+faults remain 500 internal_error. Complete properties increase transport, parsing,
+full-set validation and summary storage costs. Graph node/edge limits and the
+detail LRU byte budget do not bound total summary bytes, and arbitrary legal
+maximum payloads are not guaranteed to fit every browser quota.
 
 After identity verification, a project publishes its validated local summary
 snapshot while task-sync runs in the background. Valid empty snapshots render
@@ -478,11 +496,13 @@ owns the algorithm, schema, failure rules and detail integration.
 
 ## Persistent task details
 
-`TaskDetailSessions(scope)` uses the same authenticated scope and schema-1 details
+`TaskDetailSessions(scope)` uses the same authenticated scope and schema-3 details
 store as project summaries. `detail-cache.ts` validates intrinsic bodies against
 the current summary and guarded lifecycle ticket, then materializes readiness and
-blockers from the complete local graph. Full current properties, including
-nullable worker metadata, remain intact. A new summary version invalidates its
+blockers from the complete local graph. Full current properties preserve actual
+present keys: an absent worker means no retained ownership, while a present
+worker is an object whose nullable inner fields retain their defined meaning.
+Detail-to-summary consistency uses the same complete semantic property comparison. A new summary version invalidates its
 detail; prerequisite-only changes update derived fields without successor GETs.
 Raw server-derived disagreements are retained separately before materialization,
 so stale feedback and write restrictions cannot disappear through local overwrite.
@@ -987,11 +1007,14 @@ switching, filtering and scroll restoration make no API requests and do not
 alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)
 records the persistence rules.
 
-The detail decoder requires `properties.pullRequests` with string `url` and
-`title` fields. Missing or malformed structure produces the existing detail
-error and retry state. It preserves string content, including NUL and arbitrary
-address text, without defaults or content validation. The graph decoder retains
-its compact projection and never copies properties into graph nodes.
+The generic task and summary decoders require a properties object and preserve
+all keys. The PR business reader accepts an absent pullRequests key; a present
+value must be an array of objects with string `url` and `title` fields. Missing
+pullRequests and an empty array share the existing empty presentation while
+remaining distinct data. A malformed present value produces the existing error
+and retry state. String content, including NUL and arbitrary address text, is
+preserved without defaults or content validation. The server graph decoder and
+local graph projection retain compact nodes without properties.
 
 Graph and detail reads require `externalDependsOn` alongside the complete
 `dependsOn` set. The shared decoder canonicalizes UUIDs, rejects duplicates and

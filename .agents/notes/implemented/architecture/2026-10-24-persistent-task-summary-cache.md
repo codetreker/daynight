@@ -18,16 +18,23 @@ IndexedDB transaction, merges against the transaction's current complete set by
 task ID and business version, and derives readiness, blockers, statistics and the
 existing GraphIndex locally. Network decoding and authentication happen outside
 the transaction; publication follows transaction completion. Equal versions must
-have identical intrinsic content. Older rows cannot advance coverage.
+have identical intrinsic content, including every property key and JSON value.
+Higher versions replace the whole property object, so missing keys remove old
+values without property tombstones. Older rows cannot advance coverage or revive
+removed properties. Graph projections explicitly drop properties while the
+summary map retains them.
 
-The origin-local daynight-task-cache database uses schema 2 and idb 8.0.4. The
-[property-row model](2026-10-30-task-property-rows.md) makes property absence
-observable without changing task versions during migration. The 1-to-2 upgrade
-therefore clears rebuildable project/summary/detail stores and rotates user
-fences alongside that model change, avoiding same-version conflicts with old
-worker:null or mandatory-PR details. Summary rows still omit properties. Its
-userScopes store owns durable user fences; projects owns project manifests and
-cache generations; summaries owns intrinsic task rows; details establishes the
+The origin-local daynight-task-cache database uses schema 3 and idb 8.0.4. The
+[property-row model](2026-10-30-task-property-rows.md) made property absence
+observable without changing task versions during migration; its 1-to-2 upgrade
+cleared rebuildable stores to prevent conflicts with old worker:null or
+mandatory-PR details. The
+[full-property synchronization decision](2026-10-30-task-property-sync.md)
+adds complete properties to summary rows. Upgrades from 2 or directly from 1 to 3
+clear rebuildable project/summary/detail stores, rotate user fences and clear old
+watermarks before a complete snapshot. A missing field in an old row cannot be
+inferred as an empty property object. Its userScopes store owns durable user
+fences; projects owns project manifests and cache generations; summaries owns intrinsic task rows; details establishes the
 shared intrinsic-detail record and transaction shape. Manifest counts, edges,
 maximum time, ownership and graph validity are checked against the complete
 durable collection before applying a delta. Missing independent rows are
@@ -119,8 +126,13 @@ summaries can render during background synchronization; online project admission
 remains mandatory for detail bodies and task writes. Each apply can read and
 validate the full bounded local set; its local work is not guaranteed proportional
 to the changed rows.
-The accepted tail window can still repeat indefinitely. Storage failures remain
-visible through existing error and Retry states, with an allowed current view
+The original summary format omitted properties to reduce repeated graph/list
+payloads while detail persistence had an independent policy. Full-property
+synchronization now accepts those additional bytes without changing detail
+admission or its LRU budget. The node/edge limits and detail budget do not bound
+summary bytes; payload parsing and full-set validation costs grow with property
+content. The accepted tail window can still repeat indefinitely. Storage failures
+remain visible through existing error and Retry states, with an allowed current view
 retained; there is no silent network-only fallback.
 
 Native browser evidence is required for persistence, transaction failure and

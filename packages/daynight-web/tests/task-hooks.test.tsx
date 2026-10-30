@@ -51,7 +51,7 @@ const deferred = <T,>() => {
 };
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
-const syncFixture = createGraphSyncFixture();
+const syncFixture = createGraphSyncFixture({ propertiesForTask: () => detail.properties });
 beforeEach(() => {
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => {

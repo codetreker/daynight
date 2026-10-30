@@ -42,7 +42,7 @@ it("clears persisted null-ownership details before admitting the same task versi
   await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
   expect((await connection.get("details", [userId, projectId, taskId]))!.detail.properties).toHaveProperty("worker", null);
   const current = await cache().open();
-  expect(TASK_CACHE_SCHEMA).toBe(2);
+  expect(TASK_CACHE_SCHEMA).toBe(3);
   expect(await current.getAll("details")).toEqual([]);
   expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
 });
@@ -71,7 +71,7 @@ it("reports blocked upgrades at 5000ms and closes an eventual late connection", 
 it("cleans up a connection that opens after its owner has unmounted", async () => {
   const database = cache(); const opening = database.open(); database.close();
   await expect(opening).rejects.toMatchObject({ name: "AbortError" });
-  const next = await openDB(TASK_CACHE_DATABASE, 2); next.close();
+  const next = await openDB(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); next.close();
 });
 
 it("classifies synchronous open failures as storage errors", async () => {
@@ -87,4 +87,27 @@ it("reports an actual upgrade transaction abort as storage failure while its own
     return request;
   });
   await expect(cache().open()).rejects.toMatchObject({ name: "TaskCacheError", category: "storage", cause: { name: "AbortError" } });
+});
+
+it.each([1, 2])("rebuilds schema %i summaries and details before admitting properties-bearing snapshots", async (oldVersion) => {
+  const userId = "10000000-0000-4000-8000-000000000001";
+  const projectId = "20000000-0000-4000-8000-000000000001";
+  const taskId = "30000000-0000-4000-8000-000000000001";
+  const userFence = "40000000-0000-4000-8000-000000000001";
+  const failure = vi.fn(); const old = cache(failure, oldVersion); const connection = await old.open();
+  const detail = detailFixture(projectId, taskId);
+  const { projectId: _owner, title, description: _body, properties: _properties, ready: _ready, blockedBy: _blockedBy, ...intrinsic } = detail;
+  const project = { id: projectId, name: "Project", repoUrl: "https://example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: detail.createdAt, updatedAt: detail.updatedAt };
+  await connection.put("userScopes", { userId, userFence });
+  await connection.put("projects", { userId, projectId, userFence, cacheGeneration: userFence, state: "active", invalidatedBy: null,
+    epoch: userFence, project, maxUpdatedAt: detail.updatedAt, taskCount: 1, edgeCount: 0 });
+  // Old persisted summaries intentionally have no properties field.
+  const legacy = { userId, projectId, taskId, summary: { ...intrinsic, titlePreview: title, titleTruncated: false } };
+  await connection.put("summaries", legacy as unknown as TaskCacheSchema["summaries"]["value"]);
+  await connection.put("details", { userId, projectId, taskId, userFence, cacheGeneration: userFence, detail, byteSize: 100, lastUsedAt: 1 });
+  const current = await cache().open();
+  expect(TASK_CACHE_SCHEMA).toBe(3);
+  expect(failure).toHaveBeenCalledWith(expect.objectContaining({ category: "versionchange" }));
+  expect((await current.get("userScopes", userId))!.userFence).not.toBe(userFence);
+  for (const store of ["projects", "summaries", "details"] as const) expect(await current.getAll(store)).toEqual([]);
 });

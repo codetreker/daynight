@@ -286,7 +286,7 @@ export const installBrowsingFixture = (): BrowsingFixture => {
       });
       if (state.scenario === 'error' && count === 0 || state.scenario === 'refresh-error' && count === 1 || state.failedGraphReads) return fault('internal_error', 500);
       const snapshot = graphSnapshot(state);
-      return taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: state.epoch, versionForTask: (task) => state.tasks.get(task.id)!.version, viewerId: TEST_VIEWER_ID });
+      return taskSyncResponse(snapshot, { query: taskSyncQuery(url), epoch: state.epoch, versionForTask: (task) => state.tasks.get(task.id)!.version, propertiesForTask: (task) => state.tasks.get(task.id)!.properties, viewerId: TEST_VIEWER_ID });
     }
     const storedTask = state?.tasks.get(taskMatch?.[2] ?? '');
     const task = state !== undefined && storedTask !== undefined ? currentTask(state, storedTask.id) : undefined;

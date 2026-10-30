@@ -34,7 +34,7 @@ const attachment: Attachment = {
 let root: HTMLDivElement;
 
 beforeEach(() => {
-  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n }));
+  vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => taskSyncFromGraph(await graphRequest(projectId, signal), { query, versionForTask: (task) => task.id === detail.id ? detail.version : 1n, propertiesForTask: (task) => task.id === detail.id ? detail.properties : {} }));
 });
 
 beforeEach(() => {

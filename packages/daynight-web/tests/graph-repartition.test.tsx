@@ -33,7 +33,7 @@ const graph = (tasks: readonly GraphTask[]): TaskGraph => ({
 let root: HTMLDivElement;
 let overflow: string;
 
-const syncFixture = createGraphSyncFixture();
+const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
 beforeEach(() => {
   syncFixture.reset();
   vi.mocked(getTaskSync).mockReset().mockImplementation(async (projectId, query, _userId, signal) => syncFixture.toSync(await graphRequest(projectId, signal), query));

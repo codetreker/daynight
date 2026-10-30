@@ -17,7 +17,7 @@ const connections: IDBPDatabase<TaskCacheSchema>[] = [];
 const seed = async (details: readonly TaskDetail[]) => {
   const scope = createTaskCacheScope({ userId: TEST_VIEWER_ID, onIdentityMismatch: vi.fn() }); scopes.push(scope);
   const graph = graphFixture(details);
-  await scope.applySync(await scope.beginSync(projectId, signal()), taskSyncFromGraph(graph, { versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version }), signal());
+  await scope.applySync(await scope.beginSync(projectId, signal()), taskSyncFromGraph(graph, { versionForTask: (task) => details.find((detail) => detail.id === task.id)!.version, propertiesForTask: (task) => details.find((detail) => detail.id === task.id)!.properties }), signal());
   return scope;
 };
 const inspect = async () => { const connection = await openDB<TaskCacheSchema>(TASK_CACHE_DATABASE, TASK_CACHE_SCHEMA); connections.push(connection); return connection; };
@@ -85,7 +85,7 @@ it("enforces the byte budget and accepts an exact 2 MiB row while leaving oversi
 
 it("rejects captured tickets after snapshot rotation or project invalidation", async () => {
   const detail = body(); const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
-  await scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { epoch: "30000000-0000-4000-8000-000000000002", versionForTask: () => detail.version }), signal());
+  await scope.applySync(ticket, taskSyncFromGraph(graphFixture([detail]), { epoch: "30000000-0000-4000-8000-000000000002", versionForTask: () => detail.version, propertiesForTask: () => detail.properties }), signal());
   await expect(saveDetail(scope, ticket, detail, signal())).rejects.toMatchObject({ name: "AbortError" });
   const active = await scope.beginSync(projectId, signal()); await scope.invalidateProject(projectId, signal());
   await expect(saveDetail(scope, active, detail, signal())).rejects.toMatchObject({ name: "AbortError" });
@@ -141,4 +141,15 @@ it("treats equivalent timestamp precision as the same intrinsic content", async 
   await saveDetail(scope, ticket, detail, signal()); const first = (await record())!;
   expect(await saveDetail(scope, ticket, { ...detail, updatedAt: detail.updatedAt.replace("Z", ".000000000Z") }, signal())).toMatchObject({ kind: "matching" });
   expect(await record()).toEqual(first);
+});
+
+it("checks same-version detail properties against complete summaries while accepting object-key reordering", async () => {
+  const detail = body(1, { properties: { future: { first: 1, second: ["a", "b"] }, pullRequests: [] } });
+  const scope = await seed([detail]); const ticket = await scope.beginSync(projectId, signal());
+  const equivalent = { ...detail, properties: { pullRequests: [], future: { second: ["a", "b"], first: 1 } } };
+  await expect(saveDetail(scope, ticket, equivalent, signal())).resolves.toMatchObject({ kind: "matching" });
+  const saved = (await record())!;
+  await expect(saveDetail(scope, ticket, { ...detail, properties: {} }, signal())).rejects.toMatchObject({ kind: "protocol" });
+  expect(await record()).toEqual(saved);
+  expect((await scope.beginSync(projectId, signal())).maxUpdatedAt).toBe(ticket.maxUpdatedAt);
 });

@@ -4,7 +4,7 @@
 
 ## 资源和属性所有权
 
-完整 Task 的 `properties` 是保留所有键的通用 JSON 对象。`worker` 缺失表示没有保留的执行归属，包括从未认领或已经强制撤回；存在时是最后一条合法认领记录，`state` 为 `active`、`released` 或 `completed`。读取不补 null，现有旧 worker:null 在属性行迁移中转为缺失。图保持原有精简投影，不包含属性。
+完整 Task 的 `properties` 是保留所有键的通用 JSON 对象。`worker` 缺失表示没有保留的执行归属，包括从未认领或已经强制撤回；存在时是最后一条合法认领记录，`state` 为 `active`、`released` 或 `completed`。读取不补 null，现有旧 worker:null 在属性行迁移中转为缺失。task-sync 摘要携带同快照的完整属性并按任务版本替换，包含 Worker 生命周期变化；服务端图和浏览器图节点保持不含属性的精简投影。摘要属性不代替执行身份核对所需的实时 Task GET。
 
 ```json
 {
@@ -89,7 +89,7 @@ stoppedConfirmed 表达授权调用方已核实原 agent 真实停止，不代�
 
 全部写入复用现有 Tasks 服务和项目行锁，并在读取/修改属性前锁定父任务 FOR UPDATE，同一事务核验成员、版本、依赖、归属并写入属性、状态、计时和版本。Session relay 先取父任务 FOR SHARE，再读取 worker 和 Session；属性缺失时仍由父任务锁维持 fence。锁序保持项目（如有）→父任务→属性→Session，不引入反向锁序。失败、取消或数据库错误完整回滚。许可或平台编辑与认领同版本竞争只能提交一个有效结果，不增加独立 claim 权威表。
 
-真实 worker 修改沿用同一事务的 task.version 与 updatedAt；[时间窗口摘要](daynight-task-sync.md)因此能观察到其业务版本变化，同值 no-op 保持原值。摘要只读且不包含 properties，不携带 worker 归属；需要核对执行身份时仍按已知 taskId GET 完整 Task。现有同步窗口和更新时间索引继续由摘要能力拥有，不增加 worker 查询投影或反向索引。
+真实 worker 修改沿用同一事务的 task.version 与 updatedAt；[时间窗口摘要](daynight-task-sync.md)因此能观察到其业务版本变化，同值 no-op 保持原值。snapshot/delta 都包含完整当前 properties，包括存在的 worker 归属；需要核对执行身份时仍按已知 taskId GET 完整 Task，不以只读缓存替代实时认领核对。现有同步窗口和更新时间索引继续由摘要能力拥有，不增加 worker 查询投影或反向索引。
 
 沿用 invalid_input、认证/forbidden/not_found、version_conflict、dependency_unsatisfied、invalid_transition，并用 claim_conflict 表达非当前归属。非成员读取和写入按现有规则隐藏任务。非法存储属性值以保留错误链的属性校验错误返回 400 invalid_input，数据库及其他内部故障仍返回 500。错误不转换为空候选、局部资源或成功。
 
