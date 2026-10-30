@@ -59,7 +59,9 @@ export const runForegroundReview = async (
     signal.throwIfAborted();
     const skill = await dependencies.prepareSkill(options.packageDirectory, paths.cacheDirectory);
     signal.throwIfAborted();
-    store = dependencies.openStore(paths.databaseFile);
+    store = dependencies.openStore(paths.databaseFile, {
+      onMigration: event => { log({ level: event.kind === "failed" ? "error" : "info", phase: `sqlite-migration-${event.kind}`, message: JSON.stringify(event) }); },
+    });
     const client = dependencies.createClient();
     const git = dependencies.createGit({ temporaryDirectory: paths.temporaryDirectory, client });
     const processes = dependencies.createProcesses(lock.previousProcessesExcluded ? { previousProcessesExcluded: true } : {});

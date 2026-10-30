@@ -117,8 +117,10 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 `worker setup` 在参数分派后加载配置和有界只读环境检查，选择 agent 与既有 Project 后确认原子保存；它不启动 worker、Herdr 或 native agent，不创建 SQLite、clone 或 claim。`worker run` 加载前台配置、SQLite、Git、Herdr 与协调循环，读取固定状态根及启动时配置，不触发 review 配置引导。`worker attach` 只加载私有 Herdr 客户端入口，在交互式终端连接已有会话，不读取凭据、SQLite、worker 锁或调用服务端。独立有界请求、客户端连接与常驻命令生命周期分开，worker 取消先进入原任务收尾；详细行为由[worker 需求](daynight-worker.md)拥有。
 
 `review add-repo` 与 review 首次引导只写配置。按 C6 完成必要的配置引导后，
-`review list` 与 `review ls` 只读取配置及已存数据库，
-`review run` 独立持有审查运行时和信号生命周期，具体保证由 review 需求定义。
+`review list` 与 `review ls` 读取配置及已存数据库的业务快照，受支持旧格式在读取前自动升级；
+当前格式保持只读且不取得实例锁。`review run` 独立持有审查运行时和信号生命周期，
+具体保证由 review 需求定义。各本地业务数据库的独立版本、迁移原子性、准入和失败结果由
+[SQLite 升级需求](cli-sqlite-migrations.md)定义。
 `project list/show` 和显式 `--repo` 的创建只加载 server 配置和 HTTP 能力；省略
 `--repo` 的创建才加载 Git 发现当前 worktree 的有效 `origin`。所有 project 操作
 均不读取或改写仓库本地关联、不写 ignore 规则。创建在完整分页比较仓库身份后，
@@ -136,8 +138,8 @@ review 的目录 `--path` 保留原有拒绝规则。`project create` 接受一�
 由[project/task 需求](daynight-project-task.md#pt7-task-命令与更新语义)拥有。`task` 显式指定 project
 时只需要 server 配置和 HTTP；自动选择时才加载 Git 与仓库关联模块。任务写入必须晚于本地
 关联准备成功，完整行为由[project/task 需求](daynight-project-task.md)定义。
-客户端的命令和源码结构调整不改变 review 配置与状态的现有格式和位置，不迁移、
-重分区或重新初始化这些数据。新增命令通过自己的模块接入；它的业务依赖不能成为
+命令和源码布局调整本身不改变 review 配置与状态的位置及身份。必要的数据库格式转换由所属 store 的
+独立版本序列负责，不能因布局调整重分区或重新初始化业务数据。新增命令通过自己的模块接入；它的业务依赖不能成为
 其他命令的启动前提。[project/task 需求](daynight-project-task.md)规定服务 API
 命令；其独立配置校验、仓库本地关联和远端操作继续遵守这些加载与数据归属要求。
 附件 `put/list/read/remove` 的文件语义由[附件需求](daynight-task-attachments.md#cli)

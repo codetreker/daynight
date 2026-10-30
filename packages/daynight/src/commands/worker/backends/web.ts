@@ -88,9 +88,11 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         } else {
           if (execution.ticketPath === null) throw new Error("The original launch ticket is missing; cleanup retains its unknown native writer.");
           const ticket = await readLaunchTicket(options.homeDirectory, execution.launchId);
-          let reachable = false;
-          try { const response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); task = remember(task, response.snapshot); reachable = true; }
+          let response: Awaited<ReturnType<typeof request>> | undefined;
+          try { response = await request(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); }
           catch { const saved = readControllerSnapshot(journal(task)); if (saved !== null) task = remember(task, saved); }
+          const reachable = response !== undefined;
+          if (response !== undefined) task = remember(task, response.snapshot);
           const proof = task.webExecution!.controllerProcess;
           if (proof === null) throw new Error("The original controller process proof is missing; cleanup cannot infer stop.");
           let stopped = await confirmControllerProcessesStopped(proof, task.webExecution!.nativeProcesses);

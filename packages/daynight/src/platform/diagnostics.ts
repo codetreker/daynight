@@ -1,4 +1,7 @@
+import { formatSqliteError, SqliteAccessError } from "./sqlite-error.js";
+
 export const formatError = (error: unknown): string => {
+  if (error instanceof SqliteAccessError) return formatSqliteError(error);
   if (!(error instanceof Error)) {
     return String(error);
   }

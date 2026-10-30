@@ -18,7 +18,7 @@ import { createWorkerCoordinator } from "./coordinator.js";
 import type { WorkerRepositoryAssignment } from "./coordinator.js";
 import { submitWorkerControl } from "./control.js";
 import type { WorkerControlRequest } from "./control.js";
-import { createWorkerDiagnostics } from "./diagnostics.js";
+import { createWorkerDiagnostics, workerSqliteMigrationEvent } from "./diagnostics.js";
 import { isWorkerCancellation } from "./execution.js";
 import { createWorkerHerdr } from "./herdr.js";
 import { ensureWorkerIdentity } from "./identity.js";
@@ -82,7 +82,7 @@ const throwFailures = (failures: readonly unknown[]): void => {
 
 
 const createWebRuntime = async (options: { homeDirectory: string; packageDirectory: string }, paths: WorkerPaths, store: ReturnType<typeof openWorkerStore>, git: ReturnType<typeof createWorkerGitManager>, serverUrl: string, serverToken: string, platform: TaskPlatform, emit: (event: WorkerEvent) => void) => {
-  const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"));
+  const webStore = openWebExecutionStore(path.join(paths.workerDirectory, "web-executions.sqlite"), { onMigration: event => { emit(workerSqliteMigrationEvent(event)); } });
   try {
     const buildPrompt = await createWorkerPromptBuilder(options.packageDirectory);
     const api = createWorkerSessionApi(serverUrl, serverToken);
@@ -95,7 +95,10 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
       emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
     });
     return { webStore, webBackend, launcher, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
-  } catch (error) { webStore.close(); throw error; }
+  } catch (error) {
+    try { webStore.close(); } catch (closeError) { throw new AggregateError([error, closeError], "Web runtime initialization and store shutdown failed."); }
+    throw error;
+  }
 };
 
 export const runWorker = async (options: {

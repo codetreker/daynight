@@ -1,9 +1,10 @@
 import path from "node:path";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { acquireInstanceLock } from "../../../src/commands/review/runtime.js";
 import { openStore, readReviewListingSnapshot, type Store } from "../../../src/commands/review/store.js";
+import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import type { PullRequestObservation, ReviewState } from "../../../src/commands/review/model.js";
 
 vi.mock("node:fs", async (importOriginal) => {
@@ -18,6 +19,14 @@ const connections = new Set<Database.Database>();
 const repository = { host: "github.com", githubId: "42" };
 const uuid = (number: number): string => `00000000-0000-4000-8000-${number.toString().padStart(12, "0")}`;
 const excluded = { processesExcluded: true } as const;
+const readSnapshot = (databaseFile: string) => readReviewListingSnapshot({
+  databaseFile, lockFile: path.join(path.dirname(databaseFile), "instance.lock"),
+}, { onMigration: () => {} });
+const schemaV1 = readFileSync(new URL("./fixtures/schema-v1.sql", import.meta.url), "utf8");
+const causeTree = (error: unknown): unknown[] => {
+  if (!(error instanceof Error)) return [error];
+  return [error, ...(error.cause === undefined ? [] : causeTree(error.cause)), ...(error instanceof AggregateError ? error.errors.flatMap(causeTree) : [])];
+};
 
 const directory = (): string => {
   mkdirSync(fixtureRoot, { recursive: true });
@@ -33,7 +42,7 @@ const connect = (file: string): Database.Database => {
 const fixture = () => {
   const location = directory();
   const file = path.join(location, "state.sqlite");
-  const store = openStore(file);
+  const store = openStore(file, { onMigration: () => {} });
   stores.add(store);
   store.registerRepository({ ...repository, remote: "https://github.com/owner/repo.git", localPath: path.join(location, "repo") });
   store.applyRepositoryPoll(repository, { kind: "initialize", startPrNumber: 100 }, 10);
@@ -66,21 +75,21 @@ afterEach(() => {
   for (const location of directories.splice(0)) rmSync(location, { recursive: true });
 });
 
-describe("read-only review listing snapshots", () => {
+describe("review listing snapshots and automatic upgrades", () => {
   it("returns null for a missing database without creating files or directories", () => {
     const location = directory();
-    expect(readReviewListingSnapshot(path.join(location, "state.sqlite"))).toBeNull();
-    expect(readReviewListingSnapshot(path.join(location, "missing", "state.sqlite"))).toBeNull();
+    expect(readSnapshot(path.join(location, "state.sqlite"))).toBeNull();
+    expect(readSnapshot(path.join(location, "missing", "state.sqlite"))).toBeNull();
     expect(readdirSync(location)).toEqual([]);
-    expect(() => readReviewListingSnapshot("state.sqlite")).toThrow("must be absolute");
+    expect(() => readSnapshot("state.sqlite")).toThrow("must be absolute");
   });
 
   it("propagates a filesystem failure rather than reporting an absent database", () => {
     const location = directory();
     const file = path.join(location, "file");
     writeFileSync(file, "occupied");
-    expect(() => readReviewListingSnapshot(path.join(file, "state.sqlite"))).toThrow();
-    expect(() => readReviewListingSnapshot(location)).toThrow();
+    expect(() => readSnapshot(path.join(file, "state.sqlite"))).toThrow();
+    expect(() => readSnapshot(location)).toThrow();
   });
 
   it("rejects a file ancestor when the host reports Windows-style ENOENT", () => {
@@ -92,7 +101,14 @@ describe("read-only review listing snapshots", () => {
       expect(target).toBe(databaseFile);
       throw Object.assign(new Error("Windows reports a missing path below a file"), { code: "ENOENT" });
     });
-    expect(() => readReviewListingSnapshot(databaseFile)).toThrow(`ancestor ${file} is not a directory`);
+    let failure: unknown;
+    try { readSnapshot(databaseFile); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(SqliteAccessError);
+    expect(failure).toMatchObject({
+      kind: "migration-failed", context: { database: "Review", phase: "inspect-path", file: databaseFile },
+    });
+    expect((failure as SqliteAccessError).cause).toBeInstanceOf(Error);
+    expect(((failure as SqliteAccessError).cause as Error).message).toContain("ancestor is not a directory");
     expect(vi.mocked(lstatSync).mock.calls.map(([target]) => target)).toEqual([databaseFile, file]);
   });
 
@@ -105,8 +121,8 @@ describe("read-only review listing snapshots", () => {
     const linkType = process.platform === "win32" ? "junction" : "dir";
     symlinkSync(target, validLink, linkType);
     symlinkSync(path.join(location, "absent-target"), brokenLink, linkType);
-    expect(readReviewListingSnapshot(path.join(validLink, "missing", "state.sqlite"))).toBeNull();
-    expect(() => readReviewListingSnapshot(path.join(brokenLink, "state.sqlite"))).toThrow();
+    expect(readSnapshot(path.join(validLink, "missing", "state.sqlite"))).toBeNull();
+    expect(() => readSnapshot(path.join(brokenLink, "state.sqlite"))).toThrow();
     expect(readdirSync(target)).toEqual([]);
   });
 
@@ -115,11 +131,25 @@ describe("read-only review listing snapshots", () => {
     const databaseFile = path.join(location, "state.sqlite");
     const rootError = Object.assign(new Error("filesystem root is unavailable"), { code: "ENOENT" });
     vi.mocked(lstatSync).mockImplementation(() => { throw rootError; });
-    expect(() => readReviewListingSnapshot(databaseFile)).toThrow(rootError);
+    let rootFailure: unknown;
+    try { readSnapshot(databaseFile); } catch (error) { rootFailure = error; }
+    expect(rootFailure).toBeInstanceOf(SqliteAccessError);
+    expect(rootFailure).toMatchObject({
+      kind: "migration-failed", context: { database: "Review", phase: "inspect-path", file: databaseFile },
+    });
+    expect((rootFailure as SqliteAccessError).cause).toBe(rootError);
+    expect((rootFailure as SqliteAccessError).cause).toMatchObject({ code: "ENOENT" });
     expect(vi.mocked(lstatSync).mock.calls.at(-1)?.[0]).toBe(path.parse(databaseFile).root);
     const permissionError = Object.assign(new Error("permission denied"), { code: "EACCES" });
     vi.mocked(lstatSync).mockImplementation(() => { throw permissionError; });
-    expect(() => readReviewListingSnapshot(databaseFile)).toThrow(permissionError);
+    let permissionFailure: unknown;
+    try { readSnapshot(databaseFile); } catch (error) { permissionFailure = error; }
+    expect(permissionFailure).toBeInstanceOf(SqliteAccessError);
+    expect(permissionFailure).toMatchObject({
+      kind: "migration-failed", context: { database: "Review", phase: "inspect-path", file: databaseFile },
+    });
+    expect((permissionFailure as SqliteAccessError).cause).toBe(permissionError);
+    expect((permissionFailure as SqliteAccessError).cause).toMatchObject({ code: "EACCES" });
     expect(readdirSync(location)).toEqual([]);
   });
 
@@ -135,7 +165,7 @@ describe("read-only review listing snapshots", () => {
     store.retryReview({ reviewId: failed.id, attempt: 1 }, excluded, { error: "attempt exhausted", retryAt: 60 }, 50);
     observe(104); reserve(104); observe(104, { state: "closed" }, 60);
     observe(105); reserve(105); observe(105, { state: "merged" }, 60);
-    const snapshot = readReviewListingSnapshot(file);
+    const snapshot = readSnapshot(file);
     expect(snapshot?.repositories).toEqual(store.listRepositories());
     expect(snapshot?.pullRequests.map(({ number, draft }) => ({ number, draft }))).toEqual([
       { number: 101, draft: true }, { number: 102, draft: false }, { number: 103, draft: false },
@@ -159,7 +189,7 @@ describe("read-only review listing snapshots", () => {
       if (status === "interrupted") store.markInterrupted(previous.id, "execution interrupted", 70);
     }
     observe(101, { headSha: "third-head", baseRef: "release" }, 80);
-    const snapshot = readReviewListingSnapshot(file);
+    const snapshot = readSnapshot(file);
     expect(snapshot?.pullRequests[0]).toMatchObject({ desiredRevision: 3, headSha: "third-head", baseRef: "release" });
     expect(snapshot?.reviews).toEqual([store.getReview(previous.id)]);
     expect(snapshot?.reviews[0]?.status).toBe(status);
@@ -176,7 +206,7 @@ describe("read-only review listing snapshots", () => {
     insert.run(uuid(100), 2, "head-101", "main");
     insert.run(uuid(101), 1, "wrong-head", "main");
     insert.run(uuid(102), 1, "head-101", "wrong-base");
-    expect(readReviewListingSnapshot(file)?.reviews).toEqual([store.getReview(completed.id)]);
+    expect(readSnapshot(file)?.reviews).toEqual([store.getReview(completed.id)]);
   });
 
   it("leaves persisted state, schema and review recovery statuses unchanged", () => {
@@ -194,8 +224,8 @@ describe("read-only review listing snapshots", () => {
       reviews: sql.prepare("SELECT * FROM reviews ORDER BY id").all(),
     });
     const before = persisted();
-    expect(readReviewListingSnapshot(file)?.reviews[0]).toMatchObject({ status: "interrupted", lastError: "original interruption" });
-    expect(readReviewListingSnapshot(file)?.repositories[0]?.lastPollError).toBe("original poll error");
+    expect(readSnapshot(file)?.reviews[0]).toMatchObject({ status: "interrupted", lastError: "original interruption" });
+    expect(readSnapshot(file)?.repositories[0]?.lastPollError).toBe("original poll error");
     expect(persisted()).toEqual(before);
   });
 
@@ -208,7 +238,7 @@ describe("read-only review listing snapshots", () => {
     writer.exec("BEGIN IMMEDIATE");
     try {
       writer.exec("UPDATE repositories SET last_poll_at = 999; UPDATE pull_requests SET head_sha = 'uncommitted-head', desired_revision = 2; UPDATE reviews SET last_error = 'uncommitted-error'");
-      const snapshot = readReviewListingSnapshot(file);
+      const snapshot = readSnapshot(file);
       expect(snapshot?.repositories[0]?.lastPollAt).toBe(10);
       expect(snapshot?.pullRequests[0]?.headSha).toBe("head-101");
       expect(snapshot?.reviews[0]?.lastError).toBeNull();
@@ -242,7 +272,7 @@ describe("read-only review listing snapshots", () => {
       });
       return statement;
     });
-    const snapshot = readReviewListingSnapshot(file);
+    const snapshot = readSnapshot(file);
     expect(committed).toBe(true);
     expect(store.getRepository(repository)?.lastPollAt).toBe(100);
     expect(store.getReview(preparing.id)?.status).toBe("superseded");
@@ -251,14 +281,57 @@ describe("read-only review listing snapshots", () => {
     expect(snapshot?.reviews[0]).toMatchObject({ id: preparing.id, status: "preparing" });
   });
 
-  it("reads schema1 without creating the publication table or changing the schema version", () => {
-    const { file } = fixture();
+  it("automatically upgrades an independent schema1 fixture and keeps the original listing records", () => {
+    const location = directory();
+    const file = path.join(location, "state.sqlite");
     const sql = connect(file);
-    sql.exec("DROP TABLE review_publications; PRAGMA user_version = 1");
-    const before = sql.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all();
-    expect(readReviewListingSnapshot(file)).not.toBeNull();
+    sql.exec(schemaV1);
+    sql.exec(`INSERT INTO repositories VALUES ('github.com','42','https://github.com/owner/repo.git','/repo',100,10,20,NULL);
+      INSERT INTO pull_requests(host,github_id,number,state,draft,head_sha,base_ref,base_sha,desired_revision,observed_at)
+        VALUES('github.com','42',101,'open',0,'head','main','base',1,20);
+      INSERT INTO reviews(id,host,github_id,number,revision,head_sha,base_ref,status,max_attempts,created_at,updated_at)
+        VALUES('original-review','github.com','42',101,1,'head','main','preparing',3,20,20)`);
+    const snapshot = readSnapshot(file);
+    expect(snapshot?.pullRequests[0]).toMatchObject({ number: 101, headSha: "head" });
+    expect(snapshot?.reviews[0]).toMatchObject({ id: "original-review", status: "preparing" });
+    expect(sql.pragma("user_version", { simple: true })).toBe(2);
+    expect(sql.prepare("SELECT phase, identity_format, publisher_id FROM review_publications").all()).toEqual([
+      { phase: "prepared", identity_format: "legacy", publisher_id: null },
+    ]);
+    expect(existsSync(path.join(location, "instance.lock"))).toBe(false);
+  });
+
+  it.each(["active", "dead", "invalid"] as const)("preserves a %s predecessor instance lock while an old format requires migration", (kind) => {
+    const location = directory();
+    const file = path.join(location, "state.sqlite");
+    const sql = connect(file); sql.exec(schemaV1);
+    const lockFile = path.join(location, "instance.lock");
+    const lock = kind === "invalid" ? "unreadable predecessor metadata" : JSON.stringify({ owner: "original-owner", pid: kind === "active" ? process.pid : 2147483647, startedAt: new Date(0).toISOString() });
+    writeFileSync(lockFile, lock);
+    let failure: unknown;
+    try { readSnapshot(file); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(SqliteAccessError);
+    expect((failure as SqliteAccessError).kind).toBe("upgrade-blocked");
+    expect(readFileSync(lockFile, "utf8")).toBe(lock);
     expect(sql.pragma("user_version", { simple: true })).toBe(1);
-    expect(sql.prepare("SELECT name, sql FROM sqlite_master ORDER BY name").all()).toEqual(before);
+    expect(sql.prepare("SELECT name FROM sqlite_schema WHERE name='review_publications'").get()).toBeUndefined();
+  });
+
+  it.each(["missing active index", "changed state constraint"] as const)("rejects schema1 with a %s before attempting migration", (alteration) => {
+    const file = path.join(directory(), "state.sqlite");
+    const sql = connect(file);
+    sql.exec(alteration === "changed state constraint" ? schemaV1.replace("('open', 'closed', 'merged')", "('OPEN', 'closed', 'merged')") : schemaV1);
+    if (alteration === "missing active index") sql.exec("DROP INDEX reviews_one_active_per_pr");
+    expect(() => readSnapshot(file)).toThrow("invalid-format");
+    expect(sql.pragma("user_version", { simple: true })).toBe(1);
+    expect(sql.prepare("SELECT name FROM sqlite_schema WHERE name='review_publications'").get()).toBeUndefined();
+  });
+
+  it("does not mistake an unrecognized sqlite-prefixed user index for an internal object", () => {
+    const { file } = fixture();
+    const sql = connect(file); sql.exec("CREATE INDEX sqliteXcustom ON reviews(id)");
+    expect(() => readSnapshot(file)).toThrow("invalid-format");
+    expect(sql.prepare("SELECT name FROM sqlite_schema WHERE name='sqliteXcustom'").get()).toEqual({ name: "sqliteXcustom" });
   });
 
   it.each([0, 3])("rejects existing schema version %i without migration and closes the reader", (version) => {
@@ -267,7 +340,7 @@ describe("read-only review listing snapshots", () => {
     sql.pragma(`user_version = ${version}`);
     sql.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('preserved')");
     const close = vi.spyOn(Database.prototype, "close");
-    expect(() => readReviewListingSnapshot(file)).toThrow(`found version ${version}`);
+    expect(() => readSnapshot(file)).toThrow(SqliteAccessError);
     expect(close).toHaveBeenCalledTimes(1);
     expect(sql.pragma("user_version", { simple: true })).toBe(version);
     expect(sql.prepare("SELECT value FROM sentinel").get()).toEqual({ value: "preserved" });
@@ -278,7 +351,10 @@ describe("read-only review listing snapshots", () => {
     const file = path.join(directory(), "state.sqlite");
     writeFileSync(file, "This is not a SQLite database.");
     const close = vi.spyOn(Database.prototype, "close");
-    expect(() => readReviewListingSnapshot(file)).toThrow("not a database");
+    let failure: unknown;
+    try { readSnapshot(file); } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(SqliteAccessError);
+    expect(causeTree(failure).some(error => error instanceof Error && error.message.includes("not a database"))).toBe(true);
     expect(close).toHaveBeenCalledTimes(1);
   });
 
@@ -293,15 +369,17 @@ describe("read-only review listing snapshots", () => {
       return this;
     });
     if (!failOperation) {
-      expect(() => readReviewListingSnapshot(file)).toThrow(cleanupError);
+      let failure: unknown;
+      try { readSnapshot(file); } catch (error) { failure = error; }
+      expect(failure).toBeInstanceOf(SqliteAccessError);
+      expect(causeTree(failure)).toContain(cleanupError);
     } else {
       let error: unknown;
-      try { readReviewListingSnapshot(file); } catch (caught) { error = caught; }
-      expect(error).toBeInstanceOf(AggregateError);
-      const errors = (error as AggregateError).errors as unknown[];
-      expect(errors[0]).toBeInstanceOf(Error);
-      expect((errors[0] as Error).message).toContain("found version 3");
-      expect(errors[1]).toBe(cleanupError);
+      try { readSnapshot(file); } catch (caught) { error = caught; }
+      expect(error).toBeInstanceOf(SqliteAccessError);
+      const causes = causeTree(error);
+      expect(causes.some(cause => cause instanceof SqliteAccessError && cause.kind === "unsupported-version")).toBe(true);
+      expect(causes).toContain(cleanupError);
     }
   });
 });

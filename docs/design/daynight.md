@@ -230,8 +230,10 @@ review 的配置和路径类型明确以 `ReviewConfiguration`、`ReviewPaths` �
 `commands/review/model.ts` 持有领域和安全恢复证明类型，store 专注持久化；
 `polling.ts` 组合远端只读观测与本地原子状态提交，GitHub 适配器专注远端查询。
 [review 模块职责表](daynight-review.md#单进程与普通模块)解释具体职责及执行不变量。
-共享的 `platform/` 承载诊断、文件系统和无业务副作用的 bundle 捕获/entrypoint 校验；
-这些函数不导入命令模块。review 继续拥有快照、哈希和执行协议。
+共享的 `platform/` 承载诊断、文件系统、SQLite 格式执行与连接生命周期，以及无业务副作用的 bundle
+捕获/entrypoint 校验；这些函数不导入命令模块。各 store 明确提供自己的版本序列和升级准入，公共层不发现
+数据库或维护全局版本。[SQLite 升级设计](cli-sqlite-migrations.md)拥有实际事务和关闭规则；review 继续拥有
+快照、哈希和执行协议。
 
 源码测试按 `test/cli/`、`test/config/`、`test/api/`、`test/commands/review/`、
 `test/commands/update/`、`test/commands/completion/`、`test/commands/project/`、
@@ -356,8 +358,8 @@ review 的配置仍为 `~/.daynight/config.yml`，SQLite 仍为 `~/.daynight/sta
 和 `review` 组成；全部 review 设置位于 `review` mapping，详见
 [review 配置](daynight-review.md#使用方式与配置)。状态路径和持久化身份保持不变。
 review 运行时通过显式 SQLite 迁移从版本 1 升到版本 2，保存远端发布证据和一次性
-conversation 后续轮次，保留旧边界、预算、会话、进程证据及 worktree；只读列表接受
-两个版本并不执行迁移。业务模块归属与磁盘目录归属分别管理，源码整理本身不改变
+conversation 后续轮次，保留旧边界、预算、会话、进程证据及 worktree。列表访问旧格式时也自动完成受支持
+迁移，再重开当前版本 2 的只读快照；当前格式不取得维护锁。业务模块归属与磁盘目录归属分别管理，源码整理本身不改变
 持久化身份。详细格式、验证、锁及恢复规则由
 [review 设计](daynight-review.md#本地数据与-sqlite)统一定义。
 

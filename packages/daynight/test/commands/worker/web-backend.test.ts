@@ -120,3 +120,22 @@ it("preserves an existing cleanup deadline and gives an expired first terminal c
   expect(request).not.toHaveBeenCalled();
   expect(f.git.removeWorktree).toHaveBeenCalledOnce();
 });
+
+it("cleanup propagates a local snapshot write failure without taking the IPC fallback", async () => {
+  const f = await fixture();
+  let task = f.store.bindWorktree(f.identity, await f.git.prepareWorktree({ projectId: f.identity.projectId, repoUrl: f.identity.repoUrl, localPath: f.identity.localPath }, f.identity, {} as never), 2);
+  task = f.store.initializeWebExecution(task, 3);
+  const execution = task.webExecution!, proof = { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) };
+  task = f.store.updateWebExecution(task, { sessionId: randomUUID(), initialPrompt: "original", launchSubmission: "acknowledged", controllerProcess: proof }, 4);
+  const ticket: ControllerLaunchTicket = { schemaVersion: 1, launchId: execution.launchId, executionId: execution.executionId, controllerId: execution.controllerId, controllerInstanceId: execution.controllerInstanceId, sessionId: task.webExecution!.sessionId!, executionGeneration: "1", serverOrigin: task.serverOrigin, projectId: task.projectId, taskId: task.taskId, claimId: task.claimId, workerId: task.workerId, worktreeId: task.worktreeId, userId: task.userId!, provider: "codex", cwd: f.home, nativeHome: path.join(f.home, ".codex"), configuration: task.configuration!, initialOperationId: execution.initialOperationId, initialPrompt: "original", resumeNativeSessionId: null, credentialFile: path.join(f.home, "grant.json"), ipcEndpoint: path.join(f.home, "c.sock"), ipcSecret: "a".repeat(64), createdAt: new Date().toISOString() };
+  const { writeLaunchTicket } = await import("../../../src/commands/controller/launch-ticket.js");
+  task = f.store.updateWebExecution(task, { ticketPath: await writeLaunchTicket(f.home, ticket) }, 5);
+  const snapshot: ControllerSnapshot = { executionId: execution.executionId, claimId: task.claimId, sessionId: ticket.sessionId, executionGeneration: "1", controllerInstanceId: execution.controllerInstanceId, lifecycle: "ready", nativeSessionId: null, initialInputState: "confirmed", activity: "idle", currentTurnId: null, capabilities: { send: true, steer: true, cancel: true, respond: true }, controllerProcess: proof, nativeProcesses: [], nativeStopped: false, stoppedAt: null, error: null };
+  const failure = new Error("local execution write failed"), fallback = vi.spyOn(lifecycle, "readControllerSnapshot"), stopping = vi.spyOn(processProof, "confirmControllerProcessesStopped");
+  vi.spyOn(f.store, "updateWebExecution").mockImplementation(() => { throw failure; });
+  const request = vi.fn<typeof requestController>().mockResolvedValue({ requestId: randomUUID(), ok: true, snapshot });
+  const backend = createWebExecutionBackend({ homeDirectory: f.home, store: f.store, git: f.git, launcher: { prepare: vi.fn(), launch: vi.fn(), refreshGrant: vi.fn() }, platform: "macos", buildPrompt: () => "managed", emit: () => {}, now: () => 6, request });
+  await expect(backend.cleanup(task, "shutdown", 100)).rejects.toBe(failure);
+  expect(request).toHaveBeenCalledOnce(); expect(fallback).not.toHaveBeenCalled(); expect(stopping).not.toHaveBeenCalled();
+  expect(f.store.getTask(task)?.cleanup).toMatchObject({ input: "not-submitted", agentStopped: false, backendResourcesClosed: false });
+});

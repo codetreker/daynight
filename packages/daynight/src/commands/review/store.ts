@@ -1,6 +1,10 @@
 import path from "node:path";
-import { lstatSync, statSync } from "node:fs";
-import Database from "better-sqlite3";
+import type Database from "better-sqlite3";
+import { acquireMaintenanceLock } from "../../platform/instance-lock.js";
+import { closeSqliteDatabase, openSqliteDatabase, readSqliteDatabase, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
+import { reviewFormat } from "./store-format.js";
+import type { ReviewPaths } from "./paths.js";
 import type { PublicationIdentityFormat, ReviewPublication } from "./publication.js";
 
 import type { RepositoryIdentity, PullRequestIdentity, RepositoryState, PullRequestObservation, RepositoryPollUpdate, PullRequestState, ReviewStatus, ReviewState, ReviewCandidate, ReviewListingSnapshot, AttemptIdentity, OperationsStopped, ProcessesExcluded } from "./model.js";
@@ -57,165 +61,53 @@ const requireExcluded = (proof: ProcessesExcluded): void => {
 
 export type ReviewPublicationState = { phase: "prepared" | "pending" | "verified" | "legacy"; publisherId: string | null; identityFormat: PublicationIdentityFormat; outcome: "approved" | "commented" | null; remoteReviewId: string | null; threadIds: string[]; followupConsumed: boolean };
 const publicationColumns = `phase, publisher_id AS publisherId, identity_format AS identityFormat, outcome, remote_review_id AS remoteReviewId, remote_thread_ids AS threadIds, followup_consumed AS followupConsumed`;
-const publicationSchema = `
-  CREATE TABLE review_publications (
-    review_id TEXT PRIMARY KEY,
-    phase TEXT NOT NULL CHECK(phase IN ('prepared', 'pending', 'verified', 'legacy')),
-    identity_format TEXT NOT NULL DEFAULT 'line' CHECK(identity_format IN ('line', 'legacy')),
-    publisher_id TEXT CHECK(phase = 'legacy' OR identity_format = 'legacy' OR publisher_id IS NOT NULL),
-    outcome TEXT CHECK(outcome IN ('approved', 'commented')),
-    remote_review_id TEXT,
-    remote_thread_ids TEXT NOT NULL DEFAULT '[]',
-    followup_consumed INTEGER NOT NULL DEFAULT 0 CHECK(followup_consumed IN (0, 1)),
-    CHECK((phase = 'verified') = (outcome IS NOT NULL AND remote_review_id IS NOT NULL))
-  ) STRICT;
-`;
-const schema = `
-  CREATE TABLE repositories (
-    host TEXT NOT NULL,
-    github_id TEXT NOT NULL,
-    remote TEXT NOT NULL,
-    local_path TEXT NOT NULL,
-    start_pr_no INTEGER CHECK(start_pr_no >= 0),
-    initialized_at INTEGER,
-    last_poll_at INTEGER,
-    last_poll_error TEXT,
-    PRIMARY KEY(host, github_id),
-    CHECK((start_pr_no IS NULL) = (initialized_at IS NULL))
-  ) STRICT;
-  CREATE TABLE pull_requests (
-    host TEXT NOT NULL,
-    github_id TEXT NOT NULL,
-    number INTEGER NOT NULL CHECK(number > 0),
-    state TEXT NOT NULL CHECK(state IN ('open', 'closed', 'merged')),
-    draft INTEGER NOT NULL CHECK(draft IN (0, 1)),
-    head_sha TEXT NOT NULL,
-    base_ref TEXT NOT NULL,
-    base_sha TEXT NOT NULL,
-    desired_revision INTEGER NOT NULL CHECK(desired_revision > 0),
-    completed_revision INTEGER NOT NULL DEFAULT 0 CHECK(completed_revision >= 0 AND completed_revision <= desired_revision),
-    session_id TEXT,
-    session_established INTEGER NOT NULL DEFAULT 0 CHECK(session_established IN (0, 1)),
-    worktree_path TEXT,
-    cleanup_pending INTEGER NOT NULL DEFAULT 0 CHECK(cleanup_pending IN (0, 1)),
-    cleanup_error TEXT,
-    observed_at INTEGER NOT NULL,
-    PRIMARY KEY(host, github_id, number),
-    CHECK(session_established = 0 OR session_id IS NOT NULL),
-    CHECK(cleanup_pending = 0 OR worktree_path IS NOT NULL)
-  ) STRICT;
-  CREATE TABLE reviews (
-    id TEXT PRIMARY KEY,
-    host TEXT NOT NULL,
-    github_id TEXT NOT NULL,
-    number INTEGER NOT NULL,
-    revision INTEGER NOT NULL CHECK(revision > 0),
-    head_sha TEXT NOT NULL,
-    base_ref TEXT NOT NULL,
-    base_sha TEXT,
-    status TEXT NOT NULL CHECK(status IN ('preparing', 'running', 'retry_wait', 'completed', 'failed', 'interrupted', 'superseded')),
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),
-    max_attempts INTEGER NOT NULL CHECK(max_attempts > 0 AND attempt_count <= max_attempts),
-    retry_at INTEGER,
-    process_owner TEXT,
-    process_id INTEGER,
-    process_identity TEXT,
-    stdout_log_path TEXT,
-    stderr_log_path TEXT,
-    last_error TEXT,
-    created_at INTEGER NOT NULL,
-    updated_at INTEGER NOT NULL,
-    CHECK((status = 'retry_wait') = (retry_at IS NOT NULL)),
-    CHECK(status <> 'running' OR (base_sha IS NOT NULL AND attempt_count > 0 AND process_owner IS NOT NULL AND stdout_log_path IS NOT NULL AND stderr_log_path IS NOT NULL)),
-    CHECK((process_id IS NULL) = (process_identity IS NULL))
-  ) STRICT;
-  CREATE UNIQUE INDEX reviews_one_active_per_pr ON reviews(host, github_id, number)
-    WHERE status IN (${activeStatuses});
-  CREATE INDEX reviews_revision ON reviews(host, github_id, number, revision);
-  ${publicationSchema}
-  PRAGMA user_version = 2;
-`;
+type ListingPaths = Pick<ReviewPaths, "databaseFile" | "lockFile">;
 
-const reviewDatabaseIsMissing = (databaseFile: string): boolean => {
-  // Windows may report ENOENT for a file ancestor; ordinary absence requires an existing directory.
-  // https://github.com/nodejs/node/blob/955266bfdd854cd280dffd47548673914484e4c0/deps/uv/src/win/error.c#L134-L142
-  let candidate = databaseFile;
-  while (true) {
-    let status;
-    try {
-      status = lstatSync(candidate);
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-      const parent = path.dirname(candidate);
-      if (parent === candidate) throw error;
-      candidate = parent;
-      continue;
-    }
-    if (candidate === databaseFile) return false;
-    const ancestor = status.isSymbolicLink() ? statSync(candidate) : status;
-    if (!ancestor.isDirectory()) throw new Error(`The SQLite database path ancestor ${candidate} is not a directory.`);
-    return true;
-  }
+export const readReviewListingSnapshot = (
+  paths: ListingPaths,
+  options: { onMigration?: SqliteMigrationReporter } = {},
+): ReviewListingSnapshot | null => {
+  if (!path.isAbsolute(paths.databaseFile) || !path.isAbsolute(paths.lockFile)) throw new Error("The SQLite database and instance-lock paths must be absolute.");
+  return readSqliteDatabase<ReviewListingSnapshot | null>({
+    file: paths.databaseFile, format: reviewFormat, onMissing: () => null,
+    ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
+    acquireMaintenance: () => acquireMaintenanceLock({
+      lockFile: paths.lockFile, ownershipGateFile: `${paths.lockFile}.sqlite`, gateFileMustExist: false,
+    }),
+  }, (db: Database.Database): ReviewListingSnapshot => {
+    const repositories = db.prepare(`SELECT ${repositoryColumns} FROM repositories ORDER BY host, github_id`).all() as RepositoryState[];
+    const pullRequests = (db.prepare(`SELECT ${pullRequestColumns} FROM pull_requests WHERE state = 'open' ORDER BY host, github_id, number`)
+      .all() as PullRequestRow[]).map(asPullRequest);
+    const reviews = db.prepare(`SELECT ${reviewColumns} FROM reviews r
+      WHERE EXISTS(SELECT 1 FROM pull_requests p WHERE p.host = r.host AND p.github_id = r.github_id AND p.number = r.number AND p.state = 'open'
+        AND ((r.revision = p.desired_revision AND r.head_sha = p.head_sha AND r.base_ref = p.base_ref) OR r.status IN (${activeStatuses})))
+      ORDER BY host, github_id, number, created_at, id`).all() as ReviewState[];
+    return { repositories, pullRequests, reviews };
+  });
 };
 
-export const readReviewListingSnapshot = (databaseFile: string): ReviewListingSnapshot | null => {
-  if (!path.isAbsolute(databaseFile)) throw new Error("The SQLite database path must be absolute.");
-  if (reviewDatabaseIsMissing(databaseFile)) return null;
-  const db = new Database(databaseFile, { readonly: true, fileMustExist: true, timeout: 5000 });
-  let operationFailed = false;
-  let operationError: unknown;
-  try {
-    return db.transaction(() => {
-      const version = db.pragma("user_version", { simple: true }) as number;
-      if (version !== 1 && version !== 2) throw new Error(`Review listing requires SQLite schema version 1 or 2; found version ${version}.`);
-      const repositories = db.prepare(`SELECT ${repositoryColumns} FROM repositories ORDER BY host, github_id`).all() as RepositoryState[];
-      const pullRequests = (db.prepare(`SELECT ${pullRequestColumns} FROM pull_requests WHERE state = 'open' ORDER BY host, github_id, number`)
-        .all() as PullRequestRow[]).map(asPullRequest);
-      const reviews = db.prepare(`SELECT ${reviewColumns} FROM reviews r
-        WHERE EXISTS(SELECT 1 FROM pull_requests p WHERE p.host = r.host AND p.github_id = r.github_id AND p.number = r.number AND p.state = 'open'
-          AND ((r.revision = p.desired_revision AND r.head_sha = p.head_sha AND r.base_ref = p.base_ref) OR r.status IN (${activeStatuses})))
-        ORDER BY host, github_id, number, created_at, id`).all() as ReviewState[];
-      return { repositories, pullRequests, reviews };
-    }).deferred();
-  } catch (error) {
-    operationFailed = true;
-    operationError = error;
-    throw error;
-  } finally {
-    try { db.close(); } catch (closeError) {
-      if (operationFailed) throw new AggregateError([operationError, closeError], "SQLite review listing and connection cleanup failed.");
-      throw closeError;
-    }
-  }
-};
-
-export const openStore = (databaseFile: string, options: { busyTimeoutMs?: number } = {}) => {
+export const openStore = (databaseFile: string, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
   if (!path.isAbsolute(databaseFile)) throw new Error("The SQLite database path must be absolute.");
   const busyTimeoutMs = options.busyTimeoutMs === undefined ? 5000 : options.busyTimeoutMs;
   requireInteger(busyTimeoutMs, "SQLite busy timeout", 1);
   if (busyTimeoutMs > 60000) throw new Error("SQLite busy timeout must not exceed 60000 milliseconds.");
-  const db = new Database(databaseFile, { timeout: busyTimeoutMs });
-  try {
-    const version = db.pragma("user_version", { simple: true }) as number;
-    if (version > 2) throw new Error(`SQLite schema version ${version} is newer than supported version 2.`);
-    if (version < 0) throw new Error(`Unsupported SQLite schema version ${version}.`);
-    const journalMode = db.pragma("journal_mode = WAL", { simple: true });
-    if (journalMode !== "wal") throw new Error(`SQLite refused WAL mode: ${String(journalMode)}.`);
-    db.pragma("synchronous = FULL");
-    if (db.pragma("synchronous", { simple: true }) !== 2) throw new Error("SQLite refused synchronous=FULL.");
-    if (version === 0) db.transaction(() => db.exec(schema)).immediate();
-    if (version === 1) db.transaction(() => {
-      db.exec(publicationSchema);
-      db.exec(`INSERT INTO review_publications(review_id, phase, identity_format)
-        SELECT id, CASE WHEN status = 'completed' THEN 'legacy' ELSE 'prepared' END, 'legacy'
-        FROM reviews WHERE status = 'completed' OR status IN (${activeStatuses})`);
-      db.pragma("user_version = 2");
-    }).immediate();
-  } catch (error) {
-    try { db.close(); } catch (closeError) { throw new AggregateError([error, closeError], "SQLite startup and connection cleanup failed."); }
-    throw error;
-  }
-  const atomic = <T>(operation: () => T): T => db.transaction(operation).immediate();
+  const db = openSqliteDatabase({
+    file: databaseFile, format: reviewFormat, allowEmpty: true, timeoutMs: busyTimeoutMs,
+    ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
+  });
+  const atomic = <T>(operation: () => T): T => {
+    let formatFailure: unknown;
+    const transaction = db.transaction(() => {
+      try { assertCurrentSqlite(db, reviewFormat); }
+      catch (error) { formatFailure = error; throw error; }
+      return operation();
+    });
+    try { return transaction.immediate(); }
+    catch (error) {
+      if (formatFailure !== undefined && error !== formatFailure) throw new AggregateError([formatFailure, error], "Review format assertion and transaction rollback failed.");
+      throw error;
+    }
+  };
   const getRepository = (identity: RepositoryIdentity): RepositoryState | null => {
     const key = repositoryKey(identity);
     return db.prepare(`SELECT ${repositoryColumns} FROM repositories WHERE host = @host AND github_id = @githubId`).get(key) as RepositoryState | undefined ?? null;
@@ -350,7 +242,7 @@ export const openStore = (databaseFile: string, options: { busyTimeoutMs?: numbe
       db.prepare("UPDATE pull_requests SET desired_revision = desired_revision + 1, observed_at = @now WHERE host = @host AND github_id = @githubId AND number = @number").run({ ...pullRequestKey(pr), now });
       return needPullRequest(pr);
     }),
-    close: (): void => { db.close(); },
+    close: (): void => { closeSqliteDatabase(db, { file: databaseFile, format: reviewFormat }); },
     getRepository,
     getPullRequest,
     getReview,

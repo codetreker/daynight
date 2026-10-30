@@ -1,5 +1,7 @@
 import path from "node:path";
-import Database from "better-sqlite3";
+import { openSqliteDatabase, closeSqliteDatabase, type SqliteMigrationReporter } from "../../platform/sqlite-access.js";
+import { assertCurrentSqlite } from "../../platform/sqlite-format.js";
+import { workerStoreFormat } from "./store-format.js";
 import { canonicalId } from "../../api/parse.js";
 import type { AgentControlMode, WorkerAgent } from "../../api/types.js";
 import type { ClaimIdentity, LocalTask, ProjectIdentity, WorkerProject } from "./types.js";
@@ -32,80 +34,46 @@ const asTask = (row: LocalTask): LocalTask => {
   if (row.status !== "pending" && row.status !== "active" && row.status !== "done") throw new TypeError("Worker task status must be pending, active or done.");
   return { ...claimKey(row), status: row.status, agent: agent(row.agent), agentControlMode: mode(row.agentControlMode), sessionId: row.sessionId === null ? null : id(row.sessionId, "Native session ID") };
 };
-const schema = `
-  CREATE TABLE projects (
-    project_id TEXT PRIMARY KEY NOT NULL,
-    repo_url TEXT NOT NULL,
-    local_path TEXT NOT NULL
-  ) STRICT;
-  CREATE TABLE tasks (
-    project_id TEXT NOT NULL,
-    task_id TEXT NOT NULL,
-    claim_id TEXT NOT NULL,
-    status TEXT NOT NULL CHECK(status IN ('pending', 'active', 'done')),
-    agent TEXT NOT NULL CHECK(agent IN ('copilot', 'codex', 'claude')),
-    session_id TEXT,
-    agent_control_mode TEXT NOT NULL DEFAULT 'herdr' CHECK(agent_control_mode IN ('herdr', 'web')),
-    PRIMARY KEY(project_id, task_id, claim_id)
-  ) STRICT;
-  CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(project_id, task_id) WHERE status = 'active';
-`;
-const expectedColumns = {
-  projects: ["project_id", "repo_url", "local_path"],
-  tasks: ["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"],
-};
-const unsupportedSchema = (): Error => new Error("The worker SQLite schema is incompatible. Stop the worker and delete its old state.sqlite before starting this version.");
-
-export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?: number } = {}) => {
+export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?: number; onMigration?: SqliteMigrationReporter } = {}) => {
   absolutePath(databaseFile, "The SQLite database path");
   const busyTimeoutMs = options.busyTimeoutMs === undefined ? 5000 : options.busyTimeoutMs;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > 60_000) throw new TypeError("SQLite busy timeout must be a safe integer between 1 and 60000 milliseconds.");
-  const db = new Database(databaseFile, { timeout: busyTimeoutMs });
-  try {
-    if (db.pragma("journal_mode = WAL", { simple: true }) !== "wal") throw new Error("SQLite refused WAL mode.");
-    db.pragma("synchronous = FULL");
-    if (db.pragma("synchronous", { simple: true }) !== 2) throw new Error("SQLite refused synchronous=FULL.");
-    db.transaction(() => {
-      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[];
-      if (tables.length === 0) db.exec(schema);
-      else {
-        if (tables.length !== 2 || tables[0]!.name !== "projects" || tables[1]!.name !== "tasks") throw unsupportedSchema();
-        const taskColumns = db.pragma("table_info(tasks)") as { name: string }[];
-        if (taskColumns.map(column => column.name).join(",") === "project_id,task_id,claim_id,status,agent,session_id") {
-          db.exec("ALTER TABLE tasks RENAME TO legacy_tasks; DROP INDEX tasks_one_active_per_task;");
-          db.exec(schema.slice(schema.indexOf("CREATE TABLE tasks")));
-          db.exec("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id) SELECT project_id, task_id, claim_id, status, agent, session_id FROM legacy_tasks; DROP TABLE legacy_tasks;");
-        }
-        for (const [table, expected] of Object.entries(expectedColumns)) {
-          const columns = db.pragma(`table_info(${table})`) as { name: string }[];
-          if (columns.length !== expected.length || columns.some((column, index) => column.name !== expected[index])) throw unsupportedSchema();
-        }
-        const index = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'tasks_one_active_per_task'").get() as { sql: string } | undefined;
-        if (index === undefined) throw unsupportedSchema();
-      }
-    }).immediate();
-  } catch (error) {
-    try { db.close(); } catch (closeError) { throw new AggregateError([error, closeError], "Worker SQLite startup and connection cleanup failed."); }
-    throw error;
-  }
-  const atomic = <T>(operation: () => T): T => db.transaction(operation).immediate();
-  const getProject = (identity: ProjectIdentity): WorkerProject | null => {
+  const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowEmpty: true, timeoutMs: busyTimeoutMs,
+    ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
+  const atomic = <T>(operation: () => T): T => {
+    let guardFailure: unknown;
+    try {
+      return db.transaction(() => {
+        try { assertCurrentSqlite(db, workerStoreFormat); }
+        catch (error) { guardFailure = error; throw error; }
+        return operation();
+      }).immediate();
+    } catch (error) {
+      if (guardFailure !== undefined && error !== guardFailure) throw new AggregateError([guardFailure, error], "Worker SQLite format assertion and rollback failed.");
+      throw error;
+    }
+  };
+  const read = <T>(operation: () => T): T => {
+    if (db.inTransaction) { assertCurrentSqlite(db, workerStoreFormat); return operation(); }
+    return db.transaction(() => { assertCurrentSqlite(db, workerStoreFormat); return operation(); }).deferred();
+  };
+  const getProject = (identity: ProjectIdentity): WorkerProject | null => read(() => {
     const row = db.prepare(`SELECT ${projectColumns} FROM projects WHERE project_id = @projectId`).get(projectKey(identity)) as WorkerProject | undefined;
     return row === undefined ? null : asProject(row);
-  };
-  const getTask = (identity: ClaimIdentity): LocalTask | null => {
+  });
+  const getTask = (identity: ClaimIdentity): LocalTask | null => read(() => {
     const row = db.prepare(`SELECT ${taskColumns} FROM tasks WHERE project_id = @projectId AND task_id = @taskId AND claim_id = @claimId`).get(claimKey(identity)) as LocalTask | undefined;
     return row === undefined ? null : asTask(row);
-  };
+  });
   const needTask = (identity: ClaimIdentity): LocalTask => {
     const task = getTask(identity);
     if (task === null) throw new Error("The claimed task is not registered.");
     return task;
   };
   return {
-    close: (): void => { db.close(); },
+    close: (): void => { closeSqliteDatabase(db, { file: databaseFile, format: workerStoreFormat }); },
     getProject,
-    listProjects: (): WorkerProject[] => (db.prepare(`SELECT ${projectColumns} FROM projects ORDER BY project_id`).all() as WorkerProject[]).map(asProject),
+    listProjects: (): WorkerProject[] => read(() => (db.prepare(`SELECT ${projectColumns} FROM projects ORDER BY project_id`).all() as WorkerProject[]).map(asProject)),
     registerProject: (input: WorkerProject): WorkerProject => atomic(() => {
       const project = asProject(input);
       const existing = getProject(project);
@@ -118,8 +86,8 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
       return getProject(project)!;
     }),
     getTask,
-    listTasks: (): LocalTask[] => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask),
-    listUnfinishedTasks: (): LocalTask[] => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE status <> 'done' ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask),
+    listTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
+    listUnfinishedTasks: (): LocalTask[] => read(() => (db.prepare(`SELECT ${taskColumns} FROM tasks WHERE status <> 'done' ORDER BY project_id, task_id, claim_id`).all() as LocalTask[]).map(asTask)),
     registerPending: (input: ClaimIdentity & { agent: WorkerAgent; agentControlMode?: AgentControlMode; sessionId?: string | null }): LocalTask => atomic(() => {
       const key = claimKey(input);
       const tool = agent(input.agent);

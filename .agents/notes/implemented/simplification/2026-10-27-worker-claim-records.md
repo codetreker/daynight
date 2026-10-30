@@ -27,6 +27,9 @@ The [Web execution evidence decision](../architecture/2026-10-28-web-execution-e
 adds claim-frozen mode routing and a separate Web-only evidence store. The
 resource-derived recovery and process-local execution rules below apply to Herdr;
 they do not replace the Controller journal or authorize uncertain Web replay.
+The [SQLite format migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
+versions this same index independently without adding business columns or another
+recovery ledger.
 
 The service supplies complete current own-claim inventory. Git and the private
 Herdr instance supply actual resources. Startup resolves configured Projects and
@@ -191,7 +194,9 @@ its continuity can be lost. Management takes the runner offline. The state
 directory is for one configured service/account/worker identity; changes require completing
 old executions and rebuilding local state.
 
-There is no old-schema migration or automatic deletion. An operator stops the
-old worker and removes the old SQLite before new-schema startup, retaining
-workerId and native history. Component checks and schema verification do not
+Known unversioned minimal indexes are adopted at format version 5, preserving
+rows and adding the existing Herdr mode where it was absent. The retired detailed
+schema still has no conversion or automatic deletion: an operator stops the old
+worker and removes that old SQLite before new-schema startup, retaining workerId
+and native history. The SQLite migration decision owns that format distinction. Component checks and schema verification do not
 establish native conversation or cross-platform whole-Goal acceptance.

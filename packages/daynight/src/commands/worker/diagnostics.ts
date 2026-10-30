@@ -1,10 +1,25 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
+import type { SqliteMigrationEvent } from "../../platform/sqlite-access.js";
+import { serializeSqliteError, SqliteAccessError } from "../../platform/sqlite-error.js";
 import type { TaskPlatform } from "../../api/types.js";
 import type { WorkerPaths } from "./paths.js";
 import type { LocalTask } from "./types.js";
 
-export type WorkerDiagnostic = { kind: string; message: string; task?: LocalTask; error?: unknown };
+export type WorkerDiagnostic = { kind: string; message: string; task?: LocalTask; error?: unknown; sqlite?: SqliteMigrationEvent };
+
+const sqliteMetadata = (event: SqliteMigrationEvent): SqliteMigrationEvent => ({
+  migrationId: event.migrationId, database: event.database, file: event.file,
+  kind: event.kind, phase: event.phase, fromVersion: event.fromVersion, toVersion: event.toVersion,
+  ...(event.stepVersion === undefined ? {} : { stepVersion: event.stepVersion }),
+  durationMs: event.durationMs, outcome: event.outcome,
+});
+
+export const workerSqliteMigrationEvent = (event: SqliteMigrationEvent): WorkerDiagnostic => ({
+  kind: `sqlite-migration-${event.kind}`,
+  message: `SQLite ${event.database} ${event.phase}: ${event.fromVersion} → ${event.toVersion} (${event.outcome}).`,
+  sqlite: sqliteMetadata(event),
+});
 
 const abbreviateGuids = (value: string): string => value.replace(/\b([0-9a-f]{8})-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "$1");
 
@@ -22,6 +37,7 @@ export const createWorkerDiagnostics = async (options: {
     return result.replace(/\b(Bearer\s+)[^\s"']+/gi, "$1[redacted]").replace(/\b(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, "$1[redacted]@");
   };
   const describeError = (value: unknown, depth = 0): unknown => {
+    if (value instanceof SqliteAccessError) return serializeSqliteError(value);
     if (value instanceof Error) return {
       name: value.name, message: redact(value.message),
       ...(value.cause === undefined || depth >= 6 ? {} : { cause: describeError(value.cause, depth + 1) }),
@@ -36,6 +52,7 @@ export const createWorkerDiagnostics = async (options: {
     const record = {
       timestamp: new Date().toISOString(), workerId: options.workerId, platform: options.platform,
       kind: event.kind, message: redact(event.message),
+      ...(event.sqlite === undefined ? {} : { sqlite: sqliteMetadata(event.sqlite) }),
       ...(task === undefined ? {} : {
         projectId: task.projectId, taskId: task.taskId, claimId: task.claimId,
         status: task.status, agent: task.agent, sessionId: task.sessionId,

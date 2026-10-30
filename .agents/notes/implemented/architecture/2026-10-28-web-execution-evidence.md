@@ -75,3 +75,8 @@ A local record deletion cannot authorize replacement or destructive cleanup.
 Schema upgrades preserve known minimal-index rows and assign legacy Herdr mode;
 the retired rich worker schema remains explicitly rejected. Private Controller
 journals and native history are not deleted by resetting the worker index.
+The [SQLite migration decision](2026-10-30-cli-sqlite-migrations.md) gives Web
+execution state its independent version 1 and preserves existing stored JSON
+strings during unversioned adoption. Controller journal versioning remains with
+its own store, and no format migration changes the claim or native-call evidence
+ownership described here.

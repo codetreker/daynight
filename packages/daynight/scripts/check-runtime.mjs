@@ -38,7 +38,8 @@ try {
   } finally {
     store.close();
   }
-  assert.equal(readReviewListingSnapshot(databaseFile).repositories.length, 1);
+  const listingPaths = { databaseFile, lockFile: path.join(temporary, "instance.lock") };
+  assert.equal(readReviewListingSnapshot(listingPaths).repositories.length, 1);
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }
