@@ -60,7 +60,7 @@ func commandHash(c sp.Command) []byte {
 	return h[:]
 }
 func (s *Service) authorizeCommand(ctx context.Context, tx pgx.Tx, r *record, t task, c sp.Command) error {
-	if (!active(t, r) && r.Snapshot.Lifecycle != "draining") || c.Fence != r.Snapshot.Fence {
+	if !active(t, r) || c.Fence != r.Snapshot.Fence {
 		return conflict()
 	}
 	permissionRecord := *r

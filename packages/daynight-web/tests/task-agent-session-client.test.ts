@@ -15,7 +15,7 @@ function fixture(storage: Storage | null = null, principal = userId) {
   const s = snapshot(); let receive!: (message: BrowserMessage) => void; let close!: () => void;
   const page: TimelinePage = { sessionId: s.sessionId, historyEpoch: s.historyEpoch, items: [], resources: [], beforeCursor: null, afterCursor: null, hasMoreBefore: false, hasMoreAfter: false, lastEventSeq: '0' };
   const channel: SessionChannel = { close: vi.fn() };
-  const api: SessionApi = { current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; close = onClose; return channel; }) };
+  const api: SessionApi = { archive: vi.fn(), archiveContent: vi.fn(), current: vi.fn(async () => ({ status: 'registered' as const, session: s })), timeline: vi.fn(async () => page), command: vi.fn(), operation: vi.fn(), resource: vi.fn(), resourceUrl: () => '/resource', channel: vi.fn((_id, _after, onMessage, onClose) => { receive = onMessage; close = onClose; return channel; }) };
   const client = new TaskSessionClient({ api, userId: principal, projectId: s.identity.projectId, taskId: s.identity.taskId, claimId: s.claimId, isCurrent: () => true, onPrincipalMismatch: vi.fn(), storage }); clients.push(client);
   return { s, api, client, receive: (message: BrowserMessage) => receive(message), disconnect: () => close() };
 }

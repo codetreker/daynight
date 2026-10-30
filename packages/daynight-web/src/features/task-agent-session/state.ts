@@ -56,7 +56,7 @@ export const hasPendingResponse = (state: SessionState, interaction: Pick<Sessio
 });
 export const sessionRespondGate = (state: SessionState, connected: boolean, interaction?: Pick<SessionInteraction, 'interactionId' | 'revision'>): boolean => {
   const s = state.snapshot;
-  return connected && (interaction === undefined || !hasPendingResponse(state, interaction)) && !state.recoveryRequired && s !== null && s.synchronized && s.connectionState === 'connected' && (s.lifecycle === 'active' || s.lifecycle === 'draining' && (interaction === undefined ? (s.cleanupInteractionIds?.length ?? 0) > 0 : s.cleanupInteractionIds?.includes(interaction.interactionId) === true)) && s.operations.canRespond && s.capabilities.respond;
+  return connected && (interaction === undefined || !hasPendingResponse(state, interaction)) && !state.recoveryRequired && s !== null && s.synchronized && s.connectionState === 'connected' && s.lifecycle === 'active' && s.operations.canRespond && s.capabilities.respond;
 };
 export const sessionCancelGate = (state: SessionState, connected: boolean): boolean => {
   const s = state.snapshot;

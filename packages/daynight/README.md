@@ -1337,18 +1337,35 @@ for its supported options. These commands do not implement a native TUI or chang
 The command prints the Test Session URL and remains in the foreground. Sign in
 to Daynight as the account that started it; the URL itself grants no access.
 The service's `/test-sessions` page lists that account's online Test Sessions.
-Archived history remains available through the original URL and local resume. Use the sidebar or the Session page's back link to
-return to the list; session IDs do not need to be copied manually.
+Completed history is available through the original URL after its file archive
+is ready. Native resume creates a separate execution. Use the sidebar or the
+Session page's back link to return to the list; session IDs do not need to be
+copied manually.
 The page, history, resources, WebSocket and commands all enforce that ownership.
 An expired or revoked credential cannot continue authorizing access. Tokens stay
 in private local files and never appear in the URL.
 
 Task and Test pages share the same timeline, composer and interaction handling.
 Refreshing or closing a browser does not create or stop an Agent. Ctrl+C stops
-the owned execution; the service retains its archived history as read-only when
-shutdown registration succeeds. Service unavailability does not prevent local
-process cleanup, but leaves remote archival unconfirmed. The current directory
-and user files are never removed by the launcher.
+the owned execution. Once the service confirms shutdown, the launcher uploads
+its recorded timeline and resources to file storage for read-only access. The
+service database stores archive metadata, not conversation payloads. Service
+unavailability does not prevent local process cleanup; failed uploads retain
+their private local source. The current directory and user files are never
+removed by the launcher.
+
+Retry a failed upload without starting or resuming the Agent:
+
+```sh
+daynight controller codex archive <test-session-id>
+```
+
+The same command supports `claude` and `copilot`. It verifies the original local
+execution and stop evidence, and does not require the old working directory to
+still exist. Use `-- archive` to send the literal word as an initial prompt.
+Archives are limited to 64 MiB including resource encoding, with at most 8 MiB
+per resource; incomplete or oversized archives fail explicitly and retain their
+source. Completed pages disable all Agent controls.
 
 Resume a stopped Test Session with its native context:
 

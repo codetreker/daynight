@@ -127,6 +127,7 @@ export const openWebExecutionStore = (filename: string) => {
   const needCleanup = (task: LocalTask): CleanupState => { if (task.cleanup === null) throw new Error("Cleanup has not started."); return task.cleanup; };
   return {
     close: (): void => { db.close(); }, getTask,
+    listCompletedTasks: (): LocalTask[] => (db.prepare("SELECT data FROM executions").all() as { data: string }[]).map(row => validate(JSON.parse(row.data) as LocalTask)).filter(task => task.status === "done"),
     listUnfinishedTasks: (): LocalTask[] => (db.prepare("SELECT data FROM executions").all() as { data: string }[]).map(row => validate(JSON.parse(row.data) as LocalTask)).filter(task => task.status !== "done"),
     register: (input: ResourceOwner & { project: WorkerProject; serverOrigin: string; workerId: string; userId: string; configuration: FrozenExecutionConfiguration }, now: number): LocalTask => db.transaction(() => {
       const existing = getTask(input);

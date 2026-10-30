@@ -1,3 +1,5 @@
+import { uploadStoppedControllerArchive } from "../controller/archive-upload.js";
+import { readLaunchTicket, controllerExecutionDirectory } from "../controller/launch-ticket.js";
 import path from "node:path";
 import { maintainWorkerControllerGrants } from "./backends/grant-renewal.js";
 import { openWebExecutionStore } from "./backends/web-store.js";
@@ -87,14 +89,42 @@ const createWebRuntime = async (options: { homeDirectory: string; packageDirecto
     const buildPrompt = await createWorkerPromptBuilder(options.packageDirectory);
     const api = createWorkerSessionApi(serverUrl, serverToken);
     const launcher = createWebControllerLauncher({ ...options, store: webStore, sessionApi: api, now: Date.now });
-    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now,
+    const archive: NonNullable<import("./backends/web.js").WebBackendOptions["archive"]> = async (task, journalPath, signal) => {
+      if (!task.webExecution) throw new Error("Original controller execution is missing.");
+      const ticket = await readLaunchTicket(options.homeDirectory, task.webExecution.launchId);
+      if (ticket.serverOrigin !== serverUrl || task.serverOrigin !== serverUrl) throw new Error("Archive server identity changed.");
+      await uploadStoppedControllerArchive({ journalPath, ticket, serverToken, signal });
+    };
+    const backfilled = new Set<string>();
+    const archiveRetryAt = new Map<string, number>();
+    let lastArchiveAttempt: string | null = null;
+    const backfillArchives = async (signal: AbortSignal) => {
+      const tasks = webStore.listCompletedTasks();
+      const previous = tasks.findIndex(task => task.webExecution?.executionId === lastArchiveAttempt);
+      for (let offset = 1; offset <= tasks.length; offset++) {
+        if (signal.aborted) return;
+        const task = tasks[(previous + offset) % tasks.length]!;
+        const execution = task.webExecution;
+        if (!execution || execution.launchSubmission === "not-submitted" || task.serverOrigin !== serverUrl || backfilled.has(execution.executionId) || (archiveRetryAt.get(execution.executionId) ?? 0) > Date.now()) continue;
+        // Advance on failure as well as success so a damaged source cannot monopolize catch-up.
+        lastArchiveAttempt = execution.executionId;
+        try {
+          await archive(task, path.join(controllerExecutionDirectory(options.homeDirectory, execution.executionId), "journal.sqlite"), signal);
+          backfilled.add(execution.executionId);
+          emit({ kind: "session-archive-ready", message: `Completed session ${execution.sessionId} history is archived.` });
+        } catch { archiveRetryAt.set(execution.executionId, Date.now() + 60_000); emit({ kind: "session-archive-retry", message: `Completed session ${execution.sessionId} archive is pending; its source is retained for retry.` }); }
+        // Bound historical catch-up per reconciliation round.
+        break;
+      }
+    };
+    const webBackend = createWebExecutionBackend({ homeDirectory: options.homeDirectory, store: webStore, git, launcher, platform, now: Date.now, archive,
       buildPrompt: (task, actualPlatform) => {
         if (task.configuration === null || task.resources.worktree === null) throw new Error("The frozen Web assignment is incomplete.");
         return buildPrompt({ ...task, agent: task.configuration.agent, agentControlMode: "web", sessionId: task.resources.nativeSession?.sessionId ?? null, configuration: task.configuration, worktree: task.resources.worktree }, actualPlatform);
       },
       emit: event => { const task = event.task === undefined ? null : store.getTask(event.task); emit({ kind: event.kind, message: event.message, ...(task === null ? {} : { task }) }); },
     });
-    return { webStore, webBackend, launcher, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
+    return { webStore, webBackend, launcher, backfillArchives, verifyWebServer: api.verifySupport, verifyWebUnregistered: api.verifyUnregistered, buildPrompt };
   } catch (error) { webStore.close(); throw error; }
 };
 
@@ -181,6 +211,7 @@ export const runWorker = async (options: {
     while (!signal.aborted) {
       try {
         await coordinator.tick();
+        await web.backfillArchives(signal);
         if (!attachmentShown && herdr !== undefined) {
           diagnostics.emit({ kind: "attach", message: "Run daynight worker attach in another terminal for native input." });
           attachmentShown = true;

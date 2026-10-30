@@ -525,6 +525,8 @@ func TestInstalledCLIProjectTaskAcceptance(t *testing.T) {
 	receipt := readAcceptanceCLI(t)
 	acceptanceCase(t, "installed_cli_project_task_workflow", []string{"PT.V1", "PT.V3", "PT.V5", "PT.V6", "PT.V7", "PT.V8", "PT.V9", "PT.V10", "TP-V1", "TP-V3", "TP-V6", "TP-V8"}, func(t *testing.T, scenario *acceptanceScenario) {
 		fixture := newAcceptanceFixture(t, scenario)
+		// This journey launches over a hundred CLI processes; their individual deadlines remain independent.
+		fixture.serverLifetime = 2 * time.Minute
 		cli := newAcceptanceCLI(t, receipt, scenario)
 		if version := cli.run(t, cli.caller, "--version"); version != receipt.PackageVersion+"\n" {
 			t.Fatal("fresh installed CLI version differs from its validated manifest")

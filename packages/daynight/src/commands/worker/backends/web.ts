@@ -15,6 +15,7 @@ export type WebBackendOptions = {
   homeDirectory: string; store: WebExecutionStore; git: WorkerGitManager; launcher: ReturnType<typeof createWebControllerLauncher>;
   platform: TaskPlatform; buildPrompt: (task: LocalTask, platform: TaskPlatform) => string; emit: (event: { kind: string; message: string; task?: LocalTask }) => void; now: () => number;
   request?: typeof requestController;
+  archive?: (task: LocalTask, journalPath: string, signal: AbortSignal) => Promise<void>;
 };
 export const createWebExecutionBackend = (options: WebBackendOptions) => {
   const request = options.request ?? requestController;
@@ -122,7 +123,13 @@ export const createWebExecutionBackend = (options: WebBackendOptions) => {
         }
       }
       if (!backendResourcesClosed(task.cleanup!)) throw new Error("The original Web backend resources are not closed.");
+      // Shutdown proves stop but leaves any terminal finalization for normal reconciliation.
+      if (kind === "shutdown") return task;
       if (task.cleanup!.kind === "terminal" && !task.cleanup!.worktreeDeleted) {
+        if (execution && execution.launchSubmission !== "not-submitted") {
+          if (!options.archive) throw new Error("Session archive uploader is unavailable; the original worktree is retained.");
+          await options.archive(task, journal(task), signal);
+        }
         await workerOperation(operation => options.git.removeWorktree({ projectId: task.projectId, repoUrl: task.repoUrl, localPath: task.repositoryPath }, task, operation), signal);
         task = options.store.confirmWorktreeDeleted(task, { worktreeDeleted: true }, options.now());
       }

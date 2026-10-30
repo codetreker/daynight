@@ -15,6 +15,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/filestorage"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
@@ -27,6 +28,7 @@ const HeartbeatTimeout = 30 * time.Second
 
 type Service struct {
 	DB        *store.Store
+	files     filestorage.Storage
 	now       func() time.Time
 	liveMutex sync.Mutex
 	live      map[string]*liveCell
@@ -34,8 +36,12 @@ type Service struct {
 	content   contentBroker
 }
 
-func New(db *store.Store) *Service {
-	return &Service{DB: db, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
+func New(db *store.Store, files ...filestorage.Storage) *Service {
+	s := &Service{DB: db, now: time.Now, live: map[string]*liveCell{}, instance: uuid.NewString()}
+	if len(files) > 0 {
+		s.files = files[0]
+	}
+	return s
 }
 func fault(code, message string) error { return &service.Fault{Code: code, Message: message} }
 func conflict() error {
@@ -240,7 +246,6 @@ func permissions(r *record, write bool, now time.Time) sp.Snapshot {
 		return v
 	}
 	if v.Lifecycle == "draining" {
-		v.Operations.CanRespond = v.Capabilities.Respond && len(v.CleanupInteractionIDs) > 0
 		return v
 	}
 	accepted := v.InitialInputState == "provider_accepted" || v.InitialInputState == "confirmed" || v.TestExecutionID != "" && v.InitialInputState == "not_required"

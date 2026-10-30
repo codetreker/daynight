@@ -28,7 +28,7 @@ Test 与 Task 身份必须明确区分。Test 不伪造 task、claim、worker �
 
 登录后访问 `/test-sessions` 可浏览当前账号有权读取且在线的独立测试会话，按最近的连接观察时间排序。在线要求生命周期 active、连接为 connected 或 synchronizing、心跳未超时且连接凭据有效；已归档、离线、停止中或授权失效的记录不显示。筛选在服务端分页之前完成，不能让归档记录占据页面而遗漏后面的在线会话。列表显示 Provider、状态、创建及更新时间，使用简短标识辅助区分，点击进入完整 Session URL。列表和 Session 页之间提供直接导航；用户不必保存或手工输入会话 ID。
 
-列表分页加载全部在线记录，支持刷新、加载更多、空态和失败重试。刷新从最新记录重新开始；分页期间会话活动可能改变排序位置，重复记录按 Session ID 合并。在线状态是读取时的观察，刷新重新确认；短暂断连不会删除会话或停止 Agent。归档身份与必要回执仍可通过原 URL 读取，内容只有对应 Controller 在线时提供；CLI resume 的本地候选不受此展示筛选影响。账号切换、退出或授权失效不得留下其他账号的列表内容。列表读取与单会话读取遵守相同的 owner 及父 CLI 凭据有效性检查。
+列表分页加载全部在线记录，支持刷新、加载更多、空态和失败重试。刷新从最新记录重新开始；分页期间会话活动可能改变排序位置，重复记录按 Session ID 合并。在线状态是读取时的观察，刷新重新确认；短暂断连不会删除会话或停止 Agent。归档身份与必要回执仍可通过原 URL 读取；停止后文件归档 ready 时，内容无需 Controller 在线即可只读加载，pending/failed/unavailable 明确展示且禁止控制；CLI resume 的本地候选不受此展示筛选影响。账号切换、退出或授权失效不得留下其他账号的列表内容。列表读取与单会话读取遵守相同的 owner 及父 CLI 凭据有效性检查。
 
 新建仍通过 `daynight controller <provider>` 完成。列表不扫描本机原生历史，不创建或恢复 Agent，也不提供删除会话或跨账号发现能力。
 
@@ -47,6 +47,12 @@ Session View 内容遵守 [Task Session 的本机内容归属](task-sessions.md#
 网页关闭或网络短暂断开不停止 Agent loop。本机 IPC 的连接与请求受理超时不能提前终止已认证、正在等待原生受理的输入。输入请求发出后若响应丢失或超时，launcher 保留同一执行和 operation 身份，继续观察及续签，不自动重发输入，也不将通信结果未知当作停止原生的依据。若后续确认原始输入失败，即使 Provider 仍可用，也须报告初始化失败并清理原执行，不能永久续签。明确的授权或协议拒绝、原生退出及用户取消仍须按各自的失败或停止路径处理。
 
 意外原生断开必须显示真实失败并清理拥有的进程，不静默新建会话替代原会话。独立入口不承担后台 daemon、任务调度或自动恢复循环；Task 的 worker 恢复责任继续由 [共享实现设计](../design/task-session-protocol.md)定义。
+
+## 停止后的归档与重试
+
+launcher 确认本机进程停止和服务端 Session 终止后上传只读历史。上传失败须明确区分“原生执行已停止”与“归档未完成”，保留本机源并输出重试命令：`daynight controller <provider> archive <test-session-id>`。该命令只核验原 ticket、停止证据、账号与服务，确认服务端停止结果并重试上传，不启动或 resume Agent，不要求原工作目录仍存在。字面 prompt `archive` 可通过 `-- archive` 发送。
+
+归档 ready 后原 URL 展示冻结 timeline 和资源，不提供 chatbox 或任何 Agent 写操作。未启动过 Controller 的 Session 不伪造历史。文件格式与容量遵守 [Task Session 内容归属](task-sessions.md#内容归属与结束后历史)。独立原生 resume 仍建立新 URL，不改变旧归档。
 
 ## 验收边界
 

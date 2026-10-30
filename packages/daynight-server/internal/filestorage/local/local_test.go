@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -563,5 +565,55 @@ func assertNoTemporary(t *testing.T, root string) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPutRequiresDurableBytesAndDirectoryPublication(t *testing.T) {
+	for _, failAt := range []int{1, 2, 3, 4} {
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			storage, root := newStorage(t)
+			put(t, storage, "bucket", "session/file", []byte("old"))
+			calls := 0
+			syncFailure := errors.New("injected sync failure")
+			storage.fileSync = func(file *os.File) error {
+				calls++
+				if calls == failAt {
+					return syncFailure
+				}
+				return file.Sync()
+			}
+			if _, err := storage.Put(t.Context(), "bucket", "session/file", strings.NewReader("new")); !errors.Is(err, syncFailure) {
+				t.Fatal("sync failure acknowledged", err)
+			}
+			got := string(read(t, storage, "bucket", "session/file"))
+			if failAt == 1 && got != "old" {
+				t.Fatal("unsynced bytes replaced old object")
+			}
+			if failAt > 1 && got != "new" {
+				t.Fatal("published bytes lost on directory sync failure")
+			}
+			assertNoTemporary(t, root)
+			storage.fileSync = (*os.File).Sync
+			put(t, storage, "bucket", "session/file", []byte("new"))
+			if got := string(read(t, storage, "bucket", "session/file")); got != "new" {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+func TestPutSyncsNewDirectoryChainBeforeAcknowledgement(t *testing.T) {
+	storage, _ := newStorage(t)
+	var kinds []bool
+	storage.fileSync = func(file *os.File) error {
+		info, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		kinds = append(kinds, info.IsDir())
+		return file.Sync()
+	}
+	put(t, storage, "archives", "session/hash.json", []byte("archive"))
+	if !reflect.DeepEqual(kinds, []bool{false, true, true, true}) {
+		t.Fatalf("expected file, session, bucket and root barriers, got %v", kinds)
 	}
 }

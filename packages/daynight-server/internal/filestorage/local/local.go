@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,12 +24,18 @@ type Storage struct {
 	root          *os.Root
 	exactSpelling bool
 	namespace     sync.Mutex
+	fileSync      func(*os.File) error
 }
 
 var _ filestorage.Storage = (*Storage)(nil)
 
 func New(root string) (*Storage, error) {
 	if err := os.MkdirAll(root, 0o700); err != nil {
+		return nil, err
+	}
+	// Sync the root and its ancestors before publishing objects below it. New
+	// storage roots may themselves have been created by MkdirAll above.
+	if err := syncRootParents(root); err != nil {
 		return nil, err
 	}
 	directory, err := os.OpenRoot(root)
@@ -42,7 +49,7 @@ func New(root string) (*Storage, error) {
 	if !sensitive && runtime.GOOS != "darwin" {
 		return nil, errors.Join(ErrCaseInsensitive, directory.Close())
 	}
-	return &Storage{root: directory, exactSpelling: !sensitive}, nil
+	return &Storage{root: directory, exactSpelling: !sensitive, fileSync: (*os.File).Sync}, nil
 }
 
 func (s *Storage) Close() error {
@@ -64,7 +71,11 @@ func (s *Storage) Put(ctx context.Context, bucket, name string, content io.Reade
 		}
 	}()
 	size, copyErr := io.Copy(file, contextReader{ctx: ctx, reader: content})
-	result = errors.Join(copyErr, ctx.Err(), file.Close())
+	result = errors.Join(copyErr, ctx.Err())
+	if result == nil {
+		result = s.fileSync(file)
+	}
+	result = errors.Join(result, file.Close())
 	if result != nil {
 		return info, result
 	}
@@ -170,13 +181,29 @@ func (s *Storage) publish(temporary, address string) error {
 	if err := s.fileTarget(address, true); err != nil {
 		return err
 	}
-	return s.root.Rename(temporary, address)
+	if err := s.root.Rename(temporary, address); err != nil {
+		return err
+	}
+	// The file bytes precede the rename; every new directory entry down to the
+	// configured root must also be durable before a database can acknowledge it.
+	for directory := path.Dir(address); ; directory = path.Dir(directory) {
+		file, err := s.root.Open(directory)
+		if err != nil {
+			return err
+		}
+		if err = errors.Join(s.fileSync(file), file.Close()); err != nil {
+			return err
+		}
+		if directory == "." {
+			return nil
+		}
+	}
 }
 
 func (s *Storage) discard(temporary string) error {
 	s.namespace.Lock()
 	defer s.namespace.Unlock()
-	if err := s.root.Remove(temporary); err != nil {
+	if err := s.root.Remove(temporary); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	return s.pruneParents(temporary)
@@ -306,4 +333,27 @@ func createProbeFile(root *os.Root, name string) error {
 		return err
 	}
 	return file.Close()
+}
+
+// The caller may supply a newly created nested storage root. Syncing only its
+// children would not persist the root's own name in its parent directory.
+func syncRootParents(root string) error {
+	directory, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	for {
+		file, err := os.Open(directory)
+		if err != nil {
+			return err
+		}
+		if err = errors.Join(file.Sync(), file.Close()); err != nil {
+			return err
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			return nil
+		}
+		directory = parent
+	}
 }

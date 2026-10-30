@@ -1,3 +1,4 @@
+import { parseSessionArchive, parseSessionArchiveStatus, verifySessionArchiveResources, SESSION_ARCHIVE_MAX_BYTES, type SessionArchive, type SessionArchiveStatus } from '../../../daynight/src/session/archive';
 import { ApiError, assertResponsePrincipal, json, request, requestId } from './client';
 export { listTestSessions, parseTestSessionList, type TestSessionSummary, type TestSessionList } from './test-sessions';
 import { parseBrowserMessage, parseCommandResponse, parseRegistrationResponse, parseCurrentSessionResponse, parseOperationResponse, parseTimelinePage, RELAY_LIMITS,
@@ -6,6 +7,8 @@ import { assertSessionFence, parseSessionCommand, type SessionCommand, type Sess
 
 export type SessionChannel = { close(): void };
 export type SessionApi = {
+  archive(sessionId: string, signal: AbortSignal): Promise<SessionArchiveStatus>;
+  archiveContent(sessionId: string, signal: AbortSignal): Promise<SessionArchive>;
   current(signal: AbortSignal): Promise<CurrentSessionResponse>;
   timeline(sessionId: string, direction: 'tail' | 'before' | 'after', cursor: string | null, signal: AbortSignal): Promise<TimelinePage>;
   command(sessionId: string, command: SessionCommand, signal: AbortSignal): Promise<SessionOperation>;
@@ -36,6 +39,20 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
     return json(response, signal, (value) => { if (response.status !== expectedStatus) throw new ApiError('protocol', response.status); return parse(value); });
   }
   return {
+    archive: (id, signal) => get(`${sessionRoot(id)}/archive`, signal, (value) => parseSessionArchiveStatus(archiveEnvelope(value))),
+    archiveContent: async (id, signal) => {
+      const response = await request(`${sessionRoot(id)}/archive/content`, signal, { headers: { Accept: 'application/json' } });
+      assertResponsePrincipal(response, userId, onPrincipalMismatch);
+      const archive = await json(response, signal, value => {
+        if (response.status !== 200) throw new ApiError('protocol', response.status);
+        const archive = parseSessionArchive(archiveEnvelope(value));
+        if (archive.sessionId !== id) throw new ApiError('protocol');
+        return archive;
+      }, async () => JSON.parse(await boundedArchiveText(response, signal)));
+      await verifySessionArchiveResources(archive);
+      signal.throwIfAborted();
+      return archive;
+    },
     current: (signal) => get(currentUrl, signal, parseCurrent),
     timeline: (id, direction, cursor, signal) => {
       const params = new URLSearchParams({ direction, limit: '100' });
@@ -89,4 +106,27 @@ function createBoundSessionApi(currentUrl: string, sessionRoot: (id: string) => 
       return { close: () => { closed = true; clearTimeout(handshake); socket.close(); } };
     },
   };
+}
+
+function archiveEnvelope(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || !('archive' in value) || Object.keys(value).length !== 1) throw new ApiError('protocol');
+  return value.archive;
+}
+async function boundedArchiveText(response: Response, signal: AbortSignal): Promise<string> {
+  if (!response.body) throw new ApiError('protocol');
+  // The content envelope adds a few bytes beyond the bounded archive document.
+  const limit = SESSION_ARCHIVE_MAX_BYTES + 1024;
+  const length = response.headers.get('Content-Length');
+  if (length !== null && (!/^[0-9]+$/.test(length) || BigInt(length) > BigInt(limit))) { await response.body.cancel(); throw new ApiError('protocol'); }
+  const reader = response.body.getReader(); const chunks: Uint8Array<ArrayBuffer>[] = []; let size = 0;
+  try {
+    while (true) {
+      const result = await reader.read(); signal.throwIfAborted();
+      if (result.done) break;
+      size += result.value.byteLength;
+      if (size > limit) throw new ApiError('protocol');
+      chunks.push(new Uint8Array(result.value));
+    }
+    return await new Blob(chunks).text();
+  } finally { await reader.cancel(); reader.releaseLock(); }
 }

@@ -248,12 +248,13 @@ func acceptanceCase(t *testing.T, name string, requirements []string, operation 
 }
 
 type acceptanceFixture struct {
-	admin        *pgxpool.Pool
-	schema       string
-	databaseURL  string
-	storageRoot  string
-	applications []string
-	scenario     *acceptanceScenario
+	admin          *pgxpool.Pool
+	schema         string
+	databaseURL    string
+	storageRoot    string
+	applications   []string
+	scenario       *acceptanceScenario
+	serverLifetime time.Duration
 }
 
 func newAcceptanceFixture(t *testing.T, scenario *acceptanceScenario) *acceptanceFixture {
@@ -268,7 +269,7 @@ func newAcceptanceFixture(t *testing.T, scenario *acceptanceScenario) *acceptanc
 	if err != nil {
 		t.Fatal("cannot configure acceptance database")
 	}
-	fixture := &acceptanceFixture{schema: "acceptance_" + strings.ToLower(rand.Text()), databaseURL: base, storageRoot: newTestStorageRoot(t), scenario: scenario}
+	fixture := &acceptanceFixture{schema: "acceptance_" + strings.ToLower(rand.Text()), databaseURL: base, storageRoot: newTestStorageRoot(t), scenario: scenario, serverLifetime: 45 * time.Second}
 	t.Cleanup(func() {
 		if err := os.RemoveAll(fixture.storageRoot); err != nil {
 			t.Error("cannot remove owned acceptance storage root")
@@ -477,7 +478,7 @@ func (f *acceptanceFixture) launch(t *testing.T, configuration map[string]string
 	for key, value := range configuration {
 		values[key] = value
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), f.serverLifetime)
 	process := &acceptanceProcess{logs: &acceptanceLogs{ready: make(chan string, 1)}, application: application, done: make(chan struct{}), cancel: cancel, scenario: f.scenario, fixture: f, configuration: configuration, origin: origin, appSecret: gateway.AppSecret, gateway: gateway}
 	process.command = exec.CommandContext(ctx, binaryAcceptance.Binary)
 	process.command.Env, process.command.Stdout, process.command.Stderr = acceptanceEnvironment(values), process.logs, process.logs

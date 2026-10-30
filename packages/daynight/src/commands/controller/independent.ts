@@ -1,3 +1,4 @@
+import { uploadStoppedControllerArchive } from "./archive-upload.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, realpath, writeFile, rename } from "node:fs/promises";
@@ -188,12 +189,21 @@ export const runIndependentController = async (input: IndependentControllerInput
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
         const body = { protocol: SESSION_PROTOCOL, ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, stopProof };
         await persist("stop-proof.json", body);
+        // Publish the upload intent before closing the live page so observers keep polling.
+        await request(`/api/v1/test-sessions/${ticket.sessionId}/archive`, { ...sessionFence(ticket), controllerId: ticket.controllerId, controllerInstanceId: ticket.controllerInstanceId, state: "pending", errorCode: null }, true).catch(() => {});
         try {
           const result: SessionSnapshot = parseRegistrationResponse(await request(`/api/v1/test-sessions/${ticket.sessionId}/stop`, body, true)).session;
           assertSessionFence(result, ticket);
           if (result.lifecycle !== "archived") throw new Error("Test Session archival was not confirmed.");
-          await persist("stop-result.json", { session: result }); archived = true; context.stdout("Test Session stopped and archived.\n");
+          await persist("stop-result.json", { session: result }); archived = true;
+
         } catch { context.stderr("Native execution stopped. Server archival is unconfirmed; the original stop proof is retained privately.\n"); }
+        if (archived) {
+          try {
+            await uploadStoppedControllerArchive({ journalPath: journal, ticket, serverToken: config.serverToken });
+            context.stdout("Test Session stopped and archived. Read-only history is available on its page.\n");
+          } catch { context.stderr(`Native execution stopped; session history upload is pending. Source retained in ${directory}.\nRetry without starting an agent: daynight controller ${ticket.provider} archive ${ticket.sessionId}\n`); }
+        } else context.stderr(`Retry without starting an agent: daynight controller ${ticket.provider} archive ${ticket.sessionId}\n`);
       } catch (error) { failed ??= error; context.stderr(`Test Session stop could not be fully confirmed; execution evidence: ${directory}. Inspect controller.log and the original journal.\n`); }
     }
     if (ticket && directory && !spawnAttempted) {

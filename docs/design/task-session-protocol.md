@@ -53,7 +53,7 @@ Web 目录固定请求 `GET /api/v1/test-sessions?online=true`。服务在排序
 
 Test 使用独立 `/api/v1/test-session-capabilities` 预检及 `/api/v1/test-sessions` 注册入口，避免改变旧 Task 客户端的严格能力响应。创建者来自已验证的 PAT principal；客户端提供持久 registrationId 与 testExecutionId，对账不能改换 ID。Controller grant 与 Task 共用格式和连接入口，但绑定 Test 身份及父凭据，续签不改变原执行。
 
-Test 快照、历史、操作、资源和浏览器 channel 位于 `/api/v1/test-sessions/{sessionId}` 下。访问时检查当前凭据与创建者，而 Task 路径继续检查项目权限及当前 claim。两类授权策略进入同一在线内容转发、操作去重与投递实现，不以空 task 参数代表跳过校验。会话身份表名 task_sessions 保留，scope 与 test_execution_id 的数据库约束区分归属；Task 外键不变，Test 不制造占位 Task。
+Test 快照、历史、操作、资源和浏览器 channel 位于 `/api/v1/test-sessions/{sessionId}` 下。访问时检查当前凭据与创建者，而 Task 路径继续检查项目权限及当前 claim。两类授权策略进入同一在线内容转发、操作去重与投递实现，不以空 task 参数代表跳过校验。会话身份表名 task_sessions 保留，scope 与 test_execution_id 的数据库约束区分归属；Task 归属校验不变，Test 不制造占位 Task。
 
 `GET /api/v1/test-sessions` 提供账号范围内的列表读取，与同路径的 `POST` 注册分开。返回 `{ items, nextCursor }`，每项包含 `sessionId`、`provider`、`lifecycle`、`connectionState`、`createdAt`、`updatedAt`。`updatedAt` 使用会话创建时间与最新连接心跳时间的较大值，表示服务最近观察到该连接，不推断本机文件或 Agent 的实际工作时间。列表按该时间和 Session ID 降序分页；`limit` 默认 50、最大 100，cursor 绑定当前用户。数据库在分页前过滤 Test scope、创建者和原父凭据有效性；状态读取沿用现有连接时效规则。
 
@@ -71,7 +71,7 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 
 ## Controller 与原生会话
 
-worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、投影修订及 outbox。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
+worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、投影修订索引及有界 outbox，timeline 和资源正文写入相邻的待归档文件。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并分页读取原生 items。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
@@ -121,9 +121,9 @@ Task Worker 的 grant 维护每 30 秒独立扫描当前服务的未完成 Web �
 
 ### 本机内容与在线读取
 
-Session 内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、时间线投影和资源。Timeline entryId 源于原生条目身份，entrySeq 在本机首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除本机投影。原生 transcript 可以辅助恢复，但不能替代已丢失的操作受理和未决审批证据。
+活跃 Session 的内容归属于 Agent 执行环境，要求对应 Controller 在线且本地数据存在才能加载历史。这里的执行环境可由容器或 sandbox 承载；普通 worktree 本身不具有安全隔离能力。Controller journal 保存原生身份、完整操作记录、投影修订索引和有界 outbox。标准化 timeline 与资源保存在 journal.sqlite.pending-content/，每个条目使用独立原子文件，替换前 flush 文件、替换后同步目录；内存索引提供在线分页。Timeline entryId 源于原生条目身份，entrySeq 首次插入时分配，revision 单调维护；ACK 只清除传输 outbox，不清除待归档源。原生 transcript 可以辅助恢复，但不能补齐所有实时审批、错误或 Provider 临时事件，不能替代标准化事件录制。
 
-sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；内容先在本机事务中保存，超限时压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。操作日志不参与 outbox 压缩，不确定输入不得因此重放。
+sourceEpoch 和整数 sourceSeq 标识传输顺序。outbox 的 64 MiB 上限只限制等待发送的数据；内容文件先可靠写入，再提交 SQL 索引与投递事务；超限时压缩传输积压并记录 sourceFloor。新连接以该下界跳过已舍弃的传输事件，重置展示 historyEpoch 并重新同步。网络积压不再暂停原生输入或停止健康 Agent；本机持久化失败仍须暴露，并停止无法可靠记录的执行。操作日志不参与 outbox 压缩，不确定输入不得因此重放。
 
 Controller 每次连接先分批 reconcile，排空剩余 outbox，再发送 sync_state，内容为当前状态及最多 100 个待处理交互。服务端收到后返回 sync_ack，完成前禁止网页控制。executionGeneration 隔离原生实例，connectionEpoch 隔离连接；historyEpoch 标识可用展示缓存，改变时网页重新读取本机内容，不创建或恢复另一段原生执行。
 
@@ -133,19 +133,33 @@ Session 的 HTTP、WebSocket、嵌套 timeline/content 编码与展示缓存统�
 
 Poll 使用相同的 MarshalWire 编码计算 operation_offer 的完整封装字节数。单个 offer 超过 2 MiB 时，以 payload_too_large 终态拒绝原操作，释放暂存正文并继续后续队列；若仅当前批次累计超限，则将该操作留到下一次 Poll。HTTP 请求体通过入站上限不代表增加 offer 封装后仍可发送；不得截断输入或让永远无法发送的单个 offer 阻塞后续操作。
 
-单条非交互展示投影的传输预算为 1,400,000 字节，给分页及帧封装留出空间。超过预算时，本机 journal 保留完整投影，实时发送与历史读取统一返回 display_budget_exceeded 错误条目，保留原 entryId、entrySeq 和 revision。旧 outbox 也在发送前执行同一投影，并保留 sourceSeq，使源水位可以继续确认；不是跳过事件后宣称完整回放。带权限语义的 interaction 不采用此替换，完整交互和 controls 仍受总帧及内存容量约束，超限明确失败，不通过截断审批内容或自动批准获得同步。
+单条非交互展示投影的传输预算为 1,400,000 字节，给分页及帧封装留出空间。超过预算时，本机待归档文件保留完整投影，实时发送与历史读取统一返回 display_budget_exceeded 错误条目，保留原 entryId、entrySeq 和 revision。旧 outbox 也在发送前执行同一投影，并保留 sourceSeq，使源水位可以继续确认；不是跳过事件后宣称完整回放。带权限语义的 interaction 不采用此替换，完整交互和 controls 仍受总帧及内存容量约束，超限明确失败，不通过截断审批内容或自动批准获得同步。
 
 资源以登记的 resourceId 读取，不能把任意本机路径转换为下载地址。每块最多 512 KiB，单资源最多 8 MiB；完整读取检查长度、SHA-256 及相同 Controller 连接身份。每个内容请求最多等待 15 秒，全服务最多 32 个、单 Session 最多 4 个在途请求。等待前后都检查访问权限，取消或迟到的响应不能污染另一请求或断开健康 Controller。当前 Provider 的图片/文件输入与不支持的原生二进制内容仍遵守基础交付边界。
+
+### 完成后的文件归档
+
+Controller journal v6 将旧 projection/resources 表导出到待归档文件，再在 SQL 事务中建立 content_index、删除正文表并升级版本。迁移失败保留原表；文件先于 SQL 提交的更新在重启时核验并触发完整 relay 重同步。缺文件、回退的 revision 或内容 hash 不匹配须明确失败，不把损坏源解释为空历史。索引和传输积压的裁剪不能删除归档内容。
+
+确认原生进程停止后，上传器从同一执行的待归档文件生成 schemaVersion=1 的 SessionArchive：包含 Session fence、Controller 身份、Provider/nativeSessionId、有序最终 entries 和资源描述及 base64 数据。它保留最终阅读内容而非逐 token 事件录像。Task 结束由 Worker 收尾上传；Test launcher 先确认服务端 /stop，再上传。独立上传失败可运行 controller <provider> archive <test-session-id>，以原私有 ticket 和停止证明对账后重试；该路径不启动或 resume 原生会话。上传不启动 Provider，不要求已删除的工作目录存在。Worker 每轮最多尝试一个旧 completed 执行补归档，进程内按上次尝试的执行 ID 轮转库存，成功或失败后都从下一项继续；各执行独立退避，单个损坏源不能阻塞其他历史。正常收尾只有 ready 才能删除 worktree；退出停止路径以本次 shutdown 调用意图为准，确认停止后不执行归档或删除，即使持久状态已是 terminal。原 terminal 状态仍保留，重启后的正常对账继续履行归档与删除责任。
+
+Task 路径为 /api/v1/projects/P/tasks/T/sessions/S/archive，Test 路径为 /api/v1/test-sessions/S/archive。GET 返回 pending/ready/failed/unavailable；POST 记录 pending 或 failed；PUT 上传完整 JSON；GET /archive/content 读取正文。ready 回执含 SHA-256 和十进制 byteLength。上传按原始请求字节计算哈希，相同正文重试幂等，ready 后拒绝不同正文覆盖。写入要求原 owner 的有效 PAT、原执行 fence 与 Controller 身份，以及终态执行；若断网导致服务端尚未记录 nativeSessionId，可在提交 ready 的同一事务中从归档建立该身份，已有非空 ID 必须相同；读取要求对应项目成员或 Test owner 的有效访问权，不能用旧 claim 归档获得新执行的控制权。
+
+服务端复用 filestorage，将正文保存在 session-archives bucket，以 Session ID 和内容哈希构造对象位置。PostgreSQL 的 session_archives 仅保存归档状态、对象位置、大小、哈希与枚举错误。本地文件存储在重命名前同步文件，发布后同步父目录；文件可靠写入后才提交 ready，数据库事务失败可重试同对象；读取时重新验证对象大小、SHA-256 和归档结构。迁移不新增消息正文表。正文及数据库元信息需要一起备份；多实例读取要求共享文件存储。
+
+完整 JSON 最多 64 MiB、100000 个条目、1000 个资源，单资源最多 8 MiB。条目身份唯一且 entrySeq 严格递增；资源引用必须存在，available 数据须符合长度及哈希，pending 资源不能封存成完整归档。超限和缺失明确失败，保留本机源；不裁剪后宣称完整。归档源及上传回执位于原 execution 目录，上传失败只重试文件传输，不重放业务输入。
+
+网页在 draining/archived 时停止 live 通道与所有操作，按归档状态展示等待、失败或只读 timeline。ready 内容通过原 Session View 渲染，资源从校验后的归档读取；不显示 chatbox，不允许历史审批、中断或设置操作。服务端独立拒绝终态网页写命令，Worker 内部已授权 cleanup 通道保持独立。活跃断线继续原 live 恢复。正常终止上传不提供容器突然销毁前的远端备份，也不从原生历史猜补遗漏内容。
 
 ### 服务端存储与容量
 
 PostgreSQL 保存 Session 归属、注册身份、授权、原生与连接代次、生命周期、水位和最小操作账本。不写入时间线、消息、工具输出、资源、动态 controls、待审批正文或自由文本错误；操作正文也不藏在 command 或 snapshot 中。既有内容表和历史行不自动删除，当前实现停止向其中新增内容；既有备份或历史行的清理由运维单独决定，迁移不会宣称已擦除旧数据。
 
-服务端的每 Session 内存状态最多 4 MiB，其中最近事件缓存最多 2 MiB、1000 条。缓存丢失返回 reset_required，从在线本机重新加载；不承诺离线历史回放。最多 64 个 live Session，超额明确拒绝接入，不代表实测并发能力。每 Session 最多保留 4096 条持久操作摘要，达到上限拒绝新操作；不能简单 TTL 删除 unknown 或去重记录后重新执行旧请求。Session 身份仍随创建数增长。
+服务端的每 Session 内存状态最多 4 MiB，其中最近事件缓存最多 2 MiB、1000 条。缓存丢失返回 reset_required，从在线本机重新加载；活跃执行不使用终态归档替代同步。最多 64 个 live Session，超额明确拒绝接入，不代表实测并发能力。每 Session 最多保留 4096 条持久操作摘要，达到上限拒绝新操作；不能简单 TTL 删除 unknown 或去重记录后重新执行旧请求。Session 身份仍随创建数增长。
 
 在线状态由持有 Controller 连接的 relay 实例维护。另一实例不能凭共享数据库假装拥有会话内容，也不能抢占仍有效的连接租约；请求需要路由到持有连接的实例，未满足时明确失败。服务端重启后 Agent 继续在本机执行，重新连接、授权和状态对账后恢复网页操作。数据库事务成功后才发布对应内存状态；失败事务不能先向浏览器确认尚未提交的控制结果。
 
-Controller 离线时，新页面只能读取有权限的身份与离线状态，不能加载历史或操作。已打开网页保留当前离线画面；重新同步成功后替换过期内容。归档记录保留身份与必要回执，原 URL 不提供服务器聊天历史；独立 resume 在新的在线执行中从原生本地历史恢复。执行环境的数据保留、备份和丢失恢复由该环境负责。
+活跃 Controller 离线时，新页面只能读取有权限的身份与离线状态，不能加载历史或操作。已打开网页保留当前离线画面；重新同步成功后替换过期内容。终态页面按下述文件归档协议读取。独立 resume 在新的在线执行中从原生本地历史恢复，与旧页面的只读归档分离。
 
 响应操作按 interactionId 与 interactionRevision 限制同一交互的重复提交，不能按整个 turn 或 interaction_response 类型互斥。工具审批等待 tool_result 确认期间，同一工具提出的新 MCP form 必须可独立响应。浏览器只持久保存 operation 与交互身份的关联，不保存答案；缺少旧缓存时，服务端当前在线交互校验和 Controller 原生校验仍决定能否响应。
 
