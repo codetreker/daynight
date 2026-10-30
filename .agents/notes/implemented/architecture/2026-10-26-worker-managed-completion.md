@@ -68,6 +68,8 @@ ordinary manual execution and Goal discussion retain their own lifecycle rules.
 Automatic candidate selection and continuous scheduling belong to the worker.
 Completion does not authorize a merge, deployment or broader work.
 The skill is shipped from its canonical source; installed copies are not edited.
-Static discovery and instruction-contract checks prove packaging, while a
-controlled agent trace is separate behavior evidence. Neither substitutes for
-later native Herdr or three-platform whole-Goal qualification.
+The [skill packaging validation decision](../testing/2026-10-30-skill-packaging-validation.md)
+partially supersedes instruction-contract checks here and validates resource
+discovery, metadata, local links and bytes. A controlled agent trace is separate
+behavior evidence. Neither substitutes for later native Herdr or three-platform
+whole-Goal qualification.

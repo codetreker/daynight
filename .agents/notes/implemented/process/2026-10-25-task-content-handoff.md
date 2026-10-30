@@ -147,6 +147,9 @@ rewritten in bulk. A stricter certified-content guarantee would require an
 explicit server/reference redesign; leaving the flag without certificate semantics
 keeps that later change visible rather than embedding a false guarantee.
 
-Static instruction contracts, resource copying and isolated installation establish
-published content and files. Independent semantic scenarios assess the workflow's
-decisions separately; neither proves that every Agent follows the instructions.
+Resource copying and isolated installation validate published files under the
+[skill packaging validation decision](../testing/2026-10-30-skill-packaging-validation.md),
+which partially supersedes the static instruction-contract strategy here.
+Independent semantic review assesses workflow decisions separately; packaging
+checks do not test prose semantics or prove that every Agent follows the
+instructions.

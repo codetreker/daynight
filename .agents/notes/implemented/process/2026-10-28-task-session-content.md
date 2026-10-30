@@ -94,10 +94,10 @@ archives remain immutable. A future need for certified task snapshots or shared
 session storage requires its own contract rather than copying checkpoints into
 task material.
 
-Static contracts and negative mutations check that both exclusion and preservation
-obligations are shipped. Packaging and installation check resources and bytes.
-Independent semantic scenarios check mixed requests, real inputs and artifacts,
-operational authority, recovery and all task storage forms. Keeping a correct
-sentence while adding a contradiction is a semantic case, not something existing
-positive regex checks certify. Neither static nor installation checks establish
+The [skill packaging validation decision](../testing/2026-10-30-skill-packaging-validation.md)
+partially supersedes the static-contract and negative-mutation verification
+strategy. Packaging and installation validate resource inventory, metadata,
+local links and byte identity. Independent semantic review addresses mixed
+requests, real inputs and artifacts, operational authority, recovery and all task
+storage forms separately. Packaging checks do not certify those decisions or
 universal model compliance.
