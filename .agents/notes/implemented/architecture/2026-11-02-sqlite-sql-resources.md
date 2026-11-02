@@ -12,13 +12,14 @@ contents part of whether an installed CLI can open its supported local state.
 
 ## Decision
 
-Each database owner keeps baseline, upgrade and known-source SQL in its own
+Each database owner keeps baseline and upgrade SQL in its own
 `sqlite/` directory. Each owner selects the directory; the
 [filename-order decision](2026-11-02-filename-ordered-sqlite-migrations.md) defines
-top-level discovery, numeric versions and lexical execution order. Conditional
-source and adoption resources stay in auxiliary subdirectories selected by their
-domain code. SQL files own SQL statements, while JSON
-transforms, domain admission, transaction boundaries and `user_version` writes
+top-level discovery, numeric versions and lexical execution order. Five baselines
+and five upgrades form the current resource inventory. The
+[unversioned reset decision](2026-11-02-unversioned-sqlite-reset.md) removes
+source-only and conditional adoption resources. SQL files own SQL statements,
+while JSON transforms, domain admission, transaction boundaries and `user_version` writes
 remain in TypeScript. The
 [migration decision](2026-10-30-cli-sqlite-migrations.md) continues to own versions,
 atomicity and process/lease responsibilities.
@@ -27,10 +28,9 @@ atomicity and process/lease responsibilities.
 reference metadata during format-module initialization. It executes the same
 baseline and upgrades in a short-lived memory SQLite database, captures SQLite's
 own `sqlite_schema` metadata at each discovered version and confirms the
-reference connection is closed before a user database is opened. Known Worker
-six-column source SQL supplies its separate reference layout. The Worker adoption
-script runs only in the actual adoption transaction; it is covered by the same
-rollback guarantees rather than treated as pre-executed reference SQL.
+reference connection is closed before a user database is opened. Nonzero
+source checks use those cached versioned layouts; version 0 follows reset without
+a source-schema or JSON admission model.
 
 This reference construction does not copy user data, require another writable
 file or add a user-database marker. It happens when the owning runtime module is
@@ -41,8 +41,11 @@ reused by later source checks rather than creating a database per access.
 The initial resource implementation registered fixed file URLs and versions in
 TypeScript to make sequencing visible and keep auxiliary source/adoption SQL out
 of the normal chain. The filename-order decision supersedes that ordering choice:
-filenames are authoritative, while auxiliary directories preserve the exclusion
-boundary. Resource ownership and single-source schema generation remain here.
+filenames are authoritative. At that time, a separate Worker six-column source
+reference and conditional adoption script were excluded from the numbered chain
+so they could not run as unconditional upgrades. The reset decision removes
+those resources with the adoption policy. Resource ownership and single-source
+schema generation remain here.
 
 The initial migration implementation kept executable and expected CREATE
 layouts inline. That was adequate while introducing version and ownership
@@ -92,19 +95,20 @@ schema-diff engine or repair facility.
 ## Consequences
 
 SQL is independently reviewable and shipped as an explicit runtime resource.
-Version numbers, native ownership, JSON behavior and all existing data
-formats remain unchanged. Baseline and upgrade scripts remain valid as their
-filename-derived chain from an empty database, because new database creation
+Resource extraction and filename ordering preserve version numbers, native
+ownership and versioned data semantics. Version-0 data preservation is separately
+superseded by the reset decision. Baseline and upgrade scripts remain valid as
+their filename-derived chain from an empty database, because new database creation
 already uses that chain.
 
 Format initialization performs bounded reference work and closes each memory
 connection. Later inspections use cached metadata and the existing user-database
 snapshot rules. Missing or invalid resources are visible errors at their actual
-loading or execution boundary; malformed adoption SQL cannot leave a partial
-schema because it runs in the migration transaction.
+loading or execution boundary. Reset and upgrades share the migration
+transaction and cannot leave a partial schema.
 
 Package validation must check resource inventory and exact copied bytes, then
 exercise the actual installed SQL rather than infer completeness from source
 files. Build and resource-copy scripts are release inputs. The existing migration
-mechanism still rejects unsupported layouts and retains unknown ownership; SQL
-resources do not create a new command, persistence ledger or migration scheduler.
+mechanism still rejects unsupported nonzero layouts and retains unknown
+ownership; SQL resources do not create a new command, persistence ledger or migration scheduler.

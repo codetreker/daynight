@@ -10,7 +10,7 @@ import { webExecutionStoreFormat } from "./web-store-format.js";
 const same = (left: unknown, right: unknown): boolean => JSON.stringify(left) === JSON.stringify(right);
 // The Worker owns Web execution state here; claim scheduling stays in the minimal index.
 export const openWebExecutionStore = (filename: string, options: { onMigration?: SqliteMigrationReporter } = {}) => {
-  const db = openSqliteDatabase({ file: filename, format: webExecutionStoreFormat, allowEmpty: true,
+  const db = openSqliteDatabase({ file: filename, format: webExecutionStoreFormat, allowCreate: true,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
   const atomic = <T>(operation: () => T): T => {
     let guardFailure: unknown;

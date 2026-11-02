@@ -228,17 +228,6 @@ describe("worker claim and native session index", () => {
   });
 });
 
-it("migrates the previous minimal index to frozen Herdr mode without reinterpreting rich schemas", () => {
-  const f = fixture(); close(f.store);
-  const legacy = connect(f.file);
-  legacy.exec("DROP TABLE tasks; CREATE TABLE tasks (project_id TEXT NOT NULL, task_id TEXT NOT NULL, claim_id TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('pending', 'active', 'done')), agent TEXT NOT NULL CHECK(agent IN ('copilot', 'codex')), session_id TEXT, PRIMARY KEY(project_id,task_id,claim_id)) STRICT; CREATE UNIQUE INDEX tasks_one_active_per_task ON tasks(project_id,task_id) WHERE status='active'; PRAGMA user_version=0;");
-  legacy.prepare("INSERT INTO tasks VALUES (?,?,?,?,?,?)").run(claim.projectId, claim.taskId, claim.claimId, "active", "codex", uuid(30));
-  legacy.close(); connections.delete(legacy);
-  const migrated = open(f.file);
-  expect(migrated.getTask(claim)).toMatchObject({ status: "active", agent: "codex", agentControlMode: "herdr", sessionId: uuid(30) });
-  expect(() => migrated.registerPending({ ...claim, agent: "codex", agentControlMode: "web" })).toThrow();
-});
-
 it("freezes the selected Web routing mode across reopen and later configuration changes", () => {
   const f = fixture(); f.store.registerProject(f.project);
   f.store.registerPending({ ...claim, agent: "claude", agentControlMode: "web" }); close(f.store);
@@ -267,43 +256,57 @@ const legacyFixture = () => {
   return { file, db, rows };
 };
 
-it("adopts unversioned minimal records once and preserves every claim and nullable session", () => {
-  const { file, db, rows } = legacyFixture();
+it("rebuilds the unversioned six-column index and discards every project and claim", () => {
+  const { file, db } = legacyFixture();
   const events: unknown[] = [];
-  const migrated = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(migrated);
+  const rebuilt = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
   expect(db.pragma("user_version", { simple: true })).toBe(5);
-  expect(db.prepare("SELECT project_id,task_id,claim_id,status,agent,session_id FROM tasks ORDER BY task_id").all()).toEqual(rows.map(([project_id, task_id, claim_id, status, agent, session_id]) => ({ project_id, task_id, claim_id, status, agent, session_id })));
-  expect(migrated.listTasks().map(task => task.agentControlMode)).toEqual(["herdr", "herdr", "herdr"]);
-  close(migrated);
+  expect(rebuilt.listProjects()).toEqual([]);
+  expect(rebuilt.listTasks()).toEqual([]);
+  expect((db.pragma("table_info(tasks)") as { name: string }[]).map(row => row.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id", "agent_control_mode"]);
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 5 }, { kind: "completed", fromVersion: 0, toVersion: 5 }]);
+  close(rebuilt);
   events.length = 0;
   const reopened = openWorkerStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
   expect(events).toEqual([]);
 });
 
-it("rolls back a failing six-column table replacement together with its version", () => {
+it("restores the entire unversioned index when rebuilding the baseline fails", () => {
   const { file, db, rows } = legacyFixture();
+  const schema = db.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY name").all();
+  const projects = db.prepare("SELECT * FROM projects").all();
   const exec = Database.prototype.exec;
   vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    const copyStart = sql.indexOf("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id)");
-    if (copyStart !== -1) { exec.call(this, sql.slice(0, copyStart)); throw new Error("copy failed"); }
+    const tasksStart = sql.indexOf("CREATE TABLE tasks (");
+    if (sql.includes("agent_control_mode") && tasksStart !== -1) { exec.call(this, sql.slice(0, tasksStart)); throw new Error("baseline failed"); }
     return exec.call(this, sql);
   });
   expect(() => openWorkerStore(file, { onMigration: () => {} })).toThrow("migration-failed");
   expect(db.pragma("user_version", { simple: true })).toBe(0);
-  expect((db.pragma("table_info(tasks)") as { name: string }[]).map(row => row.name)).toEqual(["project_id", "task_id", "claim_id", "status", "agent", "session_id"]);
-  expect(db.prepare("SELECT * FROM tasks ORDER BY task_id").all()).toHaveLength(rows.length);
-  expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='legacy_tasks'").get()).toBeUndefined();
-  expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='tasks_one_active_per_task'").get()).toBeDefined();
+  expect(db.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
+  expect(db.prepare("SELECT * FROM projects").all()).toEqual(projects);
+  expect(db.prepare("SELECT * FROM tasks ORDER BY task_id").all()).toEqual(rows.map(([project_id, task_id, claim_id, status, agent, session_id]) => ({ project_id, task_id, claim_id, status, agent, session_id })));
 });
 
-it("registers the current unversioned seven-column layout without rewriting its rows", () => {
+it("rebuilds the current seven-column layout when its stored version is zero", () => {
   const { file, store, register } = fixture();
   register(); store.activateTask(claim); store.setSessionId(claim, uuid(30)); close(store);
-  const db = connect(file), before = db.prepare("SELECT * FROM tasks").all(); db.pragma("user_version = 0");
-  const adopted = open(file);
-  expect(db.prepare("SELECT * FROM tasks").all()).toEqual(before);
+  const db = connect(file); db.pragma("user_version = 0");
+  const rebuilt = open(file);
+  expect(rebuilt.listProjects()).toEqual([]);
+  expect(rebuilt.listTasks()).toEqual([]);
   expect(db.pragma("user_version", { simple: true })).toBe(5);
-  expect(adopted.getTask(claim)?.sessionId).toBe(uuid(30));
+});
+
+it("rebuilds an unknown unversioned schema containing duplicate identities and invalid payloads", () => {
+  const { file, store } = fixture(); close(store);
+  const db = connect(file);
+  db.exec("DROP TABLE projects; DROP TABLE tasks; CREATE TABLE tasks(task_id TEXT, payload TEXT); CREATE TABLE unrelated(value TEXT); INSERT INTO tasks VALUES('duplicate', 'not json'), ('duplicate', 'also invalid'); INSERT INTO unrelated VALUES('discarded'); PRAGMA user_version = 0");
+  const rebuilt = open(file);
+  expect(rebuilt.listProjects()).toEqual([]);
+  expect(rebuilt.listTasks()).toEqual([]);
+  expect(db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "projects" }, { name: "tasks" }]);
+  expect(db.pragma("user_version", { simple: true })).toBe(5);
 });
 
 it("rejects newer formats and altered constraints without mutating their records", () => {

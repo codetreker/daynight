@@ -1,14 +1,10 @@
 import type Database from "better-sqlite3";
 import type { SqliteFormat } from "../../platform/sqlite-format.js";
-import { loadSqliteSequence, loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
+import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 
 const steps = loadSqliteSequence(new URL("./sqlite/", import.meta.url));
 const [baseline, ...upgrades] = steps;
-const adoptionSql = loadSqliteSql(new URL("./sqlite/adoptions/005-six-column.sql", import.meta.url));
-const sourceSixColumnSql = loadSqliteSql(new URL("./sqlite/sources/000-six-column.sql", import.meta.url));
 const schemas = sqliteSchemaSnapshots(steps);
-const baselineSchema = schemas.get(baseline.version)!;
-const sixColumnSchema = sqliteSchemaSnapshots([{ version: 0, sql: sourceSixColumnSql }]).get(0)!;
 
 const definition = (sql: string): string => {
   const tokens = sql.match(/--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|[A-Za-z_][A-Za-z0-9_]*|[^\s]/g);
@@ -23,24 +19,12 @@ const matchesSchema = (objects: readonly SqliteSchemaObject[], expected: readonl
   const known = expected[index]!;
   return object.name === known.name && object.type === known.type && object.sql !== null && known.sql !== null && definition(object.sql) === definition(known.sql);
 });
-const validateUnversioned = (db: Database.Database): "six" | "baseline" => {
-  const objects = db.prepare("SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
-  if (matchesSchema(objects, baselineSchema)) return "baseline";
-  if (matchesSchema(objects, sixColumnSchema)) return "six";
-  return incompatible();
-};
 
 export const workerStoreFormat: SqliteFormat = {
   name: "Worker state",
   baseline: {
     version: baseline.version,
     create: db => { db.exec(baseline.sql); },
-  },
-  unversioned: {
-    validate: db => { validateUnversioned(db); },
-    adopt: db => {
-      if (validateUnversioned(db) === "six") db.exec(adoptionSql);
-    },
   },
   migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => { db.exec(step.sql); } })),
   validateVersioned: (db, version) => {

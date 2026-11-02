@@ -194,9 +194,12 @@ its continuity can be lost. Management takes the runner offline. The state
 directory is for one configured service/account/worker identity; changes require completing
 old executions and rebuilding local state.
 
-Known unversioned minimal indexes are adopted at format version 5, preserving
-rows and adding the existing Herdr mode where it was absent. The retired detailed
-schema still has no conversion or automatic deletion: an operator stops the old
-worker and removes that old SQLite before new-schema startup, retaining workerId
-and native history. The SQLite migration decision owns that format distinction. Component checks and schema verification do not
+The index uses format version 5. The
+[unversioned reset decision](../architecture/2026-11-02-unversioned-sqlite-reset.md)
+replaces the later known-source adoption policy: version 0 discards its schema and
+rows, then rebuilds through the baseline and numbered upgrades after admission.
+Retired detailed nonzero versions 1–4 still have no conversion or automatic
+deletion: an operator stops the old worker and removes that SQLite before
+new-schema startup, retaining workerId and native history. Valid nonzero
+migrations preserve data. Component checks and schema verification do not
 establish native conversation or cross-platform whole-Goal acceptance.

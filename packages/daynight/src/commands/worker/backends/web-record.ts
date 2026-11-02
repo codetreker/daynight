@@ -90,7 +90,6 @@ const parseCleanup = (value: unknown): CleanupState => {
 };
 
 const key = (identity: ClaimIdentity): string => [identity.projectId, identity.taskId, identity.claimId].map(value => id(value, "Execution identity")).join("/");
-// Baseline adoption uses this parser without rewriting records; new persisted contracts require a separate parser.
 const validate = (task: LocalTask): LocalTask => {
   record(task, ["projectId", "taskId", "claimId", "worktreeId", "serverOrigin", "workerId", "userId", "status", "repoUrl", "repositoryPath", "configuration", "resources", "nativeExecution", "webExecution", "recovery", "cleanup", "control", "createdAt", "updatedAt"], "Web execution record");
   key(task); normalizeServerUrl(task.serverOrigin); id(task.workerId, "Worker ID"); id(task.worktreeId, "Worktree ID");

@@ -86,16 +86,27 @@ describe("durable SQLite initialization", () => {
     expect(sql.prepare("SELECT value FROM future_data").get()).toEqual({ value: "preserved" });
   });
 
-  it("rejects an unknown unversioned structure before creating schema objects", () => {
+  it("resets an unknown unversioned structure before normal store writes", () => {
     const { file, store } = fixture();
     close(store);
     const sql = connect(file);
-    sql.exec("DROP TABLE repositories; DROP TABLE pull_requests; DROP TABLE reviews; DROP TABLE review_publications; CREATE TABLE reviews (sentinel TEXT); INSERT INTO reviews VALUES ('retained')");
+    sql.exec("DROP TABLE repositories; DROP TABLE pull_requests; DROP TABLE reviews; DROP TABLE review_publications; CREATE TABLE reviews (sentinel TEXT); INSERT INTO reviews VALUES ('discarded')");
     sql.pragma("user_version = 0");
+    const reset = open(file);
+    expect(reset.listRepositories()).toEqual([]);
+    reset.registerRepository({ ...repository, remote: "https://github.com/owner/repo.git", localPath: path.dirname(file) });
+    expect(reset.getRepository(repository)).toMatchObject(repository);
+    expect(sql.pragma("user_version", { simple: true })).toBe(2);
+    expect((sql.pragma("table_info(reviews)") as { name: string }[]).map(row => row.name)).not.toContain("sentinel");
+    expect(sql.prepare("SELECT count(*) AS total FROM review_publications").get()).toEqual({ total: 0 });
+  });
+
+  it("rejects an unknown nonzero schema without rewriting its version or contents", () => {
+    const { file, store } = fixture(); close(store);
+    const sql = connect(file); sql.exec("DROP TABLE reviews; CREATE TABLE reviews(sentinel TEXT); INSERT INTO reviews VALUES ('preserved')"); sql.pragma("user_version=1");
     expect(() => openStore(file)).toThrow("invalid-format");
-    expect(sql.pragma("user_version", { simple: true })).toBe(0);
-    expect(sql.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all()).toEqual([{ name: "reviews" }]);
-    expect(sql.prepare("SELECT sentinel FROM reviews").get()).toEqual({ sentinel: "retained" });
+    expect(sql.pragma("user_version", { simple: true })).toBe(1);
+    expect(sql.prepare("SELECT sentinel FROM reviews").get()).toEqual({ sentinel: "preserved" });
   });
 
   it("migrates schema1 transactionally while retaining sessions, worktrees, active process identities and historical completions", () => {

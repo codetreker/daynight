@@ -30,7 +30,7 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => { if (fixture !== undefined) await fixture.cleanup(); });
 
-it("ships exact SQL resources and executes every store's filename-ordered installed migration sequence", () => {
+it("ships exact SQL resources and initializes and resets every installed store from its filename-ordered sequence", () => {
   let count = 0;
   for (const directory of sqlDirectories) {
     const source = files(path.join(packageDirectory, "src", directory));
@@ -38,7 +38,7 @@ it("ships exact SQL resources and executes every store's filename-ordered instal
     count += Object.keys(source).length;
     expect(files(path.join(installed, "dist", directory))).toEqual(source);
   }
-  expect(count).toBe(12);
+  expect(count).toBe(10);
   const cwd = path.join(fixture.receipt.root, "different caller 中文");
   const databases = path.join(fixture.receipt.root, "databases");
   mkdirSync(cwd); mkdirSync(databases);
@@ -59,12 +59,22 @@ const owners = [
 const versions = [];
 for (const [module, name, version, tables] of owners) {
   const format = (await load(module))[name];
-  const db = openSqliteDatabase({ file: path.join(directory, name + ".sqlite"), format, allowEmpty: true, onMigration: () => {} });
+  const file = path.join(directory, name + ".sqlite");
+  const db = openSqliteDatabase({ file, format, allowCreate: true, onMigration: () => {} });
   try {
     assert.equal(db.pragma("user_version", { simple: true }), version);
     assert.deepEqual(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all().map(row => row.name), tables);
+    db.exec("CREATE TABLE obsolete(value TEXT); INSERT INTO obsolete VALUES('discarded'); CREATE VIEW obsolete_view AS SELECT * FROM obsolete;");
+    db.pragma("user_version = 0");
     versions.push(version);
   } finally { db.close(); }
+  const reset = openSqliteDatabase({ file, format, allowCreate: false, onMigration: () => {} });
+  try {
+    assert.equal(reset.pragma("user_version", { simple: true }), version);
+    assert.deepEqual(reset.prepare("SELECT name FROM sqlite_schema WHERE name IN ('obsolete','obsolete_view')").all(), []);
+    assert.deepEqual(reset.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all().map(row => row.name), tables);
+    for (const table of tables) assert.equal(reset.prepare('SELECT count(*) AS count FROM "' + table + '"').get().count, 0);
+  } finally { reset.close(); }
 }
 console.log(JSON.stringify(versions));
 `, [installed, databases], cwd);

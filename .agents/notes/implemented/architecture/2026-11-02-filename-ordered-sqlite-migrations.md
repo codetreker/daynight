@@ -6,9 +6,10 @@ Status: implemented
 
 Independent SQL files and a separate TypeScript step list give migration order two
 representations. Adding a numbered SQL file can leave it packaged but inactive
-until another source file is updated. Source/adoption SQL also needs a distinct
-role: placing it beside ordinary upgrades risks treating reference construction
-or a conditional conversion as an unconditional migration.
+until another source file is updated. At the original decision, source/adoption
+SQL also needed a distinct role: placing it beside ordinary upgrades risked
+treating reference construction or a conditional conversion as an unconditional
+migration.
 
 ## Decision
 
@@ -32,19 +33,21 @@ directory is rejected as a candidate; `README.txt`, `.DS_Store` and ordinary
 auxiliary directories are outside discovery. A baseline need not start at 1;
 Worker retains `005-baseline.sql` and version 5.
 
-Worker's `sources/000-six-column.sql` supplies only a known-source reference, and
-`adoptions/005-six-column.sql` runs only after its conditional source admission.
-Non-SQL entries and ordinary auxiliary subdirectories do not enter the chain.
-TypeScript retains domain selection, JSON transforms and ownership checks, without
-supplying another
-ordinary SQL execution order.
+Five baselines and five upgrades form the current SQL inventory. Non-SQL entries
+and ordinary auxiliary subdirectories do not enter the chain. TypeScript retains
+domain selection, JSON transforms and ownership checks without supplying another
+ordinary SQL execution order. The
+[unversioned reset decision](2026-11-02-unversioned-sqlite-reset.md) removes the
+Worker source-only reference and conditional adoption resources; version 0 now
+rebuilds through this same numbered chain after domain admission.
 
 The [SQL resource decision](2026-11-02-sqlite-sql-resources.md) still owns resource
 loading, reference metadata and packaging. It initially used fixed file URLs and
 explicit versions to make ordering visible and exclude auxiliary SQL. Filename
-authority replaces only that order registration, while dedicated auxiliary
-directories retain the exclusion. Per-store formats, `user_version`, snapshot
-consistency, transactional conversion and process/lease responsibilities remain
+authority replaces only that order registration. The original source/adoption
+subdirectories kept a Worker source reference and conditional conversion out of
+unconditional execution; the reset decision later removes that separate policy.
+Per-store formats, `user_version`, snapshot consistency, transactional conversion and process/lease responsibilities remain
 with the [migration decision](2026-10-30-cli-sqlite-migrations.md).
 
 ## Alternatives
@@ -57,8 +60,9 @@ without another list to synchronize.
 
 **Scan a mixed root containing upgrades, references and adoptions.** An ordinary
 filename sequence could execute a source-only CREATE layout or conditional
-Worker adoption as if every database needed it. Auxiliary subdirectories preserve
-the distinct roles without another file-order registry.
+Worker adoption as if every database needed it. Auxiliary subdirectories
+preserved the distinct roles without another file-order registry while that
+adoption policy was active. Its removal does not broaden top-level discovery.
 
 ## Consequences
 

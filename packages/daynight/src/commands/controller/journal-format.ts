@@ -25,6 +25,7 @@ export const controllerJournalFormat: SqliteFormat = {
 
 export const assertJournalMigrationAllowed = (db: Database.Database, source: SqliteSource): undefined => {
   if (source.kind === "empty") return;
+  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type IN ('table','view') AND name='execution' COLLATE NOCASE").get() === undefined) return;
   const owner = db.prepare("SELECT owner_pid FROM execution WHERE id=1").get() as { owner_pid: number | null } | undefined;
   if (owner === undefined || owner.owner_pid === null) return;
   try { process.kill(owner.owner_pid, 0); }

@@ -62,68 +62,67 @@ it("retains shutdown provenance across worker reopen without resetting recovery 
   expect(next.recovery).toEqual(task.recovery);
 });
 
-const unversionedFixture = () => {
-  const root = directory(), file = path.join(root, "state.sqlite"), db = connect(file);
-  db.exec("CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT;");
-  const claim = { projectId: id(1), taskId: id(2), claimId: id(3) };
-  const task = {
-    ...claim, worktreeId: id(5), serverOrigin: "https://daynight.example", workerId: id(4), userId: id(6), status: "active",
-    repoUrl: "https://example.test/p.git", repositoryPath: root,
-    configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 },
-    resources: { mode: "web", worktree: null, herdr: null, nativeSession: { source: "controller", sessionId: id(7) } },
-    nativeExecution: null,
-    webExecution: {
-      executionId: id(10), registrationId: id(11), controllerId: id(12), controllerInstanceId: id(13), launchId: id(14), sessionId: id(15),
-      executionGeneration: "2", initialOperationId: id(16), initialPrompt: "original prompt", launchSubmission: "acknowledged",
-      controllerProcess: null, nativeProcesses: [], cleanupOperationId: null, ticketPath: null,
-    },
-    recovery: { count: 1, pauseReason: null, retryAuthorized: false }, cleanup: null, control: null, createdAt: 1, updatedAt: 2,
-  };
-  const key = [claim.projectId, claim.taskId, claim.claimId].join("/"), data = JSON.stringify(task, null, 2);
-  db.prepare("INSERT INTO executions VALUES(?,?)").run(key, data);
-  return { file, db, claim, key, data, task };
-};
-
-it("adopts current unversioned JSON without rewriting missing optional fields or source bytes", () => {
-  const { file, db, claim, key, data } = unversionedFixture();
+it("rebuilds the current unversioned schema and discards its execution records", () => {
+  const { file, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  store.initializeWebExecution(claim, 2);
+  close(store);
+  const db = connect(file); db.pragma("user_version = 0");
   const events: unknown[] = [];
-  const store = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(store);
+  const rebuilt = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(rebuilt);
   expect(db.pragma("user_version", { simple: true })).toBe(1);
-  expect(db.prepare("SELECT data FROM executions WHERE identity=?").get(key)).toEqual({ data });
-  expect(store.getTask(claim)?.webExecution).toMatchObject({ restartAfterShutdown: false, nativeHome: null, summary: null, initialInputState: "unknown", activity: "unknown", initialPrompt: "original prompt" });
-  expect(store.getTask(claim)?.resources.nativeSession).toEqual({ source: "controller", sessionId: id(7) });
-  expect(events).toHaveLength(2);
-  close(store); events.length = 0;
+  expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
+  expect(rebuilt.getTask(claim)).toBeNull();
+  expect(events).toMatchObject([{ kind: "started", fromVersion: 0, toVersion: 1 }, { kind: "completed", fromVersion: 0, toVersion: 1 }]);
+  close(rebuilt); events.length = 0;
   const reopened = openWebExecutionStore(file, { onMigration: event => { events.push(event); } }); stores.add(reopened);
   expect(events).toEqual([]);
-  expect(db.prepare("SELECT data FROM executions WHERE identity=?").get(key)).toEqual({ data });
 });
 
-it("rejects malformed or mismatched unversioned records before writing version or journal mode", () => {
-  const { file, db, key } = unversionedFixture();
-  const invalid = '{"stored":"private value"}'; db.prepare("UPDATE executions SET data=? WHERE identity=?").run(invalid, key);
-  expect(db.pragma("journal_mode", { simple: true })).toBe("delete");
-  expect(() => open(file)).toThrow("invalid-format");
-  expect(db.pragma("user_version", { simple: true })).toBe(0);
-  expect(db.pragma("journal_mode", { simple: true })).toBe("delete");
-  expect(db.prepare("SELECT data FROM executions").get()).toEqual({ data: invalid });
+it.each(["not json", '{"stored":"private value"}'])("discards malformed unversioned records without parsing them: %s", data => {
+  const root = directory(), file = path.join(root, "state.sqlite"), db = connect(file);
+  db.exec("CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT;");
+  db.pragma("ignore_check_constraints = ON");
+  db.prepare("INSERT INTO executions VALUES(?,?)").run("another-claim", data);
+  const rebuilt = open(file);
+  expect(db.pragma("user_version", { simple: true })).toBe(1);
+  expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
+  expect(rebuilt.listUnfinishedTasks()).toEqual([]);
 });
 
-it("rejects a row whose SQL key differs from the original claim without rewriting it", () => {
-  const { file, db, data } = unversionedFixture();
-  db.prepare("UPDATE executions SET identity=?").run("another-claim");
-  expect(() => open(file)).toThrow("invalid-format");
-  expect(db.pragma("user_version", { simple: true })).toBe(0);
-  expect(db.prepare("SELECT identity, data FROM executions").get()).toEqual({ identity: "another-claim", data });
+it("rebuilds an unknown unversioned schema with duplicate execution identities", () => {
+  const root = directory(), file = path.join(root, "state.sqlite"), db = connect(file);
+  db.exec("CREATE TABLE executions(identity TEXT, data TEXT); CREATE TABLE unrelated(value TEXT); INSERT INTO executions VALUES('duplicate', 'invalid'), ('duplicate', 'invalid'); INSERT INTO unrelated VALUES('discarded')");
+  const rebuilt = open(file);
+  expect(db.pragma("user_version", { simple: true })).toBe(1);
+  expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()).toEqual([{ name: "executions" }]);
+  expect(rebuilt.listUnfinishedTasks()).toEqual([]);
+  expect(() => db.exec("INSERT INTO executions VALUES('invalid', 'not json')")).toThrow("CHECK constraint failed");
 });
 
-it("rejects newer and unknown table formats without deleting state", () => {
-  const { file, db, data } = unversionedFixture(); db.pragma("user_version=2");
+it("rejects newer and unknown nonzero table formats without deleting state", () => {
+  const { file, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  close(store);
+  const db = connect(file), before = db.prepare("SELECT * FROM executions").all();
+  db.pragma("user_version=2");
   expect(() => open(file)).toThrow("unsupported-version");
   expect(db.pragma("user_version", { simple: true })).toBe(2);
-  expect(db.prepare("SELECT data FROM executions").get()).toEqual({ data });
-  db.pragma("user_version=0"); db.exec("CREATE TABLE unexpected(value TEXT)");
+  expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
+  db.pragma("user_version=1"); db.exec("CREATE TABLE unexpected(value TEXT); INSERT INTO unexpected VALUES('retained')");
   expect(() => open(file)).toThrow("invalid-format");
+  expect(db.pragma("user_version", { simple: true })).toBe(1);
+  expect(db.prepare("SELECT * FROM executions").all()).toEqual(before);
+  expect(db.prepare("SELECT value FROM unexpected").get()).toEqual({ value: "retained" });
+});
+
+it("validates current-version execution records during ordinary reads", () => {
+  const { file, store, project, claim } = fixture();
+  store.register({ ...claim, project, configuration: { agent: "codex", agentControlMode: "web", model: null, args: [], recoveryLimit: 2 }, userId: id(6) }, 1);
+  const db = connect(file), data = '{"stored":"private value"}';
+  db.prepare("UPDATE executions SET data=?").run(data);
+  expect(() => store.getTask(claim)).toThrow("Web execution record");
+  expect(db.pragma("user_version", { simple: true })).toBe(1);
   expect(db.prepare("SELECT data FROM executions").get()).toEqual({ data });
 });
 

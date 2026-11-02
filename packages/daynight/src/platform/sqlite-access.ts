@@ -14,7 +14,7 @@ export type SqliteMigrationEvent = {
 };
 export type SqliteMigrationReporter = (event: SqliteMigrationEvent) => undefined;
 type CommonOptions = { file: string; format: SqliteFormat; timeoutMs?: number; onMigration?: SqliteMigrationReporter; assertMigrationAllowed?: (db: Database.Database, source: SqliteSource) => void };
-export type OpenSqliteOptions = CommonOptions & { allowEmpty: boolean; onReady?: (db: Database.Database) => void };
+export type OpenSqliteOptions = CommonOptions & { allowCreate: boolean; onReady?: (db: Database.Database) => void };
 export type ReadSqliteOptions<T> = CommonOptions & { onMissing: () => T; acquireMaintenance?: () => MaintenancePermit };
 const outcomes = new WeakMap<object, SqliteOutcome>();
 const phases = new WeakMap<object, string>();
@@ -80,7 +80,7 @@ const accessContext = (error: unknown, depth = 0): SqliteAccessError | undefined
 };
 const wrap = (options: CommonOptions, phase: string, cause: unknown, closed: boolean, outcome: SqliteOutcome, fromVersion?: number): SqliteAccessError => {
   const original = accessContext(cause);
-  const kind = phase === "close" || phase === "report" || phase === "release" ? "cleanup-failed" : original !== undefined ? original.kind : phase === "admission" ? "upgrade-blocked" : "migration-failed";
+  const kind = phase === "close" || phase === "report" || phase === "release" || phase === "restore-foreign-keys" ? "cleanup-failed" : original !== undefined ? original.kind : phase === "admission" ? "upgrade-blocked" : "migration-failed";
   return new SqliteAccessError(kind, { ...context(options, phase, original?.context.fromVersion === undefined ? fromVersion : original.context.fromVersion), ...(original?.context.stepVersion === undefined ? {} : { stepVersion: original.context.stepVersion }) }, { cause, connectionClosed: closed, outcome });
 };
 export const closeSqliteDatabase = (db: Database.Database, options: Pick<CommonOptions, "file" | "format">, outcome: SqliteOutcome = "unknown"): void => {
@@ -90,13 +90,13 @@ export const closeSqliteDatabase = (db: Database.Database, options: Pick<CommonO
 export const openSqliteDatabase = (options: OpenSqliteOptions): Database.Database => {
   const timeout = validateOptions(options), report = options.onMigration === undefined ? stderrReporter : options.onMigration;
   let db: Database.Database;
-  try { db = new Database(options.file, { timeout, fileMustExist: !options.allowEmpty }); }
+  try { db = new Database(options.file, { timeout, fileMustExist: !options.allowCreate }); }
   catch (cause) { throw wrap(options, "open", cause, true, "not-started"); }
   let phase = "inspect", source: SqliteSource | undefined, migrationId: string | undefined, started = 0, committed = false;
   const event = (kind: SqliteMigrationEvent["kind"], eventPhase: string, outcome: SqliteOutcome, transition?: SqliteTransition | null): SqliteMigrationEvent => ({ migrationId: migrationId!, database: options.format.name, file: options.file, kind, phase: eventPhase, fromVersion: transition === null ? currentSqliteVersion(options.format) : transition?.fromVersion ?? source!.version, toVersion: currentSqliteVersion(options.format), durationMs: Date.now() - started, outcome });
   try {
     source = runSqliteTransaction(db, "DEFERRED", () => {
-      const observed = inspectSqlite(db, options.format, { allowEmpty: options.allowEmpty });
+      const observed = inspectSqlite(db, options.format);
       // Keep the observed version available if ending the read snapshot fails.
       source = observed;
       return observed;
@@ -106,15 +106,43 @@ export const openSqliteDatabase = (options: OpenSqliteOptions): Database.Databas
     if (db.pragma("journal_mode = WAL", { simple: true }) !== "wal") throw new Error("SQLite refused WAL mode.");
     db.pragma("synchronous = FULL");
     if (db.pragma("synchronous", { simple: true }) !== 2) throw new Error("SQLite refused synchronous=FULL.");
-    phase = "transaction";
-    const transition = runSqliteImmediate(db, () => {
-      const fresh = inspectSqlite(db, options.format, { allowEmpty: options.allowEmpty });
-      if (fresh.kind !== "current") { phase = "admission"; options.assertMigrationAllowed?.(db, fresh); }
-      phase = "migrate"; const result = upgradeSqlite(db, options.format, { allowEmpty: options.allowEmpty });
-      phase = "startup"; options.onReady?.(db);
-      return result;
-    });
-    committed = true;
+    const originalForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+    const foreignKeysFor = (observed: SqliteSource): number => observed.kind === "unversioned" ? 0 : originalForeignKeys;
+    const configureForeignKeys = (mode: number): void => {
+      db.pragma(`foreign_keys = ${mode}`);
+      if (db.pragma("foreign_keys", { simple: true }) !== mode) throw new Error("SQLite refused the required foreign key mode.");
+    };
+    let foreignKeys = originalForeignKeys, transition: SqliteTransition | null = null;
+    // Foreign-key mode changes require a transaction boundary if a writer changed the inspected source.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      phase = "configure";
+      const requiredForeignKeys = foreignKeysFor(source);
+      if (foreignKeys !== requiredForeignKeys) { configureForeignKeys(requiredForeignKeys); foreignKeys = requiredForeignKeys; }
+      phase = "transaction";
+      const result = runSqliteImmediate(db, (): { kind: "handoff"; source: SqliteSource } | { kind: "committed"; transition: SqliteTransition | null } => {
+        const fresh = inspectSqlite(db, options.format);
+        if (foreignKeysFor(fresh) !== foreignKeys) {
+          phase = "handoff";
+          if (attempt !== 0) throw new Error("SQLite source changed repeatedly while selecting the foreign key mode.");
+          return { kind: "handoff", source: fresh };
+        }
+        if (fresh.kind !== "current") { phase = "admission"; options.assertMigrationAllowed?.(db, fresh); }
+        phase = "migrate"; const upgraded = upgradeSqlite(db, options.format);
+        phase = "startup"; options.onReady?.(db);
+        if (upgraded?.reset === true) {
+          phase = "foreign-key-check";
+          const violations = db.pragma("foreign_key_check") as unknown[];
+          if (violations.length !== 0) throw new Error("SQLite foreign key validation failed after reset.");
+        }
+        return { kind: "committed", transition: upgraded };
+      });
+      if (result.kind === "handoff") { source = result.source; continue; }
+      committed = true;
+      transition = result.transition;
+      break;
+    }
+    phase = "restore-foreign-keys";
+    if (foreignKeys !== originalForeignKeys) configureForeignKeys(originalForeignKeys);
     if (migrationId !== undefined) { phase = "report"; report(event("completed", transition === null ? "already-current" : "commit", "committed", transition)); }
     return db;
   } catch (primary) {
@@ -151,7 +179,7 @@ const readAttempt = <T>(options: ReadSqliteOptions<T>, read: (db: Database.Datab
   let result: ReadAttempt<T> | undefined, failed = false, failure: unknown;
   try {
     result = db.transaction((): ReadAttempt<T> => {
-      const source = inspectSqlite(db, options.format, { allowEmpty: false });
+      const source = inspectSqlite(db, options.format);
       if (source.kind !== "current") {
         if (allowUpgrade) return { kind: "upgrade" };
         throw new SqliteAccessError("invalid-format", context(options, "read-after-upgrade", source.version));
@@ -178,7 +206,7 @@ export const readSqliteDatabase = <T>(options: ReadSqliteOptions<T>, read: (db: 
   }
   let db: Database.Database | undefined, closed = false, failed = false, failure: unknown, outcome: SqliteOutcome = "unknown";
   try {
-    db = openSqliteDatabase({ file: options.file, format: options.format, allowEmpty: false, ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }), ...(options.assertMigrationAllowed === undefined ? {} : { assertMigrationAllowed: options.assertMigrationAllowed }) });
+    db = openSqliteDatabase({ file: options.file, format: options.format, allowCreate: false, ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }), ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }), ...(options.assertMigrationAllowed === undefined ? {} : { assertMigrationAllowed: options.assertMigrationAllowed }) });
     outcome = "committed"; closeSqliteDatabase(db, options, outcome); closed = true;
   } catch (cause) { failed = true; failure = cause; closed = cause instanceof SqliteAccessError && cause.connectionClosed; outcome = cause instanceof SqliteAccessError ? cause.outcome : "unknown"; }
   if (permit !== undefined && closed && outcome !== "unknown") {

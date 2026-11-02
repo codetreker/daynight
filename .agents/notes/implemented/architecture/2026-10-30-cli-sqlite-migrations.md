@@ -18,9 +18,9 @@ retained instance lock and erase uncertainty about surviving native agents.
 ## Decision
 
 Each store explicitly supplies its own format definition and `user_version`
-sequence. Baselines, SQL upgrades and known-source SQL adoption are independent
-`.sql` resources. Each owner selects its directory; top-level filenames define
-the baseline, versions and execution order.
+sequence. Baselines and SQL upgrades are independent `.sql` resources. Each owner
+selects its directory; top-level filenames define the baseline, versions and
+execution order.
 The shared executor handles definition validation, source inspection, ordered
 synchronous steps and version advancement; connection adapters handle read
 snapshots, migration transactions, close errors and diagnostics. SQL scripts do
@@ -37,14 +37,22 @@ The [requirements](../../../../docs/spec/cli-sqlite-migrations.md) and
 and lifecycle.
 
 Review remains at version 2 and Controller journals at version 5, preserving
-their existing conversions. Known unversioned minimal Worker indexes enter
-version 5; retired detailed layouts remain unsupported. Web execution state and
-native resume leases establish their independent version 1. Registration keeps
-current records and the existing Web JSON strings instead of turning versioning
-into a data-cleaning operation. The minimal index still has only its business
-columns; no history, identity or recovery ledger is added.
+their nonzero conversions. Worker uses version 5; retired detailed versions 1–4
+remain unsupported. Web execution state and native resume leases use their
+independent version 1. The [unversioned reset decision](2026-11-02-unversioned-sqlite-reset.md)
+replaces source adoption: all five version-0 databases discard their original
+schema and data after domain admission, then rebuild through the baseline and
+numbered upgrades. The minimal index still has only its business columns; no
+history, identity or recovery ledger is added.
 
-Every source inspection reads its version and schema in one snapshot, including
+The initial policy adopted known unversioned minimal Worker indexes, supplied
+Herdr mode where it was absent and registered Web state while preserving its
+existing JSON strings. This preserved useful retained records without making
+registration a data-cleaning operation. That rationale remains historical; the
+reset decision deliberately gives up unversioned data preservation and removes
+its source-specific validation and conversion paths.
+
+Every nonzero source inspection reads its version and schema in one snapshot, including
 the writable opener's initial preflight. That short DEFERRED transaction ends
 before WAL/FULL configuration; the IMMEDIATE migration transaction then reads
 the actual source again. Concurrent commits cannot combine an old version with a
@@ -52,9 +60,10 @@ new schema during validation.
 
 Current-format queries also inspect and read their business data in one readonly
 snapshot, without additional migration write permission or instance-lock
-acquisition. A supported older format is upgraded through a short writable
-connection before reopening the query snapshot. Missing databases retain each
-entrypoint's established meaning; permissions, corruption and unknown formats
+acquisition. A supported nonzero older format is upgraded, or version 0 is reset,
+through a short writable connection before reopening the query snapshot. Missing
+databases retain each entrypoint's established meaning; permissions, corruption
+and unknown nonzero formats
 remain visible failures.
 
 Pure maintenance refuses every preexisting instance lock, including dead or
@@ -75,10 +84,12 @@ commit/close outcome retains the row. The original reporting error remains the
 operation failure, with any reconciliation error aggregated. This is cleanup of
 a proven prelaunch acquisition, not stale-lease recovery.
 
-A migration transaction commits all pending SQL/JSON steps and its version
-updates together. Its explicit synchronous boundary preserves the original
-failure if rollback or close also fails. Commit success remains a known fact even
-when a later close or reporter fails. Database failures are kept outside IPC-only
+A migration transaction commits reset when required, all pending SQL/JSON steps
+and its version updates together. Its explicit synchronous boundary preserves
+the original failure if rollback or close also fails. Commit success remains a known fact even
+when later restoration of the connection's foreign-key setting, close or
+reporting fails. The reset decision owns temporary foreign-key handling and its
+post-commit restoration boundary. Database failures are kept outside IPC-only
 catch paths; an independent launcher still attempts local stopping while keeping
 journal failures and incomplete stop evidence.
 
@@ -130,8 +141,8 @@ file's actual version. Large JSON conversions retain one write transaction and
 bounded memory rather than exposing partial commits.
 
 Completely unversioned older binaries cannot be made to follow guards they do
-not contain. Initial adoption requires exiting related old processes and
-preserving unresolved ownership evidence; concurrent mixed-binary operation and
-automatic downgrade are not guarantees. Unknown layouts, hand-edited structures
-outside the accepted source definitions and external-file conversions require an
-explicitly defined transition rather than heuristic repair.
+not contain. Switching from those binaries requires exiting related old
+processes and preserving unresolved ownership evidence; concurrent mixed-binary
+operation and automatic downgrade are not guarantees. Unknown nonzero layouts,
+hand-edited structures outside accepted versioned definitions and external-file conversions require an explicitly defined
+transition rather than heuristic repair. Version 0 follows the reset policy.

@@ -92,7 +92,7 @@ export const openStore = (databaseFile: string, options: { busyTimeoutMs?: numbe
   requireInteger(busyTimeoutMs, "SQLite busy timeout", 1);
   if (busyTimeoutMs > 60000) throw new Error("SQLite busy timeout must not exceed 60000 milliseconds.");
   const db = openSqliteDatabase({
-    file: databaseFile, format: reviewFormat, allowEmpty: true, timeoutMs: busyTimeoutMs,
+    file: databaseFile, format: reviewFormat, allowCreate: true, timeoutMs: busyTimeoutMs,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }),
   });
   const atomic = <T>(operation: () => T): T => {

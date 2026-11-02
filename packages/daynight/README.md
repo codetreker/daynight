@@ -1156,12 +1156,13 @@ The state directory belongs to the configured single service, Daynight account
 and workerId. Finish old executions before changing those identities and
 rebuilding local state. The running process pins its startup authenticated user;
 the claim-index database does not retain prior-service or prior-account recovery
-scopes. The claim index has its own `user_version=5`. Known unversioned minimal
-six-column or seven-column task indexes are adopted automatically, retaining
-records and assigning the existing `herdr` mode where the column was absent.
-Detailed worker formats 1–4 remain unsupported: stop the old worker and remove
-that old SQLite database yourself before new-schema startup. The CLI never deletes
-it automatically. Keep workerId and native history. Each business database owns
+scopes. The claim index has its own `user_version=5`. All five business databases
+reset `user_version=0` after their ownership checks: the original schema and data
+are discarded, then the baseline and numbered upgrades rebuild the current
+format. This includes existing empty files and query access. Known valid nonzero
+migrations preserve data; detailed worker formats 1–4 remain unsupported and are
+retained on refusal. Stop the old worker and remove that unsupported database
+yourself before new-schema startup. Keep workerId and native history. Each business database owns
 its migration sequence; the [SQLite migration requirements](../../docs/spec/cli-sqlite-migrations.md)
 define atomicity, ownership blockers and supported starting formats.
 
@@ -1368,8 +1369,9 @@ required separately from protocol tests.
 
 The primary worker database retains its claim and native-session index. Web
 execution state lives separately in `~/.daynight/worker/web-executions.sqlite`
-with its own format version 1. Its existing unversioned JSON records are validated
-without rewriting their stored strings. Private launch tickets and Controller
+with its own format version 1. Version 0 resets its schema and data through the
+common SQLite policy; current-version CRUD retains the existing JSON parser and
+default-field behavior. Private launch tickets and Controller
 journals live under `~/.daynight/controller/`; journals retain their independent
 format version 5. Both Worker stores must open successfully before scheduling.
 Web restart reconnects to a surviving Controller. Starting a new generation
@@ -1709,8 +1711,9 @@ verification.
 Each store's baseline and SQL conversions ship as `.sql` resources with the
 installed dist tree. Top-level SQL files in that store's directory run in lexical
 filename order: the first is its baseline, and consecutive numeric prefixes set
-later versions. TypeScript keeps conditional adoption, JSON and ownership logic;
-auxiliary SQL subdirectories do not enter the normal chain. Resource loading and
+later versions. Five baselines and five upgrades form the current SQL inventory.
+TypeScript keeps JSON conversion, ownership checks and the atomic version-0 reset;
+ordinary non-SQL subdirectories do not enter the normal chain. Resource loading and
 sequence validation finish before user-database access; package checks compare
 source and installed resources. The shared
 [SQLite migration design](../../docs/design/cli-sqlite-migrations.md) explains

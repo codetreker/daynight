@@ -132,7 +132,7 @@ export const acquireResume = async (input: { provider: SessionProvider; sessionI
     if (failed) throw failure;
   };
   try {
-    db = openSqliteDatabase({ file, format: nativeResumeLeaseFormat, allowEmpty: true,
+    db = openSqliteDatabase({ file, format: nativeResumeLeaseFormat, allowCreate: true,
       assertMigrationAllowed: assertResumeLeaseMigrationAllowed,
       onReady: (db) => {
         if (db.prepare("SELECT native_key FROM leases WHERE native_key=?").get(key)) throw new Error("This native session already has a resume lease. Confirm and reconcile its original execution; an expired or missing launcher is not permission to replace it.");

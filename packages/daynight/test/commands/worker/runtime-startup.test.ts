@@ -201,18 +201,18 @@ it("retains a committed Worker upgrade when Web state fails and resumes after it
   await mkdir(f.paths.workerDirectory, { recursive: true });
   const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
   const invalid = new Database(webFile);
-  invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original')");
+  invalid.exec("CREATE TABLE retained(value TEXT); INSERT INTO retained VALUES('original'); PRAGMA user_version=2");
   invalid.close();
-  await expect(runWorker(f)).rejects.toThrow("invalid-format");
+  await expect(runWorker(f)).rejects.toThrow("unsupported-version");
   expect(mocks.coordinator).not.toHaveBeenCalled();
   const worker = new Database(f.paths.databaseFile);
   expect(worker.pragma("user_version", { simple: true })).toBe(5);
   expect(worker.prepare("SELECT COUNT(*) AS count FROM tasks").get()).toEqual({ count: 0 });
   worker.close();
   const web = new Database(webFile);
-  expect(web.pragma("user_version", { simple: true })).toBe(0);
+  expect(web.pragma("user_version", { simple: true })).toBe(2);
   expect(web.prepare("SELECT value FROM retained").get()).toEqual({ value: "original" });
-  web.exec("DROP TABLE retained; CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT;");
+  web.exec("DROP TABLE retained; CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT; PRAGMA user_version=1");
   web.close();
   const controller = new AbortController();
   mocks.coordinator.mockReturnValue(coordinator(async () => { controller.abort(new Error("Repaired state observed.")); }));
@@ -224,4 +224,22 @@ it("retains a committed Worker upgrade when Web state fails and resumes after it
   const unchangedWorker = new Database(f.paths.databaseFile);
   expect(unchangedWorker.pragma("user_version", { simple: true })).toBe(5);
   unchangedWorker.close();
+});
+
+it("rebuilds unknown zero-version Web state before starting its coordinator", async () => {
+  const f = await fixture(false, true);
+  await mkdir(f.paths.workerDirectory, { recursive: true });
+  const webFile = path.join(f.paths.workerDirectory, "web-executions.sqlite");
+  const original = new Database(webFile);
+  original.exec("CREATE TABLE unrelated(value TEXT); INSERT INTO unrelated VALUES('discarded')");
+  original.close();
+  const controller = new AbortController();
+  mocks.coordinator.mockReturnValue(coordinator(async () => { controller.abort(new Error("Rebuilt state observed.")); }));
+  await runWorker({ ...f, signal: controller.signal });
+  expect(mocks.coordinator).toHaveBeenCalledOnce();
+  const web = new Database(webFile);
+  expect(web.pragma("user_version", { simple: true })).toBe(1);
+  expect(web.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all()).toEqual([{ name: "executions" }]);
+  expect(web.prepare("SELECT * FROM executions").all()).toEqual([]);
+  web.close();
 });

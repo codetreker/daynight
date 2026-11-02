@@ -6,7 +6,6 @@ import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } fr
 const steps = loadSqliteSequence(new URL("./sqlite/resume-lease/", import.meta.url));
 const [baseline, ...upgrades] = steps;
 const schemas = sqliteSchemaSnapshots(steps);
-const baselineSchema = schemas.get(baseline.version)!;
 const normalized = (sql: string): string => sql.replace(/\s+/g, "").replace(/;$/, "").toLowerCase();
 const validate = (db: Database.Database, expected: readonly SqliteSchemaObject[]): undefined => {
   const rows = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
@@ -18,7 +17,6 @@ const validate = (db: Database.Database, expected: readonly SqliteSchemaObject[]
 export const nativeResumeLeaseFormat: SqliteFormat = {
   name: "native-resume-leases",
   baseline: { version: baseline.version, create: (db) => { db.exec(baseline.sql); } },
-  unversioned: { validate: db => { validate(db, baselineSchema); }, adopt: () => {} },
   migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => { db.exec(step.sql); } })),
   validateVersioned: (db, version) => {
     const expected = schemas.get(version);
@@ -28,5 +26,6 @@ export const nativeResumeLeaseFormat: SqliteFormat = {
 };
 export const assertResumeLeaseMigrationAllowed = (db: Database.Database, source: SqliteSource): undefined => {
   if (source.kind === "empty") return;
+  if (db.prepare("SELECT 1 FROM sqlite_schema WHERE type IN ('table','view') AND name='leases' COLLATE NOCASE").get() === undefined) return;
   if (db.prepare("SELECT 1 FROM leases LIMIT 1").get() !== undefined) throw new SqliteAccessError("upgrade-blocked", { database: nativeResumeLeaseFormat.name, phase: "lease-admission", fromVersion: source.version, toVersion: currentSqliteVersion(nativeResumeLeaseFormat) });
 };

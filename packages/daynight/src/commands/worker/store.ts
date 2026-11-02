@@ -38,7 +38,7 @@ export const openWorkerStore = (databaseFile: string, options: { busyTimeoutMs?:
   absolutePath(databaseFile, "The SQLite database path");
   const busyTimeoutMs = options.busyTimeoutMs === undefined ? 5000 : options.busyTimeoutMs;
   if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 1 || busyTimeoutMs > 60_000) throw new TypeError("SQLite busy timeout must be a safe integer between 1 and 60000 milliseconds.");
-  const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowEmpty: true, timeoutMs: busyTimeoutMs,
+  const db = openSqliteDatabase({ file: databaseFile, format: workerStoreFormat, allowCreate: true, timeoutMs: busyTimeoutMs,
     ...(options.onMigration === undefined ? {} : { onMigration: options.onMigration }) });
   const atomic = <T>(operation: () => T): T => {
     let guardFailure: unknown;

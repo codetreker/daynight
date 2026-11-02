@@ -109,7 +109,7 @@ test("a symlink journal is refused before it can authorize a native writer", asy
 });
 
 
-test.each([false, true])("unversioned native leases are adopted only when no retained ownership exists (%s)", async retained => {
+test.each([false, true])("unversioned native leases reset only when no retained ownership exists (%s)", async retained => {
   const f = await fixture(), file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite");
   const db = new Database(file); db.exec("CREATE TABLE IF NOT EXISTS leases (native_key TEXT PRIMARY KEY, nonce TEXT NOT NULL, source_session_id TEXT NOT NULL, launcher_proof TEXT NOT NULL, created_at TEXT NOT NULL)");
   if (retained) db.prepare("INSERT INTO leases VALUES(?,?,?,?,?)").run("retained", "original-nonce", f.ticket.sessionId, JSON.stringify(identity), "2000-01-01T00:00:00.000Z");
@@ -122,6 +122,52 @@ test.each([false, true])("unversioned native leases are adopted only when no ret
     const check = new Database(file); try { expect(check.pragma("user_version", { simple: true })).toBe(1); expect(check.prepare("SELECT count(*) AS total FROM leases").get()).toEqual({ total: 1 }); } finally { check.close(); }
     await lease.release();
   }
+});
+
+test.each(["missing", "empty", "retained"] as const)("resume resets unknown unversioned leases only without retained rows (%s)", async kind => {
+  const f = await fixture(), file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite");
+  const db = new Database(file);
+  db.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('original')");
+  if (kind !== "missing") db.exec("CREATE TABLE leases(unrecognized_owner TEXT)");
+  if (kind === "retained") db.exec("INSERT INTO leases VALUES ('retained without a known ownership schema')");
+  db.close(); await chmod(file, 0o600);
+  if (kind === "retained") {
+    await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow("upgrade-blocked");
+    const check = new Database(file);
+    try {
+      expect(check.pragma("user_version", { simple: true })).toBe(0);
+      expect(check.prepare("SELECT * FROM leases").all()).toEqual([{ unrecognized_owner: "retained without a known ownership schema" }]);
+      expect(check.prepare("SELECT value FROM sentinel").get()).toEqual({ value: "original" });
+    } finally { check.close(); }
+  } else {
+    const lease = await acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config);
+    const check = new Database(file);
+    try {
+      expect(check.pragma("user_version", { simple: true })).toBe(1);
+      expect(check.prepare("SELECT name FROM sqlite_schema WHERE name='sentinel'").get()).toBeUndefined();
+      expect(check.prepare("SELECT source_session_id FROM leases").all()).toEqual([{ source_session_id: f.ticket.sessionId }]);
+    } finally { check.close(); await lease.release(); }
+  }
+});
+
+test.each(["table", "view"] as const)("case-insensitive %s lease evidence blocks unversioned reset", async kind => {
+  const f = await fixture(), file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite");
+  const db = new Database(file);
+  db.exec(kind === "table" ? "CREATE TABLE LeAsEs(sentinel TEXT); INSERT INTO LeAsEs VALUES ('preserved')" : "CREATE TABLE lease_evidence(sentinel TEXT); INSERT INTO lease_evidence VALUES ('preserved'); CREATE VIEW LeAsEs AS SELECT * FROM lease_evidence");
+  db.close(); await chmod(file, 0o600);
+  await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow("upgrade-blocked");
+  const check = new Database(file);
+  try { expect(check.pragma("user_version", { simple: true })).toBe(0); expect(check.prepare("SELECT sentinel FROM leases").get()).toEqual({ sentinel: "preserved" }); }
+  finally { check.close(); }
+});
+
+test.each([1, 2])("resume refuses unknown nonzero native lease version %s and preserves its data", async version => {
+  const f = await fixture(), file = path.join(f.home, ".daynight", "controller", "native-resume-leases.sqlite");
+  const db = new Database(file); db.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('preserved')"); db.pragma(`user_version=${version}`); db.close(); await chmod(file, 0o600);
+  await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow(version === 2 ? "unsupported-version" : "invalid-format");
+  const check = new Database(file);
+  try { expect(check.pragma("user_version", { simple: true })).toBe(version); expect(check.prepare("SELECT value FROM sentinel").get()).toEqual({ value: "preserved" }); }
+  finally { check.close(); }
 });
 
 test("lease release preserves its row when another actor changes the format", async () => {

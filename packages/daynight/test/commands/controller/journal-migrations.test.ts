@@ -11,7 +11,7 @@ const proof = vi.hoisted(() => ({ stopped: vi.fn() }));
 vi.mock("../../../src/commands/controller/process-proof.js", () => ({ confirmControllerProcessesStopped: proof.stopped }));
 const roots: string[] = [];
 beforeEach(() => { proof.stopped.mockReset().mockResolvedValue(true); });
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 const fixture = async () => {
   const base = path.resolve(import.meta.dirname, "../../../../../.tmp/journal-upgrades"); await mkdir(base, { recursive: true });
   const home = await mkdtemp(path.join(base, "h-")); roots.push(home);
@@ -77,13 +77,71 @@ test("startup admission failure rolls back the complete preceding migration", as
   } finally { db.close(); }
 });
 
-test("unknown and newer journal formats are rejected without migration", async () => {
-  for (const version of [0, 6]) {
-    const f = await fixture(); historical(f.file, 1, f.ticket);
-    const db = new Database(f.file); db.pragma(`user_version=${version}`); db.close();
-    expect(() => readControllerSnapshot(f.file)).toThrow();
-    const check = new Database(f.file); expect(check.pragma("user_version", { simple: true })).toBe(version); check.close();
+test.each(["snapshot", "operation", "writer"] as const)("%s resets an unknown unversioned journal through its normal entrypoint", async entrypoint => {
+  const f = await fixture(), db = new Database(f.file);
+  db.exec("CREATE TABLE original_data(value TEXT); INSERT INTO original_data VALUES ('discarded')"); db.close();
+  if (entrypoint === "snapshot") expect(readControllerSnapshot(f.file)).toBeNull();
+  else if (entrypoint === "operation") expect(readControllerOperation(f.file, f.ticket.initialOperationId)).toBeNull();
+  else {
+    const store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
+    try { expect(store.getSnapshot().executionId).toBe(f.ticket.executionId); expect(store.appendEvent({ text: "new" }).sequence).toBe("1"); }
+    finally { store.close(); }
   }
+  const check = new Database(f.file);
+  try {
+    expect(check.pragma("user_version", { simple: true })).toBe(5);
+    expect(check.prepare("SELECT name FROM sqlite_schema WHERE name='original_data'").get()).toBeUndefined();
+    expect(check.prepare("SELECT count(*) AS total FROM resources").get()).toEqual({ total: 0 });
+  } finally { check.close(); }
+});
+
+test.each([null, 2_000_000_000])("unversioned journals discard historical evidence after admitting owner %s", async owner => {
+  const f = await fixture(); historical(f.file, 0, f.ticket, owner);
+  expect(readControllerSnapshot(f.file)).toBeNull();
+  expect(readControllerOperation(f.file, f.ticket.initialOperationId)).toBeNull();
+  const check = new Database(f.file);
+  try { expect(check.pragma("user_version", { simple: true })).toBe(5); expect(check.prepare("SELECT count(*) AS total FROM execution").get()).toEqual({ total: 0 }); }
+  finally { check.close(); }
+});
+
+test.each(["active", "unknown"] as const)("an unversioned journal's %s owner blocks reset and preserves evidence", async owner => {
+  const f = await fixture(), original = historical(f.file, 0, f.ticket, process.pid);
+  if (owner === "unknown") vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Owner status is unavailable"), { code: "EPERM" }); });
+  expect(() => readControllerSnapshot(f.file)).toThrow("upgrade-blocked");
+  const check = new Database(f.file);
+  try {
+    expect(check.pragma("user_version", { simple: true })).toBe(0);
+    expect(check.prepare("SELECT snapshot,owner_pid FROM execution").get()).toEqual({ snapshot: original.snapshot, owner_pid: process.pid });
+    expect(check.prepare("SELECT value FROM operations").get()).toEqual({ value: original.operation });
+  } finally { check.close(); }
+});
+
+test.each(["table", "view"] as const)("case-insensitive %s owner evidence blocks an unversioned journal reset", async kind => {
+  const f = await fixture(), db = new Database(f.file);
+  db.exec(kind === "table" ? "CREATE TABLE ExEcUtIoN(id INTEGER, owner_pid INTEGER, sentinel TEXT)" : "CREATE TABLE owner_evidence(id INTEGER, owner_pid INTEGER, sentinel TEXT); CREATE VIEW ExEcUtIoN AS SELECT * FROM owner_evidence");
+  db.prepare(`INSERT INTO ${kind === "table" ? "ExEcUtIoN" : "owner_evidence"} VALUES(1,?, 'preserved')`).run(process.pid); db.close();
+  expect(() => readControllerSnapshot(f.file)).toThrow("upgrade-blocked");
+  const check = new Database(f.file);
+  try { expect(check.pragma("user_version", { simple: true })).toBe(0); expect(check.prepare("SELECT owner_pid,sentinel FROM execution").get()).toEqual({ owner_pid: process.pid, sentinel: "preserved" }); }
+  finally { check.close(); }
+});
+
+test.each(["id", "owner_pid"] as const)("missing %s owner metadata prevents unversioned reset", async column => {
+  const f = await fixture(), db = new Database(f.file);
+  db.exec(column === "id" ? "CREATE TABLE execution(owner_pid INTEGER, sentinel TEXT); INSERT INTO execution VALUES(NULL, 'preserved')" : "CREATE TABLE execution(id INTEGER, sentinel TEXT); INSERT INTO execution VALUES(1, 'preserved')"); db.close();
+  expect(() => readControllerSnapshot(f.file)).toThrow();
+  const check = new Database(f.file);
+  try { expect(check.pragma("user_version", { simple: true })).toBe(0); expect(check.prepare("SELECT sentinel FROM execution").get()).toEqual({ sentinel: "preserved" }); }
+  finally { check.close(); }
+});
+
+test.each([1, 6])("unknown nonzero journal version %s is rejected without migration", async version => {
+  const f = await fixture(), db = new Database(f.file);
+  db.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('preserved')"); db.pragma(`user_version=${version}`); db.close();
+  expect(() => readControllerSnapshot(f.file)).toThrow(version === 6 ? "unsupported-version" : "invalid-format");
+  const check = new Database(f.file);
+  try { expect(check.pragma("user_version", { simple: true })).toBe(version); expect(check.prepare("SELECT value FROM sentinel").get()).toEqual({ value: "preserved" }); }
+  finally { check.close(); }
 });
 
 test("missing and invalid journal paths preserve their distinct read contracts", async () => {

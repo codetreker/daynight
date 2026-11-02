@@ -281,6 +281,34 @@ describe("review listing snapshots and automatic upgrades", () => {
     expect(snapshot?.reviews[0]).toMatchObject({ id: preparing.id, status: "preparing" });
   });
 
+  it.each(["empty", "unknown", "known"] as const)("initializes a present unversioned %s database during listing", kind => {
+    const location = directory(), file = path.join(location, "state.sqlite"), sql = connect(file);
+    if (kind === "unknown") sql.exec("CREATE TABLE original_data(value TEXT); INSERT INTO original_data VALUES ('discarded')");
+    if (kind === "known") {
+      sql.exec(schemaV1);
+      sql.exec("INSERT INTO repositories VALUES ('github.com','42','https://github.com/owner/repo.git','/repo',100,10,20,NULL)");
+      sql.pragma("user_version=0");
+    }
+    expect(readSnapshot(file)).toEqual({ repositories: [], pullRequests: [], reviews: [] });
+    expect(sql.pragma("user_version", { simple: true })).toBe(2);
+    expect(sql.prepare("SELECT name FROM sqlite_schema WHERE name='original_data'").get()).toBeUndefined();
+    expect(sql.prepare("SELECT count(*) AS total FROM review_publications").get()).toEqual({ total: 0 });
+    expect(existsSync(path.join(location, "instance.lock"))).toBe(false);
+  });
+
+  it.each(["active", "dead", "invalid"] as const)("preserves a %s instance lock when an unversioned database needs reset", kind => {
+    const location = directory(), file = path.join(location, "state.sqlite"), sql = connect(file);
+    sql.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('preserved')");
+    const lockFile = path.join(location, "instance.lock");
+    const lock = kind === "invalid" ? "unreadable predecessor metadata" : JSON.stringify({ owner: "original-owner", pid: kind === "active" ? process.pid : 2147483647, startedAt: new Date(0).toISOString() });
+    writeFileSync(lockFile, lock);
+    expect(() => readSnapshot(file)).toThrow("upgrade-blocked");
+    expect(readFileSync(lockFile, "utf8")).toBe(lock);
+    expect(sql.pragma("user_version", { simple: true })).toBe(0);
+    expect(sql.prepare("SELECT value FROM sentinel").get()).toEqual({ value: "preserved" });
+    expect(sql.prepare("SELECT name FROM sqlite_schema WHERE name='reviews'").get()).toBeUndefined();
+  });
+
   it("automatically upgrades an independent schema1 fixture and keeps the original listing records", () => {
     const location = directory();
     const file = path.join(location, "state.sqlite");
@@ -334,7 +362,7 @@ describe("review listing snapshots and automatic upgrades", () => {
     expect(sql.prepare("SELECT name FROM sqlite_schema WHERE name='sqliteXcustom'").get()).toEqual({ name: "sqliteXcustom" });
   });
 
-  it.each([0, 3])("rejects existing schema version %i without migration and closes the reader", (version) => {
+  it.each([1, 3])("rejects existing schema version %i without migration and closes the reader", (version) => {
     const file = path.join(directory(), "state.sqlite");
     const sql = connect(file);
     sql.pragma(`user_version = ${version}`);

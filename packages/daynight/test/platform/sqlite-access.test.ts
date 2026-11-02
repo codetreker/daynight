@@ -66,14 +66,14 @@ describe("SQLite access lifecycle", () => {
     vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) { connections.add(this); if (sql === "ROLLBACK") throw rollback; return exec.call(this, sql); });
     vi.spyOn(Database.prototype, "close").mockImplementation(function(this: Database.Database) { connections.add(this); throw close; });
     let error: unknown;
-    try { openSqliteDatabase({ file, format: bad, allowEmpty: false, onMigration: quiet }); } catch (caught) { error = caught; }
+    try { openSqliteDatabase({ file, format: bad, allowCreate: false, onMigration: quiet }); } catch (caught) { error = caught; }
     expect(error).toMatchObject({ kind: "invalid-format", context: { phase: "rollback", fromVersion: 1 }, outcome: "unknown", connectionClosed: false });
     const causes: unknown[] = [];
     const collect = (value: unknown): void => { causes.push(value); if (value instanceof AggregateError) value.errors.forEach(collect); if (value instanceof Error && value.cause !== undefined) collect(value.cause); };
     collect(error); expect(causes).toContain(validation); expect(causes).toContain(rollback); expect(causes).toContain(close);
   });
   it("reads the current committed WAL snapshot without maintenance or a writer connection", () => {
-    const file = makeFile(); const writer = openSqliteDatabase({ file, format, allowEmpty: true, onMigration: quiet }); connections.add(writer);
+    const file = makeFile(); const writer = openSqliteDatabase({ file, format, allowCreate: true, onMigration: quiet }); connections.add(writer);
     writer.exec("INSERT INTO records(id,value) VALUES(1,'committed'); BEGIN IMMEDIATE; UPDATE records SET value='uncommitted'");
     const acquire = vi.fn(() => { throw new Error("Maintenance must not run."); }), report = vi.fn();
     expect(readSqliteDatabase({ file, format, onMissing: () => "missing", acquireMaintenance: acquire, onMigration: report }, db => (db.prepare("SELECT value FROM records").get() as { value: string }).value)).toBe("committed");
@@ -85,19 +85,121 @@ describe("SQLite access lifecycle", () => {
     writeFileSync(file, "parent");
     expect(() => readSqliteDatabase({ file: path.join(file, "child"), format, onMissing: () => null }, () => null)).toThrow();
   });
-  it("does not initialize an existing empty file from a query", () => {
+  it("initializes an existing empty file through query maintenance without treating it as missing", () => {
     const file = makeFile(); connect(file).close();
-    expect(() => readSqliteDatabase({ file, format, onMissing: () => null }, () => null)).toThrow("invalid-format");
-    const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(0); expect(db.prepare("SELECT name FROM sqlite_schema").all()).toEqual([]);
+    const onMissing = vi.fn((): unknown[] => []), release = vi.fn(), acquireMaintenance = vi.fn(() => ({ owner: "maintenance", release }));
+    expect(readSqliteDatabase({ file, format, onMissing, acquireMaintenance, onMigration: quiet }, db => db.prepare("SELECT * FROM records").all())).toEqual([]);
+    expect(onMissing).not.toHaveBeenCalled(); expect(acquireMaintenance).toHaveBeenCalledOnce(); expect(release).toHaveBeenCalledOnce();
+    const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(2); expect(db.pragma("table_info(records)")).toHaveLength(3);
+  });
+  it("keeps creation permission separate from resetting an existing unversioned file", () => {
+    const file = makeFile();
+    expect(() => openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet })).toThrow("migration-failed");
+    expect(existsSync(file)).toBe(false);
+    const original = connect(file); original.exec("CREATE TABLE unrelated(secret TEXT); INSERT INTO unrelated VALUES('old');"); original.close();
+    const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); connections.add(db);
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.prepare("SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").all()).toEqual([{ name: "records" }]);
+    expect(db.prepare("SELECT * FROM records").all()).toEqual([]);
+  });
+  it("checks migration admission before discarding unversioned schema and data", () => {
+    const file = makeFile(), original = connect(file); original.exec("CREATE TABLE unrelated(secret TEXT); INSERT INTO unrelated VALUES('old');"); original.close();
+    const blocker = new Error("Active owner retains this database"), admission = vi.fn((db: Database.Database, source: { kind: string; version: number }) => {
+      expect(db.inTransaction).toBe(true); expect(source).toEqual({ kind: "unversioned", version: 0 });
+      expect(db.prepare("SELECT * FROM unrelated").all()).toEqual([{ secret: "old" }]); throw blocker;
+    });
+    expect(() => readSqliteDatabase({ file, format, onMissing: () => null, onMigration: quiet, assertMigrationAllowed: admission }, () => null)).toThrow("upgrade-blocked");
+    expect(admission).toHaveBeenCalledOnce();
+    const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(0); expect(db.prepare("SELECT * FROM unrelated").all()).toEqual([{ secret: "old" }]);
+  });
+  it.each(["SET NULL", "SET DEFAULT", "cyclic SET NULL"])("resets valid unknown schemas with %s foreign key actions and restores enforcement", action => {
+    const file = makeFile(), original = connect(file); original.pragma("foreign_keys=OFF");
+    if (action === "cyclic SET NULL") original.exec(`
+      CREATE TABLE parent(id INTEGER PRIMARY KEY, child_id INTEGER NOT NULL REFERENCES child(id) ON DELETE SET NULL);
+      CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent(id) ON DELETE SET NULL);
+      INSERT INTO parent VALUES(1,1); INSERT INTO child VALUES(1,1);
+    `);
+    else original.exec(`
+      CREATE TABLE parent(id INTEGER PRIMARY KEY);
+      CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL DEFAULT 99 REFERENCES parent(id) ON DELETE ${action});
+      INSERT INTO parent VALUES(1); INSERT INTO child VALUES(1,1);
+    `);
+    expect(original.pragma("foreign_key_check")).toEqual([]); original.close();
+    const onReady = vi.fn((db: Database.Database) => { expect(db.pragma("foreign_keys", { simple: true })).toBe(0); db.exec("INSERT INTO records(id,value) VALUES(2,'startup')"); });
+    const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, onReady }); connections.add(db);
+    expect(onReady).toHaveBeenCalledOnce(); expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.prepare("SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual([{ name: "records" }]);
+    expect(db.prepare("SELECT * FROM records").all()).toEqual([{ id: 2, value: "startup", extra: null }]);
+  });
+  it.each([0, 1])("rolls reset and startup back when the rebuilt database violates foreign keys with original mode %s", originalMode => {
+    const file = makeFile(), original = connect(file); original.exec("CREATE TABLE original(value TEXT); INSERT INTO original VALUES('retained');"); original.close();
+    if (originalMode === 0) {
+      const pragma = Database.prototype.pragma;
+      vi.spyOn(Database.prototype, "pragma").mockImplementation(function(this: Database.Database, command: string, pragmaOptions?: Database.PragmaOptions) {
+        if (this.name === file && command === "journal_mode = WAL") pragma.call(this, "foreign_keys = OFF");
+        return pragma.call(this, command, pragmaOptions);
+      });
+    }
+    let error: unknown;
+    try { openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, onReady: db => {
+      db.exec("CREATE TABLE parent(id INTEGER PRIMARY KEY); CREATE TABLE child(parent_id INTEGER REFERENCES parent(id)); INSERT INTO child VALUES(99)");
+    } }); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ kind: "migration-failed", context: { phase: "foreign-key-check" }, outcome: "rolled-back", connectionClosed: true, cause: expect.objectContaining({ message: "SQLite foreign key validation failed after reset." }) });
+    const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(0); expect(db.prepare("SELECT * FROM original").all()).toEqual([{ value: "retained" }]);
+  });
+  it("reports a foreign key restoration failure after commit as cleanup and closes the unreturned connection", () => {
+    const file = makeFile(), original = connect(file); original.exec("CREATE TABLE original(value TEXT)"); original.close();
+    const failure = new Error("foreign key restoration failed"), pragma = Database.prototype.pragma, events: SqliteMigrationEvent[] = [];
+    vi.spyOn(Database.prototype, "pragma").mockImplementation(function(this: Database.Database, command: string, pragmaOptions?: Database.PragmaOptions) {
+      connections.add(this); if (command === "foreign_keys = 1") throw failure; return pragma.call(this, command, pragmaOptions);
+    });
+    let error: unknown;
+    try { openSqliteDatabase({ file, format, allowCreate: false, onMigration: event => { events.push(event); }, onReady: db => { db.exec("INSERT INTO records(id,value) VALUES(1,'committed')"); } }); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ kind: "cleanup-failed", context: { phase: "restore-foreign-keys" }, cause: failure, outcome: "committed", connectionClosed: true });
+    expect(events.at(-1)).toMatchObject({ kind: "failed", phase: "restore-foreign-keys", outcome: "committed" });
+    vi.restoreAllMocks(); const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(2); expect(db.prepare("SELECT value FROM records").all()).toEqual([{ value: "committed" }]);
+  });
+  it("hands a raced versioned source back to normal foreign key enforcement before startup", () => {
+    const file = makeFile(), original = connect(file); original.exec("CREATE TABLE original(value TEXT)"); original.close();
+    const exec = Database.prototype.exec, onReady = vi.fn((db: Database.Database) => { expect(db.pragma("foreign_keys", { simple: true })).toBe(1); });
+    let interleaved = false;
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) {
+      if (!interleaved && this.name === file && sql === "BEGIN IMMEDIATE") {
+        interleaved = true; expect(this.pragma("foreign_keys", { simple: true })).toBe(0);
+        const competitor = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); competitor.close();
+      }
+      return exec.call(this, sql);
+    });
+    const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, onReady }); connections.add(db);
+    expect(interleaved).toBe(true); expect(onReady).toHaveBeenCalledOnce(); expect(db.pragma("foreign_keys", { simple: true })).toBe(1); expect(db.pragma("user_version", { simple: true })).toBe(2);
+  });
+  it("fails before admission when competing writers repeatedly change the required foreign key mode", () => {
+    const file = makeFile(), original = connect(file); original.exec("CREATE TABLE original(value TEXT)"); original.close();
+    const exec = Database.prototype.exec, assertMigrationAllowed = vi.fn(), onReady = vi.fn();
+    let subject: Database.Database | undefined, attempts = 0;
+    vi.spyOn(Database.prototype, "exec").mockImplementation(function(this: Database.Database, sql: string) {
+      if (this.name === file && sql === "BEGIN IMMEDIATE" && (subject === undefined || subject === this)) {
+        subject = this; attempts++;
+        if (attempts === 1) { const competitor = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); competitor.close(); }
+        else { const competitor = connect(file); competitor.exec("INSERT INTO records(id,value) VALUES(1,'retained'); PRAGMA user_version=0"); competitor.close(); }
+      }
+      return exec.call(this, sql);
+    });
+    let error: unknown;
+    try { openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet, assertMigrationAllowed, onReady }); } catch (caught) { error = caught; }
+    expect(error).toMatchObject({ kind: "migration-failed", context: { phase: "handoff" }, outcome: "rolled-back", connectionClosed: true });
+    expect(attempts).toBe(2); expect(assertMigrationAllowed).not.toHaveBeenCalled(); expect(onReady).not.toHaveBeenCalled();
+    const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(0); expect(db.prepare("SELECT value FROM records").all()).toEqual([{ value: "retained" }]);
   });
   it("rechecks readonly once if another owner upgraded before maintenance admission", () => {
-    const file = makeFile(); seed(file); const acquire = vi.fn(() => { const db = openSqliteDatabase({ file, format, allowEmpty: false, onMigration: quiet }); db.close(); throw new MaintenanceLockHeldError("instance.lock"); });
+    const file = makeFile(); seed(file); const acquire = vi.fn(() => { const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); db.close(); throw new MaintenanceLockHeldError("instance.lock"); });
     expect(readSqliteDatabase({ file, format, onMissing: () => null, acquireMaintenance: acquire }, db => db.pragma("user_version", { simple: true }))).toBe(2);
     expect(acquire).toHaveBeenCalledOnce();
   });
   it("does not hide maintenance resource failures behind a now-current snapshot", () => {
     const file = makeFile(); seed(file); const closeFailure = new Error("gate close outcome unknown");
-    const acquire = () => { const db = openSqliteDatabase({ file, format, allowEmpty: false, onMigration: quiet }); db.close(); throw closeFailure; };
+    const acquire = () => { const db = openSqliteDatabase({ file, format, allowCreate: false, onMigration: quiet }); db.close(); throw closeFailure; };
     let error: unknown;
     try { readSqliteDatabase({ file, format, onMissing: () => null, acquireMaintenance: acquire }, () => "current"); } catch (caught) { error = caught; }
     expect(error).toMatchObject({ cause: closeFailure, connectionClosed: false });
@@ -136,21 +238,21 @@ describe("SQLite access lifecycle", () => {
   });
   it("keeps committed data after completion reporter failure", () => {
     const file = makeFile(); seed(file); const events: SqliteMigrationEvent[] = [];
-    expect(() => openSqliteDatabase({ file, format, allowEmpty: false, onMigration: event => { events.push(event); if (event.kind === "completed") throw new Error("report failed"); } })).toThrow("cleanup-failed");
+    expect(() => openSqliteDatabase({ file, format, allowCreate: false, onMigration: event => { events.push(event); if (event.kind === "completed") throw new Error("report failed"); } })).toThrow("cleanup-failed");
     expect(events.at(-1)).toMatchObject({ kind: "failed", outcome: "committed" }); expect(connect(file).pragma("user_version", { simple: true })).toBe(2);
   });
   it("keeps explicitly authored startup admission errors but safely wraps parser failures", () => {
     const file = makeFile(), business = new Error("Original execution is still running.");
-    expect(() => openSqliteDatabase({ file, format, allowEmpty: true, onMigration: quiet, onReady: () => { throw business; } })).toThrow(business);
+    expect(() => openSqliteDatabase({ file, format, allowCreate: true, onMigration: quiet, onReady: () => { throw business; } })).toThrow(business);
     let error: unknown;
-    try { openSqliteDatabase({ file, format, allowEmpty: true, onMigration: quiet, onReady: () => { JSON.parse('{"secret":"prompt" broken}'); } }); } catch (caught) { error = caught; }
+    try { openSqliteDatabase({ file, format, allowCreate: true, onMigration: quiet, onReady: () => { JSON.parse('{"secret":"prompt" broken}'); } }); } catch (caught) { error = caught; }
     expect(error).toBeInstanceOf(SqliteAccessError); expect(JSON.stringify(serializeSqliteError(error))).not.toContain('"prompt"'); expect((error as Error).cause).toBeInstanceOf(SyntaxError);
   });
   it("identifies a baseline failure and rolls its partial DDL back", () => {
     const file = makeFile(), events: SqliteMigrationEvent[] = [];
     const bad: SqliteFormat = { ...format, baseline: { version: 1, create: db => { db.exec("CREATE TABLE partial(id INTEGER)"); throw new Error("baseline failed"); } } };
     let error: unknown;
-    try { openSqliteDatabase({ file, format: bad, allowEmpty: true, onMigration: event => { events.push(event); } }); } catch (caught) { error = caught; }
+    try { openSqliteDatabase({ file, format: bad, allowCreate: true, onMigration: event => { events.push(event); } }); } catch (caught) { error = caught; }
     expect(error).toMatchObject({ context: { fromVersion: 0, toVersion: 2, stepVersion: 1 }, outcome: "rolled-back", connectionClosed: true });
     expect(events.at(-1)).toMatchObject({ kind: "failed", stepVersion: 1, outcome: "rolled-back" });
     const db = connect(file); expect(db.pragma("user_version", { simple: true })).toBe(0); expect(db.prepare("SELECT name FROM sqlite_schema").all()).toEqual([]);
@@ -159,7 +261,7 @@ describe("SQLite access lifecycle", () => {
     const file = makeFile(); seed(file); const close = Database.prototype.close, conversion = new SyntaxError("secret prompt payload");
     const bad: SqliteFormat = { ...format, migrations: [{ toVersion: 2, up: () => { throw conversion; } }] };
     vi.spyOn(Database.prototype, "close").mockImplementation(function(this: Database.Database) { connections.add(this); if (!this.readonly) throw new Error("closing failed"); return close.call(this); });
-    let error: unknown; try { openSqliteDatabase({ file, format: bad, allowEmpty: false, onMigration: quiet }); } catch (caught) { error = caught; }
+    let error: unknown; try { openSqliteDatabase({ file, format: bad, allowCreate: false, onMigration: quiet }); } catch (caught) { error = caught; }
     expect(error).toMatchObject({ kind: "migration-failed", context: { stepVersion: 2 }, connectionClosed: false, outcome: "rolled-back" }); expect((error as Error).cause).toBeInstanceOf(AggregateError);
     expect(JSON.stringify(serializeSqliteError(error))).not.toContain("secret prompt payload");
   });

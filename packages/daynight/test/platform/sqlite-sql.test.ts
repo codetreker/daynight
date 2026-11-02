@@ -70,19 +70,19 @@ describe("filename-ordered SQLite SQL sequences", () => {
       },
     };
     const file = path.join(fileURLToPath(directory), "state.sqlite");
-    const db = openSqliteDatabase({ file, format, allowEmpty: true, onMigration: () => {} }); connections.add(db);
+    const db = openSqliteDatabase({ file, format, allowCreate: true, onMigration: () => {} }); connections.add(db);
     expect(db.pragma("user_version", { simple: true })).toBe(3);
     expect(db.prepare("SELECT * FROM records").all()).toEqual([{ id: 1, value: "baseline-second-third", extra: null }]);
     db.close();
-    const reopened = openSqliteDatabase({ file, format, allowEmpty: false, onMigration: () => {} }); connections.add(reopened);
+    const reopened = openSqliteDatabase({ file, format, allowCreate: false, onMigration: () => {} }); connections.add(reopened);
     expect(reopened.prepare("SELECT value FROM records").get()).toEqual({ value: "baseline-second-third" });
   });
   it("uses the first filename version as the baseline and excludes unrelated files and auxiliary directories", () => {
     const directory = sequence([["006-future.sql", "ALTER TABLE records ADD COLUMN extra TEXT;"], ["005-baseline.sql", "CREATE TABLE records (id INTEGER);"]]);
     for (const name of ["README.txt", ".DS_Store", "001-baseline.sql.bak"]) writeFileSync(path.join(fileURLToPath(directory), name), "unrelated resource");
-    for (const name of ["adoptions", "sources"]) {
+    for (const name of ["archive", "references"]) {
       mkdirSync(new URL(`${name}/`, pathToFileURL(`${fileURLToPath(directory)}${path.sep}`)));
-      writeFileSync(path.join(fileURLToPath(directory), name, "000-six-column.sql"), "not executable SQL");
+      writeFileSync(path.join(fileURLToPath(directory), name, "000-reference.sql"), "not executable SQL");
     }
     const steps = loadSqliteSequence(directory), [baseline, ...upgrades] = steps;
     expect(steps.map(step => step.version)).toEqual([5, 6]);
