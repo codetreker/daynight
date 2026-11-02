@@ -27,9 +27,10 @@ permissions and task-folder trust for fresh and resumed processes.
 
 For a still-owned active claim, a patrol reads the current agent inside the
 existing serialized task operation. A live, interactive-ready agent in idle or
-done receives a continuation ping when it is not launching and has no first
-input pending. Working, blocked, unknown and not-ready states remain under
-observation. The ping preserves task, claim, worktree and authorization, and
+done receives a continuation ping when it is not launching, has no first
+input pending, and its task does not suppress periodic input under the
+[task pause decision](../feature/2026-11-02-task-paused-worker-pings.md). Working,
+blocked, unknown and not-ready states remain under observation. The ping preserves task, claim, worktree and authorization, and
 reminds the agent to wait for review and CI. The agent's state cannot complete
 the business task; only its original claim-bound completion does that.
 
@@ -101,7 +102,8 @@ allowing the original discovery error to propagate.
 
 Review and CI waits remain with the assigned agent. The worker still owns
 claim reconciliation and resources, without interpreting business acceptance
-or introducing another scheduler, durable journal or public setting. Prompt
+or introducing another scheduler or durable journal. The task pause property
+only gates periodic continuation at its native submission boundary. Prompt
 instructions cannot prove that a native agent follows the wait policy; native
 runtime evidence remains distinct from controlled component checks.
 

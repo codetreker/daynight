@@ -73,10 +73,14 @@ func TestCodecPreservesPropertiesAndPatchPresence(t *testing.T) {
 	if err != nil || !slices.Equal(pullRequestsValue(t, decoded), items) {
 		t.Fatalf("property content changed: %+v, %v", decoded, err)
 	}
-	for _, properties := range []core.TaskProperties{{}, {"pullRequests": json.RawMessage(`[]`)}} {
+	for _, properties := range []core.TaskProperties{{}, {"pullRequests": json.RawMessage(`[]`)}, {"paused": json.RawMessage(`true`)}, {"paused": json.RawMessage(`false`)}} {
 		decoded, err := Decode([]byte(encodedProperties(t, properties)))
 		if err != nil || !reflect.DeepEqual(decoded, properties) {
-			t.Fatalf("empty storage document changed presence: %+v, %v", decoded, err)
+			t.Fatalf("storage document changed presence: %+v, %v", decoded, err)
+		}
+		patch, err := DecodePatch([]byte(encodedProperties(t, properties)))
+		if err != nil || !reflect.DeepEqual(patch, core.TaskPropertiesPatch(properties)) {
+			t.Fatalf("property patch changed presence: %+v, %v", patch, err)
 		}
 	}
 	for _, properties := range []core.TaskProperties{nil, {}} {
@@ -97,6 +101,7 @@ func TestCodecPreservesPropertiesAndPatchPresence(t *testing.T) {
 func TestCodecRejectsCorruptStoredStructures(t *testing.T) {
 	for _, invalid := range []string{
 		`null`, `[]`, `{`, `{} {}`, `{"unknown":[]}`, `{"worker":null}`, `{"pullRequests":[],"pullRequests":[]}`, `{"pullRequests":null}`, `{"pullRequests":{}}`,
+		`{"paused":null}`, `{"paused":"true"}`, `{"paused":1}`, `{"paused":[]}`, `{"paused":{}}`, `{"paused":true,"paused":false}`,
 		`{"pullRequests":[null]}`, `{"pullRequests":[{}]}`, `{"pullRequests":[{"url":null,"title":"x"}]}`,
 		`{"pullRequests":[{"url":"x"}]}`, `{"pullRequests":[{"url":"x","title":1}]}`,
 		`{"pullRequests":[{"url":"x","title":"y","extra":true}]}`, `{"pullRequests":[{"url":"x","title":"y","title":"z"}]}`,

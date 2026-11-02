@@ -12,6 +12,11 @@ const jsonValue = (value: unknown): JsonValue => {
 export const parseTaskProperties = (value: unknown): TaskProperties =>
   Object.fromEntries(Object.entries(record(value)).map(([name, item]) => [name, jsonValue(item)]));
 
+export const readTaskPaused = (properties: TaskProperties): boolean | undefined => {
+  if (!Object.hasOwn(properties, "paused")) return undefined;
+  return typeof properties.paused === "boolean" ? properties.paused : malformed();
+};
+
 export const readPullRequests = (properties: TaskProperties): readonly PullRequestProperty[] | undefined => {
   if (!Object.hasOwn(properties, "pullRequests")) return undefined;
   return array(properties.pullRequests, (item) => {

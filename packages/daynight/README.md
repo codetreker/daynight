@@ -774,6 +774,18 @@ Generic commands do not introduce custom attributes or make worker publicly
 writable. To set PR references, supply the whole ordered array of url/title
 objects, preserving every entry still needed.
 
+The writable boolean property `paused` controls periodic worker continuation
+pings. Set it to `true` to suppress those pings, or set it to `false` or remove
+it to restore the usual policy. An absent key remains absent in reads. The
+property can change during an active claim without changing task status,
+execution ownership or timing:
+
+```bash
+daynight task set-property <task-id> paused true --if-version <observed-version>
+daynight task set-property <task-id> paused false --if-version <observed-version>
+daynight task remove-property <task-id> paused --if-version <observed-version>
+```
+
 The value positional argument can be empty. Use `--` before a positional
 argument beginning with a dash, with options before the terminator. For example,
 `task set-property <task-id> <property> -- -123` forwards the exact text to the
@@ -1210,13 +1222,25 @@ within its existing business authorization.
 
 For a still-owned active claim, each patrol observes the live agent. An
 interactive-ready agent that is not launching and has no first input pending
-receives a continuation ping when idle or done. Working, blocked, unknown and
-not-ready agents remain under observation. The ping preserves the original task,
+receives a continuation ping when idle or done and its task is not paused.
+Working, blocked, unknown and not-ready agents remain under observation. The ping preserves the original task,
 claim, worktree and authorization; idle or done does not complete the business
 task. The driver retains the last input observation in memory and suppresses
 repeated input while it is unchanged. Unknown submission results require
 observation before another decision, without blind replay. Terminal cleanup
 suppresses business pings.
+
+Before a periodic ping reaches the native agent, the worker rereads the task
+from the service after workspace serialization and native readiness checks,
+verifies the original active claim, worker and worktree, and checks
+`properties.paused`. A true value skips that input without advancing its
+submission baseline. Setting false or removing the property therefore permits
+a later ping even when native observation counters have not changed. Read
+failures remain visible and send no ping. The last service read and native
+submission are separate operations; pausing does not retract input already sent.
+This property controls only periodic continuation. It preserves current native
+execution, initial or deferred assignments, observation, recovery and cleanup.
+Web execution currently sends no such periodic pings.
 
 A non-NULL saved session ID remains the recovery identity. A different native
 ID reported during startup, live reconnection or before deferred input is an
