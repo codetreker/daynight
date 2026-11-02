@@ -194,10 +194,9 @@ its continuity can be lost. Management takes the runner offline. The state
 directory is for one configured service/account/worker identity; changes require completing
 old executions and rebuilding local state.
 
-The index uses format version 5. The
-[unversioned reset decision](../architecture/2026-11-02-unversioned-sqlite-reset.md)
-replaces the later known-source adoption policy: version 0 discards its schema and
-rows, then rebuilds through the baseline and numbered upgrades after admission.
+The [SQLite format migration decision](../architecture/2026-10-30-cli-sqlite-migrations.md)
+sets the index's format version to 5. Version 0 discards its schema and rows, then
+rebuilds through the baseline and numbered upgrades after admission.
 Retired detailed nonzero versions 1–4 still have no conversion or automatic
 deletion: an operator stops the old worker and removes that SQLite before
 new-schema startup, retaining workerId and native history. Valid nonzero

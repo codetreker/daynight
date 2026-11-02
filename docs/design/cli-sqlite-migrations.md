@@ -39,7 +39,7 @@
 
 构建在清理 dist、编译 TypeScript 后运行 `scripts/copy-resources.ts`，明确复制两个 skill bundle 和上述五个 SQL 目录到相同的 dist 相对路径；SQL 目录递归复制 `.sql`。构建的目录 allowlist 只控制发布范围，不提供文件执行顺序。既有 `files: ["dist"]` 发布规则将资源带入安装包，目录 URL 在源码和编译产物中保持同一相对定位。资源复制和安装验收验证实际发布字节，不能仅凭源码中存在文件认定安装包完整。
 
-资源布局及参考元数据的依据见 [SQL 资源决策](../../.agents/notes/implemented/architecture/2026-11-02-sqlite-sql-resources.md)；文件名执行顺序见 [文件名排序决策](../../.agents/notes/implemented/architecture/2026-11-02-filename-ordered-sqlite-migrations.md)。
+SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](../../.agents/notes/implemented/architecture/2026-10-30-cli-sqlite-migrations.md)。
 
 ## 独立版本与起点
 
@@ -108,4 +108,4 @@ Lease 的重置或迁移准入要求已有 lease 表没有任何保留行，版�
 
 来源 fixture 独立于当前 opener。真实 SQLite 验证各库新建、空版本 0、任意版本 0 schema 与坏 JSON 重置、非零旧格式行/JSON/BLOB 保留，以及 DDL 和版本回滚；重置覆盖外键、trigger、view、虚拟表及其 shadow 表。独立进程验证并发与中断后重新读取。当前格式 WAL 快照、旧锁保留、lease 阻塞、提交/关闭双失败、IPC catch 与本地停止各有行为断言。SQLite 转换不替换原库文件、不删除 WAL/SHM、不创建跨库分布式事务或后台迁移任务。
 
-版本 0 重置及此前接入策略的取舍见[重置决策](../../.agents/notes/implemented/architecture/2026-11-02-unversioned-sqlite-reset.md)。版本、事务与所有权的历史取舍见[升级决策](../../.agents/notes/implemented/architecture/2026-10-30-cli-sqlite-migrations.md)；SQL 文件、参考结构和打包由 [SQL 资源决策](../../.agents/notes/implemented/architecture/2026-11-02-sqlite-sql-resources.md)拥有。
+版本 0 重置、独立版本、事务、所有权和 SQL 资源打包的决策依据及备选方案由[升级决策](../../.agents/notes/implemented/architecture/2026-10-30-cli-sqlite-migrations.md)拥有。

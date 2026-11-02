@@ -72,14 +72,14 @@ Web has an additional persistence owner and must validate it against the claim,
 account, service, worktree and native identity. The shared coordinator accounts
 for both backends' resources when computing capacity and same-task barriers.
 A local record deletion cannot authorize replacement or destructive cleanup.
-The [SQLite migration decision](2026-10-30-cli-sqlite-migrations.md) gives Web
-execution state its independent version 1. Its original unversioned adoption
-preserved stored JSON strings; the
-[reset decision](2026-11-02-unversioned-sqlite-reset.md) supersedes that policy for
-all five business databases. Version 0 discards the original schema and data after
-domain admission, while valid known nonzero migrations preserve data and retired
+This decision originally preserved known minimal-index rows and assigned legacy
+Herdr mode during schema upgrades. The
+[SQLite migration decision](2026-10-30-cli-sqlite-migrations.md) gives Web execution
+state its independent version 1 and replaces unversioned adoption: version 0
+discards the original schema and data after domain admission across all five
+business databases. Valid known nonzero migrations preserve data, and retired
 rich Worker versions 1–4 remain explicitly rejected. Current Web CRUD keeps its
 existing JSON parser and default-field semantics. Resetting the worker index does
 not delete separate Controller journals or native history; each journal's own
-version-0 reset remains subject to its writer admission. No format transition
-changes the claim or native-call evidence ownership described here.
+version-0 reset remains subject to writer admission. No format transition changes
+the claim or native-call evidence ownership described here.
