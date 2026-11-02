@@ -15,6 +15,10 @@
 .worker-open { color: var(--indigo); display: inline-flex; gap: 4px; align-items: center; }
 .worker-status-badge { display: inline-flex; align-items: center; gap: 6px; white-space: normal; font-size: 11px; padding: 4px 9px; border-radius: 20px; font-weight: 500; line-height: 1.45; }
 .worker-status-badge::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.worker-status-label, .worker-task-heading-label { display: grid; }
+.worker-status-label > span, .worker-status-label::after, .worker-task-heading-label > span, .worker-task-heading-label::after { grid-area: 1 / 1; }
+.worker-status-label::after { content: attr(data-confirmed-label); visibility: hidden; }
+.worker-task-heading-label::after { content: attr(data-current-label); visibility: hidden; }
 .worker-status-badge.online { color: #2d805c; background: #edf7f1; }
 .worker-status-badge.offline { color: #b54708; background: #fff0e6; }
 .worker-back-link { display: inline-flex; gap: 7px; align-items: center; color: #68758b; font-size: 12px; margin-bottom: 22px; }
@@ -65,6 +69,7 @@
 .worker-task-phase { color: #6a778b; font-size: 11px; margin-top: 5px; }
 .worker-task-empty { padding: 35px 20px; text-align: center; color: #738196; font-size: 12px; }
 .worker-task-snapshot-caption { font-size: 11px; font-weight: 400; color: #8b7b62; margin-left: auto; }
+.worker-task-snapshot-caption[aria-hidden="true"] { visibility: hidden; }
 .worker-task-observation { padding: 12px 22px; color: #7e6948; font-size: 11px; border-bottom: 1px solid #edf0f4; }
 .worker-task-observation p + p { margin-top: 4px; }
 .worker-detail-footnote { font-size: 11px; color: #798596; margin-top: 17px; line-height: 1.8; }

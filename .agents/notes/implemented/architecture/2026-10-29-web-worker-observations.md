@@ -30,7 +30,11 @@ online and recent-visibility calculations independently of browser wall time.
 Failure, hidden state and identity checking freeze the last published time and
 mark retained observations stale. Only a fresh successful read resumes current
 liveness calculations. This distinguishes the Worker's report age from the
-browser's ability to observe newer reports. An admitted current-account 404
+browser's ability to observe newer reports. Retained badges and task captions
+identify the last confirmation; a warning and retry action require an actual
+read failure, as owned by the
+[quiet recheck decision](../bug-fix/2026-10-30-quiet-worker-rechecks.md).
+An admitted current-account 404
 clears detail; unknown inventory, observed idleness and stale task snapshots
 keep their distinct semantics. The
 [Web design](../../../../docs/design/daynight-web.md#我的-worker-列表与详情)

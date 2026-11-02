@@ -331,12 +331,20 @@ an expired detail becomes unavailable. Browser wall-clock changes do not affect
 these rules.
 
 Read failure, hidden state and identity checking freeze the last published
-server time and mark retained content stale. The UI shows the last confirmed
-badge and synchronization problem rather than treating browser connectivity as
-Worker liveness. Visibility return or same-account recovery starts a fresh read;
-only success recalibrates the anchor and resumes the ticker. An admitted
-current-principal 404 clears the old detail. Initial loading, initial failure,
-empty results and retained-snapshot refresh failure have separate displays.
+server time and mark retained content stale. Visibility return or same-account
+recovery starts a fresh read; only success recalibrates the anchor and resumes
+the ticker. Normal checks retain the displayed resources, source times, focus
+and last-confirmed labels without inserting a warning or moving the content.
+Badges reserve the intrinsic size of their localized last-confirmed label so
+the longer text does not rewrap adjacent report details on narrow screens.
+Task headings retain their title and snapshot-caption footprint; the current
+observation hides that caption visually and from its accessible name.
+Actual refresh failures show the synchronization error, last successful
+observation and retry action throughout further attempts until success. Worker
+offline notices and probe failures retain their distinct meanings; browser
+connectivity does not establish Worker liveness. An admitted current-principal
+404 clears the old detail. Initial loading, initial failure, empty results and
+retained-snapshot refresh failure have separate displays.
 
 Online badges use green. Offline text and dot use `#b54708` on `#fff0e6`, with
 explicit labels in the list, detail and narrow layout. Historical task rows and
@@ -805,8 +813,10 @@ unfinished prerequisite produces an explicit Blocked / 被阻塞 badge. A Goal r
 expands a task list through its main native button, independently of its
 sibling View dependencies / 查看依赖关系 button. The list contains every other
 ordinary-component member exactly once, with `in_progress` first, then `todo`,
-then `done`; tasks with the same status retain snapshot order. This child
-priority preserves top-level Goal ordering. Other starting tasks in a merge are
+then `done`. Completed children use exact `completedAt` descending order, with
+unknown completion times last. Equal completion times and unknown-time ties retain
+snapshot order, as do children in other status groups. Fresh snapshots recalculate
+this order. Top-level Goal ordering remains independent. Other starting tasks in a merge are
 included, while external prerequisite context is excluded. The
 list always retains `done`, `in_progress` and `todo` children; completed tasks
 remain visible. The chain-level Show all control changes whole-Goal visibility

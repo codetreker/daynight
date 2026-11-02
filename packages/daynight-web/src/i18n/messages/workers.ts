@@ -19,7 +19,6 @@ export type WorkersMessages = {
   readonly protocolError: string;
   readonly refreshFailed: string;
   readonly retainedState: string;
-  readonly synchronizing: string;
   readonly lastSynchronized: string;
   readonly lastReported: string;
   readonly sampledAt: string;

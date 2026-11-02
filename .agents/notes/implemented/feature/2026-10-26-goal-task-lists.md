@@ -26,9 +26,14 @@ if its title contains `[Goal]`.
 The row body toggles a compact task list with `aria-expanded` and an associated
 `aria-controls` target. The list contains every component member except the
 representative exactly once, ordered by status: `in_progress`, then `todo`,
-then `done`. Equal-status tasks retain complete snapshot order. The [status ordering decision](../bug-fix/2026-10-28-project-status-order.md)
+then `done`. The original choice retained snapshot order within every status,
+keeping creation order without another timestamp comparator. The
+[completed-child ordering decision](2026-10-30-completed-subtask-order.md) replaces
+that choice for `done` children: exact completion time descending, unknown times
+last, with snapshot order for ties. Other status groups retain snapshot order.
+The [status ordering decision](../bug-fix/2026-10-28-project-status-order.md)
 applies the same priority to top-level Goals using their complete aggregate
-status, with exact newest-first ties; children retain snapshot-order ties. Other starting tasks and merged descendants are included;
+status, with exact newest-first ties. Other starting tasks and merged descendants are included;
 chain-external context remains in the graph. The list retains `done`, `in_progress` and `todo` children, including
 completed tasks. The chain-level Show all control changes whole-Goal visibility; it never filters
 child rows by status or completion date. The [recent browsing and pagination

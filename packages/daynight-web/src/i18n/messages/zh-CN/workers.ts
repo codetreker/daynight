@@ -9,7 +9,7 @@ export const workers: WorkersMessages = {
   refresh: '刷新', refreshing: '正在刷新…', retry: '重试',
   readError: '服务暂时无法提供已确认的 Worker 观测。', networkError: '请检查网络连接后重试。',
   protocolError: '服务返回的 Worker 信息格式无效。', refreshFailed: 'Worker 信息同步失败。',
-  retainedState: '当前数值和徽标显示上次确认的观测。', synchronizing: '正在重新确认 Worker 的最新状态…',
+  retainedState: '当前数值和徽标显示上次确认的观测。',
   lastSynchronized: '最后同步', lastReported: '最后上报', sampledAt: '资源采样时间', checkedAt: '检测时间',
   online: 'online', offline: 'offline', confirmedStatus: ({ status }) => `${status} · 上次确认`,
   count: ({ count }) => `${count} 个 Worker`, onlineCount: ({ count }) => `${count} 个在线`, offlineCount: ({ count }) => `${count} 个离线`,

@@ -19,12 +19,12 @@ const user = (id = owner) => ({ id, name: id === owner ? 'Alice' : 'Bob', email:
 const json = (body: unknown, status = 200, viewer = principal) => new Response(JSON.stringify(body), { status, headers: viewerHeaders(viewer, { 'Content-Type': 'application/json' }) });
 const summary = (workerId = firstWorker, name = 'Alice worker') => ({ workerId, machine: { id: workerId, name }, platform: 'linux', lastReportedAt: reportedAt, taskObservationState: 'unavailable', taskObservedAt: null, activeTaskCount: null });
 const list = (name = 'Alice worker', viewer = principal) => json({ observedAt, items: [summary(firstWorker, name)], nextCursor: null }, 200, viewer);
-const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principal) => {
+const detail = (workerId = firstWorker, name = 'Alice worker', viewer = principal, observation = { observedAt, reportedAt, cpu: 34 }) => {
   const worker = summary(workerId, name);
-  return json({ observedAt, worker: { ...worker, inventoryObservedAt: null, tasks: [], telemetry: {
+  return json({ observedAt: observation.observedAt, worker: { ...worker, lastReportedAt: observation.reportedAt, inventoryObservedAt: null, tasks: [], telemetry: {
     machine: worker.machine, platform: worker.platform, workingDirectory: '/srv/workers', sampledAt: observedAt,
     os: { state: 'ok', checkedAt: observedAt, value: { type: 'Linux', release: '6.8.0', version: '#1', arch: 'x64' } },
-    cpu: { state: 'ok', checkedAt: observedAt, value: { model: 'Example CPU', logicalProcessors: 8, usagePercent: 34 } },
+    cpu: { state: 'ok', checkedAt: observation.observedAt, value: { model: 'Example CPU', logicalProcessors: 8, usagePercent: observation.cpu } },
     memory: { state: 'ok', checkedAt: observedAt, value: { usedBytes: 4 * 1024 ** 3, totalBytes: 16 * 1024 ** 3 } },
     disk: { state: 'ok', checkedAt: observedAt, value: { availableBytes: 32 * 1024 ** 3, totalBytes: 64 * 1024 ** 3 } },
     versions: { daynight: '0.27.1', herdr: { state: 'not_running', checkedAt: observedAt }, codex: { state: 'not_installed', checkedAt: observedAt }, copilot: { state: 'not_installed', checkedAt: observedAt } },
@@ -54,6 +54,34 @@ beforeEach(() => {
 });
 
 describe('Worker pages in the authenticated workspace', () => {
+  it('quietly retains Worker details through foreground identity checks and replaces the confirmed report afterward', async () => {
+    window.history.replaceState(null, '', `/workers/${firstWorker}`);
+    const identity = Promise.withResolvers<Response>(), replacement = Promise.withResolvers<Response>();
+    let identityReads = 0, workerReads = 0;
+    install(url => {
+      if (url === '/api/v1/me' && ++identityReads === 2) return identity.promise;
+      if (url === `/api/v1/me/workers/${firstWorker}`) return ++workerReads === 1 ? detail() : replacement.promise;
+      return defaults(url);
+    });
+    render(<AuthenticatedApp />);
+    const heading = await screen.findByRole('heading', { name: 'Alice worker' }), cpu = screen.getByRole('meter', { name: 'CPU usage' });
+    const content = document.querySelector('.worker-page')!, sections = [...content.children];
+    heading.focus(); returnToWorkspace();
+    await screen.findByText('online · last confirmed');
+    expect(workerReads).toBe(1); expect(cpu).toHaveAttribute('aria-valuenow', '34'); expect(heading).toHaveFocus();
+    expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections);
+    await act(async () => identity.resolve(json(user())));
+    await waitFor(() => expect(workerReads).toBe(2));
+    expect(screen.getByText('online · last confirmed')).toBeInTheDocument(); expect(cpu).toHaveAttribute('aria-valuenow', '34');
+    expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections);
+    const freshTime = '2026-10-29T11:01:00Z';
+    await act(async () => replacement.resolve(detail(firstWorker, 'Alice worker', owner, { observedAt: freshTime, reportedAt: freshTime, cpu: 67 })));
+    await screen.findByText('online');
+    expect(screen.getByRole('meter', { name: 'CPU usage' })).toBe(cpu); expect(cpu).toHaveAttribute('aria-valuenow', '67');
+    expect(content.querySelector(`.worker-description time[datetime="${freshTime}"]`)).toBeInTheDocument();
+    expect(document.querySelector('.worker-sync-notice')).toBeNull(); expect([...content.children]).toEqual(sections); expect(heading).toHaveFocus();
+  });
+
   it('reads account Workers when project navigation fails and browser storage is unavailable', async () => {
     window.history.replaceState(null, '', '/workers');
     vi.stubGlobal('indexedDB', undefined);
