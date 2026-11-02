@@ -48,10 +48,16 @@ const resetUnversionedSqlite = (db: Database.Database): undefined => {
   if (db.pragma("foreign_keys", { simple: true }) !== 0) throw new Error("SQLite unversioned reset requires foreign_keys=OFF before beginning the transaction.");
   const objects = db.prepare("SELECT name, type FROM main.sqlite_schema WHERE type IN ('trigger', 'view') AND name NOT GLOB 'sqlite_*' ORDER BY type, name").all() as { name: string; type: "trigger" | "view" }[];
   for (const object of objects) db.exec(`DROP ${object.type.toUpperCase()} main.${quoteIdentifier(object.name)}`);
+  const virtualTables = (db.pragma("main.table_list") as { schema: string; name: string; type: string }[])
+    .filter(table => table.schema === "main" && !table.name.startsWith("sqlite_") && table.type === "virtual");
+  for (const table of virtualTables) db.exec(`DROP TABLE main.${quoteIdentifier(table.name)}`);
+  if (virtualTables.length !== 0) {
+    // FTS5 external content can retain its cached shadow flag after its virtual table is dropped.
+    // RESET reloads the schema and keeps schema writes disabled: https://sqlite.org/pragma.html#pragma_writable_schema
+    db.pragma("writable_schema = RESET");
+  }
   const tables = (db.pragma("main.table_list") as { schema: string; name: string; type: string }[])
-    .filter(table => table.schema === "main" && !table.name.startsWith("sqlite_") && (table.type === "virtual" || table.type === "table"))
-    .sort((left, right) => Number(right.type === "virtual") - Number(left.type === "virtual"));
-  // Virtual tables own their shadow tables; dropping a shadow table independently can corrupt them.
+    .filter(table => table.schema === "main" && !table.name.startsWith("sqlite_") && (table.type === "table" || table.type === "shadow"));
   for (const table of tables) db.exec(`DROP TABLE main.${quoteIdentifier(table.name)}`);
 };
 export const upgradeSqlite = (db: Database.Database, format: SqliteFormat): SqliteTransition | null => {

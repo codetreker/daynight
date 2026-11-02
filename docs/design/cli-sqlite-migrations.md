@@ -59,7 +59,7 @@ SQL 资源、参考元数据和文件名执行顺序的取舍见[升级决策](.
 
 `inspectSqlite` 不修改数据库；`upgradeSqlite` 要求已有 immediate 写事务，并在事务内重新检查来源，不接受等待写锁之前缓存的迁移计划。版本 0 在业务准入后重置用户 schema，再执行基线与全部后续迁移、验证目标并推进 `user_version`。非零受支持版本只执行未完成步骤。
 
-重置、迁移及包含迁移的 startup 使用明确的同步 BEGIN IMMEDIATE、action、COMMIT 边界。访问层记录连接原有的 `foreign_keys` 设置，仅在非空版本 0 重置前于事务外临时关闭并核实；空版本 0 初始化和非零迁移保持原设置。低层 `upgradeSqlite` 要求非空版本 0 的调用者已在 BEGIN 前关闭外键。事务内先完成业务准入，再删除用户 trigger 和 view，随后删除虚拟表，最后删除普通表；虚拟表的 shadow 表由其所属虚拟表处理，不能作为普通表重复删除。基线、升级和 onReady 完成后，每次实际发生的非空版本 0 重置都执行 `foreign_key_check`，通过后才能提交，与连接原有外键设置无关。DROP、基线、升级、数据、版本和 startup 一并提交或回滚，不删除或替换数据库文件。action 或提交失败时，若仍有活动事务则尝试回滚；回滚也失败时保留两个错误。已有活动事务和 Promise/thenable 结果明确拒绝。该边界不嵌套现有普通业务 transaction/savepoint；已归属运行期事务只断言当前版本，不在业务回调里迁移。
+重置、迁移及包含迁移的 startup 使用明确的同步 BEGIN IMMEDIATE、action、COMMIT 边界。访问层记录连接原有的 `foreign_keys` 设置，仅在非空版本 0 重置前于事务外临时关闭并核实；空版本 0 初始化和非零迁移保持原设置。低层 `upgradeSqlite` 要求非空版本 0 的调用者已在 BEGIN 前关闭外键。事务内先完成业务准入，再删除用户 trigger 和 view，随后删除全部虚拟表，让模块清理自身 shadow 表；通过 `writable_schema=RESET` 重新加载 schema（仍禁用 schema 写入），再重新枚举并删除全部残留用户表，包括最初被识别为 shadow 的 FTS5 外部内容表。基线、升级和 onReady 完成后，每次实际发生的非空版本 0 重置都执行 `foreign_key_check`，通过后才能提交，与连接原有外键设置无关。DROP、基线、升级、数据、版本和 startup 一并提交或回滚，不删除或替换数据库文件。action 或提交失败时，若仍有活动事务则尝试回滚；回滚也失败时保留两个错误。已有活动事务和 Promise/thenable 结果明确拒绝。该边界不嵌套现有普通业务 transaction/savepoint；已归属运行期事务只断言当前版本，不在业务回调里迁移。
 
 Controller 的升级和原 ticket/generation 校验、writer 认领位于同一外层事务；纯升级不运行这些业务步骤。Lease 的建库/迁移、查重和首个 INSERT 同样在一笔事务内。原有异步的文件、账号和进程证明准备留在事务外，最终事务重查稳定身份与格式。
 

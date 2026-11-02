@@ -65,6 +65,7 @@ for (const [module, name, version, tables] of owners) {
     assert.equal(db.pragma("user_version", { simple: true }), version);
     assert.deepEqual(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT GLOB 'sqlite_*' ORDER BY name").all().map(row => row.name), tables);
     db.exec("CREATE TABLE obsolete(value TEXT); INSERT INTO obsolete VALUES('discarded'); CREATE VIEW obsolete_view AS SELECT * FROM obsolete;");
+    db.exec("CREATE TABLE search_content(id INTEGER PRIMARY KEY, body TEXT); INSERT INTO search_content VALUES(1, 'discarded external content'); CREATE VIRTUAL TABLE search USING fts5(body, content='search_content', content_rowid='id'); INSERT INTO search(search) VALUES('rebuild');");
     db.pragma("user_version = 0");
     versions.push(version);
   } finally { db.close(); }

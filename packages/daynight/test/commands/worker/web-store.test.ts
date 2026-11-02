@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { openWebExecutionStore, type WebExecutionStore } from "../../../src/commands/worker/backends/web-store.js";
 
 const id = (n: number) => `00000000-0000-4000-8000-${n.toString().padStart(12, "0")}`;
@@ -16,6 +16,16 @@ const open = (file: string): WebExecutionStore => {
 };
 const close = (store: WebExecutionStore): void => { store.close(); stores.delete(store); };
 const connect = (file: string): Database.Database => { const db = new Database(file); databases.add(db); return db; };
+const externalContentFixture = () => {
+  const root = directory(), file = path.join(root, "state.sqlite"), db = connect(file);
+  db.exec(`
+    CREATE TABLE search_content(id INTEGER PRIMARY KEY, body TEXT NOT NULL);
+    INSERT INTO search_content VALUES(1, 'original searchable content'), (2, 'retained external row');
+    CREATE VIRTUAL TABLE search USING fts5(body, content='search_content', content_rowid='id');
+    INSERT INTO search(search) VALUES('rebuild');
+  `);
+  return { file, db };
+};
 const fixture = () => {
   const root = directory(), file = path.join(root, "state.sqlite"), store = open(file);
   const project = { serverOrigin: "https://daynight.example", projectId: id(1), repoUrl: "https://example.test/p.git", localPath: root };
@@ -23,6 +33,7 @@ const fixture = () => {
   return { root, file, store, project, claim };
 };
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const store of stores) store.close(); stores.clear();
   for (const db of databases) if (db.open) db.close(); databases.clear();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -98,6 +109,53 @@ it("rebuilds an unknown unversioned schema with duplicate execution identities",
   expect(db.prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name").all()).toEqual([{ name: "executions" }]);
   expect(rebuilt.listUnfinishedTasks()).toEqual([]);
   expect(() => db.exec("INSERT INTO executions VALUES('invalid', 'not json')")).toThrow("CHECK constraint failed");
+});
+
+it("discards FTS5 external content classified as a shadow table when rebuilding an unversioned Web store", () => {
+  const { file, db } = externalContentFixture();
+  expect(db.pragma("main.table_list")).toContainEqual(expect.objectContaining({ name: "search_content", type: "shadow" }));
+  expect(db.prepare("SELECT rowid, body FROM search WHERE search MATCH 'searchable'").all()).toEqual([{ rowid: 1, body: "original searchable content" }]);
+  const exec = Database.prototype.exec;
+  let baselineReached = false;
+  vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    if (sql.includes("CREATE TABLE executions (")) {
+      expect(this.pragma("writable_schema", { simple: true })).toBe(0);
+      baselineReached = true;
+    }
+    return exec.call(this, sql);
+  });
+  const rebuilt = open(file);
+  expect(baselineReached).toBe(true);
+  expect(db.pragma("user_version", { simple: true })).toBe(1);
+  expect(db.prepare("SELECT type, name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all()).toEqual([{ type: "table", name: "executions" }]);
+  expect(db.prepare("SELECT * FROM executions").all()).toEqual([]);
+  expect(rebuilt.listUnfinishedTasks()).toEqual([]);
+});
+
+it("restores FTS5 external content and its index when the Web baseline fails after cleanup", () => {
+  const { file, db } = externalContentFixture();
+  const schema = db.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY name").all();
+  const rows = db.prepare("SELECT * FROM search_content ORDER BY id").all();
+  const matches = db.prepare("SELECT rowid, body FROM search WHERE search MATCH 'searchable OR retained' ORDER BY rowid").all();
+  expect(matches).toEqual([{ rowid: 1, body: "original searchable content" }, { rowid: 2, body: "retained external row" }]);
+  const failure = new Error("Web baseline failed"), exec = Database.prototype.exec;
+  let cleaned = false;
+  vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    if (sql.includes("CREATE TABLE executions (")) {
+      expect(this.prepare("SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").all()).toEqual([]);
+      expect(this.pragma("writable_schema", { simple: true })).toBe(0);
+      cleaned = true;
+      exec.call(this, sql);
+      throw failure;
+    }
+    return exec.call(this, sql);
+  });
+  expect(() => open(file)).toThrow("migration-failed");
+  expect(cleaned).toBe(true);
+  expect(db.pragma("user_version", { simple: true })).toBe(0);
+  expect(db.prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY name").all()).toEqual(schema);
+  expect(db.prepare("SELECT * FROM search_content ORDER BY id").all()).toEqual(rows);
+  expect(db.prepare("SELECT rowid, body FROM search WHERE search MATCH 'searchable OR retained' ORDER BY rowid").all()).toEqual(matches);
 });
 
 it("rejects newer and unknown nonzero table formats without deleting state", () => {

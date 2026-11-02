@@ -77,9 +77,13 @@ captures and disables `foreign_keys` before BEGIN. Fresh inspection inside
 IMMEDIATE must agree with the selected mode before domain admission or startup;
 a raced source permits one read-only handoff to reconfigure outside the
 transaction, and another mode change fails. Empty initialization and nonzero
-migration retain the original setting. Reset removes triggers and views, virtual
-tables before ordinary tables, and lets virtual-table owners remove their shadow
-tables. Every actual nonempty reset passes `foreign_key_check` after startup and
+migration retain the original setting. Reset removes triggers and views, then
+virtual tables so their modules clean up owned shadow tables. It reloads the
+schema with `writable_schema=RESET`, leaving schema writing disabled, before
+re-enumerating and removing every surviving user table. FTS5 external-content
+tables can survive their virtual table while retaining a cached shadow flag;
+refreshing that classification allows their normal deletion. Every actual
+nonempty reset passes `foreign_key_check` after startup and
 before commit, regardless of the original setting. The database file is retained.
 
 Pure maintenance refuses every preexisting instance lock, including dead or
