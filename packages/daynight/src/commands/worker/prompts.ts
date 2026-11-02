@@ -52,11 +52,13 @@ export const createWorkerPromptBuilder = async (packageDirectory: string) => {
 };
 
 export const workerPingPrompt = (task: ClaimIdentity): string => [
+  "<system remider>",
   `This is the worker's periodic check for project ${task.projectId}, task ${task.taskId}, original claim ${task.claimId}.`,
   "Continue the current assignment in its original native conversation and worktree, preserving its scope, existing authorization and worker-managed execution rules. This is a background task. Make decisions autonomously within that scope and authorization.",
   humanInterventionInstruction,
   reviewWaitInstruction,
   "Only after all required delivery, acceptance and evidence are complete, finish the task using its original claimId and the version observed for that decision. Reconcile unconfirmed writes before any further mutation.",
+  "</system remider>",
 ].join("\n\n");
 
 export const workerCleanupPrompt = (task: ClaimIdentity, deadline: number): string => [
