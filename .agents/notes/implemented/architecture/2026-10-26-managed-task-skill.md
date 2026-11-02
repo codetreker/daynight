@@ -78,9 +78,12 @@ blockers such as unavailable credentials or reviewers, unmet human gates, and
 explicit user restrictions or revocation preserve the original assignment,
 actual state, minimum needed intervention, and next action before returning
 waiting to the controller. Necessary user intervention follows the
-[managed signaling flow](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction),
-with task-local `worker.signaling` and confirmed removal after resolution before
-resuming the original assignment. Its session checkpoint retains the
+[managed intervention flow](../../../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction),
+with the agent setting its own task's `paused=true` before waiting and confirming
+resolution, the original assignment and valid authorization before clearing the
+pause and resuming. The [task pause decision](../feature/2026-11-02-task-paused-worker-pings.md)
+replaces the earlier prescribed reason-carrying signal: waiting and verified
+resolution remain required, while issue text and feedback stay in the session. Its session checkpoint retains the
 original identities, workspace, authorization, scope, PR head, validation and
 review state, owned resources, and next action without copying secrets. Recovery
 refreshes the same active claim and current remote state before further writes.

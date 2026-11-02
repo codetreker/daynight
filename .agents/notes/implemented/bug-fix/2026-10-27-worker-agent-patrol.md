@@ -17,8 +17,10 @@ idle agent occupying its cleanup slot until the full deadline.
 
 The [worker design](../../../../docs/design/daynight-worker.md) keeps business
 continuation and termination as separate phases of the same claim. Startup and
-recovery prompts declare a background assignment, require autonomous decisions
-within its scope and existing authorization, and prohibit questions. Waiting
+recovery prompts declare a background assignment and require autonomous decisions
+within its scope and existing authorization. Necessary human intervention follows
+the [task pause workflow](../feature/2026-11-02-task-paused-worker-pings.md), which
+qualifies the earlier blanket prohibition on questions. Waiting
 for review or CI remains ongoing execution: the agent waits, checks results and
 continues delivery without ending the turn. Task scope and business authorization
 remain unchanged. The separate [full-access

@@ -1213,12 +1213,20 @@ The saved SQLite session_id still selects resume or fresh startup; an inactive
 pane's retained reference is not saved as a newly observed session ID. A live
 agent keeps its current connection.
 
-Startup and recovery prompts identify the assignment as a background task: the
-agent asks no questions and makes decisions within the task scope and existing
-authorization. While waiting for review or CI, it waits, checks for results and
-continues delivery without ending its execution turn. Fixed native full access
-and folder trust apply to every fresh/resumed process; task delivery remains
-within its existing business authorization.
+Startup, recovery and continuation prompts require autonomous decisions within
+the task scope and existing authorization. When human intervention is necessary,
+the managed agent sets its own task's `paused` property to true with an observed
+exact version and confirms the same assignment and pause before waiting. It
+reports the issue and retains session context; the user chooses how to respond.
+After verifying resolution, the original assignment and permission to resume,
+it clears the pause and confirms false or absence before continuing. Independent
+user restrictions still apply. The [managed workflow](src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction)
+owns readback, failure and conflict handling.
+
+Ordinary review and CI waits remain ongoing execution: the agent waits, checks
+results and continues delivery without ending its turn or setting a pause just
+because a poll times out. Fixed native full access and folder trust apply to
+every fresh/resumed process; task delivery remains within its business authorization.
 
 For a still-owned active claim, each patrol observes the live agent. An
 interactive-ready agent that is not launching and has no first input pending

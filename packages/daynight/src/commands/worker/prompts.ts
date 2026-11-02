@@ -8,6 +8,7 @@ import { validateHerdrAgentArguments } from "./herdr/arguments.js";
 import type { ClaimIdentity, ExecutionConfiguration, LocalTask, WorktreeBinding } from "./types.js";
 
 export type ManagedAssignment = LocalTask & { serverOrigin: string; workerId: string; worktreeId: string; configuration: ExecutionConfiguration; worktree: WorktreeBinding };
+const humanInterventionInstruction = "When human intervention is necessary to complete this assignment, you must set properties.paused=true on your own assigned task before waiting. Follow the using-daynight managed skill's Request user interaction workflow. Clear the pause only after the problem is resolved and valid authorization permits resuming this assignment.";
 const reviewWaitInstruction = "If review or CI is pending, wait and check it periodically yourself. When results arrive, address feedback, fix failures and complete the remaining delivery. Waiting is part of execution: do not end this turn or exit merely because review or CI is pending.";
 
 export const createWorkerPromptBuilder = async (packageDirectory: string) => {
@@ -36,11 +37,12 @@ export const createWorkerPromptBuilder = async (packageDirectory: string) => {
     };
     return [
       "The current execution environment is worker-managed.",
-      "This is a background task. Do not ask the user any questions. Make decisions autonomously within this assignment and its existing authorization.",
+      "This is a background task. Make decisions autonomously within this assignment and its existing authorization.",
       "Use the using-daynight skill in autopilot-managed-task mode for this already-claimed assignment.",
       `Read the installed skill entry at ${JSON.stringify(path.join(root, "SKILL.md"))} and its references/autopilot-managed-task.md at ${JSON.stringify(path.join(root, "references", "autopilot-managed-task.md"))}. Resolve its other references from that same bundle.`,
       "Verify the current service task, original claim and actual worktree before business writes.",
       "Execute only this assignment under its task and repository authorization. Preserve the controller-owned worktree and workspace. The controller owns scheduling and cleanup.",
+      humanInterventionInstruction,
       reviewWaitInstruction,
       "After all required delivery, acceptance and evidence, complete the task with the original claimId and the version observed for that decision as the final task mutation. Unconfirmed writes require observation before any further decision.",
       task.sessionId === null ? "This is a new native conversation for this execution." : "Continue this execution in its original native conversation and worktree. Reconcile interrupted business work before proceeding.",
@@ -51,7 +53,8 @@ export const createWorkerPromptBuilder = async (packageDirectory: string) => {
 
 export const workerPingPrompt = (task: ClaimIdentity): string => [
   `This is the worker's periodic check for project ${task.projectId}, task ${task.taskId}, original claim ${task.claimId}.`,
-  "Continue the current assignment in its original native conversation and worktree, preserving its scope, existing authorization and worker-managed execution rules. This is a background task; do not ask the user any questions. Make decisions autonomously within that scope and authorization.",
+  "Continue the current assignment in its original native conversation and worktree, preserving its scope, existing authorization and worker-managed execution rules. This is a background task. Make decisions autonomously within that scope and authorization.",
+  humanInterventionInstruction,
   reviewWaitInstruction,
   "Only after all required delivery, acceptance and evidence are complete, finish the task using its original claimId and the version observed for that decision. Reconcile unconfirmed writes before any further mutation.",
 ].join("\n\n");

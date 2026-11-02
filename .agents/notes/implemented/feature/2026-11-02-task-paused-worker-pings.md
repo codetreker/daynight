@@ -44,10 +44,29 @@ unknown submission outcomes.
 This property gates periodic continuation only. It does not stop a running
 agent, change task status or worker phase, affect acquisition, or block initial
 and deferred assignments, recovery, cleanup and manual interaction. Web execution
-currently emits no periodic continuation pings. Managed intervention instructions
-retain reporting, waiting context, original assignment verification and resolution
-before resuming without a signaling-property protocol. They do not automatically
-set or clear `paused`.
+currently emits no periodic continuation pings.
+
+Managed agents set `paused=true` on their own task before waiting for necessary
+human intervention. They first read the complete task and verify their original
+active assignment, submit the observed exact version, and confirm the same
+assignment and pause by readback. The issue, feedback and waiting checkpoint
+remain in the session; response methods are chosen by the user. Startup and
+continuation prompts reference this workflow instead of prohibiting all questions.
+
+After feedback, the agent rereads the original assignment and verifies resolution
+and current authorization. With no independent pause or restriction in force,
+it clears a true pause with that newly observed version and confirms false or
+absence before continuing. An already cleared pause only needs verification.
+Unresolved problems retain the pause. Conflicts and unconfirmed writes follow
+write-safety; failed writes remain visible, and claim changes stop task writes.
+Ordinary CI/review polling does not trigger human-intervention pause.
+
+This workflow partially replaces the earlier prescribed reason-carrying signal
+in the [managed execution decision](../architecture/2026-10-26-managed-task-skill.md)
+and [reference ownership decision](../architecture/2026-10-29-daynight-skill-reference-ownership.md).
+That prescription sought explicit waiting and verified resolution. The boolean
+pause now owns continuation control while the problem and response remain
+session context.
 
 ## Alternatives
 
@@ -70,6 +89,16 @@ submission boundary.
 on later patrols, but can leave a newly unpaused task idle until native state
 changes for an unrelated reason. Only actual submissions establish a new input
 baseline.
+
+**Leave pause control entirely manual.** An operator would have to discover the
+blocked agent and pause it before another continuation. The managed agent already
+knows when intervention is necessary, so it must establish and verify its own
+pause before returning to wait.
+
+**Keep an unconditional no-questions instruction.** That wording discouraged
+unsolicited background questions, but also contradicted required intervention.
+Autonomous decisions remain the default within scope, with a specific pause
+workflow for necessary human input.
 
 ## Consequences
 
