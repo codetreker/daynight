@@ -1237,9 +1237,10 @@ every fresh/resumed process; task delivery remains within its business authoriza
 For a still-owned active claim, each patrol observes the live agent. An
 interactive-ready agent that is not launching and has no first input pending
 receives a continuation ping when idle or done and its task is not paused.
-Working, blocked, unknown and not-ready agents remain under observation. The ping preserves the original task,
-claim, worktree and authorization; idle or done does not complete the business
-task. The driver retains the last input observation in memory and suppresses
+Working, blocked, unknown and not-ready agents remain under observation. The
+entire ping is enclosed in literal `<system remider>` and `</system remider>`
+tags and preserves the original task, claim, worktree and authorization; idle or
+done does not complete the business task. The driver retains the last input observation in memory and suppresses
 repeated input while it is unchanged. Unknown submission results require
 observation before another decision, without blind replay. Terminal cleanup
 suppresses business pings.
