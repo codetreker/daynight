@@ -1706,10 +1706,13 @@ after automatic lock recovery until process exclusion is explicitly confirmed.
 Database state does not replace physical Git/worktree or session-history
 verification.
 
-Each store's baseline and SQL conversions ship as fixed `.sql` resources with
-the installed dist tree. The store explicitly selects resource URLs and version
-order; directory names do not schedule migrations, and missing resources fail
-before user-database access. The shared
+Each store's baseline and SQL conversions ship as `.sql` resources with the
+installed dist tree. Top-level SQL files in that store's directory run in lexical
+filename order: the first is its baseline, and consecutive numeric prefixes set
+later versions. TypeScript keeps conditional adoption, JSON and ownership logic;
+auxiliary SQL subdirectories do not enter the normal chain. Resource loading and
+sequence validation finish before user-database access; package checks compare
+source and installed resources. The shared
 [SQLite migration design](../../docs/design/cli-sqlite-migrations.md) explains
 per-store resources, versions, connection lifecycle and failure handling. See the
 [review architecture](../../docs/design/daynight-review.md) for transitions and the

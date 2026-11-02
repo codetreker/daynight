@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import Database from "better-sqlite3";
@@ -30,7 +30,7 @@ beforeAll(async () => {
 }, 180_000);
 afterAll(async () => { if (fixture !== undefined) await fixture.cleanup(); });
 
-it("ships exact SQL resources and executes every store's explicit installed migration sequence", () => {
+it("ships exact SQL resources and executes every store's filename-ordered installed migration sequence", () => {
   let count = 0;
   for (const directory of sqlDirectories) {
     const source = files(path.join(packageDirectory, "src", directory));
@@ -81,7 +81,7 @@ it("rejects a missing installed SQL resource without repository fallback or reta
   }
   finally { db.close(); }
   const original = readFileSync(databaseFile);
-  const resource = path.join(installed, "dist/commands/review/sqlite/upgrade-2.sql");
+  const resource = path.join(installed, "dist/commands/review/sqlite");
   const unavailable = `${resource}.unavailable`;
   const program = String.raw`
 import path from "node:path";
@@ -97,7 +97,8 @@ db.close();
     const result = run(program, [installed, databaseFile], workspace);
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("ENOENT");
-    expect(result.stderr).toContain("upgrade-2.sql");
+    expect(result.stderr).toContain("scandir");
+    expect(result.stderr).toContain("sqlite");
     expect(readFileSync(databaseFile)).toEqual(original);
   } finally { renameSync(unavailable, resource); }
   const restored = run(program, [installed, databaseFile], workspace);
@@ -108,4 +109,61 @@ db.close();
     expect(upgraded.prepare("SELECT remote FROM repositories WHERE github_id='42'").get()).toEqual({ remote: "https://github.com/owner/retained.git" });
   }
   finally { upgraded.close(); }
+});
+it("discovers newly added installed migrations and executes them only in filename order", () => {
+  const directory = path.join(installed, "dist/commands/worker/sqlite");
+  const first = path.join(directory, "006-create-order-probe.sql");
+  const second = path.join(directory, "007-record-order-probe.sql");
+  expect(existsSync(first)).toBe(false); expect(existsSync(second)).toBe(false);
+  const databaseFile = path.join(fixture.receipt.root, "filename-ordered-worker.sqlite");
+  const original = new Database(databaseFile);
+  try {
+    original.exec(readFileSync(path.join(directory, "005-baseline.sql"), "utf8"));
+    original.pragma("user_version = 5");
+  } finally { original.close(); }
+  try {
+    writeFileSync(second, "INSERT INTO filename_order_probe(value) VALUES('sorted');\n");
+    writeFileSync(first, "CREATE TABLE filename_order_probe(value TEXT NOT NULL);\n");
+    const result = run(String.raw`
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+const [installed, databaseFile] = process.argv.slice(1);
+const { openWorkerStore } = await import(pathToFileURL(path.join(installed, "dist/commands/worker/store.js")).href);
+const store = openWorkerStore(databaseFile);
+store.close();
+`, [installed, databaseFile], workspace);
+    expect(result.status, result.stderr).toBe(0);
+    const upgraded = new Database(databaseFile, { readonly: true });
+    try {
+      expect(upgraded.pragma("user_version", { simple: true })).toBe(7);
+      expect(upgraded.prepare("SELECT value FROM filename_order_probe").all()).toEqual([{ value: "sorted" }]);
+    } finally { upgraded.close(); }
+  } finally { rmSync(first, { force: true }); rmSync(second, { force: true }); }
+});
+
+it("rejects an invalid installed SQL candidate without changing an existing database", () => {
+  const directory = path.join(installed, "dist/commands/worker/sqlite");
+  const invalid = path.join(directory, "006-upgrade.SQL");
+  expect(existsSync(invalid)).toBe(false);
+  const databaseFile = path.join(fixture.receipt.root, "invalid-filename-worker.sqlite");
+  const db = new Database(databaseFile);
+  try {
+    db.exec(readFileSync(path.join(directory, "005-baseline.sql"), "utf8"));
+    db.pragma("user_version = 5");
+  } finally { db.close(); }
+  const original = readFileSync(databaseFile);
+  try {
+    writeFileSync(invalid, "ALTER TABLE projects ADD COLUMN invalid_probe TEXT;\n");
+    const result = run(String.raw`
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+const [installed, databaseFile] = process.argv.slice(1);
+const { openWorkerStore } = await import(pathToFileURL(path.join(installed, "dist/commands/worker/store.js")).href);
+openWorkerStore(databaseFile).close();
+`, [installed, databaseFile], workspace);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Invalid SQLite SQL filename");
+    expect(result.stderr).toContain("006-upgrade.SQL");
+    expect(readFileSync(databaseFile)).toEqual(original);
+  } finally { rmSync(invalid, { force: true }); }
 });

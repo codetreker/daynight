@@ -49,9 +49,15 @@ same compiled output. `pnpm build` clears the package's `dist/`, compiles
 `packages/daynight/dist/main.js`, then runs `scripts/copy-resources.ts`. That step
 copies the explicit review and public skill bundles, plus the five SQLite owner
 resource directories, into matching dist paths. Skill bundles retain their full
-relative resources; SQL directories include only `.sql` files. Resources are
-allowlisted rather than discovered from repository skills or directory names.
-The package's existing `files: ["dist"]` rule publishes these resources, while
+relative resources. SQL directories recursively copy files whose names end in
+`.sql` case-insensitively, preserving their names and bytes, including uppercase
+`.SQL` candidates. The copy step neither chooses migration order nor silently
+omits a candidate that violates runtime naming rules. Resources are allowlisted
+at the bundle/directory boundary rather than discovered from the repository.
+Within each owner SQL directory, the runtime validates top-level SQL candidates
+against strict lowercase regular-file naming and derives migration order from
+valid numbered filenames. Auxiliary subdirectories are copied but excluded from
+that normal chain. The package's existing `files: ["dist"]` rule publishes these resources, while
 `daynight` and `dn` keep the same stable JavaScript entry. The
 [SQLite design](design/cli-sqlite-migrations.md#sql-资源与参考结构) owns SQL loading,
 reference metadata and execution ordering.

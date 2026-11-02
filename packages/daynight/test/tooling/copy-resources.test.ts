@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { inspectInstalledSkill } from "../fixtures/skill-contract.js";
+import { loadSqliteSequence } from "../../src/platform/sqlite-sql.js";
 
 const root = path.resolve(import.meta.dirname, "../../../../.tmp/copy-resource-tests");
 const packageDirectory = path.resolve(import.meta.dirname, "../..");
@@ -45,7 +47,7 @@ const fixture = (missing?: Resource) => {
   for (const resource of sqlDirectories) {
     if (resource === missing) continue;
     mkdirSync(source(resource), { recursive: true });
-    writeFileSync(path.join(source(resource), "baseline-1.sql"), "CREATE TABLE baseline (value TEXT NOT NULL);\n");
+    writeFileSync(path.join(source(resource), "001-baseline.sql"), "CREATE TABLE baseline (value TEXT NOT NULL);\n");
   }
   const run = () => {
     const result = spawnSync(process.execPath, [path.join(scripts, "copy-resources.ts")], {
@@ -62,6 +64,18 @@ afterEach(() => {
 });
 
 describe("packaged resource copy", () => {
+  it("preserves invalid SQL candidates so installed discovery rejects them before database access", () => {
+    const f = fixture();
+    const resource = sqlDirectories[0];
+    const filename = "002-upgrade.SQL";
+    const sql = "ALTER TABLE baseline ADD COLUMN upgraded INTEGER;\n";
+    writeFileSync(path.join(f.source(resource), filename), sql);
+    const copied = f.run();
+    expect(copied.status, copied.stderr).toBe(0);
+    expect(readFileSync(path.join(f.destination(resource), filename), "utf8")).toBe(sql);
+    expect(() => loadSqliteSequence(pathToFileURL(f.destination(resource)))).toThrow("Invalid SQLite SQL filename");
+  });
+
   it.each([{ name: "LF", lineEnding: "\n" }, { name: "CRLF", lineEnding: "\r\n" }])("copies bundled skills and SQL byte-for-byte with $name line endings", async ({ lineEnding }) => {
     const f = fixture();
     for (const resource of resources) {

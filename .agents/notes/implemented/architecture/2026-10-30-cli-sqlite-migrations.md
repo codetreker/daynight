@@ -19,7 +19,8 @@ retained instance lock and erase uncertainty about surviving native agents.
 
 Each store explicitly supplies its own format definition and `user_version`
 sequence. Baselines, SQL upgrades and known-source SQL adoption are independent
-`.sql` resources, selected through fixed URLs and explicit version registration.
+`.sql` resources. Each owner selects its directory; top-level filenames define
+the baseline, versions and execution order.
 The shared executor handles definition validation, source inspection, ordered
 synchronous steps and version advancement; connection adapters handle read
 snapshots, migration transactions, close errors and diagnostics. SQL scripts do
@@ -29,6 +30,8 @@ selection remain explicit in code. The
 [SQL resource decision](2026-11-02-sqlite-sql-resources.md) owns resource layout,
 reference metadata and packaging, including the rationale for replacing the
 initial inline definitions without changing these versions or domain ownership.
+The [filename-order decision](2026-11-02-filename-ordered-sqlite-migrations.md)
+owns how the directory supplies that sequence without a TypeScript step list.
 The [requirements](../../../../docs/spec/cli-sqlite-migrations.md) and
 [design](../../../../docs/design/cli-sqlite-migrations.md) own the complete behavior
 and lifecycle.

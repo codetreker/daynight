@@ -1,9 +1,17 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadSqliteSql, sqliteSchemaSnapshots } from "../../src/platform/sqlite-sql.js";
+import { loadSqliteSequence, loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../src/platform/sqlite-sql.js";
+
+import { openSqliteDatabase } from "../../src/platform/sqlite-access.js";
+import { currentSqliteVersion, type SqliteFormat } from "../../src/platform/sqlite-format.js";
+
+vi.mock("node:fs", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, readdirSync: vi.fn(actual.readdirSync) };
+});
 
 const temporary = fileURLToPath(new URL("../../../../.tmp/sqlite-sql-tests/", import.meta.url));
 const directories: string[] = [], connections = new Set<Database.Database>();
@@ -30,6 +38,90 @@ describe("SQLite SQL resources", () => {
   it("exposes a missing resource without falling back to another SQL file", () => {
     const resource = pathToFileURL(path.join(makeDirectory(), "baseline-1.sql"));
     expect(() => loadSqliteSql(resource)).toThrow(expect.objectContaining({ code: "ENOENT", path: fileURLToPath(resource) }));
+  });
+});
+
+describe("filename-ordered SQLite SQL sequences", () => {
+  const sequence = (files: readonly (readonly [string, string])[]): URL => {
+    const directory = makeDirectory();
+    for (const [name, sql] of files) writeFileSync(path.join(directory, name), sql);
+    return pathToFileURL(directory);
+  };
+  it("sorts shuffled filesystem entries before deriving metadata and running actual migrations", async () => {
+    const directory = sequence([
+      ["003-third.sql", "UPDATE records SET value=value || '-third'; CREATE INDEX records_value ON records(value);"],
+      ["001-baseline.sql", "CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO records VALUES(1, 'baseline');"],
+      ["002-second.sql", "ALTER TABLE records ADD COLUMN extra TEXT; UPDATE records SET value=value || '-second';"],
+    ]);
+    const actualFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(readdirSync).mockImplementationOnce(((directory: URL, options: { withFileTypes: true }) => actualFs.readdirSync(directory, options).sort((a, b) => a.name > b.name ? -1 : 1)) as typeof readdirSync);
+    const steps = loadSqliteSequence(directory), [baseline, ...upgrades] = steps;
+    expect(steps.map(step => step.version)).toEqual([1, 2, 3]);
+    const schemas = sqliteSchemaSnapshots(steps);
+    expect(schemas.get(1)).toHaveLength(1);
+    expect(schemas.get(2)![0]!.sql).toContain("extra TEXT");
+    expect(schemas.get(3)!.map(object => object.name)).toEqual(["records", "records_value"]);
+    const format: SqliteFormat = {
+      name: "filename-order records",
+      baseline: { version: baseline.version, create: db => { db.exec(baseline.sql); } },
+      migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => { db.exec(step.sql); } })),
+      validateVersioned: (db, version) => {
+        expect(db.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[]).toEqual(schemas.get(version));
+      },
+    };
+    const file = path.join(fileURLToPath(directory), "state.sqlite");
+    const db = openSqliteDatabase({ file, format, allowEmpty: true, onMigration: () => {} }); connections.add(db);
+    expect(db.pragma("user_version", { simple: true })).toBe(3);
+    expect(db.prepare("SELECT * FROM records").all()).toEqual([{ id: 1, value: "baseline-second-third", extra: null }]);
+    db.close();
+    const reopened = openSqliteDatabase({ file, format, allowEmpty: false, onMigration: () => {} }); connections.add(reopened);
+    expect(reopened.prepare("SELECT value FROM records").get()).toEqual({ value: "baseline-second-third" });
+  });
+  it("uses the first filename version as the baseline and excludes unrelated files and auxiliary directories", () => {
+    const directory = sequence([["006-future.sql", "ALTER TABLE records ADD COLUMN extra TEXT;"], ["005-baseline.sql", "CREATE TABLE records (id INTEGER);"]]);
+    for (const name of ["README.txt", ".DS_Store", "001-baseline.sql.bak"]) writeFileSync(path.join(fileURLToPath(directory), name), "unrelated resource");
+    for (const name of ["adoptions", "sources"]) {
+      mkdirSync(new URL(`${name}/`, pathToFileURL(`${fileURLToPath(directory)}${path.sep}`)));
+      writeFileSync(path.join(fileURLToPath(directory), name, "000-six-column.sql"), "not executable SQL");
+    }
+    const steps = loadSqliteSequence(directory), [baseline, ...upgrades] = steps;
+    expect(steps.map(step => step.version)).toEqual([5, 6]);
+    expect(currentSqliteVersion({ name: "baseline five", baseline: { version: baseline.version, create: () => {} }, migrations: upgrades.map(step => ({ toVersion: step.version, up: () => {} })), validateVersioned: () => {} })).toBe(6);
+    expect([...sqliteSchemaSnapshots(steps).keys()]).toEqual([5, 6]);
+  });
+  it("accepts data-only upgrade scripts that leave an empty reference schema unchanged", () => {
+    const steps = loadSqliteSequence(sequence([["001-baseline.sql", "CREATE TABLE records (id INTEGER);"], ["002-data.sql", "UPDATE records SET id=id+1;"]]));
+    const schemas = sqliteSchemaSnapshots(steps);
+    expect(schemas.get(2)).toEqual(schemas.get(1));
+  });
+  it.each([
+    ["001-baseline.sql", "001-duplicate.sql", "Duplicate"],
+    ["001-baseline.sql", "003-gap.sql", "consecutive"],
+    ["0001-baseline.sql", "002-width.sql", "zero-padding width"],
+  ])("rejects an invalid chain containing %s and %s", (first, second, message) => {
+    const exec = vi.spyOn(Database.prototype, "exec");
+    expect(() => loadSqliteSequence(sequence([[first, "CREATE TABLE records (id INTEGER);"], [second, "SELECT 1;"]]))).toThrow(message);
+    expect(exec).not.toHaveBeenCalled();
+  });
+  it.each(["baseline.sql", "01-baseline.sql", "001-.sql", "001-Upper.sql", "001-bad_slug.sql", "001-double--word.sql", "001-baseline.SQL"])("rejects the malformed filename %s", filename => {
+    const exec = vi.spyOn(Database.prototype, "exec");
+    expect(() => loadSqliteSequence(sequence([[filename, "SELECT 1;"]]))).toThrow("Invalid SQLite SQL filename");
+    expect(exec).not.toHaveBeenCalled();
+  });
+  it("rejects a directory named as a SQL resource", () => {
+    const directory = sequence([["001-baseline.sql", "CREATE TABLE records (id INTEGER);"]]);
+    mkdirSync(path.join(fileURLToPath(directory), "002-directory.sql"));
+    expect(() => loadSqliteSequence(directory)).toThrow("Invalid SQLite SQL filename");
+  });
+  it.each(["000-zero.sql", "2147483648-overflow.sql"])("rejects the out-of-range version %s", filename => {
+    expect(() => loadSqliteSequence(sequence([[filename, "SELECT 1;"]]))).toThrow("positive signed 32-bit integer");
+  });
+  it("rejects an empty sequence and an empty discovered SQL asset before database access", () => {
+    const exec = vi.spyOn(Database.prototype, "exec");
+    const empty = pathToFileURL(makeDirectory());
+    expect(() => loadSqliteSequence(empty)).toThrow("SQLite SQL sequence is empty");
+    expect(() => loadSqliteSequence(sequence([["001-baseline.sql", " \r\n\t"]]))).toThrow("SQLite SQL resource is empty");
+    expect(exec).not.toHaveBeenCalled();
   });
 });
 

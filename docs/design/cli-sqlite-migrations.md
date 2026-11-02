@@ -2,38 +2,44 @@
 
 ## 结构与责任
 
-[升级需求](../spec/cli-sqlite-migrations.md)定义自动升级和数据保留结果。各业务 store 明确选择自己的格式定义、版本序列和准入规则；公共模块复用执行与连接生命周期，不扫描数据库来选择 store，也不维护全局版本或数据库内的迁移账本。
+[升级需求](../spec/cli-sqlite-migrations.md)定义自动升级和数据保留结果。各业务 store 明确选择自己的 SQL 目录和准入规则，目录内的文件名给出本库格式版本与执行序列；公共模块复用加载、执行与连接生命周期，不扫描数据库来选择 store，也不维护全局版本或数据库内的迁移账本。
 
 | 责任 | 所属模块 |
 |---|---|
 | 版本定义、来源检查、迁移顺序和当前版本断言 | `platform/sqlite-format.ts` |
 | 明确缺失判定、只读快照与重开、同步写事务和连接关闭 | `platform/sqlite-access.ts` |
 | 有限的访问错误与安全诊断表示 | `platform/sqlite-error.ts` |
-| 固定 URL 的 SQL 加载及本库参考结构元数据 | `platform/sqlite-sql.ts` |
+| 所属目录的文件名迁移链加载及本库参考结构元数据 | `platform/sqlite-sql.ts` |
 | 原实例锁和严格不接管的同步维护 permit | `platform/instance-lock.ts` |
 | 本库基线 DDL、已交付转换、无版本接入和必要结构检查 | 各 store 的 format 模块 |
 
-格式定义包含基线版本及建库函数、可选的无版本来源验证/接入、连续的后续迁移和按版本验证函数。SQL 资源在格式模块初始化时通过固定 URL 读取；建库和迁移 callbacks 只在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络、原生进程或其他文件。
+格式定义包含基线版本及建库函数、可选的无版本来源验证/接入、连续的后续迁移和按版本验证函数。SQL 主链在格式模块初始化时从所属目录加载并按文件名排序；建库和迁移 callbacks 只在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络、原生进程或其他文件。
 
 ## SQL 资源与参考结构
 
-每个 owner 的 SQL 文件与格式定义保持相邻，文件 URL、基线版本和后续步骤在 TypeScript 中逐项登记。文件名用于定位资源，不能替代显式的版本序列；运行时不枚举目录或按名称猜测顺序。
+每个 owner 明确提供自己的 SQL 目录。`loadSqliteSequence` 只发现顶层名称以大小写不敏感的 `.sql` 结尾的候选，再要求候选为命名合规的普通文件，并按名称字典序排序。无关非 SQL 文件和普通辅助目录被忽略，不递归发现迁移。文件名前缀直接给出版本；首文件作为基线，其余文件成为后续迁移。TypeScript 不保存逐步文件清单或另一份排序，增加合规编号文件便自动进入序列。
 
-| Owner | SQL 资源目录 |
-|---|---|
-| Review | `commands/review/sqlite/` |
-| Worker 主索引 | `commands/worker/sqlite/` |
-| Web 执行状态 | `commands/worker/backends/sqlite/` |
-| Controller journal | `commands/controller/sqlite/journal/` |
-| Native resume lease | `commands/controller/sqlite/resume-lease/` |
+| Owner | SQL 主链目录 | 当前文件 |
+|---|---|---|
+| Review | `commands/review/sqlite/` | `001-baseline.sql`、`002-publications.sql` |
+| Worker 主索引 | `commands/worker/sqlite/` | `005-baseline.sql` |
+| Web 执行状态 | `commands/worker/backends/sqlite/` | `001-baseline.sql` |
+| Controller journal | `commands/controller/sqlite/journal/` | `001-baseline.sql`、`002-projection.sql`、`003-operation-acknowledgements.sql`、`004-projection-gap.sql`、`005-resources.sql` |
+| Native resume lease | `commands/controller/sqlite/resume-lease/` | `001-baseline.sql` |
 
-基线和 SQL 升级只保留一份可执行定义。Review 的 1→2 publication 转换、journal 的 1→5 步骤、Worker 六列接入都执行各自明确登记的文件；Worker 已知六列来源另有独立来源 SQL，用于构造该布局的参考。SQL 文件不写 BEGIN/COMMIT 或 PRAGMA，事务、user_version、JSON 和 owner 逻辑仍由原 TypeScript 边界控制。
+文件名遵守 `NNN-description.sql`：数字前缀至少三位，同一目录使用相同宽度的补零；版本数值为 1–2147483647；后缀是以小写 ASCII 字母开头、由小写字母或数字组成且可用单个 `-` 分段的名称，扩展名必须为小写 `.sql`。首版本可以大于 1，之后必须连续。顶层 SQL 候选中的非法名称、非普通文件、重复版本、宽度不一致、空 SQL 链和中间缺号都在用户库打开前失败；例如大写 `.SQL` 和名称以 `.sql` 结尾的目录会进入候选检查并被拒绝，而 `README.txt`、`.DS_Store` 及普通 `sources/`、`adoptions/` 目录不进入主链。
 
-`sqliteSchemaSnapshots` 在格式模块初始化时，把同一组明确登记的基线和升级 SQL 依次执行到短生命周期的内存 SQLite 中，按步骤缓存 SQLite 自己生成的 sqlite_schema 元数据，然后确认关闭连接。实际用户数据库尚未打开；后续来源检查只使用已缓存的本库参考，不为每次访问重新建参考库。这个过程不复制用户记录、不读取原生历史、不生成持久标记，也不维护另一套预期 DDL 或用 SQL parser 重建结构。
+Worker 的 `sources/000-six-column.sql` 只构造已知无版本六列来源的参考，`adoptions/005-six-column.sql` 只在确实识别为六列来源时由 TypeScript 接入逻辑执行。它们不属于普通迁移序列；子目录隔离使其编号不会成为另一基线或被无条件执行。SQL 文件不写 BEGIN/COMMIT 或 PRAGMA，事务、user_version、JSON 和 owner 逻辑仍由原 TypeScript 边界控制。
 
-已交付来源仍是有限集合，不推导任意手改 SQL 的语义等价。资源读取及参考结构构造发生在用户库打开前；SQL 的语法或执行错误在对应执行边界暴露。Worker 六列 adoption 文件只在实际接入事务中执行，其失败由原事务回滚，不声称每份资源都已被参考链预执行。独立 SQL 与参考元数据的选择依据由 [SQL 资源决策](../../.agents/notes/implemented/architecture/2026-11-02-sqlite-sql-resources.md)持有。
+`sqliteSchemaSnapshots` 在格式模块初始化时，把同一组按文件名发现的基线和升级 SQL 依次执行到短生命周期的内存 SQLite 中，按步骤缓存 SQLite 自己生成的 sqlite_schema 元数据，然后确认关闭连接。实际用户数据库尚未打开；后续来源检查只使用已缓存的本库参考，不为每次访问重新建参考库。这个过程不复制用户记录、不读取原生历史、不生成持久标记，也不维护另一套预期 DDL 或用 SQL parser 重建结构。
 
-构建在清理 dist、编译 TypeScript 后运行 `scripts/copy-resources.ts`，明确复制两个 skill bundle 和上述五个 SQL 目录到相同的 dist 相对路径；SQL 目录只复制 `.sql` 文件。既有 `files: ["dist"]` 发布规则将它们带入安装包，`new URL(..., import.meta.url)` 在源码和编译产物中保持同一相对定位。资源复制和安装验收验证实际发布字节，不能仅凭源码中存在文件认定安装包完整。
+已交付来源仍是有限集合，不推导任意手改 SQL 的语义等价。资源读取及参考结构构造发生在用户库打开前；SQL 的语法或执行错误在对应执行边界暴露。Worker 六列 adoption 文件只在实际接入事务中执行，其失败由原事务回滚，不声称每份资源都已被参考链预执行。
+
+目标版本由实际发现的主链末尾给出。没有清单或第二套期望序列时，连续链缺少原本末尾文件无法仅靠目录发现判定；不能把中间缺号检查宣传成任意文件缺失检测。构建和安装验证核对实际源码目录与产物中的完整文件及字节，已交付 SQL 文件的保留仍属于源码变更审阅要求。
+
+构建在清理 dist、编译 TypeScript 后运行 `scripts/copy-resources.ts`，明确复制两个 skill bundle 和上述五个 SQL 目录到相同的 dist 相对路径；SQL 目录递归复制 `.sql`，包括辅助子目录。构建的目录 allowlist 只控制发布范围，不提供文件执行顺序。既有 `files: ["dist"]` 发布规则将资源带入安装包，目录 URL 在源码和编译产物中保持同一相对定位。资源复制和安装验收验证实际发布字节，不能仅凭源码中存在文件认定安装包完整。
+
+资源布局及参考元数据的依据见 [SQL 资源决策](../../.agents/notes/implemented/architecture/2026-11-02-sqlite-sql-resources.md)；文件名执行顺序及辅助目录边界见 [文件名排序决策](../../.agents/notes/implemented/architecture/2026-11-02-filename-ordered-sqlite-migrations.md)。
 
 ## 独立版本与起点
 

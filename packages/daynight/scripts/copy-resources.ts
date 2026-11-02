@@ -24,7 +24,7 @@ for (const resource of resources) {
       recursive: true,
       errorOnExist: true,
       force: false,
-      filter: (source) => !resource.sqlOnly || statSync(source).isDirectory() || source.endsWith(".sql"),
+      filter: (source) => !resource.sqlOnly || statSync(source).isDirectory() || source.toLowerCase().endsWith(".sql"),
     },
   );
 }

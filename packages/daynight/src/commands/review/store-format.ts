@@ -1,10 +1,10 @@
 import type Database from "better-sqlite3";
 import type { SqliteFormat } from "../../platform/sqlite-format.js";
-import { loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
+import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 
-const baselineSql = loadSqliteSql(new URL("./sqlite/baseline-1.sql", import.meta.url));
-const upgrade2Sql = loadSqliteSql(new URL("./sqlite/upgrade-2.sql", import.meta.url));
-const schemas = sqliteSchemaSnapshots([{ version: 1, sql: baselineSql }, { version: 2, sql: upgrade2Sql }]);
+const steps = loadSqliteSequence(new URL("./sqlite/", import.meta.url));
+const [baseline, ...upgrades] = steps;
+const schemas = sqliteSchemaSnapshots(steps);
 
 const sqlTokens = (sql: string): string => {
   const tokens = sql.match(/--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/|'(?:[^']|'')*'|"(?:[^"]|"")*"|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[^\s]/g);
@@ -16,8 +16,8 @@ const sqlTokens = (sql: string): string => {
 };
 
 const validateReviewVersion = (db: Database.Database, version: number): undefined => {
-  if (version !== 1 && version !== 2) throw new Error(`Unsupported Review schema version ${version}.`);
-  const expected = schemas.get(version)!;
+  const expected = schemas.get(version);
+  if (expected === undefined) throw new Error(`Unsupported Review schema version ${version}.`);
   const actual = db.prepare("SELECT name, type, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
   if (actual.length !== expected.length || actual.some((object, index) => {
     const definition = expected[index]!;
@@ -28,12 +28,9 @@ const validateReviewVersion = (db: Database.Database, version: number): undefine
 export const reviewFormat: SqliteFormat = {
   name: "Review",
   baseline: {
-    version: 1,
-    create: db => { db.exec(baselineSql); },
+    version: baseline.version,
+    create: db => { db.exec(baseline.sql); },
   },
-  migrations: [{
-    toVersion: 2,
-    up: db => { db.exec(upgrade2Sql); },
-  }],
+  migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => { db.exec(step.sql); } })),
   validateVersioned: validateReviewVersion,
 };

@@ -1,16 +1,11 @@
 import type Database from "better-sqlite3";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
-import type { SqliteFormat, SqliteSource } from "../../platform/sqlite-format.js";
-import { loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
+import { currentSqliteVersion, type SqliteFormat, type SqliteSource } from "../../platform/sqlite-format.js";
+import { loadSqliteSequence, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 
-const baselineSql = loadSqliteSql(new URL("./sqlite/journal/baseline-1.sql", import.meta.url));
-const upgrades = [
-  { version: 2, sql: loadSqliteSql(new URL("./sqlite/journal/upgrade-2.sql", import.meta.url)) },
-  { version: 3, sql: loadSqliteSql(new URL("./sqlite/journal/upgrade-3.sql", import.meta.url)) },
-  { version: 4, sql: loadSqliteSql(new URL("./sqlite/journal/upgrade-4.sql", import.meta.url)) },
-  { version: 5, sql: loadSqliteSql(new URL("./sqlite/journal/upgrade-5.sql", import.meta.url)) },
-];
-const schemas = sqliteSchemaSnapshots([{ version: 1, sql: baselineSql }, ...upgrades]);
+const steps = loadSqliteSequence(new URL("./sqlite/journal/", import.meta.url));
+const [baseline, ...upgrades] = steps;
+const schemas = sqliteSchemaSnapshots(steps);
 // These shipped definitions contain no string literals; whitespace and case do
 // not distinguish their finite CREATE/ALTER layouts.
 const normalized = (sql: string): string => sql.replace(/\s+/g, "").replace(/;$/, "").toLowerCase();
@@ -23,7 +18,7 @@ const validateVersioned = (db: Database.Database, version: number): undefined =>
 
 export const controllerJournalFormat: SqliteFormat = {
   name: "controller-journal",
-  baseline: { version: 1, create: (db) => { db.exec(baselineSql); } },
+  baseline: { version: baseline.version, create: (db) => { db.exec(baseline.sql); } },
   migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => { db.exec(step.sql); } })),
   validateVersioned,
 };
@@ -35,7 +30,7 @@ export const assertJournalMigrationAllowed = (db: Database.Database, source: Sql
   try { process.kill(owner.owner_pid, 0); }
   catch (cause) {
     if (cause instanceof Error && "code" in cause && cause.code === "ESRCH") return;
-    throw new SqliteAccessError("upgrade-blocked", { database: controllerJournalFormat.name, phase: "owner-admission", fromVersion: source.version, toVersion: 5 }, { cause });
+    throw new SqliteAccessError("upgrade-blocked", { database: controllerJournalFormat.name, phase: "owner-admission", fromVersion: source.version, toVersion: currentSqliteVersion(controllerJournalFormat) }, { cause });
   }
-  throw new SqliteAccessError("upgrade-blocked", { database: controllerJournalFormat.name, phase: "owner-admission", fromVersion: source.version, toVersion: 5 });
+  throw new SqliteAccessError("upgrade-blocked", { database: controllerJournalFormat.name, phase: "owner-admission", fromVersion: source.version, toVersion: currentSqliteVersion(controllerJournalFormat) });
 };

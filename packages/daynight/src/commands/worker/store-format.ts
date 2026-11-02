@@ -1,11 +1,13 @@
 import type Database from "better-sqlite3";
 import type { SqliteFormat } from "../../platform/sqlite-format.js";
-import { loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
+import { loadSqliteSequence, loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 
-const baselineSql = loadSqliteSql(new URL("./sqlite/baseline-5.sql", import.meta.url));
-const adoptionSql = loadSqliteSql(new URL("./sqlite/adopt-six-column.sql", import.meta.url));
-const sourceSixColumnSql = loadSqliteSql(new URL("./sqlite/source-six-column.sql", import.meta.url));
-const currentSchema = sqliteSchemaSnapshots([{ version: 5, sql: baselineSql }]).get(5)!;
+const steps = loadSqliteSequence(new URL("./sqlite/", import.meta.url));
+const [baseline, ...upgrades] = steps;
+const adoptionSql = loadSqliteSql(new URL("./sqlite/adoptions/005-six-column.sql", import.meta.url));
+const sourceSixColumnSql = loadSqliteSql(new URL("./sqlite/sources/000-six-column.sql", import.meta.url));
+const schemas = sqliteSchemaSnapshots(steps);
+const baselineSchema = schemas.get(baseline.version)!;
 const sixColumnSchema = sqliteSchemaSnapshots([{ version: 0, sql: sourceSixColumnSql }]).get(0)!;
 
 const definition = (sql: string): string => {
@@ -21,28 +23,30 @@ const matchesSchema = (objects: readonly SqliteSchemaObject[], expected: readonl
   const known = expected[index]!;
   return object.name === known.name && object.type === known.type && object.sql !== null && known.sql !== null && definition(object.sql) === definition(known.sql);
 });
-const validate = (db: Database.Database, allowSixColumns: boolean): "six" | "seven" => {
+const validateUnversioned = (db: Database.Database): "six" | "baseline" => {
   const objects = db.prepare("SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
-  if (matchesSchema(objects, currentSchema)) return "seven";
-  if (allowSixColumns && matchesSchema(objects, sixColumnSchema)) return "six";
+  if (matchesSchema(objects, baselineSchema)) return "baseline";
+  if (matchesSchema(objects, sixColumnSchema)) return "six";
   return incompatible();
 };
 
 export const workerStoreFormat: SqliteFormat = {
   name: "Worker state",
   baseline: {
-    version: 5,
-    create: db => { db.exec(baselineSql); },
+    version: baseline.version,
+    create: db => { db.exec(baseline.sql); },
   },
   unversioned: {
-    validate: db => { validate(db, true); },
+    validate: db => { validateUnversioned(db); },
     adopt: db => {
-      if (validate(db, true) === "six") db.exec(adoptionSql);
+      if (validateUnversioned(db) === "six") db.exec(adoptionSql);
     },
   },
-  migrations: [],
+  migrations: upgrades.map(step => ({ toVersion: step.version, up: (db: Database.Database): undefined => { db.exec(step.sql); } })),
   validateVersioned: (db, version) => {
-    if (version !== 5) return incompatible();
-    validate(db, false);
+    const expected = schemas.get(version);
+    if (expected === undefined) return incompatible();
+    const objects = db.prepare("SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
+    if (!matchesSchema(objects, expected)) return incompatible();
   },
 };

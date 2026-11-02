@@ -260,8 +260,8 @@ pnpm build
 pnpm acceptance
 ```
 
-These commands target the CLI. Its build publishes explicitly listed skill
-bundles and per-owner SQLite SQL resources with the compiled dist tree; the
+These commands target the CLI. Its build publishes skill bundles and per-owner
+SQLite SQL directories with the compiled dist tree; the
 [development guide](docs/development.md#cli-development) owns packaging details.
 Web checks use `pnpm web:typecheck`,
 `pnpm web:test` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
