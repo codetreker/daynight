@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -94,8 +95,9 @@ func TestTaskPropertyResourceSchemaAuthenticationAndMethods(t *testing.T) {
 		} `json:"properties"`
 	}](t, response, http.StatusOK)
 	prs, hasPR := schema.Properties["pullRequests"]
+	paused, hasPaused := schema.Properties["paused"]
 	worker, hasWorker := schema.Properties["worker"]
-	if !hasPR || !hasWorker || prs.ReadOnly || !worker.ReadOnly || len(prs.Schema) == 0 || len(worker.Schema) == 0 {
+	if !hasPR || !hasPaused || !hasWorker || prs.ReadOnly || paused.ReadOnly || !worker.ReadOnly || string(paused.Schema) != `{"type":"boolean"}` || len(prs.Schema) == 0 || len(worker.Schema) == 0 {
 		t.Fatalf("invalid property catalog: %s", response.Body)
 	}
 	var workerSchema map[string]any
@@ -194,25 +196,61 @@ func TestTaskPropertyResourceWireLimitAndDatabaseFailure(t *testing.T) {
 	}
 }
 
-func TestTaskPropertyResourcePreservesProtectedWorker(t *testing.T) {
+func TestTaskPausedPropertyResourcePreservesActiveWorkerAndPresence(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	extendedWorkerTestHandler(handler)
 	project := taskProject(t, handler)
 	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Claim preservation"), map[string]any{"allowAgents": true})
 	task = claimHTTPWorker(t, handler, task, workerClaimBody(task.Version))
-	worker := apiWorker(t, task.Properties)
 	path := taskPath(task) + "/properties"
-	set := propertyResource(t, handler, http.MethodPut, path+"/pullRequests", map[string]any{"version": task.Version, "valueText": "[]"})
-	if !reflect.DeepEqual(apiWorker(t, set.Properties), worker) {
-		t.Fatal("setting writable property changed protected worker")
+	initial := propertyResource(t, handler, http.MethodGet, path, nil)
+	if _, exists := initial.Properties["paused"]; exists || task.Status != "in_progress" {
+		t.Fatalf("claim synthesized pause state or did not start execution: %#v", task)
 	}
-	removed := propertyResource(t, handler, http.MethodDelete, path+"/pullRequests", map[string]any{"version": set.Version})
-	if !reflect.DeepEqual(apiWorker(t, removed.Properties), worker) || len(removed.Properties) != 1 {
-		t.Fatal("removing writable property changed protected worker")
+	assertExecutionPreserved := func(actual api.Task) {
+		t.Helper()
+		actual.Version = task.Version
+		actual.UpdatedAt = task.UpdatedAt
+		actual.Properties = maps.Clone(actual.Properties)
+		delete(actual.Properties, "paused")
+		if !reflect.DeepEqual(actual, task) {
+			t.Fatalf("pause mutation changed task or execution data: %#v", actual)
+		}
 	}
+	current := task
+	for _, value := range []string{"true", "false"} {
+		set := propertyResource(t, handler, http.MethodPut, path+"/paused", map[string]any{"version": current.Version, "valueText": value})
+		read := readHTTPTask(t, handler, task)
+		if raw, exists := set.Properties["paused"]; !exists || string(raw) != value || set.Version != current.Version+1 || read.Version != set.Version || !read.UpdatedAt.After(current.UpdatedAt) || !reflect.DeepEqual(read.Properties, set.Properties) {
+			t.Fatalf("pause mutation lost presence or task metadata: %#v", set)
+		}
+		assertExecutionPreserved(read)
+		if got := propertyResource(t, handler, http.MethodGet, path, nil); !reflect.DeepEqual(got, set) {
+			t.Fatalf("pause property resource changed on read: %#v", got)
+		}
+		noop := propertyResource(t, handler, http.MethodPut, path+"/paused", map[string]any{"version": set.Version, "valueText": " \n" + value + " "})
+		if !reflect.DeepEqual(noop, set) || !reflect.DeepEqual(readHTTPTask(t, handler, task), read) {
+			t.Fatal("equivalent boolean changed task or property resource")
+		}
+		assertProjectError(t, projectRequest(handler, http.MethodPut, path+"/paused", jsonBody(t, map[string]any{"version": current.Version, "valueText": value})), http.StatusConflict, "version_conflict")
+		assertProjectError(t, projectRequest(handler, http.MethodDelete, path+"/paused", jsonBody(t, map[string]any{"version": current.Version})), http.StatusConflict, "version_conflict")
+		current = read
+	}
+	removed := propertyResource(t, handler, http.MethodDelete, path+"/paused", map[string]any{"version": current.Version})
 	read := readHTTPTask(t, handler, task)
-	if read.Status != task.Status || read.AllowAgents != task.AllowAgents || !reflect.DeepEqual(read.StartedAt, task.StartedAt) || !reflect.DeepEqual(apiWorker(t, read.Properties), worker) {
-		t.Fatal("property mutation changed unrelated task or claim data")
+	if _, exists := removed.Properties["paused"]; exists || removed.Version != current.Version+1 || read.Version != removed.Version || !read.UpdatedAt.After(current.UpdatedAt) || !reflect.DeepEqual(read.Properties, removed.Properties) {
+		t.Fatalf("pause removal kept a default value or lost metadata: %#v", removed)
+	}
+	assertExecutionPreserved(read)
+	noop := propertyResource(t, handler, http.MethodDelete, path+"/paused", map[string]any{"version": removed.Version})
+	if !reflect.DeepEqual(noop, removed) || !reflect.DeepEqual(readHTTPTask(t, handler, task), read) {
+		t.Fatal("absent pause removal changed task or property resource")
+	}
+	for _, value := range []string{"", "null", `"true"`, `"false"`, "0", "1", "[]", "{}", "[true]", "true false"} {
+		assertProjectError(t, projectRequest(handler, http.MethodPut, path+"/paused", jsonBody(t, map[string]any{"version": removed.Version, "valueText": value})), http.StatusBadRequest, "invalid_input")
+		if !reflect.DeepEqual(readHTTPTask(t, handler, task), read) {
+			t.Fatal("invalid pause mutation changed task")
+		}
 	}
 }
 

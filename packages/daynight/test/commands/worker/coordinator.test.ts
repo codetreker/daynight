@@ -13,7 +13,7 @@ import type { Operation } from "../../../src/api/operation.js";
 import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
+import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrPromptResult, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
@@ -74,9 +74,11 @@ const fixture = async (maxConcurrent = 1) => {
       pane.status = "working"; pane.stateChangeSeq = 2;
       return observe(context, binding);
     }),
-    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string) => {
-      order.push("notify"); const pane = resources.get(context.claimId)!.panes[0]!;
+    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard): Promise<HerdrPromptResult> => {
+      const pane = resources.get(context.claimId)!.panes[0]!;
       const before = observe(context, binding);
+      if (beforeSubmit !== undefined && !await beforeSubmit(operation)) return { submission: "skipped", observation: before };
+      order.push("notify");
       pane.interactiveReady = true; pane.stateChangeSeq! += 1;
       if (prompt.startsWith("The controller is stopping this execution")) { pane.status = "idle"; pane.completionSeq! += 1; }
       else pane.status = "working";
@@ -387,8 +389,9 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
   });
 
-  it("cleans an ended claim in stop/close/delete order and retains history", async () => {
-    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  it.each([false, true])("cleans an ended claim in stop/close/delete order and retains history when paused=%s", async (paused) => {
+    const f = await fixture(); f.candidates[0] = { ...f.candidates[0]!, properties: { ...f.candidates[0]!.properties, paused } };
+    await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const old = f.store.listTasks()[0]!; f.grants.clear(); f.candidates.splice(0);
     await f.coordinator.tick(); await eventually(() => expect(f.store.getTask(old)?.status).toBe("done"));
     expect(f.order.slice(-3)).toEqual(["notify", "stop-close", "remove-worktree"]);
@@ -667,6 +670,31 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.tasks.submitPrompt).toHaveBeenCalledOnce();
     expect(f.tasks.submitPrompt.mock.calls[0]![2]).toContain("worker's periodic check");
     expect(f.tasks.submitPrompt.mock.calls[0]![2]).not.toBe(f.options.buildPrompt.mock.results[0]!.value);
+    expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
+  it("uses fresh pause state despite stale inventory and preserves a zero recovery budget", async () => {
+    const f = await fixture();
+    const limited = { ...configuration, recoveryLimit: 0 };
+    const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }] });
+    await coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const stale = [...f.grants.values()];
+    let current: Task = { ...stale[0]!, properties: { ...stale[0]!.properties, paused: true } };
+    vi.mocked(f.remote.ownInventory).mockResolvedValue(stale);
+    vi.mocked(f.remote.readTask).mockImplementation(async () => current);
+    const pane = [...f.resources.values()][0]!.panes[0]!;
+    pane.status = "idle"; pane.stateChangeSeq = 3; pane.completionSeq = 1;
+
+    for (let patrol = 1; patrol <= 3; patrol++) {
+      await eventually(async () => { await coordinator.tick(); expect(f.remote.readTask).toHaveBeenCalledTimes(patrol); });
+    }
+    expect(f.order.filter((entry) => entry === "notify")).toEqual([]);
+    expect(f.events.some((event) => event.kind === "execution-error")).toBe(false);
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    current = { ...current, properties: Object.fromEntries(Object.entries(current.properties).filter(([name]) => name !== "paused")) };
+    await eventually(async () => { await coordinator.tick(); expect(f.order.filter((entry) => entry === "notify")).toHaveLength(1); });
+    expect(f.tasks.submitPrompt.mock.calls.at(-1)![2]).toContain("worker's periodic check");
     expect(f.tasks.start).toHaveBeenCalledOnce();
   });
 

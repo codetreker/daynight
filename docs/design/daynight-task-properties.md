@@ -21,9 +21,9 @@ flowchart LR
 
 core 使用通用 TaskProperties map。internal/taskproperties 依赖 core 并拥有静态注册表、值 codec、规范化与 typed business accessors；core 不反向依赖 codec。HTTP DTO 使用同样的属性对象，不增加每属性字段。服务端添加一个预定义属性只需定义与对应业务消费，不要求更改 SQL schema、通用命令或完整资源字段投影。
 
-定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。初始属性为 pullRequests 与 worker。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
+定义提供名称、说明、readOnly、值 schema 和 native decoder/normalizer。已注册属性为 pullRequests、paused 与 worker。schema 用于发现和说明，实际验证由 native codec 负责；没有运行时属性插件、数据库定义表或通用 JSON Schema 执行引擎。契约测试覆盖 schema 与 validator 的类型、必填、枚举、nullable 和保护规则。
 
-properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，存在的 worker 必须是合法归属对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
+properties:{} 表示没有属性。存在的 pullRequests 必须是有序数组，paused 必须是布尔值，worker 必须是合法归属对象；整个属性值均不允许 null。worker 内部 nullable 字段不受此规则改变。
 
 ## 值解析与规范化
 
@@ -34,6 +34,12 @@ JSON 对象的重复键与未知字段在普通 unmarshal 前被拒绝。PR 字�
 存储读取同样通过定义的 native decoder/normalizer，语义比较和 DTO 输出使用规范值。不能把旧 JSON 原始片段直接透传，从而改变客户端看到的字符。属性名和结构非法产生可识别的属性校验错误；数据库故障保持原错误链。
 
 TaskProperties 作为不可变值使用。修改创建候选 map 并复制变更值，不原地修改当前任务或共享快照。属性 map 的存在键参与比较，缺失与 [] 不相等；对象键序、缩进和等价转义不构成值变化，有序数组仍按顺序比较。
+
+## 暂停标记的消费
+
+paused 复用通用可写属性定义、独立属性行及任务整体 version。布尔 codec 严格接受 true/false，保留显式 false，拒绝 null 及其它类型；不创建新列或默认属性行。公开 property 修改允许在 in_progress 时执行，继续保留 worker 归属与普通任务字段。
+
+CLI 通用属性对象保持所有键，Worker 的 typed reader 只在消费处解释 paused。缺席表示周期 ping 未暂停，存在的非布尔值是协议错误。Worker 使用现有完整 task GET 在实际周期输入递交前读取当前值，而非复制为本机 SQLite 权威状态；原 claim 核验与输入提交基线由[Worker 设计](daynight-worker.md)拥有。
 
 ## 独立表与读取
 

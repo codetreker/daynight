@@ -10,7 +10,7 @@ export type CleanupInput = { owner: ResourceOwner; project: WorkerProject; task?
 type CleanupAttempt = { deadline: number; notified: boolean; submitted: boolean };
 const key = (owner: ResourceOwner): string => `${owner.projectId}/${owner.taskId}/${owner.claimId}`;
 
-export const createCleanupDriver = (deps: ExecutionDependencies) => {
+export const createCleanupDriver = (deps: Omit<ExecutionDependencies, "readTask">) => {
   const attempts = new Map<string, CleanupAttempt>();
   return {
     advance: async (input: CleanupInput, resources: readonly HerdrOwnedWorkspace[], deleteWorktree: boolean, signal?: AbortSignal): Promise<boolean> => {

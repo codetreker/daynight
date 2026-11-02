@@ -39,6 +39,14 @@ func DecodePatch(data []byte) (core.TaskPropertiesPatch, error) {
 	return Normalize(core.TaskProperties(fields), true)
 }
 
+func normalizePaused(raw json.RawMessage) (json.RawMessage, error) {
+	var value *bool
+	if err := json.Unmarshal(raw, &value); err != nil || value == nil {
+		return nil, fmt.Errorf("properties.paused must be a boolean")
+	}
+	return json.Marshal(*value)
+}
+
 func normalizePullRequests(raw json.RawMessage) (json.RawMessage, error) {
 	values, err := decodePullRequests(raw)
 	if err != nil {

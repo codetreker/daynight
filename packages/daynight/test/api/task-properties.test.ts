@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTaskProperties, readPullRequests, readWorkerClaim, sameTaskProperties } from "../../src/api/task-properties.js";
+import { parseTaskProperties, readPullRequests, readTaskPaused, readWorkerClaim, sameTaskProperties } from "../../src/api/task-properties.js";
 
 describe("generic task properties", () => {
   it("retains unknown keys, nested version fields and value presence", () => {
@@ -33,6 +33,19 @@ describe("generic task properties", () => {
 });
 
 describe("typed property consumers", () => {
+  it("retains absence and explicit paused values when consumed", () => {
+    expect(readTaskPaused(parseTaskProperties({}))).toBeUndefined();
+    expect(readTaskPaused(parseTaskProperties({ paused: false }))).toBe(false);
+    expect(readTaskPaused(parseTaskProperties({ paused: true }))).toBe(true);
+    expect(sameTaskProperties({}, { paused: false })).toBe(false);
+  });
+
+  it.each([null, "false", 0, [], {}])("rejects malformed present paused values when consumed %#", (paused) => {
+    const properties = parseTaskProperties({ paused });
+    expect(properties.paused).toEqual(paused);
+    expect(() => readTaskPaused(properties)).toThrow("invalid response");
+  });
+
   it("distinguishes a missing PR property from an explicitly empty array", () => {
     expect(readPullRequests({})).toBeUndefined();
     expect(readPullRequests({ pullRequests: [] })).toEqual([]);

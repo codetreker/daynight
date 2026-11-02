@@ -4,7 +4,7 @@
 
 ## 目标与范围
 
-Task 使用服务端预定义且有明确值结构的属性。属性目录随服务端代码发布；当前包含公开可写的 pullRequests 和服务端拥有的只读 worker。通用传输、存储和完整资源保留全部属性键，具体业务只读取需要的属性。
+Task 使用服务端预定义且有明确值结构的属性。属性目录随服务端代码发布；当前包含公开可写的 pullRequests、paused 和服务端拥有的只读 worker。通用传输、存储和完整资源保留全部属性键，具体业务只读取需要的属性。
 
 | 编号 | 必需行为 |
 |---|---|
@@ -20,6 +20,7 @@ Task 使用服务端预定义且有明确值结构的属性。属性目录随服
 | TP10 | 数据迁移保留既有 PR 字符串、顺序及重复项，保留执行归属与任务元数据；旧空 PR 数组保留，旧 worker:null 转为缺失。 |
 | TP11 | 非法输入或非法存储属性值返回 400 invalid_input；数据库故障及其他内部错误返回 500 internal_error，不返回局部成功或丢弃非法属性。 |
 | TP12 | 网页保持只读 PR 展示和原有视觉；通用读取保留缺失与空值，PR 展示本身可把缺失和空列表显示为同一空态。 |
+| TP13 | paused 为可写布尔值，允许在执行中设置与移除；true 抑制 worker 的周期 continuation ping，false 或缺席适用原有策略，读取不注入默认键。 |
 
 ## 属性对象与值
 
@@ -37,6 +38,12 @@ Task 使用服务端预定义且有明确值结构的属性。属性目录随服
 properties:{} 表示没有属性；properties:{"pullRequests":[]} 则保留一个值为空数组的属性。当前 pullRequests 不接受 null，worker 如果存在必须是归属对象；worker 内部允许的 herdr:null、nativeSessionId:null 仍有各自业务含义。
 
 PR 项只允许 url/title 两字段，两者均必填。嵌套未知字段、重复 JSON key、缺项或错误类型返回 400 invalid_input。结构校验不增加字符串业务要求。JSON 转义写法、对象键序和缩进不是值的差异；既有解码器对错误 Unicode surrogate 的处理保持已解码的原有语义。
+
+## 暂停周期 ping
+
+paused 仅接受 JSON 布尔 true 或 false，null、字符串、数字及复合值均拒绝。缺席表示不暂停，但不是一个自动生成的 false 属性；设置 false 会保留该键，移除则删除它。两种操作均可用于执行中的任务，保留其状态、计时、归属及其他属性。
+
+paused:true 只抑制 worker 自动发送的周期 continuation ping，不停止已运行的 agent、不改变任务领取资格或 Task/worker phase，也不阻止初始及待递交 assignment、恢复、终止清理或人工会话交互。解除暂停后，原生观察未改变也能重新适用正常 ping 条件。具体递交时序与验收由[Worker 需求](daynight-worker.md)拥有。
 
 ## 属性 HTTP 资源
 
@@ -99,6 +106,9 @@ daynight task properties <task-id> --json
 daynight task set-property <task-id> pullRequests '[{"url":"https://github.com/owner/repo/pull/123","title":"修复同步"}]' --if-version <observed-version>
 daynight task set-property <task-id> pullRequests '[]' --if-version <observed-version>
 daynight task remove-property <task-id> pullRequests --if-version <observed-version>
+daynight task set-property <task-id> paused true --if-version <observed-version>
+daynight task set-property <task-id> paused false --if-version <observed-version>
+daynight task remove-property <task-id> paused --if-version <observed-version>
 ~~~
 
 create/update 不提供 PR 专用选项。创建后的属性通过通用设置命令维护；原生 HTTP create/PATCH 的原子多字段能力保留。设置 PR 时提交完整有序数组，保留仍需要的所有关联。
@@ -139,3 +149,4 @@ create/update 不提供 PR 专用选项。创建后的属性通过通用设置�
 | TP-V6 | CLI 的值/schema 模式、原始值文本、空值、-- 参数、精确版本和补全一致；读写不预取 schema，未知/只读/错误值到达服务端，完整输出不丢键。CLI/Web 不补默认值，精确外壳版本不影响属性内同名 version，旧详情缓存不能造成同版本冲突。 |
 | TP-V7 | PR 展示覆盖缺失、空、重复、空标题、长内容和不可导航地址，以及 100/101 项分页、末页、替换重置、焦点和窄屏。 |
 | TP-V8 | 列表保留分页和快照语义；snapshot/delta 同快照批量读取完整属性并传播删除；图节点不承载属性。非法存储属性返回 400，数据库故障返回 500；网络/配额失败不截断、局部提交或推进水位，旧摘要升级完整重建。 |
+| TP-V9 | paused 的 true、false、缺席、设置、移除、同值和陈旧版本遵守存在性与版本规则；错误类型拒绝，执行中的更新保留状态、时间和 claim，完整资源与 worker inventory 保留当前值。 |

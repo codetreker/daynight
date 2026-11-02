@@ -14,10 +14,10 @@ import (
 
 func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing.T) {
 	catalog := Definitions()
-	if len(catalog) != 2 || catalog["pullRequests"].ReadOnly || !catalog["worker"].ReadOnly {
+	if len(catalog) != 3 || catalog["paused"].ReadOnly || catalog["pullRequests"].ReadOnly || !catalog["worker"].ReadOnly {
 		t.Fatalf("unexpected definitions: %#v", catalog)
 	}
-	if got := propertyNames(); !slices.Equal(got, []string{"pullRequests", "worker"}) {
+	if got := propertyNames(); !slices.Equal(got, []string{"paused", "pullRequests", "worker"}) {
 		t.Fatalf("property order: %v", got)
 	}
 	encoded, err := json.Marshal(catalog)
@@ -26,7 +26,7 @@ func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing
 	}
 	catalog["worker"].Schema[0] = 'X'
 	delete(catalog, "pullRequests")
-	if fresh := Definitions(); len(fresh) != 2 || !json.Valid(fresh["worker"].Schema) {
+	if fresh := Definitions(); len(fresh) != 3 || !json.Valid(fresh["worker"].Schema) {
 		t.Fatal("caller mutated registry definitions")
 	}
 	for _, name := range propertyNames() {
@@ -39,6 +39,9 @@ func TestDefinitionsExposeValueContractsWithoutSharingRegistryStorage(t *testing
 
 func TestSchemaMatchesKnownValueStructures(t *testing.T) {
 	catalog := Definitions()
+	if string(catalog["paused"].Schema) != `{"type":"boolean"}` || catalog["paused"].kind != "boolean" {
+		t.Fatalf("paused schema and input kind diverged: %#v", catalog["paused"])
+	}
 	var pr struct {
 		Type  string `json:"type"`
 		Items struct {
@@ -157,8 +160,10 @@ func TestRegistryNormalizationAndCopiesPreservePresenceAndIsolation(t *testing.T
 }
 
 func TestRegistryEnforcesPublicWritesAndSanitizesValidationErrors(t *testing.T) {
-	if err := CheckWritable("pullRequests"); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"paused", "pullRequests"} {
+		if err := CheckWritable(name); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, name := range []string{"worker", "private-property-input"} {
 		if err := CheckWritable(name); err == nil {
@@ -215,6 +220,33 @@ func TestRawInputPreservesNativeMeaningAndRejectsDuplicateOrTrailingJSON(t *test
 	}
 }
 
+func TestPausedBooleanInputPreservesPresenceAndRejectsOtherValues(t *testing.T) {
+	for _, value := range []string{"true", "false"} {
+		for _, input := range []string{value, " \n" + value + "\t "} {
+			parsed, err := ParseInput("paused", input)
+			if err != nil || string(parsed) != value {
+				t.Fatalf("boolean input %q: %s (%v)", input, parsed, err)
+			}
+			normalized, err := Normalize(core.TaskProperties{"paused": json.RawMessage(input)}, true)
+			if err != nil || len(normalized) != 1 || string(normalized["paused"]) != value || Equal(normalized, core.TaskProperties{}) {
+				t.Fatalf("boolean normalization lost presence: %#v (%v)", normalized, err)
+			}
+		}
+	}
+	for _, input := range []string{"", "null", `"true"`, `"false"`, "0", "1", "[]", "{}", "[true]", `{"paused":true}`, "true false", "false null", "TRUE"} {
+		for _, parse := range []func() error{
+			func() error { _, err := ParseInput("paused", input); return err },
+			func() error { _, err := NormalizeValue("paused", json.RawMessage(input), true); return err },
+		} {
+			err := parse()
+			var invalidValue *ValidationError
+			if !errors.As(err, &invalidValue) || invalidValue.Path != "properties.paused" || errors.Unwrap(err) == nil {
+				t.Fatalf("invalid boolean input %q lost validation identity: %v", input, err)
+			}
+		}
+	}
+}
+
 func TestStringDefinitionsAcceptRawTextAndJSONStringWithoutNewProductProperty(t *testing.T) {
 	valueDefinition := Definition{Name: "testText", kind: "string", Normalize: func(raw json.RawMessage) (json.RawMessage, error) {
 		var value string
@@ -233,7 +265,7 @@ func TestStringDefinitionsAcceptRawTextAndJSONStringWithoutNewProductProperty(t 
 			t.Fatalf("string input %q: got %q (%v), want %q", test.input, actual, err, test.want)
 		}
 	}
-	if !reflect.DeepEqual(propertyNames(), []string{"pullRequests", "worker"}) {
+	if !reflect.DeepEqual(propertyNames(), []string{"paused", "pullRequests", "worker"}) {
 		t.Fatal("string shorthand test registered a product property")
 	}
 }
