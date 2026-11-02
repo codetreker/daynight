@@ -284,7 +284,8 @@ it("rolls back a failing six-column table replacement together with its version"
   const { file, db, rows } = legacyFixture();
   const exec = Database.prototype.exec;
   vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
-    if (sql.startsWith("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id) SELECT")) throw new Error("copy failed");
+    const copyStart = sql.indexOf("INSERT INTO tasks(project_id, task_id, claim_id, status, agent, session_id)");
+    if (copyStart !== -1) { exec.call(this, sql.slice(0, copyStart)); throw new Error("copy failed"); }
     return exec.call(this, sql);
   });
   expect(() => openWorkerStore(file, { onMigration: () => {} })).toThrow("migration-failed");

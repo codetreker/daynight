@@ -20,7 +20,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "node scripts/clean-dist.ts && tsc -p tsconfig.build.json && node scripts/copy-skills.ts",
+    "build": "node scripts/clean-dist.ts && tsc -p tsconfig.build.json && node scripts/copy-resources.ts",
     "typecheck": "tsc --noEmit",
     "test": "pnpm run build && vitest run",
     "test:apfs": "DAYNIGHT_TEST_APFS=1 vitest run test/commands/review/apfs.test.ts",

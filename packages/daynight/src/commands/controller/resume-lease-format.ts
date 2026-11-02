@@ -1,16 +1,18 @@
 import type Database from "better-sqlite3";
 import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import type { SqliteFormat, SqliteSource } from "../../platform/sqlite-format.js";
+import { loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../platform/sqlite-sql.js";
 
-const schema = "CREATE TABLE leases (native_key TEXT PRIMARY KEY, nonce TEXT NOT NULL, source_session_id TEXT NOT NULL, launcher_proof TEXT NOT NULL, created_at TEXT NOT NULL)";
+const baselineSql = loadSqliteSql(new URL("./sqlite/resume-lease/baseline-1.sql", import.meta.url));
+const schema = sqliteSchemaSnapshots([{ version: 1, sql: baselineSql }]).get(1)![0]!.sql!;
 const normalized = (sql: string): string => sql.replace(/\s+/g, "").replace(/;$/, "").toLowerCase();
 const validate = (db: Database.Database): undefined => {
-  const rows = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as { name: string; type: string; sql: string | null }[];
+  const rows = db.prepare("SELECT name,type,sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY name").all() as SqliteSchemaObject[];
   if (rows.length !== 1 || rows[0]!.name !== "leases" || rows[0]!.type !== "table" || rows[0]!.sql === null || normalized(rows[0]!.sql) !== normalized(schema)) throw new Error("Native resume leases do not match the supported schema.");
 };
 export const nativeResumeLeaseFormat: SqliteFormat = {
   name: "native-resume-leases",
-  baseline: { version: 1, create: (db) => { db.exec(schema); } },
+  baseline: { version: 1, create: (db) => { db.exec(baselineSql); } },
   unversioned: { validate, adopt: () => {} },
   migrations: [],
   validateVersioned: (db) => { validate(db); },

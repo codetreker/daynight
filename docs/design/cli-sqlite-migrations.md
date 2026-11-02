@@ -9,10 +9,31 @@
 | 版本定义、来源检查、迁移顺序和当前版本断言 | `platform/sqlite-format.ts` |
 | 明确缺失判定、只读快照与重开、同步写事务和连接关闭 | `platform/sqlite-access.ts` |
 | 有限的访问错误与安全诊断表示 | `platform/sqlite-error.ts` |
+| 固定 URL 的 SQL 加载及本库参考结构元数据 | `platform/sqlite-sql.ts` |
 | 原实例锁和严格不接管的同步维护 permit | `platform/instance-lock.ts` |
 | 本库基线 DDL、已交付转换、无版本接入和必要结构检查 | 各 store 的 format 模块 |
 
-格式定义包含基线版本及建库函数、可选的无版本来源验证/接入、连续的后续迁移和按版本验证函数。迁移 callbacks 同步执行，只操作传入 Database；返回类型为 `undefined`，拒绝误传 async callback。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络、原生进程或其他文件。
+格式定义包含基线版本及建库函数、可选的无版本来源验证/接入、连续的后续迁移和按版本验证函数。SQL 资源在格式模块初始化时通过固定 URL 读取；建库和迁移 callbacks 只在传入 Database 上执行已经加载的 SQL 或本库 JSON 转换，返回类型为 `undefined`，拒绝误传 async callback。版本由执行器统一推进，迁移不自行提交或开始事务，也不操作 Git、网络、原生进程或其他文件。
+
+## SQL 资源与参考结构
+
+每个 owner 的 SQL 文件与格式定义保持相邻，文件 URL、基线版本和后续步骤在 TypeScript 中逐项登记。文件名用于定位资源，不能替代显式的版本序列；运行时不枚举目录或按名称猜测顺序。
+
+| Owner | SQL 资源目录 |
+|---|---|
+| Review | `commands/review/sqlite/` |
+| Worker 主索引 | `commands/worker/sqlite/` |
+| Web 执行状态 | `commands/worker/backends/sqlite/` |
+| Controller journal | `commands/controller/sqlite/journal/` |
+| Native resume lease | `commands/controller/sqlite/resume-lease/` |
+
+基线和 SQL 升级只保留一份可执行定义。Review 的 1→2 publication 转换、journal 的 1→5 步骤、Worker 六列接入都执行各自明确登记的文件；Worker 已知六列来源另有独立来源 SQL，用于构造该布局的参考。SQL 文件不写 BEGIN/COMMIT 或 PRAGMA，事务、user_version、JSON 和 owner 逻辑仍由原 TypeScript 边界控制。
+
+`sqliteSchemaSnapshots` 在格式模块初始化时，把同一组明确登记的基线和升级 SQL 依次执行到短生命周期的内存 SQLite 中，按步骤缓存 SQLite 自己生成的 sqlite_schema 元数据，然后确认关闭连接。实际用户数据库尚未打开；后续来源检查只使用已缓存的本库参考，不为每次访问重新建参考库。这个过程不复制用户记录、不读取原生历史、不生成持久标记，也不维护另一套预期 DDL 或用 SQL parser 重建结构。
+
+已交付来源仍是有限集合，不推导任意手改 SQL 的语义等价。资源读取及参考结构构造发生在用户库打开前；SQL 的语法或执行错误在对应执行边界暴露。Worker 六列 adoption 文件只在实际接入事务中执行，其失败由原事务回滚，不声称每份资源都已被参考链预执行。独立 SQL 与参考元数据的选择依据由 [SQL 资源决策](../../.agents/notes/implemented/architecture/2026-11-02-sqlite-sql-resources.md)持有。
+
+构建在清理 dist、编译 TypeScript 后运行 `scripts/copy-resources.ts`，明确复制两个 skill bundle 和上述五个 SQL 目录到相同的 dist 相对路径；SQL 目录只复制 `.sql` 文件。既有 `files: ["dist"]` 发布规则将它们带入安装包，`new URL(..., import.meta.url)` 在源码和编译产物中保持同一相对定位。资源复制和安装验收验证实际发布字节，不能仅凭源码中存在文件认定安装包完整。
 
 ## 独立版本与起点
 
@@ -24,7 +45,7 @@
 | Controller journal | 基线 1，依次保留 ACK/projection、operation acknowledged、projection gap、source floor/resource 的 1→5 转换 |
 | Native resume lease | 基线 1；已知无版本结构仅在无保留 lease 时登记，不重写归属记录 |
 
-新库使用同一基线建库和后续步骤，避免另一套最新 DDL 漂移。版本范围为正的 32 位有符号整数，0 只表示尚未登记；负数、缺步、逆序和较新版本均拒绝。来源结构检查由本库维护，覆盖迁移需要的表、列、主键、必要索引、约束和 STRICT 属性，只接受有限的已交付布局；不推导任意手改 SQL 的语义等价。
+新库使用同一基线建库和后续步骤，避免另一套最新 DDL 漂移。版本范围为正的 32 位有符号整数，0 只表示尚未登记；负数、缺步、逆序和较新版本均拒绝。来源结构检查由本库维护，参考元数据来自上述实际 SQL 链，覆盖迁移需要的表、列、主键、必要索引、约束和 STRICT 属性，只接受有限的已交付布局。
 
 接入不成为历史数据清洗。Web 记录的既有缺省处理保持，但验证后不重新序列化写回；未来收紧字段需要新增版本转换。Journal 的原有 JSON 字符串、序列、ACK、原生身份和 BLOB 保留，不把原类型断言当成已经增加全面运行时校验。
 
@@ -81,4 +102,4 @@ Lease 的迁移准入要求没有保留行；陈旧、过期或 PID 缺失都不
 
 来源 fixture 独立于当前 opener。真实 SQLite 验证各库新建、旧格式、行/JSON/BLOB 保留、DDL 和版本回滚；独立进程验证并发与中断后重新读取。当前格式 WAL 快照、旧锁保留、lease 阻塞、提交/关闭双失败、IPC catch 与本地停止各有行为断言。SQLite 转换不覆盖原库文件、不删除 WAL/SHM、不创建跨库分布式事务或后台迁移任务。
 
-选择与历史取舍见[升级决策](../../.agents/notes/implemented/architecture/2026-10-30-cli-sqlite-migrations.md)。
+版本、事务与所有权的历史取舍见[升级决策](../../.agents/notes/implemented/architecture/2026-10-30-cli-sqlite-migrations.md)；SQL 文件、参考结构和打包由 [SQL 资源决策](../../.agents/notes/implemented/architecture/2026-11-02-sqlite-sql-resources.md)拥有。

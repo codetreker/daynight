@@ -1,9 +1,11 @@
 import type Database from "better-sqlite3";
 import type { SqliteFormat } from "../../../platform/sqlite-format.js";
+import { loadSqliteSql, sqliteSchemaSnapshots, type SqliteSchemaObject } from "../../../platform/sqlite-sql.js";
 import { parseWebTaskV1, webClaimKey } from "./web-record.js";
 import type { LocalTask } from "./web-types.js";
 
-const schema = "CREATE TABLE executions (identity TEXT PRIMARY KEY NOT NULL, data TEXT NOT NULL CHECK(json_valid(data))) STRICT";
+const baselineSql = loadSqliteSql(new URL("./sqlite/baseline-1.sql", import.meta.url));
+const schema = sqliteSchemaSnapshots([{ version: 1, sql: baselineSql }]).get(1)![0]!.sql!;
 const definition = (sql: string): string => {
   const tokens = sql.match(/--[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'|"(?:""|[^"])*"|[A-Za-z_][A-Za-z0-9_]*|[^\s]/g);
   if (tokens === null) throw new Error("An empty SQLite definition cannot identify a known format.");
@@ -12,13 +14,13 @@ const definition = (sql: string): string => {
   return meaningful.map(token => token.startsWith("'") ? token : token.toLowerCase()).join("\0");
 };
 const validateSchema = (db: Database.Database): undefined => {
-  const objects = db.prepare("SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").all() as { type: string; name: string; sql: string | null }[];
+  const objects = db.prepare("SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").all() as SqliteSchemaObject[];
   if (objects.length !== 1 || objects[0]!.type !== "table" || objects[0]!.name !== "executions" || objects[0]!.sql === null || definition(objects[0]!.sql) !== definition(schema)) throw new Error("The Web execution SQLite schema is incompatible with its known state format.");
 };
 
 export const webExecutionStoreFormat: SqliteFormat = {
   name: "Web execution state",
-  baseline: { version: 1, create: db => { db.exec(schema); } },
+  baseline: { version: 1, create: db => { db.exec(baselineSql); } },
   unversioned: {
     validate: db => {
       validateSchema(db);

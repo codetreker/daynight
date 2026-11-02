@@ -260,7 +260,10 @@ pnpm build
 pnpm acceptance
 ```
 
-These commands target the CLI. Web checks use `pnpm web:typecheck`,
+These commands target the CLI. Its build publishes explicitly listed skill
+bundles and per-owner SQLite SQL resources with the compiled dist tree; the
+[development guide](docs/development.md#cli-development) owns packaging details.
+Web checks use `pnpm web:typecheck`,
 `pnpm web:test` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
 `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
@@ -272,7 +275,8 @@ browser acceptance and complete validation commands.
 Release-input changes require a strictly greater SemVer in
 `packages/daynight/package.json`. This includes `packages/daynight/src/`, either
 package manifest, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, either
-application TypeScript configuration and the CLI build-cleanup script. Additions,
+application TypeScript configuration and the CLI build-cleanup and resource-copy
+scripts. Additions,
 deletions and moves count; build metadata alone does not increase precedence.
 Tests, fixtures, documentation, CI workflows and validation scripts alone do not
 require a version increase.
@@ -305,7 +309,7 @@ from all changed paths, including deletions and both sides of renames:
 | CI routing/workflow changes and other unclassified paths | Every module |
 
 Runtime files under `packages/daynight/src/` always select CLI checks, including
-bundled Markdown. Other documentation exclusions apply before module selection;
+SQL resources and bundled Markdown. Other documentation exclusions apply before module selection;
 changes selecting several modules run their union. The Web selector enables
 parallel quality and browser jobs, each with a 20-minute bound; both are required
 by `checks`. Selected jobs retain their complete integration and coverage gates.

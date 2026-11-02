@@ -14,6 +14,8 @@ CLI 在访问已有本地业务数据库时检查其格式，并在必要时自�
 | Controller journal | `~/.daynight/controller/executions/<execution-id>/journal.sqlite` | 当前 5，保留已有 1→5 转换 |
 | Native resume lease | `~/.daynight/controller/native-resume-leases.sqlite` | 当前 1，接入已有无版本结构；保留 lease 阻塞迁移 |
 
+各库的建库、SQL 升级和已知来源 SQL 接入转换分别由独立 `.sql` 资源持有，版本与文件 URL 的对应关系及执行次序由所属 store 明确定义，不扫描目录来选择或排序迁移。发布包必须包含这些完整资源；资源读取失败在打开用户数据库前明确暴露，不能回退到另一份内联 DDL。无效 SQL 在其参考构造或实际执行边界失败，实际迁移的失败继续遵守单库回滚保证。JSON 转换、业务准入、事务及 user_version 推进继续由 TypeScript 负责。
+
 纯实例锁 SQLite gate 没有业务格式，不加入迁移序列。Worker gate 与其 `state.sqlite` 共用文件，合法建库入口必须能初始化 gate 已创建但尚无业务表的数据库。已有空业务文件只能由允许建库的入口初始化；查询不得将它伪装成已初始化的空结果。
 
 ## 数据保留与原子性

@@ -18,11 +18,18 @@ retained instance lock and erase uncertainty about surviving native agents.
 ## Decision
 
 Each store explicitly supplies its own format definition and `user_version`
-sequence. The shared executor handles definition validation, source inspection,
-ordered synchronous steps and version advancement; connection adapters handle
-read snapshots, migration transactions, close errors and diagnostics. Database
-paths and store selection remain explicit in code. The
-[requirements](../../../../docs/spec/cli-sqlite-migrations.md) and
+sequence. Baselines, SQL upgrades and known-source SQL adoption are independent
+`.sql` resources, selected through fixed URLs and explicit version registration.
+The shared executor handles definition validation, source inspection, ordered
+synchronous steps and version advancement; connection adapters handle read
+snapshots, migration transactions, close errors and diagnostics. SQL scripts do
+not own transactions, PRAGMA settings or version writes. JSON conversion and
+business admission remain TypeScript responsibilities. Database paths and store
+selection remain explicit in code. The
+[SQL resource decision](2026-11-02-sqlite-sql-resources.md) owns resource layout,
+reference metadata and packaging, including the rationale for replacing the
+initial inline definitions without changing these versions or domain ownership.
+The [requirements](../../../../docs/spec/cli-sqlite-migrations.md) and
 [design](../../../../docs/design/cli-sqlite-migrations.md) own the complete behavior
 and lifecycle.
 
