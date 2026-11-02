@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"maps"
 	"reflect"
 	"strings"
 	"testing"
@@ -92,8 +93,67 @@ func TestTaskPropertyWritesPreserveWorkerAndRollback(t *testing.T) {
 	assertTaskUnchanged(t, tasks, principal, changed)
 }
 
+func TestTaskPausedPropertyPreservesActiveExecutionAndPresence(t *testing.T) {
+	tasks, _, project, _, principal := taskService(t)
+	ctx := context.Background()
+	target := claimableTask(t, tasks, principal, project.ID)
+	target = updateTask(t, tasks, principal, target, UpdateTask{Properties: propertyPatch(core.PullRequestProperty{URL: "pull-request", Title: "Evidence"})})
+	target = claimWorkerTask(t, tasks, principal, target, workerDescriptor())
+	if _, exists := target.Properties["paused"]; exists || target.Status != core.TaskInProgress {
+		t.Fatalf("claim synthesized pause state or did not start execution: %#v", target)
+	}
+	assertExecutionPreserved := func(actual core.Task) {
+		t.Helper()
+		actual.Version = target.Version
+		actual.UpdatedAt = target.UpdatedAt
+		actual.Properties = maps.Clone(actual.Properties)
+		delete(actual.Properties, "paused")
+		if !reflect.DeepEqual(actual, target) {
+			t.Fatalf("pause mutation changed task or execution data: %#v", actual)
+		}
+	}
+	current := target
+	for _, value := range []string{"true", "false"} {
+		changed, err := tasks.SetProperty(ctx, principal, project.ID, target.ID, "paused", value, current.Version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if raw, exists := changed.Properties["paused"]; !exists || string(raw) != value || changed.Version != current.Version+1 || !changed.UpdatedAt.After(current.UpdatedAt) {
+			t.Fatalf("pause value lost presence or version: %#v", changed)
+		}
+		assertExecutionPreserved(changed)
+		assertTaskUnchanged(t, tasks, principal, changed)
+		noop, err := tasks.SetProperty(ctx, principal, project.ID, target.ID, "paused", " \n"+value+" ", changed.Version)
+		if err != nil || !reflect.DeepEqual(noop, changed) {
+			t.Fatalf("equivalent boolean changed task: %#v (%v)", noop, err)
+		}
+		_, err = tasks.SetProperty(ctx, principal, project.ID, target.ID, "paused", value, current.Version)
+		requireFault(t, err, "version_conflict")
+		_, err = tasks.RemoveProperty(ctx, principal, project.ID, target.ID, "paused", current.Version)
+		requireFault(t, err, "version_conflict")
+		current = changed
+	}
+	removed, err := tasks.RemoveProperty(ctx, principal, project.ID, target.ID, "paused", current.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := removed.Properties["paused"]; exists || removed.Version != current.Version+1 || !removed.UpdatedAt.After(current.UpdatedAt) {
+		t.Fatalf("pause removal kept a default value or lost version: %#v", removed)
+	}
+	assertExecutionPreserved(removed)
+	repeated, err := tasks.RemoveProperty(ctx, principal, project.ID, target.ID, "paused", removed.Version)
+	if err != nil || !reflect.DeepEqual(repeated, removed) {
+		t.Fatalf("absent pause removal changed task: %#v (%v)", repeated, err)
+	}
+	for _, value := range []string{"null", `"true"`, "1", "[]", "{}", "true false"} {
+		_, err := tasks.SetProperty(ctx, principal, project.ID, target.ID, "paused", value, removed.Version)
+		requireFault(t, err, "invalid_input")
+		assertTaskUnchanged(t, tasks, principal, removed)
+	}
+}
+
 func TestIllegalStoredPropertiesRemainInputErrorsAndPreserveTask(t *testing.T) {
-	for _, value := range []struct{ name, raw string }{{"pullRequests", "{"}, {"pullRequests", `["private-stored-value"]`}, {"pullRequests", "null"}, {"worker", "null"}, {"unknown", "[]"}} {
+	for _, value := range []struct{ name, raw string }{{"pullRequests", "{"}, {"pullRequests", `["private-stored-value"]`}, {"pullRequests", "null"}, {"paused", "null"}, {"worker", "null"}, {"unknown", "[]"}} {
 		t.Run(value.name+"/"+value.raw, func(t *testing.T) {
 			tasks, database, project, _, principal := taskService(t)
 			ctx := context.Background()

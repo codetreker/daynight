@@ -2,6 +2,8 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
+import type { JsonValue, Task } from "../../../src/api/types.js";
+import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { createExecutionDriver, settleWorkerStops } from "../../../src/commands/worker/execution.js";
 import type { ExecutionDependencies, ExecutionInput, WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
 import { createHerdrAgentManager, herdrExecutionAgentName, herdrExecutionLabel } from "../../../src/commands/worker/herdr/agents.js";
@@ -102,10 +104,16 @@ const fixture = async (agent: "codex" | "copilot", sessionId: string | null) => 
   const manager = createHerdrAgentManager({ rpc, session: "w", preflight: { verifyStart: vi.fn(async () => {}) }, workspaceEnvironment: nativeEnvironment, processExecuting: async (pid) => executing.has(pid), pollIntervalMs: 1 });
   const events: WorkerEvent[] = [];
   const git = { prepareWorktree: vi.fn(async () => worktree), verifyWorktree: vi.fn(async () => worktree) } as unknown as WorkerGitManager;
-  const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
+  const remoteTask: Omit<Task, "properties"> & { properties: Record<string, JsonValue> } = {
+    projectId: owner.projectId, id: owner.taskId, title: "Task execution", description: "task", status: "in_progress", allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null,
+    version: 1n, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
+    properties: { worker: { claimId: owner.claimId, state: "active", userId: uuid(6), workerId: uuid(5), machine: { id: uuid(7), name: "fixture" }, platform: "linux", agent, agentControlMode: "herdr", worktreeId: owner.worktreeId, phase: "executing", herdr: null, nativeSessionId: sessionId, claimedAt: "2026-10-27T00:00:00Z" } },
+  };
+  const readTask = vi.fn(async () => remoteTask);
+  const dependencies: ExecutionDependencies = { store, git, herdr: { tasks: manager } as unknown as WorkerHerdrAdapter, readTask, platform: "linux", serverOrigin: "https://daynight.example", workerId: uuid(5), buildPrompt: vi.fn(() => "managed assignment"), emit: (event) => events.push(event), now: Date.now };
   const input: ExecutionInput = { task, project, owner, title: "Task execution", configuration };
   const resources = async () => { const operation = createOperation(); try { return await manager.listResources(operation); } finally { operation.dispose(); } };
-  return { root, store, input, context, manager, rpc, resources, events, calls, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
+  return { root, store, input, context, manager, rpc, resources, events, calls, launches, nativeEnvironment, expectedNativeEnvironment, workerEnvironment, workspaces, panes, agents, binding, dependencies, readTask, remoteTask, executing, failNextClose: (failure: Error) => { closeFailure = failure; }, reportOnLaunch: (id: string) => { launchReference = id; }, blockOnLaunch: () => { blockedLaunch = true; }, finishFirstTurnBeforeDiscovery: (status: "idle" | "done") => { firstTurnCompletion = status; }, driver: createExecutionDriver(dependencies) };
 };
 
 describe("execution from current Herdr resources", () => {
@@ -167,6 +175,111 @@ describe("execution from current Herdr resources", () => {
     expect(prompts()).toHaveLength(2);
     expect(f.calls.filter((call) => ["workspace.close", "workspace.create", "agent.start"].includes(call.method))).toEqual([]);
     expect(f.store.getTask(f.input.task)?.status).toBe("active");
+  });
+
+  it.each([false, undefined])("suppresses paused patrols and resumes the unchanged native turn when paused becomes %s", async (resumed) => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    f.remoteTask.properties.paused = true;
+    for (let patrol = 0; patrol < 3; patrol++) await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    expect(f.readTask).toHaveBeenCalledTimes(3);
+    expect(f.store.getTask(f.input.task)).toEqual(f.input.task);
+    expect(f.launches).toEqual([]);
+
+    if (resumed === undefined) delete f.remoteTask.properties.paused;
+    else f.remoteTask.properties.paused = resumed;
+    await f.driver.advance(f.input);
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+    expect(f.readTask).toHaveBeenCalledTimes(4);
+  });
+
+  it("checks fresh pause state after native readiness waits", async () => {
+    const f = await fixture("codex", staleId);
+    f.agents.push({ ...f.panes[0], agent: "codex", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const request = f.rpc.request;
+    let reads = 0;
+    vi.spyOn(f.rpc, "request").mockImplementation(async (method, params, operation) => {
+      const result = await request(method, params, operation);
+      if (method === "agent.read" && ++reads === 1) {
+        expect(f.readTask).not.toHaveBeenCalled();
+        f.remoteTask.properties.paused = true;
+        return { ...result, read: { ...result.read as Entry, text: "initializing" } };
+      }
+      return result;
+    });
+    await f.driver.advance(f.input);
+    expect(reads).toBe(2);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    expect(f.readTask).toHaveBeenCalledOnce();
+    delete f.remoteTask.properties.paused;
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it("checks fresh pause state after waiting for workspace serialization", async () => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const submit = vi.spyOn(f.manager, "submitPrompt");
+    const operation = createOperation();
+    try {
+      const blocker = f.manager.submitPrompt(f.context, f.binding, "serialized caller", operation, async () => { await gate; return false; });
+      const patrol = f.driver.advance(f.input);
+      await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
+      expect(f.readTask).not.toHaveBeenCalled();
+      f.remoteTask.properties.paused = true;
+      release();
+      await blocker;
+      await patrol;
+    } finally { release(); operation.dispose(); }
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    expect(f.readTask).toHaveBeenCalledOnce();
+  });
+
+  it.each(["read failure", "invalid pause"])("exposes %s without sending or consuming the continuation decision", async (failureKind) => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const failure = new Error("fresh task unavailable");
+    if (failureKind === "read failure") f.readTask.mockRejectedValueOnce(failure);
+    else f.remoteTask.properties.paused = "true";
+    await expect(f.driver.advance(f.input)).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", ...(failureKind === "read failure" ? { cause: failure } : {}) });
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    delete f.remoteTask.properties.paused;
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toHaveLength(1);
+  });
+
+  it.each(["missing", "released", "claim", "worker", "worktree", "local completed"])("does not ping when the original active ownership is %s", async (change) => {
+    const f = await fixture("copilot", staleId);
+    f.agents.push({ ...f.panes[0], agent: "copilot", name: herdrExecutionAgentName(f.context), agent_status: "idle", interactive_ready: true, launch_pending: false, state_change_seq: 10, completion_seq: 3 });
+    const original = readWorkerClaim(f.remoteTask.properties)!;
+    f.readTask.mockImplementationOnce(async () => {
+      if (change === "missing") delete f.remoteTask.properties.worker;
+      else if (change === "local completed") f.store.completeTask(f.input.task);
+      else f.remoteTask.properties.worker = { ...original, ...(change === "released" ? { state: "released" } : change === "claim" ? { claimId: uuid(20) } : change === "worker" ? { workerId: uuid(21) } : { worktreeId: uuid(22) }) };
+      return f.remoteTask;
+    });
+    if (change === "local completed") await expect(f.driver.advance(f.input)).rejects.toThrow("already done");
+    else await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt")).toEqual([]);
+    expect(f.launches).toEqual([]);
+    expect(f.store.listTasks()).toHaveLength(1);
+  });
+
+  it.each(["initial", "deferred"])("delivers the %s assignment while periodic continuation is paused", async (assignment) => {
+    const f = await fixture("copilot", savedId);
+    f.remoteTask.properties.paused = true;
+    if (assignment === "deferred") {
+      f.blockOnLaunch();
+      await f.driver.advance(f.input);
+      f.agents[0]!.agent_status = "idle";
+    }
+    await f.driver.advance(f.input);
+    expect(f.calls.filter((call) => call.method === "agent.prompt").map((call) => call.params.text)).toEqual(["managed assignment"]);
+    expect(f.readTask).not.toHaveBeenCalled();
   });
 
   it.each([

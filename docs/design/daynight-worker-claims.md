@@ -109,7 +109,7 @@ Typed ApiClient 的 TaskFilters/TaskPageQuery 支持 workerId；listTasks 成功
 
 自动初次认领结果未知时不重放；成功完整的自己 claim 清单找回实际 claim 后再登记 pending，失败或部分清单不建立归属结论。显式管理的精确版本及未知写入结果仍按具体 taskId 读取核对原 claim 及具体操作的目标结果；该读取不用于自动清理的缺席原因分类。只有明确拒绝的提交可由新明确决定替换，该决定须重新读取 task 并核对精确 if-version 与本次观察相同；拒绝未修改 task 时，数值相同的版本仍有效。Unknown 提交不因读到旧值解除 fence。一次 HTTP 超时、取消或 5xx 不能证明写入未发生；现有 ApiError.outcomeUnconfirmed 保留不确定结果，调用方不能自动重发。
 
-每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建/更新输入仅暴露可写的 PR 属性。
+每次轮询、写入或核对使用独立有界 Operation，并继承运行时取消信号。客户端基础不启动常驻循环，不把普通单命令的五分钟期限套到整个 worker 生存期。完整 Task 的 CLI/Web 读取器严格保留 worker；公共创建/更新输入仅暴露已注册的可写属性，包括 pullRequests 和 paused；worker 归属保持服务端只读。
 
 ## Web 归属展示与撤回
 

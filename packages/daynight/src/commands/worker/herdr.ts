@@ -13,6 +13,8 @@ export type {
   HerdrAgentObservation,
   HerdrAgentStartInput,
   HerdrPromptReceipt,
+  HerdrPromptResult,
+  HerdrPromptGuard,
   HerdrNativeReference,
 } from "./herdr/agents.js";
 export { HerdrAgentActionError, validateHerdrAgentArguments } from "./herdr/agents.js";

@@ -39,7 +39,7 @@ const remoteOwner = (task: Task): ResourceOwner => {
 
 export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
   const now = options.now === undefined ? Date.now : options.now;
-  const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, emit: options.emit, now };
+  const deps: ExecutionDependencies = { store: options.store, git: options.git, herdr: options.herdr, readTask: options.remote.readTask, platform: options.platform, workerId: options.workerId, serverOrigin: options.serverOrigin, buildPrompt: options.buildPrompt, emit: options.emit, now };
   const execution = createExecutionDriver(deps);
   const cleanup = createCleanupDriver(deps);
   const normalSignal = options.signal === undefined ? new AbortController().signal : options.signal;

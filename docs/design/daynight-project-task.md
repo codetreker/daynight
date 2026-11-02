@@ -115,7 +115,7 @@ review 配置可始终省略，其业务字段不参与服务校验。YAML 错�
 已知字符串的结构验证：合法 Unicode 文本、不含 NUL；非空文本还须包含 Unicode
 `White_Space` 之外的字符。该规则与 Go 服务一致，U+FEFF 可以单独构成名称，
 U+0085 则不能。验证保留字符串原值，不修剪空白，也不拒绝服务允许的其他控制字符。
-Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受的资源阻断完整列表。属性内的 PR 字符串是独立的 opaque JSON 内容，不应用此文本限制。CLI/Web 的 api/task-properties.ts 保留通用 JSON map，readPullRequests/readWorkerClaim 在各自业务处返回明确的缺失状态；sameTaskProperties 比较完整属性对象，不能因当前客户端只使用两个属性就丢弃其它键。
+Project 名称参数与响应 DTO 复用同一规则，避免已被服务接受的资源阻断完整列表。属性内的 PR 字符串是独立的 opaque JSON 内容，不应用此文本限制。CLI/Web 的 api/task-properties.ts 保留通用 JSON map，readTaskPaused/readPullRequests/readWorkerClaim 在各自业务处返回明确的缺失状态；sameTaskProperties 比较完整属性对象，不能因当前业务仅消费部分属性就丢弃其它键。
 
 ## 服务地址与 HTTP 客户端
 

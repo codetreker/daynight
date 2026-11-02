@@ -262,7 +262,7 @@ ID 逐项提供、不执行 CSV 拆分，正规化及排序后拒绝列表内/�
 重复关系选项逐项声明 ID，其他元数据选项只允许一次。服务继续验证引用、状态、环和项目范围，
 所有普通与外部前置仍参与执行，拒绝保留原错误码与相关 task ID。
 
-通用属性命令的 property 是完整字面名称，点号不是对象路径。独立名称 . 或 .. 无法在现有 URL 传输中保持同一资源路径，客户端作为传输错误拒绝且不发请求；可表示的名称仍交由服务端判断。CLI 不维护属性白名单、不获取 schema 作为设置前置，也不解析 value；原始参数作为 valueText 提交。默认 JSON 与字符串 shorthand、可写性、类型和结构都由服务端判断。当前公开可写属性为 pullRequests；其完整数组保留顺序、重复、空白与空字符串。worker 只读保护不因通用命令改变。
+通用属性命令的 property 是完整字面名称，点号不是对象路径。独立名称 . 或 .. 无法在现有 URL 传输中保持同一资源路径，客户端作为传输错误拒绝且不发请求；可表示的名称仍交由服务端判断。CLI 不维护属性白名单、不获取 schema 作为设置前置，也不解析 value；原始参数作为 valueText 提交。默认 JSON 与字符串 shorthand、可写性、类型和结构都由服务端判断。当前公开可写属性为 pullRequests 与布尔 paused；PR 完整数组保留顺序、重复、空白与空字符串，paused 控制 worker 的周期 continuation ping。worker 只读保护不因通用命令改变。
 
 properties 仅允许 task ID 或 --schema 一种模式，均缺失、同时给出或 schema 附 --project 在 I/O 前拒绝。schema 一次 GET 全局定义，不读取项目或工作目录。值读取一次 GET 属性资源。set/remove 显式 --if-version 只提交一次写；省略时一次 GET 属性资源取得任务版本，再写一次；显式 --project 直接作用于该属性请求，不额外读取 project。未显式 project 才使用既有 discover。
 
