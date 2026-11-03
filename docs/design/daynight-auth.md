@@ -75,10 +75,20 @@ CLI 退出接口仅允许当前 PAT 撤销自身，不提供其他令牌管理�
 邀请和授权修改响应使用；HTTP 仍展平为既有成员 JSON。修改授权只比较真实 grant
 版本，邀请判断已有直接关系也读取这一投影，不用计算的准入结果代替。
 
-`ProjectAccess` 只表达当前主体的 project/user ID 和准入角色，不携带资料、可写版本或
-存储时间。`RequireProjectRead`、`RequireProjectWrite` 及 Worker 的非 claim owner
-管理员检查消费该投影。当前准入与可见项目列表共用 Store 的直接授权关系，列表在
-SQL cursor/LIMIT 前筛选；这种类型分离保持当前直接授权语义。
+`ProjectAccess` 表达当前主体的 project/user ID、有效准入角色和可空 `DirectGrant`。
+它没有独立的可写版本或存储时间；嵌入的 grant 保留自己实际的角色、版本与时间。
+`RequireProjectRead`、`RequireProjectWrite` 及 Worker 的非 claim owner 管理员检查
+消费该投影。当前准入与可见项目列表共用 Store 的直接授权关系，列表在 SQL
+cursor/LIMIT 前筛选。单主体查询在同一语句取得有效角色与实际 grant，不额外读取资料。
+
+`GET /api/v1/projects/{projectId}/access` 返回当前主体的
+`{effectiveRole,directGrant}`，两个键必填。grant 为 null 或完整的
+`{projectId,userId,role,version,createdAt,updatedAt}`；当前直接授权实现成功时返回
+实际非 null grant，缺失准入按原规则拒绝。版本是正 int64 JSON number，时间为 UTC。
+API 不返回完整名册或个人资料，客户端核对响应 principal 及存在的 grant 归属。
+TaskSync 顶层 `actorAccess` 使用相同 DTO 和同一读取快照，空 delta 也包含它。
+[当前准入投影决策](../../.agents/notes/implemented/architecture/2026-11-03-project-access-projection.md)
+记录内存所有权、刷新与资料读取分离的原因。
 
 读取在原 repeatable-read 快照中计算准入再读取资源；写入取得现有项目行锁后重算
 准入，再校验授权目标的真实版本与领域约束。Tasks.SetStatus(ctx, principal,
@@ -232,6 +242,7 @@ HTTP 认证逐请求读取当前会话/PAT 并产生 Principal。资源服务在
 | POST /api/v1/auth/device/logout | 当前 Bearer PAT 撤销自身，浏览器会话不能调用。 |
 | 现有 project/task/graph/property/attachment API | session 或 PAT；业务 service 检查当前项目成员。 |
 | PUT .../tasks/{taskId}/status | session/PAT；成员写权限，正 int64 version 与三状态目标；PUT 和 405 路径均经过 Require、Cookie Origin 规则及 no-store。 |
+| GET .../projects/{id}/access | 当前主体的有效角色和可空独立授权；无资料，要求当前项目准入。 |
 | GET .../projects/{id}/members | 任一成员读取最小资料和角色/version。 |
 | PATCH .../projects/{id}/settings | admin，锁后复核角色与精确设置 version，返回完整 Project。 |
 | PATCH/DELETE .../members/{userId} | admin，携带观察到的成员 version。 |
@@ -260,7 +271,7 @@ TaskDetailSessionProvider 位于当前 user/generation 的身份域内，跨详�
 项目列表增加名称/仓库地址创建表单，复用原 API，成功进入空项目且创建者为 admin。
 账户页管理 PAT，项目管理导航连接成员与 `/projects/:id/settings`。设置页成员可读，角色确认是 admin 后可编辑；
 服务端在项目锁后独立复核角色与设置版本。设置按 user/project 键隔离，草稿不写入权威 Project；
-不确定 PATCH 先重读 Project/成员，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。
+不确定 PATCH 先重读 Project 和当前 access，核对失败阻止新写入并允许读重试，不把取消或导航视为远端回滚。
 具体数据和读取机制由[计时架构](daynight-task-timing.md)拥有。成员冲突
 重取权威数据。401/换账号使共享请求 generation 失效并卸载旧项目和附件内容，
 失败不伪装成空列表。成员 version 以 bigint 解码及序列化，保留完整正 int64。

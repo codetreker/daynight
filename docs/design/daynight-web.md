@@ -812,21 +812,25 @@ TaskNode 保留主体检查与 Details/展开独立控件，底部 42px 预留�
 ## 项目执行提醒设置
 
 `AuthenticatedApp` 注册 `/projects/:id/settings`，与成员路由共用项目管理导航、面包屑和本地化标题；Go 同源页面入口提供 GET/HEAD 深链接及既有方法拒绝。
-`ProjectSettingsPanel` 按 user/project 键隔离，`useProjectSettings` 组合完整 Project 和成员读取，只有明确的当前 admin 可编辑。
+`ProjectSettingsPanel` 按 user/project 键隔离，`useProjectSettings` 读取完整 Project，
+共享内存 access 提供当前本人角色；只有完成当前权限核验的 admin 可编辑。
+权限刷新沿身份/项目生命周期发布，保留独立设置草稿；成员资料不再承担本人准入。
 草稿、已保存资源、角色、pending、uncertain 与语义反馈独立；语言切换不重新发请求或丢失输入。
 `api/project-settings.ts` 的 GET 使用权威 Project，PATCH 使用完整 bigint version 编码并返回完整 Project；输入使用正 int32 分钟校验。
 确认的当前版本同值保存保留项目版本和 updatedAt，实际变化响应携带新版本与更新时间。
 
-409/403 后重新读取 Project 与成员，按最新角色和值恢复而不重发旧 PATCH；404 或当前成员不存在清除私有资源。
+409/403 后重新读取 Project 与当前 access，按最新角色和值恢复而不重发旧 PATCH；确认项目失权时清除私有资源。
 确认的其他 4xx 拒绝保留可说明的错误。PATCH 的网络、协议或 5xx 失败不能证明未提交，状态转为 uncertain，
-成功核对 Project 和成员后才允许下次写入；核对失败继续阻止 Save，提供只读重试。
+成功核对 Project 和 access 后才允许下次写入；核对失败继续阻止 Save，提供只读重试。
 路由/项目/身份切换取消旧请求并忽略晚到结果，但不把 abort 当作远端回滚；重新进入时必须完成初始权威读取。
 共享 request 边界保持前台身份核验隔离，同用户后台确认不卸载表单，换号 generation 使旧结果失效。
 
 Project、分页 Project 与图内 Project.settings 的版本通过专用 `project-json.ts` envelope 解码：
 复用鉴权与根版本读取的 `json-source.ts` 原始片段定位，只对已知 settings 子对象调用根版本解码，
 分别覆盖 root Project、items[] 和 graph.project；原生 JSON 先验证完整正文，未知嵌套对象保持原有语义。
-不改变通用 parseApiJson 对未知嵌套 version 的处理，也不要求较新浏览器的 reviver source context。
+同一原始片段机制仅在已声明的 access.directGrant 与 task-sync.actorAccess.directGrant
+路径无损解码授权版本；不递归改写未知嵌套对象或 task properties 的 version。
+保留通用 parseApiJson 的其他语义，不要求较新浏览器的 reviver source context。
 超过 `2^53` 的 settings.version 保持 bigint，保存编码为 JSON 数字；缺失或错误 settings 不补默认值。
 
 ## 完整项目图的本地投影

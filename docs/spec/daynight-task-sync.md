@@ -44,7 +44,15 @@
 
 缓存缺失、schema 不兼容、结构损坏、数据库异常关闭时允许重新装载完整摘要。schema 2→3 及直接 1→3 升级在同一升级事务中重建 projects/summaries/details、轮换 user fence 并清掉旧水位，随后读取完整 snapshot；不能把旧摘要缺少 properties 解释为 {}。active 与 invalidated manifest 都必须验证归属、生命周期及对应格式；invalidated 的 epoch/project/水位必须全为 null，任务与边计数全为零，不能把残留 epoch 作为增量基线。用户 fence 损坏时，在一个事务中轮换 fence 并清除或失效该用户可重建数据，不依赖损坏 fence，也不影响其他用户；旧绑定 scope 和 ticket 不能跨修复发布。IndexedDB 打开、升级、配额、修复及写入失败明确进入现有错误/Retry 状态；失败事务保留原持久状态和允许显示的当前快照，不能当作空项目或同步成功。网络、响应解析及属性读取失败不提交局部摘要或推进水位。本次返回集合中的非法存储属性使整个请求返回 400 invalid_input；数据库查询或事务完成故障仍返回 500 internal_error，后者优先于已发现的属性拒绝。重试先读实际存储。
 
-## R7：计时与项目设置
+## R7：计时、项目设置与当前权限
+
+每次成功 snapshot 和 delta 都包含必填的顶层 `actorAccess`，与 Project、任务和属性
+来自同一数据库快照。它使用[本人权限合同](daynight-auth.md)的
+`{effectiveRole,directGrant}`，grant 版本是无损正 int64 JSON number，不同于任务摘要
+version 的十进制字符串。即使 delta.tasks 为空，本人角色和实际 grant 也必须返回。
+客户端先核对响应身份，再解码并发布这一投影；旧请求、旧身份和旧项目不能覆盖新观察。
+actorAccess 只进入内存权限所有者，不写入 Project/Task 或 IndexedDB，不改变 epoch、
+任务业务版本或同步水位；权限失败与内容缓存失败分别遵守各自错误边界。
 
 每次实际成功同步都取得新 observedAt 与当前 Project；只用于本页显示计时和设置。持久缓存不恢复 performance.now 锚点，重复响应不重建图布局。仅本地摘要的页面不显示最近成功刷新时间、运行中耗时或可能卡住提醒；已完成任务仍可使用持久起止时间显示耗时。概览与任务列表的近期分类按浏览器本地时区的自然日计算；暂时当前时刻使用本机时间，成功同步后切换为服务端样本与单调时间，分类口径由[Web 需求](daynight-web.md#项目整体进度)拥有。项目设置通过已有 settings.version 合并，迟到响应不得回退设置。
 

@@ -1,7 +1,7 @@
 import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, type TaskResponseAdmission } from "./client";
-import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitations, parseMember, parseMembers, parseMemberVersion, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
+import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitations, parseMember, parseMembers, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
 import { project, timestamp } from "./parse";
-import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, User } from "./auth-types";
+import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, ProjectAccess, User } from "./auth-types";
 import type { Project } from "./types";
 import { decodeProjectJson } from "./project-json";
 export type * from "./auth-types";
@@ -126,3 +126,12 @@ export const decideDeviceAuthorization = (userCode: string, decision: "approve" 
   if (!response.ok) return json(response, signal, () => { throw new ApiError("protocol", response.status); });
   if (response.status !== 204) throw new ApiError("protocol", response.status);
 });
+
+export const getProjectAccess = (projectId: string, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectAccess> => {
+  const project = requestId(projectId);
+  return authOperation(signal, async () => {
+    const response = await request(`${projectUrl(project)}/access`, signal, { headers: { Accept: "application/json" } });
+    assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
+    return json(response, signal, (data) => parseProjectAccess(data, project, admission.userId), decodeProjectAccessJson);
+  });
+};

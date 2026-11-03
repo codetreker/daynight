@@ -1,7 +1,7 @@
 import { array, boolean, id, malformed, nonemptyString, record, string, timestamp } from "./parse";
 import { parseApiJson } from "./json";
 import { jsonContainerSources, jsonObjectSources } from "./json-source";
-import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, User } from "./auth-types";
+import type { AuthConfig, AuthProvider, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, ProjectAccess, ProjectGrant, User } from "./auth-types";
 
 const nullable = <T>(value: unknown, parse: (value: unknown) => T): T | null => value === null ? null : parse(value);
 const unique = <T>(items: T[], key: (item: T) => string): T[] => {
@@ -110,3 +110,27 @@ export const parseDeviceAuthorization = (value: unknown, userCode: string): Devi
   if (code !== userCode || normalizeDeviceUserCode(code) !== code || !["pending", "approved", "denied", "expired", "consumed"].includes(string(status))) return malformed();
   return { userCode: code, expiresAt: timestamp(data.expiresAt), status: status as DeviceAuthorizationInspection["status"] };
 };
+
+export const parseProjectGrant = (value: unknown, projectId: string, userId?: string): ProjectGrant => {
+  const data = record(value);
+  const grant = {
+    projectId: id(data.projectId), userId: id(data.userId), role: parseRole(data.role),
+    version: parseMemberVersion(data.version), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt),
+  };
+  if (grant.projectId !== projectId || userId !== undefined && grant.userId !== userId) return malformed();
+  return grant;
+};
+
+export const parseProjectAccess = (value: unknown, projectId: string, userId?: string): ProjectAccess => {
+  const data = record(value);
+  return { effectiveRole: parseRole(data.effectiveRole), directGrant: data.directGrant === null ? null : parseProjectGrant(data.directGrant, projectId, userId) };
+};
+
+export const projectAccessSource = (text: string): unknown => {
+  const parsed = parseApiJson(text);
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return parsed;
+  const data = parsed as Record<string, unknown>;
+  if (Object.hasOwn(data, 'directGrant')) data.directGrant = parseApiJson(jsonObjectSources(text).get('directGrant')!);
+  return parsed;
+};
+export const decodeProjectAccessJson = async (response: Response): Promise<unknown> => projectAccessSource(await response.text());

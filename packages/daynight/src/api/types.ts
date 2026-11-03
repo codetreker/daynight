@@ -38,6 +38,20 @@ export type Project = {
   readonly updatedAt: string;
 };
 
+export type ProjectGrant = {
+  readonly projectId: string;
+  readonly userId: string;
+  readonly role: "admin" | "member";
+  readonly version: bigint;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+
+export type ProjectAccess = {
+  readonly effectiveRole: "admin" | "member";
+  readonly directGrant: ProjectGrant | null;
+};
+
 export type ProjectMember = {
   readonly projectId: string;
   readonly userId: string;

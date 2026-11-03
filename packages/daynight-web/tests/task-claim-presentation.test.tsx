@@ -18,13 +18,13 @@ const idle: TaskMutationState = { operation: null, phase: 'idle', error: null, r
 const operation = { action: 'withdraw' as const, claimId: worker.claimId, version: detail.version };
 
 describe('claim ownership presentation', () => {
-  it('only offers withdrawal to a current member who owns the claim or administers the project', () => {
-    expect(mayWithdrawClaim(worker, worker.userId, [member()])).toBe(true);
-    expect(mayWithdrawClaim(worker, id(10), [member(id(10), 'admin')])).toBe(true);
-    expect(mayWithdrawClaim(worker, id(10), [member(id(10))])).toBe(false);
-    expect(mayWithdrawClaim(worker, worker.userId, [])).toBe(false);
-    expect(mayWithdrawClaim({ ...worker, state: 'released' }, worker.userId, [member()])).toBe(true);
-    expect(mayWithdrawClaim({ ...worker, state: 'completed' }, worker.userId, [member()])).toBe(false);
+  it('only offers withdrawal to a current member with live access who owns the claim or administers the project', () => {
+    expect(mayWithdrawClaim(worker, worker.userId, "member")).toBe(true);
+    expect(mayWithdrawClaim(worker, id(10), "admin")).toBe(true);
+    expect(mayWithdrawClaim(worker, id(10), "member")).toBe(false);
+    expect(mayWithdrawClaim(worker, worker.userId, null)).toBe(false);
+    expect(mayWithdrawClaim({ ...worker, state: 'released' }, worker.userId, "member")).toBe(true);
+    expect(mayWithdrawClaim({ ...worker, state: 'completed' }, worker.userId, "member")).toBe(false);
   });
 
   it('shows owner, account, machine, agent and localized execution phase without changing the saved claim', () => {

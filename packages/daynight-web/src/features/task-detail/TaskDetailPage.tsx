@@ -1,3 +1,4 @@
+import { ProjectAccessBoundary } from "../projects/ProjectAccess";
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { navigateTaskDetail, type TaskDetailNavigation } from '../../app/router';
 import { useI18n } from '../../i18n/LocaleProvider';
@@ -33,4 +34,4 @@ const TaskDetailPageContent = ({ projectId, taskId, navigation }: TaskDetailPage
   </div>;
 };
 
-export const TaskDetailPage = (props: TaskDetailPageProps) => <TaskDetailSessionBoundary><TaskDetailPageContent {...props} /></TaskDetailSessionBoundary>;
+export const TaskDetailPage = (props: TaskDetailPageProps) => <ProjectAccessBoundary projectId={props.projectId}><TaskDetailSessionBoundary><TaskDetailPageContent {...props} /></TaskDetailSessionBoundary></ProjectAccessBoundary>;

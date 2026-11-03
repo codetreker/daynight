@@ -1,3 +1,4 @@
+import { ProjectAccessBoundary, useProjectAccess } from "../projects/ProjectAccess";
 import { readPullRequests, readWorkerClaim } from "../../api/task-properties";
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../../api/client';
@@ -80,7 +81,7 @@ const TaskDetailError = ({ error }: { readonly error: unknown }) => {
   </>;
 };
 
-export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen }: TaskDetailSurfaceProps) => {
+const TaskDetailContent = ({ projectId, taskId, snapshot, onSelectTask, onClose, onRestoreFocus, onRefreshGraph, presentation, navigation, onNavigate, attachmentApi, attachmentUrls, detailUrl, graphError = null, fullscreen }: TaskDetailSurfaceProps) => {
   const sessionMessages = useSessionMessages();
   const modal = presentation === 'dialog';
   const scope = `${projectId}/${taskId}`;
@@ -97,7 +98,9 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   const currentClaim = worker !== undefined && worker.state !== 'completed' ? worker : null;
   const membership = useProjectMembers(projectId, currentClaim !== null);
   const viewer = useTaskCacheScope();
-  const mayWithdraw = currentClaim !== null && membership.status === 'ready' && mayWithdrawClaim(currentClaim, viewer.userId, membership.members);
+  const access = useProjectAccess(projectId);
+  useEffect(() => { if (currentClaim !== null && access.status === 'loading') void access.session.revalidate(); }, [currentClaim !== null, access.status, access.session]);
+  const mayWithdraw = currentClaim !== null && access.ready && mayWithdrawClaim(currentClaim, viewer.userId, access.access!.effectiveRole);
   type TaskConfirmationState = DeletionConfirmation | StatusConfirmation | WithdrawalConfirmation | (AgentPermissionConfirmation & { readonly kind: 'allowAgents' }) |
     (PlatformConfirmation & { readonly kind: 'requiredPlatform' });
   const [confirmation, setConfirmation] = useState<TaskConfirmationState | null>(null);
@@ -114,6 +117,10 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
   useLayoutEffect(() => { if (confirmation !== null && !confirmationValid) setConfirmation(null); }, [confirmation, confirmationValid]);
   const confirm = (): void => {
     if (confirmation === null || !confirmationValid) return;
+    if (confirmation.kind === 'withdraw') {
+      const admitted = access.session.snapshot();
+      if (admitted.status !== 'ready' || admitted.refreshing || currentClaim === null || !mayWithdrawClaim(currentClaim, viewer.userId, admitted.access!.effectiveRole)) return;
+    }
     setConfirmation(null);
     if (confirmation.kind === 'delete') task.deleteTask(confirmation.detail.version, confirmation.removeDepends);
     else if (confirmation.kind === 'withdraw') task.withdrawClaim(confirmation.claimId, confirmation.detail.version);
@@ -272,8 +279,9 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
                   <TaskAgentPermissionSwitch detail={detail} disabled={!task.canSetAgentPermission} describedBy={automationFeedbackId}
                     onClick={() => requestConfirmation({ kind: 'allowAgents', detail, allowAgents: !detail.allowAgents })} />
                 </div>
+                {currentClaim !== null && access.error !== null && <div role="alert"><TaskDetailError error={access.error} /><button className="button" type="button" onClick={() => { void access.session.revalidate(); }}>{messages.workspace.projects.retry}</button></div>}
                 {currentClaim !== null && <TaskClaimSummary worker={currentClaim} members={membership.members} membershipStatus={membership.status} membershipError={membership.error} onRetryMembers={membership.retry}
-                  canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => requestConfirmation({ kind: 'withdraw', detail, claimId: currentClaim.claimId }) } : {})} />}
+                  canWithdraw={task.canWithdrawClaim && mayWithdraw} {...(mayWithdraw ? { onWithdraw: () => { const review = { kind: 'withdraw' as const, detail, claimId: currentClaim.claimId }; void access.session.revalidate().then((fresh) => { if (fresh !== null && dialogRef.current?.isConnected && mayWithdrawClaim(currentClaim, viewer.userId, fresh.effectiveRole)) requestConfirmation(review); }); } } : {})} />}
               </div>
               <TaskDetailReading key={`${projectId}/${taskId}`} projectId={projectId} taskId={taskId} description={detail.description} {...(worker?.agentControlMode === 'web' ? { session: (active: boolean) => <TaskAgentSession key={worker!.claimId} projectId={projectId} taskId={taskId} claimId={worker!.claimId} active={active} current={!task.requiresFreshRead && task.status === 'ready' && task.error === null} /> } : {})} selection={selection} onSelectionChange={changeSelection} requireCompleteInventory={!modal} {...(modal || fullscreen.active ? { keyboardOwner } : {})} {...(attachmentApi === undefined ? {} : { api: attachmentApi })} {...(attachmentUrls === undefined ? {} : { urls: attachmentUrls })} overview={(description) => <>
                 <div className="task-detail-columns">
@@ -345,3 +353,5 @@ export const TaskDetailSurface = ({ projectId, taskId, snapshot, onSelectTask, o
     </>;
   return modal ? <div className="task-detail-backdrop" onClick={(event) => { if (event.target === event.currentTarget && !confirmationOpen) onClose!(); }}>{content}</div> : content;
 };
+
+export const TaskDetailSurface = (props: TaskDetailSurfaceProps) => <ProjectAccessBoundary projectId={props.projectId}><TaskDetailContent {...props} /></ProjectAccessBoundary>;

@@ -1,3 +1,4 @@
+import { directAccessFixture } from "./helpers/taskSync";
 import * as fake from "fake-indexeddb";
 import { openDB, type IDBPDatabase } from "idb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -17,7 +18,7 @@ const time = "2026-10-20T12:00:00.123456789Z";
 const later = "2026-10-20T12:00:01.000000001Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@example.test/project", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
 const task = (n: number, changes: Partial<TaskSummary> = {}): TaskSummary => ({ id: taskId(n), version: 1n, properties: {}, titlePreview: `Task ${n}`, titleTruncated: false, status: "todo", dependsOn: [], externalDependsOn: [], allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, ...changes });
-const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ mode: "delta", epoch, project, observedAt: later, tasks, ...changes });
+const response = (tasks: readonly TaskSummary[], changes: Partial<TaskSync> = {}): TaskSync => ({ actorAccess: directAccessFixture(project.id), mode: "delta", epoch, project, observedAt: later, tasks, ...changes });
 const signal = () => new AbortController().signal;
 const scopes: TaskCacheScope[] = [];
 const connections: IDBPDatabase<TaskCacheSchema>[] = [];

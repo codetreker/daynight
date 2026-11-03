@@ -99,6 +99,7 @@ type TaskSync = {
   mode: "snapshot" | "delta";
   epoch: string;
   project: Project;
+  actorAccess: ProjectAccess; // 当前主体的有效角色与可空实际独立授权
   observedAt: string;
   tasks: TaskViewRecord[];
 };
@@ -117,13 +118,35 @@ type TaskSync = {
 | 数据库查询或事务完成失败 | 500 internal_error，优先于已发现的业务拒绝 |
 | 请求取消 | 沿用真实取消行为，不降格为空数据 |
 
-在一次现有只读 REPEATABLE READ 快照中验证成员资格、读取 Project/epoch、精确容量检查、匹配摘要、完整属性和 observedAt。全部状态都参与同步。assignedTo 由同一任务行直接投影，字段必填且明确为 null 或规范 UUID，不依赖用户资料或属性解码。store 先读取任务行并完成 rows.Err()/关闭 rows，再使用共同 loadTaskProperties 对已准入的任务 ID 批量读取 task_properties；空集合不查询属性，没有属性行的任务得到 {}。属性和父任务版本来自同一快照，查询次数不随任务或属性数量线性增长。容量检查在属性读取之前完成，不向未授权请求读取属性。
+在一次现有只读 REPEATABLE READ 快照中计算当前主体准入，将现有
+`RequireProjectRead` 返回值保存在必填 `actorAccess`，再读取 Project/epoch、精确容量、
+匹配摘要、完整属性和 observedAt。GET access 与该字段共用
+[本人权限投影](daynight-auth.md)；即使空 delta 也返回同一快照的实际角色与 grant，
+不为五秒同步额外读取完整名册或再作一次资料查询。全部状态都参与同步。assignedTo 由同一任务行直接投影，字段必填且明确为 null 或规范 UUID，不依赖用户资料或属性解码。store 先读取任务行并完成 rows.Err()/关闭 rows，再使用共同 loadTaskProperties 对已准入的任务 ID 批量读取 task_properties；空集合不查询属性，没有属性行的任务得到 {}。属性和父任务版本来自同一快照，查询次数不随任务或属性数量线性增长。容量检查在属性读取之前完成，不向未授权请求读取属性。
 
 属性读取复用定义注册表的校验与规范化。服务层在只读回调内用 propertyValidationFault 识别纯属性拒绝并保存 refusal；先处理 ReadSnapshot 实际错误，再返回 refusal。不能在事务退出后仅凭宽泛 errors.As 把事务完成或回滚故障连同坏值错误改成 400。delta 仅校验本次窗口选中的任务，不额外读取窗口外属性。节点/边容量不约束属性总字节，完整响应的成本见第 10 节；协议不引入分页或中间发布。每次检查容量，不能保留旧修订号方案的“序号相等即跳过计数”优化。
 
-TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须保留当前 GraphTask 已有的 requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。新 version 字符串严格解码为 bigint；Project.settings.version 沿用现有无损解码。properties 必须是对象，缺失、null 或数组均拒绝，通用 parseTaskProperties 保留客户端未知的全部键；属性内同名 version 保持普通 JSON 值，不递归转成 bigint。缓存字段不得缺省。GET/HEAD、no-store、错误信封与请求取消保持。task-sync 的全项目容量合同独立于[按任务查询的 task-graph](../spec/daynight-server.md#任务链图查询)；后者不能提供完整项目摘要或替代缓存基线。
+TaskStatus 沿用当前共享的 todo/in_progress/done 三状态。摘要必须保留当前 GraphTask 已有的 requiredPlatform（明确可空）及 allowAgents；缺失字段作为协议错误，不能补默认值。返回排序为 (createdAt,id)，依赖数组按 ID。任务摘要 version 字符串严格解码为 bigint；Project.settings.version 和
+actorAccess.directGrant.version 的 JSON number 分别在已知子树中无损解码。
+存在的 grant 必须属于请求项目和已核对的实际用户，role 与 effectiveRole 分别校验。properties 必须是对象，缺失、null 或数组均拒绝，通用 parseTaskProperties 保留客户端未知的全部键；属性内同名 version 保持普通 JSON 值，不递归转成 bigint。缓存字段不得缺省。GET/HEAD、no-store、错误信封与请求取消保持。task-sync 的全项目容量合同独立于[按任务查询的 task-graph](../spec/daynight-server.md#任务链图查询)；后者不能提供完整项目摘要或替代缓存基线。
 
 认证边界为实际认证后的响应写 `Daynight-User-ID`，覆盖同步、详情、写结果及认证后资源错误。缓存发布前与当前身份核对；401 沿用会话失效流程。该头来自 core.Principal，不能回显客户端输入。
+
+## 当前权限的内存发布
+
+`useTaskGraph` 在响应 principal、当前请求及 scope 生命周期验证和成功应用后，把
+actorAccess 发布给同一项目的内存权限 Provider；持久 applySync 仍只处理内在 Project、
+摘要和详情。provider 覆盖项目弹层、设置/成员以及独立 Task/附件路径，绑定既有
+TaskCacheScope 和用户/项目生命周期，不增加第二份持久缓存或更改 schema 3。
+
+图页面的首次及每五秒 TaskSync 提供角色。没有 TaskSync 的设置/成员页面首次读取
+GET access；每次成功观察重置可见三十秒 fallback。隐藏暂停，恢复可见、focus 和管理
+操作前重验；并发 GET 合并。每个实际读取在派发前捕获观察顺序与作用域，迟到的 GET
+或 sync 不得替换较新成功观察，管理重验期间旧观察也不能解除提交限制。读取失败保留
+stale/error，确认失权使用现有捕获 generation 的 revokeProject，普通网络错误保持错误。
+
+权限不参与图内容相等比较，不推进水位，也不写入 Project manifest、summaries、details
+或广播内容。claim owner 的资料读取沿原项目名册所有者保留，并与本人操作资格分开。
 
 ## 5. IndexedDB 与去重
 

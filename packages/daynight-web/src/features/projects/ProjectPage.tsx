@@ -1,3 +1,4 @@
+import { ProjectAccessBoundary } from "./ProjectAccess";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { Project } from "../../api/types";
 import { navigate } from "../../app/router";
@@ -282,4 +283,4 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   );
 };
 
-export const ProjectPage = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => <TaskDetailSessionBoundary><ProjectView key={projectId} projectId={projectId} {...(renderActions === undefined ? {} : { renderActions })} /></TaskDetailSessionBoundary>;
+export const ProjectPage = ({ projectId, renderActions }: { readonly projectId: string; readonly renderActions?: (project: Project) => ReactNode }) => <ProjectAccessBoundary projectId={projectId}><TaskDetailSessionBoundary><ProjectView key={projectId} projectId={projectId} {...(renderActions === undefined ? {} : { renderActions })} /></TaskDetailSessionBoundary></ProjectAccessBoundary>;

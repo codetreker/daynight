@@ -1,7 +1,7 @@
 import { readWorkerClaim } from "../../api/task-properties";
 import type { RefObject } from 'react';
 import { ApiError } from '../../api/client';
-import type { ProjectMember } from '../../api/auth-types';
+import type { ProjectMember, ProjectRole } from '../../api/auth-types';
 import type { TaskDetail, WorkerClaim } from '../../api/types';
 import { useI18n } from '../../i18n/LocaleProvider';
 import { identityName } from '../management/feedback';
@@ -14,9 +14,8 @@ export type WithdrawalConfirmation = { readonly kind: 'withdraw'; readonly detai
 export const matchesWithdrawalReview = (confirmation: WithdrawalConfirmation, detail: TaskDetail | null): boolean =>
   detail !== null && readWorkerClaim(detail.properties)?.claimId === confirmation.claimId && taskReviewKey(confirmation.detail) === taskReviewKey(detail);
 
-export const mayWithdrawClaim = (worker: WorkerClaim, viewerId: string, members: readonly ProjectMember[]): boolean => {
-  const viewer = members.find((member) => member.userId === viewerId);
-  return worker.state !== 'completed' && viewer !== undefined && (worker.userId === viewerId || viewer.role === 'admin');
+export const mayWithdrawClaim = (worker: WorkerClaim, viewerId: string, role: ProjectRole | null): boolean => {
+  return worker.state !== 'completed' && role !== null && (worker.userId === viewerId || role === 'admin');
 };
 
 export const TaskClaimSummary = ({ worker, members, membershipStatus, membershipError, onRetryMembers, canWithdraw, onWithdraw }: {

@@ -1,6 +1,6 @@
 import { selectTaskList } from './helpers/projectViews';
 import { detailFixture, graphFixture, withDetailResources as withTestDetailResources } from './helpers/taskDetail';
-import { taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
+import { directAccessFixture, taskSyncQuery, taskSyncResponse, viewerHeaders } from './helpers/taskSync';
 import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
 import { performance as nodePerformance } from 'node:perf_hooks';
 import { openDB } from 'idb';
@@ -38,13 +38,14 @@ const member = (id = userId, role = "admin") => ({ projectId, userId: id, name: 
 let serverUserId = userId;
 const json = (body: unknown, status = 200, principal = serverUserId) => new Response(stringifyWireJson(body), { status, headers: status === 401 ? { "Content-Type": "application/json" } : viewerHeaders(principal, { "Content-Type": "application/json" }) });
 const isTaskSync = (url: string) => new URL(url, window.location.origin).pathname.endsWith('/task-sync');
-const graphResponse = (value: TaskGraph, url: string, version = 1n) => taskSyncResponse(value, { query: taskSyncQuery(new URL(url, window.location.origin)), versionForTask: () => version, propertiesForTask: () => ({ pullRequests: [] }), viewerId: serverUserId });
+const graphResponse = (value: TaskGraph, url: string, version = 1n) => taskSyncResponse(value, { query: taskSyncQuery(new URL(url, window.location.origin)), versionForTask: () => version, propertiesForTask: () => ({ pullRequests: [] }), viewerId: serverUserId, actorAccess: directAccessFixture(value.project.id, serverUserId, "admin") });
 const withDetailResources = (project: string, task: string, fallback: (url: string, options?: RequestInit) => Response | Promise<Response>) => withTestDetailResources(project, task, fallback, {}, () => serverUserId);
 const fail = (status: number, code: string) => json({ error: { code, message: "hidden server details", requestId: "rq-safe" } }, status);
 const graph = (url: string) => graphResponse({ observedAt: "2026-10-20T12:00:00Z", project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url);
 const defaults = (url: string): Response => {
   if (url === "/api/v1/me") return json(user(serverUserId, serverUserId === userId ? "Alice" : "Bob"));
   if (url === "/api/v1/auth/providers") return json({ providers: ["github"] });
+  if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
   if (url.endsWith("/members")) return json({ items: [member()] });
   if (isTaskSync(url)) return graph(url);
   if (url.startsWith("/api/v1/projects")) return json({ items: [project()], nextCursor: null });
@@ -112,7 +113,8 @@ describe("sidebar integration with the authenticated workspace", () => {
     let removed = false;
     const fetcher = vi.fn((url: string, options?: RequestInit) => {
       if (url === `/api/v1/projects/${projectId}/members/${userId}` && options?.method === "DELETE") { removed = true; return Promise.resolve(new Response(null, { status: 204, headers: viewerHeaders(serverUserId) })); }
-      if (url.endsWith("/members")) return Promise.resolve(json({ items: [member(), { ...member(otherId), name: "Bob" }] }));
+      if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
+  if (url.endsWith("/members")) return Promise.resolve(json({ items: [member(), { ...member(otherId), name: "Bob" }] }));
       if (url.endsWith("/invitations")) return Promise.resolve(json({ items: [] }));
       if (url.startsWith("/api/v1/projects?")) return Promise.resolve(json({ items: removed ? [] : [project()], nextCursor: null }));
       return Promise.resolve(defaults(url));
@@ -121,6 +123,7 @@ describe("sidebar integration with the authenticated workspace", () => {
     render(<AuthenticatedApp />);
     fireEvent.click(await screen.findByRole("button", { name: "移除 Alice" }));
     const dialog = screen.getByRole("dialog", { name: "移除 Alice？" });
+    await waitFor(() => expect(within(dialog).getByRole("button", { name: "移除成员" })).not.toBeDisabled());
     fireEvent.click(within(dialog).getByRole("button", { name: "移除成员" }));
     await screen.findByRole("heading", { name: "还没有项目" });
     expect(window.location.pathname).toBe("/projects");
@@ -358,7 +361,8 @@ describe("authenticated application shell", () => {
         dispatchedGraphs.push({ cookie: cookieAccount, label: document.querySelector(".account-name")?.textContent ?? null });
         return Promise.resolve(graphResponse({ observedAt: now, project: project(`${cookieAccount} 的项目`), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, url));
       }
-      if (url.endsWith("/members")) return Promise.resolve(json({ items: [member(cookieAccount === "Alice" ? userId : otherId)] }));
+      if (url.endsWith("/access")) return serverUserId === userId ? json(directAccessFixture(projectId, userId, "admin")) : fail(404, "not_found");
+  if (url.endsWith("/members")) return Promise.resolve(json({ items: [member(cookieAccount === "Alice" ? userId : otherId)] }));
       return Promise.resolve(defaults(url));
     });
     vi.stubGlobal("fetch", fetcher);
@@ -965,9 +969,9 @@ describe("authenticated application shell", () => {
     expect(graphReads()).toBe(2);
   });
 
-  it("shows project membership access from the authoritative current membership", async () => {
+  it("shows the authoritative live access independently of the member roster", async () => {
     window.history.replaceState(null, "", `/projects/${projectId}`);
-    install((url) => url.endsWith("/members") ? json({ items: [member(userId, "member")] }) : defaults(url));
+    install((url) => isTaskSync(url) ? taskSyncResponse({ observedAt: now, project: project(), tasks: [], summary: { total: 0, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 } }, { viewerId: userId, versionForTask: () => 1n, actorAccess: directAccessFixture(projectId, userId, "member") }) : defaults(url));
     render(<AuthenticatedApp />);
     await screen.findByRole("heading", { name: "私有项目" });
     expect(await screen.findByText("成员", { selector: ".badge" })).toBeInTheDocument();

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { listMembers, type ProjectRole } from "../../api/auth";
+import { useProjectAccess } from "../projects/ProjectAccess";
 import { ApiError, isAbortError } from "../../api/client";
 import { getProject, isExecutionWarningMinutes, saveProjectSettings } from "../../api/project-settings";
 import type { Project } from "../../api/types";
@@ -13,7 +13,8 @@ export const parseWarningDraft = (draft: string): number | null => {
 
 export const useProjectSettings = (projectId: string, userId: string) => {
   const [project, setProject] = useState<Project | null>(null);
-  const [role, setRole] = useState<ProjectRole | null>(null);
+  const access = useProjectAccess(projectId);
+  const role = access.ready ? access.access!.effectiveRole : null;
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState(false);
@@ -26,16 +27,15 @@ export const useProjectSettings = (projectId: string, userId: string) => {
   const generation = useRef(0);
   const submitting = useRef(false);
 
-  const clearPrivate = () => { setProject(null); setRole(null); setDraft(""); setUncertain(false); setUnavailable(true); };
+  const clearPrivate = () => { setProject(null); setDraft(""); setUncertain(false); setUnavailable(true); };
   const load = async (signal: AbortSignal, nextNotice: SettingsNotice = null) => {
     const current = ++generation.current;
-    setLoading(true); setRole(null); setError(null);
+    setLoading(true); setError(null);
     try {
-      const [saved, members] = await Promise.all([getProject(projectId, signal), listMembers(projectId, signal)]);
+      const [saved, admitted] = await Promise.all([getProject(projectId, signal), access.session.revalidate()]);
       if (signal.aborted || current !== generation.current) return;
-      const self = members.find((member) => member.userId === userId);
-      if (self === undefined) { clearPrivate(); return; }
-      setProject(saved); setRole(self.role); setDraft(String(saved.settings.executionWarningMinutes));
+      if (admitted === null) return;
+      setProject(saved); setDraft(String(saved.settings.executionWarningMinutes));
       setUnavailable(false); setUncertain(false); setInvalid(false); setNotice(nextNotice);
     } catch (failure) {
       if (signal.aborted || current !== generation.current || isAbortError(failure)) return;
@@ -51,7 +51,8 @@ export const useProjectSettings = (projectId: string, userId: string) => {
   }, [projectId, userId]);
 
   const save = async () => {
-    if (submitting.current || loading || uncertain || role !== "admin" || project === null) return;
+    const admitted = access.session.snapshot();
+    if (submitting.current || loading || uncertain || admitted.status !== "ready" || admitted.refreshing || admitted.access!.effectiveRole !== "admin" || project === null) return;
     const minutes = parseWarningDraft(draft);
     if (minutes === null) { setInvalid(true); return; }
     submitting.current = true; setPending(true); setError(null); setNotice(null); setInvalid(false);
@@ -75,7 +76,7 @@ export const useProjectSettings = (projectId: string, userId: string) => {
   };
 
   return {
-    project, role, draft, loading, pending, unavailable, uncertain, error, invalid, notice,
+    project: access.status === "unavailable" ? null : project, role, draft, loading: loading || access.status === "loading", pending, unavailable: unavailable || access.status === "unavailable", uncertain, error: error ?? access.error, invalid, notice,
     dirty: project !== null && draft !== String(project.settings.executionWarningMinutes),
     change: (value: string) => { setDraft(value); setInvalid(false); setNotice(null); setError(null); },
     cancel: () => { if (project !== null && !pending && !uncertain) { setDraft(String(project.settings.executionWarningMinutes)); setInvalid(false); setError(null); setNotice("cancelled"); } },

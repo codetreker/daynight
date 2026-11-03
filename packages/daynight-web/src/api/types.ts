@@ -1,3 +1,5 @@
+import type { ProjectAccess } from "./auth-types";
+
 export type ExecutionPlatform = "windows" | "linux" | "macos";
 
 export type TaskStatus = "todo" | "in_progress" | "done";
@@ -129,6 +131,7 @@ export type TaskSummary = Omit<GraphTask, "blockedBy" | "ready"> & {
 };
 
 export type TaskSync = {
+  readonly actorAccess: ProjectAccess;
   readonly mode: "snapshot" | "delta";
   readonly epoch: string;
   readonly project: Project;

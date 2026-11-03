@@ -205,7 +205,8 @@ export const installAuthFixture = (initial: AuthScenario) => {
       const current = entry.members.find((item) => item.userId === activeUser.id);
       if (current === undefined) return error(404, 'not_found');
       if (suffix === '' && method === 'GET') return wireResponse(entry.project);
-      if (suffix === 'task-sync' && method === 'GET') return taskSyncResponse(entry.graph, { query: taskSyncQuery(url), epoch: entry.epoch, versionForTask: () => 1n, propertiesForTask: () => ({ pullRequests: [] }), viewerId: activeUser.id });
+      if (suffix === 'access' && method === 'GET') return wireResponse({ effectiveRole: current.role, directGrant: { projectId: current.projectId, userId: current.userId, role: current.role, version: BigInt(current.version), createdAt: current.createdAt, updatedAt: current.updatedAt } });
+      if (suffix === 'task-sync' && method === 'GET') return taskSyncResponse(entry.graph, { query: taskSyncQuery(url), epoch: entry.epoch, versionForTask: () => 1n, propertiesForTask: () => ({ pullRequests: [] }), viewerId: activeUser.id, actorAccess: { effectiveRole: current.role, directGrant: { projectId: current.projectId, userId: current.userId, role: current.role, version: BigInt(current.version), createdAt: current.createdAt, updatedAt: current.updatedAt } } });
       if (suffix === 'members' && method === 'GET') {
         if (scenario === 'members-error') return error(500, 'internal_error');
         return Response.json({ items: entry.members });

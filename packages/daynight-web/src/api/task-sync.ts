@@ -1,3 +1,4 @@
+import { parseProjectAccess } from "./auth-parse";
 import { isTaskVersion } from "./json";
 import { parseTaskProperties } from "./task-properties";
 import { array, boolean, id, malformed, project, record, string, timestamp, executionPlatform } from "./parse";
@@ -31,10 +32,11 @@ export const parseTaskSummary = (value: unknown): TaskSummary => {
   };
 };
 
-export const parseTaskSync = (value: unknown, projectId: string): TaskSync => {
+export const parseTaskSync = (value: unknown, projectId: string, userId?: string): TaskSync => {
   const data = record(value);
   if (data.mode !== "snapshot" && data.mode !== "delta") return malformed();
   const result: TaskSync = {
+    actorAccess: parseProjectAccess(data.actorAccess, projectId, userId),
     mode: data.mode, epoch: id(data.epoch), project: project(data.project),
     observedAt: timestamp(data.observedAt), tasks: array(data.tasks, parseTaskSummary),
   };

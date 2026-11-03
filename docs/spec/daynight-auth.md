@@ -152,6 +152,26 @@ Cookie Origin 准入失败不输出未经准入的用户 ID。该头用于客户
 确认，GET、链接预览、inspect 和登录跳转不消费。有效邀请只允许查看项目名称等最小
 摘要。接受与消费原子提交，并发只增加一名新成员；已有成员不升级角色且不消费邀请。
 
+## 当前主体的项目权限
+
+`GET /api/v1/projects/{projectId}/access` 在当前读取快照内返回本人权限：
+`{effectiveRole,directGrant}` 两个键必填，effectiveRole 为 admin 或 member。
+directGrant 为 null 或完整的 projectId、userId、role、version、createdAt、updatedAt；
+其版本是实际独立授权的正 int64 JSON number，时间为 UTC，不附带姓名、邮箱或头像。
+当前直接授权数据成功读取时返回实际 grant；未准入和缺失项目沿用 not_found，
+真实查询或事务失败不能表现为 null grant 或默认角色。响应保留认证主体头和 no-store。
+
+Web 的项目、设置、成员、Task 弹层及独立 Task/附件页面使用同一份身份/项目绑定的
+内存权限投影控制本人操作；CLI Worker 管理读取当前 access。完整成员资料只承担
+名册和 claim owner 的姓名、邮箱、加载、错误重试与离任展示，不据其推断本人权限。
+TaskSync 成功响应即使没有任务变化也发布本人角色；普通可见图页面沿用五秒同步。
+没有同步刷新时，可见页面在距上次成功观察三十秒后读取 access，隐藏时暂停。
+恢复可见、focus 和打开管理操作时重验，并合并同一作用域的并发读取。
+
+迟到的旧身份、旧项目或较早请求不能替换较新的观察。读取失败保留明确 stale/error
+与重试，管理提交等待当前 access 核验；网络失败不能视作撤权。确认失权沿现有项目
+缓存撤权路径处理。角色及 grant 不写入持久任务记录，也不能代替服务端每请求授权。
+
 ## Web 交互与状态
 
 正式 `Application` 在常驻 LocaleProvider 下组合公开首页、公开指南与 `AuthenticatedApp`。
@@ -195,7 +215,7 @@ Cookie Origin 准入失败不输出未经准入的用户 ID。该头用于客户
 结果状态，关闭后重开不能重复批准；身份变化清除旧会话状态，语言切换不重建它。
 成员修改和项目设置分别使用所属资源的完整正 int64 观察版本，前端解码、展示和提交不经过有损 Number。
 设置页按用户/项目隔离，复用同一前台身份检查和请求等待；同用户确认保留草稿，换号使旧读写失效。
-设置不确定写结果须先核对 Project 与成员再允许新写入，核对失败仅提供读取重试，不自动重放 PATCH；
+设置不确定写结果须先核对 Project 与当前 access再允许新写入，核对失败仅提供读取重试，不自动重放 PATCH；
 设置的详细合同由[计时需求](daynight-task-timing.md)拥有。
 邀请 fragment 立即移出地址，以 tab 内临时存储跨登录；inspect 不消费邀请，只有
 明确确认才 accept，结束后清理。PAT 和邀请链接仅在创建时展示，复制失败可恢复，
