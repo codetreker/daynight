@@ -288,7 +288,8 @@ in the startup log. Invalid timeout values fail validation.
 
 `SIGINT` and `SIGTERM` stop accepting connections and begin draining requests.
 Active request contexts remain usable during the drain. On deadline, the runtime
-cancels remaining request contexts, force-closes HTTP connections, and closes the
+force-closes HTTP connections before canceling the shared request context, preventing
+canceled handlers from returning a default success response during teardown. It closes the
 file-storage root and database pool after request-owned resources are released.
 Database operations must use the request context and release acquired connections.
 The runtime also closes an acquired file root on later startup failure. Local

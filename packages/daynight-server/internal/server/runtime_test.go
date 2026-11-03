@@ -281,6 +281,90 @@ func TestForcedDrainCancelsDatabaseWork(t *testing.T) {
 	await(t, clientDone)
 }
 
+func TestForcedDrainClosesTransportBeforeRequestCancellationCanReturnSuccess(t *testing.T) {
+	config := testConfig(t)
+	config.ShutdownTimeout = 30 * time.Millisecond
+	entered, handlerDone := make(chan struct{}), make(chan struct{})
+	runtime, err := Start(context.Background(), config, testLogger(), func(Dependencies) (http.Handler, error) {
+		return http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			close(entered)
+			<-r.Context().Done()
+			// Returning without a write normally causes net/http to send HTTP 200.
+			close(handlerDone)
+		}), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type requestResult struct {
+		status int
+		err    error
+	}
+	response := make(chan requestResult, 1)
+	clientDone, runtimeDone := make(chan struct{}), make(chan struct{})
+	cancelRequests := runtime.cancelRequests
+	runtime.cancelRequests = func() {
+		cancelRequests()
+		// Force the problematic interleaving: when cancellation precedes Close,
+		// the handler and its HTTP response finish before shutdown can continue.
+		select {
+		case <-clientDone:
+		case <-time.After(5 * time.Second):
+			t.Error("canceled request did not finish")
+		}
+	}
+	relayStopped := make(chan struct{})
+	runtime.shutdownHandler = func(context.Context) error {
+		select {
+		case <-handlerDone:
+		case <-time.After(5 * time.Second):
+			return errors.New("request handler did not cancel before relay shutdown")
+		}
+		if err := runtime.Store.Pool.Ping(context.Background()); err != nil {
+			return err
+		}
+		_, err := runtime.Files.Put(context.Background(), "runtime", "relay.txt", strings.NewReader("drained"))
+		close(relayStopped)
+		return err
+	}
+	ctx, stop := context.WithCancel(context.Background())
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	cleanupCancellationRequest(t, cancelRequest, stop, clientDone, runtimeDone)
+	result := make(chan error, 1)
+	go func() { defer close(runtimeDone); result <- runtime.Run(ctx) }()
+	go func() {
+		defer close(clientDone)
+		req, err := http.NewRequestWithContext(requestContext, http.MethodGet, "http://"+runtime.Address(), nil)
+		if err != nil {
+			response <- requestResult{err: err}
+			return
+		}
+		res, err := (&http.Client{Timeout: 4 * time.Second}).Do(req)
+		got := requestResult{err: err}
+		if res != nil {
+			got.status = res.StatusCode
+			res.Body.Close()
+		}
+		response <- got
+	}()
+	await(t, entered)
+	stop()
+	if err := await(t, result); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("forced shutdown lost its deadline failure: %v", err)
+	}
+	if got := await(t, response); got.err == nil || got.status != 0 {
+		t.Fatalf("canceled handler returned a completed HTTP response: status=%d err=%v", got.status, got.err)
+	}
+	await(t, relayStopped)
+	if _, err := runtime.Store.Pool.Acquire(context.Background()); err == nil {
+		t.Fatal("forced shutdown retained database pool")
+	}
+	if object, err := runtime.Files.Open(context.Background(), "runtime", "relay.txt"); err == nil {
+		object.Body.Close()
+		t.Fatal("forced shutdown retained file storage")
+	}
+}
+
 func TestClientCancellationReachesDatabase(t *testing.T) {
 	config := testConfig(t)
 	query := "select pg_sleep(10) /* " + uuid.NewString() + " */"
