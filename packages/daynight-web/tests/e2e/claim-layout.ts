@@ -45,9 +45,14 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   const identity = await api.get('/api/v1/me');
   expect(identity.status()).toBe(200);
   const user = parseUser(await identity.json());
-  const enabled = await api.patch(path, { data: { version: task.version, allowAgents: true, assignedTo: user.id } });
+  const assigned = await api.patch(path, { data: { version: task.version, assignedTo: user.id } });
+  expect(assigned.status()).toBe(200);
+  const assignedTask = await assigned.json() as Task;
+  expect(assignedTask).toMatchObject({ assignedTo: user.id, allowAgents: false });
+  const enabled = await api.patch(path, { data: { version: assignedTask.version, allowAgents: true } });
   expect(enabled.status()).toBe(200);
   const enabledTask = await enabled.json() as Task;
+  expect(enabledTask).toMatchObject({ assignedTo: user.id, allowAgents: true });
   const claimId = randomUUID();
   const claimed = await api.post(`${path}/worker-claim`, { headers: { 'Daynight-Worker-Protocol': '2' }, data: { version: enabledTask.version, claimId, workerId: randomUUID(), machine: { id: randomUUID(), name: machineName }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: randomUUID() } });
   expect(claimed.status()).toBe(200);
