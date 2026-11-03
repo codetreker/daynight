@@ -25,13 +25,13 @@ locks and uncertainty about surviving native agents.
 
 Each store explicitly selects its format and SQL directory, with an independent
 `user_version` sequence: Review 2, Worker 5, Web execution state 1, Controller
-journal 5 and native resume lease 1. Review and journal retain their existing
+journal 6 and native resume lease 1. Review and journal retain their existing
 nonzero conversions; retired detailed Worker versions 1–4 remain unsupported.
 The minimal Worker index gains no business columns, identity marker, history or
 recovery ledger. There is no global version, database-family identifier or
 migration ledger.
 
-Five baselines and five upgrades are independent `.sql` resources. Top-level
+Five baselines and six upgrades are independent `.sql` resources. Top-level
 filenames alone define each owner's baseline, versions and execution order;
 TypeScript has no per-step registry or second sequence. A valid next numbered
 file automatically enters its owner's chain. Strict discovery rejects malformed
@@ -49,7 +49,10 @@ access and is reused without copying user records or creating another writable
 file. Loading remains behind the lazy database-runtime command boundary, so
 help, completion and lightweight commands do not initialize database runtimes.
 SQL owns statements; TypeScript owns JSON conversion, domain admission,
-transactions, connection settings and version advancement.
+transactions, connection settings and version advancement. Journal v6 also exports
+legacy content to durable pending files before its destructive SQL conversion;
+the [file archive decision](2026-10-30-session-file-archives.md) owns that
+domain-specific ordering and recovery. The shared runner does not migrate files.
 
 All five business databases discard their original user schema and data at
 version 0 after domain admission, then rebuild through the same baseline and

@@ -78,10 +78,10 @@ it('scopes pending response gates to the exact interaction and revision', () => 
   expect(sessionRespondGate(state, true, { interactionId: 'form', revision: '1' })).toBe(true);
 });
 
-it('admits only trusted cleanup interactions while draining and never ordinary send', () => {
+it('blocks every interaction and ordinary send while draining', () => {
   const s = snapshot();
   const state = hydrateSession(emptySessionState(), { ...s, lifecycle: 'draining', cleanupInteractionIds: ['cleanup'], operations: { ...s.operations, canRespond: true } }, []);
-  expect(sessionRespondGate(state, true, { interactionId: 'cleanup', revision: '1' })).toBe(true);
+  expect(sessionRespondGate(state, true, { interactionId: 'cleanup', revision: '1' })).toBe(false);
   expect(sessionRespondGate(state, true, { interactionId: 'old', revision: '1' })).toBe(false);
   expect(sessionSendGate(state, true)).toBe(false);
   expect(sessionRespondGate({ ...state, snapshot: { ...state.snapshot!, cleanupInteractionIds: [] } }, true, { interactionId: 'cleanup', revision: '1' })).toBe(false);

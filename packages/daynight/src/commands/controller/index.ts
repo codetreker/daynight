@@ -1,13 +1,22 @@
 import { UsageError, type CliContext } from "../../cli/context.js";
 import { canonicalId } from "../../api/parse.js";
 import { parseCommand, selectCommand, renderCommandHelp } from "../../cli/schema.js";
-import { controllerDefinition, controllerResumeDefinition } from "./definition.js";
+import { controllerDefinition, controllerResumeDefinition, controllerArchiveDefinition } from "./definition.js";
 import { parseProviderArguments } from "./providers/projection.js";
 import type { SessionProvider } from "../../session/protocol.js";
 export type IndependentControllerInput = { provider: SessionProvider; model: string | null; args: string[]; prompt: string | null; resume?: { sessionId: string | null } };
 export const runControllerCommand = async (args: readonly string[], context: CliContext): Promise<void> => {
   const selected = selectCommand(controllerDefinition, args, ["daynight", "controller"], "daynight controller --help");
   if (selected.kind !== "selected") { context.stdout(renderCommandHelp(selected.command, selected.path)); return; }
+  if (selected.remaining[0] === "archive") {
+    const provider = selected.command.name as SessionProvider;
+    const parsed = parseCommand(controllerArchiveDefinition(provider), selected.remaining.slice(1), [...selected.path, "archive"]);
+    if (parsed.kind !== "run") { context.stdout(renderCommandHelp(parsed.command, parsed.path)); return; }
+    const sessionId = parsed.values[0]!;
+    if (canonicalId(sessionId) !== sessionId) throw new UsageError("Test Session ID must be a canonical UUID.");
+    await (await import("./independent-archive.js")).retryIndependentArchive({ provider, sessionId }, context);
+    return;
+  }
   if (selected.remaining[0] === "resume") {
     const provider = selected.command.name as SessionProvider, remaining = selected.remaining.slice(1);
     const base = controllerResumeDefinition(provider);

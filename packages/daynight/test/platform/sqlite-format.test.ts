@@ -137,3 +137,21 @@ describe("independent SQLite format sequences", () => {
     expect(() => runSqliteImmediate(db, () => { assertCurrentSqlite(db, format); })).toThrow("unsupported-version");
   });
 });
+
+it.each(["empty", "unversioned", "outdated"] as const)("preserves the original %s source through every migration callback", kind => {
+  const db = connect();
+  if (kind === "unversioned") { db.pragma("foreign_keys=OFF"); db.exec("CREATE TABLE old_data(value TEXT)"); }
+  if (kind === "outdated") { format.baseline.create(db); db.pragma("user_version=1"); }
+  const received: unknown[] = [];
+  const contextual: SqliteFormat = {
+    ...format,
+    migrations: [
+      { toVersion: 2, up: (...args) => { received.push(args[1]); format.migrations[0]!.up(args[0], args[1]); } },
+      { toVersion: 3, up: (...args) => { received.push(args[1]); } },
+    ],
+  };
+  runSqliteImmediate(db, () => upgradeSqlite(db, contextual));
+  const expected = { kind, version: kind === "outdated" ? 1 : 0 };
+  expect(received).toEqual([expected, expected]);
+  expect(db.pragma("user_version", { simple: true })).toBe(3);
+});

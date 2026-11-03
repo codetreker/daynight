@@ -66,7 +66,7 @@ it('keeps a follow-up form enabled while the original approval card awaits its n
   expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
 });
 
-it('enables only the current trusted cleanup approval in the draining timeline', () => {
+it('disables every approval in the draining timeline', () => {
   const s = snapshot();
   const state = hydrateSession(emptySessionState(), { ...s, lifecycle: 'draining', cleanupInteractionIds: ['cleanup'], operations: { ...s.operations, canRespond: true } }, [
     { kind: 'interaction', entryId: 'old', entrySeq: '1', revision: '1', interaction: { interactionId: 'old', revision: '1', kind: 'approval', state: 'pending', title: 'Old operation', detail: 'Old approval', actions: ['allow_once'] } },
@@ -74,7 +74,7 @@ it('enables only the current trusted cleanup approval in the draining timeline',
   ]);
   render(<SessionTimeline state={state} active canRespond={sessionRespondGate(state, true)} onRespond={async () => {}} hasOlder={false} loadingOlder={false} onLoadOlder={async () => {}} onLoadResource={async () => new Blob()} />);
   const actions = screen.getAllByRole('button', { name: 'Allow once' });
-  expect(actions[0]).toBeDisabled(); expect(actions[1]).toBeEnabled();
+  expect(actions[0]).toBeDisabled(); expect(actions[1]).toBeDisabled();
 });
 
 it('grows and shrinks the composer to its content within its measured limit', () => {

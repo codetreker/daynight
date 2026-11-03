@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore, readControllerOperation, readControllerSnapshot, recordStoppedControllerGeneration } from "../../../src/commands/controller/lifecycle-store.js";
@@ -42,11 +42,11 @@ test.each([1, 2, 3, 4])("readonly helpers upgrade journal v%s without claiming o
   expect(readControllerSnapshot(f.file)).toMatchObject({ executionId: f.ticket.executionId });
   const db = new Database(f.file, { readonly: true });
   try {
-    expect(db.pragma("user_version", { simple: true })).toBe(5);
+    expect(db.pragma("user_version", { simple: true })).toBe(6);
     expect(db.prepare("SELECT owner_pid,snapshot,ticket_hash,last_sequence,last_acknowledged,source_floor,projection_gap FROM execution").get()).toEqual({ owner_pid: null, snapshot: original.snapshot, ticket_hash: "old-ticket", last_sequence: 3, last_acknowledged: 0, source_floor: 0, projection_gap: null });
     expect(db.prepare("SELECT value,acknowledged FROM operations").get()).toEqual({ value: original.operation, acknowledged: 0 });
     expect(db.prepare("SELECT value FROM outbox").get()).toEqual({ value: '{ "kind": "state", "payload": { "original": true } }' });
-    expect(db.prepare("SELECT count(*) AS total FROM resources").get()).toEqual({ total: 0 });
+    expect(db.prepare("SELECT count(*) AS total FROM content_index").get()).toEqual({ total: 0 });
   } finally { db.close(); }
 });
 
@@ -89,9 +89,9 @@ test.each(["snapshot", "operation", "writer"] as const)("%s resets an unknown un
   }
   const check = new Database(f.file);
   try {
-    expect(check.pragma("user_version", { simple: true })).toBe(5);
+    expect(check.pragma("user_version", { simple: true })).toBe(6);
     expect(check.prepare("SELECT name FROM sqlite_schema WHERE name='original_data'").get()).toBeUndefined();
-    expect(check.prepare("SELECT count(*) AS total FROM resources").get()).toEqual({ total: 0 });
+    expect(check.prepare("SELECT count(*) AS total FROM content_index").get()).toEqual({ total: 0 });
   } finally { check.close(); }
 });
 
@@ -100,7 +100,7 @@ test.each([null, 2_000_000_000])("unversioned journals discard historical eviden
   expect(readControllerSnapshot(f.file)).toBeNull();
   expect(readControllerOperation(f.file, f.ticket.initialOperationId)).toBeNull();
   const check = new Database(f.file);
-  try { expect(check.pragma("user_version", { simple: true })).toBe(5); expect(check.prepare("SELECT count(*) AS total FROM execution").get()).toEqual({ total: 0 }); }
+  try { expect(check.pragma("user_version", { simple: true })).toBe(6); expect(check.prepare("SELECT count(*) AS total FROM execution").get()).toEqual({ total: 0 }); }
   finally { check.close(); }
 });
 
@@ -135,13 +135,70 @@ test.each(["id", "owner_pid"] as const)("missing %s owner metadata prevents unve
   finally { check.close(); }
 });
 
-test.each([1, 6])("unknown nonzero journal version %s is rejected without migration", async version => {
+test.each([1, 6, 7])("unknown nonzero journal version %s is rejected without migration", async version => {
   const f = await fixture(), db = new Database(f.file);
   db.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('preserved')"); db.pragma(`user_version=${version}`); db.close();
-  expect(() => readControllerSnapshot(f.file)).toThrow(version === 6 ? "unsupported-version" : "invalid-format");
+  expect(() => readControllerSnapshot(f.file)).toThrow(version === 7 ? "unsupported-version" : "invalid-format");
   const check = new Database(f.file);
   try { expect(check.pragma("user_version", { simple: true })).toBe(version); expect(check.prepare("SELECT value FROM sentinel").get()).toEqual({ value: "preserved" }); }
   finally { check.close(); }
+});
+
+test("current journal reads do not recreate or rewrite pending content files", async () => {
+  const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
+  store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "retained" }] });
+  store.close();
+  const index = `${f.file}.pending-content/index.json`, manifest = `${f.file}.pending-content/manifest.json`;
+  const originalIndex = await readFile(index), originalStat = await stat(index);
+  await rm(manifest);
+  expect(readControllerSnapshot(f.file)).toMatchObject({ sessionId: f.ticket.sessionId });
+  expect(readControllerOperation(f.file, f.ticket.initialOperationId)).toBeNull();
+  expect(await readFile(index)).toEqual(originalIndex);
+  expect((await stat(index)).mtimeMs).toBe(originalStat.mtimeMs);
+  await expect(stat(manifest)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(() => openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} })).toThrow("Pending archive source is missing");
+});
+
+test("unversioned reset retains unrelated pending content instead of silently adopting another session", async () => {
+  const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} }); store.close();
+  const manifest = `${f.file}.pending-content/manifest.json`, retained = await readFile(manifest);
+  const evidence = `${f.file}.pending-content/evidence.txt`; await writeFile(evidence, "retained source");
+  const db = new Database(f.file); db.pragma("user_version=0"); db.close();
+  expect(() => openControllerLifecycleStore(f.file, { ...f.ticket, sessionId: randomUUID() }, { onMigration: () => {} })).toThrow("another session");
+  expect(await readFile(manifest)).toEqual(retained);
+  expect(await readFile(evidence, "utf8")).toBe("retained source");
+  const check = new Database(f.file); try { expect(check.pragma("user_version", { simple: true })).toBe(0); } finally { check.close(); }
+});
+
+test.each([false, true])("unversioned reset cannot adopt nonempty history into a new execution after read reset=%s", async resetByRead => {
+  const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
+  store.projectTimeline({ entryId: randomUUID(), revision: "1", kind: "assistant_message", content: [{ type: "text", text: "original execution history" }] });
+  store.close();
+  const pending = `${f.file}.pending-content`, manifest = await readFile(`${pending}/manifest.json`);
+  const database = new Database(f.file); database.pragma("user_version=0"); database.close();
+  if (resetByRead) expect(readControllerSnapshot(f.file)).toBeNull();
+  const next = { ...f.ticket, executionId: randomUUID(), claimId: randomUUID() };
+  expect(() => openControllerLifecycleStore(f.file, next, { onMigration: () => {} })).toThrow("no original controller execution");
+  expect(await readFile(`${pending}/manifest.json`)).toEqual(manifest);
+  const check = new Database(f.file);
+  try {
+    expect(check.pragma("user_version", { simple: true })).toBe(resetByRead ? 6 : 0);
+    const row = check.prepare("SELECT snapshot FROM execution").get() as { snapshot: string } | undefined;
+    if (resetByRead) expect(row).toBeUndefined();
+    else expect(JSON.parse(row!.snapshot).executionId).toBe(f.ticket.executionId);
+  } finally { check.close(); }
+});
+
+test("an ownerless legacy projection cannot be dropped by the file migration", async () => {
+  const f = await fixture(); historical(f.file, 5, f.ticket);
+  const db = new Database(f.file);
+  db.exec("DELETE FROM execution; INSERT INTO projection VALUES('orphan','hash',1,'{}')"); db.close();
+  expect(() => readControllerSnapshot(f.file)).toThrow("migration-failed");
+  const check = new Database(f.file);
+  try {
+    expect(check.pragma("user_version", { simple: true })).toBe(5);
+    expect(check.prepare("SELECT id FROM projection").get()).toEqual({ id: "orphan" });
+  } finally { check.close(); }
 });
 
 test("missing and invalid journal paths preserve their distinct read contracts", async () => {
@@ -154,14 +211,14 @@ test("missing and invalid journal paths preserve their distinct read contracts",
 test("stopped-generation writing rejects a format change during asynchronous process proof", async () => {
   const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
   store.patchSnapshot({ controllerProcess: { pid: 987, parentPid: 1, processGroupId: 987, startedAt: "original", commandHash: "a".repeat(64) } }); store.close();
-  proof.stopped.mockImplementationOnce(async () => { const changed = new Database(f.file); changed.pragma("user_version=6"); changed.close(); return true; });
+  proof.stopped.mockImplementationOnce(async () => { const changed = new Database(f.file); changed.pragma("user_version=7"); changed.close(); return true; });
   await expect(recordStoppedControllerGeneration(f.file, f.ticket)).rejects.toThrow("unsupported-version");
   const db = new Database(f.file); try { expect(JSON.parse((db.prepare("SELECT snapshot FROM execution").get() as { snapshot: string }).snapshot).nativeStopped).toBe(false); } finally { db.close(); }
 });
 
 test("journal.close refuses stale-version SQL while still closing its handle", async () => {
   const f = await fixture(), store = openControllerLifecycleStore(f.file, f.ticket, { onMigration: () => {} });
-  const db = new Database(f.file); db.pragma("user_version=6");
+  const db = new Database(f.file); db.pragma("user_version=7");
   expect(() => store.close()).toThrow("unsupported-version");
   expect(db.prepare("SELECT owner_pid FROM execution").get()).toEqual({ owner_pid: process.pid });
   expect(() => store.getSnapshot()).toThrow(); db.close();

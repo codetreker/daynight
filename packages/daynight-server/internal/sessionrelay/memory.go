@@ -170,6 +170,8 @@ func attachLive(tx pgx.Tx, r *record) error {
 	if live != nil && live.Snapshot.ControllerFence == r.Snapshot.ControllerFence {
 		stable := r.Snapshot
 		r.Snapshot = live.Snapshot
+		// Another relay may finalize the durable identity after this live update.
+		r.Snapshot.Identity = stable.Identity
 		r.Snapshot.Lifecycle = stable.Lifecycle
 		r.Snapshot.InitialInputState = stable.InitialInputState
 	} else {

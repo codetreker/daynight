@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -381,6 +384,157 @@ func TestPermissionFailuresRemainIdentifiable(t *testing.T) {
 	}
 }
 
+func TestExistingRootBelowSearchOnlyAncestor(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses filesystem permission checks")
+	}
+	ancestor := t.TempDir()
+	root := filepath.Join(ancestor, "storage")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(ancestor, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(ancestor, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if file, err := os.Open(ancestor); err == nil {
+		file.Close()
+		t.Skip("filesystem does not enforce search-only directory permissions")
+	} else if !errors.Is(err, fs.ErrPermission) {
+		t.Fatal(err)
+	}
+	storage, err := New(root)
+	if err != nil {
+		t.Fatal("existing accessible root rejected:", err)
+	}
+	t.Cleanup(func() {
+		if err := storage.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	put(t, storage, "archives", "session/file", []byte("archive"))
+	if got := string(read(t, storage, "archives", "session/file")); got != "archive" {
+		t.Fatal(got)
+	}
+	nested, err := New(filepath.Join(root, "new", "storage"))
+	if err != nil {
+		t.Fatal("new nested root traversed beyond its existing writable parent:", err)
+	}
+	if err := nested.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMakeRootSyncsCreatedDirectoryEntries(t *testing.T) {
+	parent := t.TempDir()
+	first := filepath.Join(parent, "first")
+	root := filepath.Join(first, "storage")
+	var synced []string
+	if err := makeRoot(root, func(file *os.File) error {
+		synced = append(synced, file.Name())
+		return file.Sync()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{first, parent, root, first}; !reflect.DeepEqual(synced, want) {
+		t.Fatalf("directory persistence barriers: got %v, want %v", synced, want)
+	}
+	if err := makeRoot(root, func(*os.File) error {
+		t.Fatal("creation phase repeated synchronization for an existing root")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewRootSyncFailureCanRetryWithoutSkippingBarrier(t *testing.T) {
+	for _, failAt := range []int{1, 2, 3, 4} {
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			parent, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			first := filepath.Join(parent, "first")
+			root := filepath.Join(first, "storage")
+			calls := 0
+			failure := errors.New("directory sync failed")
+			if err := makeRoot(root, func(file *os.File) error {
+				calls++
+				if calls == failAt {
+					return failure
+				}
+				return file.Sync()
+			}); !errors.Is(err, failure) {
+				t.Fatal("failed directory synchronization acknowledged:", err)
+			}
+			retained := first
+			if failAt >= 3 {
+				retained = root
+			}
+			if info, err := os.Stat(retained); err != nil || !info.IsDir() {
+				t.Fatal("failed initialization removed an adoptable directory:", err)
+			}
+			// An existing directory never waives a New caller's own barriers.
+			storage, err := newWithDirectorySync(root, func(file *os.File) error {
+				if file.Name() == parent {
+					return failure
+				}
+				return file.Sync()
+			})
+			if storage != nil {
+				storage.Close()
+				t.Fatal("retry exposed storage before its failed ancestor barrier")
+			}
+			if !errors.Is(err, failure) {
+				t.Fatalf("retry skipped failed barrier: %v", err)
+			}
+			var retried []string
+			storage, err = newWithDirectorySync(root, func(file *os.File) error {
+				retried = append(retried, file.Name())
+				return file.Sync()
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer storage.Close()
+			for _, required := range []string{root, first, parent} {
+				if !slices.Contains(retried, required) {
+					t.Fatalf("retry skipped directory barrier %s: %v", required, retried)
+				}
+			}
+			put(t, storage, "archives", "session/file", []byte("retried archive"))
+			if got := string(read(t, storage, "archives", "session/file")); got != "retried archive" {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+
+func TestNewRootPreservesFileCreatedDuringInitialization(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "new", "storage")
+	err := makeRoot(root, func(file *os.File) error {
+		if file.Name() == parent {
+			// The parent has just been created, while the final root was absent
+			// at the initial stat. Another writer can claim that name before mkdir.
+			if err := os.WriteFile(root, []byte("another writer"), 0o600); err != nil {
+				return err
+			}
+		}
+		return file.Sync()
+	})
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("concurrent regular file accepted as a storage root: %v", err)
+	}
+	if content, err := os.ReadFile(root); err != nil || string(content) != "another writer" {
+		t.Fatalf("initialization changed the competing file: %q %v", content, err)
+	}
+}
+
 func TestFailedPublicationKeepsConflictingDirectory(t *testing.T) {
 	storage, root := newStorage(t)
 	source := &observingReader{Reader: strings.NewReader("content"), observe: func() {
@@ -563,5 +717,55 @@ func assertNoTemporary(t *testing.T, root string) {
 		return nil
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPutRequiresDurableBytesAndDirectoryPublication(t *testing.T) {
+	for _, failAt := range []int{1, 2, 3, 4} {
+		t.Run(fmt.Sprint(failAt), func(t *testing.T) {
+			storage, root := newStorage(t)
+			put(t, storage, "bucket", "session/file", []byte("old"))
+			calls := 0
+			syncFailure := errors.New("injected sync failure")
+			storage.fileSync = func(file *os.File) error {
+				calls++
+				if calls == failAt {
+					return syncFailure
+				}
+				return file.Sync()
+			}
+			if _, err := storage.Put(t.Context(), "bucket", "session/file", strings.NewReader("new")); !errors.Is(err, syncFailure) {
+				t.Fatal("sync failure acknowledged", err)
+			}
+			got := string(read(t, storage, "bucket", "session/file"))
+			if failAt == 1 && got != "old" {
+				t.Fatal("unsynced bytes replaced old object")
+			}
+			if failAt > 1 && got != "new" {
+				t.Fatal("published bytes lost on directory sync failure")
+			}
+			assertNoTemporary(t, root)
+			storage.fileSync = (*os.File).Sync
+			put(t, storage, "bucket", "session/file", []byte("new"))
+			if got := string(read(t, storage, "bucket", "session/file")); got != "new" {
+				t.Fatal(got)
+			}
+		})
+	}
+}
+func TestPutSyncsNewDirectoryChainBeforeAcknowledgement(t *testing.T) {
+	storage, _ := newStorage(t)
+	var kinds []bool
+	storage.fileSync = func(file *os.File) error {
+		info, err := file.Stat()
+		if err != nil {
+			return err
+		}
+		kinds = append(kinds, info.IsDir())
+		return file.Sync()
+	}
+	put(t, storage, "archives", "session/hash.json", []byte("archive"))
+	if !reflect.DeepEqual(kinds, []bool{false, true, true, true}) {
+		t.Fatalf("expected file, session, bucket and root barriers, got %v", kinds)
 	}
 }

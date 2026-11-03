@@ -190,7 +190,7 @@ test("lease release preserves its row when another actor changes the format", as
 });
 
 test("journal format failure aborts resume inventory rather than hiding a candidate", async () => {
-  const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file); db.pragma("user_version=6"); db.close();
+  const f = await fixture(), file = path.join(controllerExecutionDirectory(f.home, f.ticket.executionId), "journal.sqlite"), db = new Database(file); db.pragma("user_version=7"); db.close();
   await expect(acquireResume({ provider: "codex", sessionId: f.ticket.sessionId }, f.context, config)).rejects.toThrow("unsupported-version");
   expect(f.fetch).not.toHaveBeenCalled(); expect(proof.capture).not.toHaveBeenCalled();
 });

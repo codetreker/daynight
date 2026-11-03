@@ -38,7 +38,7 @@ it("ships exact SQL resources and initializes and resets every installed store f
     count += Object.keys(source).length;
     expect(files(path.join(installed, "dist", directory))).toEqual(source);
   }
-  expect(count).toBe(10);
+  expect(count).toBe(11);
   const cwd = path.join(fixture.receipt.root, "different caller 中文");
   const databases = path.join(fixture.receipt.root, "databases");
   mkdirSync(cwd); mkdirSync(databases);
@@ -53,7 +53,7 @@ const owners = [
   ["commands/review/store-format.js", "reviewFormat", 2, ["pull_requests", "repositories", "review_publications", "reviews"]],
   ["commands/worker/store-format.js", "workerStoreFormat", 5, ["projects", "tasks"]],
   ["commands/worker/backends/web-store-format.js", "webExecutionStoreFormat", 1, ["executions"]],
-  ["commands/controller/journal-format.js", "controllerJournalFormat", 5, ["execution", "operations", "outbox", "projection", "resources"]],
+  ["commands/controller/journal-format.js", "controllerJournalFormat", 6, ["content_index", "execution", "operations", "outbox"]],
   ["commands/controller/resume-lease-format.js", "nativeResumeLeaseFormat", 1, ["leases"]],
 ];
 const versions = [];
@@ -80,7 +80,7 @@ for (const [module, name, version, tables] of owners) {
 console.log(JSON.stringify(versions));
 `, [installed, databases], cwd);
   expect(result.status, result.stderr).toBe(0);
-  expect(JSON.parse(result.stdout)).toEqual([2, 5, 1, 5, 1]);
+  expect(JSON.parse(result.stdout)).toEqual([2, 5, 1, 6, 1]);
 });
 
 it("rejects a missing installed SQL resource without repository fallback or retained-data changes", () => {

@@ -67,7 +67,7 @@ func (s *Service) Current(ctx context.Context, p core.Principal, project, taskID
 		if err := s.archiveExpired(ctx, tx, r); err != nil {
 			return err
 		}
-		out = map[string]any{"status": "registered", "session": permissions(r, admin || r.Owner == p.UserID, s.now())}
+		out = map[string]any{"status": "registered", "session": permissions(r, (admin || r.Owner == p.UserID) && active(t, r), s.now())}
 		return nil
 	})
 	return out, err

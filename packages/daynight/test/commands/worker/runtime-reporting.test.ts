@@ -11,14 +11,20 @@ import { runWorker } from "../../../src/commands/worker/runtime.js";
 import { resolveWorkerPaths } from "../../../src/commands/worker/paths.js";
 import { workerTelemetry, workerTelemetryTime } from "../../fixtures/worker-telemetry.js";
 
-const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webClose: vi.fn(), emit: vi.fn() }));
+const mocks = vi.hoisted(() => ({ coordinator: vi.fn(), herdr: vi.fn(), git: vi.fn(), prompt: vi.fn(), remote: vi.fn(), telemetry: vi.fn(), webClose: vi.fn(), emit: vi.fn(), completed: vi.fn(), archive: vi.fn(), ticket: vi.fn(), delay: vi.fn() }));
+vi.mock("node:timers/promises", async original => {
+  const actual = await original<typeof import("node:timers/promises")>();
+  return { ...actual, setTimeout: (...args: Parameters<typeof actual.setTimeout>) => mocks.delay(...args) };
+});
+vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: mocks.archive }));
+vi.mock("../../../src/commands/controller/launch-ticket.js", async original => ({ ...await original<object>(), readLaunchTicket: mocks.ticket }));
 vi.mock("../../../src/commands/worker/coordinator.js", () => ({ createWorkerCoordinator: mocks.coordinator }));
 vi.mock("../../../src/commands/worker/herdr.js", () => ({ createWorkerHerdr: mocks.herdr }));
 vi.mock("../../../src/commands/worker/worktrees.js", () => ({ createWorkerGitManager: mocks.git }));
 vi.mock("../../../src/commands/worker/prompts.js", () => ({ createWorkerPromptBuilder: mocks.prompt }));
 vi.mock("../../../src/commands/worker/remote.js", () => ({ createWorkerRemote: mocks.remote }));
 vi.mock("../../../src/commands/worker/telemetry.js", () => ({ createWorkerTelemetryCollector: mocks.telemetry }));
-vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: () => ({ close: mocks.webClose }) }));
+vi.mock("../../../src/commands/worker/backends/web-store.js", () => ({ openWebExecutionStore: () => ({ close: mocks.webClose, listCompletedTasks: mocks.completed }) }));
 vi.mock("../../../src/commands/worker/backends/web.js", () => ({ createWebExecutionBackend: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/web-process.js", () => ({ createWebControllerLauncher: () => ({}) }));
 vi.mock("../../../src/commands/worker/backends/grant-renewal.js", () => ({ maintainWorkerControllerGrants: async () => {} }));
@@ -46,8 +52,10 @@ let report: ReturnType<typeof vi.fn<(workerId: string, value: WorkerReport, oper
 let prepare: ReturnType<typeof vi.fn>;
 let shutdown: ReturnType<typeof vi.fn>;
 let dispose: ReturnType<typeof vi.fn>;
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.delay.mockImplementation((await vi.importActual<typeof import("node:timers/promises")>("node:timers/promises")).setTimeout);
+  mocks.completed.mockReturnValue([]);
   mocks.webClose.mockImplementation(() => {});
   vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
   collect = vi.fn(async () => ({ telemetry: workerTelemetry, issues: [] }));
@@ -60,11 +68,46 @@ beforeEach(() => {
   mocks.coordinator.mockImplementation((options: WorkerCoordinatorOptions) => ({ tick: vi.fn(async () => { if (!options.signal!.aborted) await new Promise<void>(resolve => options.signal!.addEventListener("abort", () => resolve(), { once: true })); }), shutdown }));
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
 describe("worker runtime reporting integration", () => {
+  it.each([undefined, 5_000])("backfills later completed sessions fairly with polling interval %s", async pollIntervalMs => {
+    const f = await fixture();
+    if (pollIntervalMs !== undefined) {
+      const { parse } = await import("yaml");
+      const { readFile } = await import("node:fs/promises");
+      const config = parse(await readFile(f.paths.configFile, "utf8"));
+      await writeFile(f.paths.configFile, stringify({ ...config, worker: { ...config.worker, pollIntervalMs } }));
+    }
+    let now = 0, rounds = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const labels = new Map([[uuid(11), "broken"], [uuid(12), "second"], [uuid(13), "third"]]);
+    mocks.completed.mockReturnValue([...labels.keys()].map(executionId => ({
+      serverOrigin: "https://daynight.example",
+      webExecution: { executionId, launchId: executionId, sessionId: executionId, launchSubmission: "submitted" },
+    })));
+    mocks.ticket.mockImplementation(async (_home, launchId) => ({ serverOrigin: "https://daynight.example", executionId: launchId }));
+    const attempts: string[] = [];
+    mocks.archive.mockImplementation(async ({ ticket }) => {
+      attempts.push(labels.get(ticket.executionId)!);
+      if (ticket.executionId === uuid(11)) throw new Error("Original archive source is missing.");
+      return { state: "ready" };
+    });
+    mocks.delay.mockImplementation(async milliseconds => { expect(milliseconds).toBe(pollIntervalMs ?? 60_000); now += milliseconds; });
+    mocks.coordinator.mockImplementation(() => ({ tick: async () => {
+      expect(attempts.length).toBeLessThanOrEqual(rounds);
+      if (++rounds === 5) f.signal.abort();
+    }, shutdown }));
+    await runWorker({ ...f, signal: f.signal.signal });
+    expect(attempts).toEqual(pollIntervalMs === undefined ? ["broken", "second", "third", "broken"] : ["broken", "second", "third"]);
+    expect(mocks.delay).toHaveBeenCalledTimes(4);
+    expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-ready")).toHaveLength(2);
+    expect(mocks.emit.mock.calls.filter(([event]) => event.kind === "session-archive-retry")).toHaveLength(pollIntervalMs === undefined ? 2 : 1);
+  });
+
   it("reports independently through repository preparation and long Web reconciliation with wired inventory hooks", async () => {
     const f = await fixture(), prepared = deferred<void>();
     prepare.mockImplementation(() => prepared.promise);
