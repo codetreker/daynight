@@ -529,8 +529,10 @@ Go、web、CLI 和 shell completion 各自的检查内容及门槛保持。
 安装 CLI 验收复用此 E2E 测试包的 fixture，包含
 `installed_cli_project_task_workflow` 场景，通过 `PT.V*` 要求编号对应 CLI 的真实
 project/task 操作、依赖推进、重启持久化及版本竞争。Node 编排入口在 Go
-覆盖率 gate 前准备一次安装，将同一产物用于 Go 场景及随后预算探针；原有 go-cov
-参数、race、critical 与 strict raw profile 检查保持原义。预算探针运行在 Go 默认
+覆盖率 gate 前准备一次安装，将同一产物用于 Go 场景及随后预算探针。编排层固定传入
+`--skip-result-packages cmd/e2e_tests`，仅省略无产品语句测试包的结果汇总行；测试仍
+执行且失败仍使 gate 失败，生产覆盖率、race、critical 与 strict raw profile 检查保持
+原义。机制见[E2E 测试包决策](../../.agents/notes/implemented/testing/2026-11-03-server-e2e-package.md)。预算探针运行在 Go 默认
 10 分钟 test timer 之外；公开安装命令的两个期限场景通过测试侧 preload 使用
 1 秒单次和 3 秒总期限，生产默认 30 秒/5 分钟由测试单独断言。四个字节场景保留
 真实 128 MiB/256 MiB 限制及精确边界和 +1 字节配对。原有 Go 作业仍为 20 分钟。

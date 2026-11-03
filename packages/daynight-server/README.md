@@ -346,11 +346,16 @@ runs `go vet`, prepares the pinned real-UniAuth integration fixture, and expires
 results so database changes cannot be hidden by cached coverage, and executes race-enabled package
 tests through `go-cov` pinned to commit
 `d6caf2759e330b48d69a543695e37002a48feb1d`. The checked-in `.go-cov.toml`
-requires at least 85% coverage per package and 80% per function, with critical
-blocks enforced and no production exclusions. A separate exact calculation over
-the raw coverage profile requires overall statement coverage **strictly greater
-than 90%**. Exactly 90% fails. The check also tests that calculation's boundary
-and malformed-profile behavior.
+requires at least 85% coverage per production package and 80% per function,
+with critical blocks enforced and no production exclusions. The Node
+orchestrator passes `--skip-result-packages cmd/e2e_tests` because this test-only
+package has no product statements and the pinned tool otherwise treats its
+`[no statements]` result as 0%. Only that package's result-summary row is omitted;
+its tests still run and failures still fail the gate. Production-package
+thresholds, critical checks and the raw coverage profile remain intact. A
+separate exact calculation over that profile requires overall statement coverage
+**strictly greater than 90%**. Exactly 90% fails. The check also tests that
+calculation's boundary and malformed-profile behavior.
 
 `scripts/env.sh` places downloaded tools, dependencies, caches, binaries, and
 temporary outputs under this module's `.tmp/`. Both Go-consuming CI jobs restore

@@ -598,8 +598,11 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 [附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
 原有 PT 场景和六个预算探针保持完整。
 
-编排层原样执行固定 go-cov 参数及 strict raw coverage 检查，通过后才在 Go 默认
-10 分钟计时器之外运行六个公开安装 CLI 场景：持续推进 cursor 的总期限、
+编排层执行固定版本 go-cov，以 `--skip-result-packages cmd/e2e_tests` 省略没有
+产品语句的 E2E 测试包结果汇总行；该包测试仍完整执行，测试失败仍向上传递。
+生产包及函数的覆盖率门槛、critical 检查和原始 coverage profile 保持完整。
+strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行六个公开安装
+CLI 场景：持续推进 cursor 的总期限、
 响应开始后停顿的单次期限，以及两组 gzip 解码字节边界配对。两个期限场景使用
 测试侧 Node.js `registerHooks` preload，只包装安装产物的 `api/operation.js` 导出，
 复用原有 `createOperation` 实现并注入 3 秒总期限和 1 秒单次期限。preload 先断言

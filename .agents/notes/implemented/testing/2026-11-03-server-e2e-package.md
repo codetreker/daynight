@@ -20,6 +20,16 @@ retains isolated PostgreSQL schemas, storage roots, process control, source and
 artifact checks, concurrency barriers, error assertions and cleanup evidence.
 The existing `go test ./...` and `go-cov` invocation discover the package.
 
+The central Node orchestrator passes `--skip-result-packages cmd/e2e_tests` to
+`go-cov`. This package contains only `_test.go` files, so it has no product
+statements; the pinned tool otherwise interprets its `[no statements]` package
+result as 0% against the package threshold. The option omits that result-summary
+row while preserving test execution, test-failure propagation, the raw profile
+and every production coverage check. The tool matches
+[module-relative package-name substrings](https://github.com/codetreker/go-cov/blob/d6caf2759e330b48d69a543695e37002a48feb1d/internal/coverage/parse.go#L287-L301).
+The directory remains test-only; production code belongs to its owning package
+so the report omission cannot hide product coverage.
+
 `cmd/daynight-server` retains the executable and tests that call its internal
 functions directly. Its tests own temporary storage, address allocation and
 authenticated-request helpers independently of the E2E package. Selecting this
@@ -48,8 +58,9 @@ appropriate to its resources.
 
 ## Consequences
 
-The complete gate retains its existing scenarios, race detection, coverage
-thresholds, installed CLI artifact checks and evidence paths. The binary still
+The complete gate retains its existing scenarios, race detection, production
+coverage thresholds, installed CLI artifact checks and evidence paths. The
+no-statements test package is omitted only from package-result reporting. The binary still
 targets the production command, and its execution remains separate from the
 owning packages' statement coverage. Directory depth is unchanged, so module,
 repository and migration paths retain their existing resolution.
