@@ -876,13 +876,14 @@ project identity and graph counts without recording task content, repository
 addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
 `task-sync` and computes its graphs locally.
 
-## Task Steps read API
+## Task Steps API
 
-Task-owned Steps persist independently from Sessions and expose dedicated reads.
-The [read contract](../../docs/spec/daynight-task-steps.md) owns field, identity,
-permission, snapshot, encoding and refusal semantics. Migration 030 adds
-normalized rows without changing existing Task fields or migration checksums.
-Steps remain outside ordinary Task, list, graph and synchronization projections.
+Task-owned Steps persist independently from Sessions and expose dedicated reads
+and atomic collection additions. The [resource contract](../../docs/spec/daynight-task-steps.md)
+owns field, identity, permission, version, encoding and refusal semantics.
+Migration 030 stores normalized rows without changing existing Task fields or
+migration checksums. Steps remain outside ordinary Task, list, graph and
+synchronization projections.
 
 For `T = /api/v1/projects/{projectId}/tasks/{taskId}`:
 
@@ -890,38 +891,92 @@ For `T = /api/v1/projects/{projectId}/tasks/{taskId}`:
 |---|---|---|
 | `GET` / `HEAD` | `T/steps` | Complete ordered projectId/taskId/version/steps resource; empty is `[]`. |
 | `GET` / `HEAD` | `T/steps/{stepId}` | Parent identity/version and complete `step`; the eight-hex input is case-insensitive. |
+| `POST` | `T/steps` | `201`, canonical item `Location` and complete ordered collection after append or before/after insertion. |
 
-Reads accept no query, including a trailing empty `?`. Other methods return
-an authenticated `405` with `Allow: GET, HEAD`. Both project roles can read;
-normal Task nonmembership/missing scope is `404`, parent soft deletion is `410`,
-and a missing child is `404`. Responses retain `no-store` and principal/request
-receipts. Parent version and content share one repeatable-read snapshot through
-a narrow Task header, independent from properties and execution policy.
+Requests accept no query, including a trailing empty `?`. Unsupported collection
+methods return an authenticated `405` with `Allow: GET, HEAD, POST`; item methods
+return `Allow: GET, HEAD`. Both project roles can read and add. Normal Task
+nonmembership/missing scope is `404`, parent soft deletion is `410`, and a missing
+child or anchor is `404`. Responses retain `no-store` and principal/request
+receipts; Cookie writes require the configured Origin.
 
-`internal/tasksteps` is the only public DTO/codec owner. Exact Encoder output
-includes default escaping and a terminal LF, with 19 version digits reserved
-within 67,108,864 bytes. Invalid storage or failed cleanup returns an internal
-error; the service never substitutes a partial or empty result. Reads preserve
-all parent metadata and timestamps.
+POST accepts one JSON object within 1 MiB. It requires a positive exact int64
+`version`, a caller-chosen eight-hex `id` and `title`. Omitted `description` is
+empty and omitted `status` is `todo`; the four statuses are `todo`, `in_progress`,
+`done` and `skipped`. Optional `before` and `after` are mutually exclusive and
+refer only to the same Task. IDs normalize to lowercase; title and Markdown
+retain their originals. Unknown/duplicate/read-only fields, explicit null,
+wrong types, NUL, invalid UTF-8 and lone escaped UTF-16 surrogates are refused.
+Valid surrogate pairs, literal U+FFFD and escaped backslashes are preserved.
+Duplicate titles create independent records; an existing ID always conflicts.
 
-The routine gate covers migration preservation/constraints, scoped reads,
-snapshot interleaving, raw text and precise int64 encoding, auth/HEAD/query/
-method refusals, malformed storage and actual binary restart persistence in
-`TestBuiltBinaryStepsReadPersistence`. The maximum-resource HTTP test uses the
-`stress` build tag and is excluded from routine CI. After preparing the normal
-auth fixture and an isolated PostgreSQL database, run it separately:
+Reads use one repeatable-read snapshot and a narrow Task header, independent from
+properties and execution policy. Add uses the existing project transaction and
+lock order: project, member admission, narrow parent lock, tombstone and version,
+current rows, duplicate ID before anchor, immutable candidate, version exhaustion,
+database UTC microsecond time, exact encoding, position shift/insert, narrow
+parent touch and Commit. All candidate checks finish before data changes.
+Concurrent same-version Task and Steps writes permit at most one actual change.
+
+A successful add advances only the parent version and `updated_at` once, using
+the new Step's creation/update time. Existing Step content timestamps, Task
+business fields, properties, dependencies, execution timing and Worker/Session
+ownership remain unchanged. Task state, disabled automatic execution, absent
+Sessions and active Worker ownership do not restrict Steps; add never freezes a
+Session or calls the full Task updater.
+
+`internal/tasksteps` is the sole public DTO/codec owner. Exact Encoder output
+includes default escaping and terminal LF, with 19 version digits reserved
+within 67,108,864 bytes. A frozen successfully encoded collection is the response
+body. An over-limit candidate returns `409 steps_limit_exceeded` with
+`encodedBytes` and `maxEncodedBytes` details before any data mutation. Other
+write refusals are `409 version_conflict`, `409 step_id_conflict` and
+`409 version_exhausted`. Invalid stored rows, non-dense order, read over-capacity,
+database failures and failed transaction cleanup are internal errors; the service
+never substitutes a partial or empty result.
+
+The shared transaction owner preserves operation, commit and cleanup failures
+and their original causes. Confirmed Commit remains `committed` after response
+loss; confirmed rollback is `not_committed`; unconfirmed Commit is `unknown`.
+The driver's closed-transaction cleanup after failed Commit cannot prove rollback.
+Cleanup failure outranks a nested business refusal. The handler logs fixed safe
+diagnostics under `component=task_step`, operation and prepare/persist/commit/
+response phases, without input values or arbitrary Fault/driver messages.
+Transaction outcome is independent from `response_outcome=written|failed|canceled_before_body`
+and `written_bytes`. A completed network write does not prove client receipt.
+Recovery GET request IDs may append `.r1`, `.r2` and so on to the original ID;
+`read_kind=reconcile`, version and found/absent/current-state observations describe
+current facts without attributing them to an unknown write. Clients retain the
+original identity and do not replay POST automatically.
+
+Routine tests cover migration preservation, scoped reads, snapshot interleaving,
+raw text, exact int64, auth/Origin/HEAD/query/method refusals, malformed storage,
+append/anchors/defaults, concurrency, parent and Session preservation, rollback
+and completion facts, and safe response diagnostics. Actual binary read restart
+persistence is covered by `TestBuiltBinaryStepsReadPersistence`. After preparing
+the normal auth fixture and an isolated PostgreSQL database, focused tests can
+be run from this module:
 
 ```bash
 source scripts/env.sh
 export DAYNIGHT_TEST_DATABASE_URL='postgres://.../isolated-test-database'
 export DAYNIGHT_TEST_UNIAUTH_FIXTURE="$(node scripts/prepare-uniauth-fixture.mts)"
-go test -tags=stress ./internal/server -run '^TestStepsHTTPExactCapacityStress$' -count=1 -timeout=3m
+go test ./internal/core/store ./internal/service ./internal/server -run 'Test(Transact|TaskSteps|Steps)' -count=1 -timeout=5m
 ```
 
-The stress case seeds legitimate bounded individual records, observes complete
+Maximum-resource HTTP tests use the `stress` build tag and run separately from
+routine CI:
+
+```bash
+go test -tags=stress ./internal/server -run '^TestStepsHTTP(ExactCapacity|AddCapacity)Stress$' -count=1 -timeout=5m
+```
+
+The read case seeds legitimate bounded individual records, observes complete
 64 MiB HTTP bytes at the maximum int64 version, checks the same content at a
 one-digit version, and refuses an illegally seeded over-capacity collection.
-Run-specific results and source identity belong to the corresponding PR evidence.
+The add case checks an exact successful candidate and subsequent complete GET,
+then a one-byte over-limit candidate with no data writes. Run-specific results
+and source identity belong to the corresponding PR evidence.
 
 ## Task Thread API
 

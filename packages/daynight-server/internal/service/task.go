@@ -110,19 +110,9 @@ func (s *Tasks) Create(ctx context.Context, principal core.Principal, projectID 
 }
 
 func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID, id string, input UpdateTask) (core.Task, error) {
-	if err := requirePrincipal(principal); err != nil {
-		return core.Task{}, err
-	}
-	projectID, err := CanonicalID(projectID)
+	projectID, id, err := taskWriteIdentity(principal, projectID, id, input.Version)
 	if err != nil {
 		return core.Task{}, err
-	}
-	id, err = CanonicalID(id)
-	if err != nil {
-		return core.Task{}, err
-	}
-	if input.Version < 1 {
-		return core.Task{}, invalidInput("Version must be a positive integer.")
 	}
 	if input.Title == nil && input.Description == nil && input.DependsOn == nil && input.ExternalDependsOn == nil && len(input.Properties) == 0 && input.AllowAgents == nil && input.RequiredPlatform == nil && input.AssignedTo == nil {
 		return core.Task{}, invalidInput("At least one task field must be provided.")
@@ -135,8 +125,8 @@ func (s *Tasks) Update(ctx context.Context, principal core.Principal, projectID,
 		if err != nil {
 			return taskMutation{}, err
 		}
-		if current.Version != input.Version {
-			return taskMutation{}, &Fault{Code: "version_conflict", Message: "Task version does not match."}
+		if err := requireTaskVersion(current.Version, input.Version); err != nil {
+			return taskMutation{}, err
 		}
 		worker, err := taskproperties.Worker(current.Properties)
 		if err != nil {
@@ -215,19 +205,9 @@ func (s *Tasks) write(ctx context.Context, principal core.Principal, projectID s
 }
 
 func (s *Tasks) versionedWrite(ctx context.Context, principal core.Principal, projectID, id string, version int64, prepare func(*store.ProjectTx, core.Task) (taskMutation, error)) (core.Task, error) {
-	if err := requirePrincipal(principal); err != nil {
-		return core.Task{}, err
-	}
-	projectID, err := CanonicalID(projectID)
+	projectID, id, err := taskWriteIdentity(principal, projectID, id, version)
 	if err != nil {
 		return core.Task{}, err
-	}
-	id, err = CanonicalID(id)
-	if err != nil {
-		return core.Task{}, err
-	}
-	if version < 1 {
-		return core.Task{}, invalidInput("Version must be a positive integer.")
 	}
 	return s.write(ctx, principal, projectID, func(tx *store.ProjectTx) (taskMutation, error) {
 		current, err := tx.Task(ctx, id)
@@ -237,8 +217,8 @@ func (s *Tasks) versionedWrite(ctx context.Context, principal core.Principal, pr
 		if err != nil {
 			return taskMutation{}, err
 		}
-		if current.Version != version {
-			return taskMutation{}, &Fault{Code: "version_conflict", Message: "Task version does not match."}
+		if err := requireTaskVersion(current.Version, version); err != nil {
+			return taskMutation{}, err
 		}
 		worker, err := taskproperties.Worker(current.Properties)
 		if err != nil {
