@@ -119,8 +119,12 @@ matrix; its result belongs to the tested revision. The
 [completion design](../docs/design/daynight-completion.md) owns its coverage and
 loading guarantees.
 
-GitHub Actions runs type checking, build, and tests on native Linux, macOS, and
-Windows runners. Each native job resolves the latest available Node.js 24 patch.
+GitHub Actions runs type checking, build, and tests on native Linux, macOS 26
+Intel x64, and Windows runners. The macOS job uses the standard
+`macos-26-intel` label; the
+[runner decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
+records the hosted capacity failure and architecture covered by this lane.
+Each native job resolves the latest available Node.js 24 patch.
 A separate runtime matrix builds the package with Node.js 24 and checks the packed
 artifact with Node.js `22.14.0`, the latest `22` and `24` releases, and current
 `node`. Each runtime installs it in a fresh npm consumer with `--engine-strict`
