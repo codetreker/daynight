@@ -127,7 +127,8 @@ const MembersContent = ({ projectId, projectName, user, onRemoved, onUnavailable
         if (signal.aborted) return;
         const { link, ...metadata } = result;
         setInvitations((items) => [metadata, ...(items ?? [])]);
-        setDialog({ kind: 'secret', secret: link }); return;
+        setDialog({ kind: 'secret', secret: link });
+        await load(signal); return;
       } else await revokeInvitation(projectId, action.invitation.id, signal);
       if (signal.aborted) return;
       setDialog(null); await load(signal);

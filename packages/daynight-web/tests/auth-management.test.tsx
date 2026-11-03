@@ -270,7 +270,10 @@ describe('authoritative project management', () => {
   });
 
   it('creates a seven-day once-only invitation and revokes it without retaining its link', async () => {
-    vi.mocked(auth.createInvitation).mockResolvedValue({ ...invitation, link: 'https://daynight.test/invitations#once-secret' });
+    let catalogue: readonly ProjectInvitation[] = [];
+    vi.mocked(auth.listInvitations).mockImplementation(async () => catalogue);
+    vi.mocked(auth.createInvitation).mockImplementation(async () => { catalogue = [invitation]; return { ...invitation, link: 'https://daynight.test/invitations#once-secret' }; });
+    vi.mocked(auth.revokeInvitation).mockImplementation(async (_projectId, invitationId) => { catalogue = catalogue.filter((item) => item.id !== invitationId); });
     members(); await readyMembers(); expect(screen.getByText(/还没有有效邀请/)).toBeInTheDocument();
     click('邀请成员'); expect(screen.getByText('7 天后到期 · 单次使用 · 加入角色：成员')).toBeInTheDocument(); await dialogClick('创建邀请链接');
     await screen.findByLabelText('一次性邀请链接'); expect(auth.createInvitation).toHaveBeenCalledWith('00000000-0000-4000-8000-000000000101', expect.any(AbortSignal));

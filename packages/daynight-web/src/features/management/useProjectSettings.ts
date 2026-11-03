@@ -104,7 +104,11 @@ export const useProjectSettings = (projectId: string, userId: string) => {
     dirty: project !== null && draft !== String(project.settings.executionWarningMinutes),
     change: (value: string) => { setDraft(value); setInvalid(false); setNotice(null); setError(null); },
     cancel: () => { if (project !== null && !pending && !uncertain) { setDraft(String(project.settings.executionWarningMinutes)); setInvalid(false); setError(null); setNotice("cancelled"); } },
-    retry: () => { if (!submitting.current) void load(controller.current!.signal, uncertain ? "reconciled" : null); },
+    retry: () => {
+      if (submitting.current) return;
+      if (error === null && project !== null && !uncertain) void access.session.revalidate();
+      else void load(controller.current!.signal, uncertain ? "reconciled" : null);
+    },
     save,
   };
 };

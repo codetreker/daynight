@@ -155,3 +155,85 @@ it('keeps an acknowledged settings write when an older recovery read arrives lat
     expect(writes).toBe(1);
   } finally { mounted.view.unmount(); mounted.scope.dispose(); }
 });
+
+it('retries an access-only failure without replacing a valid unsaved settings draft', async () => {
+  let accessFails = false;
+  let resourceReads = 0;
+  let writes = 0;
+  const mounted = mount('settings', (url, init) => {
+    if (url === `${root}/access`) return accessFails ? failure(503) : json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin'));
+    if (url === root) { resourceReads++; return json(project); }
+    if (init?.method === 'PATCH') { writes++; throw new Error('The draft must not be submitted.'); }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  try {
+    const field = await screen.findByLabelText('Alert threshold');
+    await waitFor(() => expect(field).not.toBeDisabled());
+    fireEvent.change(field, { target: { value: '95' } });
+    accessFails = true;
+    await focus(mounted.access());
+    expect(field).toHaveValue(95);
+    expect(field).toBeDisabled();
+    accessFails = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(mounted.access().snapshot()).toMatchObject({ status: 'ready', refreshing: false }));
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+    expect(screen.getByLabelText('Alert threshold')).toHaveValue(95);
+    expect(screen.getByLabelText('Alert threshold')).not.toBeDisabled();
+    expect(resourceReads).toBe(1);
+    expect(writes).toBe(0);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});
+
+it.each([false, true])('keeps an acknowledged invitation and its full catalogue across older reads, post-ack read failure=%s', async (postAckReadFails) => {
+  const existing = { id: '30000000-0000-4000-8000-000000000001', projectId, createdBy: TEST_VIEWER_ID, createdAt: stamp, expiresAt: '2099-10-30T10:00:00Z', consumedBy: null, consumedAt: null, revokedAt: null };
+  const created = { ...existing, id: '30000000-0000-4000-8000-000000000002' };
+  const link = new URL('/invitations#created-once', window.location.origin).href;
+  let allowed = true;
+  let committed = false;
+  let invitationReads = 0;
+  let writes = 0;
+  let writeSignal: AbortSignal | undefined;
+  const heldWrite = Promise.withResolvers<Response>();
+  const heldInvitations = Promise.withResolvers<Response>();
+  const mounted = mount('members', (url, init) => {
+    if (url === `${root}/access`) return allowed ? json(directAccessFixture(projectId, TEST_VIEWER_ID, 'admin')) : failure(404);
+    if (url === `${root}/members`) return json(roster(freshEmail));
+    if (url === `${root}/invitations` && init?.method === 'POST') { writes++; writeSignal = init.signal as AbortSignal; return heldWrite.promise; }
+    if (url === `${root}/invitations`) {
+      invitationReads++;
+      if (invitationReads === 2) return heldInvitations.promise;
+      if (invitationReads === 3 && postAckReadFails) return failure(503);
+      return json({ items: committed ? [created, existing] : [existing] });
+    }
+    throw new Error(`Unexpected request ${url}`);
+  });
+  try {
+    await screen.findByRole('button', { name: `Revoke invitation ${existing.id}` });
+    fireEvent.click(screen.getByRole('button', { name: 'Invite member' }));
+    const confirm = screen.getByRole('button', { name: 'Create invitation link' });
+    await waitFor(() => expect(confirm).not.toBeDisabled());
+    fireEvent.click(confirm);
+    await waitFor(() => expect(writes).toBe(1));
+    allowed = false;
+    await focus(mounted.access());
+    allowed = true;
+    await focus(mounted.access());
+    await waitFor(() => expect(invitationReads).toBe(2));
+    committed = true;
+    await act(async () => { heldWrite.resolve(json({ ...created, link }, 201)); await nextEventLoopTurn(); });
+    expect(await screen.findByLabelText('One-time invitation link')).toHaveValue(link);
+    await act(async () => { heldInvitations.resolve(json({ items: [existing] })); await nextEventLoopTurn(); });
+    fireEvent.click(screen.getByRole('button', { name: 'I have saved it, close' }));
+    if (postAckReadFails) {
+      await screen.findByRole('alert');
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    }
+    await screen.findByRole('button', { name: `Revoke invitation ${created.id}` });
+    expect(screen.getByRole('button', { name: `Revoke invitation ${existing.id}` })).toBeVisible();
+    expect(screen.getByText(freshEmail)).toBeVisible();
+    expect(screen.queryByLabelText('One-time invitation link')).toBeNull();
+    expect(writes).toBe(1);
+    expect(writeSignal!.aborted).toBe(false);
+  } finally { mounted.view.unmount(); mounted.scope.dispose(); }
+});

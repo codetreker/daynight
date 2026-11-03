@@ -39,9 +39,15 @@ or lifetime before a late response can republish private content, with an
 unavailable render guard as well. This does not cancel accepted writes or erase
 unknown outcomes. Temporary access failure cannot discard the only recoverable
 resource result or retry path; successful authority refresh must expose a usable
-resource or start a fresh read without replacing a valid settings draft. A known
-settings write acknowledgement retires older pending reads before installing its
-resource, draft and success feedback; it does not abort or replay the write.
+resource or start a fresh read without replacing a valid settings draft. When a
+valid resource exists and only access failed, Retry revalidates access without
+reloading saved settings over the draft. Missing or failed resources and unknown
+write outcomes retain full resource reconciliation. A known settings write
+acknowledgement retires older pending reads before installing its resource, draft
+and success feedback. Invitation creation retains the one-time result, then
+starts a complete member/invitation read that retires older reads; a local append
+alone cannot reconstruct a directory cleared by withdrawal. These read fences do
+not abort or replay accepted writes.
 
 Access stays outside persistent Project and Task records. Existing member reads
 retain claim-owner name/email, loading, failure/retry and former-member display;
@@ -72,6 +78,12 @@ format or a synthetic generation.
 appear to authorize operations after membership or identity changes. Keeping the
 projection in its current identity lifetime preserves separate content and
 permission ownership without a cache-format migration.
+
+**Retire an older invitation read and keep only the local acknowledgement.**
+This prevents that read from erasing the new invitation, but a withdrawal may
+already have cleared the member and invitation lists. Appending one acknowledged
+item cannot reconstruct their other entries. The existing post-write read
+reconciles the complete catalogue while retaining the one-time link separately.
 
 ## Consequences
 
