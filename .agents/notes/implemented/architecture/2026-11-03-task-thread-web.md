@@ -28,17 +28,28 @@ bounds and duplicate-member checks. This reuse does not create a shared feature
 controller or a second message identity.
 
 A separate consumed-after ID advances only after a fully validated forward page
-is retained. POST receipts, history and reference reads cannot move it. Visible,
-incoming and reference windows have count and byte caps. Only one reading anchor,
-one latest confirmed receipt and one in-flight POST reservation can be fixed.
-New receipts release previous receipt pins, and explicit window navigation can
-evict already displayed own receipts before a forward GET covers them. Such
-eviction never advances continuity. Revealing all retained incoming messages plus
-the fixed set leaves capacity for another complete forward page. History tickets
-belong to a captured window revision, direction and actual boundary. Explicit
-reference navigation or incoming reveal replaces that window, aborts its history
-request and releases the slot. Admission, merge and error handling reject stale
-tickets so an old result cannot alter the replacement window or its requests.
+is retained. POST receipts, history and reference reads cannot move it. The
+fetched window represents one retained contiguous service segment; detached
+anchors and own receipts can remain visible without becoming its endpoints.
+Pruning selects one edge run from the complete candidate sequence and preserves
+a fetched member for navigation. Forward pages extend that run only through a
+captured boundary or overlapping returned IDs; otherwise they remain a complete
+incoming segment. Ordinary empty-buffer jumps preserve the established run;
+capacity release can retain its newest fetched member. Reveal uses the complete
+buffered segment, including visible echoes. Notification counts include only
+buffered IDs that are not currently displayed.
+
+Visible, incoming and reference windows have count and byte caps. Only one
+reading anchor, one latest confirmed receipt and one in-flight POST reservation
+can be fixed. New receipts release previous receipt pins, and explicit window
+navigation can evict already displayed own receipts before a forward GET covers
+them. Such eviction never advances continuity. Revealing all retained incoming
+messages plus the fixed set leaves capacity for another complete forward page.
+History tickets belong to a captured window revision, direction and actual
+boundary. Explicit reference navigation or incoming reveal replaces that window,
+aborts its history request and releases the slot. Admission, merge and error
+handling reject stale tickets so an old result cannot alter the replacement
+window or its requests.
 
 The API distinguishes waiting for authentication from dispatch, validates a 201
 and its body/reply/actor echo, and records the confirmed remote result before

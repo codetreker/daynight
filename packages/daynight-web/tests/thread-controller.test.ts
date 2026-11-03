@@ -288,3 +288,94 @@ it('rejects a history result when its captured boundary was evicted by concurren
   list.mockResolvedValueOnce(page([message(151)], true, true)); await controller.loadOlder();
   expect(list.mock.calls.at(-1)![1]).toEqual({ beforeId: id(152), count: 50 }); expect(controller.snapshot().consumedAfterId).toBe(id(153));
 });
+
+it('keeps an empty-buffer scroll jump on its established range despite a disconnected own receipt', async () => {
+  const { controller, list, post } = make(); const own = message(200, 'own');
+  list.mockResolvedValueOnce(page([message(151)], true)); await start(controller);
+  list.mockResolvedValueOnce(page([message(9)], true, true)).mockResolvedValueOnce(page([message(10)], true, true)); await controller.showReference(id(10));
+  post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(own); return own; });
+  controller.setDraft(own.body); await controller.send();
+  list.mockResolvedValueOnce(page([message(152), own], true)); controller.revealIncoming(); await controller.refresh();
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(10), own.id]); expect(controller.snapshot().incomingCount).toBe(1);
+  expect(controller.snapshot().consumedAfterId).toBe(own.id);
+  list.mockResolvedValueOnce(page([message(11), message(12), message(151)], true, true)); await controller.loadWindowNewer();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ afterId: id(10), count: 50 });
+  list.mockResolvedValueOnce(page([message(152), own], true)); await controller.loadWindowNewer();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ afterId: id(151), count: 50 });
+  list.mockResolvedValueOnce(page([message(9)], true, true)); await controller.loadOlder();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ beforeId: id(10), count: 50 });
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(9), id(10), id(11), id(12), id(151), id(152), own.id]);
+  expect(controller.snapshot().incomingCount).toBe(0); expect(controller.snapshot().consumedAfterId).toBe(own.id);
+});
+
+it('retains a visible own echo inside the complete buffered segment rather than using notification IDs as range membership', async () => {
+  const { controller, list, post } = make({ limits: { ...THREAD_LIMITS, visibleCount: 3 } });
+  const a = message(10), b = message(11), c = message(12, 'own'), d = message(13), e = message(14);
+  list.mockResolvedValueOnce(page([a])); await start(controller); controller.setFollowing(false);
+  post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(c); return c; });
+  controller.setDraft(c.body); await controller.send(); list.mockResolvedValueOnce(page([b, c, d])); await controller.refresh();
+  expect(controller.snapshot().incomingCount).toBe(2);
+  controller.revealIncoming(); await controller.refresh(); controller.setReadingAnchor(c.id);
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([b.id, c.id, d.id]);
+  list.mockResolvedValueOnce(page([e])); await controller.refresh();
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([c.id, d.id, e.id]);
+  list.mockResolvedValueOnce(page([b], true, true)); await controller.loadOlder();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ beforeId: c.id, count: 50 });
+  expect(controller.snapshot().consumedAfterId).toBe(e.id);
+});
+
+it('keeps disconnected fixed pins outside a pruned segment and exposes both retrievable directions', async () => {
+  const { controller, list } = make({ limits: { ...THREAD_LIMITS, visibleCount: 4 } });
+  list.mockResolvedValueOnce(page([message(1), message(2), message(3), message(4)])); await start(controller); controller.setReadingAnchor(id(1));
+  list.mockResolvedValueOnce(page([message(5), message(6)])); await controller.loadWindowNewer();
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(1), id(4), id(5), id(6)]); expect(controller.snapshot().hasMoreBefore).toBe(true);
+  list.mockResolvedValueOnce(page([message(2), message(3)], true, true)); await controller.loadOlder();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ beforeId: id(4), count: 50 });
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(1), id(2), id(3), id(4)]); expect(controller.snapshot().hasMoreAfter).toBe(true);
+  list.mockResolvedValueOnce(page([message(5), message(6)], true)); await controller.loadWindowNewer();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ afterId: id(4), count: 50 }); expect(controller.snapshot().consumedAfterId).toBe(id(4));
+});
+
+it('admits connected overlapping forward pages after historical navigation without leaving obsolete buffered entries', async () => {
+  const { controller, list } = make();
+  list.mockResolvedValueOnce(page([message(10)])); await start(controller);
+  list.mockResolvedValueOnce(page([message(11), message(12), message(13)], true, true)); await controller.loadWindowNewer();
+  expect(controller.snapshot().consumedAfterId).toBe(id(10));
+  list.mockResolvedValueOnce(page([message(11), message(12), message(13), message(14)])); controller.revealIncoming(); await controller.refresh();
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(10), id(11), id(12), id(13), id(14)]); expect(controller.snapshot().incomingCount).toBe(0);
+  list.mockResolvedValueOnce(page([message(15)])); await controller.refresh();
+  expect(controller.snapshot().visible.at(-1)?.id).toBe(id(15)); expect(controller.snapshot().incomingCount).toBe(0); expect(controller.snapshot().consumedAfterId).toBe(id(15));
+});
+
+it('keeps an own receipt outside range membership until the first fromBeginning page is admitted', async () => {
+  const { controller, list, post } = make(); await start(controller); const c = message(12, 'own');
+  post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(c); return c; });
+  controller.setDraft(c.body); await controller.send(); expect(controller.snapshot().consumedAfterId).toBeNull();
+  list.mockResolvedValueOnce(page([message(10), message(11), c])); await controller.refresh();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ fromBeginning: true, count: 50 });
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(10), id(11), c.id]); expect(controller.snapshot().incomingCount).toBe(0);
+  expect(controller.snapshot().consumedAfterId).toBe(c.id);
+  list.mockResolvedValueOnce(page([])); await controller.loadOlder(); expect(list.mock.calls.at(-1)![1]).toEqual({ beforeId: id(10), count: 50 });
+});
+
+it('releases a complete buffered segment when history displays it so later forward pages cannot overtake stale incoming data', async () => {
+  const { controller, list } = make(); list.mockResolvedValueOnce(page([message(10)])); await start(controller); controller.setFollowing(false);
+  list.mockResolvedValueOnce(page([message(11), message(12)])); await controller.refresh(); expect(controller.snapshot().incomingCount).toBe(2);
+  list.mockResolvedValueOnce(page([message(11), message(12)], true)); await controller.loadWindowNewer(); expect(controller.snapshot().incomingCount).toBe(0);
+  list.mockResolvedValueOnce(page([])); controller.revealIncoming(); await controller.refresh();
+  list.mockResolvedValueOnce(page([message(13)])); await controller.refresh();
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(10), id(11), id(12), id(13)]); expect(controller.snapshot().incomingCount).toBe(0); expect(controller.snapshot().consumedAfterId).toBe(id(13));
+});
+
+it('keeps a disconnected latest receipt out of the newer boundary after pruning toward older history', async () => {
+  const { controller, list, post } = make({ limits: { ...THREAD_LIMITS, visibleCount: 4 } });
+  list.mockResolvedValueOnce(page([message(3), message(4), message(5), message(6)], true)); await start(controller);
+  const own = message(7, 'own'); post.mockImplementationOnce(async (_scope, _input, _signal, admission) => { admission.onDispatch?.(); admission.onConfirmed?.(own); return own; });
+  controller.setDraft(own.body); await controller.send();
+  list.mockResolvedValueOnce(page([message(2), message(3)], true, true)); await controller.loadOlder();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ beforeId: id(4), count: 50 });
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(2), id(3), id(4), own.id]); expect(controller.snapshot().hasMoreAfter).toBe(true);
+  list.mockResolvedValueOnce(page([message(5), message(6), own], true)); await controller.loadWindowNewer();
+  expect(list.mock.calls.at(-1)![1]).toEqual({ afterId: id(4), count: 50 });
+  expect(controller.snapshot().visible.map(item => item.id)).toEqual([id(4), id(5), id(6), own.id]); expect(controller.snapshot().hasMoreBefore).toBe(true); expect(controller.snapshot().consumedAfterId).toBe(id(6));
+});

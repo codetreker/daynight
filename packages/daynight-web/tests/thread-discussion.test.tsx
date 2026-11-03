@@ -131,3 +131,56 @@ it('closes details during account revalidation while keeping task data and the d
   expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.getByRole('textbox')).toHaveValue('Keep my draft'); expect(screen.getByRole('textbox')).toBeDisabled(); expect(screen.getByText('Retained while checking')).toBeVisible();
   view.rerender(<Harness />); await waitFor(() => expect(screen.getByRole('textbox')).toBeEnabled());
 });
+
+it('keeps reference-window history reachable after viewing a disconnected own receipt', async () => {
+  const item = (value: number, extra: Partial<ThreadMessage> = {}): ThreadMessage => ({
+    id: id(value), author: { userId: TEST_VIEWER_ID, displayName: 'Alice', Agent: false },
+    body: `Message ${value}\n\n${'Reading text. '.repeat(60)}`,
+    createdAt: `2026-11-04T10:00:00.${String(value).padStart(3, '0')}Z`, ...extra,
+  });
+  const reference = item(10), latest = item(151, { replyTo: reference.id }), receipt = item(200);
+  let posted = false;
+  const fetcher = vi.fn(async (url: string, init?: RequestInit) => {
+    if (init?.method === 'POST') { posted = true; return resource(receipt, 201); }
+    const query = new URL(url, location.origin).searchParams;
+    if (query.get('beforeId') === reference.id) return page([item(9)], false, true);
+    if (query.get('afterId') === id(9)) return page([reference], true, true);
+    if (query.get('afterId') === reference.id) return page([item(11), item(12), latest], true, true);
+    if (query.get('afterId') === latest.id) return posted ? page([item(152), receipt], true, false) : page([]);
+    if (query.get('afterId') === receipt.id) return page([]);
+    return page([latest], true, false);
+  });
+  vi.stubGlobal('fetch', fetcher);
+  const view = render();
+  const box = view.container.querySelector<HTMLDivElement>('.thread-timeline')!;
+  Object.defineProperties(box, {
+    clientHeight: { configurable: true, value: 200 },
+    scrollHeight: { configurable: true, get: () => box.querySelectorAll('[data-entry-key]').length * 500 },
+  });
+  vi.spyOn(box, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 400, 200));
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+  vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+    if (!this.matches('[data-entry-key]')) return originalRect.call(this);
+    const top = [...box.querySelectorAll('[data-entry-key]')].indexOf(this) * 500 - box.scrollTop;
+    return new DOMRect(0, top, 400, 500);
+  });
+  await screen.findByText(/^Message 151/);
+  fireEvent.click(screen.getByRole('button', { name: '查看引用消息' }));
+  await screen.findByText(/^Message 10/);
+  fireEvent.wheel(box, { deltaY: -10 }); box.scrollTop = 100; fireEvent.scroll(box);
+  fireEvent.change(screen.getByRole('textbox'), { target: { value: receipt.body } });
+  fireEvent.click(screen.getByRole('button', { name: '发送' }));
+  await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue(''));
+  expect(screen.getByText(/^Message 200/)).toBeVisible();
+  expect(screen.queryByRole('button', { name: /\d+ 条新消息/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: '查看新消息' }));
+  await screen.findByRole('button', { name: '1 条新消息' });
+  fireEvent.click(screen.getByRole('button', { name: '加载较新的消息' }));
+  await screen.findByText(/^Message 11\b/, { selector: '.thread-message-markdown p' }); expect(screen.getByText(/^Message 12\b/, { selector: '.thread-message-markdown p' })).toBeVisible(); expect(screen.getByText(/^Message 151\b/, { selector: '.thread-message-markdown p' })).toBeVisible();
+  expect(fetcher.mock.calls.some(([url]) => new URL(url, location.origin).searchParams.get('afterId') === reference.id)).toBe(true);
+  fireEvent.click(screen.getByRole('button', { name: '加载较新的消息' }));
+  await screen.findByText(/^Message 152\b/);
+  fireEvent.click(screen.getByRole('button', { name: '加载较早的消息' }));
+  await screen.findByText(/^Message 9\b/);
+  for (const value of [10, 11, 12, 151, 152, 200]) expect(screen.getByText(new RegExp(`^Message ${value}\\b`), { selector: '.thread-message-markdown p' })).toBeVisible();
+});

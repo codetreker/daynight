@@ -68,6 +68,7 @@ export class ThreadController {
   private readonly limits: ThreadLimits;
   private readonly listeners = new Set<() => void>();
   private visible = new Map<string, ThreadMessage>();
+  // Visible echoes still belong to the complete buffered range; only out-of-window entries contribute to its notice.
   private incoming = new Map<string, ThreadMessage>();
   private references = new Map<string, ThreadMessage>();
   // POST echoes do not extend the fetched history range; its next boundary must still expose interleaved messages.
@@ -75,12 +76,12 @@ export class ThreadController {
   private windowRevision = 0;
   private cursor: Pick<ThreadMessage, 'id' | 'createdAt'> | null = null;
   private initialized = false;
+  private forwardHasMoreAfter = false;
   private active = false;
   private documentVisible = true;
   private admissionBlocked = false;
   private retired = false;
   private following = true;
-  private viewingHistory = false;
   private readingAnchor: string | null = null;
   private latestReceipt: string | null = null;
   private hasMoreBefore = false;
@@ -128,7 +129,7 @@ export class ThreadController {
   private readable = (): boolean => !this.retired && this.active && this.documentVisible && !this.paused();
   private live = (): void => { if (this.retired || this.lifetime.signal.aborted || this.options.lifetime.aborted) aborted(); };
   private makeView = (): ThreadView => ({
-    visible: ordered(this.visible.values()), incomingCount: this.incoming.size, consumedAfterId: this.cursor?.id ?? null,
+    visible: ordered(this.visible.values()), incomingCount: [...this.incoming.keys()].filter(id => !this.visible.has(id)).length, consumedAfterId: this.cursor?.id ?? null,
     hasMoreBefore: this.hasMoreBefore, hasMoreAfter: this.hasMoreAfter,
     loading: !this.initialized && this.forwardTask !== null, refreshing: this.initialized && this.forwardTask !== null,
     loadingOlder: this.historyDirection === 'older', loadingNewer: this.historyDirection === 'newer', referenceLoading: this.referenceTarget,
@@ -190,27 +191,48 @@ export class ThreadController {
   private fitsIncoming = (messages: Map<string, ThreadMessage>): boolean => messages.size <= this.limits.incomingCount && bytes(messages.values()) <= this.limits.incomingBytes;
   private pinned = (id: string): boolean => id === this.readingAnchor || id === this.latestReceipt;
   private consumed = (item: ThreadMessage): boolean => this.cursor !== null && compare(item, this.cursor) <= 0;
-  private pruned = (messages: Map<string, ThreadMessage>, direction: 'oldest' | 'newest', explicit: boolean, reserve = this.reserved): Map<string, ThreadMessage> | null => {
+  private rangeMessages = (): readonly ThreadMessage[] => ordered([...this.windowIds].flatMap(id => this.visible.has(id) ? [this.visible.get(id)!] : []));
+  private rangeConnects = (position: Pick<ThreadMessage, 'id' | 'createdAt'> | null, items: readonly ThreadMessage[]): boolean => {
+    if (this.windowIds.size === 0) return position === null;
+    return position !== null && this.windowIds.has(position.id) || items.some(item => this.windowIds.has(item.id));
+  };
+  private releaseCoveredIncoming = (): void => {
+    if ([...this.incoming.keys()].every(id => this.windowIds.has(id))) this.incoming = new Map();
+  };
+  private pruned = (messages: Map<string, ThreadMessage>, direction: 'oldest' | 'newest', explicit: boolean, reserve = this.reserved, range = this.rangeMessages()): Map<string, ThreadMessage> | null => {
     const result = new Map(messages);
+    const retainedRange = new Set(range.filter(item => result.has(item.id)).map(item => item.id));
     const candidates = [...ordered(result.values())];
     if (direction === 'newest') candidates.reverse();
     const anchor = this.readingAnchor === null ? null : this.getMessage(this.readingAnchor);
     for (const item of candidates) {
       if (this.fitsVisible(result, reserve)) break;
       if (this.pinned(item.id) || !explicit && (!this.consumed(item) || anchor !== null && compare(item, anchor) >= 0)) continue;
-      result.delete(item.id);
+      // A fetched boundary must survive when disconnected pins are the only other retained entries.
+      if (retainedRange.size === 1 && retainedRange.has(item.id)) continue;
+      result.delete(item.id); retainedRange.delete(item.id);
     }
     return this.fitsVisible(result, reserve) ? result : null;
   };
   private canReserve = (): boolean => this.reserved || this.pruned(this.visible, 'oldest', false, true) !== null;
-  private applyVisible = (next: Map<string, ThreadMessage>, windowIds: Set<string>): void => {
+  private applyVisible = (next: Map<string, ThreadMessage>, range: readonly ThreadMessage[], retain: 'oldest' | 'newest' = 'newest'): void => {
+    const candidateRange = ordered(new Map(range.map(item => [item.id, item])).values());
+    const runs: ThreadMessage[][] = [];
+    let run: ThreadMessage[] = [];
+    for (const item of candidateRange) {
+      if (next.has(item.id)) run.push(next.get(item.id)!);
+      else if (run.length > 0) { runs.push(run); run = []; }
+    }
+    if (run.length > 0) runs.push(run);
+    // Skipped fixed pins stay visible, but cannot bridge a hole left by pruning.
+    const nextWindow = (retain === 'oldest' ? runs[0] : runs.at(-1)) ?? [];
     const removed = [...this.visible.values()].filter(item => !next.has(item.id));
-    const nextWindow = ordered([...windowIds].flatMap(id => next.has(id) ? [next.get(id)!] : []));
+    const known = [...removed, ...candidateRange, ...next.values()];
     const first = nextWindow[0], last = nextWindow.at(-1);
-    if (removed.some(item => first === undefined || compare(item, first) < 0)) this.hasMoreBefore = true;
-    if (removed.some(item => last === undefined || compare(item, last) > 0)) this.hasMoreAfter = true;
+    if (first !== undefined && known.some(item => compare(item, first) < 0)) this.hasMoreBefore = true;
+    if (last !== undefined && known.some(item => compare(item, last) > 0)) this.hasMoreAfter = true;
     for (const item of removed) if (item.id === this.replyTo || item.id === this.detailsId) this.cacheReference(item);
-    this.visible = next; this.windowIds = new Set([...windowIds].filter(id => next.has(id)));
+    this.visible = next; this.windowIds = new Set(nextWindow.map(item => item.id)); this.releaseCoveredIncoming();
   };
   private handle = (error: unknown, kind: 'read' | 'history' | 'reference' | 'post', phase: string = kind): void => {
     if (this.retired || isAbortError(error)) return;
@@ -282,14 +304,21 @@ export class ThreadController {
         } else {
           const incoming = new Map(this.incoming);
           const visible = new Map(this.visible);
-          const direct = this.following && !this.viewingHistory && this.incoming.size === 0;
-          for (const item of items) { if (visible.has(item.id) || direct) visible.set(item.id, item); else incoming.set(item.id, item); }
-          const trimmed = this.pruned(visible, 'oldest', false);
+          const direct = this.following && this.incoming.size === 0 && this.rangeConnects(boundary, items);
+          for (const item of items) {
+            if (direct) visible.set(item.id, item);
+            else { incoming.set(item.id, item); if (visible.has(item.id)) visible.set(item.id, item); }
+          }
+          const range = direct ? [...this.rangeMessages(), ...items] : this.rangeMessages();
+          const trimmed = this.pruned(visible, 'oldest', false, this.reserved, range);
           if (trimmed === null || !this.fitsIncoming(incoming)) { this.catchupPaused = true; break; }
-          this.applyVisible(trimmed, new Set([...this.windowIds, ...(direct ? items.map(item => item.id) : [])]));
-          this.incoming = incoming;
+          const previousEnd = this.rangeMessages().at(-1), pageEnd = items.at(-1);
+          if (direct && pageEnd !== undefined && (previousEnd === undefined || compare(pageEnd, previousEnd) >= 0)) this.hasMoreAfter = page.hasMoreAfter;
+          this.applyVisible(trimmed, range);
+          this.incoming = incoming; this.releaseCoveredIncoming();
           this.enrich(items);
         }
+        this.forwardHasMoreAfter = page.hasMoreAfter;
         const last = items.at(-1);
         if (last !== undefined) this.cursor = { id: last.id, createdAt: last.createdAt };
         this.readError = null; this.emit();
@@ -301,8 +330,8 @@ export class ThreadController {
     }
   };
   private boundary = (direction: 'older' | 'newer'): ThreadMessage | undefined => {
-    const messages = ordered([...this.windowIds].flatMap(id => this.visible.has(id) ? [this.visible.get(id)!] : []));
-    return direction === 'older' ? messages[0] ?? ordered(this.visible.values())[0] : messages.at(-1) ?? ordered(this.visible.values()).at(-1);
+    const messages = this.rangeMessages();
+    return direction === 'older' ? messages[0] : messages.at(-1);
   };
   loadOlder = (): Promise<void> => this.loadHistory('older');
   loadWindowNewer = (): Promise<void> => this.loadHistory('newer');
@@ -320,25 +349,27 @@ export class ThreadController {
       this.assertTicket(ticket);
       const items = this.normalize(page.items), next = new Map(this.visible);
       for (const item of items) next.set(item.id, item);
-      const trimmed = this.pruned(next, direction === 'older' ? 'newest' : 'oldest', true);
+      const range = [...this.rangeMessages(), ...items];
+      const trimmed = this.pruned(next, direction === 'older' ? 'newest' : 'oldest', true, this.reserved, range);
       if (trimmed === null) throw new ApiError('protocol', null, 'window_capacity');
-      this.viewingHistory = true; this.following = false;
+      this.following = false;
       if (direction === 'older') this.hasMoreBefore = page.hasMoreBefore; else this.hasMoreAfter = page.hasMoreAfter;
-      this.applyVisible(trimmed, new Set([...this.windowIds, ...items.map(item => item.id)])); for (const item of items) this.incoming.delete(item.id); this.enrich(items); this.emit();
+      this.applyVisible(trimmed, range, direction === 'older' ? 'oldest' : 'newest'); this.enrich(items); this.emit();
     } catch (error) { if (this.currentTicket(ticket)) this.handle(error, 'history'); }
     finally { if (this.generations.history === ticket.generation) { this.historyTask = null; this.historyDirection = null; this.tickets.delete('history'); this.emit(); } }
   };
   // Buffered pages remain represented when their cursor advances; only already shown entries may be displaced.
   revealIncoming = (): void => {
     if (this.retired) return;
-    const next = this.incoming.size === 0 && !this.catchupPaused ? new Map(this.visible) : new Map(this.incoming);
-    if (next.size === 0) { const boundary = this.cursor === null ? undefined : this.visible.get(this.cursor.id); const seed = boundary === undefined ? ordered(this.visible.values()).at(-1) : boundary; if (seed !== undefined) next.set(seed.id, seed); }
-    const ids = new Set(next.keys());
+    const buffered = this.incoming.size > 0;
+    const preserved = !buffered && !this.catchupPaused;
+    const range = buffered ? ordered(this.incoming.values()) : preserved ? this.rangeMessages() : this.rangeMessages().slice(-1);
+    const next = preserved ? new Map(this.visible) : new Map(range.map(item => [item.id, item]));
     for (const id of [this.readingAnchor, this.latestReceipt]) { const item = id === null ? null : this.getMessage(id); if (item !== null) next.set(item.id, item); }
     if (!this.fitsVisible(next)) protocol();
     this.replaceHistoryWindow();
-    this.hasMoreBefore ||= this.visible.size > next.size;
-    this.applyVisible(next, ids); this.incoming = new Map(); this.viewingHistory = false; this.following = true; this.catchupPaused = false; this.emit();
+    if (buffered) this.hasMoreAfter = this.forwardHasMoreAfter;
+    this.applyVisible(next, range); this.incoming = new Map(); this.following = true; this.catchupPaused = false; this.emit();
     if (this.readable()) void this.refresh();
   };
   private cacheReference = (message: ThreadMessage): void => {
@@ -381,8 +412,7 @@ export class ThreadController {
       this.replaceHistoryWindow();
       this.latestReceipt = null;
       this.hasMoreBefore = true; this.hasMoreAfter = true;
-      this.applyVisible(new Map([[message.id, message]]), new Set([message.id]));
-      this.incoming.delete(message.id); this.viewingHistory = true; this.following = false;
+      this.applyVisible(new Map([[message.id, message]]), [message]); this.following = false;
     }
     if (!reveal) this.detailsId = message.id;
     this.referenceError = null; this.emit();
@@ -390,7 +420,7 @@ export class ThreadController {
   send = (): Promise<void> => {
     if (!this.view.canSend) return this.postTask ?? Promise.resolve();
     const reserved = this.pruned(this.visible, 'oldest', false, true); if (reserved === null) return Promise.resolve();
-    this.applyVisible(reserved, this.windowIds); this.reserved = true; this.postError = null; this.postOutcome = 'waiting_auth'; this.remoteOutcome = 'not_sent';
+    this.applyVisible(reserved, this.rangeMessages()); this.reserved = true; this.postError = null; this.postOutcome = 'waiting_auth'; this.remoteOutcome = 'not_sent';
     const input: PostThreadInput = this.replyTo === null ? { body: this.draft } : { body: this.draft, replyTo: this.replyTo };
     const captured = { draftRevision: this.draftRevision, replyRevision: this.replyRevision, replyTo: this.replyTo };
     const task = this.runPost(input, captured); this.postTask = task; this.emit(); return task;
@@ -426,7 +456,7 @@ export class ThreadController {
       this.reserved = false;
       const trimmed = this.pruned(next, 'oldest', true);
       if (trimmed === null) return protocol();
-      this.latestReceipt = item.id; this.applyVisible(trimmed, this.windowIds); this.incoming.delete(item.id); this.enrich([item]);
+      this.latestReceipt = item.id; this.applyVisible(trimmed, this.rangeMessages()); this.enrich([item]);
       if (this.draftRevision === confirmed.draftRevision) { this.draft = ''; this.draftRevision++; }
       if (this.replyRevision === confirmed.replyRevision && this.replyTo === confirmed.replyTo) { this.replyTo = null; this.replyRevision++; }
       this.confirmed = null; this.postError = null; this.emit();
