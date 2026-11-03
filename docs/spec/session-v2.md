@@ -139,6 +139,7 @@ lease 为 30 秒，10 秒续约，授予必须收到 Worker durable ACK。服务
 | 项目 | 上限或固定值 |
 |---|---|
 | 最终 JSON UTF-8 字节 | 64 MiB |
+| 单条在线协议消息 UTF-8 字节 | 4 MiB |
 | 帧文件及时间索引规范序列化预算 | 60 MiB |
 | 其余 manifest、段、gap、结束元数据 | 4 MiB |
 | 单帧原始 JSON 字节 | 256 KiB |
