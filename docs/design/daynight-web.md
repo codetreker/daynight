@@ -691,7 +691,7 @@ DAYNIGHT_TEST_DATABASE_URL=... bash scripts/check.sh
   → 非 root 运行阶段：仅复制二进制
 ```
 
-`deployment/localhost/compose.yaml` 使用仓库根 context 并显式指定 `deployment/localhost/Dockerfile`。Dockerfile 专属 `.dockerignore` 使用根相对 allowlist，纳入 workspace/root/web/Go manifests、锁文件、`patches/` 中的 Dagre 运行时与 XYFlow 声明补丁、实际构建脚本与源码，排除宿主 `node_modules`、`.tmp`、生成 dist 和无关工作区内容。安装层只下载 web 所需依赖；镜像内部执行同一 `web:build`，不依赖宿主预构建产物。
+`deployment/localhost/compose.yaml` 使用仓库根 context 并显式指定 `deployment/localhost/Dockerfile`。Dockerfile专属`.dockerignore`使用根相对allowlist，纳入workspace/root/web/Go manifests、锁文件、`patches/`中的Dagre运行时与XYFlow声明补丁、实际构建脚本与源码。Web消费的CLI源码通过`packages/daynight/src/api/`、`src/session/`树及精确的`src/platform/text.ts`文件同时纳入context并COPY到前端阶段，使纯Thread parser、文本校验与Session协议的传递依赖完整可用；宿主`node_modules`、`.tmp`、生成dist和无关工作区内容继续排除。安装层只下载 web 所需依赖；镜像内部执行同一 `web:build`，不依赖宿主预构建产物。
 
 保留 nginx stream/TCP 转发、服务与 gateway 共享网络命名空间、服务 loopback 监听、宿主 loopback 端口发布、公开 `/readyz` 数据库就绪检查和命名卷。nginx 不增加 SPA fallback，HTML、资源和 API 都由同一个 Go mux 处理。正常重建栈继续保留数据库数据。操作细节由 `deployment/localhost/README.md` 拥有，拓扑与内嵌交付选择分别由[本机部署决策](../../.agents/notes/archived/architecture/2026-10-20-localhost-compose.md)和[内嵌交付决策](../../.agents/notes/archived/architecture/2026-10-20-embedded-dashboard-deployment.md)拥有。
 
@@ -744,8 +744,7 @@ localhost 栈；Go 覆盖率和直接二进制测试继续使用已有独立 Pos
 ### CI 构建归属
 
 同一个 Web 模块选择结果并行启用 `verify-web-quality` 与 `verify-web`，两个 job 各保留
-20 分钟上限，最终 `checks` 同时依赖二者及其他已选择模块。共享 workflow 变更仍按原有
-规则选择全部模块，不改变路径分类、合并结果验证或未选择 job 的 `skipped` 语义。
+20分钟上限，最终`checks`同时依赖二者及其他已选择模块。浏览器消费的CLI `src/api/`、`src/session/`和精确的`src/platform/text.ts`变更同时选择CLI与Web；共享workflow变更仍选择全部模块，合并结果验证及未选择job的`skipped`语义保持。
 
 质量 job 使用 `scripts/ci.mts` 的内部 `quality` 模式，串行执行 `test:harness` 和
 `test:coverage`，每个命令分别限时 180 秒。后者执行常规 Vitest/V8 文件，保留完整产品源码清单与严格语句覆盖率

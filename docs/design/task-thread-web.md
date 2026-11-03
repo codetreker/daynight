@@ -21,7 +21,7 @@
 | `src/features/task-thread/presentation.tsx` | 账号标签、来源、摘要、图标与安全错误详情 |
 | `src/styles/task-discussion.css` 与 inspection 语言目录 | Discussion 专属布局、响应样式、双语文案和可访问性标签 |
 
-CLI 的 `src/api/thread.ts`、`json-source.ts` 和相关纯校验代码不依赖 Node 运行时。Web 直接复用其字段、精确时间、来源区间和重复字段校验，保留自己的网络、身份、页面状态与渲染；不导入 CLI 命令、终端 renderer 或 Operation。共享 parser 不产生共享客户端生命周期。
+CLI的`src/api/thread.ts`、`json-source.ts`和相关纯校验代码不依赖Node运行时。Web直接复用其字段、精确时间、来源区间和重复字段校验，保留自己的网络、身份、页面状态与渲染；不导入CLI命令、终端renderer或Operation。共享parser不产生共享客户端生命周期。生产及dev-ci共用的[Dockerfile](../../deployment/localhost/Dockerfile)与其context allowlist纳入CLI `src/api/`、`src/session/`树及精确的`src/platform/text.ts`，覆盖Thread parser与既有Session协议的源码闭包；这些共享输入变更同时选择CLI和Web检查，规则由[开发指南](../development.md#ci-selection)拥有。
 
 ## 请求与响应准入
 

@@ -12,6 +12,16 @@ const root = fileURLToPath(new URL("../../", import.meta.url));
 
 for (const [path, expected] of [
   ["packages/daynight/src/main.ts", { ...none, cli: true }],
+  ["packages/daynight/src/api/thread.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/api/json.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/api/json-source.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/api/validation.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/api/types.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/platform/text.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/platform/files.ts", { ...none, cli: true }],
+  ["packages/daynight/src/session/protocol.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/session/controls.ts", { ...none, cli: true, web: true }],
+  ["packages/daynight/src/session/v2/protocol.ts", { ...none, cli: true, web: true }],
   ["scripts/dev-install.mjs", { ...none, cli: true }],
   ["scripts/dev-install.test.mjs", { ...none, cli: true }],
   ["packages/daynight/src/.gitignore", { ...none, cli: true }],

@@ -589,6 +589,8 @@ The [root README routing table](../README.md#ci-selection) owns path selection.
 
 Every path under `packages/daynight/src/` selects CLI validation, including
 runtime Markdown such as the bundled review skill's `SKILL.md` or `README.md`.
+The browser-consumed `src/api/` and `src/session/` trees and exact
+`src/platform/text.ts` path also select Web quality and browser validation.
 Other documentation exclusions apply before module selection. The `.gitignore`
 exclusion matches only the repository root; nested ignore files retain their
 module ownership or the unclassified-path fallback. An excluded path does not

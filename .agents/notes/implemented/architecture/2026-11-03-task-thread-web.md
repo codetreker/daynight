@@ -102,6 +102,12 @@ room for a complete forward page; changing caps requires preserving that proof.
 The parent-reference resolver uses at most two existing list reads on demand,
 with an exact target check and a bounded cache rather than eager per-row work.
 
+The production and dev-ci image use the same frontend build, whose context and
+COPY inputs include the browser-consumed CLI API/session trees and the exact
+pure text utility. These sources must stay available without host worktree
+artifacts. Changes to the API/session trees or text utility select both CLI and
+Web validation, so a shared contract change cannot bypass its browser consumer.
+
 Mutable messages need a separate change-reading contract. Inbox, directed
 routing, receipts, automatic wakeups and notification recovery remain separate
 capabilities with no dormant schema or controller machinery here.

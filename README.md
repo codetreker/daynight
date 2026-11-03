@@ -325,6 +325,7 @@ from all changed paths, including deletions and both sides of renames:
 | Changed paths | PR application jobs |
 |---|---|
 | `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
+| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI validation plus Web quality and Web browser acceptance |
 | Other `packages/daynight/` paths | Linux, macOS and Windows CLI, runtime compatibility, plus shell completion |
 | `packages/daynight-server/` | Go server |
 | `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
