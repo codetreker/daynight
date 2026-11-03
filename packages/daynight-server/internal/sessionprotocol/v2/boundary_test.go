@@ -361,7 +361,7 @@ func TestLimitsSharedWithTypeScript(t *testing.T) {
 	}
 }
 
-func archiveWithFrames(t *testing.T, count int, pad bool) Archive {
+func archiveWithFrames(t *testing.T, count int) Archive {
 	t.Helper()
 	archive, e := DecodeArchive(fixtureBytes(t, "valid-archive"))
 	if e != nil {
@@ -373,9 +373,6 @@ func archiveWithFrames(t *testing.T, count int, pad bool) Archive {
 	archive.Index = make([]FrameIndex, count)
 	for i := 0; i < count; i++ {
 		data := wireBytes(t, Frame{FrameSeq: fmt.Sprint(i + 1), CapturedAt: archive.StartedAt, ElapsedMs: fmt.Sprint(i), Width: 1, Height: 1, Full: true, Rows: [][]StyledText{{}}})
-		if pad {
-			data = append(data, []byte(strings.Repeat(" ", MaxFrameBytes-len(data)))...)
-		}
 		fileID := fmt.Sprintf("00000000-0000-4000-8000-%012d", i+100)
 		archive.Files[i] = FrameFile{FileID: fileID, SegmentID: segmentID, FrameSeq: fmt.Sprint(i + 1), SHA256: HashBytes(data), ByteLength: fmt.Sprint(len(data)), Data: string(data)}
 		archive.Index[i] = FrameIndex{SegmentID: segmentID, FrameSeq: fmt.Sprint(i + 1), FileID: fileID, FirstElapsedMs: fmt.Sprint(i), LastElapsedMs: fmt.Sprint(i)}
@@ -383,7 +380,7 @@ func archiveWithFrames(t *testing.T, count int, pad bool) Archive {
 	return archive
 }
 func TestArchiveFrameCountMaximum(t *testing.T) {
-	archive := archiveWithFrames(t, MaxFrames, false)
+	archive := archiveWithFrames(t, MaxFrames)
 	if _, e := DecodeArchive(wireBytes(t, archive)); e != nil {
 		t.Fatal(e)
 	}
@@ -393,37 +390,144 @@ func TestArchiveFrameCountMaximum(t *testing.T) {
 		t.Fatal("over-limit frame count accepted")
 	}
 }
+
+func recordingFixtureSize(archive Archive, lengths []int) (int, error) {
+	if len(lengths) != len(archive.Files) {
+		return 0, fmt.Errorf("recording fixture length count differs from files")
+	}
+	safeText := func(text string) bool {
+		for i := 0; i < len(text); i++ {
+			if text[i] < ' ' || text[i] > '~' || strings.ContainsRune("<>&", rune(text[i])) {
+				return false
+			}
+		}
+		return true
+	}
+	files := append([]FrameFile(nil), archive.Files...)
+	padding := 0
+	for i, file := range files {
+		for _, text := range []string{file.FileID, file.SegmentID, file.FrameSeq, file.SHA256, file.ByteLength, file.Data} {
+			if !safeText(text) {
+				return 0, fmt.Errorf("recording fixture file %d has non-equivalent JSON escaping", i)
+			}
+		}
+		if lengths[i] < len(file.Data) || lengths[i] > MaxFrameBytes {
+			return 0, fmt.Errorf("recording fixture file %d has invalid planned length %d", i, lengths[i])
+		}
+		files[i].ByteLength = fmt.Sprint(lengths[i])
+		padding += lengths[i] - len(file.Data)
+	}
+	for i, entry := range archive.Index {
+		for _, text := range []string{entry.SegmentID, entry.FrameSeq, entry.FileID, entry.FirstElapsedMs, entry.LastElapsedMs} {
+			if !safeText(text) {
+				return 0, fmt.Errorf("recording fixture index %d has non-equivalent JSON escaping", i)
+			}
+		}
+	}
+	// This scaffold contains printable ASCII without HTML characters. Its JSON
+	// escaping matches canonical JSON; each appended space adds exactly one byte.
+	raw, err := json.Marshal(map[string]any{"files": files, "index": archive.Index})
+	if err != nil {
+		return 0, err
+	}
+	return len(raw) + padding, nil
+}
+
+func TestRecordingFixtureSize(t *testing.T) {
+	archive := Archive{Files: []FrameFile{{FileID: "f", SegmentID: "s", FrameSeq: "1", SHA256: "h", ByteLength: "2", Data: "\"\\"}}, Index: []FrameIndex{}}
+	const expected = `{"files":[{"fileId":"f","segmentId":"s","frameSeq":"1","sha256":"h","byteLength":"2","data":"\"\\"}],"index":[]}`
+	for _, length := range []int{2, 9, 10, 99, 100} {
+		t.Run(fmt.Sprint(length), func(t *testing.T) {
+			size, err := recordingFixtureSize(archive, []int{length})
+			want := len(expected) + length - 2 + len(fmt.Sprint(length)) - 1
+			if err != nil || size != want {
+				t.Fatalf("fixture size: got %d, want %d, error %v", size, want, err)
+			}
+			file := archive.Files[0]
+			file.Data += strings.Repeat(" ", length-len(file.Data))
+			file.ByteLength = fmt.Sprint(len(file.Data))
+			canonical, err := CanonicalJSON(map[string]any{"files": []FrameFile{file}, "index": archive.Index})
+			if err != nil || len(canonical) != size {
+				t.Fatalf("canonical size: got %d, want %d, error %v", len(canonical), size, err)
+			}
+		})
+	}
+	for _, data := range []string{"<", ">", "&", "\x00", "\n", "\x7f", "é", "\u2028", "\u2029", string([]byte{0xff})} {
+		t.Run(fmt.Sprintf("unsafe-%x", data), func(t *testing.T) {
+			file := archive.Files[0]
+			file.Data = data
+			if _, err := recordingFixtureSize(Archive{Files: []FrameFile{file}}, []int{len(data)}); err == nil {
+				t.Fatal("unsafe recording fixture text accepted")
+			}
+		})
+	}
+	for _, lengths := range [][]int{nil, {1}, {MaxFrameBytes + 1}} {
+		if _, err := recordingFixtureSize(archive, lengths); err == nil {
+			t.Fatalf("invalid recording fixture lengths accepted: %v", lengths)
+		}
+	}
+}
+
 func TestExactRecordingBudget(t *testing.T) {
-	archive := archiveWithFrames(t, 240, true)
-	last := &archive.Files[len(archive.Files)-1]
-	contentSize := func() int {
-		b, e := CanonicalJSON(map[string]any{"files": archive.Files, "index": archive.Index})
-		if e != nil {
-			t.Fatal(e)
-		}
-		return len(b)
+	scaffold := archiveWithFrames(t, 240)
+	lengths := make([]int, len(scaffold.Files))
+	for i := range lengths {
+		lengths[i] = MaxFrameBytes
 	}
-	for i := 0; i < 3; i++ {
-		excess := contentSize() - MaxRecordingBytes
-		if excess > 0 {
-			last.Data = last.Data[:len(last.Data)-excess]
-		} else {
-			last.Data += strings.Repeat(" ", -excess)
+	for range len(fmt.Sprint(MaxFrameBytes)) + 1 {
+		size, err := recordingFixtureSize(scaffold, lengths)
+		if err != nil {
+			t.Fatal(err)
 		}
-		last.ByteLength = fmt.Sprint(len(last.Data))
+		if size == MaxRecordingBytes {
+			break
+		}
+		lengths[len(lengths)-1] += MaxRecordingBytes - size
 	}
-	last.SHA256 = HashBytes([]byte(last.Data))
-	if contentSize() != MaxRecordingBytes {
+	size, err := recordingFixtureSize(scaffold, lengths)
+	if err != nil || size != MaxRecordingBytes {
+		t.Fatalf("recording boundary planning failed: size %d, error %v", size, err)
+	}
+	archive := scaffold
+	archive.Files = append([]FrameFile(nil), scaffold.Files...)
+	for i := range archive.Files {
+		file := &archive.Files[i]
+		file.Data += strings.Repeat(" ", lengths[i]-len(file.Data))
+		file.ByteLength = fmt.Sprint(len(file.Data))
+		file.SHA256 = HashBytes([]byte(file.Data))
+	}
+	actualSize := func() int {
+		for i, file := range archive.Files {
+			lengths[i] = len(file.Data)
+			if file.ByteLength != fmt.Sprint(lengths[i]) {
+				t.Fatal("recording fixture byteLength differs from data")
+			}
+		}
+		size, err := recordingFixtureSize(scaffold, lengths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return size
+	}
+	if actualSize() != MaxRecordingBytes {
 		t.Fatal("recording boundary construction failed")
 	}
 	if _, e := DecodeArchive(wireBytes(t, archive)); e != nil {
 		t.Fatal(e)
 	}
+	last := &archive.Files[len(archive.Files)-1]
+	if len(last.Data)+1 > MaxFrameBytes {
+		t.Fatal("recording overflow would also exceed the frame limit")
+	}
 	last.Data += " "
 	last.ByteLength = fmt.Sprint(len(last.Data))
 	last.SHA256 = HashBytes([]byte(last.Data))
-	if _, e := DecodeArchive(wireBytes(t, archive)); e == nil {
-		t.Fatal("recording budget exceeded")
+	if actualSize() != MaxRecordingBytes+1 {
+		t.Fatal("recording overflow construction failed")
+	}
+	_, err = DecodeArchive(wireBytes(t, archive))
+	if protocolError, ok := err.(*Error); !ok || protocolError.Code != "recording_limit" {
+		t.Fatalf("recording overflow: got %v, want recording_limit", err)
 	}
 }
 func TestExactMetadataBudget(t *testing.T) {
