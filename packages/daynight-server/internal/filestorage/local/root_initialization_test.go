@@ -45,6 +45,46 @@ func TestRootInitializationDoesNotIgnoreSyncFailures(t *testing.T) {
 	}
 }
 
+func TestRootRemovedDuringInitializationDoesNotReturnStorage(t *testing.T) {
+	for _, phase := range []string{"resolve", "open"} {
+		t.Run(phase, func(t *testing.T) {
+			parent, err := filepath.EvalSymlinks(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			root := filepath.Join(parent, "storage")
+			target := parent
+			if phase == "open" {
+				if err := os.Mkdir(root, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				for filepath.Dir(target) != target {
+					target = filepath.Dir(target)
+				}
+			}
+			removed := false
+			storage, err := newWithDirectorySync(root, func(file *os.File) error {
+				if file.Name() == target && !removed {
+					// Simulate a concurrent remover after directory creation or
+					// after the final ancestor barrier, before acquiring os.Root.
+					if err := os.Remove(root); err != nil {
+						return err
+					}
+					removed = true
+				}
+				return file.Sync()
+			})
+			if storage != nil {
+				storage.Close()
+				t.Fatal("removed root returned writable storage")
+			}
+			if !removed || !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("root disappearance was not reported: removed=%t, error=%v", removed, err)
+			}
+		})
+	}
+}
+
 func TestRootInitializationContinuesAboveUnreadableAncestor(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses filesystem permission checks")
