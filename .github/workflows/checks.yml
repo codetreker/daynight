@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   detect-changes:
@@ -367,7 +367,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   checks:
-    if: ${{ !cancelled() }}
+    if: ${{ always() }}
     needs: [detect-changes, verify, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web]
     runs-on: ubuntu-latest
     timeout-minutes: 1
