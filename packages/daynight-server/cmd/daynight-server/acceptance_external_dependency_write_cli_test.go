@@ -65,33 +65,24 @@ func TestInstalledCLIExternalDependencyWriteAcceptance(t *testing.T) {
 			}
 		}
 		before = target
-		// HTTP responses and stdout logs use separate transports. Observe each
-		// direct PATCH before measuring the next CLI invocation's mutation delta.
-		patch := func(input map[string]any, requestID string) api.Task {
-			response := process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), input, requestID)
-			result := acceptanceDecode[api.Task](t, response, http.StatusOK)
-			ids := response.header.Values("X-Request-ID")
-			if len(ids) != 1 || ids[0] != requestID {
-				t.Fatal("direct classification PATCH lost its response request identity")
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-			defer cancel()
-			if err := acceptanceEventually(ctx, func() (bool, error) {
-				return process.logs.matches(map[string]any{"type": "http_request", "request_id": ids[0], "method": http.MethodPatch, "status": float64(http.StatusOK)}), nil
-			}); err != nil {
-				t.Fatal("direct classification PATCH did not complete its correlated request log")
-			}
-			return result
-		}
-		target = patch(map[string]any{"version": target.Version, "externalDependsOn": []string{a.ID}}, "external-flags-only")
+		const changedRequestID = "external-flags-only"
+		const noopRequestID = "external-flags-noop"
+		target = acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": []string{a.ID}}, changedRequestID), http.StatusOK)
 		preserved := target
 		preserved.ExternalDependsOn, preserved.Version, preserved.UpdatedAt = before.ExternalDependsOn, before.Version, before.UpdatedAt
 		if target.Version != before.Version+1 || !target.UpdatedAt.After(before.UpdatedAt) || !reflect.DeepEqual(preserved, before) || !slices.Equal(target.ExternalDependsOn, []string{a.ID}) {
 			t.Fatal("public flags-only patch changed fields other than classification and version metadata")
 		}
-		noop := patch(map[string]any{"version": target.Version, "externalDependsOn": target.ExternalDependsOn}, "external-flags-noop")
+		noop := acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": target.ExternalDependsOn}, noopRequestID), http.StatusOK)
 		if !reflect.DeepEqual(noop, target) {
 			t.Fatal("public flags-only no-op changed metadata")
+		}
+		// An HTTP response can arrive before the process log pipe is drained.
+		setupContext, cancelSetup := context.WithTimeout(context.Background(), 8*time.Second)
+		setupErr := acceptanceCLIWaitSuccessfulPatchLogs(setupContext, process.logs, changedRequestID, noopRequestID)
+		cancelSetup()
+		if setupErr != nil {
+			t.Fatalf("installed raw PATCH logs did not complete: expected requestIds=%q observed=%+v: %v", []string{changedRequestID, noopRequestID}, acceptanceCLIMutations(process), setupErr)
 		}
 		cli.refuse(t, process, "version_conflict", target.ID, "task", "update", target.ID, "--project", projectID, "--external-depends-on", a.ID, "--if-version", strconv.FormatInt(before.Version, 10))
 		if after := cli.task(t, target.ID); !reflect.DeepEqual(after, target) {
