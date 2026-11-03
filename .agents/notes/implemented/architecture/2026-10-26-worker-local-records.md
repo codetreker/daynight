@@ -13,7 +13,14 @@ would make these decisions depend on conflicting persistent facts.
 
 ## Decision
 
-The local store now follows the claim and native-session index in the [simplification decision](../simplification/2026-10-27-worker-claim-records.md). Identity, instance exclusion and static resource ownership retain their original owners. The following records the original detailed storage decision and why its stronger restart guarantees were adopted.
+The local store follows the claim and native-session index in the
+[simplification decision](../simplification/2026-10-27-worker-claim-records.md).
+Its current independent format sequence is owned by the
+[SQLite migration decision](2026-10-30-cli-sqlite-migrations.md). Identity,
+instance exclusion and static resource ownership retain their original owners.
+The following records the original detailed storage decision and why its stronger
+restart guarantees were adopted; its numbered schemas describe that retired
+model rather than the current minimal index.
 
 The [local development CLI decision](2026-10-29-local-development-cli.md) adds an optional `DN_CONFIG_DIR` root for configuration and companion state. The original default paths below remain the default; resource ownership is unchanged.
 

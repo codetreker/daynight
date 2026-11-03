@@ -101,7 +101,11 @@ explains task creation, handoff, execution and Goal workflows.
 
 `dn` is an alias for `daynight`. Use `daynight --help` and each command's
 `--help` for syntax, `daynight update` to update an npm global installation,
-and the [CLI manual](packages/daynight/README.md) for detailed usage. The complete
+and the [CLI manual](packages/daynight/README.md) for detailed usage. Local business
+SQLite databases upgrade automatically when an accessed file needs migration,
+including through query commands. Current-format reads retain their read-only
+snapshot behavior; the [migration requirements](docs/spec/cli-sqlite-migrations.md)
+define supported formats, ownership blockers and failure preservation. The complete
 [configuration example](packages/daynight/config.example.yml) covers service,
 review and worker settings; the
 [configuration guide](packages/daynight/README.md#configuration-setup) explains
@@ -261,7 +265,10 @@ beside the npm CLI. It defaults to a separate `~/.daynight-dev` state root;
 Agent command aliases remain opt-in. See the [development channel guide](docs/development.md#local-development-cli-channel)
 for configuration, build identity and isolation limits.
 
-These commands target the CLI. Web checks use `pnpm web:typecheck`,
+These commands target the CLI. Its build publishes skill bundles and per-owner
+SQLite SQL directories with the compiled dist tree; the
+[development guide](docs/development.md#cli-development) owns packaging details.
+Web checks use `pnpm web:typecheck`,
 `pnpm web:test` and `pnpm web:build`. The server uses Go 1.27.2 and PostgreSQL
 18.6; from `packages/daynight-server/`, run `bash scripts/check.sh` with
 `DAYNIGHT_TEST_DATABASE_URL` pointing to an isolated database. See the
@@ -273,7 +280,8 @@ browser acceptance and complete validation commands.
 Release-input changes require a strictly greater SemVer in
 `packages/daynight/package.json`. This includes `packages/daynight/src/`, either
 package manifest, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.npmrc`, either
-application TypeScript configuration and the CLI build-cleanup script. Additions,
+application TypeScript configuration and the CLI build-cleanup and resource-copy
+scripts. Additions,
 deletions and moves count; build metadata alone does not increase precedence.
 Tests, fixtures, documentation, CI workflows and validation scripts alone do not
 require a version increase.
@@ -306,7 +314,7 @@ from all changed paths, including deletions and both sides of renames:
 | CI routing/workflow changes and other unclassified paths | Every module |
 
 Runtime files under `packages/daynight/src/` always select CLI checks, including
-bundled Markdown. Other documentation exclusions apply before module selection;
+SQL resources and bundled Markdown. Other documentation exclusions apply before module selection;
 changes selecting several modules run their union. The Web selector enables
 parallel quality and browser jobs, each with a 20-minute bound; both are required
 by `checks`. Selected jobs retain their complete integration and coverage gates.

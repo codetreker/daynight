@@ -72,7 +72,7 @@ describe("release version gate", () => {
     expect(() => f.check("push", base, head)).toThrow("Release inputs changed");
   });
 
-  it.each(["packages/daynight/tsconfig.json", "packages/daynight/tsconfig.build.json", "packages/daynight/scripts/clean-dist.ts", "packages/daynight/scripts/copy-skills.ts", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"])("requires an increase for build or dependency input %s", (filename) => {
+  it.each(["packages/daynight/tsconfig.json", "packages/daynight/tsconfig.build.json", "packages/daynight/scripts/clean-dist.ts", "packages/daynight/scripts/copy-skills.ts", "packages/daynight/scripts/copy-resources.ts", "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", ".npmrc"])("requires an increase for build or dependency input %s", (filename) => {
     const f = fixture();
     const base = f.base;
     const head = f.commit({ ...files(), [filename]: "changed" }, base);

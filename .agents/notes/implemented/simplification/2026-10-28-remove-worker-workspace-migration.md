@@ -47,4 +47,7 @@ resource validation continues to report invalid ownership and bindings;
 historical labels and markers are not converted or accepted through compatibility
 branches. Removing this facility does not inspect, delete or rewrite existing
 machine state, and it does not change server database migrations or the native
-conversation recovery contract.
+conversation recovery contract. The independent
+[CLI SQLite format migration](../architecture/2026-10-30-cli-sqlite-migrations.md)
+mechanism converts database contents within existing store ownership; it does
+not restore this removed workspace, Herdr-label or Git-marker converter.
