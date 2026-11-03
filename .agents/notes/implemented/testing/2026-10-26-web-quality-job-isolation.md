@@ -36,7 +36,10 @@ isolation and full product-source manifest remain unchanged.
 Browser mode installs pinned Chromium with Linux dependencies under the existing
 600-second bound, then invokes ordinary core acceptance. That runner owns native
 and container preparation, functional browser order, atomic permission release,
-capacity, recovery and cleanup. It has no quality/browser preparation callbacks,
+recovery and cleanup. The [local stress decision](2026-11-03-local-stress-suites.md)
+partially supersedes the original mandatory capacity phase: ordinary CI runs the
+complete functional inventory, while explicit local stress acceptance adds
+capacity after the same preparation and cleanup barriers. It has no quality/browser preparation callbacks,
 empty success phases or readiness-admission observer. Local acceptance continues
 to use its preinstalled browser through the same ordinary core. The existing
 `ready.json` remains diagnostic; it does not grant browser execution.
@@ -48,11 +51,11 @@ process-group cleanup failure remains a failure; combined errors are preserved.
 This guard is not replaced by the command leader's exit status.
 
 The container's 900-second permission wait, native-before-container browser
-release, one browser worker, zero retries, complete capacity inputs and all
-geometry/performance thresholds remain unchanged. Within browser acceptance,
-capacity waits for its own preparation, functional phases, complete container
-cleanup and browser recovery. Quality runs on a separate runner and does not
-alter those timing conditions. Artifacts keep their quality or acceptance
+release, one browser worker and zero retries remain unchanged. Explicit local
+stress acceptance retains complete capacity inputs and all geometry/performance
+thresholds. Its capacity phase waits for preparation, functional phases,
+complete container cleanup and browser recovery. Quality runs on a separate
+runner and does not alter those local timing conditions. Artifacts keep their quality or acceptance
 ownership, source identity and retention policy.
 
 This partially supersedes the unified quality/browser orchestration in the
@@ -85,9 +88,9 @@ contract without separating the competing responsibilities. Both jobs retain
 20 minutes, and all existing command and functional deadlines remain in force.
 
 **Shard browser scenarios across runners.** Shards duplicate target preparation
-and require new scenario, artifact and permission aggregation. The full native,
-container and capacity journey remains together; only independent quality work
-has a separate job.
+and require new scenario, artifact and permission aggregation. At the time of this choice, the full native, container and capacity journey
+remained together; only independent quality work received a separate job.
+Capacity now belongs to the explicit local stress path.
 
 ## Consequences
 
@@ -100,8 +103,8 @@ wait. Internal CI modes do not add a product CLI or deployment interface.
 This costs a second Node/pnpm setup and a separate quality artifact upload. It
 does not omit tests, weaken the strict coverage comparison, bypass process-group
 cleanup or replace protected merge checks. Wrapper tests cover full commands and
-errors; core tests retain native/container ordering, permission and capacity
-ownership without obsolete quality placeholders.
+errors; core tests retain native/container ordering, permission, optional local
+capacity ownership and cleanup without obsolete quality placeholders.
 
 Isolation does not establish the CPU/I/O cause of an earlier timeout or guarantee
 a faster hosted run. Actual completion and elapsed-time observations remain

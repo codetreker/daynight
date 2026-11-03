@@ -33,6 +33,30 @@ const startedInitial = async (run: ReturnType<typeof harness>): Promise<void> =>
   await Promise.all(initial.map((name) => run.began[name].promise));
 };
 
+test('functional-only acceptance drains both targets and release without starting capacity', async () => {
+  const run = harness();
+  const controller = new AbortController();
+  const completion = observe(runPipeline(controller, {
+    nativePreparation: run.phases.nativePreparation,
+    nativeFunctional: run.phases.nativeFunctional,
+    container: run.phases.container,
+    releaseContainer: run.phases.releaseContainer,
+  }));
+  await startedInitial(run);
+  run.gates.nativePreparation.resolve();
+  await run.began.nativeFunctional.promise;
+  run.gates.nativeFunctional.resolve();
+  await run.began.releaseContainer.promise;
+  run.gates.releaseContainer.resolve();
+  await run.ended.releaseContainer.promise;
+  assert.equal(completion.settled(), false);
+  run.gates.container.resolve();
+  assert.equal((await completion.result).error, undefined);
+  assert.equal(controller.signal.aborted, false);
+  assert.equal(run.events.includes('capacity:start'), false);
+  for (const name of names.filter((name) => name !== 'capacity')) assert.ok(run.events.includes(`${name}:end`));
+});
+
 test('waits for native preparation, releases a late container callback, and runs capacity after cleanup', async () => {
   const run = harness();
   const callbackReady = deferred();

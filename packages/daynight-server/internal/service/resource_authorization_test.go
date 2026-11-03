@@ -135,7 +135,7 @@ func TestAllResourcesRequireCurrentProjectMembership(t *testing.T) {
 			t.Fatalf("member resource authority: %v", err)
 		}
 	}
-	if err := f.memberships.Remove(ctx, admin, project.ID, member.UserID, joined.Version); err != nil {
+	if err := f.memberships.Remove(ctx, admin, project.ID, member.UserID, joined.Grant.Version); err != nil {
 		t.Fatal(err)
 	}
 	before := probe.count()
@@ -214,7 +214,7 @@ func TestAdmittedAttachmentWriteFinishesAfterMemberRemoval(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
 	}
-	if err := f.memberships.Remove(context.Background(), admin, project.ID, member.UserID, joined.Version); err != nil {
+	if err := f.memberships.Remove(context.Background(), admin, project.ID, member.UserID, joined.Grant.Version); err != nil {
 		close(probe.release)
 		t.Fatal(err)
 	}

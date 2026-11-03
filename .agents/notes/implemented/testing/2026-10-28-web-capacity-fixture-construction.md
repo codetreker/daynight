@@ -4,7 +4,7 @@ Status: implemented
 
 ## Problem
 
-Production browser capacity acceptance builds its complete graphs through real
+The production browser capacity matrix builds its complete graphs through real
 authenticated APIs. Creating a dependent task after its upstream layers exist
 makes every dependency admission traverse that accumulated ancestry. Dense
 merge and external graphs therefore spend substantial setup time before browser
@@ -27,8 +27,10 @@ is classified with the existing helper only after attachment, using its current
 version; the root remains ordinary and its other 107 predecessors remain
 external. Shared-root construction retains its direct API writes.
 
+The [local stress decision](2026-11-03-local-stress-suites.md) places this matrix
+behind explicit local browser stress acceptance; routine CI does not build it.
 All four inputs, graph formulas, creation batches, logical ID positions and
-snapshot-derived overview order remain intact. Complete API readback still
+snapshot-derived overview order remain intact in that local path. Complete API readback still
 compares ordinary and external dependencies. The five repetitions, independent
 node/edge-limit refusal and restoration, geometry, performance budgets, traces,
 screenshots and cleanup retain their existing meaning. The [Web README](../../../../packages/daynight-web/README.md#production-browser-acceptance)

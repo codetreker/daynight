@@ -48,12 +48,16 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	var original core.ProjectMember
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 		var err error
-		original, err = snapshot.ProjectMember(ctx, admin, project.ID)
+		original, err = snapshot.DirectProjectMember(ctx, admin.UserID, project.ID)
 		if err != nil {
 			return err
 		}
-		if original.Role != core.ProjectAdmin || original.UserID != admin.UserID || original.Version < 1 {
+		if original.Grant.Role != core.ProjectAdmin || original.Grant.UserID != admin.UserID || original.Grant.Version < 1 {
 			t.Fatalf("first admin: %+v", original)
+		}
+		access, err := snapshot.ProjectAccess(ctx, admin, project.ID)
+		if err != nil || access != (core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin}) {
+			t.Fatalf("admin access: %+v %v", access, err)
 		}
 		page, err := snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1})
 		if err != nil {
@@ -69,7 +73,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if len(next.Items) != 1 || next.Items[0].ID != later.ID || next.HasMore {
 			t.Fatalf("second filtered page: %+v", next)
 		}
-		_, err = snapshot.ProjectMember(ctx, member, project.ID)
+		_, err = snapshot.ProjectAccess(ctx, member, project.ID)
 		if !errors.Is(err, core.ErrNotFound) {
 			t.Fatalf("nonmember found: %v", err)
 		}
@@ -79,12 +83,16 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 	}
 	invitation := newStoredInvitation(project, admin, "lifecycle")
 	if err := s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
-		current, err := tx.ProjectMember(ctx, admin)
+		current, err := tx.DirectProjectMember(ctx, admin.UserID)
 		if err != nil {
 			return err
 		}
-		if current.Version != original.Version {
+		if current.Grant.Version != original.Grant.Version {
 			t.Fatal("snapshot mismatch")
+		}
+		access, err := tx.ProjectAccess(ctx, admin)
+		if err != nil || access != (core.ProjectAccess{ProjectID: project.ID, UserID: admin.UserID, Role: core.ProjectAdmin}) {
+			t.Fatalf("write admission: %+v %v", access, err)
 		}
 		count, err := tx.AdminCount(ctx)
 		if err != nil {
@@ -126,7 +134,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if invited.Role != core.ProjectMemberRole || invited.Version <= original.Version {
+		if invited.Grant.Role != core.ProjectMemberRole || invited.Grant.Version <= original.Grant.Version {
 			t.Fatal("invited role/version")
 		}
 		return tx.ConsumeInvitation(ctx, invite.ID, member.UserID, time.Now())
@@ -134,6 +142,10 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
+		access, err := snapshot.ProjectAccess(ctx, member, project.ID)
+		if err != nil || access != (core.ProjectAccess{ProjectID: project.ID, UserID: member.UserID, Role: core.ProjectMemberRole}) {
+			t.Fatalf("invited access: %+v %v", access, err)
+		}
 		members, err := snapshot.ProjectMembers(ctx, project.ID)
 		if err != nil {
 			return err
@@ -157,7 +169,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if changed.Version <= invited.Version {
+		if changed.Grant.Version <= invited.Grant.Version {
 			t.Fatal("version did not advance")
 		}
 		if err := tx.RemoveMember(ctx, member.UserID); err != nil {
@@ -167,7 +179,7 @@ func TestMembershipStorageLifecycleAndPagination(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if rejoined.Version <= changed.Version {
+		if rejoined.Grant.Version <= changed.Grant.Version {
 			t.Fatal("rejoin reused old observation version")
 		}
 		second := newStoredInvitation(project, admin, "revoked")
@@ -230,7 +242,7 @@ func TestMembershipStorageConstraintsRollbackAndBoundedCleanup(t *testing.T) {
 }
 
 func TestMembershipStorageOperationalFailures(t *testing.T) {
-	for _, phase := range []string{"private-project", "project-member", "accessible", "members", "target-member", "admin-count", "set-role", "remove", "add", "inspect", "lock", "create", "list-invites", "revoke", "consume"} {
+	for _, phase := range []string{"private-project", "project-member", "project-access", "write-access", "accessible", "members", "target-member", "admin-count", "set-role", "remove", "add", "inspect", "lock", "create", "list-invites", "revoke", "consume"} {
 		t.Run(phase, func(t *testing.T) {
 			s, admin, member, project := membershipFixture(t)
 			ctx := context.Background()
@@ -249,12 +261,14 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 			switch phase {
 			case "private-project":
 				_, err = s.CreatePrivateProject(ctx, admin, uuid.NewString(), "Missing", "https://example.com/missing")
-			case "project-member", "accessible", "members", "inspect", "list-invites":
+			case "project-member", "project-access", "accessible", "members", "inspect", "list-invites":
 				err = s.ReadSnapshot(ctx, func(snapshot *Snapshot) error {
 					var err error
 					switch phase {
 					case "project-member":
-						_, err = snapshot.ProjectMember(ctx, admin, project.ID)
+						_, err = snapshot.DirectProjectMember(ctx, admin.UserID, project.ID)
+					case "project-access":
+						_, err = snapshot.ProjectAccess(ctx, admin, project.ID)
 					case "accessible":
 						_, err = snapshot.AccessibleProjects(ctx, admin, Page{Limit: 1})
 					case "members":
@@ -270,8 +284,10 @@ func TestMembershipStorageOperationalFailures(t *testing.T) {
 				err = s.WriteProject(ctx, project.ID, func(tx *ProjectTx) error {
 					var err error
 					switch phase {
+					case "write-access":
+						_, err = tx.ProjectAccess(ctx, admin)
 					case "target-member":
-						_, err = tx.Member(ctx, member.UserID)
+						_, err = tx.DirectProjectMember(ctx, member.UserID)
 					case "admin-count":
 						_, err = tx.AdminCount(ctx)
 					case "set-role":

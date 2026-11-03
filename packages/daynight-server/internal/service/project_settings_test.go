@@ -110,7 +110,7 @@ func TestProjectSettingsChecksCurrentAdministratorAfterProjectLock(t *testing.T)
 			project := f.project(t, owner, "Queued administrator")
 			other := f.project(t, owner, "Other project remains available")
 			membership := f.join(t, owner, target, project.ID)
-			if _, err := f.memberships.SetRole(context.Background(), owner, project.ID, target.UserID, membership.Version, core.ProjectAdmin); err != nil {
+			if _, err := f.memberships.SetRole(context.Background(), owner, project.ID, target.UserID, membership.Grant.Version, core.ProjectAdmin); err != nil {
 				t.Fatal(err)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -163,7 +163,7 @@ func TestProjectSettingsCancellationAndDatabaseFailuresPreserveTheSavedProject(t
 		cancelAfter bool
 		minutes     int32
 	}{
-		{"member refusal completion", "FROM project_members m", true, 90},
+		{"member refusal completion", "FROM project_members", true, 90},
 		{"project query", "SELECT id::text, name, repo_url", false, 90},
 		{"noop completion", "SELECT id::text, name, repo_url", true, 60},
 		{"update query", "UPDATE projects SET execution_warning_minutes", false, 90},

@@ -123,7 +123,7 @@ func TestThreadRoundTripAuthorizationAndTaskInvariants(t *testing.T) {
 			return err
 		}
 		member, err := tx.ProjectMember(ctx, principal, project.ID)
-		if err != nil || member.UserID != principal.UserID {
+		if err != nil || member.Grant.UserID != principal.UserID {
 			t.Fatalf("locked member: %#v %v", member, err)
 		}
 		name, err := tx.AuthorName(ctx, principal.UserID)

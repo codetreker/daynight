@@ -57,28 +57,28 @@ func membershipLookupError(err error) error {
 	return err
 }
 
-func RequireProjectRead(ctx context.Context, snapshot *store.Snapshot, principal core.Principal, projectID string) (core.ProjectMember, error) {
+func RequireProjectRead(ctx context.Context, snapshot *store.Snapshot, principal core.Principal, projectID string) (core.ProjectAccess, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.ProjectMember{}, err
+		return core.ProjectAccess{}, err
 	}
 	id, err := CanonicalID(projectID)
 	if err != nil {
-		return core.ProjectMember{}, err
+		return core.ProjectAccess{}, err
 	}
-	member, err := snapshot.ProjectMember(ctx, principal, id)
-	return member, membershipLookupError(err)
+	access, err := snapshot.ProjectAccess(ctx, principal, id)
+	return access, membershipLookupError(err)
 }
 
-func RequireProjectWrite(ctx context.Context, tx *store.ProjectTx, principal core.Principal) (core.ProjectMember, error) {
+func RequireProjectWrite(ctx context.Context, tx *store.ProjectTx, principal core.Principal) (core.ProjectAccess, error) {
 	if err := requirePrincipal(principal); err != nil {
-		return core.ProjectMember{}, err
+		return core.ProjectAccess{}, err
 	}
-	member, err := tx.ProjectMember(ctx, principal)
-	return member, membershipLookupError(err)
+	access, err := tx.ProjectAccess(ctx, principal)
+	return access, membershipLookupError(err)
 }
 
-func requireProjectAdmin(member core.ProjectMember) error {
-	if member.Role != core.ProjectAdmin {
+func requireProjectAdmin(access core.ProjectAccess) error {
+	if access.Role != core.ProjectAdmin {
 		return &Fault{Code: "forbidden", Message: "Project administrator access is required."}
 	}
 	return nil
@@ -104,12 +104,12 @@ func (s *Memberships) read(ctx context.Context, principal core.Principal, projec
 	var refusal *Fault
 	err = s.store.ReadSnapshot(ctx, func(snapshot *store.Snapshot) error {
 		return completeMembershipOperation(func() error {
-			member, err := RequireProjectRead(ctx, snapshot, principal, id)
+			access, err := RequireProjectRead(ctx, snapshot, principal, id)
 			if err != nil {
 				return err
 			}
 			if admin {
-				if err := requireProjectAdmin(member); err != nil {
+				if err := requireProjectAdmin(access); err != nil {
 					return err
 				}
 			}
@@ -136,11 +136,11 @@ func (s *Memberships) write(ctx context.Context, principal core.Principal, proje
 	var refusal *Fault
 	err = s.store.WriteProject(ctx, id, func(tx *store.ProjectTx) error {
 		return completeMembershipOperation(func() error {
-			member, err := RequireProjectWrite(ctx, tx, principal)
+			access, err := RequireProjectWrite(ctx, tx, principal)
 			if err != nil {
 				return err
 			}
-			if err := requireProjectAdmin(member); err != nil {
+			if err := requireProjectAdmin(access); err != nil {
 				return err
 			}
 			return operation(tx)
@@ -166,14 +166,14 @@ func (s *Memberships) List(ctx context.Context, principal core.Principal, projec
 }
 
 func memberMutationTarget(ctx context.Context, tx *store.ProjectTx, userID string, version int64) (core.ProjectMember, error) {
-	member, err := tx.Member(ctx, userID)
+	member, err := tx.DirectProjectMember(ctx, userID)
 	if errors.Is(err, core.ErrNotFound) {
 		return core.ProjectMember{}, &Fault{Code: "not_found", Message: "Project member was not found.", Cause: err}
 	}
 	if err != nil {
 		return core.ProjectMember{}, err
 	}
-	if member.Version != version {
+	if member.Grant.Version != version {
 		return core.ProjectMember{}, &Fault{Code: "version_conflict", Message: "Member version does not match."}
 	}
 	return member, nil
@@ -191,7 +191,7 @@ func validateMemberMutation(userID string, version int64) (string, error) {
 }
 
 func preserveProjectAdmin(ctx context.Context, tx *store.ProjectTx, member core.ProjectMember) error {
-	if member.Role != core.ProjectAdmin {
+	if member.Grant.Role != core.ProjectAdmin {
 		return nil
 	}
 	count, err := tx.AdminCount(ctx)
@@ -221,7 +221,7 @@ func (s *Memberships) SetRole(ctx context.Context, principal core.Principal, pro
 		if err != nil {
 			return err
 		}
-		if member.Role == role {
+		if member.Grant.Role == role {
 			result = member
 			return nil
 		}
@@ -348,7 +348,7 @@ func (s *Memberships) InspectInvitation(ctx context.Context, principal core.Prin
 			return err
 		}
 		result.ProjectID, result.ProjectName = project.ID, project.Name
-		member, err := snapshot.ProjectMember(ctx, principal, project.ID)
+		member, err := snapshot.DirectProjectMember(ctx, principal.UserID, project.ID)
 		if errors.Is(err, core.ErrNotFound) {
 			return nil
 		}
@@ -383,7 +383,7 @@ func (s *Memberships) AcceptInvitation(ctx context.Context, principal core.Princ
 			if !invitationAvailable(invitation, now) {
 				return invitationUnavailable(nil)
 			}
-			result, err = tx.ProjectMember(ctx, principal)
+			result, err = tx.DirectProjectMember(ctx, principal.UserID)
 			if err == nil {
 				return nil
 			}
