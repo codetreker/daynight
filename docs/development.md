@@ -132,11 +132,13 @@ matrix; its result belongs to the tested revision. The
 [completion design](../docs/design/daynight-completion.md) owns its coverage and
 loading guarantees.
 
-GitHub Actions runs type checking, build, and tests on native Linux, macOS 26
-Intel x64, and Windows runners. The macOS job uses the standard
-`macos-26-intel` label; the
-[runner decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
-records the hosted capacity failure and architecture covered by this lane.
+Native development and validation support Linux, Windows and Apple Silicon
+(ARM64) macOS. Intel macOS is unsupported. GitHub Actions runs type checking,
+build and tests on native Linux, macOS 26 ARM64 and Windows runners. The macOS
+job uses the standard `macos-26` label and verifies Darwin ARM64 before validation;
+the [platform decision](../.agents/notes/implemented/testing/2026-11-04-macos-arm64-support.md)
+records the support boundary and runner selection. Hosted capacity failures
+require diagnosis within this ARM64 runner policy.
 Each native job resolves the latest available Node.js 24 patch.
 A separate runtime matrix builds the package with Node.js 24 and checks the packed
 artifact with Node.js `22.14.0`, the latest `22` and `24` releases, and current

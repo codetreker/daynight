@@ -27,9 +27,9 @@ Daynight 是一个组合命令的客户端工具包。npm 包提供统一的 `da
 
 npm 包名为 `@codetreker/daynight`，可执行命令为 `daynight` 和 `dn`，TypeScript 应用代码放在
 `packages/daynight/`。两个名称均由包的 `bin` 声明指向 `dist/main.js`，安装后可直接使用，无需手动设置 shell alias。
-它们共享全部命令、参数、配置、副作用、输出和退出码；帮助及诊断使用规范名称 `daynight`。Linux、macOS 和 Windows
-必须支持同一组命令和对应的业务保证；平台相关的命令执行、输出处理和退出行为必须
-经过原生验证。发布包的 Node.js 要求为 `>=22`，不限制主版本上限；运行时依赖必须
+它们共享全部命令、参数、配置、副作用、输出和退出码；帮助及诊断使用规范名称 `daynight`。支持 Linux、Windows 和 Apple Silicon（ARM64）macOS，不支持 Intel macOS。
+CLI、Worker、Controller、Review 与原生验收沿用这一支持范围，必须支持同一组命令和对应的业务保证；
+平台相关的命令执行、输出处理和退出行为必须经过对应支持平台的原生验证。发布包的 Node.js 要求为 `>=22`，不限制主版本上限；运行时依赖必须
 允许 Node.js 22 的当前 LTS patch，使严格 engine 校验下的安装和运行均可用。Node.js 22.14
 之前的旧小版本不具备 SQLite 二进制需要的 Node-API 10；安装指引建议使用当前 patch。源码开发和发布工具链的要求由
 [开发指南](../development.md#cli-development)维护。shell 补全的运行环境由 C5 单独约束。
