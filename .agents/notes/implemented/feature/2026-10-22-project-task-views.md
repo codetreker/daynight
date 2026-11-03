@@ -39,7 +39,11 @@ replaces the badge unit with unfinished tasks. Current components give each
 task one membership; toolbars separately report all filter-matching entries
 against complete category totals, independently of page size.
 
-Each inner category has its own Show all choice and scroll position. Both lists
+Each inner category has its own Show all choice. The original category decision
+also chose independent scroll positions to resume each list separately. The
+[shared-scroll decision](../bug-fix/2026-11-03-shared-task-list-scroll.md) replaces
+that behavior: both categories now share the current task-list page offset,
+and category switching does not restore historical offsets. Both lists
 use status-first presentation order with exact newest-first ties, as defined by
 the [status ordering decision](../bug-fix/2026-10-28-project-status-order.md). The [recent browsing and pagination
 decision](2026-10-27-recent-task-pages.md) replaces the unfinished-only default
@@ -47,7 +51,7 @@ with all unfinished work plus recent local-calendar completions, and adds
 independent 15-entry task pages under the
 [compact-list decision](../simplification/2026-10-28-compact-task-list.md) without truncating component data. Current page
 numbers remain in memory for the project visit; category, standalone visibility,
-completed-chain visibility and scroll positions keep their independent records. Storage failure leaves in-memory interaction available with a visible
+completed-chain visibility and the shared task-list offset keep separate records. Storage failure leaves in-memory interaction available with a visible
 persistence notice. Page positions do not persist graph geometry, pan, zoom,
 details or fullscreen. The original category design retained the inline member
 witness or explicit collapse across switches; the [graph-dialog

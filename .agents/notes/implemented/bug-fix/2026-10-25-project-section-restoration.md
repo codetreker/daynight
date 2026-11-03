@@ -32,9 +32,12 @@ which originally chose mount-local selection to keep Overview as the entry point
 without adding a stored format. Its section layout, lazy task workspace retention,
 shared synchronization and detail ownership continue to apply. The
 [task browsing preference decision](../../archived/feature/2026-10-21-task-browsing-preferences.md)
-records the original inner-category, expansion, filter and scroll choices; their
-records, keys and formats do not change. Overview scroll remains per-mount memory, and only
-active Tasks can read or write the task-category page offsets.
+records the original inner-category, expansion, filter and scroll choices. This
+section-restoration decision originally left those records unchanged. The
+[shared-scroll decision](2026-11-03-shared-task-list-scroll.md) replaces the
+per-category offsets with a single task-list offset while keeping the section
+selection record. Overview scroll remains per-mount memory, and only active
+Tasks can read or write the shared task-list position.
 
 The [Web specification](../../../../docs/spec/daynight-web.md) owns the required
 restoration behavior, and the [Web design](../../../../docs/design/daynight-web.md)

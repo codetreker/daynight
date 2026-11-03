@@ -348,21 +348,37 @@ describe('project task views', () => {
     fireEvent.click(tab('standalone')); expect(screen.getByRole('checkbox', { name: /^显示所有/ })).toBeChecked();
   });
 
-  it('saves separate scroll positions, restores on switching and reload, and isolates another project', async () => {
+  it('shares one scroll position across categories without restoring on switches, and isolates project visits', async () => {
     let scroll = 0;
     vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
     vi.mocked(window.scrollTo).mockImplementation((options) => { scroll = (options as ScrollToOptions).top!; });
     let view = mount(); await screen.findByRole('tab', { name: '任务链' });
+    vi.mocked(window.scrollTo).mockClear();
     scroll = 320; fireEvent.scroll(window); fireEvent.click(tab('standalone'));
-    expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: 'instant' });
+    expect(scroll).toBe(320);
     scroll = 540; fireEvent.scroll(window); fireEvent.click(tab('chains'));
-    expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 320, behavior: 'instant' });
-    fireEvent.click(tab('standalone')); expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 540, behavior: 'instant' });
-    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 320, standalone: 540 });
+    expect(scroll).toBe(540);
+    fireEvent.keyDown(tab('chains'), { key: 'ArrowRight' });
+    expect(tab('standalone')).toHaveFocus();
+    expect(scroll).toBe(540);
+    expect(window.scrollTo).not.toHaveBeenCalled();
+    expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll'))!)).toBe(540);
     cleanup(); view = mount(); await screen.findByRole('tab', { name: '独立任务' });
     expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 540, behavior: 'instant' });
     view.rerender(<ProjectPage projectId={otherProject} />); selectTasks(); await screen.findByRole('heading', { name: otherProject });
     expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: 'instant' });
+    scroll = 120; fireEvent(window, new Event('pagehide'));
+    expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll', otherProject))!)).toBe(120);
+    view.rerender(<ProjectPage projectId={project} />); await screen.findByRole('tab', { name: '独立任务' });
+    expect(scroll).toBe(540);
+  });
+
+  it('ignores obsolete category scroll records when entering the task list', async () => {
+    window.localStorage.setItem(key('task-view-scroll'), JSON.stringify({ chains: 320, standalone: 540 }));
+    const read = vi.spyOn(Storage.prototype, 'getItem');
+    mount(); await screen.findByRole('tab', { name: '任务链' });
+    expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: 'instant' });
+    expect(read).not.toHaveBeenCalledWith(key('task-view-scroll'));
   });
 
   it('distinguishes absent categories, hidden completed rows and an entirely empty project', async () => {
@@ -411,10 +427,17 @@ describe('project task views', () => {
 const newPreferences = [
   ['task-view', '"invalid"', /^浏览器保存的任务页签无效/],
   ['completed-standalone-tasks', '{}', /^浏览器保存的独立任务“显示所有”偏好无效/],
-  ['task-view-scroll', '{"chains":-1,"standalone":0}', /^浏览器保存的任务浏览位置无效/],
+  ['task-list-scroll', '-1', /^浏览器保存的任务浏览位置无效/],
 ] as const;
 
 describe('task view storage failures', () => {
+  it.each(['null', '{}', '[]', 'true', '"320"', '1e999'])('rejects a non-finite or nonnumeric task-list offset %s', async (value) => {
+    window.localStorage.setItem(key('task-list-scroll'), value);
+    mount(); await screen.findByRole('tab', { name: '任务链' });
+    expect(screen.getByText(/^浏览器保存的任务浏览位置无效/)).toBeVisible();
+    expect(window.scrollTo).toHaveBeenLastCalledWith({ top: 0, behavior: 'instant' });
+  });
+
   it.each(newPreferences)('rejects invalid %s data while preserving usable defaults', async (kind, value, notice) => {
     window.localStorage.setItem(key(kind), value); mount(); await screen.findByRole('tab', { name: '任务链' });
     expect(screen.getByText(notice)).toBeVisible(); expect(tab('chains')).toHaveAttribute('aria-selected', 'true');
@@ -473,9 +496,9 @@ describe('project overview and task workspace', () => {
     else Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', originalScrollIntoView);
   });
 
-  it('locates an overview chain after switching from the saved standalone category and overrides its old scroll position', async () => {
+  it('locates an overview chain after switching from the saved standalone category and overrides the shared scroll position', async () => {
     window.localStorage.setItem(key('task-view'), '"standalone"');
-    window.localStorage.setItem(key('task-view-scroll'), JSON.stringify({ chains: 320, standalone: 540 }));
+    window.localStorage.setItem(key('task-list-scroll'), '320');
     let scroll = 0;
     vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
     vi.mocked(window.scrollTo).mockImplementation((options) => { scroll = (options as ScrollToOptions).top!; });
@@ -490,7 +513,7 @@ describe('project overview and task workspace', () => {
     expect(chainRow()).toHaveClass('overview-progress-target');
     expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'center', behavior: 'instant' });
     expect(scroll).toBe(760);
-    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 760, standalone: 540 });
+    expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll'))!)).toBe(760);
     expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByTestId('graph-node')).toBeNull();
     fireEvent.click(sectionTab('overview'));
@@ -516,7 +539,7 @@ describe('project overview and task workspace', () => {
     expect(target).toHaveFocus();
     expect(target).toHaveClass('overview-progress-target');
     expect(scrollIntoView).toHaveBeenLastCalledWith({ block: 'start', behavior: 'instant' });
-    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 0, standalone: 240 });
+    expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll'))!)).toBe(240);
     expect(screen.queryByRole('dialog')).toBeNull();
     act(() => vi.advanceTimersByTime(2_200));
     expect(target).not.toHaveClass('overview-progress-target');
@@ -612,7 +635,7 @@ describe('project overview and task workspace', () => {
   });
 
   it('defaults to Overview and restores Tasks directly on remount with its separate scroll position', async () => {
-    window.localStorage.setItem(key('task-view-scroll'), JSON.stringify({ chains: 320, standalone: 540 }));
+    window.localStorage.setItem(key('task-list-scroll'), '320');
     let scroll = 80;
     vi.spyOn(window, 'scrollY', 'get').mockImplementation(() => scroll);
     vi.mocked(window.scrollTo).mockImplementation((options) => { scroll = (options as ScrollToOptions).top!; });
@@ -625,7 +648,7 @@ describe('project overview and task workspace', () => {
     expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(scroll).toBe(0);
     scroll = 90; fireEvent.scroll(window); fireEvent(window, new Event('pagehide'));
-    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 320, standalone: 540 });
+    expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll'))!)).toBe(320);
     fireEvent.click(sectionTab('tasks'));
     const chain = await findChainRow();
     expect(screen.queryByTestId('graph-node')).toBeNull();
@@ -637,7 +660,7 @@ describe('project overview and task workspace', () => {
     expect(chain).not.toBeVisible();
     expect(document.getElementById('project-section-panel-tasks')).toHaveAttribute('inert');
     scroll = 120; fireEvent.scroll(window); fireEvent(window, new Event('pagehide'));
-    expect(JSON.parse(window.localStorage.getItem(key('task-view-scroll'))!)).toEqual({ chains: 400, standalone: 540 });
+    expect(JSON.parse(window.localStorage.getItem(key('task-list-scroll'))!)).toBe(400);
     fireEvent.click(sectionTab('tasks'));
     expect(await findChainRow()).toBe(chain);
     expect(scroll).toBe(400);
@@ -650,6 +673,19 @@ describe('project overview and task workspace', () => {
     expect(await findChainRow()).toBeVisible();
     expect(screen.queryByTestId('graph-node')).toBeNull();
     expect(scroll).toBe(400);
+  });
+
+  it('restores the shared offset after the initial snapshot renders the visible task workspace', async () => {
+    window.localStorage.setItem(key('project-section'), '"tasks"');
+    window.localStorage.setItem(key('task-list-scroll'), '320.5');
+    let resolve!: (value: TaskGraph) => void;
+    graphRequest.mockReturnValueOnce(new Promise<TaskGraph>((done) => { resolve = done; }));
+    vi.mocked(window.scrollTo).mockImplementation(() => { expect(chainRow()).toBeVisible(); });
+    mountOverview();
+    expect(window.scrollTo).not.toHaveBeenCalled();
+    await act(async () => { resolve(snapshot()); });
+    await findChainRow();
+    expect(window.scrollTo).toHaveBeenCalledExactlyOnceWith({ top: 320.5, behavior: 'instant' });
   });
 
   it('mounts a task workspace only after its first visible usable snapshot', async () => {

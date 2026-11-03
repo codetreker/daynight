@@ -792,7 +792,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     const overviewTop = Math.min(120, overviewExtent);
     await page.evaluate((top) => window.scrollTo(0, top), overviewTop);
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(overviewTop);
-    expect(await page.evaluate((id) => JSON.parse(localStorage.getItem(`daynight:task-view-scroll:${id}`)!).chains, project.id)).toBe(540);
+    expect(await page.evaluate((id) => JSON.parse(localStorage.getItem(`daynight:task-list-scroll:${id}`)!), project.id)).toBe(540);
     await activateViewWithoutScrolling(page, '任务列表');
     await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
     await expectClosedChain(page, predecessor.id);
@@ -920,7 +920,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await activateViewWithoutScrolling(page, '任务链');
   await expect(chainsCompleted).toBeChecked();
   await expectClosedChain(page, predecessor.id);
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(0);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
   await openChain(page, predecessor.id);
   await expect(inspectTask(page, dependent.id)).toBeVisible();
   await closeChain(page);
@@ -928,7 +928,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await activateViewWithoutScrolling(page, '独立任务');
   await expect(standaloneCompleted).toBeChecked();
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await standaloneCompleted.evaluate((checkbox: HTMLInputElement) => checkbox.focus({ preventScroll: true }));
   await page.keyboard.press('Space');
   await activateViewWithoutScrolling(page, '任务链');
@@ -936,7 +936,70 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   await activateViewWithoutScrolling(page, '独立任务');
   await expect(standaloneCompleted).not.toBeChecked();
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
+  await test.step('keeps category switching at the current position and only clamps shorter content', async () => {
+    const scrollTrace = await page.evaluateHandle(() => {
+      const original = window.scrollTo;
+      let calls = 0;
+      window.scrollTo = new Proxy(original, {
+        apply: (target, receiver, arguments_) => {
+          calls++;
+          return Reflect.apply(target, receiver, arguments_);
+        },
+      });
+      return { reset: () => { calls = 0; }, count: () => calls, restore: () => { window.scrollTo = original; } };
+    });
+    const settledPosition = async () => {
+      const position = page.evaluate(() => new Promise<number>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve(window.scrollY)));
+      }));
+      await page.clock.runFor(40);
+      return await position;
+    };
+    try {
+      for (const width of [1100, 390]) {
+        await page.setViewportSize({ width, height: 700 });
+        await page.evaluate(() => window.scrollTo(0, 120));
+        for (const name of ['任务链', '独立任务', '任务链', '独立任务'] as const) {
+          await scrollTrace.evaluate((trace) => trace.reset());
+          await activateViewWithoutScrolling(page, name);
+          expect(await settledPosition()).toBe(120);
+          expect(await scrollTrace.evaluate((trace) => trace.count())).toBe(0);
+        }
+        await standalonePagination.getByRole('button', { name: '下一页', exact: true }).click();
+        await expect(page.locator('.standalone-row')).toHaveCount(7);
+        const shortExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
+        await activateViewWithoutScrolling(page, '任务链');
+        const longExtent = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
+        expect(longExtent).toBeGreaterThan(shortExtent);
+        await page.evaluate((top) => window.scrollTo(0, top), longExtent);
+        await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(longExtent);
+        await scrollTrace.evaluate((trace) => trace.reset());
+        await activateViewWithoutScrolling(page, '独立任务');
+        expect(await settledPosition()).toBe(shortExtent);
+        expect(await scrollTrace.evaluate((trace) => trace.count())).toBe(0);
+        await activateViewWithoutScrolling(page, '任务链');
+        expect(await settledPosition()).toBe(shortExtent);
+        expect(await scrollTrace.evaluate((trace) => trace.count())).toBe(0);
+        await activateViewWithoutScrolling(page, '独立任务');
+        await standalonePagination.getByRole('button', { name: '上一页', exact: true }).click();
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await scrollTrace.evaluate((trace) => trace.reset());
+        await viewTab(page, '任务链').click();
+        expect(await settledPosition()).toBe(0);
+        await viewTab(page, '独立任务').click();
+        expect(await settledPosition()).toBe(0);
+        expect(await scrollTrace.evaluate((trace) => trace.count())).toBe(0);
+      }
+    } finally {
+      await scrollTrace.evaluate((trace) => trace.restore());
+      await scrollTrace.dispose();
+    }
+    await page.setViewportSize({ width: 1100, height: 700 });
+    await page.evaluate(() => window.scrollTo(0, 540));
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
+    await expect.poll(() => page.evaluate((id) => JSON.parse(localStorage.getItem(`daynight:task-list-scroll:${id}`)!), project.id)).toBe(540);
+  });
   const membersUrl = `**/api/v1/projects/${project.id}/members`;
   let releaseMembers!: () => void;
   let markMembersRequestStarted!: () => void;
@@ -953,14 +1016,14 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
     await membersRequestStarted;
     await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
     await expect(standaloneCompleted).not.toBeChecked();
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
     const projectHeading = page.locator('.project-heading');
     const headingBeforeMembership = await projectHeading.boundingBox();
     expect(headingBeforeMembership).not.toBeNull();
     releaseMembers();
     await expect(page.getByRole('link', { name: '项目设置', exact: true })).toBeVisible();
     expect(await projectHeading.boundingBox()).toEqual(headingBeforeMembership);
-    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
   } finally {
     releaseMembers();
     await page.unroute(membersUrl);
@@ -974,7 +1037,7 @@ test('project-view-tabs', scenario('project-view-tabs'), async ({ page, api: req
   await openProject(page, project.id, project.name);
   await expect(page.getByRole('tab', { name: '任务列表', exact: true })).toHaveAttribute('aria-selected', 'true');
   await expect(viewTab(page, '独立任务')).toHaveAttribute('aria-selected', 'true');
-  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(320);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBe(540);
 
   independent = await updateTask(request, project.id, independent.id, { version: independent.version, dependsOn: [predecessor.id] });
   const joinedSync = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/projects/${project.id}/task-sync`);

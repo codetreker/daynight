@@ -10,7 +10,7 @@ import { useOverviewProgress } from "./useOverviewProgress";
 import { taskPageSize, usePagination } from "./usePagination";
 import { ProjectSectionTabs } from "./ProjectSectionTabs";
 import { ProjectTaskWorkspace } from "./ProjectTaskWorkspace";
-import { useChainVisibility, useProjectSection, useStandaloneVisibility, useTaskView, useTaskViewScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
+import { useChainVisibility, useProjectSection, useStandaloneVisibility, useTaskView, useTaskListScroll, type ProjectSection, type TaskView } from "./useProjectViewPreferences";
 import { ProjectGraphErrorDetail, projectGraphErrorTitle } from "./ProjectGraphError";
 import { useTaskGraph } from "./useTaskGraph";
 import { compareTaskStatus } from "./task-order";
@@ -55,7 +55,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
   const snapshot = graph.snapshot;
   const snapshotReady = snapshot !== null;
   const { activeView, onViewChange, issue: tabIssue } = useTaskView(projectId);
-  const { savePosition, issue: scrollIssue } = useTaskViewScroll(projectId, activeView, snapshotReady && section === "tasks");
+  const { savePosition, issue: scrollIssue } = useTaskListScroll(projectId, snapshotReady && section === "tasks");
   useLayoutEffect(() => {
     if (!snapshotReady) setTasksMounted(false);
     else if (section === "tasks") setTasksMounted(true);
@@ -154,9 +154,8 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
 
   const selectView = useCallback((view: TaskView) => {
     if (view === activeView) return;
-    savePosition();
     onViewChange(view);
-  }, [activeView, savePosition, onViewChange]);
+  }, [activeView, onViewChange]);
 
   const selectSection = useCallback((next: ProjectSection) => {
     if (next === section) return;
@@ -202,7 +201,7 @@ const ProjectView = ({ projectId, renderActions }: { readonly projectId: string;
       if (!focusVisible(document.getElementById(`project-task-tab-${view}`))) focusVisible(document.getElementById("project-section-tab-tasks"));
       return;
     }
-    // Explicit overview navigation runs after the task view restores its saved position.
+    // Explicit overview navigation runs after the task list restores its saved position.
     target.scrollIntoView({ block: overviewTarget.kind === "chain" ? "center" : "start", behavior: "instant" });
     target.focus({ preventScroll: true });
     savePosition();

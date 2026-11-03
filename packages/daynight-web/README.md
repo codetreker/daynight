@@ -620,8 +620,8 @@ placeholder is replaced by authorized actions without narrowing the title or
 moving the restored page position. The
 [header-layout decision](../../.agents/notes/implemented/bug-fix/2026-10-23-project-header-layout-shift.md)
 owns that geometry; the existing
-[task-view decision](../../.agents/notes/implemented/feature/2026-10-22-project-task-views.md)
-owns per-project/tab scroll preferences independently from graph viewports.
+[shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-03-shared-task-list-scroll.md)
+owns one task-list page offset per project, independently from Overview and graph viewports.
 
 ## Languages
 
@@ -749,8 +749,8 @@ requests or stored page preferences.
 Clicking a progress row selects Task list and the matching category, switches to
 the destination Goal's page, then scrolls, focuses and briefly highlights it.
 The standalone aggregate selects its list's first page. Explicit positioning wins
-over saved category scroll for that activation; later ordinary switches retain
-their usual memory. The [recent browsing decision](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)
+over saved task-list scroll for that activation; ordinary category switches
+keep the current page position. The [recent browsing decision](../../.agents/notes/implemented/feature/2026-10-27-recent-task-pages.md)
 owns the shared window and paging policy; the [progress decision](../../.agents/notes/implemented/feature/2026-10-26-project-overview-progress.md)
 retains the original aggregation and navigation rationale. The adjacent Task
 list section contains Standalone tasks and Task chains. Desktop section navigation is vertical on the
@@ -831,7 +831,8 @@ members stays visible. External prerequisite context does not contribute to
 chain progress or status. The former shared-membership badge is removed: a task
 can recur as context while its actual component membership remains unique.
 
-Each category retains its own completed visibility and scroll position. Chain
+Each category retains its own completed visibility. Both share the current
+task-list page position; category switching does not restore an older offset. Chain
 ordering uses its representative's exact `(created_at,id)` service order,
 reversed for newest first without lossy JavaScript timestamp conversion. The
 open graph dialog keeps an original task witness only for the current reading
@@ -995,7 +996,7 @@ persist. Locale translates controls without adding business reads. The
 separates topology state from presentation lifetime.
 
 Per-project browser preferences retain the selected outer section and inner task
-category, each category's page scroll position and completed-item choice. Graph
+category, one shared task-list page offset and each category's completed-item choice. Graph
 dialog opening, witness, Goal disclosure, fullscreen, details and graph viewport are temporary;
 the former `daynight:project-view:${projectId}` expansion record is not read or
 written. The outer section uses the independent
@@ -1008,14 +1009,22 @@ likewise leave the current page usable with visible feedback.
 Both stable inner tabpanel wrappers retain their IDs and hide inactive content.
 Task page scroll restoration and scroll/pagehide listeners are active only when
 Task list is selected and a snapshot is available. Leaving Tasks saves its
-current inner position before Overview can restore its own per-mount memory
+shared position before Overview can restore its own per-mount memory
 position. Overview starts at zero and never reads or overwrites the persisted
-task offsets. Outer switches retain the already visited task subtree; inner
+task offset. The JSON number at `daynight:task-list-scroll:${projectId}` is
+restored on task-list entry, reload or project return. Inner category switching
+does not call scroll restoration: the current offset stays within the new
+document range, and shorter content can naturally clamp it to the bottom.
+Returning to longer content does not recover an older category offset. The old
+`daynight:task-view-scroll:${projectId}` record is no longer read or written.
+Outer switches retain the already visited task subtree; inner
 switches retain their conditional-content mounting. Graph dialogs close on
 either departure and open only after a new dependency-graph action. Section/category
 switching, filtering and scroll restoration make no API requests and do not
 alter the complete project counters or prerequisites. The [preference decision](../../.agents/notes/archived/feature/2026-10-21-task-browsing-preferences.md)
-records the persistence rules.
+records the original persistence rules; the
+[shared-scroll decision](../../.agents/notes/implemented/bug-fix/2026-11-03-shared-task-list-scroll.md)
+owns the shared offset and category-switch behavior.
 
 The generic task and summary decoders require a properties object and preserve
 all keys. The PR business reader accepts an absent pullRequests key; a present
@@ -1453,8 +1462,8 @@ Reloading or returning to a project restores the selected outer section. It
 demonstrates the current outer section layout, retained task subtree and
 isolated section scroll ownership, newest-first category lists, topology-based
 standalone classification, cross-chain prerequisites, direct standalone details
-and per-project tab, scroll, independent completed-item preferences across
-reloads. Goal headers expand one-task-per-row lists with direct child and Goal
+and per-project tab, shared task-list scroll and independent completed-item
+preferences across reloads. Goal headers expand one-task-per-row lists with direct child and Goal
 details; membership includes all ordinary-component members and keeps external
 context in the graph. Graph dialogs start closed and open only through each
 Goal's separate View dependencies action, leaving disclosure unchanged. The
@@ -1836,7 +1845,7 @@ scenario annotations validated in each target's report.
 |---|---|
 | W1 | `project-list`: more than 50 projects, cursor requests, unique cards and navigation to a later-page project |
 | W2 | `project-graph`, `deep-links`, `task-attachments`, `task-detail-page`: project entry, direct HTML reload, complete standalone task/tab/file navigation and history without source-tab state; modal selection remains local |
-| W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained task-list subtree and closed graph dialog across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/scroll restoration and temporary graph-dialog opening, dependency reclassification and consistent full refresh |
+| W3–W4 | `project-graph`, `project-view-tabs`, `refresh-staleness`, `failure-recovery`: Overview default without a saved preference, per-project outer-section restoration on reload and return, responsive section navigation, exact statistics, retained task-list subtree and closed graph dialog across outer round trips, isolated Overview/task scroll and no extra synchronization, ordinary-component categories and member progress, direct standalone details, independent completion filters, per-project inner-tab/shared task-list scroll restoration, category switches without programmatic scrolling, natural short-content clamping and temporary graph-dialog opening, dependency reclassification and consistent full refresh |
 | W5–W7 | `project-graph`, `keyboard-focus`, `capacity-chain`, `capacity-merge`, `capacity-shared`, `capacity-external`: Goal disclosure with complete unique child rows and direct task details, independent explicit 80% graph dialog and narrow-screen gutters, list/focus/scroll restoration, complete projection data, bounded overview/induced edges, explicit expansion/reset, state markers and detail/viewport actions |
 | W8, TI12–TI14 | `detail-navigation`, `refresh-staleness`, `task-detail-page`: shared complete dialog/page content and actions, title-bar/attachment popouts, task/tab/file history, query-preserving login, nested confirmations, precise/conflicting/unknown writes, automatic full-detail reads and retained geometry/state |
 | W9 | `refresh-staleness`, `failure-recovery`, `deep-links`, `capacity-limits`: periodic status updates and automatic recovery, owned-database failure/restoration, cached content with correlated refresh errors across reload, cold-cache initial failure/loading, empty/not-found states, cached project navigation during delayed sync with request cancellation, and complete size refusal |
