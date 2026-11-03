@@ -13,6 +13,7 @@ import (
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/taskthreadjson"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -224,10 +225,26 @@ func TestThreadReadCancellationAndServiceDeadlineAreBounded(t *testing.T) {
 	}
 	for _, post := range []bool{false, true} {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		defer cancel()
 		blocker, err := database.Pool.Begin(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
+		rollback := func() error {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			err := blocker.Rollback(cleanup)
+			if errors.Is(err, pgx.ErrTxClosed) {
+				return nil
+			}
+			return err
+		}
+		// A failed assertion must release the blocking lease before pool cleanup.
+		defer func() {
+			if err := rollback(); err != nil {
+				t.Errorf("release blocking transaction: %v", err)
+			}
+		}()
 		// A relation lock blocks both reads and writes after pool acquisition.
 		if _, err := blocker.Exec(context.Background(), `LOCK TABLE tasks IN ACCESS EXCLUSIVE MODE`); err != nil {
 			t.Fatal(err)
@@ -239,10 +256,11 @@ func TestThreadReadCancellationAndServiceDeadlineAreBounded(t *testing.T) {
 			_, err = threads.List(ctx, principal, project.ID, task.ID, ThreadListRequest{})
 		}
 		cancel()
-		if err == nil || !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
-			t.Fatalf("parent deadline ignored: %v", err)
+		elapsed := time.Since(start)
+		if err == nil || !errors.Is(err, context.DeadlineExceeded) || elapsed > time.Second {
+			t.Fatalf("parent deadline ignored (post=%t elapsed=%s): %v", post, elapsed, err)
 		}
-		if err := blocker.Rollback(context.Background()); err != nil {
+		if err := rollback(); err != nil {
 			t.Fatal(err)
 		}
 		listThread(t, threads, principal, task, ThreadListRequest{})

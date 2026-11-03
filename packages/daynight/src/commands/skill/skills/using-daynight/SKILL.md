@@ -1,6 +1,6 @@
 ---
 name: using-daynight
-description: Manage projects, tasks, attachments, and Goals with the Daynight CLI; create tasks, execute a specified task, or review a handoff. Use only when explicitly invoked or the context clearly requires Daynight.
+description: Manage projects, tasks, discussion threads, attachments, and Goals with the Daynight CLI; create tasks, execute a specified task, or review a handoff. Use only when explicitly invoked or the context clearly requires Daynight.
 ---
 
 # Using Daynight
@@ -15,10 +15,11 @@ Use the `daynight` CLI to operate it and [Daynight](https://daynight.cc) to brow
 | Project | A project associated with a Git repository, organizing tasks and project access. |
 | Task | An independently tracked work item with a description, status, dependencies, execution requirements, and PR references. In this skill, "task" means this object. |
 | Goal | A complete objective expressed through tasks and their dependencies, including requirements discussion, solution discussion, and delivery work; not a separate resource. |
+| Thread | A task's durable discussion, independent of execution; explicit reads, immutable posts and same-task replies. |
 | Attachment | A task's independent attachment area for inputs and results such as documents, prototypes, and images. |
 | worker-managed | An execution environment assigned and managed by `daynight worker`; the agent executes only its explicit assignment. |
 
-The CLI supports project registration and lookup, task creation and filtering, status and dependency management, property values and definitions, attachment reads and writes, and worker-managed execution.
+The CLI supports project registration and lookup, task creation and filtering, status and dependency management, property values and definitions, discussion reads and posts, attachment reads and writes, and worker-managed execution.
 Creation, execution, and handoff are separate operations; see [authorization and scope](references/authorization.md).
 
 ## Setup and CLI
@@ -40,6 +41,7 @@ Read only the files and required references for the current operation, not every
 | Find commands | [CLI handbook](references/handbook.md): command map and help discovery |
 | Discover, select, or register projects | [Project management](references/project-management.md): project identity and reuse |
 | Query tasks, edit metadata, properties, status, or dependencies, or delete tasks | [Task management](references/task-management.md): fields, lifecycle, and relationship semantics |
+| Read or post task discussion | [Task management](references/task-management.md#discussion-threads): bounded pages, author attribution, replies and read continuity |
 | Submit and reconcile writes safely | [Write safety](references/write-safety.md): versions, conflicts, uncertain results, and attachment concurrency |
 | Write or read descriptions, attachments, and shared inputs | [Task content standard](references/task-content.md): boundaries, ownership, references, and sufficiency |
 | Create or register work | [Create task](references/create-task.md): duplicate checks, preparation, registration, and readback |

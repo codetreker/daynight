@@ -201,7 +201,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
   let failure: unknown;
   let failInventory = false;
   const projects: Project[] = [1, 2].map((number) => ({ id: uuid(number), name: `Repo ${number}`, repoUrl: `https://git.example/worker/repo-${number}.git`, settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time }));
-  const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { pullRequests: [] }, status: "todo", allowAgents: true, assignedTo: null, requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
+  const tasks: FixtureTask[] = projects.map((project, index) => ({ id: uuid(index + 10), projectId: project.id, title: `Managed ${index + 1}`, description: "Fixture task", properties: { pullRequests: [] }, status: "todo", allowAgents: true, assignedTo: uuid(100), requiredPlatform: "linux", version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true }));
   const send = (response: ServerResponse, value: unknown, status = 200): void => { response.writeHead(status, { "content-type": "application/json", ...(status >= 200 && status < 300 ? { "Daynight-User-ID": uuid(100) } : {}) }); response.end(stringifyApiJson(value)); };
   const refusal = (response: ServerResponse): void => send(response, { error: { code: "version_conflict", message: "Fixture version conflict", requestId: "worker-fixture" } }, 409);
   const server = createServer(async (request, response) => {
@@ -226,13 +226,17 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       if (task !== undefined && parts.length === 7 && request.method === "GET") { send(response, task); return; }
       if (project !== undefined && parts.length === 6 && request.method === "GET") {
         const inventory = url.searchParams.get("workerId");
+        const assignedTo = url.searchParams.get("assignedTo");
+        const selectedAssignee = assignedTo === null ? undefined : assignedTo === "me" ? uuid(100) : assignedTo === "unassigned" ? null : assignedTo.toLowerCase();
         if (inventory !== null && failInventory) {
           inventoryResponses.push({ projectId: project.id, itemCount: 0, status: 500, mappedProjectCount: 2 });
           send(response, { error: { code: "internal_error", message: "Injected unavailable inventory", requestId: "worker-inventory-fault" } }, 500); return;
         }
         const items = tasks.filter((item) => {
           const worker = readWorkerClaim(item.properties);
-          return item.projectId === project.id && (inventory === null ? item.ready && item.allowAgents : worker?.state === "active" && worker.workerId === inventory && worker.userId === uuid(100));
+          return item.projectId === project.id && (inventory === null
+            ? item.ready && item.allowAgents && (selectedAssignee === undefined || item.assignedTo === selectedAssignee)
+            : worker?.state === "active" && worker.workerId === inventory && worker.userId === uuid(100));
         });
         if (inventory !== null) {
           const sql = new Database(databaseFile, { readonly: true });
@@ -395,6 +399,9 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
       await expectExit(running.closed, 0);
       expect(row(second.id)).toMatchObject({ status: "active", claim_id: originalClaim, session_id: originalSession });
       expect(await readFile(sentinel, "utf8")).toBe("Keep the original uncommitted task result.\n");
+      // Claim ownership is independent of task responsibility during recovery.
+      second.assignedTo = scenario === "null-session" ? null : uuid(101);
+      second.version += 1n;
       if (scenario === "resume") {
         const previousWorkspace = (await events()).find((event) => event.kind === "workspace" && event.taskId === second.id)!;
         environment.FIXTURE_RESTORE_WORKSPACE = JSON.stringify({ label: previousWorkspace.label, cwd: previousWorkspace.cwd, sessionId: originalSession });
@@ -436,6 +443,7 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
         expect(restartLogs).not.toContain(" warning ");
       }
       expect(readWorkerClaim(second.properties)!.claimId).toBe(originalClaim);
+      expect(second.assignedTo).toBe(scenario === "null-session" ? null : uuid(101));
       expect(requests.slice(restartRequestOffset).some((request) => request.method === "POST" && request.path.endsWith("/worker-claim"))).toBe(false);
       expect(inventoryResponses.filter((response) => response.status === 200).every((response) => response.mappedProjectCount === 2)).toBe(true);
       expect(restarted.child.kill("SIGINT")).toBe(true);
@@ -488,6 +496,13 @@ it.skipIf(process.platform !== "linux").each(["resume", "null-session", "empty-d
     expect(restored).toHaveLength(scenario === "resume" ? 1 : 0);
     for (const empty of restored) expect(observed.some((event) => event.kind === "native-start" && workspaceKey(event) === workspaceKey(empty))).toBe(false);
     expect(observed.findIndex((event) => event.kind === "native-start" && event.taskId === second.id)).toBeGreaterThan(observed.findIndex((event) => event.kind === "native-stop" && event.taskId === first.id));
+    const taskPages = requests.filter((request) => request.method === "GET").map((request) => new URL(request.path, "http://localhost")).filter((request) => /^\/api\/v1\/projects\/[0-9a-f-]{36}\/tasks$/.test(request.pathname));
+    const inventoryPages = taskPages.filter((request) => request.searchParams.has("workerId"));
+    const candidatePages = taskPages.filter((request) => !request.searchParams.has("workerId"));
+    expect(inventoryPages.length).toBeGreaterThan(0);
+    expect(candidatePages.length).toBeGreaterThan(0);
+    expect(inventoryPages.every((request) => !request.searchParams.has("assignedTo"))).toBe(true);
+    expect(candidatePages.every((request) => request.searchParams.get("assignedTo") === "me")).toBe(true);
     const claimRequests = requests.filter((request) => request.method === "POST" && request.path.endsWith("/worker-claim"));
     const reportRequests = requests.filter((request) => request.method === "POST" && /^\/api\/v1\/me\/workers\/[0-9a-f-]{36}\/report$/.test(request.path));
     expect(claimRequests.map((request) => request.taskId)).toEqual(tasks.map((task) => task.id));

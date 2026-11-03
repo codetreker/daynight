@@ -18,9 +18,7 @@ The [attachment requirements](../../docs/spec/daynight-task-attachments.md) and
 [architecture](../../docs/design/daynight-task-attachments.md) own single-file
 management, previews and their independent state; the
 [Web decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)
-records the original choices. The original
-offline dashboard mockups remain separate from the application; the attachment
-development mockup below reuses the real components with a frontend-only fixture.
+records the original choices.
 
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define login, private
@@ -122,10 +120,6 @@ truncate long visible names. Project children appear in expanded desktop and
 mobile navigation and are hidden in the folded rail. Initial loading, empty and
 failed reads have localized feedback and retry; Load more traverses subsequent
 pages without removing earlier links on failure.
-
-Run `pnpm web:dev` and open [the project navigation preview](tests/mockups/sidebar-projects.html)
-for production components with in-page project fixtures: switching, long names,
-multiple pages, loading, empty and retry scenarios. It requires no backend.
 
 The existing `/account` entry and sidebar toggle stay in the footer. Desktop widths are
 190px expanded and 68px collapsed. The footer stays reachable on long pages and
@@ -263,25 +257,6 @@ An unconfirmed update blocks further writes until a token-list read confirms
 the actual state; a failed read retains the displayed metadata and the write
 block. Reads never repeat the update. Expired, revoked, and missing tokens are
 unavailable for editing.
-
-With `pnpm web:dev`, open `/tests/mockups/auth.html` for actual components with
-controlled fetch responses, the same locale Provider and final styles. This
-fixture validates frontend interaction separately from real UniAuth service and
-upstream-provider login. Use `/tests/mockups/auth.html?scenario=project` for the
-production project sections and their per-project preference restoration. The
-[static design prototype](../../docs/design/mockups/auth/index.html) retains the
-broader scenario reference; its deterministic scenario reset does not represent
-production browsing-preference persistence. Open `/tests/mockups/device.html` for
-the production device page with frontend-only controlled request states. Its
-scenario selector covers manual entry, loading, approval, denial, expiration,
-invalid codes, request failures, rate limiting, uncertain decisions, and long
-account details. Open `/tests/mockups/tokens.html` for the production token panel,
-creation dialog, and expiration editor inside the workspace sidebar-footer layout,
-including its selected account entry and shared responsive workspace navigation.
-The scenario controls cover loading, conflicts, unconfirmed updates,
-reconciliation failures, unavailable tokens, and long names. The shared language
-selector and final responsive styles remain
-interactive without a Go service.
 
 ## My Workers
 
@@ -723,14 +698,7 @@ visible in localized selector text; a successful save clears the current issue,
 including startup errors. Cross-tab live synchronization and account preferences
 are outside this runtime's persistence guarantee.
 
-With `pnpm web:dev`, open `/tests/mockups/locale-runtime.html` for the
-[actual-component runtime preview](tests/mockups/locale-runtime.html). It shows
-shared selectors and retained fixture state with production selector styles
-and no Go API or PostgreSQL. The actual-component
-[browsing](tests/mockups/browsing.html) and
-[attachment](tests/mockups/attachments.html) previews also mount the Provider
-explicitly. Fixtures verify frontend behavior;
-production claims require real service receipts. Web typecheck, test and build
+Production claims require real service receipts. Web typecheck, test and build
 include all translated components under the existing coverage gate.
 
 ## Development
@@ -750,8 +718,7 @@ owns case-coexistence coverage. Vite proxies `/api` to that address
 and listens on loopback. For real login through Vite, set the same
 `DAYNIGHT_UNIAUTH_CALLBACK_URL` in the Vite and Go environments, registered with
 UniAuth for the development browser origin. Vite proxies exactly that callback
-path through the same Go API target. When unset, no callback proxy is added and
-frontend-only mockups remain independent of the Go service. The five required
+path through the same Go API target. When unset, no callback proxy is added. The five required
 backend authentication settings and explicit HTTP test policy follow the
 [deployment guide](../../deployment/localhost/README.md); changing the browser
 origin does not relax callback or Cookie-write Origin checks.
@@ -821,18 +788,6 @@ keyboard direction. The outer choice is stored per project in browser
 preferences, so the first render after reload or return already shows the saved
 Overview or Task list selection. It does not change the URL or history. Empty
 projects retain both section destinations.
-
-With `pnpm web:dev`, open the [recent-task preview](tests/mockups/recent-tasks.html)
-at `/tests/mockups/recent-tasks.html`. It mounts the real `ProjectPage`, production
-CSS and locale catalog with controlled read-only task-sync responses. Choose
-`#mixed`, `#completed`, `#empty`, `#loading` or `#failure`; the mixed inventory
-includes 42 visible Goals, 43 visible standalone tasks, an old representative
-with a recently completed child, a Goal with 33 children, calendar cutoffs and
-older/unknown completion history. The completed case retains 100% recent rows.
-Loading release and service recovery controls exercise the corresponding states.
-This frontend-only entry needs no Go service or PostgreSQL and is excluded from
-the production build; it supplies interaction evidence, not real-service
-acceptance.
 
 Both sections use one `ProjectView` snapshot, synchronization loop and detail
 owner. Task list mounts on first selection and stays mounted while hidden and
@@ -951,9 +906,8 @@ with actions use eight seconds. Hover or focus pauses expiry. Close and expiry
 change only presentation; unresolved recovery remains accessible from a compact
 floating trigger, without changing write locks or replaying writes. Status does
 not stop a process or provide delivery authority. The [status architecture](../../docs/design/daynight-task-status.md)
-owns server rules, migration and timing. The [component fixture](tests/mockups/browsing.html)
-uses production sessions/styles for frontend behavior; actual service acceptance
-separately proves HTTP, database and persistence behavior.
+owns server rules, migration and timing. Actual service acceptance proves HTTP,
+database and persistence behavior.
 
 Task details share claim display and force withdrawal across the dialog,
 standalone page and fullscreen. Active claims show the user, machine, agent and
@@ -1124,15 +1078,8 @@ task data retains its index and layout; settings-only changes update Project
 metadata without rebuilding task projections, and changed intrinsic data replaces
 statistics and both task-category lists together. The
 [automatic refresh decision](../../.agents/notes/implemented/feature/2026-10-22-project-task-auto-refresh.md)
-owns the scheduling and scope. With `pnpm web:dev`,
-`/tests/mockups/auto-refresh.html` uses the real project page, styles and controlled
-responses to explore periodic changes, delayed reads and recoverable failures
-without Go or PostgreSQL. Without a saved section preference it starts on Overview;
-select Task list to inspect task rows and graphs while the same project
-synchronization continues. Reloading restores the selected section. The [notification mockup](tests/mockups/notifications.html)
-uses the shared detail surface for lock tooltips, success, unknown-write, stale
-snapshot and refresh-error feedback in dialog and page containers. Production
-verification uses the real-service journeys.
+owns the scheduling and scope. Production verification uses the real-service
+journeys.
 
 Same-resource, same-generation graph and detail refresh retain successful data
 while loading and on recoverable failure. Errors remain in state during automatic retries until a
@@ -1276,15 +1223,6 @@ wide diagrams retain readable labels in a focusable local scroll region at
 and release owned rendering resources. The
 [flowchart design](../../docs/design/daynight-task-inspection.md#mermaid-流程图)
 owns staging, serialization and image lifetime.
-
-Run `pnpm web:dev` and open `/tests/mockups/markdown.html` for the production
-`TaskDetailSurface` and `TaskDetailReading` composition with final styles and
-frontend-only task/attachment fixtures. Flowchart results, failures and source,
-description links, detail tabs, relations,
-existing task actions and attachment management are interactive without Go or
-PostgreSQL. Query parameters choose the task, tab, file, page mode and attachment
-scenario. This entry and `/tests/mockups/attachments.html` share
-`tests/mockups/main.tsx`; neither belongs to the production single-index build.
 
 ## Task attachments
 
@@ -1489,63 +1427,9 @@ is introduced. The [full-reader decision](../../.agents/notes/implemented/archit
 retains routing/rendering foundations and the
 [shared-page decision](../../.agents/notes/implemented/architecture/2026-10-24-shared-attachment-page.md)
 retains full attachment-panel reuse rationale; complete Task Detail composition
-now belongs to the standalone-detail decision.
-
-### Frontend-only attachment mockup
-
-Run `pnpm web:dev` and open `/tests/mockups/attachments.html` on Vite's printed
-origin. `tests/mockups/main.tsx` renders the production `TaskDetailSurface` and
-CSS with `task-detail-fixture.ts` and the attachment `fixture.ts`. Task reads and
-existing writes are intercepted by the in-memory fixture; native previews use
-local files. The modal and page therefore share complete content and actions
-without Go, PostgreSQL or service requests. Refresh resets fixture changes.
-Object URLs remain valid through deletion and are released with their fixture.
-
-Use `/tests/mockups/attachments.html?mode=page` for standalone Overview and
-`/tests/mockups/attachments.html?mode=page&file=docs%2Fguide.md&scenario=files`
-for complete details at a bundled attachment. Query `task`, `tab` and `file`
-express fixture navigation; page changes use browser history while modal changes
-stay local. The fixture URL differs from production's canonical task routes.
-The `scenario` query selects existing attachment files, loading, empty, failure
-and busy cases. All resources are development entries excluded from the
-single-index production build; object URLs define no production navigation rule.
-
-The mockup validates appearance and frontend behavior, not authentication or
-persistent data. Local browser probes exercise the real portal dialog,
-background inertness, CSS-hidden controls, frame boundaries, layered keys and
-trigger restoration; unit layout emulation does not establish those browser
-properties. The production `task-detail-page` and `task-attachments` journeys
-use actual services on both runtime targets with source-qualified receipts.
-
-## Frontend-only task browsing mockup
-
-Run `pnpm web:dev` and open `/tests/mockups/browsing.html` on Vite's printed
-origin. The fixture mounts the production project page and CSS with mixed,
-fully completed and empty project graphs. Without a saved section preference it
-starts on Overview; select Task list to reach the two inner category tabs.
-Reloading or returning to a project restores the selected outer section. It
-demonstrates the current outer section layout, retained task subtree and
-isolated section scroll ownership, newest-first category lists, topology-based
-standalone classification, cross-chain prerequisites, direct standalone details
-and per-project tab, shared task-list scroll and independent completed-item
-preferences across reloads. Goal headers expand one-task-per-row lists with direct child and Goal
-details; membership includes all ordinary-component members and keeps external
-context in the graph. Graph dialogs start closed and open only through each
-Goal's separate View dependencies action, leaving disclosure unchanged. The
-fixture uses the production compact row and dialog CSS directly, including
-naturally growing long titles, complete status/progress fields, 80% desktop
-geometry and narrow-screen gutters. Each graph dialog provides fullscreen
-controls, retained pan/zoom, keyboard focus isolation and task details above
-its canvas. It distinguishes hidden all-complete items from an empty category
-and a truly empty project and preserves focus when the reveal action
-disappears. The self-contained [task view
-mockup](../../docs/design/mockups/task-views.html) preserves the earlier
-inner-category visual baseline without a development server. Its original state
-examples do not replace the current production-component fixture. The scenario
-stays in the URL hash. Graph, detail and empty attachment-list reads are served
-in memory; unexpected requests fail instead of reaching a service. This
-development entry is excluded from the production build and does not establish
-real-backend acceptance.
+now belongs to the standalone-detail decision. The production `task-detail-page`
+and `task-attachments` journeys use actual services on both runtime targets with
+source-qualified receipts.
 
 ## Validation and build
 

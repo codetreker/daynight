@@ -10,7 +10,7 @@ import * as layoutModule from '../../src/features/task-graph/layout';
 import { LanguageSelector } from '../../src/i18n/LanguageSelector';
 import { messagesByLocale } from '../../src/i18n/messages';
 import { renderWithLocale } from '../helpers/renderWithLocale';
-import { browsingProjects } from '../mockups/browsing-fixture';
+import { progressiveGraph } from '../helpers/graphData';
 import { installGraphMeasurements } from '../graph-measurements';
 
 const time = '2026-10-20T00:00:00Z';
@@ -122,7 +122,7 @@ describe('localized task graph presentation', () => {
 
   it('retranslates expanded visibility controls without changing the actual visible graph, detail selection or viewport', async () => {
     const user = userEvent.setup();
-    const fixture = browsingProjects.progressive;
+    const fixture = progressiveGraph;
     const index = buildGraphIndex(fixture);
     const rootId = fixture.tasks.find((task) => task.titlePreview === '渐进展开 · 主链交付起点')!.id;
     const joinId = fixture.tasks.find((task) => task.titlePreview === '合流任务 · 40 个外部前置')!.id;

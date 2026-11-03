@@ -22,10 +22,7 @@ packages/daynight-web/
     LocaleProvider.tsx     展示值、偏好错误及保存操作
     LanguageSelector.tsx   共用原生选择器、错误提示与重试
   tests/helpers/renderWithLocale.tsx  显式语言渲染 helper
-  tests/mockups/locale-runtime.html
 ```
-
-隔离的[运行时预览](../../packages/daynight-web/tests/mockups/locale-runtime.html)继续演示多个选择器共享语言与 fixture 状态。实际组件的[任务浏览预览](../../packages/daynight-web/tests/mockups/browsing.html)和[附件预览](../../packages/daynight-web/tests/mockups/attachments.html)均显式挂载 Provider，复用生产组件及样式。这些 fixture 的前端交互不替代真实服务验收。
 
 生产 Application 的公开与认证分支共享常驻 LocaleProvider。messages.landing 拥有
 推广、示例文档与记录、FAQ、公开身份提示和元数据；演示的稳定身份与本地选择不依赖
@@ -35,8 +32,7 @@ packages/daynight-web/
 messages.workers 拥有 Worker 列表/详情、观测状态、资源/版本、时间、同步失败与可访问名称。
 入口在绘制前设置当前语言及与路径对应的推广页、指南或鉴权加载标题；后续页面元数据、
 路由与会话状态按当前目录更新。
-身份变化释放用户内容，但不重建语言 Provider。独立鉴权 fixture 仍显式挂载
-Provider，其内存交互验证与真实 UniAuth 生产验收分别保留证据。
+身份变化释放用户内容，但不重建语言 Provider。真实 UniAuth 生产验收保留对应源码与浏览器环境的证据。
 
 ## 初始语言与偏好
 
@@ -84,6 +80,8 @@ Provider 使用一份当前 issue 状态，初始值来自 `initial.issue`。选
 `auth` 拥有登录、账户、项目创建、成员、邀请、令牌、工作空间路由及管理对话框消息；`workers` 拥有账号级 Worker 观测消息；`setup` 拥有使用引导的五步说明、成功标志、Agent 请求示例与复制反馈。组件通过 `useI18n()` 取得领域消息、公共状态与格式化器；相同 task 状态和请求 ID 标签不在领域中重复定义。
 
 固定文本使用字符串；动态文本使用带具名参数的函数，返回完整句子，目录负责语序、标点、单位和复数。调用方不拼接零散英语片段，不提供缺失键时使用另一种语言的静默替代。产品计数消息及格式测试覆盖 0、1 与多项；测试专用消息不进入产品目录。
+
+Session 的指定操作和活动标签从已有英语目录导出只读子集，只在[对应组件位置](task-session-protocol.md#session-view-的阅读与输入状态)读取。该映射是显式产品术语规则，不是缺失翻译时的 fallback。组件保留 LocaleProvider 订阅及周围本地化消息，固定文本使用局部 `lang="en"`；不修改语言偏好、整页语言或共享中文消息值。
 
 `getFormats(locale)` 按两种 locale 缓存 `Intl.DateTimeFormat`、`Intl.NumberFormat` 和 `Intl.PluralRules`，提供 `date`、`time`、`dateTime`、`number`、`bytes` 与 `plural`。日期输入接受 `Date`、字符串或数字，沿用本地时区与 `hour12: false`；格式改变不修改输入时间戳。数字按语言分组；字节以精确值加 `B` 展示，不转换为会丢失精度的近似容量。格式化接口保留原生 `Intl` 的输入语义，不增加替代缺失数据的默认值；日期无效时由原生格式化器抛出错误。Worker 的 presentation helper 独立以当前 locale 的 Intl.NumberFormat 将严格 bytes 输入缩放为 B/KiB/MiB/GiB 等 IEC 读数，保留 API 精确值，不改变 getFormats.bytes 的精确 B 行为；相对上报时间使用服务端锚定时间与 Intl.RelativeTimeFormat。
 

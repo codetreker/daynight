@@ -2,7 +2,7 @@
 
 状态：已实现。本文定义三状态模型、统一状态资源与跨端写入机制。[需求 TS1–TS5](../spec/daynight-task-status.md)拥有完整可观察行为。
 
-状态与事务机制源码依据为 `18c794918ef0506a04bf294dad9cd8058ef2696b`；详情头部继承 `7b426bc0b632e57bb80dea0d5aca35b1e8f71a6e` 已交付的紧凑布局。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-task-status-assignment.md)保存选择与代价；[交互原型](mockups/task-status/index.html)演示生产样式的三状态交互。任务拆分与执行收据由 Daynight 所有。
+状态与事务机制源码依据为 `18c794918ef0506a04bf294dad9cd8058ef2696b`；详情头部继承 `7b426bc0b632e57bb80dea0d5aca35b1e8f71a6e` 已交付的紧凑布局。[决策记录](../../.agents/notes/implemented/architecture/2026-10-24-task-status-assignment.md)保存选择与代价。任务拆分与执行收据由 Daynight 所有。
 
 ## 问题与结构选择
 
