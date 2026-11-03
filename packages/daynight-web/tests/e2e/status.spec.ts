@@ -69,7 +69,7 @@ const expectConfirmed = async (page: Page): Promise<void> => {
   await expect(detail(page).locator('.task-status-feedback [role="status"]')).toHaveText(/^(任务状态已确认。|Task status confirmed\.)$/);
   await expect(detail(page).locator('.task-status-error')).toHaveCount(0);
 };
-const invariant = (task: TaskDetail) => ({ id: task.id, projectId: task.projectId, title: task.title, description: task.description,
+const invariant = (task: TaskDetail) => ({ assignedTo: task.assignedTo, id: task.id, projectId: task.projectId, title: task.title, description: task.description,
   properties: task.properties, allowAgents: task.allowAgents, requiredPlatform: task.requiredPlatform, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, createdAt: task.createdAt });
 const read = async (api: AuthenticatedAPI, project: string, task: string): Promise<TaskDetail> => {
   const response = await api.get(taskPath(project, task)); expect(response.status()).toBe(200);

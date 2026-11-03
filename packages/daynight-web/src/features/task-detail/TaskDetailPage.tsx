@@ -6,6 +6,7 @@ import { ProjectGraphErrorDetail, projectGraphErrorTitle } from '../projects/Pro
 import { useTaskGraph } from '../projects/useTaskGraph';
 import { TaskDetailSessionBoundary, useTaskDetailSessions } from './TaskDetailSession';
 import { TaskDetailPageBar, TaskDetailSurface } from './TaskDetailSurface';
+import { useProjectAssigneeReceipt } from '../task-assignees/TaskAssignees';
 import '../../styles/task-detail.css';
 
 type TaskDetailPageProps = {
@@ -16,6 +17,8 @@ type TaskDetailPageProps = {
 
 const TaskDetailPageContent = ({ projectId, taskId, navigation }: TaskDetailPageProps) => {
   const graph = useTaskGraph(projectId);
+  const graphOwner = useRef(Symbol());
+  useProjectAssigneeReceipt(projectId, graphOwner.current, graph.snapshot?.revision ?? 0);
   const [fullscreen, setFullscreen] = useState(false);
   const sessions = useTaskDetailSessions();
   const main = useRef<HTMLElement>(null);

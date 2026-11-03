@@ -40,7 +40,11 @@ const expectIdentityEdges = async (heading: Locator): Promise<void> => {
 
 export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAPI, info: TestInfo): Promise<void> => {
   const project = await createProject(api, { name: 'Claim reading allocation' });
-  const task = await createTask(api, project.id, { title: 'Claim reading allocation', description: Array.from({ length: 60 }, (_, index) => `Paragraph ${index + 1}: the reading panel remains accessible.`).join('\n\n') });
+  const callerResponse = await api.get('/api/v1/me');
+  expect(callerResponse.status()).toBe(200);
+  const caller = await callerResponse.json() as { id: string };
+  expect(callerResponse.headers()['daynight-user-id']).toBe(caller.id);
+  const task = await createTask(api, project.id, { title: 'Claim reading allocation', assignedTo: caller.id, description: Array.from({ length: 60 }, (_, index) => `Paragraph ${index + 1}: the reading panel remains accessible.`).join('\n\n') });
   const path = `/api/v1/projects/${project.id}/tasks/${task.id}`;
   const identity = await api.get('/api/v1/me');
   expect(identity.status()).toBe(200);
@@ -57,6 +61,8 @@ export const verifyClaimReadingLayouts = async (page: Page, api: AuthenticatedAP
   const claimed = await api.post(`${path}/worker-claim`, { headers: { 'Daynight-Worker-Protocol': '2' }, data: { version: enabledTask.version, claimId, workerId: randomUUID(), machine: { id: randomUUID(), name: machineName }, platform: 'linux', agent: 'codex', agentControlMode: 'herdr', worktreeId: randomUUID() } });
   expect(claimed.status()).toBe(200);
   const current = await claimed.json() as Task;
+  expect(current.assignedTo).toBe(caller.id);
+  expect(readWorkerClaim(current.properties)!.userId).toBe(caller.id);
   const attachment = await api.put(attachmentDownloadUrl(project.id, task.id, 'docs/guide.md'), { headers: { 'Content-Type': 'text/markdown' }, data: '# Claim reader\n\n' + 'The attachment remains readable.\n\n'.repeat(60) });
   expect(attachment.status()).toBe(201);
   const membersURL = `**/api/v1/projects/${project.id}/members`;

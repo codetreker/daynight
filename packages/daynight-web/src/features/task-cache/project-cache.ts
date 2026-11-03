@@ -18,7 +18,7 @@ export type CachedProject = TaskProjection & {
   readonly summaries: ReadonlyMap<string, TaskSummary>;
 };
 export type DetailStore = IDBPObjectStore<TaskCacheSchema, ["userScopes", "projects", "summaries", "details"], "details", "readwrite">;
-export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true };
+export type CacheEvent = { readonly projectId: string; readonly error?: unknown; readonly accessRevoked?: true; readonly revokedGeneration?: string };
 type Hint = { readonly userId: string; readonly projectId: string | null; readonly revokedGeneration?: string; readonly userFence?: string };
 class TaskCacheLifecycleChanged extends DOMException {
   constructor() { super("The task cache lifecycle changed.", "AbortError"); }
@@ -62,6 +62,13 @@ export class TaskCacheScope {
     this.userId = requestId(options.userId);
     this.onIdentityMismatch = options.onIdentityMismatch;
     this.database = new TaskCacheDatabase((error) => {
+      if (error.category === "versionchange") {
+        const projects = [...this.authorizedProjects];
+        const listeners = [...this.listeners];
+        this.close();
+        for (const projectId of projects) for (const listener of listeners) listener({ projectId, error });
+        return;
+      }
       for (const projectId of this.authorizedProjects) this.emit({ projectId, error });
     });
     this.channel = typeof BroadcastChannel === "undefined" ? null : new BroadcastChannel("daynight-task-cache");
@@ -242,7 +249,7 @@ export class TaskCacheScope {
       if (this.deniedProjects.get(projectId) === ticket) this.deniedProjects.delete(projectId);
       this.hint(projectId);
     }).catch((error: unknown) => {
-      this.emit({ projectId, accessRevoked: true, error });
+      this.emit({ projectId, accessRevoked: true, revokedGeneration: ticket.cacheGeneration, error });
       throw error;
     }).finally(() => { if (this.projectPurges.get(projectId) === work) this.projectPurges.delete(projectId); });
     this.projectPurges.set(projectId, work);
@@ -267,7 +274,7 @@ export class TaskCacheScope {
     if (denied === undefined) this.deniedProjects.set(ticket.projectId, ticket);
     this.projections.delete(ticket.projectId); this.authorizedProjects.delete(ticket.projectId);
     if (broadcast) this.channel?.postMessage({ userId: this.userId, projectId: ticket.projectId, userFence: ticket.userFence, revokedGeneration: ticket.cacheGeneration } satisfies Hint);
-    this.emit({ projectId: ticket.projectId, accessRevoked: true, error: reason });
+    this.emit({ projectId: ticket.projectId, accessRevoked: true, revokedGeneration: ticket.cacheGeneration, error: reason });
     return this.clearDeniedProject(ticket.projectId).then(() => true);
   }
   async beginSync(projectId: string, signal: AbortSignal): Promise<SyncTicket> {

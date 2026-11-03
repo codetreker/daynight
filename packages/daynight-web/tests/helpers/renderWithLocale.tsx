@@ -20,5 +20,5 @@ export const renderWithLocale = (ui: ReactElement, { locale, issue = null, getSt
   return { ...render(ui, { ...options, wrapper }), setLocale: (next: Locale) => act(() => selectLocale(next)) };
 };
 
-export const createLocaleRender = (locale: Locale) =>
-  (ui: ReactElement, options: Omit<LocaleRenderOptions, "locale"> = {}) => renderWithLocale(ui, { ...options, locale });
+export const createLocaleRender = (locale: Locale, defaults: Omit<LocaleRenderOptions, "locale"> = {}) =>
+  (ui: ReactElement, options: Omit<LocaleRenderOptions, "locale"> = {}) => renderWithLocale(ui, { ...defaults, ...options, locale });

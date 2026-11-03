@@ -37,6 +37,19 @@ export type ProjectAccess = {
   readonly directGrant: ProjectGrant | null;
 };
 
+export type ProjectPerson = {
+  readonly userId: string;
+  readonly name: string | null;
+  readonly avatarUrl: string | null;
+  readonly hasProjectAccess: boolean;
+};
+export type ProjectPeople = {
+  readonly items: readonly ProjectPerson[];
+  readonly unresolvedUserIds: readonly string[];
+};
+export type ProjectPeopleQuery =
+  | { readonly kind: "catalogue" }
+  | { readonly kind: "resolve"; readonly userIds: readonly string[] };
 export type ProjectMember = {
   readonly projectId: string;
   readonly userId: string;

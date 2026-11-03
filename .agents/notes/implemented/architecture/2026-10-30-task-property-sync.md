@@ -38,12 +38,14 @@ HTTP 500 and take precedence over a saved refusal, including when an error chain
 also contains property validation. A failed operation returns no partial tasks.
 Delta validation covers its selected task set, not unreturned historical rows.
 
-IndexedDB schema 3 rebuilds projects, summaries and details and rotates user
-fences for both 2-to-3 and direct 1-to-3 upgrades. Clearing old epochs and
-watermarks forces a complete snapshot, including tasks unchanged since the old
-format. An old missing field cannot be repaired with an inferred empty object.
-Upgrade failures roll back. Old connections close on versionchange, and stale
-fences cannot publish across the replacement.
+The property-sync delivery used IndexedDB schema 3 to rebuild projects, summaries
+and details and rotate user fences for 2-to-3 and direct 1-to-3 upgrades. The
+[assignment decision](2026-11-03-task-assignment-foundation.md) now owns schema 4
+and direct rebuilds from 1, 2 or 3. Clearing old epochs and watermarks forces a
+complete snapshot, including tasks unchanged since the old format. Missing
+properties cannot be repaired with an inferred empty object. Upgrade failures
+roll back. Old connections close on versionchange, and stale fences cannot
+publish across the replacement.
 
 The summary map keeps complete properties, while graph-node projection explicitly
 drops them. Detail-to-summary comparison uses the same complete property equality.

@@ -1,7 +1,7 @@
 import { ApiError, assertResponsePrincipal, isAbortError, json, read, request, requestId, type TaskResponseAdmission } from "./client";
 import { decodeAuthJson, normalizeDeviceUserCode, parseAuthConfig, parseCreatedInvitation, parseCreatedToken, parseDeviceAuthorization, parseInvitationInspection, parseInvitations, parseMember, parseMembers, parseMemberVersion, parseProjectAccess, decodeProjectAccessJson, parseRole, parseToken, parseTokens, parseUser } from "./auth-parse";
-import { project, timestamp } from "./parse";
-import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectRole, ProjectAccess, User } from "./auth-types";
+import { array, boolean, id, malformed, project, record, string, timestamp } from "./parse";
+import type { AuthConfig, CreatedPersonalAccessToken, CreatedProjectInvitation, DeviceAuthorizationInspection, PersonalAccessToken, PersonalAccessTokenExpiryUpdate, ProjectInvitation, ProjectInvitationInspection, ProjectMember, ProjectPeople, ProjectPeopleQuery, ProjectPerson, ProjectRole, ProjectAccess, User } from "./auth-types";
 import type { Project } from "./types";
 import { decodeProjectJson } from "./project-json";
 export type * from "./auth-types";
@@ -78,6 +78,47 @@ export const listMembers = (projectId: string, signal: AbortSignal, admission?: 
     const response = await request(`${projectUrl(project)}/members`, signal, { headers: { Accept: "application/json" } });
     if (admission !== undefined) assertResponsePrincipal(response, admission.userId, admission.onPrincipalMismatch);
     return json(response, signal, (data) => parseMembers(data, project), decodeAuthJson);
+  });
+};
+const parseProjectPeople = (value: unknown, requested: readonly string[] | null): ProjectPeople => {
+  const data = record(value);
+  if (Object.keys(data).some((key) => key !== "items" && key !== "unresolvedUserIds")) return malformed();
+  const items = array(data.items, (value): ProjectPerson => {
+    const person = record(value);
+    if (Object.keys(person).some((key) => key !== "userId" && key !== "name" && key !== "avatarUrl" && key !== "hasProjectAccess")) return malformed();
+    return {
+      userId: id(person.userId),
+      name: person.name === null ? null : string(person.name),
+      avatarUrl: person.avatarUrl === null ? null : string(person.avatarUrl),
+      hasProjectAccess: boolean(person.hasProjectAccess),
+    };
+  });
+  const unresolvedUserIds = array(data.unresolvedUserIds, id);
+  const returned = [...items.map((item) => item.userId), ...unresolvedUserIds];
+  if (new Set(returned).size !== returned.length) return malformed();
+  if (requested === null) {
+    if (unresolvedUserIds.length !== 0) return malformed();
+  } else {
+    const expected = new Set(requested);
+    if (returned.length !== expected.size || returned.some((userId) => !expected.has(userId))) return malformed();
+  }
+  return { items, unresolvedUserIds };
+};
+
+export const listProjectPeople = (projectId: string, query: ProjectPeopleQuery, signal: AbortSignal, admission: TaskResponseAdmission): Promise<ProjectPeople> => {
+  const project = requestId(projectId), user = requestId(admission.userId);
+  const requested = query.kind === "catalogue" ? null : query.userIds.map(requestId);
+  if (requested !== null && (requested.length === 0 || requested.length > 100 || new Set(requested).size !== requested.length)) throw new ApiError("protocol");
+  const parameters = new URLSearchParams();
+  if (requested !== null) for (const userId of requested) parameters.append("userId", userId);
+  const suffix = requested === null ? "" : `?${parameters}`;
+  return authOperation(signal, async () => {
+    const response = await request(`${projectUrl(project)}/task-assignees${suffix}`, signal, { headers: { Accept: "application/json" } });
+    assertResponsePrincipal(response, user, admission.onPrincipalMismatch);
+    return json(response, signal, (value) => {
+      if (response.status !== 200) throw new ApiError("protocol", response.status);
+      return parseProjectPeople(value, requested);
+    });
   });
 };
 export const setMemberRole = (projectId: string, userId: string, input: { readonly version: bigint; readonly role: ProjectRole }, signal: AbortSignal): Promise<ProjectMember> => {
