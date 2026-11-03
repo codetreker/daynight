@@ -367,7 +367,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   checks:
-    if: ${{ always() }}
+    if: ${{ !cancelled() }}
     needs: [detect-changes, verify, verify-runtime, verify-completion, verify-server, verify-web-quality, verify-web]
     runs-on: ubuntu-latest
     timeout-minutes: 1

@@ -329,9 +329,10 @@ SQL resources and bundled Markdown. Other documentation exclusions apply before 
 changes selecting several modules run their union. The Web selector enables
 parallel quality and browser jobs, each with a 20-minute bound; both are required
 by `checks`. Selected jobs retain their complete integration and coverage gates.
-The final `checks` job accepts only
-`success` or `skipped` from all preceding jobs. Documentation-only PRs run routing
-tests and that gate; every `main` push runs full application validation. See the
+The final `checks` job runs unless the workflow is cancelled and accepts only
+`success` or `skipped` from all preceding jobs. A newer run on the same ref cancels
+the older workflow. Documentation-only PRs run routing tests and that gate;
+every `main` push runs full application validation. See the
 [CI guide](docs/development.md#ci-selection) for routing and execution details.
 
 ## Validation
