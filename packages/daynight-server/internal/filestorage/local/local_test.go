@@ -488,6 +488,27 @@ func TestNewRootSyncFailureCanRetryWithoutSkippingBarrier(t *testing.T) {
 	}
 }
 
+func TestNewRootPreservesFileCreatedDuringInitialization(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "new", "storage")
+	err := makeRoot(root, func(file *os.File) error {
+		if file.Name() == parent {
+			// The parent has just been created, while the final root was absent
+			// at the initial stat. Another writer can claim that name before mkdir.
+			if err := os.WriteFile(root, []byte("another writer"), 0o600); err != nil {
+				return err
+			}
+		}
+		return file.Sync()
+	})
+	if !errors.Is(err, fs.ErrExist) {
+		t.Fatalf("concurrent regular file accepted as a storage root: %v", err)
+	}
+	if content, err := os.ReadFile(root); err != nil || string(content) != "another writer" {
+		t.Fatalf("initialization changed the competing file: %q %v", content, err)
+	}
+}
+
 func TestFailedPublicationKeepsConflictingDirectory(t *testing.T) {
 	storage, root := newStorage(t)
 	source := &observingReader{Reader: strings.NewReader("content"), observe: func() {
