@@ -1,6 +1,6 @@
 # Task Steps 资源契约
 
-状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新及独立状态设置已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
+状态：持久化结构、完整集合与单项 HTTP 读取、集合添加、单项内容更新、独立状态设置及位置移动已实现。本文拥有当前可用的 Steps 行为；Task 的常规读取、列表、图和同步保持各自资源投影。
 
 ## 所有权与模型
 
@@ -29,8 +29,9 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 | `POST T/steps` | `version`、`id`、`title`；可选 `description`、`status`、`before` 或 `after`。 | `201`，完整有序 `StepsResource`；`Location` 指向新增项的规范单项路径。 |
 | `PATCH T/steps/{stepId}` | `version`；`title`、`description` 至少提供一个。 | `200`，完整有序 `StepsResource`。 |
 | `PUT T/steps/{stepId}/status` | `version`、`status`。 | `200`，完整有序 `StepsResource`。 |
+| `PUT T/steps/{stepId}/position` | `version`；`before`、`after`、`position` 恰好一个，`position` 为 `first` 或 `last`。 | `200`，完整有序 `StepsResource`。 |
 
-所有 Steps 请求均不接受 query，包括尾部空 `?`。集合的其他方法返回认证后的 `405` 和 `Allow: GET, HEAD, POST`；单项的其他方法返回认证后的 `405` 和 `Allow: GET, HEAD, PATCH`；状态子路径只接受 `PUT`，其他方法（包括 `HEAD`）返回认证后的 `405` 和 `Allow: PUT`。所有响应使用 `Cache-Control: no-store`，沿用认证、Cookie 写请求的 Origin 检查、principal 回执及 request ID。
+所有 Steps 请求均不接受 query，包括尾部空 `?`。集合的其他方法返回认证后的 `405` 和 `Allow: GET, HEAD, POST`；单项的其他方法返回认证后的 `405` 和 `Allow: GET, HEAD, PATCH`；状态与位置子路径只接受 `PUT`，其他方法（包括 `HEAD`）返回认证后的 `405` 和 `Allow: PUT`。所有响应使用 `Cache-Control: no-store`，沿用认证、Cookie 写请求的 Origin 检查、principal 回执及 request ID。
 
 完整集合如下，`version` 是父 Task 的正 int64 精确十进制整数，不能转为丢失精度的浮点数：
 
@@ -82,15 +83,25 @@ Steps 是父 Task 拥有的有序记录，保留独立名称、Markdown 说明�
 
 真实变化先检查版本耗尽，再使用数据库 UTC 微秒时间保存目标内容或状态；时间字段仅更新目标 `updatedAt` 和父 Task `updatedAt`，父版本只推进一次。目标 `createdAt`、身份和位置，以及其他 Step 的全部字段和时间保持。标题、Markdown 和空白按原值保存，不因比较而规范化。两种操作均在任何数据修改前对完整候选执行相同的精确容量预检；状态字符串变长也可能导致容量拒绝，缩小说明仍按完整资源和版本规则提交。
 
+## 移动位置
+
+`PUT T/steps/{stepId}/position` 仅接受 `version`，以及恰好一个 `before`、`after` 或 `position`。`before` 与 `after` 是同 Task 内另一 Step 的 8 位 ID；`position` 只接受字符串 `first` 或 `last`，不接受布尔型 `first`/`last` 字段。目标与锚点均按输入 ID 规则规范化，锚点不能引用目标自身，大小写不同的同值 ID 也属于自引用。
+
+例如 `{"version":13,"after":"6F7A8B9C"}` 将目标移到该 Task 内 `6f7a8b9c` 之后；`{"version":14,"position":"first"}` 将目标移至首项。缺失目标或锚点返回子项 `404`，不会退回首尾或跨 Task 查找；自引用为 `400 invalid_input`。成功返回 `200` 和完整集合，不返回新增 `Location`。
+
+移动仅调整现存记录的顺序，不复制、重建或修改记录内容。所有 Step 的 ID、标题、说明、状态、`createdAt` 和 `updatedAt` 均保持；公开排列由返回数组表达。受影响区间的位置写成最终稠密顺序，唯一约束在提交时验证，区间外的行不需要修改。
+
+目标已在首项或末项、已紧邻指定锚点，或单项集合中的有效首尾移动均为 no-op：返回原完整资源并保留父版本和全部时间，不采样时钟、修改位置或 touch 父任务，最大正 int64 父版本仍可成功。陈旧版本仍先冲突；缺失目标或锚点不能作为 no-op。真实移动仅将父版本推进一次并更新父 `updatedAt`，先完成完整候选的精确容量预检，随后才修改受影响位置及父任务。
+
 ## 权限、快照与原子写入
 
-admin 与 member 具有相同读取、添加、内容更新和状态设置能力；Task 的 `todo`、`in_progress`、`done`，自动执行许可关闭、无 Session 或有效 Worker/Session 归属均不增加 Steps 门槛。访问首先检查正常项目成员关系和父资源可见性，再检查父墓碑。Steps 写入不读取 Worker 属性来决定可写性，不改变执行归属，也不冻结 Session。
+admin 与 member 具有相同读取、添加、内容更新、状态设置和移动能力；Task 的 `todo`、`in_progress`、`done`，自动执行许可关闭、无 Session 或有效 Worker/Session 归属均不增加 Steps 门槛。访问首先检查正常项目成员关系和父资源可见性，再检查父墓碑。Steps 写入不读取 Worker 属性来决定可写性，不改变执行归属，也不冻结 Session。
 
 读取在同一个 `REPEATABLE READ` 快照中检查项目成员关系、父资源存在性与软删除，再读取父版本及目标内容。父版本、完整内容及顺序必须属于一个一致状态；读取不改变父版本、更新时间、执行计时、状态、依赖、属性或执行归属。
 
-写入复用项目写事务，依次完成项目锁、成员准入、窄父任务头锁及墓碑检查，随后比较精确父版本。读取并验证当前集合后，添加先检查重复 ID，再解析锚点并构造不修改原集合的完整候选；内容与状态更新按同一现存目标变更路径查找目标、构造候选并比较语义值。合法 no-op 直接编码原资源，不进入版本耗尽、时钟或数据修改阶段。
+写入复用项目写事务，依次完成项目锁、成员准入、窄父任务头锁及墓碑检查，随后比较精确父版本。读取并验证当前集合后，添加先检查重复 ID，再解析锚点并构造不修改原集合的完整候选；内容与状态更新按同一现存目标变更路径查找目标、构造候选并比较语义值；移动先解析目标和相对锚点，再构造保持原内容与时间的最终顺序。合法 no-op 直接编码原资源，不进入版本耗尽、时钟或数据修改阶段。
 
-真实变化检查版本耗尽、取得数据库 UTC 微秒时间后，使用新父版本和实际时间编码候选。通过容量预检后，添加才平移位置并插入新行，内容或状态修改才 UPDATE 唯一目标行；随后均仅 touch 父任务一次。更新不重排集合。位置始终稠密为 `0..n-1`，唯一约束在提交时验证最终顺序。
+真实变化检查版本耗尽、取得数据库 UTC 微秒时间后，使用新父版本和实际时间编码候选。通过容量预检后，添加才平移位置并插入新行，内容或状态修改才 UPDATE 唯一目标行，移动才更新受影响区间的位置；随后均仅 touch 父任务一次。内容与状态更新不重排集合，移动不更改任何 Step 时间。位置始终稠密为 `0..n-1`，唯一约束在提交时验证最终顺序。
 
 Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只推进父版本一次，并只改变父 `updatedAt`；Task 标题、说明、整体状态、负责人、平台、许可、属性、依赖、执行起止时间及 Worker/Session 归属保持。相同观察版本的 Steps 与 Task 元数据竞争最多一个实际变更成功；即使修改不同字段，陈旧版本也冲突。无变化请求先完成时可与后续真实变化分别成功，但只有真实变化推进版本；真实变化先完成时，旧版本 no-op 冲突。拒绝在数据修改前决定；行写入或父 touch 后的故障经确认回滚时，完整集合、排列、父版本和全部时间均零变更。
 
@@ -102,7 +113,7 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 
 ## 失败、提交已知性与核对
 
-语法错误可在事务前拒绝。有效输入在事务内依次检查成员/父资源可见性、父删除、版本、Task 内身份或锚点、语义 no-op、版本耗尽和候选容量；陈旧版本先于目标或锚点错误，添加的重复 ID 先于缺失锚点，更新的目标缺失先于版本耗尽。
+形状与 ID 语法错误可在事务前拒绝。有效输入在事务内依次检查成员/父资源可见性、父删除、版本、Task 内身份或锚点、语义 no-op、版本耗尽和候选容量；陈旧版本先于目标或锚点错误，添加的重复 ID 先于缺失锚点，更新的目标缺失先于版本耗尽。移动先解析目标，再拒绝规范化后的自引用，随后解析其他锚点；陈旧版本先于这些语义位置检查。
 
 | 情况 | 结果 |
 |---|---|
@@ -111,7 +122,7 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 | 无项目成员权限、父资源不存在或 Task 不属于项目 | `404 not_found`。 |
 | 已授权父 Task 软删除 | `410 task_deleted`。 |
 | 该 Task 内没有目标 Step 或位置锚点 | `404 not_found`，不意味着父 Task 失效。 |
-| 非法输入、ID 或任何 query | `400 invalid_input`。 |
+| 非法输入、ID、自引用位置锚点或任何 query | `400 invalid_input`。 |
 | 观察的父版本过期 | `409 version_conflict`。 |
 | 现存 Step ID 重复 | `409 step_id_conflict`。 |
 | 父版本已达最大正 int64 且需要真实变化 | `409 version_exhausted`；同值 no-op 保持有效。 |
@@ -122,7 +133,7 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 
 响应使用独立的 `written`、`failed` 或 `canceled_before_body` 结果，并记录已写字节；写入网络不等于客户端确认收到。未知写入按原 Project、Task、Step ID 只读核对当前集合或单项，不自动重放 POST、PATCH 或 PUT，不为未知新增换 ID。当前存在、缺失或版本只表达当前事实，不能归因于某次未知操作。
 
-沿用 `X-Request-ID`。恢复 GET 可使用原请求 ID 加 `.r1`、`.r2` 等后缀关联诊断，记录 `read_kind=reconcile`、当前版本及 `found`、`absent` 或 `current_state`。该约定不参与授权、版本、身份或幂等判断。日志由 handler 记录 `add`、`update` 或 `set_status` 操作、`changed`/`unchanged` 业务结果、prepare/persist/commit/response 阶段、独立事务/响应结果、安全原因类别和必要 SQLSTATE。no-op 不记录数据写入的 persist 阶段；业务 `unchanged` 可与事务 `committed` 同时成立，二者含义独立；固定诊断不输出标题、Markdown、URL、令牌、任意 Fault message 或数据库消息。
+沿用 `X-Request-ID`。恢复 GET 可使用原请求 ID 加 `.r1`、`.r2` 等后缀关联诊断，记录 `read_kind=reconcile`、当前版本及 `found`、`absent` 或 `current_state`。该约定不参与授权、版本、身份或幂等判断。日志由 handler 记录 `add`、`update`、`set_status` 或 `move` 操作、`changed`/`unchanged` 业务结果、prepare/persist/commit/response 阶段、独立事务/响应结果、安全原因类别和必要 SQLSTATE。no-op 不记录数据写入的 persist 阶段；业务 `unchanged` 可与事务 `committed` 同时成立，二者含义独立；固定诊断不输出标题、Markdown、URL、令牌、任意 Fault message 或数据库消息。
 
 ## 验证要求
 
@@ -145,5 +156,9 @@ Task 元数据与 Steps 共享 `Task.version`。成功的真实 Steps 变化只�
 | ST-C3 | 当前同值与最大版本 no-op 返回完整原资源且无时钟采样、目标 UPDATE 或父 touch；陈旧同值冲突，真实变化版本耗尽和目标缺失遵守检查顺序。 |
 | ST-C4 | 真实 HTTP 的精确容量 PATCH、超限一字节零写入、缩小说明、状态长度增加及合法上限 no-op 均使用同一完整 codec；压力案例独立于日常 CI。 |
 | ST-C5 | 同版本实际变化竞争、成对内容写入/父 touch 后故障及确认回滚保持原子性；响应丢失可按原身份读取当前事实，日志区分 unchanged 与提交结果。 |
+| ST-M1 | 真实服务完成首尾、前后锚点和跨区间移动，返回稠密完整顺序；大小写 ID、同名记录和跨 Task 同值 ID 不改变定位。 |
+| ST-M2 | 移动保留所有 Step 身份、内容和创建/更新时间；当前相邻、首尾及单项 no-op 保留完整资源与全部时间，最大版本 no-op 无时钟、位置 UPDATE 或父 touch。 |
+| ST-M3 | 严格位置输入、自引用、缺失目标/锚点、陈旧同值、权限与版本耗尽按检查顺序拒绝；同版本移动及 Task 写入最多一次实际变化。 |
+| ST-M4 | 真实 PostgreSQL 的受影响位置写入和父 touch 后失败均确认回滚，完整前后状态相同；实际 HTTP 的最大合法资源移动与 no-op 使用同一完整 codec，压力案例独立于日常 CI。 |
 
 [服务验证说明](../../packages/daynight-server/README.md#task-steps-api)拥有测试与独立压力验证命令；实际产物及运行结果随对应源码和 PR 保存。

@@ -80,6 +80,20 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 			t.Fatal("member change lost collection")
 		}
 	}
+	moveBody := `{"version":5,"after":"ABCDEF01"}`
+	movePath := integration.server.URL + path + "/00000000/position"
+	identityRequest(t, anonymous, "PUT", movePath, moveBody, nil, 401)
+	identityRequest(t, member, "PUT", movePath, moveBody, nil, 403)
+	identityRequest(t, member, "PUT", movePath, moveBody, map[string]string{"Origin": "https://unrelated.invalid"}, 403)
+	_, data = identityRequest(t, outsider, "PUT", movePath, moveBody, origin, 404)
+	if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
+		t.Fatal("nonmember move leaked task")
+	}
+	_, data = identityRequest(t, member, "PUT", movePath, moveBody, origin, 200)
+	moved := identityDecode[api.StepsResource](t, data)
+	if moved.Version != 6 || moved.Steps[1].ID != "00000000" {
+		t.Fatal("member could not move step")
+	}
 	_, data = identityRequest(t, member, "POST", integration.server.URL+"/api/v1/me/tokens", `{"name":"Steps PAT","expiresAt":null}`, origin, 201)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	identityRequest(t, anonymous, "GET", integration.server.URL+path, "", map[string]string{"Authorization": "Bearer " + token.Token}, 200)
