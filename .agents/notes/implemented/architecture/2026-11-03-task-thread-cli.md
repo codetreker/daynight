@@ -73,7 +73,10 @@ Clients make explicit continuation decisions and retain their own read position.
 Canonical response identity checks add no current-user request, and explicit
 project selection avoids unrelated resource preflight calls.
 
-The text proof constrains future wrapper and label growth. Source-parser,
+The text proof constrains future wrapper and label growth. The
+[installed Thread scenario](../../../../packages/daynight-server/cmd/e2e_tests/acceptance_thread_cli_test.go)
+owns service parity in the test-only `cmd/e2e_tests` package, sharing its process,
+authentication, source-bound artifact and cleanup evidence harness. Source-parser,
 service-parity and rendering tests must evolve together when fields or encoding
 change. Stronger submission identity, mutable messages or automatic dispatch
 would require new requirements and API contracts; no dormant mechanisms are
