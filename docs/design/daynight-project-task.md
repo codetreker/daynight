@@ -575,8 +575,10 @@ fixture [`installed-cli.ts`](../../packages/daynight/test/fixtures/installed-cli
 `node packages/daynight/scripts/project-task-acceptance.ts`，由 Go 检查脚本调用；
 [`project-task-budgets.ts`](../../packages/daynight/scripts/project-task-budgets.ts)
 拥有期限与解码字节预算场景。
-它构建并安装 CLI 一次，将安装身份传给 Go command-package 验收，复用既有 fresh
-race binary、隔离 PostgreSQL schema、listener、重启和数据库等待屏障。新场景
+它构建并安装 CLI 一次，将安装身份传给独立 Go 测试包 `cmd/e2e_tests`，复用其 fresh
+race binary、隔离 PostgreSQL schema、listener、重启和数据库等待屏障。该包拥有
+跨进程验收的 `TestMain` 与辅助设施，由既有 `go-cov` 入口和 `go test ./...`
+发现执行；主命令包保留直接调用内部函数的测试并独立管理临时资源。场景
 `installed_cli_project_task_workflow` 通过要求编号 `PT.V1`、`PT.V3`、`PT.V5`、
 `PT.V6`、`PT.V7`、`PT.V8`、`PT.V9`、`PT.V10` 与 CLI 验收对应，保留原有服务
 场景及所属 package 覆盖率。Go receipt 的 `installedCli` 保存共享 helper 的 schema、
@@ -596,8 +598,11 @@ PR 控制字符可见转义及无原始终端控制字符输出。
 [附件跨层验收决策](../../.agents/notes/archived/testing/2026-10-21-task-attachment-cross-layer-acceptance.md)；
 原有 PT 场景和六个预算探针保持完整。
 
-编排层原样执行固定 go-cov 参数及 strict raw coverage 检查，通过后才在 Go 默认
-10 分钟计时器之外运行六个公开安装 CLI 场景：持续推进 cursor 的总期限、
+编排层执行固定版本 go-cov，以 `--skip-result-packages cmd/e2e_tests` 省略没有
+产品语句的 E2E 测试包结果汇总行；该包测试仍完整执行，测试失败仍向上传递。
+生产包及函数的覆盖率门槛、critical 检查和原始 coverage profile 保持完整。
+strict raw coverage 检查通过后，才在 Go 默认 10 分钟计时器之外运行六个公开安装
+CLI 场景：持续推进 cursor 的总期限、
 响应开始后停顿的单次期限，以及两组 gzip 解码字节边界配对。两个期限场景使用
 测试侧 Node.js `registerHooks` preload，只包装安装产物的 `api/operation.js` 导出，
 复用原有 `createOperation` 实现并注入 3 秒总期限和 1 秒单次期限。preload 先断言

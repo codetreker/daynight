@@ -1,4 +1,4 @@
-package main
+package e2e_tests
 
 import (
 	"bytes"
@@ -256,6 +256,15 @@ type acceptanceFixture struct {
 	scenario     *acceptanceScenario
 }
 
+func newAcceptanceStorageRoot(t *testing.T) string {
+	t.Helper()
+	root, err := os.MkdirTemp(filepath.Dir(binaryAcceptance.path), "process-storage-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
 func newAcceptanceFixture(t *testing.T, scenario *acceptanceScenario) *acceptanceFixture {
 	t.Helper()
 	base := os.Getenv("DAYNIGHT_TEST_DATABASE_URL")
@@ -268,7 +277,7 @@ func newAcceptanceFixture(t *testing.T, scenario *acceptanceScenario) *acceptanc
 	if err != nil {
 		t.Fatal("cannot configure acceptance database")
 	}
-	fixture := &acceptanceFixture{schema: "acceptance_" + strings.ToLower(rand.Text()), databaseURL: base, storageRoot: newTestStorageRoot(t), scenario: scenario}
+	fixture := &acceptanceFixture{schema: "acceptance_" + strings.ToLower(rand.Text()), databaseURL: base, storageRoot: newAcceptanceStorageRoot(t), scenario: scenario}
 	t.Cleanup(func() {
 		if err := os.RemoveAll(fixture.storageRoot); err != nil {
 			t.Error("cannot remove owned acceptance storage root")
