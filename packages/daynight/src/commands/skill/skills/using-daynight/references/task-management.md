@@ -10,7 +10,7 @@ Consult the relevant `--help` for arguments and field-clearing syntax.
 | Read operation | Scope and limits |
 | --- | --- |
 | `task ready` | One capped page of candidate `todo` tasks whose direct prerequisites are all complete, ordered by creation, not relevance. An empty page does not rule out in-progress or blocked work. |
-| `task list` | Traverse all matching pages. Excludes `done` by default; explicitly include completed tasks when checking for duplicates or inspecting history. |
+| `task list` | Traverse all matching pages. Excludes `done` by default; explicitly include completed tasks when checking for duplicates or inspecting history. `--assigned-to <uuid\|me\|unassigned>` filters responsibility, and combines with the other list filters. |
 | `task show` | A single task's full description, metadata, and exact version. Read it before operating on the selected task. |
 | `task properties <task-id>` | The selected task's complete current property object and exact task version. |
 | `task properties --schema` | The authenticated service's property definitions; no project or Git repository is required. |
@@ -35,17 +35,32 @@ See the [task content standard](task-content.md) for organizing descriptions and
 
 | Field | Semantics and limits |
 | --- | --- |
-| `allowAgents` | Permission for automatic selection. False for new tasks and cannot be enabled during creation. Enable only after an explicit [handoff](handoff.md) review. Omitting it from an update preserves its value. |
+| `allowAgents` | Permission for automatic selection. False for new tasks and cannot be enabled during creation. Enable only after an explicit [handoff](handoff.md) review. Omission preserves its value when assignment does not change. |
 | `requiredPlatform` | `null`, `windows`, `linux`, or `macos`; null means unrestricted. Can be specified during creation or updates and cleared during updates. |
+| `assignedTo` | One optional human responsible for the task, represented by a local user UUID or null. Create/update use `--assigned-to <user-uuid>`; update uses `--clear-assigned-to` to send null. These options conflict. Omission during update preserves the current value. |
 
-Actual changes to either field are prohibited while `in_progress`.
+A real assignee change, including first assignment or clearing, sets `allowAgents=false`
+in the same update. A same-value assignment does not reset permission. The selected
+new person must have project access; a retained former assignee may remain unchanged.
+Human responsibility grants no project access or control of an existing claim.
+Automatic acquisition requires assignment to the worker's authenticated account,
+in addition to automatic permission and the other eligibility checks. Existing
+claim inventory and explicit manual resume retain their execution-based authority.
+Human responsibility is separate from the worker-managed execution assignment.
+
+Actual changes to these fields are prohibited while `in_progress`.
 Same-value requests preserve the version and timestamps, but stale versions still conflict.
-Status operations and other metadata operations preserve these fields.
+Status, worker and property operations preserve the human assignee. Other metadata
+changes preserve all omitted fields subject to the assignment/permission rule above.
 
 List and ready support filtering by automatic-execution permission and platform compatibility.
 The service combines filters before pagination or candidate limits.
 Platform compatibility includes unrestricted and exact-match tasks without changing dependency readiness.
 Preserve filters across pages; do not locally filter a capped, unfiltered ready page.
+Assignee filtering belongs to `list`, not `ready`; combine `--ready --assigned-to me`
+on list when needed. `me` is bound to the successful response principal on every
+page, including empty pages; a complete list traversal cannot change that identity.
+No extra identity lookup is required.
 
 Ordinary execution explicitly targeted by the user is not restricted by automatic-selection permission or platform compatibility, but must still satisfy dependency, input, and authorization requirements.
 Automatic execution must use the actual runtime platform and recheck full task eligibility before starting.

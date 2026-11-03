@@ -26,7 +26,7 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Query tasks | `task list`, `task ready`, `task show` | [Task management](task-management.md#task-queries) |
 | Read task dependency graphs | `task graph <task-id>` | [Verify dependency changes](task-management.md#verify-dependency-changes) |
 | Create tasks | `task create` | [Create task](create-task.md) |
-| Change metadata | `task update` | [Task management](task-management.md#metadata) |
+| Change metadata or human responsibility | `task update` (`--assigned-to`, `--clear-assigned-to`) | [Task management](task-management.md#metadata) |
 | Read property values or definitions | `task properties` | [Properties](task-management.md#properties) |
 | Set or remove task properties | `task set-property`, `task remove-property` | [Properties](task-management.md#properties) |
 | Change status | `task set-status` | [Task management](task-management.md#status-and-timing) |

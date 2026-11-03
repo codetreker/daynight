@@ -1,6 +1,6 @@
 # Task 负责人设计
 
-状态：原生负责人列、事务与查询，以及Web负责人写入/展示/筛选和schema4缓存已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列、事务与查询、CLI 负责人读写/筛选，以及 Web 负责人写入/展示/筛选和 schema 4 缓存已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -72,7 +72,11 @@ HTTP 以局部 query 解析只允许重复 userId，不放宽共用 queryValues 
 
 Go 组装仍验证规范 ID、互斥和完整覆盖：items 与 unresolved 恰好覆盖规范请求一次，各自稳定排序。query/scan/rows/取消或事务失败不安装部分集合。错误不借用 ErrNotFound 表示资料缺失，避免外层误译为项目 404。
 
-完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。Web消费和刷新由认证scope内的TaskAssignees拥有，人员资料不写入Task版本或浏览器持久任务记录。当前基线CLI负责人消费者仍由其独立客户端交付。
+完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。Web消费和刷新由认证scope内的TaskAssignees拥有，人员资料不写入Task版本或浏览器持久任务记录。CLI 已严格消费 Task/graph 的 assignedTo，普通元数据命令使用完整 Task 响应，不为姓名调用目录；[客户端设计](daynight-project-task.md)拥有命令、me 身份与输出。
+
+## CLI 字段与命令
+
+CLI 的 Task/graph 读取器严格要求 nullable assignedTo，可读输出显示当前 UUID 或 unassigned，JSON 保留该字段。create/update 使用 UUID 设置，update 以互斥的清空选项发送 null；普通 PATCH 完整响应直接成为结果，不增加成功后的 GET 或人员查询。list 支持 UUID/me/unassigned，并与 ready、状态、许可和平台条件组合；有界 ready 命令保持原有参数。me 解析使用每页成功响应的 principal 头，完整遍历绑定第一页身份，空页也校验，且不额外请求 /me。完整命令、响应验证与错误边界由[客户端设计](daynight-project-task.md)拥有。
 
 ## Web 字段与任务写入
 

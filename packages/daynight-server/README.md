@@ -26,8 +26,9 @@ The [assignment contract](../../docs/spec/daynight-task-assignment.md) and
 Task assignee. Ordinary task creation/PATCH and full Task, summary and graph
 producers carry it. Native assignee filtering and project-scoped people reads
 are implemented. The Web consumes assignment with schema-4 cache rebuilding,
-people presentation, mutation and local list filters; CLI assignment consumers
-remain a separate capability in this source baseline.
+people presentation, mutation and local list filters. The CLI consumes the required
+nullable field and supports assignment/clearing, current-ID output and explicit
+list filters.
 
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define UniAuth identity

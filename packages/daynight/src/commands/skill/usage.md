@@ -1,6 +1,6 @@
 ---
 name: daynight
-description: Use the Daynight CLI to create and query projects and manage tasks, dependencies, properties and attachments with version-safe writes.
+description: Use the Daynight CLI to create and query projects and manage task responsibility, dependencies, properties and attachments with version-safe writes.
 ---
 
 # Daynight Project and Task Usage
@@ -31,11 +31,14 @@ outside Git. Project and task IDs are complete UUIDs.
 daynight task create --title "Improve installation" --description "Document prerequisites and verify setup."
 daynight task list --all --json
 daynight task list --status in_progress --json
+daynight task list --ready --assigned-to me --json
+daynight task list --assigned-to unassigned --json
 daynight task ready --limit 20 --json
 daynight task show <task-id> --json
 ```
 
-New tasks start in `todo` with automatic execution disabled. `task list` excludes
+New tasks start in `todo`, unassigned unless explicitly selected, with automatic
+execution disabled. `task list` excludes
 `done` by default; `--all` and `--status` are mutually exclusive. List reads all
 matching pages; JSON omits descriptions, so read `show --json` for a complete
 task and its version. Creation returns text and does not accept `--json`.
@@ -45,7 +48,12 @@ A task is ready when it is todo and every prerequisite is done. Both list and
 ready support `--allow-agents true|false` and
 `--compatible-platform windows|linux|macos`; filters combine with AND before
 pagination. Platform filtering includes unrestricted tasks and exact matches.
-List also accepts `--ready`. Readiness and automatic permission are separate.
+List also accepts `--ready` and `--assigned-to <user-uuid|me|unassigned>`.
+An assignee filter remains on every page and can combine with the other list
+filters. `me` uses the successful response identity, including on empty pages,
+and does not issue another identity request. `ready` has no assignee option; use
+`task list --ready --assigned-to me` instead. Readiness, human responsibility and
+automatic permission are separate.
 
 ## Version-Safe Writes
 
@@ -67,16 +75,32 @@ does not prove identity.
 ```bash
 daynight task update <task-id> --title "Clarify installation" --if-version <observed-version>
 daynight task update <task-id> --description "" --if-version <observed-version>
+daynight task create --title "Review installation" --assigned-to <user-uuid>
+daynight task update <task-id> --assigned-to <user-uuid> --if-version <observed-version>
+daynight task update <task-id> --clear-assigned-to --if-version <observed-version>
 daynight task update <task-id> --allow-agents true --required-platform linux --if-version <observed-version>
 daynight task set-status <task-id> in_progress --if-version <observed-version>
 daynight task set-status <task-id> done --if-version <observed-version>
 ```
 
-Update requires at least one changed field. An empty description clears it;
+Update requires at least one mutable field. An empty description clears it;
 omitted fields remain unchanged. Set `--required-platform windows|linux|macos`
-or use `--clear-required-platform`, never both. Actual permission and platform
-changes are locked while in progress. Automatic permission does not change
-status; `set-status` accepts `todo`, `in_progress` or `done`.
+or use `--clear-required-platform`, never both.
+
+`assignedTo` is one optional human responsible for the task, not a property or
+worker identity. Create/update accept `--assigned-to <user-uuid>`; update also
+accepts `--clear-assigned-to` to send null. Setting and clearing conflict. Writes
+accept UUIDs only; `me` and `unassigned` are list filters. A real assignee change
+also sets `allowAgents=false`; an equal value preserves it. Assignment grants no
+project access or transfer an existing execution. The accepted automatic claim
+rule requires a non-null assignee matching the worker's authenticated account;
+permission alone is not sufficient. Existing claim and manual-resume authority
+remain separate.
+
+Actual assignment, permission and platform changes are locked while in progress.
+These settings do not change status; `set-status` accepts `todo`, `in_progress`
+or `done`. Task and graph JSON always retain `assignedTo` as a UUID or null;
+text output shows `Assigned to: USER_UUID` or `Assigned to: unassigned`.
 
 Every direct prerequisite must be done before entering in_progress or done.
 Reopening done work is refused while a direct successor is in_progress or done.

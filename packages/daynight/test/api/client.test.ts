@@ -11,7 +11,7 @@ const otherId = "33333333-3333-3333-3333-333333333333";
 const normalId = "44444444-4444-4444-4444-444444444444";
 const time = "2026-10-20T01:02:03.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
+const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, assignedTo: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const refusal = (code = "not_found", details?: unknown) => ({ error: { code, message: "Actual server explanation.", requestId: "req-1", ...(details === undefined ? {} : { details }) } });
 const jsonResponse = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: { "Content-Type": "application/json" } });
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -543,8 +543,8 @@ const graph = (): TaskGraph => ({
   project,
   summary: { total: 2, todo: 1, inProgress: 0, done: 1, ready: 1, blocked: 0 },
   tasks: [
-    { id: taskId, titlePreview: "Task", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "todo", dependsOn: [otherId], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
-    { id: otherId, titlePreview: "Done", titleTruncated: false, allowAgents: false, requiredPlatform: null, status: "done", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+    { id: taskId, titlePreview: "Task", titleTruncated: false, allowAgents: false, requiredPlatform: null, assignedTo: null, status: "todo", dependsOn: [otherId], externalDependsOn: [], blockedBy: [], ready: true, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
+    { id: otherId, titlePreview: "Done", titleTruncated: false, allowAgents: false, requiredPlatform: null, assignedTo: null, status: "done", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false, startedAt: null, completedAt: null, createdAt: time, updatedAt: time },
   ],
 });
 
