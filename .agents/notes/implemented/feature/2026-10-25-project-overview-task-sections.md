@@ -6,8 +6,8 @@ Status: implemented
 
 Project statistics and task browsing serve different reading actions but occupy
 the same page. Separating them must not lose the current graph inspection,
-viewport, expanded chain or detail operation. The existing task-category page
-positions must also remain independent of scrolling through project statistics.
+viewport, expanded chain or detail operation. Task-list page position must also
+remain independent of scrolling through project statistics.
 
 ## Decision
 
@@ -37,16 +37,18 @@ continues to preserve list and preference ownership, including the mounted
 row-local disclosure introduced by the [Goal-list
 decision](2026-10-26-goal-task-lists.md). The [inner category
 decision](2026-10-22-project-task-views.md) retains conditional content
-mounting and independent category page positions.
+mounting. The [shared-scroll decision](../bug-fix/2026-11-03-shared-task-list-scroll.md)
+replaces independent category page positions with one task-list offset.
 
-The independent section, category, filter and scroll
-[browsing preference records](../../archived/feature/2026-10-21-task-browsing-preferences.md) keep their
-shapes and project scope; the former expansion record is no longer read or written. Task page scroll ownership is active only
+The section, category and filter records retain their project scope. The original
+[browsing preference records](../../archived/feature/2026-10-21-task-browsing-preferences.md)
+used one offset per category; the shared-scroll decision replaces only that
+scroll record. The former expansion record is no longer read or written. Task page scroll ownership is active only
 when Task list is selected and a snapshot is available. Leaving Tasks saves the
-current category position and releases its scroll/pagehide listeners during the
+shared task-list position and releases its scroll/pagehide listeners during the
 layout boundary; returning restores after the panel becomes visible. Overview
 uses a separate in-memory position, initially zero. Its scrolling and the first
-snapshot arrival never read or overwrite the task offsets. A connected element
+snapshot arrival never read or overwrite the shared task offset. A connected element
 inside hidden Tasks is not a valid detail-close focus target; restoration uses
 an available control in the visible section or the project heading.
 
