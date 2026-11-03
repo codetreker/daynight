@@ -1,3 +1,4 @@
+import { SqliteAccessError } from "../../platform/sqlite-error.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, realpath, writeFile, rename } from "node:fs/promises";
@@ -26,6 +27,10 @@ const waitForExit = async (exited: Promise<void> | undefined, milliseconds: numb
   try { await Promise.race([exited, new Promise<void>(resolve => { timer = setTimeout(resolve, milliseconds); })]); }
   finally { if (timer) clearTimeout(timer); }
 };
+
+const sqliteFailure = (error: unknown): boolean => error instanceof SqliteAccessError
+  || error instanceof AggregateError && error.errors.some(sqliteFailure)
+  || error instanceof Error && error.cause !== undefined && sqliteFailure(error.cause);
 
 // Keep the registration identity before the first network write. A timeout does
 // not authorize replacing it with another execution or replaying initial input.
@@ -163,7 +168,7 @@ export const runIndependentController = async (input: IndependentControllerInput
       }
       await delay(250, undefined, { signal: cancellation.signal });
     }
-  } catch (error) { if (!requestedStop) failed = error; }
+  } catch (error) { if (!requestedStop || sqliteFailure(error)) failed = error; }
   finally {
     // Credential revocation and network failure must never prevent local stop.
     if (child && ticket && directory) {
@@ -171,18 +176,24 @@ export const runIndependentController = async (input: IndependentControllerInput
         await requestController(ticket, { kind: "stop", deadline: Date.now() + 15_000 }, { timeoutMs: 2000 }).catch(() => {});
         await waitForExit(childExit, 2500);
         const journal = path.join(directory, "journal.sqlite");
-        let snapshot = null; try { snapshot = readControllerSnapshot(journal); } catch { /* Startup may fail before journal creation. */ }
+        let snapshot: ReturnType<typeof readControllerSnapshot> = null;
+        const stopFailures: unknown[] = [];
+        try { snapshot = readControllerSnapshot(journal); } catch (error) { stopFailures.push(error); }
         const proof = snapshot?.controllerProcess ?? processProof;
-        if (proof) await stopControllerProcesses(proof, snapshot?.nativeProcesses ?? [], Date.now() + 10_000);
-        else if (child.pid && child.exitCode === null && child.signalCode === null) {
-          // This ChildProcess handle belongs to the spawn above, even if proof
-          // capture failed. Terminate it; do not infer descendants are stopped.
-          child.kill("SIGTERM");
-          await waitForExit(childExit, 2000);
-          if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-          throw new Error("Original controller process proof is unavailable; complete stopping remains unconfirmed.");
-        }
-        await childExit;
+        try {
+          if (proof) await stopControllerProcesses(proof, snapshot?.nativeProcesses ?? [], Date.now() + 10_000);
+          else if (child.pid && child.exitCode === null && child.signalCode === null) {
+            // This ChildProcess handle belongs to the spawn above, even if proof
+            // capture failed. Terminate it; do not infer descendants are stopped.
+            child.kill("SIGTERM");
+            await waitForExit(childExit, 2000);
+            if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+            throw new Error("Original controller process proof is unavailable; complete stopping remains unconfirmed.");
+          }
+          await childExit;
+        } catch (error) { stopFailures.push(error); }
+        if (stopFailures.length === 1) throw stopFailures[0];
+        if (stopFailures.length > 1) throw new AggregateError(stopFailures, "Controller journal observation and local stopping failed.");
         const stopped = await recordStoppedControllerGeneration(journal, ticket);
         nativeStopped = true;
         const stopProof = { recordId: randomUUID(), previousControllerInstanceId: ticket.controllerInstanceId, stoppedAt: stopped.stoppedAt! };
@@ -194,7 +205,7 @@ export const runIndependentController = async (input: IndependentControllerInput
           if (result.lifecycle !== "archived") throw new Error("Test Session archival was not confirmed.");
           await persist("stop-result.json", { session: result }); archived = true; context.stdout("Test Session stopped and archived.\n");
         } catch { context.stderr("Native execution stopped. Server archival is unconfirmed; the original stop proof is retained privately.\n"); }
-      } catch (error) { failed ??= error; context.stderr(`Test Session stop could not be fully confirmed; execution evidence: ${directory}. Inspect controller.log and the original journal.\n`); }
+      } catch (error) { failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and stopping failed."); context.stderr(`Test Session stop could not be fully confirmed; execution evidence: ${directory}. Inspect controller.log and the original journal.\n`); }
     }
     if (ticket && directory && !spawnAttempted) {
       // A never-launched continuation has no journal. Keep its launch intent as
@@ -215,7 +226,7 @@ export const runIndependentController = async (input: IndependentControllerInput
     }
     if (registeredSession && !archived && (!child || !child.pid)) context.stderr(`Test Session ${registeredSession.sessionId} remains unarchived. ${spawnAttempted ? "Controller launch outcome is unconfirmed." : "No controller process was started."} Registration evidence: ${directory}.\n`);
     else if (!registeredSession && directory) context.stderr(`Test Session registration was not confirmed. Preserve and reconcile the original registration identity in ${path.join(directory, "registration.json")} before starting another execution.\n`);
-    if (resume && (!spawnAttempted && unstartedTicketRetired || nativeStopped)) { try { await resume.release(); } catch (error) { failed ??= error; } }
+    if (resume && (!spawnAttempted && unstartedTicketRetired || nativeStopped)) { try { await resume.release(); } catch (error) { failed = failed === undefined ? error : new AggregateError([failed, error], "Test Session execution and lease release failed."); } }
     process.off("SIGINT", signal); process.off("SIGTERM", signal);
   }
   if (failed) throw failed;

@@ -230,8 +230,10 @@ review 的配置和路径类型明确以 `ReviewConfiguration`、`ReviewPaths` �
 `commands/review/model.ts` 持有领域和安全恢复证明类型，store 专注持久化；
 `polling.ts` 组合远端只读观测与本地原子状态提交，GitHub 适配器专注远端查询。
 [review 模块职责表](daynight-review.md#单进程与普通模块)解释具体职责及执行不变量。
-共享的 `platform/` 承载诊断、文件系统和无业务副作用的 bundle 捕获/entrypoint 校验；
-这些函数不导入命令模块。review 继续拥有快照、哈希和执行协议。
+共享的 `platform/` 承载诊断、文件系统、SQLite 格式执行与连接生命周期，以及无业务副作用的 bundle
+捕获/entrypoint 校验；这些函数不导入命令模块。各 store 明确提供自己的版本序列和升级准入，公共层不发现
+数据库或维护全局版本。[SQLite 升级设计](cli-sqlite-migrations.md)拥有实际事务和关闭规则；review 继续拥有
+快照、哈希和执行协议。
 
 源码测试按 `test/cli/`、`test/config/`、`test/api/`、`test/commands/review/`、
 `test/commands/update/`、`test/commands/completion/`、`test/commands/project/`、
@@ -356,8 +358,8 @@ review 的配置仍为 `~/.daynight/config.yml`，SQLite 仍为 `~/.daynight/sta
 和 `review` 组成；全部 review 设置位于 `review` mapping，详见
 [review 配置](daynight-review.md#使用方式与配置)。状态路径和持久化身份保持不变。
 review 运行时通过显式 SQLite 迁移从版本 1 升到版本 2，保存远端发布证据和一次性
-conversation 后续轮次，保留旧边界、预算、会话、进程证据及 worktree；只读列表接受
-两个版本并不执行迁移。业务模块归属与磁盘目录归属分别管理，源码整理本身不改变
+conversation 后续轮次，保留旧边界、预算、会话、进程证据及 worktree。列表访问旧格式时也自动完成受支持
+迁移，再重开当前版本 2 的只读快照；当前格式不取得维护锁。业务模块归属与磁盘目录归属分别管理，源码整理本身不改变
 持久化身份。详细格式、验证、锁及恢复规则由
 [review 设计](daynight-review.md#本地数据与-sqlite)统一定义。
 
@@ -434,9 +436,11 @@ SQLite 使用 Node-API 10，实际运行需要 Node.js 22.14.0 或更新版本�
 源码开发和发布使用 Node.js 24 LTS、pnpm 11.28.6、TypeScript ESM 和固定依赖版本。
 开发工具与直接执行的 TypeScript 脚本有独立于发布产物的运行要求。构建先执行
 `node scripts/clean-dist.ts` 删除包的 `dist/`，再通过 `tsc -p tsconfig.build.json`
-生成产物，防止模块移动后保留旧的可执行文件。构建还将 review 的完整内置 skill
-bundle 复制到 `dist/commands/review/skills/daynight-review/`，由既有 `dist` 发布规则
-纳入安装包。清理和资源复制脚本从自身位置定位目录，调用者工作目录不会改变目标。
+生成产物，防止模块移动后保留旧的可执行文件。随后 `node scripts/copy-resources.ts` 明确复制 review 与
+公开 using-daynight 两个完整 skill bundle，以及五个数据库 owner 的 SQL 资源目录，到匹配的 dist 相对位置。
+SQL 目录只复制 `.sql` 文件，skill bundle 保留完整资源树；脚本不扫描仓库来发现其他资源。既有 `dist` 发布
+规则将这些文件纳入安装包。清理和资源复制脚本从自身位置定位目录，调用者工作目录不会改变目标。
+SQL 资源与来源检查的关系由 [SQLite 升级设计](cli-sqlite-migrations.md#sql-资源与参考结构)拥有。
 包的 `daynight` 和 `dn` bin 及发布入口均为 `dist/main.js`。资源定位沿用稳定入口传入的包目录；
 [review skill 设计](daynight-review-skill.md)定义捕获、快照和加载流程。
 
@@ -446,13 +450,13 @@ bundle 复制到 `dist/commands/review/skills/daynight-review/`，由既有 `dis
 `pnpm test`、`pnpm build`、独立 `pnpm acceptance` 和 `pnpm completion:acceptance`
 的实际入口由
 [README](../../README.md#cli-development)维护。资源复制回归验证从无关工作目录执行实际
-脚本，在隔离包的全新目标下检查完整 bundle；重复排他复制必须失败且保留既有内容，
-缺少源码时同样明确失败。原生矩阵每次解析最新可用的 Node.js 24 patch，验证开发工具链。
+脚本，在隔离包的全新目标下检查两个完整 bundle 和明确列举的 SQL 目录，逐字节核对复制结果；重复排他复制
+必须失败且保留既有内容，缺少源码时同样明确失败。真实安装验收再确认 tarball 中的 SQL 可加载和执行。原生矩阵每次解析最新可用的 Node.js 24 patch，验证开发工具链。
 独立的运行时矩阵先在 Node.js 24 下构建 tarball，再分别使用 Node.js `22.14.0`、最新 `22`、
 最新 `24` 和当前 `node` 安装该产物。全新 npm consumer 启用严格 engine 校验，并验证
 CLI 命令、交互提示依赖和 SQLite，避免包元数据接受版本而实际依赖无法安装或运行。
 源码、包元数据、构建或依赖输入变化
-需要更高 SemVer；构建清理脚本也属于发布输入。[CI 路由](../../README.md#ci-selection)
+需要更高 SemVer；构建清理和资源复制脚本也属于发布输入。[CI 路由](../../README.md#ci-selection)
 选中 CLI 时，全部原生检查、运行时兼容检查和独立 shell completion 检查必须成功，
 PR 的 Linux CLI 任务还检查包版本；main push 保留全量应用门禁。最终 `checks` 只接受所有前置 job 的
 `success` 或 `skipped`，失败、取消及其他结果使汇总失败。

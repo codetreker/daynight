@@ -427,7 +427,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       const invalid = invoke("ls");
       expect(invalid.status).toBe(1);
       expect(invalid.stdout).toBe("");
-      expect(invalid.stderr).toContain("not a database");
+      expect(JSON.parse(invalid.stderr)).toMatchObject({ name: "SqliteAccessError", database: "Review", phase: "read", cause: { sqliteCode: "SQLITE_NOTADB" } });
       expect(await readFile(paths.databaseFile, "utf8")).toBe(corrupt);
       await rm(paths.databaseFile);
       const database = new Database(paths.databaseFile);
@@ -437,7 +437,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       const future = invoke("list");
       expect(future.status).toBe(1);
       expect(future.stdout).toBe("");
-      expect(future.stderr).toContain("found version 3");
+      expect(JSON.parse(future.stderr)).toMatchObject({ kind: "unsupported-version", database: "Review", fromVersion: 3, toVersion: 2 });
       expect(await readFile(paths.databaseFile)).toEqual(original);
       expect(await readFile(paths.configFile, "utf8")).toBe(configuration);
       expect(await readFile(paths.lockFile, "utf8")).toBe("existing review instance\n");

@@ -217,8 +217,8 @@ UI 原型、讨论与 PR 交付区分、交付授权、部分登记、不确定�
 普通与 managed 情境分别核对加载路径、完整任务资料和交付门槛；managed 还核对显式
 环境/技能/模式、原 assignment、缺失或不匹配等待、原 claim 完成和交还 controller。
 
-既有 copy-skills 测试、frontmatter 和本地链接检查验证完整 bundle，实际 build 与
-npm pack 证明协议进入发布产物。隔离安装及模拟 launcher 的三个 Agent × 两个 scope
+资源复制测试中的 skill 检查、frontmatter 和本地链接检查验证完整 bundle，实际 build 与
+npm pack 证明协议进入发布产物。`copy-resources` 同时发布明确列举的 SQL 目录，但这不改变 skill 的协议或语义验证边界。隔离安装及模拟 launcher 的三个 Agent × 两个 scope
 验收继续验证完整字节、覆盖、迁移和资源保留；不运行真实 Agent 或模型、不读取账号、
 不发布 npm 或部署。按实际影响运行 CLI typecheck、test、build 与必要 CI。
 
