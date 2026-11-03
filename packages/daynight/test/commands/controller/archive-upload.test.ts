@@ -5,7 +5,9 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { openControllerLifecycleStore } from "../../../src/commands/controller/lifecycle-store.js";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
-import { openPendingContent, migratePendingContent } from "../../../src/commands/controller/pending-content.js";
+import { openPendingContent } from "../../../src/commands/controller/pending-content.js";
+import { upgradeSqlite } from "../../../src/platform/sqlite-format.js";
+import { controllerJournalFormat } from "../../../src/commands/controller/journal-format.js";
 import type { ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 const roots: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
@@ -66,10 +68,11 @@ test("legacy completed SQL history migrates atomically and is readable after wor
   const f = await fixture(); const content = openPendingContent(f.journalPath, f.ticket.sessionId);
   const original = content.entries.get(f.entry.entryId)!;
   const db = new Database(f.journalPath);
-  db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT,revision INTEGER,value TEXT); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT,content BLOB); PRAGMA user_version=5;");
+  db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   await rm(`${f.journalPath}.pending-content`, { recursive: true });
-  const migrated = openPendingContent(f.journalPath, f.ticket.sessionId); migratePendingContent(db, migrated);
+  db.transaction(() => upgradeSqlite(db, controllerJournalFormat)).immediate();
+  const migrated = openPendingContent(f.journalPath, f.ticket.sessionId);
   expect(migrated.entries.get(original.entryId)).toEqual(original);
   expect(db.pragma("user_version", { simple: true })).toBe(6);
   expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('projection','resources')").all()).toEqual([]);
@@ -79,13 +82,13 @@ test("legacy completed SQL history migrates atomically and is readable after wor
 test("failed legacy migration retains SQL originals and safely resumes an already written file", async () => {
   const f = await fixture(); const db = new Database(f.journalPath); const content = openPendingContent(f.journalPath, f.ticket.sessionId);
   const original = content.entries.get(f.entry.entryId)!;
-  db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT,revision INTEGER,value TEXT); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT,content BLOB); PRAGMA user_version=5;");
+  db.exec("DROP TABLE content_index; ALTER TABLE execution DROP COLUMN archive_incomplete; CREATE TABLE projection(id TEXT PRIMARY KEY,content_hash TEXT NOT NULL,revision INTEGER NOT NULL,value TEXT NOT NULL); CREATE TABLE resources(id TEXT PRIMARY KEY,descriptor TEXT NOT NULL,content BLOB); PRAGMA user_version=5;");
   db.prepare("INSERT INTO projection(rowid,id,content_hash,revision,value) VALUES(1,?,?,1,?)").run(original.entryId, "unused", JSON.stringify(original));
   db.prepare("INSERT INTO resources VALUES(?,?,NULL)").run(randomUUID(), "{}");
-  expect(() => migratePendingContent(db, content)).toThrow();
+  expect(() => db.transaction(() => upgradeSqlite(db, controllerJournalFormat)).immediate()).toThrow();
   expect(db.pragma("user_version", { simple: true })).toBe(5);
   expect(db.prepare("SELECT count(*) AS n FROM projection").get()).toEqual({ n: 1 });
-  db.exec("DELETE FROM resources"); migratePendingContent(db, content);
+  db.exec("DELETE FROM resources"); db.transaction(() => upgradeSqlite(db, controllerJournalFormat)).immediate();
   expect(db.pragma("user_version", { simple: true })).toBe(6); db.close();
 });
 test("file committed before an outbox rollback survives restart with relay resynchronization", async () => {

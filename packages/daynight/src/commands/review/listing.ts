@@ -120,5 +120,5 @@ export const listReviews = async (paths: ReviewPaths): Promise<string> => {
   } catch (cause) {
     throw new Error(`Invalid configuration file ${paths.configFile}: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
   }
-  return formatReviewListing(configuration, readReviewListingSnapshot(paths.databaseFile));
+  return formatReviewListing(configuration, readReviewListingSnapshot(paths));
 };

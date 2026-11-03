@@ -17,9 +17,15 @@ The standardized Controller timeline is the display-history source. Live updates
 write private, atomic per-entry files beside the execution journal; registered
 resources use the same pending-upload directory. SQLite keeps execution identity,
 operation evidence, content hashes and revisions, and a bounded transport outbox.
-Stopped uploaders share the lifecycle opener's structural journal migrations
-before exporting legacy content, without acquiring a writer lease or changing
-execution identity. Migration exports legacy content before dropping its SQL tables. File commits
+Stopped uploaders share the lifecycle opener's versioned SQL chain and owner
+admission, without acquiring a writer lease or changing execution identity.
+The v6 domain callback exports legacy content before its numbered SQL conversion
+drops the content tables. All pending schema steps share one transaction; failed
+exports roll SQL back to the original version while retaining durable files for
+verified retry. A version-zero SQL reset does not delete pending files, and a
+new writer without an execution record cannot adopt nonempty pending content
+solely because its Session ID matches. Empty pending manifests remain usable
+for initialization retries. File commits
 precede SQL delivery metadata; recovery rejects missing or regressed content and
 resynchronizes file updates that survived a rolled-back SQL transaction.
 

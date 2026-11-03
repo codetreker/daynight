@@ -71,8 +71,13 @@ export const createWebControllerLauncher = (options: { homeDirectory: string; pa
         const deadline = Date.now() + 30000;
         while (Date.now() < deadline) {
           signal.throwIfAborted();
-          try { const response = await requestController(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); options.store.updateWebExecution(task, { launchSubmission: "acknowledged", nativeProcesses: response.snapshot.nativeProcesses }, options.now()); return; }
+          let response: Awaited<ReturnType<typeof requestController>> | undefined;
+          try { response = await requestController(ticket, { kind: "observe" }, { signal, timeoutMs: 1000 }); }
           catch { if (child.exitCode !== null || child.signalCode !== null) throw new Error("Controller exited before its authenticated initialization; inspect its private log."); }
+          if (response !== undefined) {
+            options.store.updateWebExecution(task, { launchSubmission: "acknowledged", nativeProcesses: response.snapshot.nativeProcesses }, options.now());
+            return;
+          }
           await new Promise(resolve => setTimeout(resolve, 100));
         }
         throw new Error("Controller startup outcome is unknown; the original process and launch intent are retained.");

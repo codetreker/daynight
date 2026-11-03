@@ -48,6 +48,8 @@ Session View 内容遵守 [Task Session 的本机内容归属](task-sessions.md#
 
 意外原生断开必须显示真实失败并清理拥有的进程，不静默新建会话替代原会话。独立入口不承担后台 daemon、任务调度或自动恢复循环；Task 的 worker 恢复责任继续由 [共享实现设计](../design/task-session-protocol.md)定义。
 
+本机 journal 和 native resume lease 分别遵守 [SQLite 升级需求](cli-sqlite-migrations.md)。读取受支持的非零旧 journal 时自动升级并保留数据；版本 0 在旧 owner 准入后丢弃 schema 和数据，通过基线与编号升级重建，已有空文件同样适用。当前格式读取不认领 writer；明确缺失与权限、损坏或版本错误分开。升级失败不能被当成无 journal，也不能阻止停止自己已启动的进程。停止证明、journal 身份及持久化 stopped 状态未完整成立时，不得伪造 nativeStopped、归档或释放原 lease。已有 lease 表的任何保留行阻止其数据库重置或迁移，不能因 PID 消失或时间过期删除记录；版本 0 没有 lease 表时可重置。
+
 ## 停止后的归档与重试
 
 launcher 确认本机进程停止和服务端 Session 终止后上传只读历史。上传失败须明确区分“原生执行已停止”与“归档未完成”，保留本机源并输出重试命令：`daynight controller <provider> archive <test-session-id>`。该命令只核验原 ticket、停止证据、账号与服务，确认服务端停止结果并重试上传，不启动或 resume Agent，不要求原工作目录仍存在。字面 prompt `archive` 可通过 `-- archive` 发送。

@@ -12,6 +12,7 @@ vi.mock("../../../src/commands/controller/process-proof.js", () => ({ capturePro
 vi.mock("../../../src/commands/controller/archive-upload.js", () => ({ uploadStoppedControllerArchive: f.archive }));
 vi.mock("../../../src/commands/controller/resume.js", () => ({ acquireResume: f.resume }));
 import { runIndependentController } from "../../../src/commands/controller/independent.js";
+import { SqliteAccessError } from "../../../src/platform/sqlite-error.js";
 import { SESSION_PROTOCOL } from "../../../src/session/protocol.js";
 import type { CliContext } from "../../../src/cli/context.js";
 const id = "11111111-1111-4111-8111-111111111111";
@@ -352,6 +353,29 @@ test("history upload failure reports stopped execution and a native-free retry c
   expect(call.serverToken).toBe("private-token");
   expect(call.signal).toBeUndefined();
 });
+test.each(["direct", "aggregate"] as const)("%s SQLite archive failure stays visible after Ctrl+C without invalidating proven stop or lease release", async wrapper => {
+  const v = await setup(null);
+  const sqlite = new SqliteAccessError("migration-failed", { database: "controller-journal", phase: "migrate", fromVersion: 5, toVersion: 6 }, { outcome: "rolled-back", connectionClosed: true });
+  const failure = wrapper === "direct" ? sqlite : new AggregateError([new Error("Another cleanup failure"), sqlite], "Archive cleanup failed");
+  f.archive.mockRejectedValueOnce(failure);
+  f.resume.mockResolvedValue({ nativeSessionId: id, ticket: { sessionId: id, nativeHome: v.home, configuration: { args: [] } }, release: f.release });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context)).rejects.toBe(failure);
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).toHaveBeenCalledOnce(); expect(f.release).toHaveBeenCalledOnce();
+  expect(v.err.join("")).toContain("Native execution stopped; session history upload is pending");
+  expect(v.err.join("")).not.toContain("stop could not be fully confirmed");
+  expect(v.out.join("")).not.toContain("stopped and archived");
+});
+
+test("SQLite archive failure retains the preceding execution failure", async () => {
+  const v = await setup(null), execution = new Error("Agent runtime failed");
+  const archive = new SqliteAccessError("invalid-format", { database: "controller-journal", phase: "inspect" });
+  const original = f.request.getMockImplementation()!;
+  f.request.mockImplementation((...args) => { if (args[1].kind === "observe") throw execution; return original(...args); });
+  f.archive.mockRejectedValueOnce(archive);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([execution, archive]);
+  expect(v.err.join("")).not.toContain("stop could not be fully confirmed");
+});
 test("unconfirmed server stop never publishes completed content", async () => {
   const v = await setup(null, true);
   await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context);
@@ -427,4 +451,29 @@ test("archive-only retry marks pending before stop and tolerates metadata public
   expect(order).toEqual(["pending", "stop"]);
   expect(f.archive).toHaveBeenCalledTimes(2);
   expect(f.spawn).toHaveBeenCalledOnce();
+});
+
+test("journal observation failure still stops its owned child without fabricating stop evidence", async () => {
+  const v = await setup(null), failure = new Error("Journal format upgrade failed");
+  f.resume.mockResolvedValue({ nativeSessionId: id, ticket: { sessionId: id, nativeHome: v.home, configuration: { args: [] } }, release: f.release });
+  f.snapshot.mockImplementation(() => { throw failure; });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context)).rejects.toBe(failure);
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
+  expect(v.requests.some(request => request.url.endsWith("/stop"))).toBe(false);
+});
+
+test("journal and local-stop failures remain independently visible", async () => {
+  const v = await setup(null), journal = new Error("Journal unsupported version"), stopping = new Error("Local stopping failed");
+  f.snapshot.mockImplementation(() => { throw journal; }); f.stop.mockRejectedValue(stopping);
+  const error = await runIndependentController({ provider: "codex", model: null, args: [], prompt: null }, v.context).catch(error => error);
+  expect(error).toBeInstanceOf(AggregateError); expect(error.errors).toEqual([journal, stopping]);
+  expect(f.stop).toHaveBeenCalledOnce(); expect(f.record).not.toHaveBeenCalled();
+});
+
+
+test("terminal cancellation does not hide a database failure while acquiring resume", async () => {
+  const v = await setup(null), failure = new SqliteAccessError("unsupported-version", { database: "controller-journal", phase: "inspect", fromVersion: 7, toVersion: 6 });
+  f.resume.mockImplementationOnce(async () => { process.emit("SIGINT", "SIGINT"); throw failure; });
+  await expect(runIndependentController({ provider: "codex", model: null, args: [], prompt: null, resume: { sessionId: id } }, v.context)).rejects.toBe(failure);
+  expect(f.spawn).not.toHaveBeenCalled(); expect(f.release).not.toHaveBeenCalled();
 });

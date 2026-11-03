@@ -1,0 +1,1 @@
+ALTER TABLE operations ADD COLUMN acknowledged INTEGER NOT NULL DEFAULT 0;

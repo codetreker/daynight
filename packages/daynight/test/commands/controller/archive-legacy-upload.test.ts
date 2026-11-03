@@ -1,14 +1,14 @@
 import Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { uploadStoppedControllerArchive } from "../../../src/commands/controller/archive-upload.js";
 import { controllerPayloadHash, type ControllerLaunchTicket } from "../../../src/commands/controller/launch-ticket.js";
 import { openControllerLifecycleStore, type ControllerSnapshot } from "../../../src/commands/controller/lifecycle-store.js";
 
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { vi.restoreAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
 // Build each historical schema independently of the current lifecycle opener.
 const fixture = async (version: 1 | 2 | 3 | 4 | 5) => {
@@ -48,8 +48,8 @@ const inspect = <T>(file: string, action: (db: Database.Database) => T): T => {
 
 test.each([2, 3, 4, 5] as const)("uploads a stopped v%i journal without acquiring its writer lease or changing execution identity", async version => {
   const f = await fixture(version), bodies: string[] = [];
-  // A stale lease must remain untouched, even when its PID belongs to this process.
-  inspect(f.journalPath, db => db.prepare("UPDATE execution SET owner_pid=?").run(process.pid));
+  // A dead writer lease must stay unchanged; migration does not acquire it.
+  inspect(f.journalPath, db => db.prepare("UPDATE execution SET owner_pid=?").run(2_000_000_000));
   const identity = inspect(f.journalPath, db => db.prepare("SELECT ticket_hash,owner_pid,snapshot,last_sequence FROM execution").get());
   expect((await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).state).toBe("ready");
   expect(bodies).toHaveLength(1);
@@ -62,10 +62,10 @@ test.each([2, 3, 4, 5] as const)("uploads a stopped v%i journal without acquirin
   });
 });
 
-test("failed intermediate schema migration rolls back before exporting and can retry", async () => {
+test("invalid legacy schema is rejected before exporting and can retry after repair", async () => {
   const f = await fixture(2), bodies: string[] = [];
   inspect(f.journalPath, db => db.exec("CREATE TABLE resources (unrelated TEXT);"));
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("resources");
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "invalid-format" });
   inspect(f.journalPath, db => {
     expect(db.pragma("user_version", { simple: true })).toBe(2);
     expect((db.pragma("table_info(operations)") as { name: string }[]).map(row => row.name)).toEqual(["id", "value"]);
@@ -79,13 +79,59 @@ test("failed intermediate schema migration rolls back before exporting and can r
   expect(JSON.parse(bodies[0]!).entries).toEqual([{ ...f.entry, entrySeq: "1" }]);
 });
 
+test.each(["active", "unknown"] as const)("archive migration rejects an %s writer before changing schema or exporting files", async owner => {
+  const f = await fixture(2), bodies: string[] = [];
+  inspect(f.journalPath, db => db.prepare("UPDATE execution SET owner_pid=?").run(process.pid));
+  if (owner === "unknown") vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("Owner status unavailable"), { code: "EPERM" }); });
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "upgrade-blocked", outcome: "rolled-back", connectionClosed: true });
+  inspect(f.journalPath, db => {
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.prepare("SELECT owner_pid,snapshot FROM execution").get()).toEqual({ owner_pid: process.pid, snapshot: JSON.stringify(f.snapshot) });
+  });
+  await expect(stat(`${f.journalPath}.pending-content`)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(bodies).toEqual([]);
+});
+
+test("v6 DDL failure rolls back every intermediate version while preserving exported files for retry", async () => {
+  const f = await fixture(2), bodies: string[] = [], original = Database.prototype.exec;
+  const exec = vi.spyOn(Database.prototype, "exec").mockImplementation(function (this: Database.Database, sql: string) {
+    if (this.name === f.journalPath && sql.includes("CREATE TABLE content_index")) throw new Error("Injected content schema failure");
+    return original.call(this, sql);
+  });
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "migration-failed", outcome: "rolled-back", connectionClosed: true });
+  exec.mockRestore();
+  inspect(f.journalPath, db => {
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
+    expect(db.prepare("SELECT value FROM projection").get()).toEqual({ value: JSON.stringify(f.entry) });
+    expect((db.pragma("table_info(operations)") as { name: string }[]).map(row => row.name)).toEqual(["id", "value"]);
+  });
+  expect(await readdir(`${f.journalPath}.pending-content/timeline`)).toHaveLength(1);
+  await uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) });
+  expect(JSON.parse(bodies[0]!).entries).toEqual([{ ...f.entry, entrySeq: "1" }]);
+});
+
+test.each([2, 6] as const)("v%i archive rechecks stopped evidence after the receipt network boundary", async version => {
+  const f = await fixture(2), bodies: string[] = [];
+  if (version === 6) await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies, () => true) })).rejects.toThrow("503");
+  await writeFile(`${f.journalPath}.archive-receipt-1.json`, JSON.stringify({ state: "ready", sha256: "a".repeat(64), byteLength: "1", errorCode: null }));
+  const request: typeof fetch = async (_url, init) => {
+    if (init?.method === "GET") inspect(f.journalPath, db => db.prepare("UPDATE execution SET snapshot=?").run(JSON.stringify({ ...f.snapshot, executionGeneration: "2" })));
+    if (init?.method === "PUT") throw new Error("A changed execution must not upload");
+    return Response.json({ archive: unavailable });
+  };
+  const result = uploadStoppedControllerArchive({ ...f, serverToken: "test", request });
+  if (version === 2) await expect(result).rejects.toMatchObject({ kind: "upgrade-blocked", outcome: "rolled-back", cause: expect.objectContaining({ message: "Session archive requires the original stopped controller generation." }) });
+  else await expect(result).rejects.toThrow("original stopped controller generation");
+  expect(inspect(f.journalPath, db => db.pragma("user_version", { simple: true }))).toBe(version);
+});
+
 test("interrupted legacy content export keeps SQL originals and reuses the already written entry on retry", async () => {
   const f = await fixture(2), bodies: string[] = [];
   const second = { ...f.entry, entryId: randomUUID(), content: [{ type: "text", text: "second answer" }] };
   inspect(f.journalPath, db => db.prepare("INSERT INTO projection VALUES(?,?,1,?)").run(second.entryId, "second", "{}"));
   await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow();
   inspect(f.journalPath, db => {
-    expect(db.pragma("user_version", { simple: true })).toBe(5);
+    expect(db.pragma("user_version", { simple: true })).toBe(2);
     expect(db.prepare("SELECT count(*) AS n FROM projection").get()).toEqual({ n: 2 });
     expect(db.prepare("SELECT snapshot FROM execution").get()).toEqual({ snapshot: JSON.stringify(f.snapshot) });
     db.prepare("UPDATE projection SET value=? WHERE id=?").run(JSON.stringify(second), second.entryId);
@@ -132,10 +178,18 @@ test("unproven stop evidence prevents migration before touching the legacy schem
   await expect(stat(`${f.journalPath}.pending-content`)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
+test("archive opening reports an inaccessible journal as a typed failure without creating it", async () => {
+  const f = await fixture(2), bodies: string[] = [];
+  await rm(f.journalPath);
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "invalid-format", connectionClosed: true, context: { phase: "archive-open" } });
+  await expect(stat(f.journalPath)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(bodies).toEqual([]);
+});
+
 test.each([1, 7] as const)("rejects archive journal version %i without changing its schema or identity", async version => {
   const f = await fixture(1), bodies: string[] = [];
   inspect(f.journalPath, db => db.pragma(`user_version=${version}`));
-  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toThrow("Unsupported controller archive journal");
+  await expect(uploadStoppedControllerArchive({ ...f, serverToken: "test", request: receiver(bodies) })).rejects.toMatchObject({ kind: "unsupported-version" });
   inspect(f.journalPath, db => {
     expect(db.pragma("user_version", { simple: true })).toBe(version);
     expect(db.prepare("SELECT snapshot FROM execution").get()).toEqual({ snapshot: JSON.stringify(f.snapshot) });

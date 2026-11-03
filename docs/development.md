@@ -45,12 +45,22 @@ pnpm daynight --version
 `pnpm check` runs type checking and tests. Standalone `pnpm test` and
 `pnpm acceptance` build the package before exercising the compiled CLI. Native CI
 typechecks and builds once, then invokes both Vitest configurations against that
-same compiled output. `pnpm build` clears the package's `dist/` before emitting
-`packages/daynight/dist/main.js` and copying the explicit review and public skill
-bundles into `dist/commands/review/skills/daynight-review/` and
-`dist/commands/skill/skills/using-daynight/`. Complete relative resources are included;
-repository workflow skills are not scanned for publication. The package's
-`daynight` and `dn` bins point to the same stable JavaScript entry.
+same compiled output. `pnpm build` clears the package's `dist/`, compiles
+`packages/daynight/dist/main.js`, then runs `scripts/copy-resources.ts`. That step
+copies the explicit review and public skill bundles, plus the five SQLite owner
+resource directories, into matching dist paths. Skill bundles retain their full
+relative resources. SQL directories recursively copy files whose names end in
+`.sql` case-insensitively, preserving their names and bytes, including uppercase
+`.SQL` candidates. The copy step neither chooses migration order nor silently
+omits a candidate that violates runtime naming rules. Resources are allowlisted
+at the bundle/directory boundary rather than discovered from the repository.
+Within each owner SQL directory, the runtime validates top-level SQL candidates
+against strict lowercase regular-file naming and derives migration order from
+valid numbered filenames. Auxiliary subdirectories are copied but excluded from
+that normal chain. The package's existing `files: ["dist"]` rule publishes these resources, while
+`daynight` and `dn` keep the same stable JavaScript entry. The
+[SQLite design](design/cli-sqlite-migrations.md#sql-资源与参考结构) owns SQL loading,
+reference metadata and execution ordering.
 Source tests mirror `cli/`, `config/`, `api/`, `commands/` and `platform/`
 ownership, with build and version-policy tests in `test/tooling/`.
 The pnpm dependency store is local to `.tmp/pnpm-store`. Native skill terminal
@@ -333,7 +343,8 @@ browser setup, required gates and receipt interpretation.
 
 Changes to `packages/daynight/src/`, either package manifest, `pnpm-lock.yaml`,
 `pnpm-workspace.yaml`, `.npmrc`, either application TypeScript configuration, or
-the package's build-cleanup script require a strictly greater SemVer in `packages/daynight/package.json`. Source
+the package's build-cleanup and resource-copy scripts require a strictly greater
+SemVer in `packages/daynight/package.json`. Source
 additions, deletions and moves all count. Unchanged versions, downgrades and
 build-metadata-only changes fail. Tests, fixtures, documentation, CI workflows
 and validation scripts alone do not require a version increase. CI enforces this

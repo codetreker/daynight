@@ -13,9 +13,11 @@ understands or follows the skill.
 
 Skill automation validates packaging, not instruction text contracts. The existing
 [resource inspection fixture](../../../../packages/daynight/test/fixtures/skill-contract.ts)
-and [copy tests](../../../../packages/daynight/test/tooling/copy-skills.test.ts)
-validate resource inventory, allowlisted bundles, YAML entrypoint metadata,
-local links contained within the bundle and byte-for-byte copying. The existing
+and [resource-copy tests](../../../../packages/daynight/test/tooling/copy-resources.test.ts)
+validate skill resource inventory, allowlisted bundles, YAML entrypoint metadata,
+local links contained within the bundle and byte-for-byte copying. The shared
+copy step also packages the explicitly listed SQLite SQL directories; those
+resource checks do not expand skill validation into instruction contracts. The existing
 [skill installation acceptance](../../../../packages/daynight/test/cli/skill.acceptance.ts)
 uses the actual packed CLI in an isolated installation and compares packaged
 resources with source resources and installed copies. Existing installation,

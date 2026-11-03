@@ -47,6 +47,8 @@ Web 目录固定请求 `GET /api/v1/test-sessions?online=true`。服务在排序
 
 `controller <provider> resume [test-session-id]` 从私有 launch ticket 与 journal 建立来源绑定，核对 provider、native ID、native home、真实 cwd、server origin、owner 与停止证据。候选选择后再次核验服务端归档身份，并取得以 provider、规范 native home 和 native ID 为键的本机跨执行锁；加锁后重新检查同原生会话的全部已登记执行，防止选择期间状态变化。
 
+本机 native resume lease 库独立使用版本 1。申请在同一同步事务中检查格式、必要时重置或升级、查重并写入 lease；已有 `leases` 表的任何保留行都阻止重置或迁移，版本 0 没有该表时可重置。版本 0 重置丢弃原 schema 和数据，并执行基线与编号升级。释放先在事务内确认当前格式，再按原 native_key 与 nonce 删除，不进入自动升级或过期回收。格式和关闭失败保留错误与原归属。共同机制见 [SQLite 升级设计](cli-sqlite-migrations.md)。
+
 恢复注册新的 Test Session 和 execution，使用新的凭据、journal 和操作身份，ticket 的 resumeNativeSessionId 指向原生历史且 initialInput 固定为 none。新 URL 从原生历史投影 timeline，旧 Session 的归档和回执保持不变。已有 Provider 原生恢复负责准确身份与历史加载，不重发旧操作。锁贯穿 launcher 的执行和清理；未启动或完整停止证明允许释放，未知结果保留租约。该流程不放宽服务端 archived grant 拒绝，也不承担外部原生 TUI 的抢占。
 
 ## Test Session 注册与权限
@@ -72,6 +74,10 @@ IPC 传输失败、EOF 或响应超时使用明确的 outcome-unknown 错误，�
 ## Controller 与原生会话
 
 worker 将冻结配置、managed prompt、初始 operationId、原生目录和 IPC 身份写入私有、不可覆写的 launch ticket；命令行只携带 launchId。Controller 使用单写者 SQLite journal 保存执行身份、输入结果、投影修订索引及有界 outbox，timeline 和资源正文写入相邻的待归档文件。本机 IPC 用 ticket 中的随机 secret 鉴权，worker 以此观察、提交首次输入和请求清理。Controller 与 worker 分离，使 worker 重启无需重启仍在运行的 Agent。
+
+Journal 的 1→6 非零迁移由本库定义持有并保留原数据；版本 0 在准入后丢弃原 schema 和数据，从基线与编号升级重建。已有空版本 0 文件也在查询访问时初始化。启动在同一事务中先检查旧 owner，再重置或升级及执行原 ticket/generation 认领；版本 0 没有 `execution` 表时可重置，已有该表时必须能读取 `id` 和 `owner_pid`，缺列或活跃、未知 owner 均在 DDL 前失败。纯读取只完成格式重置或升级，不启动 Controller 或认领 writer。当前格式在同一只读快照内检查并读取，不创建或重建待归档文件。版本 0 重置不删除独立待归档源；若启动时已没有 execution 身份记录而待归档 timeline 或资源非空，必须拒绝采用，不能只凭相同 Session ID 把历史归入新 ticket。空 manifest 可以用于尚未写入内容的初始化重试。独立 stopped writer 在事务外验证进程树，最终事务重查格式及 snapshot 后写停止状态；close 清除 owner_pid 也是受格式检查的写入口。
+
+本地数据库更新与 IPC 请求使用不同的错误边界，更新失败不能被解释成不可达而创建新 generation 或重放输入。独立 launcher 的退出保留 journal 错误，同时继续尝试停止已归属 child；完整停止及 journal 证明缺失时保留 native lease 和未确认结果。
 
 Codex adapter 通过私有 `codex app-server --stdio` 建立 thread，恢复时要求精确 thread ID 和 cwd，并分页读取原生 items。Claude adapter 使用 Agent SDK Query，SessionStart 确认精确会话身份；SDK 配套 CLI 是默认执行程序。Claude SDK 空输入初始化不保证产生原生 session ID，因而初始化成功后只允许提交唯一的首次任务输入；收到实际 SessionStart 或原生消息中的 ID 后才记录身份。恢复历史通过带私有 `CLAUDE_CONFIG_DIR` 的只读 SDK 子进程读取，避免读到 Controller 父进程的全局会话目录。独立 Test Session 的原生设置和认证继承现有配置。Task Worker 新建原生会话沿用后台任务的 full access 策略；恢复会话保留已经确认的原生设置，不覆盖网页选择。网页权限操作必须经过当前 capability 和原生确认。
 
@@ -139,7 +145,7 @@ Poll 使用相同的 MarshalWire 编码计算 operation_offer 的完整封装字
 
 ### 完成后的文件归档
 
-Controller journal v6 将旧 projection/resources 表导出到待归档文件，再在 SQL 事务中建立 content_index、删除正文表并升级版本。停止后的归档上传器对 v2–v4 journal 先执行与正常 opener 共用的结构迁移到 v5，再导出内容到 v6；结构迁移不获取 writer lease、不修改执行身份或 snapshot，也不启动原生进程。结构事务可先提交，内容导出失败仍保留 SQL 正文；v6 必须在文件可靠写入后与正文表删除同一事务提交。迁移失败保留原表；文件先于 SQL 提交的更新在重启时核验并触发完整 relay 重同步。缺文件、回退的 revision 或内容 hash 不匹配须明确失败，不把损坏源解释为空历史。索引和传输积压的裁剪不能删除归档内容。
+Controller journal v6 将旧 projection/resources 表导出到待归档文件，再在 SQL 事务中建立 content_index、删除正文表并升级版本。停止后的归档上传器先只读核对受支持版本和原停止身份，再使用与正常 opener 共用的格式定义，在同一 immediate 事务内完成 v2–v5 的结构升级和 v6 文件导出；迁移前拒绝活跃或不可确认的旧 writer，不获取 writer lease、不推进执行代次，也不启动原生进程。内容导出失败时 SQL 回滚到原版本，已可靠落盘的文件保留供核验重试；`006-pending-content.sql` 的结构转换、正文表删除、索引和 v6 版本在文件可靠写入后同一事务提交。迁移失败保留原表；文件先于 SQL 提交的更新在重启时核验并触发完整 relay 重同步。缺文件、回退的 revision 或内容 hash 不匹配须明确失败，不把损坏源解释为空历史。索引和传输积压的裁剪不能删除归档内容。
 
 确认原生进程停止后，上传器从同一执行的待归档文件生成 schemaVersion=1 的 SessionArchive：包含 Session fence、Controller 身份、Provider/nativeSessionId、有序最终 entries 和资源描述及 base64 数据。它保留最终阅读内容而非逐 token 事件录像。Task 结束由 Worker 收尾上传；Test launcher 先确认服务端 /stop，再上传。独立上传失败可运行 controller <provider> archive <test-session-id>，以原私有 ticket 和停止证明对账后重试；该路径不启动或 resume 原生会话。上传不启动 Provider，不要求已删除的工作目录存在。Worker 每轮最多尝试一个旧 completed 执行补归档，进程内按上次尝试的执行 ID 轮转库存，成功或失败后都从下一项继续；各执行独立退避，单个损坏源不能阻塞其他历史。正常收尾只有 ready 才能删除 worktree；退出停止路径以本次 shutdown 调用意图为准，确认停止后不执行归档或删除，即使持久状态已是 terminal。原 terminal 状态仍保留，重启后的正常对账继续履行归档与删除责任。
 

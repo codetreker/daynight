@@ -91,29 +91,24 @@ export const openPendingContent = (journal: string, sessionId: string) => {
 export type PendingContent = ReturnType<typeof openPendingContent>;
 
 /** File commit precedes SQL deletion. A crash leaves either both copies or files only. */
-export const migratePendingContent = (db: Database.Database, content: PendingContent): void => {
-  const version = Number(db.pragma("user_version", { simple: true }));
-  if (version >= 6) return;
+export const migratePendingContent = (db: Database.Database, content: PendingContent, schemaSql: string): void => {
+  if (!db.inTransaction) throw new Error("Pending content migration requires the journal migration transaction.");
   db.pragma("secure_delete = ON");
-  db.transaction(() => {
-    for (const row of db.prepare("SELECT CAST(rowid AS TEXT) AS seq,value FROM projection ORDER BY rowid").iterate() as Iterable<{ seq: string; value: string }>) {
-      const entry = parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
-      const existing = content.entries.get(entry.entryId);
-      if (existing && JSON.stringify(existing) !== JSON.stringify(entry)) throw new Error("Legacy projection conflicts with pending archive source.");
-      content.saveEntry(entry);
-    }
-    for (const row of db.prepare("SELECT descriptor,content FROM resources").iterate() as Iterable<{ descriptor: string; content: Buffer | null }>) {
-      const resource = parseSessionResource(JSON.parse(row.descriptor));
-      const value = { resource, data: row.content?.toString("base64") ?? null };
-      const existing = content.resources.get(resource.resourceId);
-      if (existing && JSON.stringify(existing) !== JSON.stringify(value)) throw new Error("Legacy resource conflicts with pending archive source.");
-      content.saveResource(value);
-    }
-    db.exec("ALTER TABLE execution ADD COLUMN archive_incomplete INTEGER NOT NULL DEFAULT 0; UPDATE execution SET archive_incomplete=1 WHERE projection_gap IS NOT NULL; CREATE TABLE content_index (id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, revision TEXT NOT NULL, entry_seq TEXT NOT NULL);");
-    for (const entry of content.entries.values()) db.prepare("INSERT INTO content_index VALUES(?,?,?,?)").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq);
-    db.exec("DROP TABLE projection; DROP TABLE resources; PRAGMA user_version=6;");
-  }).immediate();
-  db.pragma("wal_checkpoint(TRUNCATE)");
+  for (const row of db.prepare("SELECT CAST(rowid AS TEXT) AS seq,value FROM projection ORDER BY rowid").iterate() as Iterable<{ seq: string; value: string }>) {
+    const entry = parseTimelineEntry({ ...JSON.parse(row.value) as object, entrySeq: row.seq });
+    const existing = content.entries.get(entry.entryId);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(entry)) throw new Error("Legacy projection conflicts with pending archive source.");
+    content.saveEntry(entry);
+  }
+  for (const row of db.prepare("SELECT descriptor,content FROM resources").iterate() as Iterable<{ descriptor: string; content: Buffer | null }>) {
+    const resource = parseSessionResource(JSON.parse(row.descriptor));
+    const value = { resource, data: row.content?.toString("base64") ?? null };
+    const existing = content.resources.get(resource.resourceId);
+    if (existing && JSON.stringify(existing) !== JSON.stringify(value)) throw new Error("Legacy resource conflicts with pending archive source.");
+    content.saveResource(value);
+  }
+  db.exec(schemaSql);
+  for (const entry of content.entries.values()) db.prepare("INSERT INTO content_index VALUES(?,?,?,?)").run(entry.entryId, controllerPayloadHash(entry), entry.revision, entry.entrySeq);
 };
 
 /** Files may be ahead of a rolled-back SQL delivery transaction, never behind it. */

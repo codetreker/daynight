@@ -165,14 +165,34 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
         copyFileSync(executable, path.join(listingExecutables, name));
       }
     }
-    const list = (alias: "list" | "ls", listingHome = home): string => {
+    const list = (alias: "list" | "ls", listingHome = home, migration?: { fromVersion: number; toVersion: number }): string => {
       const result = crossSpawn.sync(installedBin, ["review", alias], {
         cwd: secondCwd, encoding: "utf8", windowsHide: true, timeout: 30_000,
         env: { ...environment, PATH: listingExecutables, NODE_OPTIONS: "", HOME: listingHome, USERPROFILE: listingHome, XDG_CONFIG_HOME: path.join(listingHome, "config") },
       });
       if (result.error) throw result.error;
       expect(result.status, result.stderr).toBe(0);
-      expect(result.stderr).toBe("");
+      if (migration === undefined) expect(result.stderr).toBe("");
+      else {
+        const events = result.stderr.trim().split("\n").map(line => JSON.parse(line) as { kind: string; sqlite: Record<string, unknown> });
+        expect(events).toHaveLength(2);
+        const started = events[0]!;
+        const completed = events[1]!;
+        expect(started).toMatchObject({
+          kind: "sqlite-migration-started", sqlite: {
+            database: "Review", file: path.join(listingHome, ".daynight", "state.sqlite"),
+            kind: "started", phase: "begin", ...migration, outcome: "not-started",
+          },
+        });
+        expect(started.sqlite.migrationId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+        expect(completed).toMatchObject({
+          kind: "sqlite-migration-completed", sqlite: {
+            database: "Review", file: path.join(listingHome, ".daynight", "state.sqlite"),
+            migrationId: started.sqlite.migrationId, kind: "completed", phase: "commit", ...migration, outcome: "committed",
+          },
+        });
+        for (const event of events) expect(event.sqlite.durationMs).toBeGreaterThanOrEqual(0);
+      }
       return result.stdout;
     };
     const helpHome = path.join(directory, "help-only home 中文");
@@ -231,12 +251,12 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
         seed.prepare(statement).run(parameters);
       }
     } finally { seed.close(); }
-    const existingSnapshot = (): unknown => {
+    const existingSnapshot = () => {
       const database = new Database(existingDatabase, { readonly: true, fileMustExist: true });
       try {
         return {
           schemaVersion: database.pragma("user_version", { simple: true }),
-          schema: database.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all(),
+          schema: database.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name").all() as { type: string; name: string; tbl_name: string; sql: string | null }[],
           repositories: database.prepare("SELECT * FROM repositories ORDER BY host, github_id").all(),
           pullRequests: database.prepare("SELECT * FROM pull_requests ORDER BY host, github_id, number").all(),
           reviews: database.prepare("SELECT * FROM reviews ORDER BY id").all(),
@@ -245,7 +265,28 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
     };
     const beforeExistingListing = existingSnapshot();
     expect(beforeExistingListing).toMatchObject({ schemaVersion: 1 });
-    const reusedListing = list("list", existingHome);
+    const reusedListing = list("list", existingHome, { fromVersion: 1, toVersion: 2 });
+    const afterExistingUpgrade = existingSnapshot();
+    expect(afterExistingUpgrade.schemaVersion).toBe(2);
+    expect(afterExistingUpgrade.repositories).toEqual(beforeExistingListing.repositories);
+    expect(afterExistingUpgrade.pullRequests).toEqual(beforeExistingListing.pullRequests);
+    expect(afterExistingUpgrade.reviews).toEqual(beforeExistingListing.reviews);
+    expect(afterExistingUpgrade.schema.filter(object => object.tbl_name !== "review_publications")).toEqual(beforeExistingListing.schema);
+    expect(afterExistingUpgrade.schema.filter(object => object.tbl_name === "review_publications").map(({ type, name }) => ({ type, name }))).toEqual([
+      { type: "index", name: "sqlite_autoindex_review_publications_1" }, { type: "table", name: "review_publications" },
+    ]);
+    const migratedDatabase = new Database(existingDatabase, { readonly: true, fileMustExist: true });
+    try {
+      const publication = (reviewId: string, phase: string) => ({
+        review_id: reviewId, phase, identity_format: "legacy", publisher_id: null, outcome: null,
+        remote_review_id: null, remote_thread_ids: "[]", followup_consumed: 0,
+      });
+      expect(migratedDatabase.prepare("SELECT * FROM review_publications ORDER BY review_id").all()).toEqual([
+        publication("44444444-4444-4444-8444-444444444444", "legacy"),
+        publication("55555555-5555-4555-8555-555555555555", "legacy"),
+        publication("66666666-6666-4666-8666-666666666666", "prepared"),
+      ]);
+    } finally { migratedDatabase.close(); }
     expect(list("ls", existingHome)).toBe(reusedListing);
     expect(reusedListing).toContain("github.com/fixture/review-project\nLast observed: 2026-10-19T12:00:00.000Z");
     expect(reusedListing).toMatch(/^#17\s+Open\s+Completed\s+1$/m);
@@ -254,8 +295,15 @@ it("runs the packed and installed CLI through a persistent native Git and SQLite
     expect(reusedListing).toMatch(/^#20\s+Open\s+Retry waiting\s+2$/m);
     expect(reusedListing).toContain("Retry at: 2026-10-19T12:00:30.000Z\n  Error: Fixture agent interrupted");
     expect(readFileSync(existingConfig, "utf8")).toBe(existingContents);
-    expect(existingSnapshot()).toEqual(beforeExistingListing);
-    expect(readdirSync(existingDirectory).sort()).toEqual(["config.yml", "state.sqlite"]);
+    expect(existingSnapshot()).toEqual(afterExistingUpgrade);
+    expect(existsSync(path.join(existingDirectory, "instance.lock"))).toBe(false);
+    const expectedSqliteArtifacts = new Set(["config.yml", "instance.lock.sqlite", "state.sqlite", "state.sqlite-wal", "state.sqlite-shm"]);
+    const existingArtifacts = readdirSync(existingDirectory).sort();
+    expect(existingArtifacts).toEqual(expect.arrayContaining(["config.yml", "instance.lock.sqlite", "state.sqlite"]));
+    for (const name of existingArtifacts) expect(expectedSqliteArtifacts.has(name), name).toBe(true);
+    const maintenanceGate = new Database(path.join(existingDirectory, "instance.lock.sqlite"), { readonly: true, fileMustExist: true });
+    try { expect(maintenanceGate.prepare("SELECT name FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*'").all()).toEqual([]); }
+    finally { maintenanceGate.close(); }
     expect(readRecords<Request>("requests")).toHaveLength(0);
     expect(agents()).toHaveLength(0);
     expect(publications()).toHaveLength(0);

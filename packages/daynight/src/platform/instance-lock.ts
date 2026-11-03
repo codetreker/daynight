@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import Database from "better-sqlite3";
 
 type InstanceOwner = { owner: string; pid: number; startedAt: string };
@@ -12,8 +12,8 @@ export class InstanceLockHeldError extends Error {
 }
 const isMissing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 
-const withOwnershipGate = <T>(databaseFile: string, operation: () => T): T => {
-  const database = new Database(databaseFile, { timeout: 5_000 });
+const withOwnershipGate = <T>(databaseFile: string, operation: () => T, fileMustExist = false): T => {
+  const database = new Database(databaseFile, { timeout: 5_000, fileMustExist });
   let result: T;
   try { result = database.transaction(operation).immediate(); }
   catch (error) {
@@ -91,6 +91,47 @@ export const acquireInstanceLock = async (lockFile: string, ownershipGateFile: s
         if (readFileSync(lockFile, "utf8").trim() !== content) throw new Error(`Instance lock ${lockFile} no longer belongs to this CLI; it was retained.`);
         unlinkSync(lockFile);
       });
+      released = true;
+    },
+  };
+};
+
+
+export class MaintenanceLockHeldError extends Error {
+  constructor(readonly lockFile: string) {
+    super(`An existing instance lock blocks SQLite maintenance: ${lockFile}. Its ownership evidence was retained.`);
+    this.name = "MaintenanceLockHeldError";
+  }
+}
+
+export type MaintenancePaths = { lockFile: string; ownershipGateFile: string; gateFileMustExist: boolean };
+export type MaintenancePermit = { owner: string; release(): void };
+
+/** Maintenance cannot consume the predecessor uncertainty carried by an existing lock. */
+export const acquireMaintenanceLock = (paths: MaintenancePaths): MaintenancePermit => {
+  const owner = randomUUID();
+  const content = JSON.stringify({ owner, pid: process.pid, startedAt: new Date().toISOString() });
+  withOwnershipGate(paths.ownershipGateFile, () => {
+    try { lstatSync(paths.lockFile); }
+    catch (error) {
+      if (!isMissing(error)) throw error;
+      replaceOwner(paths.lockFile, content);
+      return;
+    }
+    throw new MaintenanceLockHeldError(paths.lockFile);
+  }, paths.gateFileMustExist);
+  let released = false;
+  const verify = (): void => {
+    if (readFileSync(paths.lockFile, "utf8").trim() !== content) throw new Error(`Maintenance lock ${paths.lockFile} no longer belongs to this CLI; it was retained.`);
+  };
+  return {
+    owner,
+    release: (): void => {
+      if (released) return;
+      // A cooperating acquisition cannot replace our live PID while this lock remains.
+      withOwnershipGate(paths.ownershipGateFile, verify, paths.gateFileMustExist);
+      verify();
+      unlinkSync(paths.lockFile);
       released = true;
     },
   };

@@ -10,7 +10,9 @@ const sequence = (value: string): bigint => {
   return BigInt(value);
 };
 
-export const createLocalSessionContent = (store: PendingContent, sessionId: string) => {
+type ContentTransactions = { read: <T>(action: () => T) => T; write: <T>(action: () => T) => T };
+
+export const createLocalSessionContent = (store: PendingContent, sessionId: string, transactions: ContentTransactions) => {
   const resourcesFor = (items: readonly TimelineEntry[]): SessionResource[] => {
     const ids = new Set<string>();
     for (const item of items) {
@@ -22,7 +24,7 @@ export const createLocalSessionContent = (store: PendingContent, sessionId: stri
       return row ? [row.resource] : [];
     });
   };
-  return {
+  const content = {
     readTimeline(query: LocalTimelineQuery): Omit<TimelinePage, "sessionId" | "lastEventSeq"> & { kind: "timeline" } {
       if (!Number.isSafeInteger(query.limit) || query.limit < 1 || query.limit > 200 || !["tail", "before", "after"].includes(query.direction)) throw new Error("Invalid local timeline page.");
       let pivot = 0n;
@@ -85,5 +87,11 @@ export const createLocalSessionContent = (store: PendingContent, sessionId: stri
       const end = Math.min(Number(position) + limit, content.length);
       return { kind: "resource", resource, offset, data: content.subarray(Number(position), end).toString("base64"), eof: end === content.length };
     },
+  };
+  return {
+    readTimeline: (query: LocalTimelineQuery) => transactions.read(() => content.readTimeline(query)),
+    pendingInteractions: () => transactions.read(() => content.pendingInteractions()),
+    saveResource: (resource: SessionResource, bytes?: Uint8Array): void => transactions.write(() => content.saveResource(resource, bytes)),
+    readResource: (resourceId: string, offset: string, limit: number) => transactions.read(() => content.readResource(resourceId, offset, limit)),
   };
 };
