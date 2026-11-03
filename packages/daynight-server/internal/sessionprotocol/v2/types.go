@@ -218,6 +218,35 @@ type ControlRequest struct {
 	DraftHandled              bool    `json:"draftHandled"`
 	InitialUnknownDisposition *string `json:"initialUnknownDisposition"`
 }
+type ControlDispatch struct {
+	ActorUserID   string         `json:"actorUserId"`
+	RequestDigest string         `json:"requestDigest"`
+	Request       ControlRequest `json:"request"`
+}
+type ControlAck struct {
+	RequestDigest string          `json:"requestDigest"`
+	Durable       bool            `json:"durable"`
+	ControlState  ControlState    `json:"controlState"`
+	Result        OperationResult `json:"result"`
+}
+type RecordingResponsibility struct {
+	ResponsibilityID string `json:"responsibilityId"`
+	RecordingEnabled bool   `json:"recordingEnabled"`
+}
+
+// RecordingEvidence identifies a trusted Worker's durable journal and selected
+// source. Digests prove byte consistency, not independent observation of its disk.
+type RecordingEvidence struct {
+	ResponsibilityID     string  `json:"responsibilityId"`
+	EvidenceID           string  `json:"evidenceId"`
+	Revision             string  `json:"revision"`
+	SelectedFrameCount   string  `json:"selectedFrameCount"`
+	RegisteredFrameCount string  `json:"registeredFrameCount"`
+	CaptureError         *string `json:"captureError"`
+	Closed               bool    `json:"closed"`
+	JournalSHA256        string  `json:"journalSha256"`
+	SourceSHA256         string  `json:"sourceSha256"`
+}
 type InputPayload interface{ inputPayload() string }
 type Paste struct {
 	Text string `json:"text"`
@@ -290,19 +319,23 @@ type Receipt struct {
 }
 type NativeSnapshot struct{ sp.Snapshot }
 
-func (v NativeSnapshot) MarshalJSON() ([]byte, error) { return sp.MarshalWire(v.Snapshot) }
-func (Registration) sessionPayload() string           { return "registration" }
-func (RegistrationAck) sessionPayload() string        { return "registration_ack" }
-func (Snapshot) sessionPayload() string               { return "snapshot" }
-func (ControlState) sessionPayload() string           { return "control_state" }
-func (ControlRequest) sessionPayload() string         { return "control_request" }
-func (Operation) sessionPayload() string              { return "operation" }
-func (OperationResult) sessionPayload() string        { return "operation_result" }
-func (GenerationLedger) sessionPayload() string       { return "generation_ledger" }
-func (Finalization) sessionPayload() string           { return "finalization" }
-func (ArchiveStatus) sessionPayload() string          { return "archive_status" }
-func (Receipt) sessionPayload() string                { return "receipt" }
-func (NativeSnapshot) sessionPayload() string         { return "native_snapshot" }
+func (v NativeSnapshot) MarshalJSON() ([]byte, error)  { return sp.MarshalWire(v.Snapshot) }
+func (Registration) sessionPayload() string            { return "registration" }
+func (RegistrationAck) sessionPayload() string         { return "registration_ack" }
+func (Snapshot) sessionPayload() string                { return "snapshot" }
+func (ControlState) sessionPayload() string            { return "control_state" }
+func (ControlRequest) sessionPayload() string          { return "control_request" }
+func (ControlDispatch) sessionPayload() string         { return "control_dispatch" }
+func (ControlAck) sessionPayload() string              { return "control_ack" }
+func (RecordingResponsibility) sessionPayload() string { return "recording_responsibility" }
+func (RecordingEvidence) sessionPayload() string       { return "recording_evidence" }
+func (Operation) sessionPayload() string               { return "operation" }
+func (OperationResult) sessionPayload() string         { return "operation_result" }
+func (GenerationLedger) sessionPayload() string        { return "generation_ledger" }
+func (Finalization) sessionPayload() string            { return "finalization" }
+func (ArchiveStatus) sessionPayload() string           { return "archive_status" }
+func (Receipt) sessionPayload() string                 { return "receipt" }
+func (NativeSnapshot) sessionPayload() string          { return "native_snapshot" }
 
 type RecordingPolicy struct {
 	SampleIntervalMs     int `json:"sampleIntervalMs"`

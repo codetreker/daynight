@@ -86,7 +86,7 @@ continuation、网页输入和 cleanup prompt。`manual` 期间禁止自动输�
 `closing`/`closed` 拒绝普通输入。Worker 重启、terminal 替换、撤权和停止提升
 `controlEpoch`，旧结果仅能更新原操作，不能恢复旧控制。
 
-lease 为 30 秒，10 秒续约，授予必须收到 Worker durable ACK。服务端和 Worker
+lease 为 30 秒，10 秒续约，授予和续约必须收到关联原请求的 Worker durable ACK。服务端和 Worker
 分别校验过期；Worker 使用单调时限，重启后租约失效。最多一个未决人工批次，
 输入绑定完整 fence、connection/control epoch、segment、terminal、lease 与递增
 `leaseSeq`。单次 paste 最多 16 KiB UTF-8；keys 每次只允许一个白名单逻辑快捷键。
@@ -104,6 +104,12 @@ lease 为 30 秒，10 秒续约，授予必须收到 Worker durable ACK。服务
 `delivered_continue` 决定。Worker 重新核对 readiness、原 fence、最新 epoch 和
 进行中批次；该决定不构成 provider ACK。网页单写者不能排除本地 Herdr TUI/API
 并发输入。
+
+控制派发必须保留服务端认证的 actor、原请求摘要和 fence。Worker 持久仲裁后
+返回关联 operationId 的结果与状态；未关联状态、尚未派发完成的结果或旧代次
+ACK 不能授予 lease。`renew_control` 只续期当前 holder/browser 的同一 lease 和
+controlEpoch；过期后不能复活。补充消息需要明确能力匹配，旧 v2 producer 不能
+因协议名称相同而被当作具备这些行为。
 
 ## 封存、归档与回执
 
@@ -133,6 +139,23 @@ lease 为 30 秒，10 秒续约，授予必须收到 Worker durable ACK。服务
 任务重新领取后仍应按原 Session 发现历史；读取重新检查权限，删除任务或撤销
 成员不恢复访问。历史阅读不取得 lease、不 attach、不恢复 native session。
 原 owner 的删除任务归档收尾权限沿用现有规则，与用户读取权限分别判断。
+
+## 录制证据的来源与失败边界
+
+每代先由服务端登记录制策略和固定责任身份并 ACK，再由可信 Worker 持久保存
+同一身份后采集。初始登记之后，持续采集不依赖逐帧联网。Worker 选择内容前
+必须写入持久责任；修订和内容计数不得回退，捕获错误不得被清除。
+
+收尾提供固定、正常关闭的责任证据，绑定原 fence、责任 ID、日志字节身份和
+该代文件/索引来源。服务端保存并核对证据与既有观察；ready 的每代 selected、
+registered 计数必须均等于实际归档文件数，来源摘要必须匹配。合法 unavailable
+仅允许闭合零计数、无错误、空来源且策略/原因一致的责任，仍需全部运行停止及
+finalization 冻结。缺日志、未完成关闭或内容损坏不能重建为零帧。
+
+证据的 hash 不独立证明本机采集事实；服务端只对已观察记录核验单调性。
+可信 Worker 之外的恶意伪造或本地状态回滚不具有独立远程证明。无法取得可信
+正常关闭证据时保持失败/未知并保留资源；真实 Worker 恢复验证不能被 schema
+或测试生产者替代。
 
 ## 统一限额
 

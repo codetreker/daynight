@@ -1,0 +1,940 @@
+package sessionrelay
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
+	v2 "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol/v2"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestTerminalLeaseTransitionRequiresTheRequestedActorAndBoundedExpiry(t *testing.T) {
+	now := time.Date(2026, 11, 3, 13, 0, 0, 0, time.UTC)
+	request := v2.ControlRequest{OperationID: "operation", ConnectionEpoch: "1", ControlEpoch: "4", Action: "acquire_control", BrowserClientID: "browser"}
+	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "5", State: "manual", Lease: &v2.Lease{LeaseID: "lease", HolderUserID: "actor", BrowserClientID: "browser", ControlEpoch: "5", ExpiresAt: now.Add(30 * time.Second).Format(time.RFC3339)}}
+	if err := terminalControlTransition(request, "actor", state, now); err != nil {
+		t.Fatal(err)
+	}
+	state.Lease.HolderUserID = "other"
+	if err := terminalControlTransition(request, "actor", state, now); err == nil {
+		t.Fatal("a different user received the pending request's lease")
+	}
+	state.Lease.HolderUserID = "actor"
+	state.Lease.ExpiresAt = now.Add(31 * time.Second).Format(time.RFC3339)
+	if err := terminalControlTransition(request, "actor", state, now); err == nil {
+		t.Fatal("an overlong lease was accepted")
+	}
+	state.Lease.ExpiresAt = now.Format(time.RFC3339)
+	if err := terminalControlTransition(request, "actor", state, now); err == nil {
+		t.Fatal("an expired lease was accepted")
+	}
+}
+
+func TestTerminalControlReleaseCannotResumeAutomationAndRenewCannotReplaceLease(t *testing.T) {
+	now := time.Date(2026, 11, 3, 13, 0, 0, 0, time.UTC)
+	id := "original"
+	request := v2.ControlRequest{Action: "release_control", ConnectionEpoch: "1", ControlEpoch: "4", LeaseID: &id, BrowserClientID: "browser"}
+	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "5", State: "automation"}
+	if terminalControlTransition(request, "actor", state, now) == nil {
+		t.Fatal("ordinary release resumed automation")
+	}
+	state.State = "suspended"
+	if err := terminalControlTransition(request, "actor", state, now); err != nil {
+		t.Fatal(err)
+	}
+	request.Action = "renew_control"
+	state.State = "manual"
+	state.ControlEpoch = "4"
+	state.Lease = &v2.Lease{LeaseID: id, HolderUserID: "actor", BrowserClientID: "browser", ControlEpoch: "4", ExpiresAt: now.Add(30 * time.Second).Format(time.RFC3339)}
+	if err := terminalControlTransition(request, "actor", state, now); err != nil {
+		t.Fatal(err)
+	}
+	state.Lease.LeaseID = "replacement"
+	if terminalControlTransition(request, "actor", state, now) == nil {
+		t.Fatal("renewal replaced original lease")
+	}
+}
+
+type terminalControlFixture struct {
+	fixture
+	message v2.Message
+	binding v2.Binding
+	segment string
+	now     time.Time
+	browser string
+}
+
+func terminalControlSetup(t *testing.T) *terminalControlFixture {
+	t.Helper()
+	f, m := terminalFixture(t)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	f.s.now = func() time.Time { return now }
+	in := m.Payload.(v2.Registration)
+	x := &terminalControlFixture{fixture: f, message: m, binding: in.Binding, segment: uuid.NewString(), now: now, browser: uuid.NewString()}
+	f.s.now = func() time.Time { return x.now }
+	if _, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, m); err != nil {
+		t.Fatal(err)
+	}
+	run := v2.Run{ExecutionGeneration: "1", Owner: in.Owner, Binding: in.Binding, StartedAt: terminalTime(now), SegmentIDs: []string{x.segment}}
+	m.Type = "generation_ledger"
+	m.Payload = v2.GenerationLedger{Runs: []v2.Run{run}}
+	if _, err := f.s.UpdateTerminalLedger(context.Background(), f.p, f.project, f.task, m.SessionID, "1", m); err != nil {
+		t.Fatal(err)
+	}
+	m.Type = "recording_responsibility"
+	m.Payload = v2.RecordingResponsibility{ResponsibilityID: uuid.NewString(), RecordingEnabled: true}
+	if _, err := f.s.UpdateTerminalRecording(context.Background(), f.p, f.project, f.task, m.SessionID, "1", m); err != nil {
+		t.Fatal(err)
+	}
+	x.worker(t, "1", x.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "1", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}))
+	return x
+}
+func (f *terminalControlFixture) msg(kind string, payload v2.Payload) v2.Message {
+	m := f.message
+	m.Type = kind
+	m.Payload = payload
+	return m
+}
+func (f *terminalControlFixture) worker(t *testing.T, epoch string, m v2.Message) v2.Message {
+	t.Helper()
+	out, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, epoch, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func (f *terminalControlFixture) submit(t *testing.T, m v2.Message) v2.Message {
+	t.Helper()
+	out, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, m.SessionID, f.browser, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func (f *terminalControlFixture) poll(t *testing.T, epoch string) []v2.Message {
+	t.Helper()
+	out, err := f.s.PollTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, epoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func (f *terminalControlFixture) control(t *testing.T) *v2.ControlState {
+	t.Helper()
+	var out *v2.ControlState
+	err := f.s.terminalAccess(context.Background(), f.p, f.project, f.task, f.message.SessionID, false, func(_ pgx.Tx, r *terminalRecord, _ task, _ bool) error { out = r.Control; return nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+func (f *terminalControlFixture) acquire(t *testing.T) v2.Lease {
+	t.Helper()
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	f.submit(t, f.msg("control_request", req))
+	offers := f.poll(t, "1")
+	if len(offers) != 1 {
+		t.Fatal(offers)
+	}
+	dispatch := offers[0].Payload.(v2.ControlDispatch)
+	lease := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: f.p.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
+	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "keys", "renew_control", "release_control"}}
+	f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: dispatch.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+	return lease
+}
+func (f *terminalControlFixture) input(lease v2.Lease, seq, text string) v2.Message {
+	return f.msg("operation", v2.Operation{OperationID: uuid.NewString(), ConnectionEpoch: "1", SegmentID: f.segment, Binding: f.binding, ControlEpoch: lease.ControlEpoch, LeaseID: lease.LeaseID, LeaseSeq: seq, Kind: "paste", Payload: v2.Paste{Text: text}})
+}
+
+func TestTerminalClosedStateSurvivesDisconnectAndReconnect(t *testing.T) {
+	for _, state := range []string{"closing", "closed"} {
+		t.Run(state, func(t *testing.T) {
+			f := terminalControlSetup(t)
+			ctx := context.Background()
+			f.worker(t, "1", f.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: state, InitialAssignment: "transport_completed", AvailableActions: []string{}}))
+			if err := f.s.DisconnectTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.control(t); got.State != state {
+				t.Fatalf("disconnect reopened terminal: %+v", got)
+			}
+			registration := f.message.Payload.(v2.Registration)
+			registration.Mode = "reconnect"
+			epoch := "1"
+			registration.ConnectionEpoch = &epoch
+			if _, err := f.s.RegisterTerminal(ctx, f.p, f.project, f.task, f.msg("registration", registration)); err != nil {
+				t.Fatal(err)
+			}
+			if got := f.control(t); got.State != state {
+				t.Fatalf("reconnect reopened terminal: %+v", got)
+			}
+			for _, target := range []string{"suspended", "automation"} {
+				m := f.msg("control_state", v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "4", State: target, InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}})
+				if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, f.message.SessionID, "2", m); err == nil {
+					t.Fatalf("%s reopened as %s", state, target)
+				}
+			}
+		})
+	}
+}
+
+func TestTerminalControlEpochExhaustionClosesWithoutOverflow(t *testing.T) {
+	f := terminalControlSetup(t)
+	f.worker(t, "1", f.msg("control_state", v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "9223372036854775807", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{}}))
+	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+		t.Fatal(err)
+	}
+	got := f.control(t)
+	if got.ControlEpoch != "9223372036854775807" || got.State != "closed" {
+		t.Fatalf("exhausted control fence wrapped: %+v", got)
+	}
+}
+
+func TestTerminalFinalizationClearsTransientPreviewAndCommandBodies(t *testing.T) {
+	f, m, doc := terminalArchiveFixture(t)
+	f.s.terminalFrames = map[string][]byte{m.SessionID: []byte("private screen")}
+	f.s.terminalPending = map[string]map[string][]byte{m.SessionID: {uuid.NewString(): []byte("private input")}}
+	finalizeFixture(t, f, m, doc)
+	if len(f.s.terminalFrames) != 0 || len(f.s.terminalPending) != 0 {
+		t.Fatal("finalized terminal retained transient content")
+	}
+}
+
+func TestTerminalFinalizationFencesDelayedCommittedSnapshot(t *testing.T) {
+	f, m, doc := terminalArchiveFixture(t)
+	// The durable snapshot transaction has committed, but its callback has not
+	// run yet. Finalization must invalidate that callback before releasing data.
+	publish, _, err := f.s.stageTerminalSnapshot(m.SessionID, []byte("delayed private screen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalizeFixture(t, f, m, doc)
+	publish()
+	if len(f.s.terminalFrames) != 0 || len(f.s.terminalFrameWrites) != 0 {
+		t.Fatal("delayed callback resurrected finalized preview")
+	}
+	// Read fencing also rejects a stale cache supplied independently of callbacks.
+	x := terminalControlSetup(t)
+	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: x.segment, SegmentOrdinal: "1", Binding: x.binding, Recorded: true, Frame: v2.Frame{FrameSeq: "1", CapturedAt: terminalTime(x.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "private"}}}}}
+	x.worker(t, "1", x.msg("snapshot", snapshot))
+	err = x.s.terminalAccess(context.Background(), x.p, x.project, x.task, x.message.SessionID, false, func(_ pgx.Tx, r *terminalRecord, _ task, _ bool) error {
+		finalID := uuid.NewString()
+		r.FinalizationID = &finalID
+		if x.s.terminalSnapshot(r) != nil {
+			t.Fatal("finalized record exposed cached frame")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTerminalSnapshotReservationsAreBoundedAndLatestCommitWins(t *testing.T) {
+	s := &Service{}
+	first, cancelFirst, err := s.stageTerminalSnapshot("session", []byte("first"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest, _, err := s.stageTerminalSnapshot("session", []byte("latest"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelFirst()
+	latest()
+	first()
+	if string(s.terminalFrames["session"]) != "latest" {
+		t.Fatal("stale callback replaced latest frame")
+	}
+	_, cancel, err := s.stageTerminalSnapshot("session", []byte("rollback"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	if string(s.terminalFrames["session"]) != "latest" {
+		t.Fatal("rollback changed committed preview")
+	}
+	for i := 1; i < maxLiveSessions; i++ {
+		if _, _, err := s.stageTerminalSnapshot(decimal(int64(i)), []byte("pending")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.stageTerminalSnapshot("overflow", []byte("pending")); err == nil {
+		t.Fatal("pending previews escaped capacity limit")
+	}
+	s.forgetTerminalSnapshot("session")
+	if _, _, err := s.stageTerminalSnapshot("replacement", []byte("pending")); err != nil {
+		t.Fatal("released preview retained capacity", err)
+	}
+}
+
+func TestTerminalFrameOrderingSurvivesDelayedPublication(t *testing.T) {
+	f := terminalControlSetup(t)
+	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: f.segment, SegmentOrdinal: "1", Binding: f.binding, Recorded: true, Frame: v2.Frame{FrameSeq: "100", CapturedAt: terminalTime(f.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "newest private screen"}}}}}
+	m := f.msg("snapshot", snapshot)
+	f.worker(t, "1", m)
+	// Reproduce the post-commit/pre-publication state: durable acceptance exists,
+	// but only its reserved callback can publish the frame.
+	f.s.forgetTerminalSnapshot(m.SessionID)
+	publish, _, err := f.s.stageTerminalSnapshot(m.SessionID, encode(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	older := snapshot
+	older.Frame.FrameSeq = "1"
+	if _, err = f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, "1", f.msg("snapshot", older)); err == nil {
+		t.Fatal("older frame replaced a committed unpublished frame")
+	}
+	publish()
+	f.s.forgetTerminalSnapshot(m.SessionID)
+	changed := snapshot
+	changed.Frame.Width = 2
+	if _, err = f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, "1", f.msg("snapshot", changed)); err == nil {
+		t.Fatal("conflicting duplicate accepted after cache loss")
+	}
+	f.worker(t, "1", m)
+	var persisted string
+	if err := f.s.DB.Pool.QueryRow(context.Background(), `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, m.SessionID).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(persisted, "newest private screen") {
+		t.Fatal("frame content persisted with ordering metadata")
+	}
+	registration := f.message.Payload.(v2.Registration)
+	registration.Mode = "reconnect"
+	epoch := "1"
+	registration.ConnectionEpoch = &epoch
+	if _, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, f.msg("registration", registration)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot.ConnectionEpoch = "2"
+	f.worker(t, "2", f.msg("snapshot", snapshot))
+	older.ConnectionEpoch = "2"
+	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, m.SessionID, "2", f.msg("snapshot", older)); err == nil {
+		t.Fatal("reconnect reset the current segment's frame order")
+	}
+}
+
+func TestTerminalInputCannotDispatchToPriorCollectionSegment(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	input := f.input(lease, "1", "prior segment")
+	f.submit(t, input)
+	err := f.s.terminalAccess(context.Background(), f.p, f.project, f.task, f.message.SessionID, false, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
+		r.Runs[0].SegmentIDs = append(r.Runs[0].SegmentIDs, uuid.NewString())
+		return saveTerminal(context.Background(), tx, r)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if offered := f.poll(t, "1"); len(offered) != 0 {
+		t.Fatal("input offered to a prior segment", offered)
+	}
+	out, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, input.Payload.(v2.Operation).OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := out.Payload.(v2.OperationResult); got.State != "rejected" {
+		t.Fatal(got)
+	}
+}
+
+func TestTerminalControlDurableAcknowledgementAndInputLedger(t *testing.T) {
+	f := terminalControlSetup(t)
+	ctx := context.Background()
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	request := f.msg("control_request", req)
+	if got := f.submit(t, request).Payload.(v2.OperationResult); got.State != "queued" {
+		t.Fatal(got)
+	}
+	if f.control(t).Lease != nil {
+		t.Fatal("queue granted lease before Worker acknowledgement")
+	}
+	offers := f.poll(t, "1")
+	if len(offers) != 1 {
+		t.Fatal(offers)
+	}
+	if len(f.poll(t, "1")) != 0 {
+		t.Fatal("control request replayed")
+	}
+	dispatch := offers[0].Payload.(v2.ControlDispatch)
+	if dispatch.ActorUserID != f.p.UserID || dispatch.Request != req {
+		t.Fatal(dispatch)
+	}
+	lease := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: f.p.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
+	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "keys", "renew_control", "release_control"}}
+	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, request.SessionID, "1", f.msg("control_state", state)); err == nil {
+		t.Fatal("unsolicited manual state granted lease")
+	}
+	ack := v2.ControlAck{RequestDigest: dispatch.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}
+	wrong := ack
+	wrong.RequestDigest = strings.Repeat("0", 64)
+	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, request.SessionID, "1", f.msg("control_ack", wrong)); err == nil {
+		t.Fatal("uncorrelated durable acknowledgement accepted")
+	}
+	f.worker(t, "1", f.msg("control_ack", ack))
+	if got := f.control(t).Lease; got == nil || *got != lease {
+		t.Fatal(got)
+	}
+	input := f.input(lease, "1", "private-terminal-paste")
+	f.submit(t, input)
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, input.SessionID, f.browser, f.input(lease, "2", "other")); err == nil {
+		t.Fatal("second unresolved batch accepted")
+	}
+	var persisted string
+	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT command::text FROM session_operations WHERE session_id=$1 AND operation_id=$2`, input.SessionID, input.Payload.(v2.Operation).OperationID).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(persisted, "private-terminal-paste") {
+		t.Fatal("native paste persisted in the server control ledger")
+	}
+	offers = f.poll(t, "1")
+	if len(offers) != 1 || offers[0].Payload.(v2.Operation).Payload.(v2.Paste).Text != "private-terminal-paste" {
+		t.Fatal(offers)
+	}
+	if len(f.poll(t, "1")) != 0 {
+		t.Fatal("native input replayed")
+	}
+	opID := input.Payload.(v2.Operation).OperationID
+	f.worker(t, "1", f.msg("operation_result", terminalResult(opID, "unknown", "input_unknown")))
+	if got := f.submit(t, input).Payload.(v2.OperationResult); got.State != "unknown" {
+		t.Fatal(got)
+	}
+	changed := input
+	body := input.Payload.(v2.Operation)
+	body.Payload = v2.Paste{Text: "different"}
+	changed.Payload = body
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, input.SessionID, f.browser, changed); err == nil {
+		t.Fatal("same operation ID accepted different body")
+	}
+	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, input.SessionID, "1", f.msg("operation_result", terminalResult(opID, "transport_completed", ""))); err == nil {
+		t.Fatal("unknown was converted into success")
+	}
+}
+
+func TestTerminalTimeoutAndReconnectNeverReplayOrRestoreControl(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	input := f.input(lease, "1", "time out")
+	f.submit(t, input)
+	f.poll(t, "1")
+	f.now = f.now.Add(11 * time.Second)
+	got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, input.SessionID, input.Payload.(v2.Operation).OperationID)
+	if err != nil || got.Payload.(v2.OperationResult).State != "unknown" {
+		t.Fatal(got, err)
+	}
+	reconnect := f.message
+	registration := f.message.Payload.(v2.Registration)
+	epoch := "1"
+	registration.Mode = "reconnect"
+	registration.ConnectionEpoch = &epoch
+	reconnect.Payload = registration
+	ack, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, reconnect)
+	if err != nil || ack.Payload.(v2.RegistrationAck).ConnectionEpoch != "2" {
+		t.Fatal(ack, err)
+	}
+	if f.control(t).Lease != nil || f.control(t).State != "suspended" {
+		t.Fatal("reconnect revived control")
+	}
+	if got := f.submit(t, input).Payload.(v2.OperationResult); got.State != "unknown" {
+		t.Fatal(got)
+	}
+	if len(f.poll(t, "2")) != 0 {
+		t.Fatal("reconnect replayed input")
+	}
+	state := v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "3", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
+	if _, err = f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, input.SessionID, "2", f.msg("control_state", state)); err == nil {
+		t.Fatal("reconnect resumed automation without handoff")
+	}
+}
+
+func TestTerminalLostQueuedBodyIsRejectedWithoutPersistingOrReplayingInput(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	input := f.input(lease, "1", "do not persist")
+	f.submit(t, input)
+	id := input.Payload.(v2.Operation).OperationID
+	f.s.forgetTerminalBody(input.SessionID, id)
+	if len(f.poll(t, "1")) != 0 {
+		t.Fatal("missing body was offered")
+	}
+	if got := f.submit(t, input).Payload.(v2.OperationResult); got.State != "rejected" {
+		t.Fatal(got)
+	}
+}
+
+func TestTerminalPendingAcquireIsRevokedWhenItsBrowserDisconnects(t *testing.T) {
+	f := terminalControlSetup(t)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	f.submit(t, f.msg("control_request", req))
+	f.poll(t, "1")
+	if err := f.s.DisconnectTerminalViewer(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.browser); err != nil {
+		t.Fatal(err)
+	}
+	got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, req.OperationID)
+	if err != nil || got.Payload.(v2.OperationResult).State != "unknown" {
+		t.Fatal(got, err)
+	}
+}
+
+func TestTerminalSnapshotIsTransientAndBoundToRegisteredSegment(t *testing.T) {
+	f := terminalControlSetup(t)
+	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: f.segment, SegmentOrdinal: "1", Binding: f.binding, Recorded: true, Frame: v2.Frame{FrameSeq: "1", CapturedAt: terminalTime(f.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "private-screen"}}}}}
+	f.worker(t, "1", f.msg("snapshot", snapshot))
+	var persisted string
+	if err := f.s.DB.Pool.QueryRow(context.Background(), `SELECT terminal_state::text FROM task_sessions WHERE id=$1`, f.message.SessionID).Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(persisted, "private-screen") {
+		t.Fatal("terminal screen persisted outside archive storage")
+	}
+	var rec terminalRecord
+	if err := json.Unmarshal([]byte(persisted), &rec); err != nil {
+		t.Fatal(err)
+	}
+	if !rec.Recording["1"].ObservedContent {
+		t.Fatal("positive recording observation was not preserved")
+	}
+	if f.s.terminalSnapshot(&rec) == nil {
+		t.Fatal("latest live snapshot missing")
+	}
+	snapshot.SegmentID = uuid.NewString()
+	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", snapshot)); err == nil {
+		t.Fatal("foreign segment preview accepted")
+	}
+}
+
+func TestTerminalLeaseRenewReleaseAndExplicitAutomationHandoff(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	transition := func(req v2.ControlRequest, state v2.ControlState) {
+		t.Helper()
+		f.submit(t, f.msg("control_request", req))
+		offers := f.poll(t, "1")
+		if len(offers) != 1 {
+			t.Fatal(offers)
+		}
+		d := offers[0].Payload.(v2.ControlDispatch)
+		f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+	}
+	f.now = f.now.Add(10 * time.Second)
+	lease.ExpiresAt = terminalTime(f.now.Add(30 * time.Second))
+	renewed := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "keys", "renew_control", "release_control"}}
+	transition(v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "2", Action: "renew_control", BrowserClientID: f.browser, LeaseID: &lease.LeaseID}, renewed)
+	if f.control(t).Lease.ExpiresAt != lease.ExpiresAt {
+		t.Fatal("renewal expiry missing")
+	}
+	suspended := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "3", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control", "resume_automation"}}
+	transition(v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "2", Action: "release_control", BrowserClientID: f.browser, LeaseID: &lease.LeaseID}, suspended)
+	if f.control(t).State != "suspended" {
+		t.Fatal("release resumed automation")
+	}
+	automation := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "4", State: "automation", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
+	transition(v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "3", Action: "resume_automation", BrowserClientID: f.browser, DraftHandled: true}, automation)
+	if f.control(t).State != "automation" || f.control(t).Lease != nil {
+		t.Fatal("explicit automation handoff missing")
+	}
+}
+
+func TestTerminalExpiredLeaseAndWrongBrowserCannotInput(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	input := f.input(lease, "1", "guard")
+	if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, input.SessionID, uuid.NewString(), input); err == nil {
+		t.Fatal("another browser reused the current lease")
+	}
+	f.now = f.now.Add(31 * time.Second)
+	if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, input.SessionID, f.browser, input); err == nil {
+		t.Fatal("expired lease accepted input")
+	}
+	// A read reconciles expiry and durably retains suspended instead of automation.
+	var reconciled *v2.ControlState
+	err := f.s.terminalAccess(context.Background(), f.p, f.project, f.task, input.SessionID, false, func(tx pgx.Tx, r *terminalRecord, task task, _ bool) error {
+		if err := f.s.refreshTerminalControl(context.Background(), tx, r, task); err != nil {
+			return err
+		}
+		reconciled = r.Control
+		return nil
+	})
+	if err != nil || reconciled.Lease != nil || reconciled.State != "suspended" {
+		t.Fatal(reconciled, err)
+	}
+}
+
+func terminalOtherActor(t *testing.T, f *terminalControlFixture) core.Principal {
+	t.Helper()
+	p := core.Principal{Kind: core.PATCredential, UserID: uuid.NewString(), CredentialID: uuid.NewString()}
+	hash := sha256.Sum256([]byte(p.CredentialID))
+	statements := []struct {
+		sql  string
+		args []any
+	}{
+		{`INSERT INTO users(id,uniauth_id,created_at,updated_at) VALUES($1,$2,now(),now())`, []any{p.UserID, p.UserID}},
+		{`INSERT INTO personal_access_tokens(id,user_id,token_hash,name,created_at,expires_at) VALUES($1,$2,$3,'terminal actor',now(),now()+interval '1 day')`, []any{p.CredentialID, p.UserID, hash[:]}},
+		{`INSERT INTO project_members(project_id,user_id,role) VALUES($1,$2,'admin')`, []any{f.project, p.UserID}},
+	}
+	for _, q := range statements {
+		if _, err := f.s.DB.Pool.Exec(context.Background(), q.sql, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return p
+}
+
+func TestTerminalRevokedActorIsRejectedBeforeForwardingAndAcknowledgement(t *testing.T) {
+	for _, afterPoll := range []bool{false, true} {
+		t.Run(map[bool]string{false: "queued", true: "dispatched"}[afterPoll], func(t *testing.T) {
+			f := terminalControlSetup(t)
+			actor := terminalOtherActor(t, f)
+			req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+			if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
+				t.Fatal(err)
+			}
+			var offers []v2.Message
+			if afterPoll {
+				offers = f.poll(t, "1")
+			}
+			if _, err := f.s.DB.Pool.Exec(context.Background(), `DELETE FROM project_members WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+				t.Fatal(err)
+			}
+			if !afterPoll {
+				if got := f.poll(t, "1"); len(got) != 0 {
+					t.Fatal("revoked actor command was forwarded")
+				}
+			} else {
+				d := offers[0].Payload.(v2.ControlDispatch)
+				l := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: actor.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
+				state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &l, InitialAssignment: "transport_completed", AvailableActions: []string{"paste"}}
+				f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+			}
+			if f.control(t).Lease != nil {
+				t.Fatal("revoked actor received lease")
+			}
+		})
+	}
+}
+
+func TestTerminalDisconnectAndLateAcknowledgementCannotReviveLease(t *testing.T) {
+	f := terminalControlSetup(t)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	f.submit(t, f.msg("control_request", req))
+	d := f.poll(t, "1")[0].Payload.(v2.ControlDispatch)
+	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.message.Envelope, "1"); err != nil {
+		t.Fatal(err)
+	}
+	l := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: f.p.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
+	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &l, InitialAssignment: "transport_completed", AvailableActions: []string{"paste"}}
+	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")})); err == nil {
+		t.Fatal("late ack replaced unknown outcome")
+	}
+	if f.control(t).Lease != nil {
+		t.Fatal("late ack revived lease")
+	}
+}
+
+func TestTerminalRenewAcknowledgementAfterOldExpiryDoesNotReviveLease(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	f.now = f.now.Add(29 * time.Second)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "2", Action: "renew_control", BrowserClientID: f.browser, LeaseID: &lease.LeaseID}
+	f.submit(t, f.msg("control_request", req))
+	d := f.poll(t, "1")[0].Payload.(v2.ControlDispatch)
+	f.now = f.now.Add(2 * time.Second)
+	lease.ExpiresAt = terminalTime(f.now.Add(30 * time.Second))
+	state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "renew_control"}}
+	f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+	if f.control(t).Lease != nil || f.control(t).State != "suspended" {
+		t.Fatal("late renewal revived an expired lease")
+	}
+}
+
+func TestTerminalActionRemovalBeforePollPreventsInput(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	input := f.input(lease, "1", "disabled before offer")
+	f.submit(t, input)
+	state := *f.control(t)
+	state.AvailableActions = []string{"keys", "release_control"}
+	f.worker(t, "1", f.msg("control_state", state))
+	if offers := f.poll(t, "1"); len(offers) != 0 {
+		t.Fatal("removed action was still offered")
+	}
+	if got := f.submit(t, input).Payload.(v2.OperationResult); got.State != "rejected" {
+		t.Fatal(got)
+	}
+}
+
+func TestTerminalOperationTimeoutAtLateWorkerResultRemainsUnknown(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	input := f.input(lease, "1", "uncertain input")
+	f.submit(t, input)
+	f.poll(t, "1")
+	f.now = f.now.Add(11 * time.Second)
+	got := f.worker(t, "1", f.msg("operation_result", terminalResult(input.Payload.(v2.Operation).OperationID, "transport_completed", "")))
+	if got.Payload.(v2.OperationResult).State != "unknown" {
+		t.Fatal("late result erased timeout")
+	}
+	if got := f.submit(t, input).Payload.(v2.OperationResult); got.State != "unknown" {
+		t.Fatal(got)
+	}
+}
+
+func TestTerminalInitialDeliveryStateCannotRegressOrResolveWithoutDisposition(t *testing.T) {
+	for _, prior := range []string{"unknown", "unconfirmed", "transport_completed"} {
+		if terminalInitialProgress(prior, "pending", nil) {
+			t.Fatalf("%s became automatically sendable", prior)
+		}
+	}
+	if !terminalInitialProgress("pending", "dispatching", nil) || !terminalInitialProgress("dispatching", "unknown", nil) {
+		t.Fatal("valid initial delivery progression rejected")
+	}
+	request := v2.ControlRequest{Action: "resume_automation", DraftHandled: true}
+	if terminalInitialProgress("unknown", "transport_completed", &request) {
+		t.Fatal("missing unknown disposition resolved delivery")
+	}
+	disposition := "delivered_continue"
+	request.InitialUnknownDisposition = &disposition
+	if !terminalInitialProgress("unknown", "transport_completed", &request) {
+		t.Fatal("explicit initial disposition rejected")
+	}
+}
+
+func TestTerminalInputRejectsStaleFencesTargetsSequencesAndActors(t *testing.T) {
+	f := terminalControlSetup(t)
+	lease := f.acquire(t)
+	cases := map[string]func(*v2.Operation){
+		"connection": func(o *v2.Operation) { o.ConnectionEpoch = "2" },
+		"control":    func(o *v2.Operation) { o.ControlEpoch = "3" },
+		"lease":      func(o *v2.Operation) { o.LeaseID = uuid.NewString() },
+		"segment":    func(o *v2.Operation) { o.SegmentID = uuid.NewString() },
+		"terminal":   func(o *v2.Operation) { o.Binding.TerminalID = "replacement" },
+	}
+	for name, change := range cases {
+		t.Run(name, func(t *testing.T) {
+			m := f.input(lease, "1", "guard")
+			o := m.Payload.(v2.Operation)
+			change(&o)
+			m.Payload = o
+			if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, m.SessionID, f.browser, m); err == nil {
+				t.Fatal("stale input accepted")
+			}
+		})
+	}
+	good := f.input(lease, "1", "accepted")
+	f.submit(t, good)
+	f.poll(t, "1")
+	f.worker(t, "1", f.msg("operation_result", terminalResult(good.Payload.(v2.Operation).OperationID, "transport_completed", "")))
+	if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, good.SessionID, f.browser, f.input(lease, "1", "reused sequence")); err == nil {
+		t.Fatal("duplicate lease sequence accepted")
+	}
+	actor := terminalOtherActor(t, f)
+	if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, good.SessionID, f.browser, good); err == nil {
+		t.Fatal("another actor recovered original operation")
+	}
+	if _, err := f.s.PollTerminal(context.Background(), actor, f.project, f.task, good.SessionID, f.message.Envelope, "1"); err == nil {
+		t.Fatal("another actor polled Worker channel")
+	}
+	if _, err := f.s.HandleTerminalControl(context.Background(), actor, f.project, f.task, good.SessionID, "1", f.msg("control_state", *f.control(t))); err == nil {
+		t.Fatal("another actor published Worker state")
+	}
+	if err := f.s.DisconnectTerminal(context.Background(), actor, f.project, f.task, good.SessionID, f.message.Envelope, "1"); err == nil {
+		t.Fatal("another actor disconnected Worker")
+	}
+	if _, err := f.s.PollTerminal(context.Background(), f.p, f.project, f.task, good.SessionID, f.message.Envelope, "2"); err == nil {
+		t.Fatal("superseded epoch polled channel")
+	}
+	if err := f.s.DisconnectTerminal(context.Background(), f.p, f.project, f.task, good.SessionID, f.message.Envelope, "2"); err != nil {
+		t.Fatal("stale disconnect affected current channel", err)
+	}
+	if err := f.s.DisconnectTerminalViewer(context.Background(), f.p, f.project, f.task, good.SessionID, uuid.NewString()); err != nil {
+		t.Fatal(err)
+	}
+	if f.control(t).Lease == nil {
+		t.Fatal("unrelated browser revoked active lease")
+	}
+}
+
+func TestTerminalRejectsMalformedAndUnavailableControlWithoutLedgerWrite(t *testing.T) {
+	f := terminalControlSetup(t)
+	ctx := context.Background()
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	malformed := f.msg("operation", nil)
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, malformed); err == nil {
+		t.Fatal("nil payload accepted")
+	}
+	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, f.message.SessionID, "1", malformed); err == nil {
+		t.Fatal("nil Worker payload accepted")
+	}
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.message); err == nil {
+		t.Fatal("registration used as operation")
+	}
+	if _, err := f.s.HandleTerminalControl(ctx, f.p, f.project, f.task, f.message.SessionID, "1", f.message); err == nil {
+		t.Fatal("registration used as control state")
+	}
+	wrong := req
+	wrong.ConnectionEpoch = "2"
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", wrong)); err == nil {
+		t.Fatal("wrong epoch accepted")
+	}
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, uuid.NewString(), f.msg("control_request", req)); err == nil {
+		t.Fatal("wrong browser accepted")
+	}
+	actor := terminalOtherActor(t, f)
+	if _, err := f.s.DB.Pool.Exec(ctx, `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`, f.project, actor.UserID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.SubmitTerminal(ctx, actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
+		t.Fatal("read-only project member issued control")
+	}
+	state := *f.control(t)
+	state.AvailableActions = []string{}
+	f.worker(t, "1", f.msg("control_state", state))
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
+		t.Fatal("unavailable control action accepted")
+	}
+	state.AvailableActions = []string{"acquire_control"}
+	f.worker(t, "1", f.msg("control_state", state))
+	if err := f.s.terminalAccess(ctx, f.p, f.project, f.task, f.message.SessionID, false, func(tx pgx.Tx, r *terminalRecord, _ task, _ bool) error {
+		r.OperationSeq = maxSessionOperations
+		return saveTerminal(ctx, tx, r)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.SubmitTerminal(ctx, f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
+		t.Fatal("ledger capacity exceeded")
+	}
+	var count int
+	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT count(*) FROM session_operations WHERE session_id=$1`, f.message.SessionID).Scan(&count); err != nil || count != 0 {
+		t.Fatal(count, err)
+	}
+}
+
+func TestTerminalUnknownControlAcknowledgementSuspendsWithoutGranting(t *testing.T) {
+	f := terminalControlSetup(t)
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+	f.submit(t, f.msg("control_request", req))
+	d := f.poll(t, "1")[0].Payload.(v2.ControlDispatch)
+	ack := v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: *f.control(t), Result: terminalResult(req.OperationID, "unknown", "input_unknown")}
+	f.worker(t, "1", f.msg("control_ack", ack))
+	f.worker(t, "1", f.msg("control_ack", ack))
+	if f.control(t).State != "suspended" || f.control(t).Lease != nil {
+		t.Fatal("unknown control outcome granted control")
+	}
+}
+
+func TestTerminalInvalidAndRepeatedSnapshotHandling(t *testing.T) {
+	f := terminalControlSetup(t)
+	snapshot := v2.Snapshot{ConnectionEpoch: "1", SegmentID: f.segment, SegmentOrdinal: "1", Binding: f.binding, Recorded: true, Frame: v2.Frame{FrameSeq: "2", CapturedAt: terminalTime(f.now), ElapsedMs: "0", Width: 1, Height: 1, Full: true, Rows: [][]v2.StyledText{{{Text: "a"}}}}}
+	f.worker(t, "1", f.msg("snapshot", snapshot))
+	f.worker(t, "1", f.msg("snapshot", snapshot))
+	bad := snapshot
+	bad.Frame.FrameSeq = "1"
+	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", bad)); err == nil {
+		t.Fatal("older preview replaced current frame")
+	}
+	bad = snapshot
+	bad.ConnectionEpoch = "2"
+	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("snapshot", bad)); err == nil {
+		t.Fatal("different preview epoch accepted")
+	}
+	state := *f.control(t)
+	state.ControlEpoch = "2"
+	f.worker(t, "1", f.msg("control_state", state))
+	state.ControlEpoch = "1"
+	if _, err := f.s.HandleTerminalControl(context.Background(), f.p, f.project, f.task, f.message.SessionID, "1", f.msg("control_state", state)); err == nil {
+		t.Fatal("old control epoch accepted")
+	}
+}
+
+func TestTerminalTransientBodyCapacityDoesNotEvictUnresolvedInput(t *testing.T) {
+	s := &Service{}
+	for i := 0; i < maxLiveSessions; i++ {
+		if err := s.storeTerminalBody(decimal(int64(i)), "operation", []byte("input")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.storeTerminalBody("overflow", "operation", []byte("input")); err == nil {
+		t.Fatal("unbounded pending body allocation")
+	}
+	if string(s.terminalBody("0", "operation")) != "input" {
+		t.Fatal("capacity pressure evicted unresolved input")
+	}
+	s.forgetTerminalBody("0", "operation")
+	if err := s.storeTerminalBody("overflow", "operation", []byte("input")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTerminalActiveLeaseCredentialRevocationSuspendsAndInvalidatesInput(t *testing.T) {
+	for _, revoke := range []string{"credential", "role"} {
+		t.Run(revoke, func(t *testing.T) {
+			f := terminalControlSetup(t)
+			actor := terminalOtherActor(t, f)
+			req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "1", ControlEpoch: "1", Action: "acquire_control", BrowserClientID: f.browser}
+			if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err != nil {
+				t.Fatal(err)
+			}
+			d := f.poll(t, "1")[0].Payload.(v2.ControlDispatch)
+			lease := v2.Lease{LeaseID: uuid.NewString(), HolderUserID: actor.UserID, BrowserClientID: f.browser, ControlEpoch: "2", ExpiresAt: terminalTime(f.now.Add(30 * time.Second))}
+			state := v2.ControlState{ConnectionEpoch: "1", ControlEpoch: "2", State: "manual", Lease: &lease, InitialAssignment: "transport_completed", AvailableActions: []string{"paste", "release_control"}}
+			f.worker(t, "1", f.msg("control_ack", v2.ControlAck{RequestDigest: d.RequestDigest, Durable: true, ControlState: state, Result: terminalResult(req.OperationID, "transport_completed", "")}))
+			input := f.input(lease, "1", "revoke in flight")
+			if _, err := f.s.SubmitTerminal(context.Background(), actor, f.project, f.task, f.message.SessionID, f.browser, input); err != nil {
+				t.Fatal(err)
+			}
+			f.poll(t, "1")
+			sql := `DELETE FROM personal_access_tokens WHERE id=$1`
+			args := []any{actor.CredentialID}
+			if revoke == "role" {
+				sql = `UPDATE project_members SET role='member' WHERE project_id=$1 AND user_id=$2`
+				args = []any{f.project, actor.UserID}
+			}
+			if _, err := f.s.DB.Pool.Exec(context.Background(), sql, args...); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.s.TerminalState(context.Background(), f.p, f.project, f.task, f.message.SessionID); err != nil {
+				t.Fatal(err)
+			}
+			if f.control(t).State != "suspended" || f.control(t).Lease != nil {
+				t.Fatal("revoked actor retained lease")
+			}
+			got, err := f.s.TerminalOperation(context.Background(), f.p, f.project, f.task, f.message.SessionID, input.Payload.(v2.Operation).OperationID)
+			if err != nil || got.Payload.(v2.OperationResult).State != "unknown" {
+				t.Fatal(got, err)
+			}
+		})
+	}
+}
+
+func TestTerminalIncompleteWorkerCapabilitiesCannotGrantControl(t *testing.T) {
+	f := terminalControlSetup(t)
+	reconnect := f.message
+	registration := f.message.Payload.(v2.Registration)
+	epoch := "1"
+	registration.Mode = "reconnect"
+	registration.ConnectionEpoch = &epoch
+	registration.Capabilities.Archive = false
+	reconnect.Payload = registration
+	if _, err := f.s.RegisterTerminal(context.Background(), f.p, f.project, f.task, reconnect); err != nil {
+		t.Fatal(err)
+	}
+	state := v2.ControlState{ConnectionEpoch: "2", ControlEpoch: "2", State: "suspended", InitialAssignment: "transport_completed", AvailableActions: []string{"acquire_control"}}
+	f.worker(t, "2", f.msg("control_state", state))
+	req := v2.ControlRequest{OperationID: uuid.NewString(), ConnectionEpoch: "2", ControlEpoch: "2", Action: "acquire_control", BrowserClientID: f.browser}
+	if _, err := f.s.SubmitTerminal(context.Background(), f.p, f.project, f.task, f.message.SessionID, f.browser, f.msg("control_request", req)); err == nil {
+		t.Fatal("incomplete Worker granted control")
+	}
+	view, err := f.s.TerminalState(context.Background(), f.p, f.project, f.task, f.message.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view["control"].(*v2.ControlState).AvailableActions) != 0 {
+		t.Fatal("incomplete Worker advertised browser control")
+	}
+}

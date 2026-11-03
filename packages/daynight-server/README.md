@@ -84,6 +84,11 @@ updates each affected source version once and marks the target in one transactio
 The target's own prerequisites remain. Target removal and one epoch rotation are
 atomic, with the task-local `410 task_deleted` response for later access.
 
+Herdr Task Sessions use explicit `daynight.session.v2` selection with the shared
+Session registry and archive storage. The [terminal server design](../../docs/design/terminal-session-server.md)
+defines routes, Worker capability gates, durable recording evidence and control
+ACKs. These server APIs do not establish native Worker or browser readiness.
+
 ## CLI device authorization
 
 The CLI connects to `https://daynight.cc` when `serverUrl` is omitted. An explicit

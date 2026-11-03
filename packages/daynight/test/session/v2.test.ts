@@ -15,10 +15,33 @@ describe("Session v2 strict wire values", () => {
 import { readFileSync } from "node:fs";
 import { decodeSessionV2Message, parseSessionV2Message, parseTerminalFrame, assertNativeSessionIdProgression } from "../../src/session/v2/protocol.js";
 import { decodeSessionV2Archive, parseSessionV2Archive } from "../../src/session/v2/archive.js";
+import { sourceDigest, emptySourceDigest } from "../../src/session/v2/responsibility.js";
+import { controlRequestDigest } from "../../src/session/v2/protocol.js";
 import { SESSION_PROTOCOL_HEADER, SESSION_V2_LIMITS, canonicalSessionJson, hashSessionBytes } from "../../src/session/v2/values.js";
 const root = new URL("./fixtures/v2/", import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL("manifest.json", root), "utf8")) as { cases: { file: string; type: "message" | "archive"; valid: boolean }[] };
 const fixture = (name: string): any => JSON.parse(readFileSync(new URL(name + ".json", root), "utf8"));
+
+describe("recording responsibility and authenticated control provenance", () => {
+  const vectors = fixture("responsibility-digests") as { emptySourceSha256: string; cases: { file: string; generation: string; sourceSha256: string }[] };
+  it("retains exact empty source provenance", async () => {
+    expect(await emptySourceDigest()).toBe(vectors.emptySourceSha256);
+  });
+  it.each(vectors.cases)("binds only the selected run in $file generation $generation", async ({ file, generation, sourceSha256 }) => {
+    const archive = await decodeSessionV2Archive(readFileSync(new URL(file, root)));
+    expect(await sourceDigest(archive, generation)).toBe(sourceSha256);
+    await expect(sourceDigest(archive, "1001")).rejects.toThrow();
+  });
+  it("binds the control intent to the authenticated actor", async () => {
+    const dispatch = fixture("valid-control-dispatch");
+    expect(await controlRequestDigest(dispatch.payload.actorUserId, dispatch.payload.request)).toBe(dispatch.payload.requestDigest);
+    dispatch.payload.actorUserId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    await expect(decodeSessionV2Message(JSON.stringify(dispatch))).rejects.toThrow();
+    const changed = fixture("valid-control-dispatch");
+    changed.payload.request.browserClientId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    await expect(decodeSessionV2Message(JSON.stringify(changed))).rejects.toThrow();
+  });
+});
 
 describe("shared Session v2 raw wire corpus", () => {
   it.each(manifest.cases)("$file accepts=$valid", async ({ file, type, valid }) => {
