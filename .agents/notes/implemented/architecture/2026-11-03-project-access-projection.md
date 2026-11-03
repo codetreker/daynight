@@ -25,8 +25,13 @@ and explicit access reads. The existing five-second sync refreshes ordinary grap
 pages. Other pages use a visible thirty-second fallback; focus, visibility restore
 and management entry revalidate. Concurrent GETs coalesce. Request-start ordering,
 identity and project lifetime fences reject older observations, and management
-revalidation stays blocking until a fresh result. Confirmed access denial uses the
-existing cache generation fence; network errors preserve a visible error.
+revalidation stays blocking until a fresh result. Before the access HTTP request,
+the existing cache lifecycle prepares a real persisted/in-flight generation ticket,
+including cold scopes without an online projection. Current trusted denial retires
+that captured generation through the existing revocation fence, so a delayed delta
+cannot reauthorize cached private details. Replacement generations reject stale
+denials. Lifecycle or storage preparation errors remain visible and block
+management until retry; network errors preserve their separate meaning.
 
 Access stays outside persistent Project and Task records. Existing member reads
 retain claim-owner name/email, loading, failure/retry and former-member display;
@@ -45,6 +50,13 @@ resource. It also confuses stored grant facts with the effective decision.
 **Fetch access independently on every graph refresh.** This adds a request and
 can pair role with a different snapshot. The existing successful sync already has
 the required admission result.
+
+**Capture only the currently authorized in-memory manifest.** This avoids a
+storage read for role-only pages, but a cold scope can have persisted details and
+an in-flight delta without an authorized memory projection. A later denial would
+then leave that generation eligible for publication. Reusing the existing
+lifecycle ticket before HTTP preserves the denial boundary without another cache
+format or a synthetic generation.
 
 **Persist access alongside task summaries.** A reusable content cache would then
 appear to authorize operations after membership or identity changes. Keeping the

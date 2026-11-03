@@ -142,8 +142,15 @@ TaskCacheScope 和用户/项目生命周期，不增加第二份持久缓存或�
 图页面的首次及每五秒 TaskSync 提供角色。没有 TaskSync 的设置/成员页面首次读取
 GET access；每次成功观察重置可见三十秒 fallback。隐藏暂停，恢复可见、focus 和管理
 操作前重验；并发 GET 合并。每个实际读取在派发前捕获观察顺序与作用域，迟到的 GET
-或 sync 不得替换较新成功观察，管理重验期间旧观察也不能解除提交限制。读取失败保留
-stale/error，确认失权使用现有捕获 generation 的 revokeProject，普通网络错误保持错误。
+或 sync 不得替换较新成功观察，管理重验期间旧观察也不能解除提交限制。
+
+GET access 在发送 HTTP 前通过现有 `scope.beginSync` 捕获真实 user fence 与项目
+cacheGeneration，覆盖仅有磁盘历史或在途首次同步、尚无在线内存投影的冷 scope。
+可信当前 not_found 先按原 ticket 核对 `canRevokeProject`，再由既有 `revokeProject`
+同步退役该代际并清理对应内容；迟到的旧 delta 不能重新授权该代际或恢复缓存详情。
+已经替换为新代际时忽略旧 denial，不能在收到 404 后重新取得新 ticket 并撤销它。
+权限与生命周期读取失败都保留 stale/error 和重试，管理提交等待有效核验；普通网络错误
+不作为撤权。现有缓存存储不可用时，这一生命周期准备也会明确失败，不构造默认权限。
 
 权限不参与图内容相等比较，不推进水位，也不写入 Project manifest、summaries、details
 或广播内容。claim owner 的资料读取沿原项目名册所有者保留，并与本人操作资格分开。

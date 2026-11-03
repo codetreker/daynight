@@ -56,11 +56,7 @@ export class ProjectAccessSession {
     const pending = Promise.resolve().then(async () => {
       try {
         await this.scope.ready(signal);
-        const project = this.scope.getAuthorizedProject(this.projectId);
-        if (project !== null) {
-          const { userFence, cacheGeneration, epoch, maxUpdatedAt } = project.manifest;
-          cacheTicket = { userId: this.scope.userId, projectId: this.projectId, userFence, cacheGeneration, epoch, maxUpdatedAt };
-        }
+        cacheTicket = await this.scope.beginSync(this.projectId, signal);
         ticket = this.beginObservation();
         const access = await getProjectAccess(this.projectId, signal, { userId: this.scope.userId, onPrincipalMismatch: this.scope.principalMismatch });
         await this.scope.ready(signal);

@@ -88,7 +88,7 @@ it('cancels the old project lifetime and ignores a transport that returns after 
 });
 
 it('uses sync receipts for the visible thirty-second budget and pauses its timer while hidden', async () => {
-  vi.useFakeTimers();
+  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date', 'performance'] });
   const { session } = mount();
   for (let index = 0; index < 8; index++) {
     await vi.advanceTimersByTimeAsync(5_000);
@@ -99,10 +99,9 @@ it('uses sync receipts for the visible thirty-second budget and pauses its timer
   await vi.advanceTimersByTimeAsync(60_000);
   expect(getProjectAccess).not.toHaveBeenCalled();
   visibility = 'visible'; document.dispatchEvent(new Event('visibilitychange')); window.dispatchEvent(new Event('focus'));
-  await vi.advanceTimersByTimeAsync(0);
-  expect(getProjectAccess).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledOnce());
   await vi.advanceTimersByTimeAsync(30_000);
-  expect(getProjectAccess).toHaveBeenCalledTimes(2);
+  await vi.waitFor(() => expect(getProjectAccess).toHaveBeenCalledTimes(2));
 });
 
 it('exposes an access failure without replacing it with a role or an empty result', async () => {
