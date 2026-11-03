@@ -200,7 +200,7 @@ func TestTaskPausedPropertyResourcePreservesActiveWorkerAndPresence(t *testing.T
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	extendedWorkerTestHandler(handler)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Claim preservation"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Claim preservation"), map[string]any{"allowAgents": true})
 	task = claimHTTPWorker(t, handler, task, workerClaimBody(task.Version))
 	path := taskPath(task) + "/properties"
 	initial := propertyResource(t, handler, http.MethodGet, path, nil)
@@ -283,7 +283,7 @@ func TestTaskPropertyResourceRejectsQueriesAndMalformedIDs(t *testing.T) {
 func TestWorkerClaimRejectsMalformedResourceIDs(t *testing.T) {
 	handler := projectTestHandler(t, projectTestStore(t), io.Discard)
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Claim resource validation"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Claim resource validation"), map[string]any{"allowAgents": true})
 	body := jsonBody(t, workerClaimBody(task.Version))
 	for _, malformed := range []string{
 		taskCollection("not-a-project-id") + "/" + task.ID + "/worker-claim",

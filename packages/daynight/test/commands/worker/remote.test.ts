@@ -232,7 +232,7 @@ describe("worker remote API", () => {
       const url = new URL(request.url!, "http://localhost"); calls.push(url);
       const second = url.pathname.includes(secondProject);
       const later = url.searchParams.has("cursor");
-      const item = { ...task(second ? uuid(9) : later ? uuid(10) : taskId, worker, second ? secondProject : projectId), allowAgents: false, requiredPlatform: "windows" };
+      const item = { ...task(second ? uuid(9) : later ? uuid(10) : taskId, worker, second ? secondProject : projectId), allowAgents: false, requiredPlatform: "windows", assignedTo: later ? null : uuid(80) };
       respond(response, { items: [item], nextCursor: second || later ? null : "inventory cursor+/=" });
     });
     const remote = (await verifiedRemote(serverUrl));
@@ -275,9 +275,29 @@ describe("worker remote API", () => {
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
     expect(result.map(({ id }) => id)).toEqual([uuid(9), uuid(8)]);
     expect(urls.map(({ searchParams }) => Object.fromEntries(searchParams))).toEqual([
-      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", limit: "100" },
-      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", limit: "100", cursor: "candidate cursor+/=" },
+      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100" },
+      { ready: "true", allowAgents: "true", compatiblePlatform: "linux", assignedTo: "me", limit: "100", cursor: "candidate cursor+/=" },
     ]);
+  });
+
+  it("selects the authenticated account's candidates before the service page limit", async () => {
+    const candidates = [
+      ...Array.from({ length: 101 }, (_, index) => ({ ...task(uuid(index + 100)), assignedTo: index % 2 === 0 ? null : uuid(80) })),
+      { ...task(uuid(201)), assignedTo: worker.userId },
+      { ...task(uuid(202)), assignedTo: worker.userId },
+    ];
+    const requests: URL[] = [];
+    const serverUrl = await listen((request, response) => {
+      const url = new URL(request.url!, "http://localhost"); requests.push(url);
+      const filtered = url.searchParams.get("assignedTo") === "me" ? candidates.filter(({ assignedTo }) => assignedTo === worker.userId) : candidates;
+      const offset = Number(url.searchParams.get("cursor") ?? "0");
+      const end = offset + Number(url.searchParams.get("limit"));
+      respond(response, { items: filtered.slice(offset, end), nextCursor: end < filtered.length ? String(end) : null });
+    });
+    const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
+    expect(result.map(({ id }) => id)).toEqual([uuid(201), uuid(202)]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0]!.searchParams.get("assignedTo")).toBe("me");
   });
 
   it("never repeats an uncertain claim and lets the next own inventory observe it", async () => {

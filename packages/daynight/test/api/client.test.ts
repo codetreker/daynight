@@ -102,6 +102,26 @@ describe("operation-scoped API access", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["me", "unassigned", "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"])("preserves assignedTo=%s across every task page", async (assignedTo) => {
+    const second = { ...task, id: otherId };
+    const fetch = vi.fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(jsonResponse({ items: [task], nextCursor: "assigned cursor+/=" }))
+      .mockResolvedValueOnce(jsonResponse({ items: [second], nextCursor: null }));
+    await expect(client(fetch).listTasks(projectId, { assignedTo })).resolves.toEqual([task, second]);
+    expect(fetch.mock.calls.map(([url]) => Object.fromEntries(new URL(String(url)).searchParams))).toEqual([
+      { assignedTo: assignedTo.toLowerCase(), limit: "100" },
+      { assignedTo: assignedTo.toLowerCase(), limit: "100", cursor: "assigned cursor+/=" },
+    ]);
+  });
+
+  it.each(["", "invalid", "Me", "all", ` ${otherId}`, null, false, 1, {}, []])("rejects an invalid assignee filter %s before dispatch", (assignedTo) => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const api = client(fetch);
+    expect(() => api.listTasks(projectId, { assignedTo } as never)).toThrow("Task assignee filter must be me, unassigned or a hyphenated UUID.");
+    expect(() => api.listTaskPage(projectId, { assignedTo, limit: 1 } as never)).toThrow("Task assignee filter must be me, unassigned or a hyphenated UUID.");
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "", "darwin", "win32", "Linux", true, 1, {}, []])("requires a nullable public platform in task and graph resources: %s", async (requiredPlatform) => {
     const value = { ...task, requiredPlatform };
     const taskGraph = graph();

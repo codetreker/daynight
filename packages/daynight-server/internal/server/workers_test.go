@@ -53,7 +53,7 @@ func TestWorkerSnapshotsHTTPReportReadAndPagination(t *testing.T) {
 		t.Fatalf("idle or telemetry shape incorrect: %+v", idle)
 	}
 	project := taskProject(t, handler)
-	task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Snapshot-owned task"), map[string]any{"allowAgents": true})
+	task := updateHTTPTask(t, handler, createHTTPWorkerTask(t, handler, project.ID, "Snapshot-owned task"), map[string]any{"allowAgents": true})
 	claim := workerClaimBody(task.Version)
 	claim["workerId"] = id
 	claim["agent"] = "claude"

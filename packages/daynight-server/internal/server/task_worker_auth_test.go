@@ -12,7 +12,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 	integration := newIdentityIntegration(t)
 	admin, member, outsider, anonymous := identityBrowser(t), identityBrowser(t), identityBrowser(t), identityBrowser(t)
 	adminUser := integration.login(t, admin, "alice")
-	integration.login(t, member, "bob")
+	memberUser := integration.login(t, member, "bob")
 	integration.login(t, outsider, "nullable")
 	origin := map[string]string{"Origin": integration.server.URL}
 	_, data := identityRequest(t, admin, http.MethodPost, integration.server.URL+"/api/v1/projects", `{"name":"Worker authorization","repoUrl":"https://example.com/worker"}`, origin, http.StatusCreated)
@@ -39,7 +39,7 @@ func TestWorkerHTTPAuthenticatedOwnerAndWithdrawal(t *testing.T) {
 		}
 		return data
 	}
-	data = request(member, http.MethodPost, taskCollection(project.ID), map[string]any{"title": "Owned execution"}, origin, http.StatusCreated, "")
+	data = request(member, http.MethodPost, taskCollection(project.ID), map[string]any{"title": "Owned execution", "assignedTo": memberUser.ID}, origin, http.StatusCreated, "")
 	task := identityDecode[api.Task](t, data)
 	data = request(member, http.MethodPatch, taskPath(task), map[string]any{"version": task.Version, "allowAgents": true, "requiredPlatform": "linux"}, origin, http.StatusOK, "")
 	task = identityDecode[api.Task](t, data)

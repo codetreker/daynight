@@ -337,6 +337,13 @@ export const createApiClient = (options: {
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
+    let assignedTo = filters.assignedTo;
+    if (assignedTo !== undefined && assignedTo !== "me" && assignedTo !== "unassigned") {
+      if (typeof assignedTo !== "string") throw new Error("Task assignee filter must be me, unassigned or a hyphenated UUID.");
+      const parsed = canonicalId(assignedTo);
+      if (parsed === null) throw new Error("Task assignee filter must be me, unassigned or a hyphenated UUID.");
+      assignedTo = parsed;
+    }
     let workerId: string | undefined;
     if (filters.workerId !== undefined) {
       if (typeof filters.workerId !== "string") throw new Error("Worker ID filter must be a hyphenated UUID.");
@@ -344,7 +351,7 @@ export const createApiClient = (options: {
       if (parsed === null) throw new Error("Worker ID filter must be a hyphenated UUID.");
       workerId = parsed;
     }
-    return { ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(workerId === undefined ? {} : { workerId }) };
+    return { ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(workerId === undefined ? {} : { workerId }) };
   };
   const filteredTask = (value: unknown, project: string, filters: TaskFilters): Task => {
     const task = parseTask(value, project);

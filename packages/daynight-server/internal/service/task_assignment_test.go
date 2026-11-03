@@ -159,13 +159,13 @@ func TestTaskAssignmentSurvivesMemberLossAndUnrelatedWrites(t *testing.T) {
 func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
 	ctx := context.Background()
-	alice, owner, bob := workerMember(t, database, project.ID), workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	current := createAssignedTask(t, tasks, admin, project.ID, &alice.UserID)
+	owner, bob := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
+	current := createAssignedTask(t, tasks, admin, project.ID, &owner.UserID)
 	current = updateTask(t, tasks, admin, current, UpdateTask{AllowAgents: pointer(true)})
 	descriptor := workerDescriptor()
 	current = claimWorkerTask(t, tasks, owner, current, descriptor)
-	if testWorker(t, current.Properties).UserID != owner.UserID || !equalOptional(current.AssignedTo, &alice.UserID) {
-		t.Fatal("responsibility restricted another member's eligible worker")
+	if testWorker(t, current.Properties).UserID != owner.UserID || !equalOptional(current.AssignedTo, &owner.UserID) {
+		t.Fatal("claim changed task responsibility")
 	}
 	_, err := tasks.Update(ctx, admin, project.ID, current.ID, UpdateTask{Version: current.Version, AssignedTo: assignmentChange(&bob.UserID)})
 	requireFault(t, err, "invalid_transition")
@@ -183,11 +183,11 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	current, err = tasks.RemoveProperty(ctx, admin, project.ID, current.ID, "paused", current.Version)
-	if err != nil || !equalOptional(current.AssignedTo, &alice.UserID) {
+	if err != nil || !equalOptional(current.AssignedTo, &owner.UserID) {
 		t.Fatal("active property mutation lost responsibility", err)
 	}
 	current, err = tasks.ReleaseWorker(ctx, owner, project.ID, current.ID, ReleaseWorker{Version: current.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	if err != nil || !equalOptional(current.AssignedTo, &alice.UserID) {
+	if err != nil || !equalOptional(current.AssignedTo, &owner.UserID) {
 		t.Fatal("release lost responsibility", err)
 	}
 	current = updateTask(t, tasks, admin, current, UpdateTask{AssignedTo: assignmentChange(&bob.UserID)})
@@ -210,12 +210,12 @@ func TestTaskAssignmentSurvivesEveryWorkerWrite(t *testing.T) {
 	if !equalOptional(current.AssignedTo, &bob.UserID) || testWorker(t, current.Properties).State != core.WorkerCompleted {
 		t.Fatal("reopening changed responsibility or historical ownership")
 	}
-	withdrawn := createAssignedTask(t, tasks, admin, project.ID, &alice.UserID)
+	withdrawn := createAssignedTask(t, tasks, admin, project.ID, &owner.UserID)
 	withdrawn = updateTask(t, tasks, admin, withdrawn, UpdateTask{AllowAgents: pointer(true)})
 	claim := workerDescriptor()
 	withdrawn = claimWorkerTask(t, tasks, owner, withdrawn, claim)
 	withdrawn, err = tasks.WithdrawWorker(ctx, owner, project.ID, withdrawn.ID, WithdrawWorker{Version: withdrawn.Version, ClaimID: claim.ClaimID})
-	if err != nil || !equalOptional(withdrawn.AssignedTo, &alice.UserID) || withdrawn.AllowAgents || testWorker(t, withdrawn.Properties) != nil {
+	if err != nil || !equalOptional(withdrawn.AssignedTo, &owner.UserID) || withdrawn.AllowAgents || testWorker(t, withdrawn.Properties) != nil {
 		t.Fatal("withdrawal lost responsibility or kept the claim", err)
 	}
 }
@@ -238,7 +238,7 @@ func TestTaskAssignmentCompetesWithExecutionAndPermission(t *testing.T) {
 					case "start":
 						return tasks.SetStatus(ctx, admin, project.ID, before.ID, SetTaskStatus{Version: before.Version, Status: core.TaskInProgress})
 					case "claim":
-						return tasks.ClaimWorker(ctx, bob, project.ID, before.ID, ClaimWorker{Version: before.Version, WorkerDescriptor: workerDescriptor()})
+						return tasks.ClaimWorker(ctx, alice, project.ID, before.ID, ClaimWorker{Version: before.Version, WorkerDescriptor: workerDescriptor()})
 					default:
 						return tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AllowAgents: pointer(true)})
 					}
@@ -261,12 +261,12 @@ func TestTaskAssignmentCompetesWithExecutionAndPermission(t *testing.T) {
 
 func TestTaskAssignmentNoOpAndClaimCanBothSucceed(t *testing.T) {
 	tasks, database, project, _, admin := taskService(t)
-	alice, owner := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
-	before := createAssignedTask(t, tasks, admin, project.ID, &alice.UserID)
+	owner := workerMember(t, database, project.ID)
+	before := createAssignedTask(t, tasks, admin, project.ID, &owner.UserID)
 	before = updateTask(t, tasks, admin, before, UpdateTask{AllowAgents: pointer(true)})
 	results := competeTaskWrites(t, database, project.ID,
 		func(ctx context.Context) (core.Task, error) {
-			return tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&alice.UserID)})
+			return tasks.Update(ctx, admin, project.ID, before.ID, UpdateTask{Version: before.Version, AssignedTo: assignmentChange(&owner.UserID)})
 		},
 		func(ctx context.Context) (core.Task, error) {
 			return tasks.ClaimWorker(ctx, owner, project.ID, before.ID, ClaimWorker{Version: before.Version, WorkerDescriptor: workerDescriptor()})
@@ -279,7 +279,7 @@ func TestTaskAssignmentNoOpAndClaimCanBothSucceed(t *testing.T) {
 		}
 	}
 	after, err := tasks.Get(context.Background(), admin, project.ID, before.ID)
-	if err != nil || after.Status != core.TaskInProgress || after.Version != before.Version+1 || !after.AllowAgents || !equalOptional(after.AssignedTo, &alice.UserID) || testWorker(t, after.Properties).UserID != owner.UserID {
+	if err != nil || after.Status != core.TaskInProgress || after.Version != before.Version+1 || !after.AllowAgents || !equalOptional(after.AssignedTo, &owner.UserID) || testWorker(t, after.Properties).UserID != owner.UserID {
 		t.Fatalf("equal assignment interfered with claim: %#v, %v", after, err)
 	}
 }
