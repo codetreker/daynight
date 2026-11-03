@@ -48,7 +48,7 @@ export const parseProject = (value: unknown, expectedId?: string): Project => {
 };
 
 const dependencyState = (data: Record<string, unknown>) => {
-  const parsed = { id: id(data.id), status: status(data.status), allowAgents: bool(data.allowAgents), requiredPlatform: requiredPlatform(data.requiredPlatform), startedAt: nullableTimestamp(data.startedAt), completedAt: nullableTimestamp(data.completedAt), dependsOn: dependencyIds(data.dependsOn), externalDependsOn: dependencyIds(data.externalDependsOn), blockedBy: ids(data.blockedBy), ready: bool(data.ready), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
+  const parsed = { id: id(data.id), status: status(data.status), allowAgents: bool(data.allowAgents), requiredPlatform: requiredPlatform(data.requiredPlatform), assignedTo: data.assignedTo === null ? null : id(data.assignedTo), startedAt: nullableTimestamp(data.startedAt), completedAt: nullableTimestamp(data.completedAt), dependsOn: dependencyIds(data.dependsOn), externalDependsOn: dependencyIds(data.externalDependsOn), blockedBy: ids(data.blockedBy), ready: bool(data.ready), createdAt: timestamp(data.createdAt), updatedAt: timestamp(data.updatedAt) };
   const dependencies = new Set(parsed.dependsOn);
   if (dependencies.has(parsed.id) || parsed.externalDependsOn.some((item) => !dependencies.has(item)) || parsed.blockedBy.some((item) => !dependencies.has(item)) || parsed.ready !== (parsed.status === "todo" && parsed.blockedBy.length === 0)) return malformed();
   if ((parsed.status === "in_progress" || parsed.status === "done") && parsed.blockedBy.length > 0) return malformed();

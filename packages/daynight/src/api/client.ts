@@ -116,9 +116,10 @@ export const createApiClient = (options: {
   const operation = options.operation;
   const fetch = options.fetch ?? globalThis.fetch;
 
-  type JsonResponseContext = { readonly status: number; readonly success: boolean; readonly principalId?: string };
+  type JsonResponseMetadata = { readonly status: number; readonly success: boolean; readonly principalHeader: string | null; readonly principalId?: string };
+  type JsonParser<T> = (value: unknown, metadata: JsonResponseMetadata) => T;
   type ResponseMode<T> =
-    | { readonly kind: "json"; readonly parse: (value: unknown, context: JsonResponseContext) => T; readonly requirePrincipal?: boolean; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, context: JsonResponseContext) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
+    | { readonly kind: "json"; readonly parse: JsonParser<T>; readonly requirePrincipal?: boolean; readonly responseBytes?: number; readonly decodeJsonSource?: (source: string, metadata: JsonResponseMetadata) => unknown; readonly confirmedFailure?: (status: number, error: ServerError) => boolean; readonly confirmMutation?: (result: T) => string }
     | { readonly kind: "bytes"; readonly consume: AttachmentConsumer; readonly result: T }
     | { readonly kind: "empty"; readonly result: T };
   type RequestBody = { readonly kind: "json"; readonly value: unknown } | { readonly kind: "bytes"; readonly value: ReadableStream<Uint8Array>; readonly contentType: string };
@@ -263,7 +264,7 @@ export const createApiClient = (options: {
       chunks.push(pendingText, decoder.decode());
       const responseContentType = response.headers.get("content-type");
       if (responseContentType === null || !/^application\/json(?:\s*;\s*charset\s*=\s*(?:utf-8|"utf-8"))?\s*$/i.test(responseContentType)) throw new ProtocolError("Expected an application/json UTF-8 response.");
-      const responseContext = { status, success, ...(principalId === undefined ? {} : { principalId }) };
+      const responseContext: JsonResponseMetadata = { status, success, principalHeader: response.headers.get("Daynight-User-ID"), ...(principalId === undefined ? {} : { principalId }) };
       const source = chunks.join("");
       const value = mode.kind === "json" && mode.decodeJsonSource !== undefined ? mode.decodeJsonSource(source, responseContext) : parseApiJson(source);
       checkRequest();
@@ -319,9 +320,9 @@ export const createApiClient = (options: {
     }
   };
 
-  const request = <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH", parse: (value: unknown) => T, body?: unknown): Promise<T> => exchange(context, path, method, { kind: "json", parse }, [method === "POST" ? 201 : 200], body === undefined ? undefined : { kind: "json", value: body });
+  const request = <T>(context: Context, path: string, method: "GET" | "POST" | "PATCH", parse: JsonParser<T>, body?: unknown): Promise<T> => exchange(context, path, method, { kind: "json", parse }, [method === "POST" ? 201 : 200], body === undefined ? undefined : { kind: "json", value: body });
 
-  const list = async <T>(context: Context, path: string, parse: (item: unknown) => T, identity: (item: T) => string, filters: Record<string, string> = {}, mutable = false): Promise<readonly T[]> => {
+  const list = async <T>(context: Context, path: string, parse: JsonParser<Page<T>>, identity: (item: T) => string, filters: Record<string, string> = {}, mutable = false): Promise<readonly T[]> => {
     const result: T[] = [];
     const seenIdentities = new Set<string>();
     const seenCursors = new Set<string>();
@@ -330,7 +331,7 @@ export const createApiClient = (options: {
       do {
         operation.check();
         const query = new URLSearchParams({ ...filters, limit: "100", ...(cursor === null ? {} : { cursor }) });
-        const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse: (value) => parsePage(value, parse, identity) }, [200], undefined, mutable);
+        const page = await exchange(context, `${path}?${query}`, "GET", { kind: "json", parse }, [200], undefined, mutable);
         for (const item of page.items) {
           const key = identity(item);
           if (seenIdentities.has(key)) throw new ProtocolError("Duplicate resource identity across list pages.");
@@ -351,18 +352,19 @@ export const createApiClient = (options: {
     }
   };
 
+  const taskAssignmentFilter = (value: string | undefined): string | undefined => {
+    if (value === undefined || value === "me" || value === "unassigned") return value;
+    if (typeof value !== "string") throw new Error("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
+    const parsed = canonicalId(value);
+    if (parsed === null) throw new Error("Assigned-to filter must be a hyphenated UUID, me or unassigned.");
+    return parsed;
+  };
+  const taskAssignmentInput = (value: string | null | undefined): string | null | undefined => value === undefined || value === null ? value : resourceId(value);
   const taskFilterQuery = (filters: TaskFilters): Record<string, string> => {
     if (filters.status !== undefined && filters.status !== "todo" && filters.status !== "in_progress" && filters.status !== "done") throw new Error("Task status must be todo, in_progress or done.");
     if (filters.ready !== undefined && typeof filters.ready !== "boolean") throw new Error("Ready filter must be boolean.");
     if (filters.allowAgents !== undefined && typeof filters.allowAgents !== "boolean") throw new Error("Automatic execution filter must be boolean.");
     if (filters.compatiblePlatform !== undefined && filters.compatiblePlatform !== "windows" && filters.compatiblePlatform !== "linux" && filters.compatiblePlatform !== "macos") throw new Error("Compatible platform must be windows, linux or macos.");
-    let assignedTo = filters.assignedTo;
-    if (assignedTo !== undefined && assignedTo !== "me" && assignedTo !== "unassigned") {
-      if (typeof assignedTo !== "string") throw new Error("Task assignee filter must be me, unassigned or a hyphenated UUID.");
-      const parsed = canonicalId(assignedTo);
-      if (parsed === null) throw new Error("Task assignee filter must be me, unassigned or a hyphenated UUID.");
-      assignedTo = parsed;
-    }
     let workerId: string | undefined;
     if (filters.workerId !== undefined) {
       if (typeof filters.workerId !== "string") throw new Error("Worker ID filter must be a hyphenated UUID.");
@@ -370,19 +372,35 @@ export const createApiClient = (options: {
       if (parsed === null) throw new Error("Worker ID filter must be a hyphenated UUID.");
       workerId = parsed;
     }
-    return { ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(assignedTo === undefined ? {} : { assignedTo }), ...(workerId === undefined ? {} : { workerId }) };
+    const assignedTo = taskAssignmentFilter(filters.assignedTo);
+    return { ...(assignedTo === undefined ? {} : { assignedTo }), ...(filters.status === undefined ? {} : { status: filters.status }), ...(filters.ready === undefined ? {} : { ready: String(filters.ready) }), ...(filters.allowAgents === undefined ? {} : { allowAgents: String(filters.allowAgents) }), ...(filters.compatiblePlatform === undefined ? {} : { compatiblePlatform: filters.compatiblePlatform }), ...(workerId === undefined ? {} : { workerId }) };
   };
-  const filteredTask = (value: unknown, project: string, filters: TaskFilters): Task => {
+  const filteredTask = (value: unknown, project: string, filters: TaskFilters, expectedAssignment: string | null | undefined): Task => {
     const task = parseTask(value, project);
     const worker = readWorkerClaim(task.properties);
     if (
-      (filters.status !== undefined && task.status !== filters.status)
+      (expectedAssignment !== undefined && task.assignedTo !== expectedAssignment)
+      || (filters.status !== undefined && task.status !== filters.status)
       || (filters.ready !== undefined && task.ready !== filters.ready)
       || (filters.allowAgents !== undefined && task.allowAgents !== filters.allowAgents)
       || (filters.compatiblePlatform !== undefined && task.requiredPlatform !== null && task.requiredPlatform !== filters.compatiblePlatform)
       || (filters.workerId !== undefined && (worker === undefined || worker.state !== "active" || worker.workerId !== canonicalId(filters.workerId)))
     ) throw new ProtocolError("Task does not match the requested filters.");
     return task;
+  };
+  const taskPageParser = (project: string, filters: TaskFilters): JsonParser<Page<Task>> => {
+    const selected = taskAssignmentFilter(filters.assignedTo);
+    let boundPrincipal: string | undefined;
+    return (value, metadata) => {
+      let expectedAssignment: string | null | undefined = selected === "unassigned" ? null : selected;
+      if (selected === "me") {
+        const principal = metadata.principalHeader === null ? null : canonicalId(metadata.principalHeader);
+        if (principal === null || principal !== metadata.principalHeader || boundPrincipal !== undefined && boundPrincipal !== principal) throw new ProtocolError("The authenticated response principal is invalid or changed during pagination.");
+        boundPrincipal = principal;
+        expectedAssignment = principal;
+      }
+      return parsePage(value, (item) => filteredTask(item, project, filters, expectedAssignment), (task) => task.id);
+    };
   };
   const taskVersion = (version: bigint): void => {
     if (typeof version !== "bigint" || version < 1n || version > 9_223_372_036_854_775_807n) throw new Error("Task version must be a positive int64.");
@@ -439,7 +457,7 @@ export const createApiClient = (options: {
       const project = resourceId(projectId);
       return request({ operation: "project.show", projectId: project }, `/projects/${encodeURIComponent(project)}`, "GET", (value) => parseProject(value, project));
     },
-    listProjects: () => list({ operation: "project.list" }, "/projects", (value) => parseProject(value), (project) => project.id),
+    listProjects: () => list({ operation: "project.list" }, "/projects", (value) => parsePage(value, (item) => parseProject(item), (project) => project.id), (project) => project.id),
     getProjectAccess: (projectId) => {
       const project = resourceId(projectId);
       return exchange({ operation: "project.access", projectId: project }, `/projects/${encodeURIComponent(project)}/access`, "GET", { kind: "json", parse: (value) => parseProjectAccess(value, project, expectedUserId) }, [200], undefined, true);
@@ -450,8 +468,14 @@ export const createApiClient = (options: {
     },
     createTask: (projectId, input) => {
       const project = resourceId(projectId);
-      return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => parseTask(value, project), {
+      const assignedTo = taskAssignmentInput(input.assignedTo);
+      return request({ operation: "task.create", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, "POST", (value) => {
+        const task = parseTask(value, project);
+        if (task.assignedTo !== (assignedTo === undefined ? null : assignedTo)) throw new ProtocolError("Task does not confirm the requested assignment.");
+        return task;
+      }, {
         title: input.title,
+        ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
         ...(input.description === undefined ? {} : { description: input.description }),
         ...(input.dependsOn === undefined ? {} : { dependsOn: input.dependsOn }),
@@ -490,15 +514,16 @@ export const createApiClient = (options: {
     },
     listTasks: (projectId, filters = {}) => {
       const project = resourceId(projectId);
-      return list({ operation: "task.list", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, (value) => filteredTask(value, project, filters), (task) => task.id, taskFilterQuery(filters));
+      return list({ operation: "task.list", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks`, taskPageParser(project, filters), (task) => task.id, taskFilterQuery(filters));
     },
     listTaskPage: (projectId, query) => {
       const project = resourceId(projectId);
       if (!Number.isInteger(query.limit) || query.limit < 1 || query.limit > 100) throw new Error("Task page limit must be an integer from 1 to 100.");
       if (query.cursor !== undefined && (typeof query.cursor !== "string" || query.cursor === "")) throw new Error("Task page cursor must be a nonempty string.");
       const search = new URLSearchParams({ ...taskFilterQuery(query), limit: String(query.limit), ...(query.cursor === undefined ? {} : { cursor: query.cursor }) });
-      return request({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", (value) => {
-        const page = parsePage(value, (item) => filteredTask(item, project, query), (task) => task.id);
+      const parse = taskPageParser(project, query);
+      return request({ operation: "task.list-page", projectId: project }, `/projects/${encodeURIComponent(project)}/tasks?${search}`, "GET", (value, metadata) => {
+        const page = parse(value, metadata);
         if (page.items.length > query.limit) throw new ProtocolError("Task page exceeds the requested limit.");
         return page;
       });
@@ -520,8 +545,14 @@ export const createApiClient = (options: {
     },
     updateTask: (projectId, taskId, input) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => parseTask(value, project, task), {
+      const assignedTo = taskAssignmentInput(input.assignedTo);
+      return request({ operation: "task.update", projectId: project, taskId: task }, `/projects/${encodeURIComponent(project)}/tasks/${encodeURIComponent(task)}`, "PATCH", (value) => {
+        const result = parseTask(value, project, task);
+        if (assignedTo !== undefined && result.assignedTo !== assignedTo) throw new ProtocolError("Task does not confirm the requested assignment.");
+        return result;
+      }, {
         version: input.version,
+        ...(assignedTo === undefined ? {} : { assignedTo }),
         ...(input.allowAgents === undefined ? {} : { allowAgents: input.allowAgents }),
         ...(input.requiredPlatform === undefined ? {} : { requiredPlatform: input.requiredPlatform }),
         ...(input.title === undefined ? {} : { title: input.title }),
@@ -562,7 +593,7 @@ export const createApiClient = (options: {
     },
     listTaskAttachments: (projectId, taskId) => {
       const project = resourceId(projectId), task = resourceId(taskId);
-      return list({ operation: "task.attachment.list", projectId: project, taskId: task }, attachmentPrefix(project, task), parseTaskAttachment, (attachment) => attachment.path, {}, true);
+      return list({ operation: "task.attachment.list", projectId: project, taskId: task }, attachmentPrefix(project, task), (value) => parsePage(value, parseTaskAttachment, (attachment) => attachment.path), (attachment) => attachment.path, {}, true);
     },
     readTaskAttachment: (projectId, taskId, path, consume) => {
       const project = resourceId(projectId), task = resourceId(taskId), attachmentPath = validateAttachmentPath(path);

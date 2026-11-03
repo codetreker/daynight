@@ -55,6 +55,8 @@ Copilot 的 model 或 effort 未指定时保留原生默认值，不补造模型
 
 ## Chatbox 设置、命令与运行状态
 
+Session 顶部和 Chatbox 底部的活动状态、Permissions 入口、主发送按钮、中断按钮，以及 timeline 内建的 Command/File changes 工具类型标签在中文和英文界面中均使用已有英文文案。规则覆盖同一位置的全部状态，包括初始化、空闲、工作、等待输入、停止、未知、断连、恢复和顶部只读状态，以及 Send、Add to current turn、等待受理、Executing command 和 Interrupt 的请求/处理中变体。固定文本及对应可访问名称保持一致，并标明局部英语语言；Provider 返回的名称与用户内容保持原值。周围说明、错误、操作回执、交互卡、工具执行结果状态、输入提示及设置面板继续按当前语言显示，语言切换不改变草稿、操作或权限语义。
+
 Chatbox 按 Provider 发现的真实能力提供模型、reasoning effort 和权限选择。默认值保留原生语义；没有可读实际值时显示未知，不猜测默认模型或权限。选择后区分待确认目标与已生效值，只有原生确认或回读才能更新实际状态。显示生效范围；不支持运行中生效的设置不能伪装改变当前推理。失败和未知结果可见，不能自动重复设置操作。
 
 权限设置保留 Provider 的独立含义。Codex 的 approval policy 与 sandbox 分开并遵守配置约束；Claude 保留原生 permissionMode；Copilot 的工具审批不代表路径或网络授权。新建无人值守 Worker 会话按其已配置的执行策略初始化权限；其余权限变更须由用户明确选择，不因恢复或打开设置面板提高权限。

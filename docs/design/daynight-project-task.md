@@ -15,7 +15,7 @@ JSON 列表字段见[描述省略决策](../../.agents/notes/implemented/simplif
 任务起止字段与图时钟的读取机制由[执行计时架构](daynight-task-timing.md)扩展；
 CLI 同步保留 `startedAt`、`completedAt`、`observedAt` 及 Project.settings，不产生本地推算时间；计时读取不新增人类可读字段。
 Web 的共享时钟与卡片使用相同资源事实，展示机制归[看板设计](daynight-web.md)，不改变客户端传输或命令职责。
-服务端[负责人设计](daynight-task-assignment.md)已实现原生 assignedTo、任务筛选和项目内人员读取；当前 CLI 尚未消费其读取字段或负责人选项。本文的 CLI DTO、渲染和 JSON 保留要求适用于当前已实现的客户端任务模型。
+服务端[负责人设计](daynight-task-assignment.md)拥有原生 assignedTo、任务筛选和项目内人员读取。CLI 的 Task/graph 严格解析、普通元数据设置/清空、list 筛选及当前ID输出已实现，复用同一字段契约，不增加人名或头像请求。
 
 [预定义属性设计](daynight-task-properties.md)的 server 接口、通用 CLI 属性命令与完整输出已实现。[需求](../spec/daynight-task-properties.md)拥有扩展约定。完整 TaskProperties 使用通用 JSON map，键缺失不补值，worker 的公开写入限制由服务端定义拥有。Worker 直接复用进程内 ApiClient，具体认领方法、保留 nextCursor 的 listTaskPage 和已知 taskId 核对由[归属架构](daynight-worker-claims.md)拥有；不调用 task 命令包装层。
 
@@ -182,6 +182,8 @@ HTTP 层按操作消费 JSON、原始字节或空响应，只接受 API 规定�
 数组语义与现有服务契约一致。错误保留 cause，并区分网络、期限、主动取消、HTTP
 拒绝和响应结构失败。
 
+私有成功JSON解析边界提供该响应的principal header元数据。me专用Task Page解析器在items为空时也要求单个规范Daynight-User-ID；listTasks每次遍历绑定第一页身份，后页不得变更，独立调用不共享该绑定。每项assignedTo必须等于该principal；UUID/unassigned模式核验其选择。listTaskPage校验本次成功响应，跨调用续页再由服务端cursor scope约束。不从首项推断身份，不多发/me，也不为me错误改写401/404等真实服务拒绝。普通非me且未配置expectedUserId的请求保留原可选header行为，显式expectedUserId检查继续适用。
+
 所有写请求只发一次，HTTP 层不自动重试、不自动跟随改变写入目标的重定向。写入
 后的网络失败或取消意味着结果未确认；诊断明确说明这一点，并提供 project/task
 目标供用户查询。读取也不自动重试，避免隐藏服务与分页失败。
@@ -335,7 +337,7 @@ flowchart TD
 | `project create <name> [--repo <repo>]` | 完整 `GET /api/v1/projects` 预检；仅零匹配时 `POST /api/v1/projects`，提交原始 `name`、`repoUrl` |
 | `project list` | `GET /api/v1/projects`，读到 `nextCursor: null` |
 | `project show <id>` | `GET /api/v1/projects/{id}` |
-| `task create [--required-platform <platform>]` | `POST /api/v1/projects/{projectId}/tasks`，可选 requiredPlatform |
+| `task create [--required-platform <platform>] [--assigned-to <user-uuid>]` | `POST /api/v1/projects/{projectId}/tasks`，可选 requiredPlatform 与 assignedTo |
 | `task list` | `GET /api/v1/projects/{projectId}/tasks`，保留相同筛选遍历 cursor |
 | `task ready [--limit <N>] [--allow-agents true\|false] [--compatible-platform <platform>]` | 单次 `GET /api/v1/projects/{projectId}/tasks?ready=true&limit=N`，可带 allowAgents、compatiblePlatform，不提交 cursor |
 | `task show <id>` | `GET /api/v1/projects/{projectId}/tasks/{id}` |
@@ -378,6 +380,8 @@ graph summary 只返回 total、todo、inProgress、done、ready、blocked，统
 create/update 的 --required-platform 设置枚举，update --clear-required-platform 发送null并互斥；
 省略保留。list/ready --compatible-platform 与许可、状态、ready共同投影到服务查询并绑定cursor，
 先于分页/上限，客户端验证响应匹配并暴露协议错，不本地删项。平台不改变ready或人工setter。
+
+负责人选项属于普通任务元数据。create/update 的 --assigned-to 接受自由UUID文本并规范化；update 的 --clear-assigned-to 发送null，与设置冲突。省略仅不生成key，不把null当作undefined；AssignedTo也参与至少一个更新字段判断。写入仅UUID，list另接受小写me/unassigned并传到每页。ready命令不增加该字段；用户可用task list --ready组合查询。worker 新候选使用 me，而完整既有 claim 库存仍省略该条件；[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有运行时资格规则，CLI 元数据命令保留独立职责。
 
 `task ready` 将常见的下一项工作选择限制为前 N 项，避免项目积累任务后每次
 选择都读取完整 ready 集合。命令校验 `--limit` 为十进制整数 `1..100`，省略时
@@ -439,6 +443,8 @@ Windows 的 .cmd 启动器经 CMD 转发参数，字面 CR/LF 不能作为可靠
 
 `Task` 和 graph-task 解码要求 `allowAgents` 为明确布尔值；不从缺失、null 或字符串补默认值。`update --allow-agents` 把实际布尔放入普通 PATCH，省略时不产生该字段；create 不接受该选项。同值与 in_progress 锁定由服务判定，命令不自动重试。参数定义同时提供 true/false 的静态补全。
 
+`assignedTo` 在Task/graph共用dependencyState中严格读取，为必填null或规范UUID；ready、worker/status等共用Task路径因此统一保留。create/update输入使用optional nullable字段，响应核验显式负责人目标；不能凭组合PATCH增加v+1就推断负责人实际变化，也不为此添加GET。正文成功后采用完整Task；未知结果保持不重放语义。
+
 `requiredPlatform` 在完整 Task 与 graph-task 均为必填 null/三平台枚举。创建只在 `--required-platform` 出现时发送枚举；update 用同名选项设置，或用互斥的 `--clear-required-platform` 发送 null，二者都省略时不生成 key。静态 choices 为 windows/linux/macos，同一参数定义拥有帮助和三种 shell 补全。服务器负责同值、锁定和迁移语义；CLI 不以缺字段默认值兼容旧资源，也不把查询参数当作实际运行环境。后续 worker 根据自身运行环境选取该枚举，WSL 的 Linux 运行时属于 linux。
 
 `Task.version` 与 PATCH 版本覆盖完整正 `int64` 范围，内部使用 `bigint`；JSON 读取
@@ -484,7 +490,7 @@ Project 渲染由 `commands/project/rendering.ts` 拥有，与 API 数据分离�
 显示为 `\uXXXX`。普通 Unicode、emoji 和原有反斜线保持原样；该转换只属于终端
 显示，不改变提交给服务或 JSON 输出的数据。
 
-Task 的 `rendering.ts` 提供列表标签块与完整资源标签块，均显示 `Automatic execution` 的真实布尔值与 `Required platform`，null 平台显示为 any，其他值保留枚举；graph 的可读节点同样保留两字段。列表包含 `ID`、
+Task 的 `rendering.ts` 提供列表标签块与完整资源标签块，均显示 `Automatic execution` 的真实布尔值、`Required platform` 和 `Assigned to`。null平台为any，null负责人为unassigned；graph可读节点同样保留这些字段。UUID由既有terminalText渲染，不增加姓名查询或规则旁白。列表包含 `ID`、
 `Project`、`Title`、`Status`、`Ready`、`Depends on`、`Blocked by`，以及关联 PR
 数量、按顺序编号的 title/url；完整资源另外包含 `Description`、完整十进制
 `Version`、`Created` 和 `Updated`，供 show、ready、create 和 update 使用。
@@ -502,7 +508,7 @@ terminalText。创建和更新分别以 `Task created.`、`Task updated.` 表明
 的数组，ready 为所选完整 task 的数组，普通 graph 为服务原始任务链图响应对象。
 Task 的 `renderTaskListJson` 在命令完成状态选择和稳定分组后建立输出投影，
 每个 task 只移除 `description`；默认及所有合法筛选共享该路径。其余字段保留
-API 名称、类型及原始值，包括 PR 列表、完整 int64 版本、时间戳以及明确的起止 `null`；
+API 名称、类型及原始值，包括 PR 列表、完整 int64 版本、assignedTo、时间戳以及明确的起止 `null`；
 graph JSON 保留顶层数据库 `observedAt`。这些字段不在命令层计算或省略，并继续使用
 `stringifyApiJson` 精确序列化。完整 API DTO、验证、分页、服务响应及其他操作
 不采用该投影，描述仍由 show、ready、create 和 update 返回。
@@ -529,11 +535,12 @@ stderr 错误包含操作名、已确定的 project/task ID、失败阶段和可
 
 ## 验证与交付证据
 
-验证由需求 V1–V15 约束。测试按模块归属组织，避免只镜像实现分支：
+验证由需求 V1–V16 约束。测试按模块归属组织，避免只镜像实现分支：
 
 | 层次 | 关键观察 |
 |---|---|
 | 纯数据与参数 | 正规化表和拒绝 fixture、字段存在性、依赖替换/清空、版本参数、ready limit 默认/边界/拒绝、JSON 格式 |
+| 负责人协议与身份 | 设置/清空/省略、冲突零I/O、所有Task/graph必填nullable字段；me空页与多页header、每遍历身份隔离、错误响应保留与无额外/me；正常PATCH无postGET、结果目标核验而不凭v+1推断副作用 |
 | CLI 依赖边界 | 缺失 Git/SQLite/review 工具、配置文件或 serverUrl 时，帮助、版本、update 与 review 保持独立；省略地址使用生产默认值，非法显式值失败，无本地凭据在网络前提示登录；显式 repo 创建、列表和详情不读取工作目录或 Git；login/logout 的浏览器和配置生命周期独立验证 |
 | Git 与本地状态 | 真实仓库的 insteadOf、子目录、worktree、submodule、ignore 生效、被跟踪目录、并发锁及原子替换 |
 | 受控 HTTP | 创建及 task discover 的多页零/一/多匹配、唯一匹配创建命令保留原资源、后页失败无 POST、server 或 origin 独立变化、缓存 404/不符、500/无效响应、循环或持续推进 cursor、单次/总期限、字节超限、取消及写响应丢失 |

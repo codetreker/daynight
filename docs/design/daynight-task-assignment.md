@@ -1,6 +1,6 @@
 # Task 负责人服务端设计
 
-状态：原生负责人列及事务、读取生产者、任务筛选和项目内人员读取已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
+状态：原生负责人列及事务、读取生产者、任务筛选、项目内人员读取、CLI 字段消费与负责人命令，以及本人自动领取规则已实现。[需求](../spec/daynight-task-assignment.md)拥有行为，取舍由[基础决策](../../.agents/notes/implemented/architecture/2026-11-03-task-assignment-foundation.md)拥有。
 
 ## 数据所有权
 
@@ -40,7 +40,7 @@ Tasks.write 在明确 no-op/删除路径之后，只对真正 create/update 的�
 
 完整 Task、task-sync 和图各自的 projection/scanner/assembler 直接读取 assigned_to::text；字段、版本、依赖和属性属于同一既有读取快照。summary 与图携带轻量 UUID，不嵌入可变用户资料。
 
-锁序保持项目→父任务→属性→Session。成员变更共享项目锁；自动领取在同一写事务内要求当前 AssignedTo 非空且等于 principal.UserID，领取结果绑定该认证调用者。负责人变化不重写 worker 或 Session/archive 身份；released/completed 历史继续保留，新的负责人不因此获得旧执行的控制权。
+锁序保持项目→父任务→属性→Session。成员变更共享项目锁；自动领取在同一写事务内要求当前 AssignedTo 非空且等于 principal.UserID，领取结果绑定该认证调用者。负责人变化不重写 worker 或 Session/archive 身份；released/completed 历史继续保留，新的负责人不因此获得旧执行的控制权。[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有领取资格与原执行授权分离的取舍。
 
 ## 原生任务筛选与游标
 
@@ -72,7 +72,7 @@ HTTP 以局部 query 解析只允许重复 userId，不放宽共用 queryValues 
 
 Go 组装仍验证规范 ID、互斥和完整覆盖：items 与 unresolved 恰好覆盖规范请求一次，各自稳定排序。query/scan/rows/取消或事务失败不安装部分集合。错误不借用 ErrNotFound 表示资料缺失，避免外层误译为项目 404。
 
-完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。CLI/Web 消费和刷新 owner 仍是独立客户端能力，人员资料不写入 Task 版本或浏览器持久任务记录。
+完整目录面向显式打开或重试；周期消费者使用当前展示/选中 ID 的限定模式，空集合不发请求，不能省略参数退化为全量。CLI已严格消费Task/graph的assignedTo，普通元数据命令使用完整Task响应，不为姓名调用目录；[客户端设计](daynight-project-task.md)拥有命令、me身份与输出。Web目录刷新和新字段缓存仍是独立待交付能力，人员资料不写入Task版本。
 
 ## 观测与验证
 

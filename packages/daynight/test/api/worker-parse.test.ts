@@ -12,7 +12,7 @@ const worker: WorkerClaim = {
   platform: "linux", agent: "codex", agentControlMode: "herdr", worktreeId: projectId, phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native", claimedAt: time,
 };
 const task: Task = {
-  id: taskId, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null,
+  id: taskId, projectId, title: "Task", description: "", status: "in_progress", allowAgents: true, requiredPlatform: null, assignedTo: null,
   version: 9_223_372_036_854_775_807n, properties: { pullRequests: [{ url: "\0", title: "\ud800" }], worker },
   startedAt: time, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: false,
 };
@@ -27,6 +27,13 @@ const malformedWorkers: unknown[] = [
 ];
 
 describe("worker ownership read DTO", () => {
+  it.each([undefined, "", "invalid", "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA", true, 1, {}, []].map((assignedTo) => ({ assignedTo })))("requires the native nullable assignment on worker task resources %#", ({ assignedTo }) => {
+    expect(() => parseTask({ ...task, assignedTo }, projectId, taskId)).toThrow("invalid response");
+  });
+  it("retains responsibility independently from execution ownership", () => {
+    const assignedTo = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    expect(parseTask({ ...task, assignedTo }, projectId, taskId)).toMatchObject({ assignedTo, properties: { worker: { userId: projectId } } });
+  });
   it("retains protected execution metadata and opaque PR strings", () => {
     expect(parseTask(task, projectId, taskId)).toEqual(task);
     const preparing = { ...task, properties: { ...task.properties, worker: { ...worker, herdr: null, nativeSessionId: null } } };

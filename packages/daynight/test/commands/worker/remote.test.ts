@@ -16,7 +16,7 @@ const descriptor: WorkerClaimDescriptor = { claimId: uuid(4), workerId, machine:
 const worker: WorkerClaim = { ...descriptor, agentControlMode: descriptor.agentControlMode ?? "herdr", userId: uuid(7), state: "active", phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time };
 const task = (id = taskId, claim: WorkerClaim | undefined = undefined, project = projectId): Task => ({
   id, projectId: project, title: "Task", description: "", status: claim?.state === "active" ? "in_progress" : "todo", allowAgents: true,
-  requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, version: 1n,
+  assignedTo: null, requiredPlatform: null, startedAt: claim?.state === "active" ? time : null, completedAt: null, version: 1n,
   properties: { ...(claim === undefined ? {} : { worker: claim }), pullRequests: [] }, createdAt: time, updatedAt: time,
   dependsOn: [], externalDependsOn: [], blockedBy: [], ready: claim?.state !== "active",
 });
@@ -323,7 +323,8 @@ describe("worker remote API", () => {
     const serverUrl = await listen((request, response) => {
       const url = new URL(request.url!, "http://localhost"); urls.push(url);
       const later = url.searchParams.has("cursor");
-      respond(response, { items: later ? [task(uuid(9)), task(uuid(8))] : [task(taskId, { ...worker, state: "released" })], nextCursor: later ? null : "candidate cursor+/=" });
+      const candidates = later ? [task(uuid(9)), task(uuid(8))] : [task(taskId, { ...worker, state: "released" })];
+      respond(response, { items: candidates.map((candidate) => ({ ...candidate, assignedTo: worker.userId })), nextCursor: later ? null : "candidate cursor+/=" });
     });
     const result = await Array.fromAsync((await verifiedRemote(serverUrl)).candidates(projectId, "linux", signal()));
     expect(result.map(({ id }) => id)).toEqual([uuid(9), uuid(8)]);

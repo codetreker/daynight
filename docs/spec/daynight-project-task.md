@@ -22,7 +22,7 @@ Web 附件管理亦已实现。
 
 [执行计时需求](daynight-task-timing.md)的任务起止字段与数据库图时钟已有严格 CLI 读取契约。
 JSON 保留真实时间或明确的 `null`；Project JSON 同步保留项目阈值及其精确嵌套版本。
-服务端的[负责人契约](daynight-task-assignment.md)已有顶层 assignedTo、任务筛选和人员读取；当前 CLI 尚未提供该字段的负责人选项、解析和输出，本文的已实现输出描述指 CLI 当前任务模型。
+服务端的[负责人契约](daynight-task-assignment.md)已有顶层 assignedTo、任务筛选和人员读取。CLI 已严格读取该字段，并提供普通 create/update 的设置、update 清空、list 筛选及当前 ID 展示；不为展示姓名增加人员查询。
 这些计时事实不增加可读输出字段。Web 实时卡片消费同一计时与项目阈值事实，不增加 CLI 命令。
 
 [外部依赖需求](daynight-external-dependencies.md)的存储及读取准备已实现。完整 task 和图节点
@@ -196,10 +196,15 @@ daynight task list --allow-agents false --ready
 daynight task list --ready
 daynight task list --all --json
 daynight task list --status in_progress
+daynight task list --ready --assigned-to me
+daynight task list --assigned-to unassigned --json
 daynight task show <task-id>
 daynight task update <task-id> --title "新的标题"
 daynight task update <task-id> --allow-agents true --if-version 3
 daynight task update <task-id> --description ""
+daynight task create --title "核对安装" --assigned-to <user-uuid>
+daynight task update <task-id> --assigned-to <user-uuid> --if-version <observed-version>
+daynight task update <task-id> --clear-assigned-to --if-version <observed-version>
 daynight task set-status <task-id> in_progress
 daynight task set-status <task-id> todo
 daynight task set-status <task-id> done
@@ -222,13 +227,13 @@ daynight task graph <task-id> [--depends-only]
 `--path=value` 继续拒绝。附件上传的 `--path` 是 text 选项，接受内联赋值。
 `project create`、属性 set/remove 和附件 `put/read/remove` 接受独立 `--` 结束选项解析；该终止符用于保留前导连字符的位置参数，选项必须放在终止符之前。其他操作继续使用其声明的语法。
 
-创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；未显式设置的属性缺失。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`，列表默认选择
+创建必需符合 PT6 文本规则的非空 task 标题，可选描述、`--required-platform windows|linux|macos`、`--assigned-to <user-uuid>`、重复的 `--depends-on` 和 `--external-depends-on`。省略描述与依赖分别为空字符串与空集合，平台省略为 null，不限制执行平台；负责人省略为 assignedTo:null，未显式设置的属性缺失。新 task 总为 `todo` 且 `allowAgents=false`，create 不提供许可或属性专用选项。任务响应解码接受 `todo`、`in_progress`、`done`，列表默认选择
 所有未完成任务；`--all` 选择所有未删除任务的业务状态，
 单个 `--status` 选择指定状态，包括 `done`。`--all` 与 `--status` 互斥，组合使用
 属于参数错误；列表状态值为 `todo`、`in_progress`、`done`，共享语法负责校验和静态候选，
 帮助显示选项说明。`--ready` 表示 `ready=true`，与所选状态按 AND 组合，支持
 `--all --ready`。`list` 与 `ready` 接受 --allow-agents true|false 与 --compatible-platform windows|linux|macos。严格拒绝其他值，省略不筛选；兼容包含null和同值要求，全部过滤先于服务排序、分页和ready上限，不在本地丢项。列表读完全部匹配分页后，按 `in_progress`、ready、其余 `todo`、
-`done` 分组排序；组内保留跨页的服务顺序，文本和 JSON 使用同一顺序。详情按选定
+`done` 分组排序；组内保留跨页的服务顺序，文本和 JSON 使用同一顺序。list 另支持 --assigned-to UUID|me|unassigned，省略无负责人限制；与状态/ready/许可/平台组合并保留到每页。me 以成功响应 Daynight-User-ID 绑定本次完整遍历，空页也校验，后页不得切换身份；不另发 /me 请求。按 UUID 或未分配查询验证返回项匹配，不能静默丢弃。详情按选定
 project 和 task ID 查询。[软删除需求](daynight-task-deletion.md)定义 `task delete` 的精确版本、一次预读、不重试及数据保留规则。`--remove-depends` 是可选开关：省略时无未删除引用者即可删除，有引用者则 409 拒绝；传入才明确解除全部传入引用并原子软删除，不要求无引用任务也传开关。显式 project ID、show/update/set-status/delete 的 task ID、标题、描述、状态、
 版本及修改字段组合的参数错误必须先于配置读取、Git 和网络访问拒绝；两类依赖 ID 在本地正规化并排序，
 非法 UUID、列表内及跨列表重复（包括大小写等价）先拒绝，服务继续验证引用、项目、环及状态条件。
@@ -252,8 +257,10 @@ limit，每项必须为 ready，且 task ID 不得重复；响应违反任一条
 不自动重试写入；不确定结果先 GET 核对，不将取消解释为回滚。输出完整 Task 并保留所有非状态资料。
 [三状态要求](daynight-task-status.md)拥有时间、迁移、依赖和版本细节。旧四动作删除且无别名。
 
-元数据 update 至少提供标题、描述、普通/外部依赖、自动执行许可或平台要求中的一个字段；属性由专用通用命令维护。`update --allow-agents true|false` 显式设置许可，省略保留，false 关闭；服务在 in_progress 拒绝实际切换，同值精确版本不改版本或时间。该选项不改变 ready；明确指定执行不要求开启许可。--required-platform windows|linux|macos 设置，--clear-required-platform 发送null，二者互斥；省略均保留。
+元数据 update 至少提供标题、描述、普通/外部依赖、自动执行许可、平台要求或负责人中的一个字段；属性由专用通用命令维护。`update --allow-agents true|false` 显式设置许可，省略保留，false 关闭；服务在 in_progress 拒绝实际切换，同值精确版本不改版本或时间。该选项不改变 ready；明确指定执行不要求开启许可。--required-platform windows|linux|macos 设置，--clear-required-platform 发送null，二者互斥；省略均保留。
 精确版本同值不写，旧版本冲突，in_progress实际变化整体拒绝；普通人工setter不按平台筛选。
+
+--assigned-to 在创建/更新中只接受用户 UUID，规范化后提交顶层 assignedTo；update 用互斥的 --clear-assigned-to 明确发送 null，省略均保留。查询专用 me/unassigned 不能作为写入值。实际负责人变化同一事务关闭 allowAgents；等值不重置，in_progress 拒绝实际变化。分配不授予项目访问权或既有执行控制权。自动领取还要求负责人等于 worker 认证账号；运行时规则由[本人领取决策](../../.agents/notes/implemented/architecture/2026-11-03-worker-self-assigned-claims.md)拥有，许可开启本身不足以领取他人任务。设置/清空冲突、错误UUID和非法查询token在配置/Git/网络前拒绝，新参数仍允许自由UUID值而非封闭 choices。
 `task update --status`
 作为不支持的选项拒绝，帮助引导使用 set-status。省略字段表示保持，空描述表示
 清空描述。两类依赖选项分别形成普通 N 和外部 E，任一出现就提交完整 D=N∪E 及精确 E。
@@ -286,7 +293,7 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 外部节点；文本汇总只包含三状态，JSON summary 为 total、todo、inProgress、done、ready、blocked，满足
 `total = todo + inProgress + done` 与 `todo = ready + blocked`。ready 只来自全部前置完成的 todo；
 列表、show、graph 均拒绝旧状态，状态写入只通过 set-status。标题预览、快照边界、
-节点和边上限均继承服务要求。完整任务和图节点严格读取必填布尔 allowAgents 及必填nullable requiredPlatform；缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。超限时报告数量及上限，不返回部分图。
+节点和边上限均继承服务要求。完整任务和图节点严格读取必填布尔 allowAgents、必填nullable requiredPlatform 与必填nullable assignedTo；后者只接受null或规范用户UUID。缺失/非法类型拒绝，不补默认。JSON保留原值，可读输出显示平台，null为any；负责人显示 Assigned to: UUID 或 unassigned，不查询姓名。有许可或平台筛选的 list/ready 同时验证返回项符合条件。图响应还必须包含数据库时间样本 `observedAt`；full task 和图节点均有必填可空的 `startedAt`、`completedAt`。缺失或错误类型作为协议错误拒绝，不从创建、编辑或客户端时间补值。超限时报告数量及上限，不返回部分图。
 
 附件 `put/list/read/remove` 继承相同的 project 选择，逐文件处理完整相对路径。
 目标 basename、MIME 推导、目录拒绝与原始内容输出的完整要求由
@@ -299,11 +306,11 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 最终期限检查成功后输出结果。Project 列表逐个输出完整的带标签资源块，包含 ID、名称、
 原始 repo 地址及创建、更新时间；空列表明确说明没有 project。详情和创建结果使用
 相同字段，创建结果另表明服务已确认创建。Task 列表逐个输出带标签的资源块，包括
-ID、所属 project、标题、状态、ready、依赖、外部依赖、阻塞及完整属性 JSON；列表文本
+ID、所属 project、标题、状态、ready、负责人、依赖、外部依赖、阻塞及完整属性 JSON；列表文本
 不显示描述、版本及创建、更新时间，空 task list 明确说明没有 task。详情、ready、
 创建和更新结果显示完整 task 资源，包含上述字段、描述、完整版本及创建、更新时间。
 ready 空结果输出 `No ready tasks.`，创建和更新结果另表明服务已确认操作。属性读取及 set/remove 成功结果包含 task/project ID、精确版本和完整属性；schema 模式保留全部定义与 schema 关键词，按名称输出。
-普通图输出显示 project、全部 summary 字段及每个节点的状态、标题预览、截短标记、ready、
+普通图输出显示 project、全部 summary 字段及每个节点的状态、负责人、标题预览、截短标记、ready、
 依赖、外部依赖、阻塞和时间。依赖区统一输出 `External dependencies (N): ...`，
 计数与列表只包含显式外部子集，空值显示 none。所有文本完整显示，资源边界保持清楚，输出空间随字段内容总量
 线性增长。
@@ -320,7 +327,7 @@ externalDependsOn，不输出项目、统计、标题、状态或阻塞字段。
 `description` 的数组、ready 输出为所选完整 task 的数组、属性读取输出完整 PropertyResource、schema 输出完整定义目录、普通图输出为服务的任务链图响应对象，
 并以换行结束。Task list 的默认、`--all`、`--status`、`--ready` 及其合法组合
 均使用同一 JSON 字段规则；其余 API 字段全部保留，包括原始 PR 字符串、完整 int64
-版本、创建/更新时间和明确可空的 `startedAt`、`completedAt`；图 JSON 另外保留顶层 `observedAt`。
+版本、创建/更新时间、明确可空的 assignedTo 和 `startedAt`、`completedAt`；图 JSON 另外保留顶层 `observedAt`。
 这些计时字段不增加命令参数或改变可读输出的字段选择；外部依赖数组作为已知字段保留。
 ready 不添加分页 envelope，空列表为 `[]`。JSON 保留所输出
 API 字段的名称、类型和原始字符串，不应用终端显示转义或插入诊断文字。写操作
@@ -372,12 +379,13 @@ API 字段的名称、类型和原始字符串，不应用终端显示转义或�
 | V13 | `task ready` 的默认和显式 limit、参数在 I/O 前拒绝、单次 `ready=true` 查询、合法 cursor 不续页、稳定服务顺序、完整 int64 JSON、空结果及超量/非 ready/重复 ID 响应拒绝均可观察；`task list --ready` 仍完整翻页，真实服务证明选择前 N 项及依赖完成后的 ready 变化 |
 | V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出通过适用安装入口验证 |
 | V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出通过适用安装入口和真实服务验证 |
+| V16 | 负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段通过安装CLI和真实服务验证 |
 
 配置、HTTP、仓库关联基础及 Project 命令已提供对应模块验证；Project 的实际编译
 入口已在受控 HTTP 条件下验证创建、完整分页、详情、参数错误、服务拒绝、
 取消、原始 JSON 与依赖隔离。Task 已通过参数、操作、渲染、仓库选择及实际编译
 入口的受控 HTTP 验证；共享补全保留既有场景，并在真实 Bash/zsh 验证 Task 语法。
-V1–V15 继续约束完整 CLI 交付。CLI 必须通过三原生平台的安装 CLI 受控 HTTP/Git
+V1–V16 继续约束完整 CLI 交付。CLI 必须通过三原生平台的安装 CLI 受控 HTTP/Git
 验收，以及实际安装 CLI 与真实 Go 1.27.2/PostgreSQL 18.6 的完整流程、重启和版本
 竞争。生产默认值必须保持单次请求 30 秒、总操作 5 分钟、单响应 128 MiB 和
 累计响应 256 MiB，并由测试单独断言。期限行为通过公开安装命令与流式 HTTP

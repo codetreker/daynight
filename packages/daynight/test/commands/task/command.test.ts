@@ -14,8 +14,8 @@ const otherDependencyId = "abcdefab-4444-4222-8333-123456789abc";
 const claimId = "abcdefab-5555-4222-8333-123456789abc";
 const time = "2026-10-20T00:00:00.123456789Z";
 const project: Project = { id: projectId, name: "Project", repoUrl: "git@git.example:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
-const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
+const task: Task = { id: taskId, projectId, title: "Task title", description: "Description", properties: { pullRequests: [] }, status: "todo", allowAgents: false, assignedTo: null, requiredPlatform: null, version: 9_007_199_254_740_993n, ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time };
+const graph: TaskGraph = { observedAt: time, project, summary: { total: 1, todo: 1, inProgress: 0, done: 0, ready: 1, blocked: 0 }, tasks: [{ id: taskId, titlePreview: `Task title${"T".repeat(150)}`, titleTruncated: true, allowAgents: false, assignedTo: null, requiredPlatform: null, status: "todo", ready: true, dependsOn: [], externalDependsOn: [], blockedBy: [], startedAt: null, completedAt: null, createdAt: time, updatedAt: time }] };
 const propertyResource = { projectId, taskId, version: task.version, properties: task.properties };
 const propertySchema = { properties: { future: { description: "Future definition", readOnly: false, schema: { type: "string", custom: { version: 7 } } } } };
 const operations: Operation[] = [];
@@ -546,6 +546,78 @@ describe("task output contracts", () => {
     const tasks = [task, { ...task, id: "22222222-2222-4222-8333-123456789abc", title: "Long task title ".repeat(4), description: "Long description ".repeat(4) }];
     const output = renderTaskList(tasks);
     for (const current of tasks) expect(output).toContain(`ID: ${current.id}\nProject: ${projectId}\nTitle: ${current.title}\nDescription: ${current.description}\n`);
+  });
+});
+
+
+describe("task responsibility options", () => {
+  it.each([
+    ["create", "--title", "Assigned task", "--assigned-to", "me"],
+    ["create", "--title", "Assigned task", "--assigned-to", "unassigned"],
+    ["create", "--title", "Assigned task", "--clear-assigned-to"],
+    ["create", "--title", "Assigned task", "--assigned-to="],
+    ["update", taskId, "--assigned-to", "me"],
+    ["update", taskId, "--assigned-to", "unassigned"],
+    ["update", taskId, "--assigned-to", projectId, "--clear-assigned-to"],
+    ["update", taskId, "--clear-assigned-to", "--clear-assigned-to"],
+    ["list", "--assigned-to="], ["list", "--assigned-to", "ME"],
+    ["list", "--assigned-to", "Unassigned"], ["list", "--assigned-to", "bad"],
+    ["ready", "--assigned-to", projectId],
+  ])("rejects invalid responsibility options before any local or remote preparation: %j", async (...args) => {
+    const f = fixture();
+    await expect(runTaskCommand(args, f.context, f.dependencies)).rejects.toBeInstanceOf(UsageError);
+    expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
+    expect(f.dependencies.resolveProject).not.toHaveBeenCalled();
+    expect(f.context.homeDirectory).not.toHaveBeenCalled(); expect(f.context.workingDirectory).not.toHaveBeenCalled();
+    expect(f.context.stdout).not.toHaveBeenCalled();
+  });
+
+  it("sets and clears native assignment using exact versions without task reads", async () => {
+    const f = fixture();
+    f.api.createTask.mockResolvedValue({ ...task, assignedTo: dependencyId });
+    f.api.updateTask.mockResolvedValue({ ...task, assignedTo: dependencyId });
+    await runTaskCommand(["create", "--title", "Assigned task", "--assigned-to", dependencyId.toUpperCase(), "--project", projectId], f.context, f.dependencies);
+    expect(f.api.createTask).toHaveBeenCalledExactlyOnceWith(projectId, { title: "Assigned task", assignedTo: dependencyId });
+    await runTaskCommand(["update", taskId, "--assigned-to", dependencyId.toUpperCase(), "--title", "Updated", "--allow-agents", "true", "--if-version", "9223372036854775807", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.updateTask).toHaveBeenLastCalledWith(projectId, taskId, { assignedTo: dependencyId, title: "Updated", allowAgents: true, version: 9_223_372_036_854_775_807n });
+    f.api.updateTask.mockResolvedValue(task);
+    await runTaskCommand(["update", taskId, "--clear-assigned-to", "--if-version", "9007199254740993", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.updateTask).toHaveBeenLastCalledWith(projectId, taskId, { assignedTo: null, version: 9_007_199_254_740_993n });
+    expect(f.api.getTask).not.toHaveBeenCalled(); expect(f.api.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it("retains the existing one-read default version path for an assignment-only update", async () => {
+    const f = fixture();
+    await runTaskCommand(["update", taskId, "--clear-assigned-to", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.getTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId);
+    expect(f.api.updateTask).toHaveBeenCalledExactlyOnceWith(projectId, taskId, { assignedTo: null, version: task.version });
+  });
+
+  it.each([dependencyId, "me", "unassigned"])("passes responsibility filter %s before pagination without another identity request", async (assignedTo) => {
+    const f = fixture();
+    await runTaskCommand(["list", "--assigned-to", assignedTo, "--ready", "--allow-agents", "true", "--project", projectId], f.context, f.dependencies);
+    expect(f.api.listTasks).toHaveBeenCalledExactlyOnceWith(projectId, { assignedTo, ready: true, allowAgents: true });
+    expect(f.api.getCurrentUser).not.toHaveBeenCalled();
+  });
+
+  it.each([null, dependencyId])("renders current assignment %s without changing dependency-only JSON", async (assignedTo) => {
+    const f = fixture();
+    const value = { ...task, assignedTo };
+    f.api.getTask.mockResolvedValue(value); f.api.listTasks.mockResolvedValue([value]); f.api.listReadyTasks.mockResolvedValue([value]);
+    f.api.getTaskGraph.mockResolvedValue({ ...graph, tasks: graph.tasks.map((item) => ({ ...item, assignedTo })) });
+    for (const args of [["show", taskId], ["list"], ["ready"], ["graph", taskId]]) await runTaskCommand([...args, "--project", projectId], f.context, f.dependencies);
+    for (const [output] of f.context.stdout.mock.calls) expect(output).toContain(`Assigned to: ${assignedTo === null ? "unassigned" : assignedTo}\n`);
+    f.context.stdout.mockClear();
+    await runTaskCommand(["graph", taskId, "--depends-only", "--json", "--project", projectId], f.context, f.dependencies);
+    expect(parseApiJson(f.context.stdout.mock.calls[0]![0])).toEqual([{ id: taskId, dependsOn: [], externalDependsOn: [] }]);
+  });
+
+  it.each(["create", "update", "list"])("advertises the assignment option in %s help", async (command) => {
+    const f = fixture();
+    await runTaskCommand([command, "--help"], f.context, f.dependencies);
+    expect(f.context.stdout.mock.calls[0]![0]).toContain("--assigned-to");
+    if (command === "update") expect(f.context.stdout.mock.calls[0]![0]).toContain("--clear-assigned-to");
+    expect(f.dependencies.runServerCommand).not.toHaveBeenCalled();
   });
 });
 

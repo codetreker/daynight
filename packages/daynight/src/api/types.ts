@@ -154,6 +154,7 @@ export type Task = {
   readonly status: TaskStatus;
   readonly allowAgents: boolean;
   readonly requiredPlatform: TaskPlatform | null;
+  readonly assignedTo: string | null;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
   readonly version: bigint;
@@ -193,6 +194,7 @@ export type CreateProjectInput = { readonly name: string; readonly repoUrl: stri
 export type CreateTaskInput = {
   readonly title: string;
   readonly requiredPlatform?: TaskPlatform | null;
+  readonly assignedTo?: string | null;
   readonly description?: string;
   readonly properties?: WritableTaskProperties;
   readonly dependsOn?: readonly string[];
@@ -202,6 +204,7 @@ export type UpdateTaskInput = {
   readonly version: bigint;
   readonly allowAgents?: boolean;
   readonly requiredPlatform?: TaskPlatform | null;
+  readonly assignedTo?: string | null;
   readonly title?: string;
   readonly description?: string;
   readonly properties?: WritableTaskProperties;
@@ -235,11 +238,11 @@ export type ResumeWorkerTaskInput = WorkerClaimDescriptor & {
   readonly previousClaimId: string;
 };
 export type TaskFilters = {
+  readonly assignedTo?: string;
   readonly status?: TaskStatus;
   readonly ready?: boolean;
   readonly allowAgents?: boolean;
   readonly compatiblePlatform?: TaskPlatform;
-  readonly assignedTo?: string;
   readonly workerId?: string;
 };
 export type TaskPageQuery = TaskFilters & { readonly limit: number; readonly cursor?: string };

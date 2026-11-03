@@ -6,7 +6,7 @@ import { SessionActivity } from './SessionActivity';
 import '../../styles/session-composer.css';
 import type { SessionState } from './state';
 import { sessionCancelGate, sessionSendGate, hasPendingOperation, sessionControlGate, hasPendingControls } from './state';
-import { useSessionMessages } from './messages';
+import { sessionNativeLabels, useSessionMessages } from './messages';
 
 export function SessionComposer({ state, connected, authPaused = false, active = true, draft, onDraftChange, onSend, onCancel, settingIntents = new Map(), onUpdateSetting, onExecuteCommand, onRefreshControls }: {
   readonly state: SessionState; readonly connected: boolean; readonly authPaused?: boolean; readonly active?: boolean;
@@ -183,10 +183,10 @@ export function SessionComposer({ state, connected, authPaused = false, active =
     <div className="session-composer-footer">
       <div className="session-controls-toolbar" aria-label={m.title}>
         <button type="button" className="session-control-trigger" aria-label={m.model} data-pending={modelPending || undefined} aria-expanded={controlView === 'model'} onClick={() => { setControlView(controlView === 'model' ? null : 'model'); dismissCommands(true); }}>{modelLabel}<span aria-hidden="true"> ▾</span></button>
-        <button type="button" className="session-control-trigger" aria-label={m.permissions} data-pending={permissionPending || undefined} aria-expanded={controlView === 'permissions'} onClick={() => { setControlView(controlView === 'permissions' ? null : 'permissions'); dismissCommands(true); }}>{m.permissions}<span aria-hidden="true"> ▾</span></button>
+        <button type="button" className="session-control-trigger" aria-label={sessionNativeLabels.permissions} lang="en" data-pending={permissionPending || undefined} aria-expanded={controlView === 'permissions'} onClick={() => { setControlView(controlView === 'permissions' ? null : 'permissions'); dismissCommands(true); }}>{sessionNativeLabels.permissions}<span aria-hidden="true"> ▾</span></button>
         <button type="button" className="session-control-trigger" aria-label={m.commands} aria-expanded={showCommands} onClick={() => { setControlView(showCommands ? null : 'commands'); dismissCommands(showCommands); inputRef.current?.focus({ preventScroll: true }); }}>/</button>
       </div>
-      <div className="session-actions"><button className="button button-primary" type="submit" title={authPaused ? m.checkingIdentity : undefined} disabled={!(isCommand ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}>{pending ? m.pending : commandPending ? m.executingCommand : snapshot?.activity === 'working' ? m.steer : m.send}</button></div>
+      <div className="session-actions"><button className="button button-primary" type="submit" title={authPaused ? m.checkingIdentity : undefined} disabled={!(isCommand ? commandSendAllowed : sendAllowed) || pending || commandPending || !text.trim()}><span lang="en">{pending ? sessionNativeLabels.pending : commandPending ? sessionNativeLabels.executingCommand : snapshot?.activity === 'working' ? sessionNativeLabels.steer : sessionNativeLabels.send}</span></button></div>
     </div>
     <SessionActivity snapshot={snapshot} connected={connected} active={active} commandPending={commandPending || hasPendingOperation(state, 'execute_command')} interruptRequested={interruptRequested} interruptPending={cancelling || hasPendingOperation(state, 'cancel')} interruptAllowed={cancelAllowed} onInterrupt={() => void cancel()} />
     <small className="session-composer-keyboard">{m.keyboard} · /</small>
