@@ -1,5 +1,5 @@
 import path from "node:path";
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, rmdir, unlink } from "node:fs/promises";
 import type { Operation } from "../../api/operation.js";
 import { canonicalId } from "../../api/parse.js";
 import { runRepositoryGit } from "../../repository/git.js";
@@ -7,6 +7,7 @@ import { repositoryIdentity } from "../../repository/identity.js";
 import { resolvePhysicalDirectory } from "../../platform/filesystem.js";
 import type { ResourceOwner, WorkerProject, WorktreeBinding } from "./types.js";
 import { canonicalResourceOwner } from "./resource-owner.js";
+import { removeWorktreeContents } from "./remove-worktree-contents.js";
 
 type GitRunner = typeof runRepositoryGit;
 type Owner = ResourceOwner & { leaf: string; root: string; common: string };
@@ -14,6 +15,7 @@ type Registration = { directory: string; marker: string | null; pointer: string;
 export type WorkerRepository = { root: string; commonDirectory: string; rootIdentity: string; commonIdentity: string };
 export type OwnedWorktree = { owner: ResourceOwner; binding: WorktreeBinding };
 const prefix = "daynight-worker:";
+const removing = new Set<string>();
 const missing = (error: unknown): boolean => error instanceof Error && "code" in error && error.code === "ENOENT";
 const line = (value: string): string => value.replace(/\r?\n$/, "");
 const uuid = (value: string, name: string): string => {
@@ -62,7 +64,7 @@ const sameCoordinates = (owner: Owner, identity: ResourceOwner): boolean => Obje
 export const createWorkerGitManager = (options: { temporaryDirectory: string; runGit?: GitRunner; removeDirectory?: typeof rm }) => {
   const temporaryDirectory = absolute(options.temporaryDirectory, "Git temporary directory");
   const runGit = options.runGit === undefined ? runRepositoryGit : options.runGit;
-  const removeDirectory = options.removeDirectory === undefined ? rm : options.removeDirectory;
+  const removeDirectory: typeof rm = options.removeDirectory ?? (target => unlink(target));
   let hooks: Promise<string> | null = null;
   const hookDirectory = async (): Promise<string> => {
     if (hooks === null) hooks = (async () => {
@@ -241,26 +243,63 @@ export const createWorkerGitManager = (options: { temporaryDirectory: string; ru
     },
     removeWorktree: async (project: WorkerProject, owner: ResourceOwner, operation: Operation): Promise<void> => {
       const repository = await inspectRepository(project, operation);
-      let result = await inspectWorktree(project, owner, repository, operation, true);
-      if (result.registration === null) return;
-      // Device/inode values can be reused after deletion, so the Git pointer must survive recursive cleanup.
-      // Its final unlink and nonrecursive rmdir may leave an ambiguous empty leaf, which is retained on retry.
-      if (result.leaf !== null) {
-        for (const name of await readdir(result.binding.worktreePath)) {
-          if (name === ".git") continue;
+      const key = `${repository.rootIdentity}/${repository.commonIdentity}/${uuid(owner.taskId, "Task ID")}`;
+      if (removing.has(key)) throw new Error("Task worktree cleanup is already in progress.");
+      removing.add(key);
+      try {
+        let result = await inspectWorktree(project, owner, repository, operation, true);
+        if (result.registration === null) return;
+        // Device/inode values can be reused after deletion, so the Git pointer must survive content cleanup.
+        // Its final unlink and nonrecursive rmdir may leave an ambiguous empty leaf, which is retained on retry.
+        if (result.leaf !== null) {
+          const { registration, binding, leaf } = result;
+          const directories = new Map<string, string>([[repository.root, repository.rootIdentity], [repository.commonDirectory, repository.commonIdentity]]);
+          for (const target of [path.join(repository.root, ".worktrees"), path.dirname(binding.worktreePath), path.dirname(registration.directory), registration.directory]) {
+            const identity = await directory(target);
+            if (identity === null) throw new Error(`Worktree ownership directory ${target} disappeared.`);
+            directories.set(target, identity);
+          }
+          directories.set(binding.worktreePath, leaf);
+          const metadata = new Map<string, string>();
+          for (const target of [path.join(binding.worktreePath, ".git"), ...["locked", "gitdir", "commondir"].map(name => path.join(registration.directory, name))]) {
+            const contents = await ordinaryFile(target);
+            if (contents === null) throw new Error(`Worktree ownership metadata ${target} disappeared.`);
+            metadata.set(target, contents);
+          }
+          const verifyOwnership = async (): Promise<void> => {
+            operation.check();
+            for (const [target, identity] of directories) {
+              if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
+            }
+            for (const [target, contents] of metadata) {
+              if (await ordinaryFile(target) !== contents) throw new Error(`Worktree ownership metadata ${target} changed during cleanup.`);
+            }
+            operation.check();
+          };
+          // Bind the lightweight mutation guards to a second complete ownership inspection.
+          const confirmed = await inspectWorktree(project, owner, repository, operation, true);
+          if (confirmed.leaf !== leaf || confirmed.registration?.directory !== registration.directory || confirmed.registration.marker !== registration.marker) throw new Error("The task worktree ownership changed before cleanup.");
+          await verifyOwnership();
+          await removeWorktreeContents(binding.worktreePath, leaf, operation, verifyOwnership, removeDirectory);
+          await inspectWorktree(project, owner, repository, operation, true);
+          await verifyOwnership();
+          await unlink(path.join(binding.worktreePath, ".git"));
           operation.check();
-          await removeDirectory(path.join(result.binding.worktreePath, name), { recursive: true });
+          for (const [target, identity] of directories) {
+            if (await directory(target) !== identity) throw new Error(`Worktree ownership directory ${target} changed during cleanup.`);
+          }
+          operation.check();
+          await rmdir(binding.worktreePath);
         }
         operation.check();
-        await rm(path.join(result.binding.worktreePath, ".git"));
-        await rmdir(result.binding.worktreePath);
+        result = await inspectWorktree(project, owner, repository, operation, true);
+        if (result.leaf !== null) throw new Error("The original task worktree directory still exists after removal.");
+        if (result.registration !== null) await git(repository.root, ["worktree", "remove", "--force", "--force", "--", result.binding.worktreePath], operation);
+        result = await inspectWorktree(project, owner, repository, operation, true);
+        if (result.leaf !== null || result.registration !== null) throw new Error("The original task worktree removal is incomplete.");
+      } finally {
+        removing.delete(key);
       }
-      operation.check();
-      result = await inspectWorktree(project, owner, repository, operation, true);
-      if (result.leaf !== null) throw new Error("The original task worktree directory still exists after removal.");
-      if (result.registration !== null) await git(repository.root, ["worktree", "remove", "--force", "--force", "--", result.binding.worktreePath], operation);
-      result = await inspectWorktree(project, owner, repository, operation, true);
-      if (result.leaf !== null || result.registration !== null) throw new Error("The original task worktree removal is incomplete.");
     },
     dispose: async (): Promise<void> => { if (hooks !== null) { await rm(await hooks, { recursive: true }); hooks = null; } },
   };
