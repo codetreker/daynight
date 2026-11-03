@@ -87,7 +87,11 @@ func optionalProperties(fields map[string]json.RawMessage) (*api.TaskPropertiesP
 }
 
 func (h *taskHandler) resource(request *http.Request, principal core.Principal) (string, string, *slog.Logger, error) {
-	logger := h.logger.With("user_id", principal.UserID)
+	return taskResource(request, principal, h.logger)
+}
+
+func taskResource(request *http.Request, principal core.Principal, base *slog.Logger) (string, string, *slog.Logger, error) {
+	logger := base.With("user_id", principal.UserID)
 	projectID, err := service.CanonicalID(request.PathValue("projectId"))
 	if err != nil {
 		return "", "", logger, err

@@ -48,11 +48,14 @@ const taskGraphSelection = `WITH RECURSIVE chain(id) AS (
 ) `
 
 func (s *Snapshot) TaskGraphRoot(ctx context.Context, projectID, taskID string) error {
-	var deletedAt *time.Time
-	if err := s.tx.QueryRow(ctx, `SELECT deleted_at FROM tasks WHERE project_id = $1 AND id = $2`, projectID, taskID).Scan(&deletedAt); err != nil {
-		return queryError("read task graph root", err)
+	presence, err := taskPresence(ctx, s.tx, projectID, taskID, "")
+	if err != nil {
+		return err
 	}
-	if deletedAt != nil {
+	if !presence.Found {
+		return queryError("read task graph root", core.ErrNotFound)
+	}
+	if presence.DeletedAt != nil {
 		return core.ErrTaskDeleted
 	}
 	return nil

@@ -92,6 +92,9 @@ var sessionArchivesSQL string
 //go:embed migrations/028_task_assignment.sql
 var taskAssignmentSQL string
 
+//go:embed migrations/029_task_threads.sql
+var taskThreadsSQL string
+
 type migration struct {
 	version         int64
 	sql             string
@@ -128,6 +131,7 @@ var schemaMigrations = []migration{
 	{version: 26, sql: propertyRowsSQL, transform: migratePropertyRows026, transformSource: propertyRowsTransformSource},
 	{version: 27, sql: sessionArchivesSQL},
 	{version: 28, sql: taskAssignmentSQL},
+	{version: 29, sql: taskThreadsSQL},
 }
 
 const migrationLock int64 = 0x4441594e49474854

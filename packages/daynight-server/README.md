@@ -847,6 +847,67 @@ project identity and graph counts without recording task content, repository
 addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
 `task-sync` and computes its graphs locally.
 
+## Task Thread API
+
+Persistent discussion belongs to each task independently of its execution.
+The [Thread requirements](../../docs/spec/daynight-task-thread.md) and
+[design](../../docs/design/daynight-task-thread.md) own the complete contract.
+Thread never changes Task version, timestamps, state, properties, dependencies,
+cache epoch or task-sync. It remains readable and writable before execution,
+while the Controller is offline, and after completion. Deleted tasks retain
+messages but refuse access through their task resource.
+
+For `T=/api/v1/projects/{projectId}/tasks/{taskId}`:
+
+| Method | Path | Result |
+| --- | --- | --- |
+| `POST` | `T/thread/messages` | `201`, committed default message; body, optional replyTo/claimId |
+| `GET` / `HEAD` | `T/thread/messages` | `200`, messages and actual-boundary hasMoreBefore/hasMoreAfter |
+
+GET accepts only beforeId/afterId (mutually exclusive), count=1..100 (default 50),
+details=true/false and internal fromBeginning=true/false. An explicit
+fromBeginning cannot accompany an Id boundary. Without a boundary, ordinary
+reads select the latest page; fromBeginning=true selects the oldest page. Pages
+always display oldest first. Unknown, repeated or empty query keys fail; POST
+accepts no query and strictly decodes one UTF-8 JSON object within 1 MiB.
+
+A message contains id, author.userId/displayName/Agent, body, fixed-three-digit
+UTC createdAt and optional replyTo. displayName is always present and may be
+null. Author name and verified execution attribution are immutable snapshots.
+A supplied claimId must be active and owned by the authenticated account;
+otherwise Agent=false. details=true exposes only verified claimId, workerId and
+provider under author.execution for Agent authors. Neither default messages nor
+ordinary users expose that object. The database generates message_id once; its
+primary key is (task_id,message_id), with no single-column uniqueness guarantee.
+Reply and pagination IDs are always resolved within the selected task.
+
+The shared codec admits both default/detailed message encodings at <= 65,536
+bytes and complete pages at <= 262,144 bytes. HTTP writes exactly those escaped
+JSON bytes without an added LF. Full bodies and names are never truncated.
+Service operations have a 10-second ceiling with shorter parent deadlines taking
+precedence; actual-clock advancement has a 100 ms sub-budget, and rollback uses
+an independent 5-second cleanup context. These bounds do not claim a whole-handler
+latency SLA.
+
+POST success follows confirmed commit. A failed cleanup remains 500 even with a
+nested business refusal. Unknown COMMIT returns 503 message_outcome_unknown;
+clients keep drafts and must not automatically repeat POST. A post-commit
+response failure is logged once at response phase without another append.
+Clock-budget exhaustion returns 503 clock_not_advanced; encoded oversize is 413
+payload_too_large. Missing local messages are 404 message_not_found. Invalid or
+expired credentials are 401, missing project membership or source-owner mismatch
+is 403, invalid/stale claim is 409, and deleted tasks are 410. Existing PAT/Cookie,
+Origin, no-store and Daynight-User-ID behavior applies.
+
+Store/service tests use real isolated PostgreSQL schemas to check composite
+identity, millisecond ordering, rollback/commit stages, expiry, authorization,
+immutable attribution, byte admission and ID paging. HTTP tests verify strict
+input, real Cookie/PAT authentication, actual response lengths and safe failure
+logs. Private clock seams and injected commit-response loss make failure paths
+deterministic; these are bounded observations, not proof of every network fault.
+Run the full server gate under [Validate](#validate). CLI rendering and browser
+Discussion are separate consumers of this API.
+
 ## Task HTTP API
 
 Worker operations return complete Task resources with 200 and no-store, preserving
