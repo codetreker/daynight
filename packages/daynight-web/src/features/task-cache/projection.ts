@@ -1,4 +1,5 @@
 import type { Project, TaskGraph, TaskGraphSummary, TaskSummary } from "../../api/types";
+import { sameTaskProperties } from "../../api/task-properties";
 import { buildGraphIndex, type GraphIndex } from "../task-graph/model";
 
 export const compareTimestamps = (left: string, right: string): number => {
@@ -24,6 +25,7 @@ export const sameSummary = (left: TaskSummary, right: TaskSummary): boolean =>
   left.titleTruncated === right.titleTruncated && left.status === right.status &&
   sameIds(left.dependsOn, right.dependsOn) && sameIds(left.externalDependsOn, right.externalDependsOn) &&
   left.allowAgents === right.allowAgents && left.requiredPlatform === right.requiredPlatform &&
+  sameTaskProperties(left.properties, right.properties) &&
   sameTime(left.startedAt, right.startedAt) && sameTime(left.completedAt, right.completedAt) &&
   sameTime(left.createdAt, right.createdAt) && sameTime(left.updatedAt, right.updatedAt);
 
@@ -38,7 +40,7 @@ export const projectSummaries = (project: Project, summaries: readonly TaskSumma
   const ordered = [...summaries].sort((left, right) => compareTimestamps(left.createdAt, right.createdAt) || left.id.localeCompare(right.id));
   const nodes = new Map(ordered.map((task) => [task.id, task]));
   const summary: { -readonly [Key in keyof TaskGraphSummary]: number } = { total: ordered.length, todo: 0, inProgress: 0, done: 0, ready: 0, blocked: 0 };
-  const tasks = ordered.map(({ version: _version, ...task }) => {
+  const tasks = ordered.map(({ version: _version, properties: _properties, ...task }) => {
     const blockedBy = task.dependsOn.filter((dependency) => nodes.get(dependency)?.status !== "done");
     const ready = task.status === "todo" && blockedBy.length === 0;
     if (task.status === "todo") { summary.todo++; if (ready) summary.ready++; else summary.blocked++; }

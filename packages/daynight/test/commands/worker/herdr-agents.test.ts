@@ -448,6 +448,30 @@ describe("direct task resource management", () => {
     await f.manager.submitPrompt(f.context, binding, "cleanup", operation()); expect(reads).toBe(4); expect(f.prompts).toEqual(["cleanup"]);
   });
 
+  it("can skip input after readiness waits without reporting a submission", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); let reads = 0; let guarded = 0;
+    f.hook(async (method) => method === "agent.read" ? visible(f, binding, ++reads < 3 ? "initializing" : composerScreen) : undefined);
+    const result = await f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => {
+      expect(reads).toBe(3); guarded += 1; return false;
+    });
+    expect(result).toMatchObject({ submission: "skipped", observation: { binding } });
+    expect(guarded).toBe(1); expect(f.prompts).toEqual([]);
+  });
+
+  it("checks a supplied guard immediately before prompt mutation", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); const order: string[] = [];
+    f.hook(async (method) => { order.push(method); return undefined; });
+    const result = await f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => { order.push("guard"); return true; });
+    expect(result.submission).toBe("submitted"); expect(order.slice(-2)).toEqual(["guard", "agent.prompt"]);
+    expect(f.prompts).toEqual(["periodic"]);
+  });
+
+  it("preserves a guard failure as definitely unsent with its original cause", async () => {
+    const f = await fixture(); const binding = await launch(f); f.prompts.splice(0); const failure = new Error("fresh task read failed");
+    await expect(f.manager.submitPrompt(f.context, binding, "periodic", operation(), async () => { throw failure; })).rejects.toMatchObject({ action: "agent.prompt", promptSubmission: "not-submitted", cause: failure });
+    expect(f.prompts).toEqual([]);
+  });
+
   it("preserves input errors and sends nothing when readiness observation expires", async () => {
     const f = await fixture(); const binding = await launch(f); f.prompts.splice(0);
     f.hook(async (method) => method === "agent.read" ? visible(f, binding, "Resuming session…") : undefined);

@@ -50,7 +50,7 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		}
 		if got.ID != original.ID || got.Status != original.Status || got.Version != version || got.CreatedAt != original.CreatedAt || got.UpdatedAt != original.UpdatedAt ||
 			!reflect.DeepEqual(got.StartedAt, original.StartedAt) || !reflect.DeepEqual(got.CompletedAt, original.CompletedAt) || !reflect.DeepEqual(got.RequiredPlatform, original.RequiredPlatform) || got.AllowAgents != original.AllowAgents ||
-			!slices.Equal(got.DependsOn, original.DependsOn) || !slices.Equal(got.ExternalDependsOn, original.ExternalDependsOn) || got.DependsOn == nil || got.ExternalDependsOn == nil {
+			!slices.Equal(got.DependsOn, original.DependsOn) || !slices.Equal(got.ExternalDependsOn, original.ExternalDependsOn) || got.DependsOn == nil || got.ExternalDependsOn == nil || got.Properties == nil || !reflect.DeepEqual(got.Properties, original.Properties) {
 			t.Fatalf("intrinsic task %d: %#v want %#v", index, got, original)
 		}
 	}
@@ -64,10 +64,10 @@ func TestTaskSyncHTTPProjectionWindowAndSafeLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, task := range raw.Tasks {
-		if len(task) != 13 {
+		if len(task) != 14 {
 			t.Fatalf("unexpected summary fields: %#v", task)
 		}
-		for _, field := range []string{"description", "properties", "blockedBy", "ready"} {
+		for _, field := range []string{"description", "blockedBy", "ready"} {
 			if _, exists := task[field]; exists {
 				t.Fatalf("summary exposes %s", field)
 			}
@@ -179,7 +179,7 @@ func TestTaskSyncHTTPFullLimitAndDatabaseError(t *testing.T) {
 func TestTaskSyncDTOUTCAndExactVersion(t *testing.T) {
 	stamp := time.Date(2026, 10, 24, 1, 2, 3, 123456789, time.FixedZone("offset", 8*60*60))
 	got := taskSyncResponse(core.TaskSync{ObservedAt: stamp, Project: core.Project{CreatedAt: stamp, UpdatedAt: stamp}, Tasks: []core.TaskViewRecord{{Version: 9223372036854775807, CreatedAt: stamp, UpdatedAt: stamp, StartedAt: &stamp, CompletedAt: &stamp}}})
-	if got.Tasks[0].Version != "9223372036854775807" || got.ObservedAt.Location() != time.UTC || got.Project.CreatedAt.Location() != time.UTC || got.Tasks[0].CreatedAt.Location() != time.UTC || got.Tasks[0].UpdatedAt.Location() != time.UTC || got.Tasks[0].StartedAt.Location() != time.UTC || got.Tasks[0].CompletedAt.Location() != time.UTC || got.Tasks[0].DependsOn == nil || got.Tasks[0].ExternalDependsOn == nil {
+	if got.Tasks[0].Version != "9223372036854775807" || got.ObservedAt.Location() != time.UTC || got.Project.CreatedAt.Location() != time.UTC || got.Tasks[0].CreatedAt.Location() != time.UTC || got.Tasks[0].UpdatedAt.Location() != time.UTC || got.Tasks[0].StartedAt.Location() != time.UTC || got.Tasks[0].CompletedAt.Location() != time.UTC || got.Tasks[0].DependsOn == nil || got.Tasks[0].ExternalDependsOn == nil || got.Tasks[0].Properties == nil || len(got.Tasks[0].Properties) != 0 {
 		t.Fatalf("DTO conversion: %#v", got)
 	}
 }

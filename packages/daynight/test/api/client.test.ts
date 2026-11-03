@@ -11,7 +11,7 @@ const otherId = "33333333-3333-3333-3333-333333333333";
 const normalId = "44444444-4444-4444-4444-444444444444";
 const time = "2026-10-20T01:02:03.123456789Z";
 const project = { id: projectId, name: "Project", repoUrl: "git@github.com:Org/Repo.git", settings: { version: 1n, executionWarningMinutes: 60 }, createdAt: time, updatedAt: time };
-const task = { id: taskId, projectId, title: "Task", description: "", properties: { worker: null, pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
+const task = { id: taskId, projectId, title: "Task", description: "", properties: { pullRequests: [] }, status: "todo", allowAgents: false, requiredPlatform: null, version: 1n, startedAt: null, completedAt: null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true };
 const refusal = (code = "not_found", details?: unknown) => ({ error: { code, message: "Actual server explanation.", requestId: "req-1", ...(details === undefined ? {} : { details }) } });
 const jsonResponse = (value: unknown, status = 200) => new Response(stringifyApiJson(value), { status, headers: { "Content-Type": "application/json" } });
 const cleanups: (() => void | Promise<void>)[] = [];
@@ -287,11 +287,11 @@ describe("operation-scoped API access", () => {
   it("writes full PR lists unchanged and distinguishes omission from explicit clearing", async () => {
     const properties = { pullRequests: [{ url: "\0 arbitrary text\n", title: "" }, { url: "\0 arbitrary text\n", title: "" }] };
     const fetch = vi.fn<typeof globalThis.fetch>()
-      .mockResolvedValueOnce(jsonResponse({ ...task, properties: { ...properties, worker: null } }, 201))
-      .mockResolvedValueOnce(jsonResponse({ ...task, properties: { ...properties, worker: null } }))
+      .mockResolvedValueOnce(jsonResponse({ ...task, properties: { ...properties } }, 201))
+      .mockResolvedValueOnce(jsonResponse({ ...task, properties: { ...properties } }))
       .mockResolvedValueOnce(jsonResponse(task));
     const api = client(fetch);
-    expect((await api.createTask(projectId, { title: "Task", properties })).properties).toEqual({ ...properties, worker: null });
+    expect((await api.createTask(projectId, { title: "Task", properties })).properties).toEqual({ ...properties });
     await api.updateTask(projectId, taskId, { version: 9_223_372_036_854_775_807n, properties });
     await api.updateTask(projectId, taskId, { version: 1n, properties: { pullRequests: [] } });
     expect(fetch.mock.calls.map((call) => parseApiJson(String(call[1]!.body)))).toEqual([
@@ -334,7 +334,7 @@ describe("operation-scoped API access", () => {
   });
 
   it("returns one bounded ready page without following its valid cursor", async () => {
-    const tasks = [{ ...task, properties: { worker: null, pullRequests: [{ url: "\0 arbitrary URL", title: "Ready\nPR" }] }, version: 9_223_372_036_854_775_807n }, { ...task, id: otherId }];
+    const tasks = [{ ...task, properties: { pullRequests: [{ url: "\0 arbitrary URL", title: "Ready\nPR" }] }, version: 9_223_372_036_854_775_807n }, { ...task, id: otherId }];
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ items: tasks, nextCursor: "next page+/=?" }));
     const result = await client(fetch).listReadyTasks(projectId, 2);
     expect(result).toEqual(tasks);
@@ -795,24 +795,28 @@ describe("response DTO contract", () => {
     await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...value, tasks }))).getTaskGraph(projectId, taskId)).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: false });
   });
 
-  it("projects complete raw PR properties without interpreting their content or future fields", async () => {
-    const pullRequests = [{ url: "", title: "\0\n\u0085\u001b[2J" }, { url: "  任意文本  ", title: "" }, { url: "  任意文本  ", title: "" }];
-    const expected = { ...task, properties: { worker: null, pullRequests } };
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...expected, properties: { worker: null, future: null, pullRequests: pullRequests.map((item) => ({ ...item, metadata: { version: 1.5 } })) } }));
+  it("preserves every property key and raw nested JSON value", async () => {
+    const properties = {
+      pullRequests: [{ url: "", title: "\0\n\u0085\u001b[2J", metadata: { version: 1.5 } }],
+      future: { version: 7, enabled: true, nested: [null, "value"] },
+    };
+    const expected = { ...task, properties };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(expected));
     expect(await client(fetch).getTask(projectId, taskId)).toEqual(expected);
   });
 
-  it.each([
-    undefined, null, [], {}, { pullRequests: null }, { pullRequests: {} },
-    { pullRequests: [null] }, { pullRequests: [[]] }, { pullRequests: [{}] },
-    { pullRequests: [{ url: "" }] }, { pullRequests: [{ title: "" }] },
-    { pullRequests: [{ url: 42, title: "" }] }, { pullRequests: [{ url: "", title: false }] },
-  ])("rejects missing or malformed required properties %#", async (properties) => {
-    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...task, properties: { ...properties, worker: null } }))).getTask(projectId, taskId)).rejects.toMatchObject({ phase: "protocol", cause: expect.any(Error) });
+  it("retains an empty property object without injecting defaults", async () => {
+    const expected = { ...task, properties: {} };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse(expected));
+    expect(await client(fetch).getTask(projectId, taskId)).toEqual(expected);
+  });
+
+  it.each([undefined, null, [], false, "properties"])("rejects a missing or non-object property envelope %#", async (properties) => {
+    await expect(client(vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...task, properties }))).getTask(projectId, taskId)).rejects.toMatchObject({ phase: "protocol", cause: expect.any(Error) });
   });
 
   it("applies response byte budgets to PR content without truncating resources", async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...task, properties: { worker: null, pullRequests: [{ url: "T".repeat(2048), title: "Title" }] } }));
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(jsonResponse({ ...task, properties: { pullRequests: [{ url: "T".repeat(2048), title: "Title" }] } }));
     await expect(client(fetch, operation({ limits: { responseBytes: 1024 } })).getTask(projectId, taskId)).rejects.toMatchObject({ phase: "response", cause: { kind: "response_limit" } });
     expect(fetch).toHaveBeenCalledOnce();
   });

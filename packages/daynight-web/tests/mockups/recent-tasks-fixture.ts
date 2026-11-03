@@ -105,13 +105,13 @@ export const createRecentFixture = () => {
         if (request.signal.aborted) abort();
         else request.signal.addEventListener('abort', abort, { once: true });
       });
-      return taskSyncResponse(graph, { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(url), versionForTask: () => 1n });
+      return taskSyncResponse(graph, { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(url), versionForTask: () => 1n, propertiesForTask: () => ({ pullRequests: [] }) });
     }
     if (match[4] === '/attachments') return wireResponse({ items: [], nextCursor: null }, { headers: viewerHeaders(TEST_VIEWER_ID) });
     const value = graph.tasks.find((item) => item.id === match[3]);
     if (value === undefined) throw new Error('The preview task does not exist.');
     const detail: TaskDetail = { ...value, projectId: graph.project.id, title: value.titlePreview, version: 1n,
-      properties: { pullRequests: [], worker: null }, description: '## Outcome\n\nRead the complete task and its relationships. Recent visibility and pagination do not change Goal membership.' };
+      properties: { pullRequests: [] }, description: '## Outcome\n\nRead the complete task and its relationships. Recent visibility and pagination do not change Goal membership.' };
     return wireResponse(detail, { headers: viewerHeaders(TEST_VIEWER_ID) });
   };
   window.fetch = fixtureFetch;

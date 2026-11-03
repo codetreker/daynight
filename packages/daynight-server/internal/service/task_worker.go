@@ -7,6 +7,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 )
 
 type WorkerDescriptor struct {
@@ -63,7 +64,11 @@ func (s *Tasks) ClaimWorker(ctx context.Context, principal core.Principal, proje
 		if !current.AllowAgents || !core.PlatformCompatible(current.RequiredPlatform, descriptor.Platform) {
 			return taskMutation{}, &Fault{Code: "invalid_transition", Message: "Task does not permit automatic execution on this platform."}
 		}
-		if err := freshWorkerExecution(current.Properties.Worker, descriptor); err != nil {
+		worker, err := taskproperties.Worker(current.Properties)
+		if err != nil {
+			return taskMutation{}, err
+		}
+		if err := freshWorkerExecution(worker, descriptor); err != nil {
 			return taskMutation{}, err
 		}
 		return acquireWorker(ctx, tx, current, principal.UserID, descriptor)
@@ -86,7 +91,10 @@ func (s *Tasks) ResumeWorker(ctx context.Context, principal core.Principal, proj
 		if err := workerReady(current); err != nil {
 			return taskMutation{}, err
 		}
-		worker := current.Properties.Worker
+		worker, err := taskproperties.Worker(current.Properties)
+		if err != nil {
+			return taskMutation{}, err
+		}
 		if worker == nil || worker.State != core.WorkerReleased || worker.ClaimID != previousID {
 			return taskMutation{}, claimConflict()
 		}
@@ -145,7 +153,10 @@ func (s *Tasks) UpdateWorker(ctx context.Context, principal core.Principal, proj
 			return taskMutation{current: current}, nil
 		}
 		values := currentTaskWrite(current)
-		values.Properties.Worker = &next
+		values.Properties, err = taskproperties.WithWorker(values.Properties, &next)
+		if err != nil {
+			return taskMutation{}, err
+		}
 		return taskMutation{id: current.ID, current: current, values: values, changed: true}, nil
 	})
 }
@@ -169,7 +180,11 @@ func (s *Tasks) ReleaseWorker(ctx context.Context, principal core.Principal, pro
 		next := *worker
 		next.State = core.WorkerReleased
 		values := currentTaskWrite(current)
-		values.Status, values.Properties.Worker = core.TaskTodo, &next
+		values.Status = core.TaskTodo
+		values.Properties, err = taskproperties.WithWorker(values.Properties, &next)
+		if err != nil {
+			return taskMutation{}, err
+		}
 		return taskMutation{id: current.ID, current: current, values: values, changed: true}, nil
 	})
 }
@@ -180,7 +195,10 @@ func (s *Tasks) WithdrawWorker(ctx context.Context, principal core.Principal, pr
 		return core.Task{}, err
 	}
 	return s.versionedWrite(ctx, principal, projectID, id, input.Version, func(tx *store.ProjectTx, current core.Task) (taskMutation, error) {
-		worker := current.Properties.Worker
+		worker, err := taskproperties.Worker(current.Properties)
+		if err != nil {
+			return taskMutation{}, err
+		}
 		if worker == nil || worker.ClaimID != claimID || (worker.State != core.WorkerActive && worker.State != core.WorkerReleased) {
 			return taskMutation{}, claimConflict()
 		}
@@ -188,7 +206,11 @@ func (s *Tasks) WithdrawWorker(ctx context.Context, principal core.Principal, pr
 			return taskMutation{}, err
 		}
 		values := currentTaskWrite(current)
-		values.Status, values.AllowAgents, values.Properties.Worker = core.TaskTodo, false, nil
+		values.Status, values.AllowAgents = core.TaskTodo, false
+		values.Properties, err = taskproperties.WithWorker(values.Properties, nil)
+		if err != nil {
+			return taskMutation{}, err
+		}
 		return taskMutation{id: current.ID, current: current, values: values, changed: true}, nil
 	})
 }
@@ -221,7 +243,11 @@ func workerReady(current core.Task) error {
 	if len(current.BlockedBy) > 0 {
 		return &Fault{Code: "dependency_unsatisfied", Message: "Task prerequisites must be done.", TaskIDs: current.BlockedBy}
 	}
-	if current.Properties.Worker != nil && current.Properties.Worker.State == core.WorkerActive {
+	worker, err := taskproperties.Worker(current.Properties)
+	if err != nil {
+		return err
+	}
+	if worker != nil && worker.State == core.WorkerActive {
 		return claimConflict()
 	}
 	return nil
@@ -247,12 +273,18 @@ func acquireWorker(ctx context.Context, tx *store.ProjectTx, current core.Task, 
 	}
 	values := currentTaskWrite(current)
 	values.Status = core.TaskInProgress
-	values.Properties.Worker = &core.WorkerClaim{ClaimID: descriptor.ClaimID, State: core.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: core.WorkerPreparing, ClaimedAt: claimedAt}
+	values.Properties, err = taskproperties.WithWorker(values.Properties, &core.WorkerClaim{ClaimID: descriptor.ClaimID, State: core.WorkerActive, UserID: userID, WorkerID: descriptor.WorkerID, Machine: descriptor.Machine, Platform: descriptor.Platform, Agent: descriptor.Agent, AgentControlMode: descriptor.AgentControlMode, WorktreeID: descriptor.WorktreeID, Phase: core.WorkerPreparing, ClaimedAt: claimedAt})
+	if err != nil {
+		return taskMutation{}, err
+	}
 	return taskMutation{id: current.ID, current: current, values: values, changed: true}, nil
 }
 
 func activeWorker(current core.Task, claimID string) (*core.WorkerClaim, error) {
-	worker := current.Properties.Worker
+	worker, err := taskproperties.Worker(current.Properties)
+	if err != nil {
+		return nil, err
+	}
 	if worker == nil || worker.State != core.WorkerActive || worker.ClaimID != claimID || current.Status != core.TaskInProgress {
 		return nil, claimConflict()
 	}
@@ -275,5 +307,5 @@ func requireWorkerOperator(ctx context.Context, tx *store.ProjectTx, principal c
 }
 
 func currentTaskWrite(current core.Task) store.TaskWrite {
-	return store.TaskWrite{RequiredPlatform: current.RequiredPlatform, AllowAgents: current.AllowAgents, Title: current.Title, Description: current.Description, Properties: current.Properties, Status: current.Status, DependsOn: current.DependsOn, ExternalDependsOn: current.ExternalDependsOn}
+	return store.TaskWrite{RequiredPlatform: current.RequiredPlatform, AllowAgents: current.AllowAgents, Title: current.Title, Description: current.Description, Properties: taskproperties.Clone(current.Properties), Status: current.Status, DependsOn: current.DependsOn, ExternalDependsOn: current.ExternalDependsOn}
 }

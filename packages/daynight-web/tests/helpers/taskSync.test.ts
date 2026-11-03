@@ -51,3 +51,33 @@ describe('task-sync test fixtures', () => {
     expect(fixture.toSync(graph).epoch).not.toBe(first.epoch);
   });
 });
+
+it('takes complete properties from the explicit detail source while leaving graph rows compact', async () => {
+  const detail = detailFixture(projectId, taskId, {
+    properties: { pullRequests: [], future: { version: 42, nested: [null, { enabled: true }] } },
+  });
+  const graph = graphFixture([detail]);
+  const response = taskSyncResponse(graph, {
+    viewerId: TEST_VIEWER_ID, versionForTask: () => detail.version, propertiesForTask: () => detail.properties,
+  });
+  const wire = JSON.parse(await response.text()) as { tasks: { properties: unknown }[] };
+  expect(wire.tasks[0]!.properties).toEqual(detail.properties);
+  expect(graph.tasks[0]).not.toHaveProperty('properties');
+  expect(taskSyncFixture(graph, { versionForTask: () => 1n }).tasks[0]!.properties).toEqual({});
+});
+
+it('tracks complete property replacement and deletion in simulated task versions', () => {
+  let properties = detailFixture(projectId, taskId).properties;
+  const graph = graphFixture([detailFixture(projectId, taskId)]);
+  const fixture = createGraphSyncFixture({ propertiesForTask: () => properties });
+  const first = fixture.toSync(graph);
+  properties = { pullRequests: [{ url: 'https://example.test/pr', title: 'A PR' }] };
+  const changed = fixture.toSync(graph);
+  properties = {};
+  const removed = fixture.toSync(graph);
+  const repeated = fixture.toSync(graph);
+  expect(first.tasks[0]).toMatchObject({ version: 1n, properties: { pullRequests: [] } });
+  expect(changed.tasks[0]).toMatchObject({ version: 2n, properties: { pullRequests: [{ title: 'A PR' }] } });
+  expect(removed.tasks[0]).toMatchObject({ version: 3n, properties: {} });
+  expect(repeated.tasks[0]).toEqual(removed.tasks[0]);
+});

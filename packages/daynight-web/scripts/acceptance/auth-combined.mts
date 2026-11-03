@@ -501,8 +501,8 @@ export const runAuthCombined = async (options: AuthCombinedOptions): Promise<Aut
     const bobCli = await cli(originalToken.token, 'original-cli');
     const tokenApi = await tokenContext(playwrightRequest, origin, originalToken.token);
     tokenClients.push(tokenApi);
-    await cliSuccess(bobCli, ['task', 'update', task.id, '--project', shared.id, '--if-version', task.version.toString(),
-      '--pull-request-url', 'https://example.test/combined/pull/1', '--pull-request-title', 'Combined property retained']);
+    await cliSuccess(bobCli, ['task', 'set-property', task.id, 'pullRequests', JSON.stringify([{ url: 'https://example.test/combined/pull/1', title: 'Combined property retained' }]),
+      '--project', shared.id, '--if-version', task.version.toString()]);
     const snapshot = await request<Task>(bob, origin, 'GET', `/api/v1/projects/${shared.id}/tasks/${task.id}`, 200);
     check(snapshot.version === task.version + 1n && snapshot.properties.pullRequests[0]?.title === 'Combined property retained', 'CLI property write differs from the browser API resource.');
     const binary = Buffer.from(Array.from({ length: 65_536 }, (_unused, index) => index % 256));

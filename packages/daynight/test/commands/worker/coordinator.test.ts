@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../../src/api/task-properties.js";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,7 +13,7 @@ import type { Operation } from "../../../src/api/operation.js";
 import { workerTelemetry } from "../../fixtures/worker-telemetry.js";
 import { openWorkerStore } from "../../../src/commands/worker/store.js";
 import type { WorkerEvent, WorkerGitManager } from "../../../src/commands/worker/execution.js";
-import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
+import type { HerdrAgentObservation, HerdrAgentStartInput, HerdrExecutionContext, HerdrOwnedWorkspace, HerdrPromptGuard, HerdrPromptResult, HerdrTaskBinding, WorkerHerdrAdapter } from "../../../src/commands/worker/herdr.js";
 import type { ManagedAssignment } from "../../../src/commands/worker/prompts.js";
 import type { WorkerRemote } from "../../../src/commands/worker/remote.js";
 import type { Task, WorkerClaimDescriptor } from "../../../src/api/types.js";
@@ -25,7 +26,7 @@ const configuration: ExecutionConfiguration = { agent: "codex", model: "current-
 const directories: string[] = [];
 const stores: ReturnType<typeof openWorkerStore>[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const store of stores.splice(0)) store.close(); await Promise.all(directories.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
-const task = (projectId: string, id: string): Task => ({ id, projectId, title: id, description: "task", status: "todo", allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, version: 1n, properties: { worker: null, pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
+const task = (projectId: string, id: string): Task => ({ id, projectId, title: id, description: "task", status: "todo", allowAgents: true, requiredPlatform: null, startedAt: null, completedAt: null, version: 1n, properties: { pullRequests: [] }, createdAt: "2026-10-27T00:00:00Z", updatedAt: "2026-10-27T00:00:00Z", dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true });
 const eventually = (check: () => void) => vi.waitFor(check, { timeout: 3500, interval: 10 });
 const fixture = async (maxConcurrent = 1) => {
   const base = path.resolve("../../.tmp/minimal-coordinator-tests"); await mkdir(base, { recursive: true });
@@ -73,9 +74,11 @@ const fixture = async (maxConcurrent = 1) => {
       pane.status = "working"; pane.stateChangeSeq = 2;
       return observe(context, binding);
     }),
-    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string) => {
-      order.push("notify"); const pane = resources.get(context.claimId)!.panes[0]!;
+    submitPrompt: vi.fn(async (context: HerdrExecutionContext, binding: HerdrTaskBinding, prompt: string, operation: Operation, beforeSubmit?: HerdrPromptGuard): Promise<HerdrPromptResult> => {
+      const pane = resources.get(context.claimId)!.panes[0]!;
       const before = observe(context, binding);
+      if (beforeSubmit !== undefined && !await beforeSubmit(operation)) return { submission: "skipped", observation: before };
+      order.push("notify");
       pane.interactiveReady = true; pane.stateChangeSeq! += 1;
       if (prompt.startsWith("The controller is stopping this execution")) { pane.status = "idle"; pane.completionSeq! += 1; }
       else pane.status = "working";
@@ -94,7 +97,7 @@ const fixture = async (maxConcurrent = 1) => {
     candidates: vi.fn(async function* (projectId: string) { for (const candidate of candidates) if (candidate.projectId === projectId && ![...grants.values()].some((value) => value.id === candidate.id)) yield candidate; }),
     claim: vi.fn(async (candidate: Task, descriptor: WorkerClaimDescriptor) => grant(candidate, descriptor)),
     readTask: vi.fn(async (_projectId: string, taskId: string) => { const result = [...grants.values()].find((value) => value.id === taskId); if (result === undefined) throw new Error("missing task"); return result; }),
-    update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...current.properties.worker!, ...update } } }; grants.set(current.properties.worker!.claimId, result); return result; }),
+    update: vi.fn(async (current: Task, update: object) => { const result = { ...current, properties: { ...current.properties, worker: { ...readWorkerClaim(current.properties)!, ...update } } }; grants.set(readWorkerClaim(current.properties)!.claimId, result); return result; }),
   } as unknown as WorkerRemote;
   const options = { store, git, herdr, remote, serverOrigin: origin, workerId, platform: "linux" as const, machine: { id: uuid(3), name: "fixture" }, repositories: [{ project, configuration }], globalConfiguration: configuration, maxConcurrent, buildPrompt: vi.fn((_assignment: ManagedAssignment) => "worker-managed using-daynight autopilot-managed-task"), emit: (event: WorkerEvent) => events.push(event), now: () => clock };
   const reopenStore = () => {
@@ -386,8 +389,9 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.events.some((event) => event.kind === "warning")).toBe(false);
   });
 
-  it("cleans an ended claim in stop/close/delete order and retains history", async () => {
-    const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
+  it.each([false, true])("cleans an ended claim in stop/close/delete order and retains history when paused=%s", async (paused) => {
+    const f = await fixture(); f.candidates[0] = { ...f.candidates[0]!, properties: { ...f.candidates[0]!.properties, paused } };
+    await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const old = f.store.listTasks()[0]!; f.grants.clear(); f.candidates.splice(0);
     await f.coordinator.tick(); await eventually(() => expect(f.store.getTask(old)?.status).toBe("done"));
     expect(f.order.slice(-3)).toEqual(["notify", "stop-close", "remove-worktree"]);
@@ -669,6 +673,31 @@ describe("minimal worker resource reconciliation", () => {
     expect(f.tasks.start).toHaveBeenCalledOnce();
   });
 
+  it("uses fresh pause state despite stale inventory and preserves a zero recovery budget", async () => {
+    const f = await fixture();
+    const limited = { ...configuration, recoveryLimit: 0 };
+    const coordinator = createWorkerCoordinator({ ...f.options, globalConfiguration: limited, repositories: [{ project: f.project, configuration: limited }] });
+    await coordinator.tick();
+    await eventually(() => expect(f.remote.update).toHaveBeenCalledOnce());
+    const stale = [...f.grants.values()];
+    let current: Task = { ...stale[0]!, properties: { ...stale[0]!.properties, paused: true } };
+    vi.mocked(f.remote.ownInventory).mockResolvedValue(stale);
+    vi.mocked(f.remote.readTask).mockImplementation(async () => current);
+    const pane = [...f.resources.values()][0]!.panes[0]!;
+    pane.status = "idle"; pane.stateChangeSeq = 3; pane.completionSeq = 1;
+
+    for (let patrol = 1; patrol <= 3; patrol++) {
+      await eventually(async () => { await coordinator.tick(); expect(f.remote.readTask).toHaveBeenCalledTimes(patrol); });
+    }
+    expect(f.order.filter((entry) => entry === "notify")).toEqual([]);
+    expect(f.events.some((event) => event.kind === "execution-error")).toBe(false);
+    expect(f.tasks.start).toHaveBeenCalledOnce(); expect(f.git.removeWorktree).not.toHaveBeenCalled();
+    current = { ...current, properties: Object.fromEntries(Object.entries(current.properties).filter(([name]) => name !== "paused")) };
+    await eventually(async () => { await coordinator.tick(); expect(f.order.filter((entry) => entry === "notify")).toHaveLength(1); });
+    expect(f.tasks.submitPrompt.mock.calls.at(-1)![2]).toContain("worker's periodic check");
+    expect(f.tasks.start).toHaveBeenCalledOnce();
+  });
+
   it("resets cleanup timing with a new in-memory driver", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const owner = f.worktrees.get(row.claimId)!.owner;
@@ -834,18 +863,18 @@ describe("minimal worker resource reconciliation", () => {
   it("retries using the exact validated original claim observation", async () => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const original = f.grants.get(row.claimId)!; f.resources.clear();
-    const replacement: Task = { ...original, properties: { ...original.properties, worker: { ...original.properties.worker!, claimId: uuid(950), workerId: uuid(951), worktreeId: uuid(952) } } };
+    const replacement: Task = { ...original, properties: { ...original.properties, worker: { ...readWorkerClaim(original.properties)!, claimId: uuid(950), workerId: uuid(951), worktreeId: uuid(952) } } };
     vi.mocked(f.remote.readTask).mockResolvedValueOnce(original).mockResolvedValueOnce(replacement);
     await f.coordinator.advanceRetry(row);
     expect(f.remote.readTask).toHaveBeenCalledOnce();
     expect(f.tasks.start.mock.calls.at(-1)![0].claimId).toBe(row.claimId);
-    expect(f.tasks.start.mock.calls.at(-1)![0].worktreeId).toBe(original.properties.worker!.worktreeId);
+    expect(f.tasks.start.mock.calls.at(-1)![0].worktreeId).toBe(readWorkerClaim(original.properties)!.worktreeId);
   });
 
   it.each(["claim", "worker"])("rejects a retry after the original %s identity changes", async (field) => {
     const f = await fixture(); await f.coordinator.tick(); await eventually(() => expect(f.store.listTasks()[0]?.sessionId).not.toBeNull());
     const row = f.store.listTasks()[0]!; const original = f.grants.get(row.claimId)!;
-    const worker = { ...original.properties.worker!, ...(field === "claim" ? { claimId: uuid(950) } : { workerId: uuid(951) }) };
+    const worker = { ...readWorkerClaim(original.properties)!, ...(field === "claim" ? { claimId: uuid(950) } : { workerId: uuid(951) }) };
     vi.mocked(f.remote.readTask).mockResolvedValue({ ...original, properties: { ...original.properties, worker } });
     await expect(f.coordinator.advanceRetry(row)).rejects.toThrow("no longer active on this worker");
     expect(f.tasks.start).toHaveBeenCalledOnce();
@@ -954,7 +983,7 @@ describe("minimal worker resource reconciliation", () => {
     await eventually(() => expect(f.store.listTasks()[0]?.sessionId).toEqual(expect.any(String)));
     const row = f.store.listTasks()[0]!;
     const original = f.grants.get(row.claimId)!;
-    const withdrawn: Task = { ...original, status: "todo", allowAgents: false, startedAt: null, completedAt: null, version: original.version + 1n, properties: { ...original.properties, worker: null } };
+    const withdrawn: Task = { ...original, status: "todo", allowAgents: false, startedAt: null, completedAt: null, version: original.version + 1n, properties: Object.fromEntries(Object.entries(original.properties).filter(([name]) => name !== "worker")) };
     f.grants.clear(); f.candidates.splice(0);
     vi.mocked(f.remote.readTask).mockResolvedValue(withdrawn);
     await f.coordinator.tick();

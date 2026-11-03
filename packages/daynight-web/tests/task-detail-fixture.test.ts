@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { readWorkerClaim } from '../src/api/task-properties';
 import { parseApiJson } from '../src/api/json';
 import { listMembers } from '../src/api/auth';
 import { withdrawWorkerClaim } from '../src/api/client';
@@ -18,8 +19,8 @@ describe('full-detail production component fixture', () => {
       expect(members[0]?.version).toBe(1n);
       const url = `/api/v1/projects/${detailProjectId}/tasks/${detailTaskId}`;
       const initial = parseApiJson(await (await window.fetch(url)).text()) as TaskDetail;
-      const withdrawn = await withdrawWorkerClaim(detailProjectId, detailTaskId, initial.properties.worker!.claimId, initial.version, signal, admission);
-      expect(withdrawn).toMatchObject({ status: 'todo', allowAgents: false, startedAt: null, completedAt: null, properties: { worker: null, pullRequests: initial.properties.pullRequests } });
+      const withdrawn = await withdrawWorkerClaim(detailProjectId, detailTaskId, readWorkerClaim(initial.properties)!.claimId, initial.version, signal, admission);
+      expect(withdrawn).toMatchObject({ status: 'todo', allowAgents: false, startedAt: null, completedAt: null, properties: { pullRequests: initial.properties.pullRequests } });
     } finally { fixture.dispose(); }
   });
 

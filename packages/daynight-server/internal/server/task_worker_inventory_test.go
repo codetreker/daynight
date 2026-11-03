@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
@@ -17,14 +18,27 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 	project := taskProject(t, handler)
 	workerID := uuid.NewString()
 	var want []string
-	for _, selected := range []bool{false, false, true, false, true} {
-		task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Inventory task"), map[string]any{"allowAgents": true})
+	paused := map[string]string{}
+	for _, fixture := range []struct {
+		selected bool
+		paused   string
+	}{{}, {}, {true, "true"}, {}, {true, "false"}, {selected: true}} {
+		input := map[string]any{"allowAgents": true}
+		if fixture.paused != "" {
+			input["properties"] = api.TaskWritableProperties{"paused": json.RawMessage(fixture.paused)}
+		}
+		task := updateHTTPTask(t, handler, createHTTPTask(t, handler, project.ID, "Inventory task"), input)
 		body := workerClaimBody(task.Version)
-		if selected {
+		if fixture.selected {
 			body["workerId"] = workerID
-			want = append(want, task.ID)
 		}
 		claimHTTPWorker(t, handler, task, body)
+		if fixture.selected {
+			if fixture.paused != "" {
+				paused[task.ID] = fixture.paused
+			}
+			want = append(want, task.ID)
+		}
 	}
 	collection := taskCollection(project.ID)
 	query := "?limit=1&workerId=" + strings.ToUpper(workerID)
@@ -37,8 +51,14 @@ func TestTaskHTTPWorkerInventoryFiltersAndCursor(t *testing.T) {
 		}
 		response := projectRequest(handler, http.MethodGet, path, "")
 		page := decodeResponse[api.TaskPage](t, response, http.StatusOK)
-		if response.Header().Get("Cache-Control") != "no-store" || len(page.Items) != 1 || page.Items[0].Properties.Worker == nil || page.Items[0].Properties.Worker.WorkerID != workerID || page.Items[0].Properties.Worker.State != "active" {
+		if response.Header().Get("Cache-Control") != "no-store" || len(page.Items) != 1 || apiWorker(t, page.Items[0].Properties) == nil || apiWorker(t, page.Items[0].Properties).WorkerID != workerID || apiWorker(t, page.Items[0].Properties).State != "active" {
 			t.Fatalf("wrong inventory page: %s", response.Body)
+		}
+		item := page.Items[0]
+		value, exists := item.Properties["paused"]
+		wantValue, wantExists := paused[item.ID]
+		if exists != wantExists || string(value) != wantValue {
+			t.Fatalf("inventory changed paused property presence or value: %#v", item.Properties)
 		}
 		ids = append(ids, page.Items[0].ID)
 		if page.NextCursor == nil {

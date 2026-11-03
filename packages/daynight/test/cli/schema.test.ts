@@ -236,4 +236,44 @@ describe("shared command syntax", () => {
     expect(parseCommand(taskDefinition, ["create", "--help"]).kind).toBe("help");
     expect(parseCommand(taskDefinition, []).kind).toBe("help");
   });
+
+  it("supports trailing optional arguments and renders their optionality", () => {
+    const definition: CommandDefinition = { name: "inspect", description: "Inspect", arguments: [{ name: "first", description: "Required" }, { name: "second", description: "Optional", optional: true }, { name: "third", description: "Optional", optional: true }] };
+    for (const values of [["one"], ["one", "two"], ["one", "two", "three"]]) expect(parseCommand(definition, values)).toMatchObject({ kind: "run", values });
+    expect(() => parseCommand(definition, [])).toThrow("requires a first value");
+    expect(() => parseCommand(definition, ["one", "two", "three", "four"])).toThrow("Unexpected");
+    expect(renderCommandHelp(definition)).toContain("Usage: inspect <first> [<second>] [<third>]");
+  });
+
+  it("rejects a required argument after an optional argument in the definition", () => {
+    const definition: CommandDefinition = { name: "invalid", description: "", arguments: [{ name: "optional", description: "", optional: true }, { name: "required", description: "" }] };
+    expect(() => parseCommand(definition, ["one", "two"])).toThrow("required argument after an optional argument");
+    expect(() => renderCommandHelp(definition)).toThrow("required argument after an optional argument");
+  });
+
+  it("declares the two properties modes without making the task ID always required", () => {
+    expect(parseCommand(taskDefinition, ["properties", "--schema"])).toMatchObject({ kind: "run", values: [] });
+    expect(parseCommand(taskDefinition, ["properties", "task-id"])).toMatchObject({ kind: "run", values: ["task-id"] });
+    const definition = taskDefinition.commands!.find(({ name }) => name === "properties")!;
+    expect(renderCommandHelp(definition, ["daynight", "task", "properties"])).toContain("Usage: daynight task properties [<task-id>]");
+  });
+
+  it.each(["", "  ", "\n", '"hello"', '{"number":1e3}'])("preserves explicitly allowed empty or raw property text: %j", (value) => {
+    expect(parseCommand(taskDefinition, ["set-property", "task-id", "future", value])).toMatchObject({ kind: "run", values: ["task-id", "future", value] });
+  });
+
+  it.each(["-123", "-text", "--help"])("passes terminated property values without interpreting them: %j", (value) => {
+    expect(parseCommand(taskDefinition, ["set-property", "--if-version", "42", "task-id", "future", "--", value])).toMatchObject({ kind: "run", values: ["task-id", "future", value] });
+  });
+
+  it.each([
+    ["set-property", "task-id", "future"], ["set-property", "task-id", "", "value"],
+    ["remove-property", "task-id"], ["remove-property", "task-id", ""],
+    ["create", "--title", "Title", "--pull-request-url", "url"],
+    ["create", "--title", "Title", "--pull-request-title", "title"],
+    ["update", "task-id", "--clear-pull-requests"],
+  ])("rejects missing generic property arguments and removed PR flags: %j", (...args) => {
+    expect(() => parseCommand(taskDefinition, args)).toThrow(UsageError);
+  });
+
 });

@@ -12,6 +12,7 @@ import (
 
 	"github.com/codetreker/daynight/packages/daynight-server/internal/core/store"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
+	"github.com/codetreker/daynight/packages/daynight-server/internal/taskproperties"
 	uniauth "github.com/codetreker/uniauth/sdk/go"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -73,6 +74,10 @@ func ErrorKind(err error) string {
 }
 
 func knownFault(err error) (*service.Fault, bool) {
+	var validation *taskproperties.ValidationError
+	if errors.As(err, &validation) && onlyPropertyValidation(err) {
+		return &service.Fault{Code: "invalid_input", Message: validation.Error(), Cause: err}, true
+	}
 	var fault *service.Fault
 	if errors.As(err, &fault) {
 		switch fault.Code {
@@ -81,6 +86,28 @@ func knownFault(err error) (*service.Fault, bool) {
 		}
 	}
 	return nil, false
+}
+
+func onlyPropertyValidation(err error) bool {
+	if _, ok := err.(*taskproperties.ValidationError); ok {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		children := joined.Unwrap()
+		if len(children) == 0 {
+			return false
+		}
+		for _, child := range children {
+			if !onlyPropertyValidation(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped := errors.Unwrap(err); wrapped != nil {
+		return onlyPropertyValidation(wrapped)
+	}
+	return false
 }
 
 func LogFailure(logger *slog.Logger, ctx context.Context, component, phase string, err error) {

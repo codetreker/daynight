@@ -126,8 +126,9 @@ export const verifyPublicExternalDependencyWrites = async (page: Page, api: Auth
     let consumer = await create('由 CLI 声明混合依赖的任务', [
       '--description', '公开创建和分类更新应保留任务状态、执行时间与关联资料。',
       '--depends-on', ordinary.id, '--external-depends-on', external.id,
-      '--pull-request-url', 'https://example.com/pull/42', '--pull-request-title', 'Preserved public dependency contract',
     ]);
+    await success(['task', 'set-property', consumer.id, 'pullRequests', JSON.stringify([{ url: 'https://example.com/pull/42', title: 'Preserved public dependency contract' }]), '--project', project.id, '--if-version', String(consumer.version)]);
+    consumer = await cliRead(consumer.id, 'cli-property-assigned');
     expect(consumer.dependsOn).toEqual([ordinary.id, external.id].sort()); expect(consumer.externalDependsOn).toEqual([external.id]);
     expect(consumer.status).toBe('todo'); expect(consumer.startedAt).toBeNull(); expect(consumer.completedAt).toBeNull();
     const listed = JSON.parse(await success(['task', 'list', '--project', project.id, '--all', '--json'])) as { id: string; externalDependsOn: string[]; description?: string }[];

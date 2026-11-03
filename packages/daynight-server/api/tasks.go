@@ -1,23 +1,36 @@
 package api
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type PullRequestProperty struct {
 	URL   string `json:"url"`
 	Title string `json:"title"`
 }
 
-type TaskProperties struct {
-	PullRequests []PullRequestProperty `json:"pullRequests"`
-	Worker       *WorkerClaim          `json:"worker"`
+type TaskProperties = map[string]json.RawMessage
+
+type TaskWritableProperties = TaskProperties
+
+type TaskPropertiesPatch = TaskProperties
+
+type PropertyResource struct {
+	ProjectID  string         `json:"projectId"`
+	TaskID     string         `json:"taskId"`
+	Version    int64          `json:"version"`
+	Properties TaskProperties `json:"properties"`
 }
 
-type TaskWritableProperties struct {
-	PullRequests []PullRequestProperty `json:"pullRequests"`
+type TaskPropertyDefinition struct {
+	Description string          `json:"description"`
+	ReadOnly    bool            `json:"readOnly"`
+	Schema      json.RawMessage `json:"schema"`
 }
 
-type TaskPropertiesPatch struct {
-	PullRequests *[]PullRequestProperty `json:"pullRequests,omitempty"`
+type TaskPropertySchema struct {
+	Properties map[string]TaskPropertyDefinition `json:"properties"`
 }
 
 type CreateTaskRequest struct {

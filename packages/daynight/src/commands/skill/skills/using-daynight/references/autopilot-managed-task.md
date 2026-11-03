@@ -66,15 +66,27 @@ Inspect new results and handle failures, feedback, and conflicts; ordinary waits
 ## Request user interaction
 
 Request user intervention when a goal, architecture, execution plan, or acceptance criteria necessary to complete the task are missing, when a problem is not covered by the design, or when another blocker arises.
-Do not invent missing decisions or treat the problem as completion.
+Do not invent missing decisions or treat the problem as completion. Ordinary CI and review waits remain [ongoing execution](#ongoing-waits); a polling timeout does not require human intervention.
 
-1. Record the specific issue on the current task: `set-property <task-id> worker.signaling "<reason>"`.
-2. Also print the issue to the terminal, preserve the [waiting context](task-execution.md#waiting-context), exit the execution loop, and wait for the user to address it; keep the task `in_progress` and do not select other work.
-3. After receiving feedback, verify the original assignment and confirm that the problem is solved, then clear the signal with `remove-property <task-id> worker.signaling`.
-4. Confirm the removal before resuming automatic execution of the current task. If the problem remains unresolved, retain the signal and keep waiting.
+Before waiting for human intervention, read the complete task and verify the original active claim, worker and worktree. Use the exact version from that decision to pause your own assigned task:
 
-Signal writes and removal also follow [write safety](write-safety.md).
-Recording a signal does not complete the task; do not resume blocked operations until the problem is solved.
+```bash
+daynight task set-property <task-id> paused true --project <project-id> --if-version <observed-version>
+```
+
+Read back the task to confirm `properties.paused=true` and the same original assignment. Print the specific issue to the terminal, preserve the [waiting context](task-execution.md#waiting-context), exit the execution loop, and wait for the user to address it.
+Keep the task `in_progress` and do not select other work. The user chooses how to intervene, including attaching to the existing session; do not require a particular response channel.
+
+After receiving feedback, reread the task and verify the original assignment, that the problem is solved, and that existing authorization permits resuming. Honor any independent user pause, restriction or revocation. If the problem remains unresolved, keep `paused=true` and keep waiting.
+When resuming is permitted, clear a true pause using the newly observed version:
+
+```bash
+daynight task set-property <task-id> paused false --project <project-id> --if-version <observed-version>
+```
+
+Read back the same assignment and confirm that `paused` is false or absent before continuing the original task. If the user has already cleared the pause, verify that actual state rather than writing it again.
+
+Pause writes and readback follow [write safety](write-safety.md). On a failed or unconfirmed write, report the actual failure, preserve waiting context and reconcile before another mutation; do not claim a confirmed pause or resume blocked work. A changed claim stops task-related writes.
 
 ## Complete the original claim
 

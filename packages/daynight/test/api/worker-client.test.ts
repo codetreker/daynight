@@ -16,11 +16,11 @@ const newWorktreeId = "99999999-9999-9999-9999-999999999999";
 const time = "2026-10-24T12:34:56.123456789Z";
 const descriptor = { claimId, workerId, machine: { id: machineId, name: "Build machine" }, platform: "linux", agent: "codex", worktreeId } as const;
 const claim = (state: WorkerState = "active"): WorkerClaim => ({ ...descriptor, agentControlMode: "herdr", userId, state, phase: "preparing", herdr: null, nativeSessionId: null, claimedAt: time });
-const task = (worker: WorkerClaim | null, version = 2n): Task => ({
-  id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], worker },
+const task = (worker: WorkerClaim | undefined, version = 2n): Task => ({
+  id: taskId, projectId, title: "Claimed task", description: "", properties: { pullRequests: [{ url: "opaque\0url", title: "PR" }], ...(worker === undefined ? {} : { worker }) },
   status: worker?.state === "active" ? "in_progress" : worker?.state === "completed" ? "done" : "todo",
   allowAgents: true, requiredPlatform: null, version, startedAt: worker?.state === "active" ? time : null,
-  completedAt: worker?.state === "completed" ? time : null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === null || worker.state === "released",
+  completedAt: worker?.state === "completed" ? time : null, createdAt: time, updatedAt: time, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: worker === undefined || worker.state === "released",
 });
 const cleanups: (() => void | Promise<void>)[] = [];
 const api = (serverUrl: string): ApiClient => {
@@ -54,13 +54,11 @@ afterEach(async () => {
 });
 
 describe("worker protocol negotiation", () => {
-  it("advertises the extended schema while accepting legacy Herdr read and claim responses", async () => {
+  it("advertises the extended schema for current Herdr read and claim responses", async () => {
     const headers: (string | string[] | undefined)[] = [];
-    const legacyWorker = { ...claim() };
-    delete (legacyWorker as { agentControlMode?: string }).agentControlMode;
     const origin = await listen((request, response) => {
       headers.push(request.headers["daynight-worker-protocol"]);
-      respond(response, task(legacyWorker));
+      respond(response, task(claim()));
     });
     const client = api(origin);
     await expect(client.getTask(projectId, taskId)).resolves.toMatchObject({ properties: { worker: { agentControlMode: "herdr" } } });
@@ -73,7 +71,7 @@ describe("in-process worker task API", () => {
   it("sends exact version-bound worker actions and accepts their 200 responses", async () => {
     const requests: { method: string; path: string; body: unknown }[] = [];
     const max = 9_223_372_036_854_775_807n;
-    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(claim("released")), { ...task(null), allowAgents: false }, task({ ...claim(), claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot" })];
+    const responses = [task(claim(), max), task({ ...claim(), phase: "executing", herdr: { session: "w", workspaceId: "ws", paneId: "p" }, nativeSessionId: "native" }), task(claim("completed")), task(claim("released")), { ...task(undefined), allowAgents: false }, task({ ...claim(), claimId: newClaimId, worktreeId: newWorktreeId, agent: "copilot" })];
     const origin = await listen((request, response, body) => {
       requests.push({ method: request.method!, path: request.url!, body });
       const result = responses.shift();
@@ -117,7 +115,7 @@ describe("in-process worker task API", () => {
     const upper = { ...descriptor, claimId: lower.claimId.toUpperCase(), workerId: lower.workerId.toUpperCase(), machine: { ...lower.machine, id: lower.machine.id.toUpperCase() }, worktreeId: lower.worktreeId.toUpperCase() };
     const replacementId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
     const active = { ...claim(), ...lower };
-    const responses = [task(active), task(active), task({ ...active, state: "completed" }), task({ ...active, state: "released" }), { ...task(null), allowAgents: false }, task({ ...active, claimId: replacementId })];
+    const responses = [task(active), task(active), task({ ...active, state: "completed" }), task({ ...active, state: "released" }), { ...task(undefined), allowAgents: false }, task({ ...active, claimId: replacementId })];
     const origin = await listen((_request, response) => respond(response, responses.shift()));
     const client = api(origin);
     await expect(client.claimWorkerTask(projectId, taskId, { ...upper, version: 1n })).resolves.toHaveProperty("properties.worker.claimId", lower.claimId);
@@ -129,7 +127,7 @@ describe("in-process worker task API", () => {
   });
 
   it.each([
-    { properties: { ...task(null).properties, worker: claim() } },
+    { properties: { ...task(undefined).properties, worker: claim() } },
     { status: "in_progress" },
     { allowAgents: true },
     { startedAt: time },
@@ -140,7 +138,7 @@ describe("in-process worker task API", () => {
     let requests = 0;
     const origin = await listen((_request, response) => {
       requests++;
-      respond(response, { ...task(null), allowAgents: false, ...change });
+      respond(response, { ...task(undefined), allowAgents: false, ...change });
     });
     await expect(api(origin).withdrawWorkerClaim(projectId, taskId, { version: 1n, claimId })).rejects.toMatchObject({ phase: "protocol", outcomeUnconfirmed: true });
     expect(requests).toBe(1);
@@ -189,7 +187,7 @@ describe("in-process worker task API", () => {
     const urls: URL[] = [];
     const availableId = "99999999-9999-9999-9999-999999999999";
     const released = task(claim("released"));
-    const available = { ...task(null), id: availableId };
+    const available = { ...task(undefined), id: availableId };
     const origin = await listen((request, response) => {
       const url = new URL(request.url!, "http://localhost");
       urls.push(url);
@@ -239,7 +237,7 @@ describe("in-process worker task API", () => {
   });
 
   it.each([
-    { name: "no claim", value: task(null) },
+    { name: "no claim", value: task(undefined) },
     { name: "released claim", value: task(claim("released")) },
     { name: "completed claim", value: task(claim("completed")) },
     { name: "another worker", value: task({ ...claim(), workerId: newClaimId }) },
@@ -306,7 +304,7 @@ describe("in-process worker task API", () => {
   });
 
   it("rejects a page larger than its requested bound", async () => {
-    const origin = await listen((_request, response) => respond(response, { items: [task(null), { ...task(null), id: newClaimId }], nextCursor: null }));
+    const origin = await listen((_request, response) => respond(response, { items: [task(undefined), { ...task(undefined), id: newClaimId }], nextCursor: null }));
     await expect(api(origin).listTaskPage(projectId, { limit: 1 })).rejects.toMatchObject({ phase: "protocol" });
   });
 
@@ -321,16 +319,19 @@ describe("in-process worker task API", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("rejects protected properties on ordinary mutation inputs before dispatch", () => {
-    const fetch = vi.fn<typeof globalThis.fetch>();
-    const operation = createOperation();
-    cleanups.push(() => operation.dispose());
-    const client = createApiClient({ serverUrl: "http://localhost", fetch, operation });
-    for (const worker of [null, claim()]) {
-      const properties = { pullRequests: [], worker } as never;
-      expect(() => client.createTask(projectId, { title: "Task", properties })).toThrow("Worker ownership");
-      expect(() => client.updateTask(projectId, taskId, { version: 1n, properties })).toThrow("Worker ownership");
+  it("forwards ordinary property inputs for authoritative server validation", async () => {
+    const received: unknown[] = [];
+    const origin = await listen((_request, response, body) => {
+      received.push(body);
+      respond(response, { error: { code: "invalid_input", message: "properties.worker is read-only.", requestId: "protected-property" } }, 400);
+    });
+    const client = api(origin);
+    for (const properties of [{ worker: null }, { worker: claim() }, { future: { version: 1.5 } }]) {
+      await expect(client.createTask(projectId, { title: "Task", properties })).rejects.toMatchObject({ status: 400, code: "invalid_input", confirmedRefusal: true });
+      await expect(client.updateTask(projectId, taskId, { version: 1n, properties })).rejects.toMatchObject({ status: 400, code: "invalid_input", confirmedRefusal: true });
     }
-    expect(fetch).not.toHaveBeenCalled();
+    expect(received).toHaveLength(6);
+    expect(received[0]).toEqual({ title: "Task", properties: { worker: null } });
+    expect(received[5]).toEqual({ version: 1n, properties: { future: { version: 1.5 } } });
   });
 });

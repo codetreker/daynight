@@ -28,7 +28,7 @@ describe("worker managed prompts", () => {
     const { task, build, packageDirectory } = await fixture(); const prompt = build(task, "linux");
     expect(prompt).toContain("environment is worker-managed");
     expect(prompt).toContain("using-daynight skill in autopilot-managed-task mode");
-    expect(prompt).toContain("This is a background task. Do not ask the user any questions.");
+    expect(prompt).toContain("This is a background task.");
     expect(prompt).toContain("Make decisions autonomously within this assignment and its existing authorization.");
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
     expect(prompt).toContain(JSON.stringify(path.join(packageDirectory, "dist/commands/skill/skills/using-daynight/references/autopilot-managed-task.md")));
@@ -61,11 +61,19 @@ describe("worker managed prompts", () => {
     const { task } = await fixture(); const prompt = workerPingPrompt(task);
     expect(prompt).toContain(task.projectId); expect(prompt).toContain(task.taskId); expect(prompt).toContain(task.claimId);
     expect(prompt).toContain("original native conversation and worktree");
-    expect(prompt).toContain("do not ask the user any questions");
     expect(prompt).toContain("Make decisions autonomously within that scope and authorization");
     expect(prompt).toContain("wait and check it periodically yourself");
     expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
     expect(prompt).toContain("all required delivery, acceptance and evidence");
     expect(prompt).toContain("Reconcile unconfirmed writes");
+  });
+  it.each(["startup", "periodic"])("requires its own task to be paused before necessary human intervention in the %s prompt", async (kind) => {
+    const { task, build } = await fixture();
+    const prompt = kind === "startup" ? build(task, "linux") : workerPingPrompt(task);
+    expect(prompt).toContain("When human intervention is necessary to complete this assignment");
+    expect(prompt).toContain("must set properties.paused=true on your own assigned task before waiting");
+    expect(prompt).toContain("Follow the using-daynight managed skill's Request user interaction workflow");
+    expect(prompt).toContain("Clear the pause only after the problem is resolved and valid authorization permits resuming this assignment");
+    expect(prompt).toContain("do not end this turn or exit merely because review or CI is pending");
   });
 });

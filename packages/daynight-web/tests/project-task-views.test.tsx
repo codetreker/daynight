@@ -64,7 +64,7 @@ let root: HTMLDivElement;
 
 const replacementEpochs = new WeakMap<TaskGraph, string>();
 const resetSnapshot = (value: TaskGraph): TaskGraph => { replacementEpochs.set(value, crypto.randomUUID()); return value; };
-const syncFixture = createGraphSyncFixture();
+const syncFixture = createGraphSyncFixture({ propertiesForTask: () => ({ pullRequests: [] }) });
 const servedGraphs = new Map<string, TaskGraph>();
 const servedVersions = new Map<string, bigint>();
 beforeEach(() => {
@@ -85,7 +85,7 @@ beforeEach(() => {
   vi.mocked(getTask).mockReset();
   vi.mocked(getTask).mockImplementation(async (projectId, id) => {
     const task = servedGraphs.get(projectId)!.tasks.find((item) => item.id === id)!;
-    return { ...task, id, projectId, title: task.titlePreview, description: '', properties: { worker: null, pullRequests: [] }, version: servedVersions.get(`${projectId}/${id}`)! };
+    return { ...task, id, projectId, title: task.titlePreview, description: '', properties: { pullRequests: [] }, version: servedVersions.get(`${projectId}/${id}`)! };
   });
 });
 afterEach(() => { cleanup(); root.remove(); });

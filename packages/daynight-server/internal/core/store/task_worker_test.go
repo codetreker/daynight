@@ -78,7 +78,7 @@ func TestWorkerMigrationPreservesOpaquePropertiesAndExecutionFacts(t *testing.T)
 	mustQueryExec(t, database, `INSERT INTO task_dependencies(project_id,task_id,depends_on_task_id,external) VALUES($1,$2,$3,true)`, project.ID, queryID(10), queryID(12))
 	mustQueryExec(t, database, `INSERT INTO task_attachments(project_id,task_id,path,content_type,size_bytes) VALUES($1,$2,'plan.md','text/markdown',123)`, project.ID, queryID(10))
 	before, facts := workerMigrationRows(t, database), workerMigrationRelatedFacts(t, database)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:16]); err != nil {
 		t.Fatal(err)
 	}
 	after := workerMigrationRows(t, database)
@@ -96,7 +96,7 @@ func TestWorkerMigrationPreservesOpaquePropertiesAndExecutionFacts(t *testing.T)
 	if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version=16`).Scan(&applied); err != nil {
 		t.Fatal(err)
 	}
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:16]); err != nil {
 		t.Fatal(err)
 	}
 	if err := pool.QueryRow(ctx, `SELECT applied_at FROM schema_migrations WHERE version=16`).Scan(&repeated); err != nil || !applied.Equal(repeated) || !reflect.DeepEqual(workerMigrationRows(t, database), after) {
@@ -107,8 +107,8 @@ func TestWorkerMigrationPreservesOpaquePropertiesAndExecutionFacts(t *testing.T)
 	if err := pool.QueryRow(ctx, `SELECT properties FROM tasks WHERE id=$1`, queryID(30)).Scan(&created); err != nil || created != `{"pullRequests":[],"worker":null}` {
 		t.Fatalf("new task lacks explicit null worker default: %q %v", created, err)
 	}
-	current := snapshotTask(t, database, project.ID, queryID(30))
-	if current.Properties.Worker != nil || current.Properties.PullRequests == nil {
+	current := snapshotHistoricalTask(t, database, project.ID, queryID(30))
+	if fixtureWorker(t, current.Properties) != nil || fixturePullRequests(t, current.Properties) == nil {
 		t.Fatalf("new task did not decode strict empty properties: %#v", current)
 	}
 }
@@ -126,7 +126,7 @@ func TestWorkerMigrationRollsBackPropertiesDefaultAndLedger(t *testing.T) {
 		BEGIN IF NEW.version=16 THEN RAISE EXCEPTION USING ERRCODE='P1016', MESSAGE='worker ledger rejection'; END IF; RETURN NEW; END $$;
 		CREATE TRIGGER reject_worker_ledger BEFORE INSERT ON schema_migrations FOR EACH ROW EXECUTE FUNCTION reject_worker_ledger()`)
 	before, facts := workerMigrationRows(t, database), workerMigrationRelatedFacts(t, database)
-	err := migrate(ctx, pool, schemaMigrations)
+	err := migrate(ctx, pool, schemaMigrations[:16])
 	var cause *pgconn.PgError
 	if !errors.As(err, &cause) || cause.Code != "P1016" {
 		t.Fatalf("worker migration lost the ledger failure: %v", err)
@@ -144,7 +144,7 @@ func TestWorkerMigrationRollsBackPropertiesDefaultAndLedger(t *testing.T) {
 		t.Fatalf("failed worker migration changed default: %q %v", originalDefault, err)
 	}
 	mustQueryExec(t, database, `DROP TRIGGER reject_worker_ledger ON schema_migrations; DROP FUNCTION reject_worker_ledger()`)
-	if err := migrate(ctx, pool, schemaMigrations); err != nil {
+	if err := migrate(ctx, pool, schemaMigrations[:16]); err != nil {
 		t.Fatalf("worker migration could not succeed after failure removal: %v", err)
 	}
 	rows := workerMigrationRows(t, database)

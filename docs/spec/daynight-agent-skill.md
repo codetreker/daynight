@@ -328,7 +328,9 @@ done、worker.state=completed 和原 claimId。拒绝或未知结果只读核对
 不回退普通 done；读取失败保持未确认，claim 变化停止后续业务写入。公开 CLI 的
 `--claim-id` 及 owner、claim、版本保护保持不变。
 
-缺少完成任务必需的目标、架构、执行方案或验收条件、遇到设计未覆盖的问题或其他实际阻塞时，按专属引用的 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 请求用户介入：用 `set-property <task-id> worker.signaling "<reason>"` 记录具体问题，同时输出到终端、保存等待上下文并退出执行循环，保持 in_progress 且不选择其他任务。收到反馈后核验原 assignment，确认问题解决，再用 `remove-property <task-id> worker.signaling` 清除信号并确认移除后恢复；未解决时保留信号继续等待。信号写入和移除遵守 write-safety。用户明确暂停、限制或撤回授权继续生效；验收未满足且仍有可执行的授权动作时继续处理。
+缺少完成任务必需的目标、架构、执行方案或验收条件、遇到设计未覆盖的问题或其他实际阻塞且确需人类介入时，按专属引用的 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 处理。Agent 必须先读取完整 task，核验原 active claim、worker 和 worktree，用观察到的精确 version 设置自己任务的 paused=true，并回读确认后输出问题、保存 Session 等待上下文并退出循环等待。保持 in_progress 且不选择其他任务，回应方式由用户决定。
+
+反馈后重新核验原 assignment、问题解决与当前授权；没有独立生效的暂停或限制时，以新观察版本将 paused 设为 false 并回读确认后恢复。已经为 false 或缺席时核验现状即可；未解决时保持 paused=true。冲突、不确定结果和失败遵守 write-safety，不能盲目重放、宣称暂停成功或继续受阻操作。明确暂停、限制或撤回授权继续生效；普通 CI/review 等待仍属于持续执行，不能因 polling timeout 进入人类介入暂停。
 全部验收通过并确认原 claim 完成后交还 controller。
 该入口不选择后继、不推进 Goal 阶段，也不删除系统工作区。普通入口和 managed 入口
 共用交付与验收要求，分别拥有自身的状态和资源生命周期。

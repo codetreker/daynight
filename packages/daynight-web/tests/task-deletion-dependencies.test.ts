@@ -28,7 +28,7 @@ describe('combined deletion snapshot admission', () => {
     const ordinaryAfter = { ...ordinaryBefore, version: 5n, dependsOn: [], blockedBy: [], ready: true, updatedAt: '2026-10-22T11:00:00Z' };
     const externalAfter = { ...externalBefore, version: 9n, dependsOn: [], externalDependsOn: [], blockedBy: [], ready: true, updatedAt: '2026-10-22T11:00:00Z' };
     const after = [ordinaryAfter, externalAfter, downstreamBefore]; const byId = new Map(after.map((detail) => [detail.id, detail]));
-    const replacement = await admitTaskGraph(world.scope, graphFixture(after), { epoch: crypto.randomUUID(), versionForTask: (node) => byId.get(node.id)!.version });
+    const replacement = await admitTaskGraph(world.scope, graphFixture(after), { epoch: crypto.randomUUID(), versionForTask: (node) => byId.get(node.id)!.version, propertiesForTask: (node) => byId.get(node.id)!.properties });
     expect(replacement.manifest.cacheGeneration).not.toBe(oldTicket.cacheGeneration); expect(replacement.index.nodes.has(target)).toBe(false); expect(replacement.index.successors.has(target)).toBe(false);
     expect(replacement.graph.summary).toEqual({ total: 3, todo: 3, inProgress: 0, done: 0, ready: 2, blocked: 1 });
     expect(replacement.versions.get(ordinary)).toBe(5n); expect(replacement.versions.get(external)).toBe(9n); expect(replacement.versions.get(downstream)).toBe(1n);

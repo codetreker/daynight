@@ -51,5 +51,10 @@ func (h *taskHandler) setStatus(w http.ResponseWriter, request *http.Request, pr
 		outcome = "changed"
 	}
 	logger.InfoContext(request.Context(), "task status set", "type", "resource", "component", "task", "phase", "set_status", "outcome", outcome, "request_id", RequestID(request.Context()))
-	writeJSON(w, request, logger, http.StatusOK, taskResponse(task, request))
+	response, err := taskResponse(task, request)
+	if err != nil {
+		writeError(w, request, logger, "task", "status", err)
+		return
+	}
+	writeJSON(w, request, logger, http.StatusOK, response)
 }

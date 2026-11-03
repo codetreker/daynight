@@ -17,6 +17,10 @@ const fixture = (projects: readonly Project[] = []) => {
   const unavailable = async (): Promise<never> => { throw new Error("Unexpected task API"); };
   const api = {
     listProjectMembers: async () => { throw new Error("Unused project member API method"); },
+    getTaskPropertySchema: async () => { throw new Error("Unused property API"); },
+    getTaskProperties: async () => { throw new Error("Unused property API"); },
+    setTaskProperty: async () => { throw new Error("Unused property API"); },
+    removeTaskProperty: async () => { throw new Error("Unused property API"); },
     getCurrentUser: unavailable,
     reportWorker: unavailable,
     createProject: vi.fn<ApiClient["createProject"]>().mockResolvedValue(project),

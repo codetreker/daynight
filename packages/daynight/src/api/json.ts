@@ -12,12 +12,26 @@ export const parseVersionArgument = (value: string): bigint => {
   return version;
 };
 
-export const parseApiJson = (text: string): unknown => losslessJson.parse(text, (key, value, context) => {
-  if (key !== "version" || typeof value !== "number") return value;
-  // Go int64 versions must retain their original numeric lexeme past JavaScript's safe integer range.
-  const source = context.source;
-  return source !== undefined && /^-?[0-9]+$/.test(source) ? BigInt(source) : value;
-});
+export const parseApiJson = (text: string): unknown => {
+  const versionSources = new WeakMap<object, string>();
+  const parsed = losslessJson.parse(text, function (this: object, key, value, context) {
+    if (key === "version" && typeof value === "number" && context.source !== undefined && /^-?[0-9]+$/.test(context.source)) versionSources.set(this, context.source);
+    return value;
+  });
+  const resourceVersions = (value: unknown): void => {
+    if (Array.isArray(value)) { value.forEach(resourceVersions); return; }
+    if (typeof value !== "object" || value === null) return;
+    const data = value as Record<string, unknown>;
+    for (const [key, item] of Object.entries(data)) {
+      if (key === "properties") continue;
+      const source = key === "version" ? versionSources.get(data) : undefined;
+      if (source !== undefined) data[key] = BigInt(source);
+      else resourceVersions(item);
+    }
+  };
+  resourceVersions(parsed);
+  return parsed;
+};
 
 export const stringifyApiJson = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) => {
   if (typeof item !== "bigint") return item;

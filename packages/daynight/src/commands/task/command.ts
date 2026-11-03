@@ -57,6 +57,11 @@ export const runTaskCommand = async (
     await runTaskAttachmentCommand(command, context, dependencies);
     return;
   }
+  if (["properties", "set-property", "remove-property"].includes(command.command.name)) {
+    const { runTaskPropertyCommand } = await import("./property.js");
+    await runTaskPropertyCommand(command, context, dependencies);
+    return;
+  }
   const help = `${command.path.join(" ")} --help`;
   const name = command.command.name;
   const setsStatus = name === "set-status";
@@ -78,12 +83,6 @@ export const runTaskCommand = async (
   const dependsOn = command.options.get("--depends-on") as readonly string[] | undefined;
   const externalDependsOn = command.options.get("--external-depends-on") as readonly string[] | undefined;
   const clearDependencies = command.options.has("--clear-dependencies");
-  const pullRequestUrls = command.options.get("--pull-request-url") as readonly string[] | undefined;
-  const pullRequestTitles = command.options.get("--pull-request-title") as readonly string[] | undefined;
-  const clearPullRequests = command.options.has("--clear-pull-requests");
-  if (clearPullRequests && (pullRequestUrls !== undefined || pullRequestTitles !== undefined)) throw new UsageError("--clear-pull-requests conflicts with --pull-request-url and --pull-request-title.", help);
-  if (pullRequestUrls?.length !== pullRequestTitles?.length) throw new UsageError("Provide the same number of --pull-request-url and --pull-request-title values.", help);
-  const properties = clearPullRequests ? { pullRequests: [] } : pullRequestUrls === undefined ? undefined : { pullRequests: pullRequestUrls.map((url, index) => ({ url, title: pullRequestTitles![index]! })) };
   const limitArgument = command.options.get("--limit") as string | undefined;
   const readyLimit = limitArgument === undefined ? 10 : Number(limitArgument);
   if (limitArgument !== undefined && (!/^[0-9]+$/.test(limitArgument) || !Number.isInteger(readyLimit) || readyLimit < 1 || readyLimit > 100)) throw new UsageError("Ready task limit must be a decimal integer from 1 to 100.", help);
@@ -96,9 +95,8 @@ export const runTaskCommand = async (
     ...(title === undefined ? {} : { title }),
     ...(description === undefined ? {} : { description }),
     ...dependencyFields,
-    ...(properties === undefined ? {} : { properties }),
   };
-  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, automatic-execution permission, platform requirement, dependency, or PR reference change.", help);
+  if (name === "update" && Object.keys(changes).length === 0) throw new UsageError("Task update requires a title, description, automatic-execution permission, platform requirement, or dependency change.", help);
   const rawProjectId = command.options.get("--project") as string | undefined;
   let projectId: string | undefined;
   let taskId: string | undefined;
@@ -138,7 +136,7 @@ export const runTaskCommand = async (
     const { renderTask, renderTaskGraph, renderTaskGraphDependencies, renderTaskJson, renderTaskList, renderTaskListJson, renderTaskSummaryList } = await import("./rendering.js");
     operation.check();
     if (command.command.name === "create") {
-      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), ...platformFields, ...dependencyFields, ...(properties === undefined ? {} : { properties }) };
+      const input: CreateTaskInput = { title: title!, ...(description === undefined ? {} : { description }), ...platformFields, ...dependencyFields };
       const task = await api.createTask(project.id, input);
       operation.check();
       return `Task created.\n${renderTask(task)}`;

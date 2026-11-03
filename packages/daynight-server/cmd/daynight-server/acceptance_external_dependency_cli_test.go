@@ -51,12 +51,16 @@ func TestInstalledCLIExternalDependencyReadAcceptance(t *testing.T) {
 		if after := cli.task(t, target.ID); !reflect.DeepEqual(after, target) {
 			t.Fatal("invalid external subset changed the classified task")
 		}
-		for _, arguments := range [][]string{{"--title", "Renamed classified dependent"}, {"--description", "Metadata retains edge classification."}, {"--pull-request-url", "https://example.com/pr/1", "--pull-request-title", "Preserved reference"}} {
+		for _, arguments := range [][]string{{"--title", "Renamed classified dependent"}, {"--description", "Metadata retains edge classification."}} {
 			cli.run(t, cli.repo, append([]string{"task", "update", target.ID, "--if-version", strconv.FormatInt(target.Version, 10)}, arguments...)...)
 			target = cli.task(t, target.ID)
 			if !slices.Equal(target.ExternalDependsOn, []string{prerequisiteID}) {
 				t.Fatal("installed ordinary update lost external classification")
 			}
+		}
+		target = acceptanceCLISetPullRequests(t, cli, target, acceptanceProperties(t, []api.PullRequestProperty{{URL: "https://example.com/pr/1", Title: "Preserved reference"}}))
+		if !slices.Equal(target.ExternalDependsOn, []string{prerequisiteID}) {
+			t.Fatal("installed property update lost external classification")
 		}
 		target = acceptanceCLISetStatus(t, cli, process, evidence, target, "todo")
 		acceptanceCLIRefusal(t, cli, process, evidence, target, "dependency_unsatisfied", "task", "set-status", target.ID, "in_progress", "--project", projectID, "--if-version", strconv.FormatInt(target.Version, 10))

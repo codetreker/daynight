@@ -62,7 +62,7 @@ func TestWorkerClaimHasOneWinnerAndPreservesTaskData(t *testing.T) {
 	if err != nil || actual.Status != core.TaskInProgress || actual.Ready || actual.StartedAt == nil || actual.CompletedAt != nil || actual.Version != task.Version+1 {
 		t.Fatalf("claim result: %#v, %v", actual, err)
 	}
-	worker := actual.Properties.Worker
+	worker := testWorker(t, actual.Properties)
 	if worker == nil || worker.State != core.WorkerActive || worker.Phase != core.WorkerPreparing || worker.Herdr != nil || worker.NativeSessionID != nil || worker.ClaimedAt.IsZero() || worker.ClaimedAt.Before(task.UpdatedAt) {
 		t.Fatalf("missing server execution facts: %#v", worker)
 	}
@@ -70,7 +70,8 @@ func TestWorkerClaimHasOneWinnerAndPreservesTaskData(t *testing.T) {
 		t.Fatal("claim identity does not identify the successful caller")
 	}
 	preserved := actual
-	preserved.Status, preserved.Version, preserved.UpdatedAt, preserved.StartedAt, preserved.Ready, preserved.Properties.Worker = task.Status, task.Version, task.UpdatedAt, task.StartedAt, task.Ready, nil
+	preserved.Status, preserved.Version, preserved.UpdatedAt, preserved.StartedAt, preserved.Ready = task.Status, task.Version, task.UpdatedAt, task.StartedAt, task.Ready
+	preserved.Properties = testWithWorker(t, preserved.Properties, nil)
 	if !reflect.DeepEqual(preserved, task) {
 		t.Fatal("claim changed unrelated task data")
 	}
@@ -101,7 +102,7 @@ func TestWorkerClaimEligibilityAndPermissionRaces(t *testing.T) {
 		})
 	assertOneTaskWinner(t, results, "version_conflict")
 	after, err := tasks.Get(ctx, admin, project.ID, task.ID)
-	if err != nil || (after.Properties.Worker != nil && !after.AllowAgents) {
+	if err != nil || (testWorker(t, after.Properties) != nil && !after.AllowAgents) {
 		t.Fatalf("permission race admitted a forbidden claim: %#v, %v", after, err)
 	}
 	active := claimWorkerTask(t, tasks, admin, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
@@ -116,11 +117,11 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 	ctx := context.Background()
 	owner, other := workerMember(t, database, project.ID), workerMember(t, database, project.ID)
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
-	original := *task.Properties.Worker
+	original := *testWorker(t, task.Properties)
 	phase, native := core.WorkerExecuting, "native-session"
 	herdr := &core.WorkerHerdr{Session: "w", WorkspaceID: "workspace-1", PaneID: "pane-1"}
 	updated, err := tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: task.Version, ClaimID: original.ClaimID, Phase: &phase, Herdr: &herdr, NativeSessionID: pointer(&native)})
-	if err != nil || updated.Version != task.Version+1 || updated.Properties.Worker.Phase != phase || updated.Properties.Worker.NativeSessionID == nil || !reflect.DeepEqual(updated.StartedAt, task.StartedAt) {
+	if err != nil || updated.Version != task.Version+1 || testWorker(t, updated.Properties).Phase != phase || testWorker(t, updated.Properties).NativeSessionID == nil || !reflect.DeepEqual(updated.StartedAt, task.StartedAt) {
 		t.Fatalf("session update: %#v, %v", updated, err)
 	}
 	if got, err := tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: updated.Version, ClaimID: original.ClaimID, Phase: &phase, Herdr: &herdr, NativeSessionID: pointer(&native)}); err != nil || !reflect.DeepEqual(got, updated) {
@@ -137,7 +138,7 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 		requireFault(t, err, "forbidden")
 	}
 	updated = updateTask(t, tasks, admin, updated, UpdateTask{Properties: propertyPatch(core.PullRequestProperty{URL: "PR", Title: "Result"})})
-	if updated.Properties.Worker.ClaimID != original.ClaimID || *updated.Properties.Worker.NativeSessionID != native {
+	if testWorker(t, updated.Properties).ClaimID != original.ClaimID || *testWorker(t, updated.Properties).NativeSessionID != native {
 		t.Fatal("ordinary property update discarded worker execution")
 	}
 	_, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: updated.Version, Status: core.TaskDone})
@@ -150,17 +151,17 @@ func TestWorkerSessionUpdatesAndClaimBoundCompletion(t *testing.T) {
 	var noHerdr *core.WorkerHerdr
 	var noNative *string
 	updated, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: updated.Version, ClaimID: original.ClaimID, Herdr: &noHerdr, NativeSessionID: &noNative})
-	if err != nil || updated.Properties.Worker.Herdr != nil || updated.Properties.Worker.NativeSessionID != nil {
+	if err != nil || testWorker(t, updated.Properties).Herdr != nil || testWorker(t, updated.Properties).NativeSessionID != nil {
 		t.Fatal("nullable session update was lost")
 	}
 	completed, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: updated.Version, Status: core.TaskDone, ClaimID: &original.ClaimID})
-	if err != nil || completed.Properties.Worker.State != core.WorkerCompleted || completed.CompletedAt == nil || !reflect.DeepEqual(completed.StartedAt, task.StartedAt) {
+	if err != nil || testWorker(t, completed.Properties).State != core.WorkerCompleted || completed.CompletedAt == nil || !reflect.DeepEqual(completed.StartedAt, task.StartedAt) {
 		t.Fatalf("worker completion: %#v, %v", completed, err)
 	}
 	_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: completed.Version, ClaimID: original.ClaimID, Phase: &phase})
 	requireFault(t, err, "claim_conflict")
 	reopened, err := tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: completed.Version, Status: core.TaskInProgress})
-	if err != nil || reopened.Properties.Worker.State != core.WorkerCompleted || reopened.CompletedAt != nil {
+	if err != nil || testWorker(t, reopened.Properties).State != core.WorkerCompleted || reopened.CompletedAt != nil {
 		t.Fatal("reopening reactivated historical worker ownership")
 	}
 }
@@ -183,7 +184,7 @@ func TestWorkerReleaseAndManualResumeCreateFreshExecution(t *testing.T) {
 	_, err = tasks.ReleaseWorker(ctx, other, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
 	requireFault(t, err, "forbidden")
 	released, err := tasks.ReleaseWorker(ctx, admin, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
-	if err != nil || released.Status != core.TaskTodo || released.StartedAt != nil || released.CompletedAt != nil || released.Properties.Worker.State != core.WorkerReleased || released.Properties.Worker.WorktreeID != descriptor.WorktreeID || !released.AllowAgents {
+	if err != nil || released.Status != core.TaskTodo || released.StartedAt != nil || released.CompletedAt != nil || testWorker(t, released.Properties).State != core.WorkerReleased || testWorker(t, released.Properties).WorktreeID != descriptor.WorktreeID || !released.AllowAgents {
 		t.Fatalf("release: %#v, %v", released, err)
 	}
 	for _, status := range []core.TaskStatus{core.TaskInProgress, core.TaskDone} {
@@ -203,7 +204,7 @@ func TestWorkerReleaseAndManualResumeCreateFreshExecution(t *testing.T) {
 	_, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: resume.ClaimWorker, PreviousClaimID: uuid.NewString()})
 	requireFault(t, err, "claim_conflict")
 	resumed, err := tasks.ResumeWorker(ctx, owner, project.ID, task.ID, resume)
-	if err != nil || resumed.Status != core.TaskInProgress || resumed.AllowAgents || resumed.Properties.Worker.ClaimID != next.ClaimID || resumed.Properties.Worker.Platform != core.PlatformLinux || resumed.Properties.Worker.WorktreeID != next.WorktreeID || resumed.Properties.Worker.Agent != core.AgentCopilot || resumed.Properties.Worker.Herdr != nil || resumed.Properties.Worker.NativeSessionID != nil || resumed.StartedAt == nil || !resumed.StartedAt.After(*task.StartedAt) {
+	if err != nil || resumed.Status != core.TaskInProgress || resumed.AllowAgents || testWorker(t, resumed.Properties).ClaimID != next.ClaimID || testWorker(t, resumed.Properties).Platform != core.PlatformLinux || testWorker(t, resumed.Properties).WorktreeID != next.WorktreeID || testWorker(t, resumed.Properties).Agent != core.AgentCopilot || testWorker(t, resumed.Properties).Herdr != nil || testWorker(t, resumed.Properties).NativeSessionID != nil || resumed.StartedAt == nil || !resumed.StartedAt.After(*task.StartedAt) {
 		t.Fatalf("explicit manual resume did not preserve manual permission/platform semantics: %#v, %v", resumed, err)
 	}
 	_, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: resumed.Version, ClaimID: descriptor.ClaimID, StoppedConfirmed: true})
@@ -216,7 +217,7 @@ func TestWorkerReleaseAndManualResumeCreateFreshExecution(t *testing.T) {
 	manual = updateTask(t, tasks, admin, manual, UpdateTask{RequiredPlatform: platformChange(pointer(core.PlatformWindows))})
 	manual = startTask(t, tasks, owner, manual)
 	manual = finishTask(t, tasks, owner, manual)
-	if manual.AllowAgents || manual.Properties.Worker != nil {
+	if manual.AllowAgents || testWorker(t, manual.Properties) != nil {
 		t.Fatal("ordinary manual lifecycle unexpectedly became worker-managed")
 	}
 }
@@ -254,11 +255,12 @@ func TestWorkerWithdrawalResetsClaimAndDisablesAutomation(t *testing.T) {
 					caller = admin
 				}
 				withdrawn, err := tasks.WithdrawWorker(ctx, caller, project.ID, task.ID, input)
-				if err != nil || withdrawn.Status != core.TaskTodo || withdrawn.AllowAgents || withdrawn.Properties.Worker != nil || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil || withdrawn.Version != task.Version+1 || !withdrawn.UpdatedAt.After(task.UpdatedAt) {
+				if err != nil || withdrawn.Status != core.TaskTodo || withdrawn.AllowAgents || testWorker(t, withdrawn.Properties) != nil || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil || withdrawn.Version != task.Version+1 || !withdrawn.UpdatedAt.After(task.UpdatedAt) {
 					t.Fatalf("withdrawal did not atomically reset execution: %#v, %v", withdrawn, err)
 				}
 				preserved := withdrawn
-				preserved.Status, preserved.AllowAgents, preserved.Properties.Worker = task.Status, task.AllowAgents, task.Properties.Worker
+				preserved.Status, preserved.AllowAgents = task.Status, task.AllowAgents
+				preserved.Properties = testWithWorker(t, preserved.Properties, testWorker(t, task.Properties))
 				preserved.StartedAt, preserved.CompletedAt, preserved.UpdatedAt, preserved.Version, preserved.Ready = task.StartedAt, task.CompletedAt, task.UpdatedAt, task.Version, task.Ready
 				if !reflect.DeepEqual(preserved, task) {
 					t.Fatal("withdrawal changed unrelated task data")
@@ -270,7 +272,7 @@ func TestWorkerWithdrawalResetsClaimAndDisablesAutomation(t *testing.T) {
 				_, err = tasks.ClaimWorker(ctx, owner, project.ID, task.ID, ClaimWorker{Version: withdrawn.Version, WorkerDescriptor: workerDescriptor()})
 				requireFault(t, err, "invalid_transition")
 				started := startTask(t, tasks, owner, withdrawn)
-				if started.Properties.Worker != nil {
+				if testWorker(t, started.Properties) != nil {
 					t.Fatal("manual execution retained withdrawn ownership")
 				}
 			})
@@ -285,7 +287,7 @@ func TestWorkerWithdrawalRequiresAnUnfinishedClaim(t *testing.T) {
 	_, err := tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: uuid.NewString()})
 	requireFault(t, err, "claim_conflict")
 	task = claimWorkerTask(t, tasks, owner, task, workerDescriptor())
-	claimID := task.Properties.Worker.ClaimID
+	claimID := testWorker(t, task.Properties).ClaimID
 	task, err = tasks.SetStatus(ctx, owner, project.ID, task.ID, SetTaskStatus{Version: task.Version, Status: core.TaskDone, ClaimID: &claimID})
 	if err != nil {
 		t.Fatal(err)
@@ -359,7 +361,7 @@ func TestWorkerOperationsRejectInvalidInputsAndMissingResources(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, err := tasks.Create(ctx, admin, project.ID, CreateTask{Title: "Forbidden", Properties: core.TaskProperties{Worker: &core.WorkerClaim{}}})
+			_, err := tasks.Create(ctx, admin, project.ID, CreateTask{Title: "Forbidden", Properties: core.TaskProperties{"worker": propertyJSON(map[string]any{})}})
 			return err
 		},
 		func() error {
@@ -443,7 +445,7 @@ func TestWorkerAutomaticReclaimCreatesFreshResourcesAndKeepsEligibility(t *testi
 		assertTaskUnchanged(t, tasks, owner, released)
 	}
 	resumed, err := tasks.ClaimWorker(ctx, owner, project.ID, task.ID, ClaimWorker{Version: released.Version, WorkerDescriptor: next})
-	if err != nil || resumed.Properties.Worker.ClaimID != next.ClaimID || resumed.Properties.Worker.WorktreeID != next.WorktreeID || resumed.Properties.Worker.Agent != core.AgentCopilot || resumed.Properties.Worker.Herdr != nil || resumed.Properties.Worker.NativeSessionID != nil {
+	if err != nil || testWorker(t, resumed.Properties).ClaimID != next.ClaimID || testWorker(t, resumed.Properties).WorktreeID != next.WorktreeID || testWorker(t, resumed.Properties).Agent != core.AgentCopilot || testWorker(t, resumed.Properties).Herdr != nil || testWorker(t, resumed.Properties).NativeSessionID != nil {
 		t.Fatalf("new automatic execution did not start with fresh resources: %#v, %v", resumed, err)
 	}
 	_, err = tasks.UpdateWorker(ctx, owner, project.ID, task.ID, UpdateWorker{Version: resumed.Version, ClaimID: descriptor.ClaimID, Phase: pointer(core.WorkerExecuting)})
@@ -469,7 +471,7 @@ func TestWorkerManagementRacesKeepOneDecision(t *testing.T) {
 	ctx := context.Background()
 	owner := workerMember(t, database, project.ID)
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
-	claimID := task.Properties.Worker.ClaimID
+	claimID := testWorker(t, task.Properties).ClaimID
 	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID,
 		func(ctx context.Context) (core.Task, error) {
 			return tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: claimID})
@@ -478,22 +480,22 @@ func TestWorkerManagementRacesKeepOneDecision(t *testing.T) {
 			return tasks.WithdrawWorker(ctx, admin, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: claimID})
 		}), "version_conflict")
 	withdrawn, err := tasks.Get(ctx, admin, project.ID, task.ID)
-	if err != nil || withdrawn.Properties.Worker != nil || withdrawn.AllowAgents || withdrawn.Status != core.TaskTodo || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil {
+	if err != nil || testWorker(t, withdrawn.Properties) != nil || withdrawn.AllowAgents || withdrawn.Status != core.TaskTodo || withdrawn.StartedAt != nil || withdrawn.CompletedAt != nil {
 		t.Fatalf("withdrawal race left partial execution state: %#v, %v", withdrawn, err)
 	}
 	task = claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
-	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
+	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	resume := func(descriptor WorkerDescriptor) func(context.Context) (core.Task, error) {
 		return func(ctx context.Context) (core.Task, error) {
-			return tasks.ResumeWorker(ctx, admin, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: released.Version, WorkerDescriptor: descriptor}, PreviousClaimID: released.Properties.Worker.ClaimID})
+			return tasks.ResumeWorker(ctx, admin, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: released.Version, WorkerDescriptor: descriptor}, PreviousClaimID: testWorker(t, released.Properties).ClaimID})
 		}
 	}
 	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID, resume(workerDescriptor()), resume(workerDescriptor())), "version_conflict")
 	resumed, err := tasks.Get(ctx, admin, project.ID, task.ID)
-	if err != nil || resumed.Properties.Worker.UserID != admin.UserID || resumed.Properties.Worker.WorktreeID == released.Properties.Worker.WorktreeID || resumed.StartedAt == nil || !resumed.StartedAt.After(*task.StartedAt) {
+	if err != nil || testWorker(t, resumed.Properties).UserID != admin.UserID || testWorker(t, resumed.Properties).WorktreeID == testWorker(t, released.Properties).WorktreeID || resumed.StartedAt == nil || !resumed.StartedAt.After(*task.StartedAt) {
 		t.Fatalf("resume race lost caller ownership, new resources or timing: %#v %v", resumed, err)
 	}
 }
@@ -505,7 +507,7 @@ func TestWorkerManagementRollsBackCanceledWrites(t *testing.T) {
 	for _, operation := range []string{"release", "withdraw", "resume"} {
 		if operation == "resume" {
 			var err error
-			task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
+			task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -522,11 +524,11 @@ func TestWorkerManagementRollsBackCanceledWrites(t *testing.T) {
 				var err error
 				switch operation {
 				case "release":
-					_, err = traced.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
+					_, err = traced.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
 				case "withdraw":
-					_, err = traced.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID})
+					_, err = traced.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID})
 				case "resume":
-					_, err = traced.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor}, PreviousClaimID: task.Properties.Worker.ClaimID})
+					_, err = traced.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor}, PreviousClaimID: testWorker(t, task.Properties).ClaimID})
 				}
 				assertOperational(t, err)
 				if !errors.Is(err, context.Canceled) {
@@ -554,7 +556,7 @@ func TestWorkerManagementRechecksOperatorMembership(t *testing.T) {
 				task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, admin, project.ID), workerDescriptor())
 				if operation == "resume" {
 					var err error
-					task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
+					task, err = tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -573,11 +575,11 @@ func TestWorkerManagementRechecksOperatorMembership(t *testing.T) {
 						var err error
 						switch operation {
 						case "release":
-							actual, err = tasks.ReleaseWorker(lockContext, caller, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
+							actual, err = tasks.ReleaseWorker(lockContext, caller, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
 						case "withdraw":
-							actual, err = tasks.WithdrawWorker(lockContext, caller, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID})
+							actual, err = tasks.WithdrawWorker(lockContext, caller, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID})
 						case "resume":
-							actual, err = tasks.ResumeWorker(lockContext, caller, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor}, PreviousClaimID: task.Properties.Worker.ClaimID})
+							actual, err = tasks.ResumeWorker(lockContext, caller, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: task.Version, WorkerDescriptor: descriptor}, PreviousClaimID: testWorker(t, task.Properties).ClaimID})
 						}
 						result <- taskResult{task: actual, err: err}
 					}()
@@ -606,7 +608,7 @@ func TestWorkerManualResumeRetainsDependencyProtection(t *testing.T) {
 	prerequisite := finishTask(t, tasks, owner, startTask(t, tasks, owner, createTask(t, tasks, owner, project.ID, "Prerequisite")))
 	task := updateTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), UpdateTask{DependsOn: pointer([]string{prerequisite.ID})})
 	task = claimWorkerTask(t, tasks, owner, task, workerDescriptor())
-	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID, StoppedConfirmed: true})
+	released, err := tasks.ReleaseWorker(ctx, owner, project.ID, task.ID, ReleaseWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID, StoppedConfirmed: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -615,7 +617,7 @@ func TestWorkerManualResumeRetainsDependencyProtection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()}, PreviousClaimID: released.Properties.Worker.ClaimID})
+	_, err = tasks.ResumeWorker(ctx, owner, project.ID, task.ID, ResumeWorker{ClaimWorker: ClaimWorker{Version: released.Version, WorkerDescriptor: workerDescriptor()}, PreviousClaimID: testWorker(t, released.Properties).ClaimID})
 	requireFault(t, err, "dependency_unsatisfied")
 	assertTaskUnchanged(t, tasks, owner, released)
 }
@@ -631,7 +633,7 @@ func TestWorkerWithdrawalRollsBackPartialDatabaseFailure(t *testing.T) {
 		CREATE TRIGGER reject_withdrawal_edge BEFORE INSERT ON task_dependencies FOR EACH ROW EXECUTE FUNCTION reject_withdrawal_edge()`); err != nil {
 		t.Fatal(err)
 	}
-	_, err := tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: task.Properties.Worker.ClaimID})
+	_, err := tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: testWorker(t, task.Properties).ClaimID})
 	assertOperational(t, err)
 	if errors.Unwrap(err) == nil || strings.Contains(err.Error(), "private withdrawal edge") {
 		t.Fatalf("withdrawal lost its error chain or exposed private diagnostics: %v", err)
@@ -642,7 +644,7 @@ func TestWorkerWithdrawalRollsBackPartialDatabaseFailure(t *testing.T) {
 func TestWorkerWithdrawalAndCompletionRaceKeepsOneOutcome(t *testing.T) {
 	tasks, database, project, _, owner := taskService(t)
 	task := claimWorkerTask(t, tasks, owner, claimableTask(t, tasks, owner, project.ID), workerDescriptor())
-	claimID := task.Properties.Worker.ClaimID
+	claimID := testWorker(t, task.Properties).ClaimID
 	assertOneTaskWinner(t, competeTaskWrites(t, database, project.ID,
 		func(ctx context.Context) (core.Task, error) {
 			return tasks.WithdrawWorker(ctx, owner, project.ID, task.ID, WithdrawWorker{Version: task.Version, ClaimID: claimID})
@@ -655,10 +657,10 @@ func TestWorkerWithdrawalAndCompletionRaceKeepsOneOutcome(t *testing.T) {
 		t.Fatal(err)
 	}
 	if actual.Status == core.TaskTodo {
-		if actual.Properties.Worker != nil || actual.AllowAgents || actual.StartedAt != nil || actual.CompletedAt != nil {
+		if testWorker(t, actual.Properties) != nil || actual.AllowAgents || actual.StartedAt != nil || actual.CompletedAt != nil {
 			t.Fatal("withdrawal committed a partial reset")
 		}
-	} else if actual.Status != core.TaskDone || actual.Properties.Worker == nil || actual.Properties.Worker.State != core.WorkerCompleted || !actual.AllowAgents || actual.StartedAt == nil || actual.CompletedAt == nil {
+	} else if actual.Status != core.TaskDone || testWorker(t, actual.Properties) == nil || testWorker(t, actual.Properties).State != core.WorkerCompleted || !actual.AllowAgents || actual.StartedAt == nil || actual.CompletedAt == nil {
 		t.Fatalf("completion race committed mixed outcomes: %#v", actual)
 	}
 }

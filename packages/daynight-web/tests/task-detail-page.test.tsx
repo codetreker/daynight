@@ -23,7 +23,7 @@ const installed = (initial?: TaskDetail) => {
   const tasks = new Map([[taskId, first], [otherId, detailFixture(projectId, otherId, { title: '后续任务', dependsOn: [taskId], blockedBy: [taskId], ready: false })]]);
   const paths = new Set(files);
   const handler = (url: string, options?: RequestInit): Response => {
-    if (new URL(url, location.origin).pathname === `${root}/task-sync`) return taskSyncResponse(graphFixture([...tasks.values()]), { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(new URL(url, location.origin)), versionForTask: (task) => tasks.get(task.id)!.version });
+    if (new URL(url, location.origin).pathname === `${root}/task-sync`) return taskSyncResponse(graphFixture([...tasks.values()]), { viewerId: TEST_VIEWER_ID, query: taskSyncQuery(new URL(url, location.origin)), versionForTask: (task) => tasks.get(task.id)!.version, propertiesForTask: (task) => tasks.get(task.id)!.properties });
     const match = new RegExp(`^${root}/tasks/([^/]+)(?:/(status))?$`).exec(url);
     if (match !== null) {
       const task = tasks.get(match[1]!)!;

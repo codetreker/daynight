@@ -210,7 +210,7 @@ func TestTaskStatusMigrationRollsBackDefaultRowsConstraintAndLedger(t *testing.T
 
 func statusMigrationTask(t *testing.T, database *Store, projectID, id string) core.Task {
 	t.Helper()
-	task, err := scanHistoricalTask(database.Pool.QueryRow(context.Background(), `SELECT `+taskProjection+` FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, projectID, id))
+	task, err := scanHistoricalTask(database.Pool.QueryRow(context.Background(), `SELECT `+historicalPlatformTaskProjection+` FROM tasks t WHERE t.project_id=$1 AND t.id=$2`, projectID, id))
 	if err != nil {
 		t.Fatal(err)
 	}

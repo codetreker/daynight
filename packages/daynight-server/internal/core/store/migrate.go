@@ -87,8 +87,10 @@ var testSessionsSQL string
 var workerSnapshotsSQL string
 
 type migration struct {
-	version int64
-	sql     string
+	version         int64
+	sql             string
+	transform       func(context.Context, pgx.Tx) error
+	transformSource string
 }
 
 var schemaMigrations = []migration{
@@ -117,6 +119,7 @@ var schemaMigrations = []migration{
 	{version: 23, sql: sessionTransactionOwnershipSQL},
 	{version: 24, sql: testSessionsSQL},
 	{version: 25, sql: workerSnapshotsSQL},
+	{version: 26, sql: propertyRowsSQL, transform: migratePropertyRows026, transformSource: propertyRowsTransformSource},
 }
 
 const migrationLock int64 = 0x4441594e49474854
@@ -150,7 +153,12 @@ func migrate(ctx context.Context, pool *pgxpool.Pool, migrations []migration) (e
 			if _, err := tx.Exec(ctx, next.sql); err != nil {
 				return err
 			}
-			_, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)", next.version, checksum(next.sql))
+			if next.transform != nil {
+				if err := next.transform(ctx, tx); err != nil {
+					return err
+				}
+			}
+			_, err := tx.Exec(ctx, "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)", next.version, next.checksum())
 			return err
 		}); err != nil {
 			return err
@@ -175,12 +183,19 @@ func appliedMigrations(ctx context.Context, conn *pgxpool.Conn, migrations []mig
 		if applied >= len(migrations) || version != migrations[applied].version {
 			return 0, fmt.Errorf("migration version %d is not an ordered prefix", version)
 		}
-		if savedChecksum != checksum(migrations[applied].sql) {
+		if savedChecksum != migrations[applied].checksum() {
 			return 0, fmt.Errorf("migration version %d checksum mismatch", version)
 		}
 		applied++
 	}
 	return applied, rows.Err()
+}
+
+func (m migration) checksum() string {
+	if m.transform == nil {
+		return checksum(m.sql)
+	}
+	return checksum(m.sql + "\x00" + m.transformSource)
 }
 
 func checksum(sql string) string { return fmt.Sprintf("%x", sha256.Sum256([]byte(sql))) }

@@ -1,3 +1,4 @@
+import { readWorkerClaim } from "../../api/task-properties.js";
 import { ApiError, createApiClient } from "../../api/client.js";
 import type { ApiClient } from "../../api/client.js";
 import { createOperation } from "../../api/operation.js";
@@ -119,7 +120,7 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
       const result: Task[] = [];
       for (const projectId of selected.keys()) {
         for await (const task of taskPages(projectId, { workerId }, signal)) {
-          if (task.properties.worker?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
+          if (readWorkerClaim(task.properties)?.userId !== owner) throw new ProtocolError("Worker inventory claim belongs to a different authenticated user.");
           result.push(task);
         }
       }
@@ -128,21 +129,21 @@ export const createWorkerRemote = (options: { readonly serverUrl: string; readon
     },
     candidates: async function* (projectId, platform, signal) {
       for await (const task of taskPages(projectId, { ready: true, allowAgents: true, compatiblePlatform: platform }, signal)) {
-        if (task.properties.worker?.state === "released") continue;
-        if (task.properties.worker?.state === "active") throw new ProtocolError("Worker candidate has an active claim.");
+        if (readWorkerClaim(task.properties)?.state === "released") continue;
+        if (readWorkerClaim(task.properties)?.state === "active") throw new ProtocolError("Worker candidate has an active claim.");
         yield task;
       }
     },
     claim: async (candidate, descriptor, signal) => {
       const claimed = await request(signal, (api) => api.claimWorkerTask(candidate.projectId, candidate.id, { ...descriptor, version: candidate.version }));
-      if (claimed.properties.worker?.userId !== verifiedUserId()) throw new ApiError({ operation: "worker.claim", projectId: candidate.projectId, taskId: candidate.id }, "protocol", {
+      if (readWorkerClaim(claimed.properties)?.userId !== verifiedUserId()) throw new ApiError({ operation: "worker.claim", projectId: candidate.projectId, taskId: candidate.id }, "protocol", {
         cause: new ProtocolError("The granted worker claim belongs to a different authenticated user."), outcomeUnconfirmed: true,
       });
       return claimed;
     },
     update: (task, input, signal) => {
-      const worker = task.properties.worker;
-      if (worker === null || worker.state !== "active" || worker.userId !== verifiedUserId()) throw new Error("Worker summary update requires the original active claim and authenticated user.");
+      const worker = readWorkerClaim(task.properties);
+      if (worker === undefined || worker.state !== "active" || worker.userId !== verifiedUserId()) throw new Error("Worker summary update requires the original active claim and authenticated user.");
       return request(signal, (api) => api.updateWorkerClaim(task.projectId, task.id, { ...input, version: task.version, claimId: worker.claimId }));
     },
   };

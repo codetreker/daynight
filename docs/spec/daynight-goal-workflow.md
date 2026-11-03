@@ -81,7 +81,7 @@ B 只直接依赖 A，沿链继承架构前置，并在自己的 description 保
 worker-managed 环境、using-daynight 技能和 autopilot-managed-task 模式时，才加载 managed
 指令；该入口使用原 claim，不套用普通开始或完成流程，也不执行 Goal 阶段转场。共同
 任务输入、交付、成果和验收准备由 references/task-execution.md 拥有，阶段要求由本文拥有。
-managed 遇到需用户介入的问题时，按随包 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 设置 worker.signaling、输出问题并退出循环等待，保持 in_progress；反馈后核验原 assignment，确认问题解决、移除信号并核验后才恢复，不选择其他任务。
+managed 确需用户介入时，按随包 [Request user interaction](../../packages/daynight/src/commands/skill/skills/using-daynight/references/autopilot-managed-task.md#request-user-interaction) 先核验原 assignment，以观察版本将自己任务设为 paused=true 并回读确认，再输出问题、保存 Session 等待上下文并退出循环，保持 in_progress。用户自由选择回应方式；反馈后核验原 assignment、问题已解决及授权允许恢复，解除暂停并回读确认后继续原任务，未解决则保持暂停。失败、冲突和未知结果遵守 write-safety，普通 CI/review 等待不触发该暂停，不选择其他任务或执行后续阶段。
 
 讨论任务按用户确认与阶段验收完成。独立的仓库代码、文档、原型交付以及用户明确纳入
 讨论验收的 PR 交付，仍需真实检查、授权合并和平台确认；保留开放 PR 的指令继续有效，

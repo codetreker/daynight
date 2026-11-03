@@ -205,7 +205,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
       const current = entry.members.find((item) => item.userId === activeUser.id);
       if (current === undefined) return error(404, 'not_found');
       if (suffix === '' && method === 'GET') return wireResponse(entry.project);
-      if (suffix === 'task-sync' && method === 'GET') return taskSyncResponse(entry.graph, { query: taskSyncQuery(url), epoch: entry.epoch, versionForTask: () => 1n, viewerId: activeUser.id });
+      if (suffix === 'task-sync' && method === 'GET') return taskSyncResponse(entry.graph, { query: taskSyncQuery(url), epoch: entry.epoch, versionForTask: () => 1n, propertiesForTask: () => ({ pullRequests: [] }), viewerId: activeUser.id });
       if (suffix === 'members' && method === 'GET') {
         if (scenario === 'members-error') return error(500, 'internal_error');
         return Response.json({ items: entry.members });
@@ -246,7 +246,7 @@ export const installAuthFixture = (initial: AuthScenario) => {
         if (task === undefined) return error(404, 'not_found');
         const taskSuffix = taskMatch[2] ?? '';
         if (taskSuffix === '' && method === 'GET') {
-          const detail: TaskDetail = { requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, id: task.id, projectId: entry.project.id, title: task.titlePreview, description: '完成项目范围内的实现与验证，确认成员权限、任务状态与实际交付结果一致。', properties: { worker: null, pullRequests: [] }, status: task.status, version: 1n, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt };
+          const detail: TaskDetail = { requiredPlatform: task.requiredPlatform, allowAgents: task.allowAgents, startedAt: task.startedAt, completedAt: task.completedAt, id: task.id, projectId: entry.project.id, title: task.titlePreview, description: '完成项目范围内的实现与验证，确认成员权限、任务状态与实际交付结果一致。', properties: { pullRequests: [] }, status: task.status, version: 1n, dependsOn: task.dependsOn, externalDependsOn: task.externalDependsOn, blockedBy: task.blockedBy, ready: task.ready, createdAt: task.createdAt, updatedAt: task.updatedAt };
           return new Response(stringifyApiJson(detail), { headers: { 'Content-Type': 'application/json' } });
         }
         if (taskSuffix === 'attachments' && method === 'GET') return Response.json({ items: attachments, nextCursor: null });

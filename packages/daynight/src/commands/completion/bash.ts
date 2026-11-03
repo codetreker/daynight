@@ -1,4 +1,4 @@
-import type { CommandDefinition } from "../../cli/schema.js";
+import { validateCommandArguments, type CommandDefinition } from "../../cli/schema.js";
 
 const shellQuote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`;
 const shellArray = (values: readonly string[]): string => `(${values.map(shellQuote).join(" ")})`;
@@ -8,6 +8,7 @@ const commandCases = (root: CommandDefinition): string => {
   const cases: string[] = [];
   for (let index = 0; index < nodes.length; index += 1) {
     const node = nodes[index]!;
+    validateCommandArguments(node);
     const childNames: string[] = [];
     const childNodes: string[] = [];
     for (const child of node.commands ?? []) {
@@ -49,6 +50,7 @@ const commandCases = (root: CommandDefinition): string => {
       dn_option_empty=${shellArray(optionEmpty)}
       dn_option_repeats=${shellArray(optionRepeats)}
       dn_argument_count=${node.arguments?.length ?? 0}
+      dn_argument_empty=${shellArray((node.arguments ?? []).map((argument) => argument.allowEmpty === true ? "1" : "0"))}
       dn_allow_terminator=${node.allowOptionsTerminator === true ? 1 : 0}
       case "$dn_position" in
 ${choices.join("\n")}
@@ -116,7 +118,7 @@ const runtime = String.raw`
 @PREFIX@_schema() {
   dn_children=(); dn_child_nodes=(); dn_options=(); dn_option_ids=()
   dn_option_values=(); dn_option_actions=(); dn_choices=()
-  dn_option_empty=(); dn_option_repeats=(); dn_value_choices=()
+  dn_option_empty=(); dn_option_repeats=(); dn_value_choices=(); dn_argument_empty=()
   case "$dn_node" in
 @CASES@
   esac
@@ -137,7 +139,7 @@ const runtime = String.raw`
   local LC_ALL=C
   local -a dn_words dn_children dn_child_nodes dn_options dn_option_ids
   local -a dn_option_values dn_option_actions dn_choices
-  local -a dn_option_empty dn_option_repeats dn_value_choices
+  local -a dn_option_empty dn_option_repeats dn_value_choices dn_argument_empty
   local dn_node=0 dn_position=0 dn_argument_count=0 dn_count=0 dn_pending=''
   local dn_value_option=-1 dn_value_match=-1 dn_inline=0 dn_options_terminated=0 dn_allow_terminator=0
   local dn_used='|' dn_tilde dn_current dn_word dn_index dn_match dn_option
@@ -200,7 +202,7 @@ const runtime = String.raw`
       continue
     fi
     ((dn_position < dn_argument_count)) || return 0
-    [[ -n "$dn_word" ]] || return 0
+    [[ -n "$dn_word" || "@{dn_argument_empty[dn_position]}" == 1 ]] || return 0
     if ((@{#dn_choices[@]} > 0)); then
       dn_match=0
       for dn_choice in "@{dn_choices[@]}"; do

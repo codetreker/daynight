@@ -175,9 +175,9 @@ Controller 自身只能报告 stopping。worker 独立检查对应进程停止�
 
 ## 升级与安全失败
 
-Task API 通过 `Daynight-Worker-Protocol: 2` 显式协商扩展 WorkerClaim。新 CLI 与 Web 发送此请求头，响应包含 `agentControlMode`。未发送或不能识别的版本按旧协议投影：Herdr Codex/Copilot 保留原 WorkerClaim 字段并省略 mode；Web 或 Claude claim 的 worker 摘要为 null，任务本身的状态、版本、依赖和资格不变。该投影仅表示客户端没有可用的 worker 摘要，持久 claim 与实际控制归属不受影响。
+Task API 通过 `Daynight-Worker-Protocol: 2` 显式协商扩展 WorkerClaim。新 CLI 与 Web 发送此请求头，响应包含 `agentControlMode`。未发送或不能识别的版本按旧协议投影：Herdr Codex/Copilot 保留原 WorkerClaim 字段并省略 mode；Web 或 Claude claim 的 worker 键被省略，任务本身的状态、版本、依赖和资格不变。该投影仅表示客户端没有可用的 worker 摘要，持久 claim 与实际控制归属不受影响。
 
-普通列表和详情不因项目混用执行方式而失败。带 `workerId` 的旧 worker 清单一旦含有不支持的 claim，整页明确拒绝，不能通过过滤或 null 摘要把正在运行的执行伪装成缺失。无 `workerId`、同时指定 `ready=true`、`allowAgents=true` 和 `compatiblePlatform` 的旧 worker 候选查询过滤不可执行的历史 claim；保留原有排序和游标，连续全过滤页继续扫描到可见结果或末尾，每页不超过请求 limit，也不返回带后续游标的空页。其他普通列表不应用候选过滤。
+普通列表和详情不因项目混用执行方式而失败。带 `workerId` 的旧 worker 清单一旦含有不支持的 claim，整页明确拒绝，不能通过过滤或省略 worker 摘要把正在运行的执行伪装成缺失。无 `workerId`、同时指定 `ready=true`、`allowAgents=true` 和 `compatiblePlatform` 的旧 worker 候选查询过滤不可执行的历史 claim；保留原有排序和游标，连续全过滤页继续扫描到可见结果或末尾，每页不超过请求 limit，也不返回带后续游标的空页。其他普通列表不应用候选过滤。
 
 未协商扩展协议的写请求携带旧 worker 限制。服务层保留原有输入校验顺序，在项目写锁内核对版本及实际 claim，然后决定是否允许更新、状态改变、删除或 worker 操作；claim/resume 还检查新 descriptor。旧客户端看不到的执行不能被当作无主任务重新认领或操作。兼容投影不作为写入依据，也不代替项目权限。
 

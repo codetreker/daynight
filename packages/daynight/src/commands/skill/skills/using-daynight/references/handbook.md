@@ -27,7 +27,8 @@ Do not treat this skill's workflow names as CLI commands or infer commands from 
 | Read task dependency graphs | `task graph <task-id>` | [Verify dependency changes](task-management.md#verify-dependency-changes) |
 | Create tasks | `task create` | [Create task](create-task.md) |
 | Change metadata | `task update` | [Task management](task-management.md#metadata) |
-| Set or remove task properties | `set-property`, `remove-property` | [Managed task user interaction signals](autopilot-managed-task.md#request-user-interaction) |
+| Read property values or definitions | `task properties` | [Properties](task-management.md#properties) |
+| Set or remove task properties | `task set-property`, `task remove-property` | [Properties](task-management.md#properties) |
 | Change status | `task set-status` | [Task management](task-management.md#status-and-timing) |
 | Delete tasks | `task delete` | [Task management](task-management.md#task-deletion) |
 | Upload, list, read, or remove attachments | `task attachment put/list/read/remove` | [Task content standard](task-content.md#attachments-and-references) |

@@ -20,7 +20,7 @@ const open = async (sessions: TaskDetailSessions) => {
 };
 const replace = async (sessions: TaskDetailSessions, details: readonly TaskDetail[]) => {
   const world = worlds.get(sessions)!; const byId = new Map(details.map((detail) => [detail.id, detail]));
-  await admitTaskGraph(world.scope, graphFixture(details), { epoch: crypto.randomUUID(), versionForTask: (node) => byId.get(node.id)!.version });
+  await admitTaskGraph(world.scope, graphFixture(details), { epoch: crypto.randomUUID(), versionForTask: (node) => byId.get(node.id)!.version, propertiesForTask: (node) => byId.get(node.id)!.properties });
 };
 const pausePreparation = (sessions: TaskDetailSessions, point: 'beginSync' | 'detailTransaction') => {
   const world = worlds.get(sessions)!; const entered = deferred<void>(); const release = deferred<void>(); let calls = 0;
