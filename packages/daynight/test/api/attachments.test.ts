@@ -43,7 +43,7 @@ describe("task attachment transport", () => {
     const metadataBytes = Buffer.byteLength(stringifyApiJson({ ...attachment, sizeBytes: bytes.byteLength }));
     const result = await client(fetch, operation({ limits: { responseBytes: metadataBytes, totalBytes: metadataBytes } })).putTaskAttachment(projectId, taskId, attachment.path, { body: body(bytes), contentType: attachment.contentType });
     expect(result).toEqual({ ...attachment, sizeBytes: bytes.byteLength });
-    expect(Buffer.concat(chunks)).toEqual(Buffer.from(bytes));
+    expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
     expect(Math.max(...chunks.map((chunk) => chunk.byteLength))).toBeLessThanOrEqual(65_536);
     const [url, options] = fetch.mock.calls[0]!;
     expect(String(url)).toBe(`http://127.0.0.1:8787/api/v1/projects/${projectId}/tasks/${taskId}/attachments/files/docs/%E8%AE%BE%E8%AE%A1%20%23%3F%25.bin`);
@@ -56,7 +56,7 @@ describe("task attachment transport", () => {
     const api = client(fetch, operation({ limits: { responseBytes: 1, totalBytes: 1 } }));
     const chunks: Uint8Array[] = [];
     await api.readTaskAttachment(projectId, taskId, attachment.path, async (chunk) => { chunks.push(chunk); });
-    expect(Buffer.concat(chunks)).toEqual(Buffer.from(bytes));
+    expect(Buffer.concat(chunks).equals(bytes)).toBe(true);
     expect(Math.max(...chunks.map((chunk) => chunk.byteLength))).toBeLessThanOrEqual(65_536);
     const empty = vi.fn(async () => {});
     await api.readTaskAttachment(projectId, taskId, "empty", empty);
