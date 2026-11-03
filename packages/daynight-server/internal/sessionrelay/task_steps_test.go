@@ -5,12 +5,13 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/codetreker/daynight/packages/daynight-server/internal/core"
 	"github.com/codetreker/daynight/packages/daynight-server/internal/service"
 	sp "github.com/codetreker/daynight/packages/daynight-server/internal/sessionprotocol"
 	"github.com/google/uuid"
 )
 
-func TestTaskStepAddPreservesActiveSessionPublicationAndControl(t *testing.T) {
+func TestTaskStepMutationsPreserveActiveSessionPublicationAndControl(t *testing.T) {
 	f, snapshot := connectFixture(t)
 	ctx := context.Background()
 	var version int64
@@ -25,9 +26,18 @@ func TestTaskStepAddPreservesActiveSessionPublicationAndControl(t *testing.T) {
 	if err != nil || result.Resource.Version != version+1 {
 		t.Fatalf("Step add: %+v %v", result.Resource, err)
 	}
+	title := "Changed while execution continues"
+	result, err = service.NewTaskSteps(f.s.DB).Update(ctx, f.p, f.project, f.task, "ABCDEF01", service.UpdateTaskStep{Version: version + 1, Title: &title})
+	if err != nil || result.Resource.Version != version+2 || !result.Changed {
+		t.Fatalf("Step content update: %+v %v", result.Resource, err)
+	}
+	result, err = service.NewTaskSteps(f.s.DB).SetStatus(ctx, f.p, f.project, f.task, "ABCDEF01", service.SetTaskStepStatus{Version: version + 2, Status: core.TaskStepInProgress})
+	if err != nil || result.Resource.Version != version+3 || !result.Changed {
+		t.Fatalf("Step status update: %+v %v", result.Resource, err)
+	}
 	var sessionAfter string
 	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT to_jsonb(s)::text FROM task_sessions s WHERE id=$1`, snapshot.SessionID).Scan(&sessionAfter); err != nil || sessionBefore != sessionAfter {
-		t.Fatalf("Step add changed Session ownership/lease: %v", err)
+		t.Fatalf("Step mutations changed Session ownership/lease: %v", err)
 	}
 	var epoch string
 	if err := f.s.DB.Pool.QueryRow(ctx, `SELECT source_epoch::text FROM task_sessions WHERE id=$1`, snapshot.SessionID).Scan(&epoch); err != nil {
@@ -36,7 +46,7 @@ func TestTaskStepAddPreservesActiveSessionPublicationAndControl(t *testing.T) {
 	native := "native-after-step"
 	state := sp.State{NativeSessionID: &native, InitialInputState: "confirmed", Synchronized: true, Activity: "idle", Capabilities: sp.Capabilities{Send: true, Cancel: true, Respond: true}}
 	if _, err := f.s.Handle(ctx, sp.ControllerMessage{Type: "events", ControllerFence: snapshot.ControllerFence, SourceEpoch: epoch, BatchID: uuid.NewString(), Events: []sp.SourceEvent{{SourceSeq: "1", Kind: "state", Payload: encode(state)}}}); err != nil {
-		t.Fatal("existing Controller could not publish after Step add", err)
+		t.Fatal("existing Controller could not publish after Step mutations", err)
 	}
 	command := sp.Command{Fence: snapshot.Fence, Protocol: sp.Protocol, RequestID: "after-step", OperationID: uuid.NewString(), Kind: "send_message", Payload: json.RawMessage(`{"content":[{"type":"text","text":"continue"}],"expectedTurnId":null}`)}
 	receipt, err := f.s.Submit(ctx, f.p, f.project, f.task, snapshot.SessionID, command)
@@ -56,6 +66,6 @@ func TestTaskStepAddPreservesActiveSessionPublicationAndControl(t *testing.T) {
 	}
 	actual, err := f.s.Operation(ctx, f.p, f.project, f.task, snapshot.SessionID, command.OperationID)
 	if err != nil || actual.State != "confirmed" {
-		t.Fatalf("post-Step control receipt: %+v %v", actual, err)
+		t.Fatalf("post-Step mutation control receipt: %+v %v", actual, err)
 	}
 }

@@ -67,6 +67,19 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	if identityDecode[api.StepsResource](t, data).Version != 3 {
 		t.Fatal("admin could not add")
 	}
+	for _, change := range []struct{ method, suffix, body string }{{"PATCH", "/00000000", `{"version":3,"description":"edited"}`}, {"PUT", "/00000000/status", `{"version":4,"status":"in_progress"}`}} {
+		identityRequest(t, anonymous, change.method, integration.server.URL+path+change.suffix, change.body, nil, 401)
+		identityRequest(t, member, change.method, integration.server.URL+path+change.suffix, change.body, nil, 403)
+		identityRequest(t, member, change.method, integration.server.URL+path+change.suffix, change.body, map[string]string{"Origin": "https://unrelated.invalid"}, 403)
+		_, data = identityRequest(t, outsider, change.method, integration.server.URL+path+change.suffix, change.body, origin, 404)
+		if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
+			t.Fatal("nonmember change leaked task")
+		}
+		_, data = identityRequest(t, member, change.method, integration.server.URL+path+change.suffix, change.body, origin, 200)
+		if len(identityDecode[api.StepsResource](t, data).Steps) != 2 {
+			t.Fatal("member change lost collection")
+		}
+	}
 	_, data = identityRequest(t, member, "POST", integration.server.URL+"/api/v1/me/tokens", `{"name":"Steps PAT","expiresAt":null}`, origin, 201)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	identityRequest(t, anonymous, "GET", integration.server.URL+path, "", map[string]string{"Authorization": "Bearer " + token.Token}, 200)

@@ -102,3 +102,14 @@ func (tx *ProjectTx) TouchTask(ctx context.Context, taskID string, observed time
 	}
 	return nil
 }
+
+func (tx *ProjectTx) UpdateTaskStep(ctx context.Context, taskID string, step core.TaskStep) error {
+	result, err := tx.tx.Exec(ctx, `UPDATE task_steps SET title=$3,description=$4,status=$5,updated_at=$6 WHERE task_id=$1 AND id=$2`, taskID, step.ID, step.Title, step.Description, step.Status, step.UpdatedAt)
+	if err != nil {
+		return queryError("update task step", err)
+	}
+	if result.RowsAffected() != 1 {
+		return queryError("update task step", core.ErrNotFound)
+	}
+	return nil
+}
