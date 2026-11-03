@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-26-intel, windows-latest]
+        os: [ubuntu-latest, macos-26, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     env:
@@ -78,6 +78,9 @@ jobs:
       - name: Record native validation environment
         id: environment
         run: node packages/daynight/scripts/validation-environment.ts
+      - name: Require macOS ARM64
+        if: ${{ runner.os == 'macOS' }}
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; assert.equal(process.platform, 'darwin'); assert.equal(process.arch, 'arm64', 'macOS validation requires ARM64');"
       - run: pnpm typecheck
       - run: pnpm build
       - name: Test the local development installer

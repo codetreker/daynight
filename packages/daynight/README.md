@@ -5,7 +5,8 @@ alias. Use it to manage server-backed projects, tasks, discussion threads and
 attachments, install the `using-daynight` skill for coding agents, run foreground
 task workers through
 Herdr or browser-connected native Controllers, and run a local GitHub PR reviewer through Copilot CLI. Both command names
-share configuration and behavior.
+share configuration and behavior. Supported native platforms are Linux, Windows
+and Apple Silicon (ARM64) macOS. Intel macOS is unsupported.
 
 See the [project overview](../../README.md) for the browser workspace and service,
 and the [development guide](../../docs/development.md) for source builds,
@@ -1069,7 +1070,8 @@ records binary transport and output ownership.
 assigned to its authenticated account across configured repositories, runs native agents through the claim's Herdr or
 Web backend, and cleans resources when the original claim leaves its complete
 inventory. The agent owns delivery, acceptance, evidence and final claim-bound
-completion.
+completion. Worker follows the CLI platform support policy: Linux, Windows and
+Apple Silicon (ARM64) macOS.
 
 The running worker reports an account-owned runtime snapshot immediately after
 identity and authentication are ready, every 30 seconds, and after complete task
