@@ -186,6 +186,10 @@ SQLite tests use real disk databases, including reopen, transaction rollback,
 locking, and revision/retry transitions on every platform.
 GitHub tests use controlled API responses and subprocess fixtures to verify
 complete scans, HTTP failures, and atomic observation commits.
+Coordinator race tests identify captured prelaunch CI through a persisted review
+reservation and held worktree preparation. Waiting-admission refresh counts do
+not establish that phase. The [capture-barrier decision](../.agents/notes/implemented/testing/2026-11-04-prelaunch-target-capture-barrier.md)
+records the asynchronous interleaving and retained history assertions.
 Git lifecycle tests use local origin/clone fixtures and real worktrees to check
 captured targets, disposable review artifacts, shared refs, and isolation between
 PR worktrees. Independent Git suites run in separate Vitest workers. Each suite

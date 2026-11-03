@@ -533,18 +533,49 @@ describe("foreground review coordination", () => {
     expect(f.launched[0]?.review.attemptCount).toBe(1);
   });
 
-  it("rereads the captured target after an asynchronous prelaunch CI check", async () => {
+  it.each([0, 2])("rereads the captured target after an asynchronous prelaunch CI check with %i extra admission refreshes", async (extraAdmissionRefreshes) => {
     const f = fixture(); f.update(1);
+    const preparation = deferred();
     const prelaunch = deferred<{ headSha: string; baseRef: string; ready: boolean }>();
-    f.checks(async (pr) => f.checked.length === 2 ? prelaunch.promise : { headSha: pr.headSha, baseRef: pr.baseRef, ready: true });
+    let admissionChecks = 0;
+    let prelaunchRequested = false;
+    f.prepare(async (review) => { if (review.revision === 1) await preparation.promise; });
+    f.checks(async (pr) => {
+      if (f.prepared.length === 0) {
+        admissionChecks++;
+        return { headSha: pr.headSha, baseRef: pr.baseRef, ready: admissionChecks > extraAdmissionRefreshes };
+      }
+      if (pr.headSha === "a".repeat(40)) {
+        prelaunchRequested = true;
+        return prelaunch.promise;
+      }
+      return { headSha: pr.headSha, baseRef: pr.baseRef, ready: true };
+    });
     f.start();
-    await waitFor(() => f.checked.length === 2, "prelaunch CI query");
-    f.update(1, { headSha: "e".repeat(40) });
-    await waitFor(() => f.store.getPullRequest(f.pr())?.desiredRevision === 2, "head change during prelaunch check");
-    prelaunch.resolve({ headSha: "a".repeat(40), baseRef: "main", ready: true });
-    await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 2, "updated target review");
-    expect(f.launched.map((item) => item.review.headSha)).toEqual(["e".repeat(40)]);
-    expect(f.store.listReviews(f.pr()).map((review) => review.status)).toEqual(["superseded", "completed"]);
+    try {
+      await waitFor(() => f.prepared.length === 1, "old target captured for worktree preparation");
+      const captured = f.prepared[0]!;
+      expect(f.store.getReview(captured.id)).toMatchObject({ status: "preparing", revision: 1, headSha: "a".repeat(40), attemptCount: 0 });
+      expect(f.events.some((event) => event.phase === "reserved" && event.reviewId === captured.id && event.revision === 1)).toBe(true);
+      expect(admissionChecks).toBeGreaterThanOrEqual(extraAdmissionRefreshes + 1);
+      expect(prelaunchRequested).toBe(false);
+      expect(f.launched).toEqual([]);
+      preparation.resolve();
+      await waitFor(() => prelaunchRequested, "captured old target prelaunch CI query");
+      expect(f.prepared).toHaveLength(1);
+      expect(f.store.getPullRequest(f.pr())!.worktreePath).toBe(path.join(f.configurations[0]!.path, ".worktrees", "pr-1"));
+      expect(f.store.getReview(captured.id)).toMatchObject({ status: "preparing", revision: 1, headSha: "a".repeat(40), attemptCount: 0 });
+      f.update(1, { headSha: "e".repeat(40) });
+      await waitFor(() => f.store.getPullRequest(f.pr())?.desiredRevision === 2, "head change during prelaunch check");
+      prelaunch.resolve({ headSha: "a".repeat(40), baseRef: "main", ready: true });
+      await waitFor(() => f.store.getPullRequest(f.pr())?.completedRevision === 2, "updated target review");
+      expect(f.launched.map((item) => item.review.headSha)).toEqual(["e".repeat(40)]);
+      expect(f.store.listReviews(f.pr()).map((review) => review.status)).toEqual(["superseded", "completed"]);
+      expect(f.prepared.map((review) => review.headSha)).toEqual(["a".repeat(40), "e".repeat(40)]);
+    } finally {
+      preparation.resolve();
+      prelaunch.resolve({ headSha: "a".repeat(40), baseRef: "main", ready: true });
+    }
   });
 
   it("honors CI API cooldown without consuming a worker, reservation, or agent attempt", async () => {
