@@ -85,7 +85,20 @@ executables with real Git and SQLite. The self-update suite uses real npm and an
 isolated, task-local global prefix with a controlled HTTP registry. Neither suite
 changes the operator's installed CLI or requires live review credentials.
 Project/task acceptance is a third native installed suite using a reusable
-pack/install fixture, real Git and controlled HTTP.
+pack/install fixture, real Git and controlled HTTP. Repeated private consumers
+use PNPM's supported POSIX executable-link preference; the independent e2e
+consumer still exercises default PNPM shims, and npm global updates remain real.
+
+Project/task installation preparation and self-update's initial package/global
+installation belong to case-owned setup hooks. The complete ordered business
+scenarios remain in their callbacks. Both use the existing 180-second hook and
+180-second callback limits, while the native job keeps its 10-minute limit.
+Separating these allowances changes budget ownership; it does not mean the old
+scenario-total allowance or total runtime is unchanged. Teardown aborts and
+awaits pending preparation/behavior, reaps owned processes, closes registries
+and removes private trees before publishing successful cleanup receipts. The
+[hosted-runner and preparation decision](../.agents/notes/implemented/testing/2026-11-03-macos-hosted-runner-capacity.md)
+records the platform, linking and lifecycle rationale.
 
 Shell completion has a separate real-shell acceptance command. It requires
 Python 3 on a POSIX host, Bash 4.2, a modern Bash, and zsh. Linux hosts can prepare
