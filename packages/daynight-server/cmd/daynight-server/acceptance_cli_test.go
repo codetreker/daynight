@@ -456,7 +456,7 @@ func (c *acceptanceCLI) refuse(t *testing.T, process *acceptanceProcess, code, t
 	}
 	requests := acceptanceCLIWaitMutations(t, process, before+1)
 	if len(requests) != before+1 || requests[before].Status != 409 || requests[before].RequestID == "" || !strings.Contains(result.stderr, "requestId="+requests[before].RequestID) {
-		t.Fatalf("installed CLI refusal retried or lost the actual server request identity: baseline=%d requests=%+v stderr=%q", before, requests, result.stderr)
+		t.Fatal("installed CLI refusal retried or lost the actual server request identity")
 	}
 	if err := binaryAcceptance.update(func() {
 		c.scenario.CLIRefusalRequestIDs = append(c.scenario.CLIRefusalRequestIDs, requests[before].RequestID)

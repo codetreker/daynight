@@ -49,12 +49,6 @@ behind project-row locks with observed database waiters. Changed races require
 one commit and one visible version_conflict; current same-state requests both
 succeed with no stored change. Correlated logs, process exits, full snapshots and
 attachment bytes prove exact revision/timing effects and no hidden retry.
-The external-dependency write scenario waits for both direct setup PATCH request
-identities in the completed-request log before capturing the CLI refusal's
-mutation count. Receiving an HTTP response does not join the parent process's
-asynchronous stdout copier; a late setup log must not be attributed to the CLI.
-The bounded identity barrier preserves the exact count, status and request-ID
-assertions rather than allowing additional mutations or replaying the refusal.
 Native service/HTTP cases separately order ordinary/external reopening against
 successor start/done. One observed process scheduling outcome does not prove
 every interleaving.

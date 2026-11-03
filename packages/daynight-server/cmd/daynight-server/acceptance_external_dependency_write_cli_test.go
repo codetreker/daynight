@@ -7,7 +7,6 @@ import (
 	"slices"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 )
@@ -74,20 +73,6 @@ func TestInstalledCLIExternalDependencyWriteAcceptance(t *testing.T) {
 		noop := acceptanceDecode[api.Task](t, process.request(context.Background(), http.MethodPatch, acceptanceTaskPath(target), map[string]any{"version": target.Version, "externalDependsOn": target.ExternalDependsOn}, "external-flags-noop"), http.StatusOK)
 		if !reflect.DeepEqual(noop, target) {
 			t.Fatal("public flags-only no-op changed metadata")
-		}
-		// HTTP completion does not join the child process's stdout copier.
-		// Consume both direct writes before the CLI refusal captures its baseline.
-		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-		defer cancel()
-		if err := acceptanceEventually(ctx, func() (bool, error) {
-			for _, id := range []string{"external-flags-only", "external-flags-noop"} {
-				if !process.logs.matches(map[string]any{"type": "http_request", "method": "PATCH", "status": float64(http.StatusOK), "request_id": id}) {
-					return false, nil
-				}
-			}
-			return true, nil
-		}); err != nil {
-			t.Fatal("direct classification writes did not complete their server request logs")
 		}
 		cli.refuse(t, process, "version_conflict", target.ID, "task", "update", target.ID, "--project", projectID, "--external-depends-on", a.ID, "--if-version", strconv.FormatInt(before.Version, 10))
 		if after := cli.task(t, target.ID); !reflect.DeepEqual(after, target) {
