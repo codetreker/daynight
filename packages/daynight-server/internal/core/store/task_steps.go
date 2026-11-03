@@ -130,3 +130,23 @@ func (tx *ProjectTx) MoveTaskStep(ctx context.Context, taskID, targetID string, 
 	}
 	return nil
 }
+
+// DeleteTaskStep releases the current identity and compacts only its retained
+// suffix. Both affected counts are checked against the admitted collection.
+func (tx *ProjectTx) DeleteTaskStep(ctx context.Context, taskID, targetID string, position, tailCount int64) error {
+	deleted, err := tx.tx.Exec(ctx, `DELETE FROM task_steps WHERE task_id=$1 AND id=$2`, taskID, targetID)
+	if err != nil {
+		return queryError("delete task step", err)
+	}
+	if deleted.RowsAffected() != 1 {
+		return queryError("delete task step", core.ErrNotFound)
+	}
+	compacted, err := tx.tx.Exec(ctx, `UPDATE task_steps SET position=position-1 WHERE task_id=$1 AND position>$2`, taskID, position)
+	if err != nil {
+		return queryError("compact task step positions", err)
+	}
+	if compacted.RowsAffected() != tailCount {
+		return queryError("compact task step positions", core.ErrNotFound)
+	}
+	return nil
+}

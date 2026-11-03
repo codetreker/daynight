@@ -110,7 +110,7 @@ export const assertResponsePrincipal = (response: Response, expectedUserId: stri
   }
 };
 
-export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}): Promise<Response> => {
+export const request = async (url: string, signal: AbortSignal, init: RequestInit = {}, onDispatch?: () => void): Promise<Response> => {
   signal.throwIfAborted();
   const generation = authGeneration;
   if (url !== "/api/v1/me" && url !== "/api/v1/auth/logout") {
@@ -121,6 +121,8 @@ export const request = async (url: string, signal: AbortSignal, init: RequestIni
     }
   }
   let response: Response;
+  // Identity waits must not start a caller's network deadline.
+  onDispatch?.();
   try {
     const workerProtocol = /^\/api\/v1\/projects\/[^/]+\/(?:tasks|task-sync|task-graph)(?:[/?]|$)/.test(url) && !/\/(?:attachments|preview|sessions)(?:[/?]|$)/.test(url);
     const headers = workerProtocol ? { ...(init.headers instanceof Headers || Array.isArray(init.headers) ? Object.fromEntries(new Headers(init.headers)) : init.headers), "Daynight-Worker-Protocol": "2" } : init.headers;

@@ -9,6 +9,8 @@ COPY packages/daynight/package.json ./packages/daynight/package.json
 COPY packages/daynight-web/package.json ./packages/daynight-web/package.json
 RUN pnpm install --registry="$DAYNIGHT_NPM_REGISTRY" --frozen-lockfile --filter @codetreker/daynight-web...
 COPY packages/daynight-web ./packages/daynight-web
+COPY packages/daynight/src/api ./packages/daynight/src/api
+COPY packages/daynight/src/platform/text.ts ./packages/daynight/src/platform/text.ts
 COPY packages/daynight/src/session ./packages/daynight/src/session
 RUN pnpm web:build
 

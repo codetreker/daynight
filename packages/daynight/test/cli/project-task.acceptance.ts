@@ -2,6 +2,7 @@ import { readWorkerClaim } from "../../src/api/task-properties.js";
 import { execFileSync, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { chmod, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { Server, ServerResponse } from "node:http";
@@ -9,7 +10,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import crossSpawn from "cross-spawn";
 import { parse } from "yaml";
-import { expect, it } from "vitest";
+import { afterAll, beforeAll, expect, it } from "vitest";
 import { parseApiJson, stringifyApiJson } from "../../src/api/json.js";
 import type { Project, Task, WorkerClaim } from "../../src/api/types.js";
 import { createInstalledCli, terminateInstalledProcess } from "../fixtures/installed-cli.js";
@@ -41,16 +42,42 @@ type Result = { code: number | null; stdout: string; stderr: string };
 type RequestRecord = { method: string; path: string; body: unknown };
 type Transport = "launcher" | "node-entry";
 
-it("runs the actual installed launcher through native project/task discovery, persistence and failure lifecycles", async () => {
-  const evidencePath = path.join(workspace, ".tmp/project-task-evidence.json");
-  await rm(evidencePath, { force: true });
-  const installed = await createInstalledCli();
-  const { receipt } = installed;
-  const scenarios: string[] = [];
-  const requests: RequestRecord[] = [];
-  const servers: Server[] = [];
-  const children = new Map<ChildProcess, Promise<unknown>>();
-  let failure: unknown;
+const evidencePath = path.join(workspace, ".tmp/project-task-evidence.json");
+const cancellation = new AbortController();
+const scenarios: string[] = [];
+const requests: RequestRecord[] = [];
+const servers: Server[] = [];
+const children = new Map<ChildProcess, Promise<unknown>>();
+let installed: Awaited<ReturnType<typeof createInstalledCli>> | undefined;
+let preparationRoot: string | undefined;
+let preparation: Promise<Awaited<ReturnType<typeof createInstalledCli>>>;
+let behavior: Promise<void> | undefined;
+let completed = false;
+let failure: unknown;
+
+beforeAll(async () => {
+  preparation = (async () => {
+    const temporary = path.join(workspace, ".tmp");
+    mkdirSync(temporary, { recursive: true });
+    preparationRoot = mkdtempSync(path.join(temporary, "Project task 中文 "));
+    await rm(evidencePath, { force: true });
+    cancellation.signal.throwIfAborted();
+    installed = await createInstalledCli({
+      temporaryRoot: preparationRoot, rootDirectory: path.join(preparationRoot, "installed"), signal: cancellation.signal,
+      onSpawn: (child) => {
+        const closed = new Promise<void>((resolve) => child.once("close", () => { children.delete(child); resolve(); }));
+        children.set(child, closed);
+      },
+    });
+    cancellation.signal.throwIfAborted();
+    return installed;
+  })();
+  try { await preparation; }
+  catch (cause) { failure = cause; throw cause; }
+});
+
+const exercise = async (): Promise<void> => {
+  const { receipt } = await preparation;
   const home = path.join(receipt.root, "home");
   const state = path.join(home, ".daynight");
   const outside = path.join(receipt.root, "outside Git");
@@ -72,6 +99,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
   let received: (() => void) | undefined;
   const configure = async (serverUrl: string): Promise<void> => { await mkdir(state, { recursive: true }); await writeFile(path.join(state, "config.yml"), `serverUrl: ${serverUrl}\nserverToken: fixture-token\nreview:\n  repositories: invalid-for-review\n`); };
   const listen = async (): Promise<string> => {
+    cancellation.signal.throwIfAborted();
     const server = createServer((request, response) => {
       const chunks: Buffer[] = [];
       request.on("data", (chunk: Buffer) => { chunks.push(chunk); });
@@ -159,11 +187,24 @@ it("runs the actual installed launcher through native project/task discovery, pe
       });
     });
     servers.push(server);
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", () => { server.off("error", reject); resolve(); }); });
+    const listening = Promise.withResolvers<void>();
+    const cancelListen = (): void => listening.reject(cancellation.signal.reason);
+    server.once("error", listening.reject);
+    cancellation.signal.addEventListener("abort", cancelListen, { once: true });
+    try {
+      if (cancellation.signal.aborted) cancelListen();
+      else server.listen({ port: 0, host: "127.0.0.1", signal: cancellation.signal }, listening.resolve);
+      await listening.promise;
+    } finally {
+      server.removeListener("error", listening.reject);
+      cancellation.signal.removeEventListener("abort", cancelListen);
+    }
+    cancellation.signal.throwIfAborted();
     const address = server.address(); if (address === null || typeof address === "string") throw new Error("Missing native acceptance listener.");
     return `http://127.0.0.1:${address.port}`;
   };
   const start = (args: readonly string[], cwd = outside, isolated = false, transport: Transport = "launcher") => {
+    cancellation.signal.throwIfAborted();
     const command = transport === "launcher" ? receipt.launcherPath : receipt.nodePath;
     const commandArguments = transport === "launcher" ? [...args] : [receipt.entryPath, ...args];
     const child = crossSpawn(command, commandArguments, { cwd, env: { ...environment, ...(isolated ? { NODE_OPTIONS: `--import=${pathToFileURL(path.join(receipt.root, "isolation.mjs")).href}` } : {}) }, windowsHide: true, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"] });
@@ -175,15 +216,25 @@ it("runs the actual installed launcher through native project/task discovery, pe
     children.set(child, closed);
     const result = (async (): Promise<Result> => {
       let timer: ReturnType<typeof setTimeout> | undefined;
-      const outcome = await Promise.race([closed.then((code) => ({ code })), new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), 20_000); })]);
-      if (timer !== undefined) clearTimeout(timer);
-      if (outcome === "timeout") {
-        const timeout = new Error(`Installed task command exceeded 20 seconds: ${args[0]} ${args[1]}`);
+      const aborted = Promise.withResolvers<"cancelled">();
+      const cancel = (): void => aborted.resolve("cancelled");
+      cancellation.signal.addEventListener("abort", cancel, { once: true });
+      if (cancellation.signal.aborted) cancel();
+      let outcome: { code: number | null } | "timeout" | "cancelled";
+      try {
+        outcome = await Promise.race([closed.then((code) => ({ code })), aborted.promise, new Promise<"timeout">((resolve) => { timer = setTimeout(() => resolve("timeout"), 20_000); })]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+        cancellation.signal.removeEventListener("abort", cancel);
+      }
+      if (outcome === "timeout" || outcome === "cancelled") {
+        const cause: unknown = outcome === "cancelled" ? cancellation.signal.reason : new Error(`Installed task command exceeded 20 seconds: ${args[0]} ${args[1]}`);
         try { await terminateInstalledProcess(child, closed); }
-        catch (cleanupError) { throw new AggregateError([timeout, cleanupError], "Installed command and cleanup failed."); }
-        throw timeout;
+        catch (cleanupError) { throw new AggregateError([cause, cleanupError], "Installed command and cleanup failed."); }
+        throw cause;
       }
       if (problem !== undefined) throw problem;
+      cancellation.signal.throwIfAborted();
       return { code: outcome.code, stdout, stderr };
     })();
     return { child, result };
@@ -194,7 +245,7 @@ it("runs the actual installed launcher through native project/task discovery, pe
     if (expected !== 0) expect(result.stdout).toBe("");
     return result;
   };
-  const git = (cwd: string, args: readonly string[], input?: string): string => execFileSync("git", ["-C", cwd, ...args], { env: environment, encoding: "utf8", timeout: 20_000, stdio: ["pipe", "pipe", "pipe"], ...(input === undefined ? {} : { input }) }).trim();
+  const git = (cwd: string, args: readonly string[], input?: string): string => { cancellation.signal.throwIfAborted(); return execFileSync("git", ["-C", cwd, ...args], { env: environment, encoding: "utf8", timeout: 20_000, stdio: ["pipe", "pipe", "pipe"], ...(input === undefined ? {} : { input }) }).trim(); };
   const initialize = async (location: string): Promise<void> => {
     await mkdir(location, { recursive: true }); git(location, ["init", "--initial-branch=main"]);
     git(location, ["config", "url.https://git.example/.insteadOf", "fixture:"]); git(location, ["remote", "add", "origin", "fixture:Org/Repo.git"]);
@@ -660,14 +711,54 @@ it("runs the actual installed launcher through native project/task discovery, pe
       expect(result.code).toBe(1); expect(result.stdout).toBe(""); expect(result.stderr).toContain("cancelled"); expect(result.stderr).toContain("unconfirmed"); scenarios.push("actual-posix-sigint-cancels-installed-mutation");
     }
     expect(createHash("sha256").update(await readFile(receipt.entryPath)).digest("hex")).toBe(receipt.entrySha256);
-  } catch (cause) { failure = cause; }
+    cancellation.signal.throwIfAborted();
+  } catch (cause) { failure = cause; throw cause; }
+};
+
+it("runs the actual installed launcher through native project/task discovery, persistence and failure lifecycles", async ({ signal }) => {
+  const cancel = (): void => cancellation.abort(signal.reason);
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
+  behavior = exercise();
+  try { await behavior; completed = true; }
+  finally { signal.removeEventListener("abort", cancel); }
+}, 180_000);
+
+afterAll(async () => {
+  cancellation.abort(new Error("Installed project/task acceptance is stopping."));
+  for (const result of await Promise.allSettled([preparation, behavior])) {
+    if (result.status === "rejected" && failure === undefined) failure = result.reason;
+  }
   const cleanup: unknown[] = [];
   for (const [child, closed] of children) { try { await terminateInstalledProcess(child, closed); } catch (cause) { cleanup.push(cause); } }
-  for (const server of servers) { try { server.closeAllConnections(); if (server.listening) await new Promise<void>((resolve, reject) => server.close((cause) => cause === undefined ? resolve() : reject(cause))); } catch (cause) { cleanup.push(cause); } }
-  try { await installed.cleanup(); } catch (cause) { cleanup.push(cause); }
-  let removed = false; try { await lstat(receipt.root); } catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") removed = true; else cleanup.push(cause); }
-  await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: failure === undefined && cleanup.length === 0 && removed, platform: process.platform, nodeVersion: process.version, artifact: { packageVersion: receipt.packageVersion, tarballSha256: receipt.tarballSha256, entrySha256: receipt.entrySha256, source: receipt.source }, scenarios, requests: requests.map(({ method, path: pathname }) => ({ method, path: pathname })), cleanup: { installationRemoved: removed, childrenExited: children.size === 0, serversClosed: servers.every((server) => !server.listening), errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
+  for (const server of servers) {
+    try {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close((cause) => {
+        if (cause === undefined || "code" in cause && cause.code === "ERR_SERVER_NOT_RUNNING") resolve();
+        else reject(cause);
+      }));
+    } catch (cause) { cleanup.push(cause); }
+  }
+  if (installed !== undefined) { try { await installed.cleanup(); } catch (cause) { cleanup.push(cause); } }
+  if (preparationRoot !== undefined) { try { await rm(preparationRoot, { recursive: true, force: true }); } catch (cause) { cleanup.push(cause); } }
+  let removed = false;
+  if (installed !== undefined) {
+    try { await lstat(installed.receipt.root); }
+    catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") removed = true; else cleanup.push(cause); }
+  }
+  let preparationRemoved = preparationRoot === undefined;
+  if (preparationRoot !== undefined) {
+    try { await lstat(preparationRoot); }
+    catch (cause) { if (cause instanceof Error && "code" in cause && cause.code === "ENOENT") preparationRemoved = true; else cleanup.push(cause); }
+  }
+  if (children.size !== 0) cleanup.push(new Error("Installed project/task processes did not close."));
+  if (servers.some((server) => server.listening)) cleanup.push(new Error("Installed project/task servers did not close."));
+  const artifact = installed === undefined ? {} : { artifact: { packageVersion: installed.receipt.packageVersion, tarballSha256: installed.receipt.tarballSha256, entrySha256: installed.receipt.entrySha256, source: installed.receipt.source } };
+  try {
+    await writeFile(evidencePath, `${JSON.stringify({ schemaVersion: 1, success: completed && failure === undefined && cleanup.length === 0 && removed && preparationRemoved, platform: process.platform, nodeVersion: process.version, ...artifact, scenarios, requests: requests.map(({ method, path: pathname }) => ({ method, path: pathname })), cleanup: { installationRemoved: removed, preparationRemoved, childrenExited: children.size === 0, serversClosed: servers.every((server) => !server.listening), errors: cleanup.length } }, null, 2)}\n`, { mode: 0o600 });
+  } catch (cause) { cleanup.push(cause); }
   if (cleanup.length !== 0) throw new AggregateError(failure === undefined ? cleanup : [failure, ...cleanup], "Installed project/task acceptance or cleanup failed.");
   if (failure !== undefined) throw failure;
   expect(removed).toBe(true);
-}, 180_000);
+});

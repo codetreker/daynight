@@ -899,8 +899,9 @@ addresses or query strings. The CLI uses this endpoint; the Web dashboard uses
 ## Task Steps API
 
 Task-owned Steps persist independently from Sessions and expose dedicated reads,
-atomic collection additions, content updates, independent status settings and
-position moves. The [resource contract](../../docs/spec/daynight-task-steps.md) owns field,
+atomic collection additions, content updates, independent status settings,
+position moves and current-record deletions. The
+[resource contract](../../docs/spec/daynight-task-steps.md) owns field,
 identity, permission, version, encoding and refusal semantics. Migration 030
 stores normalized rows without changing existing Task fields or migration
 checksums. Steps remain outside ordinary Task, list, graph and synchronization
@@ -916,10 +917,11 @@ For `T = /api/v1/projects/{projectId}/tasks/{taskId}`:
 | `PATCH` | `T/steps/{stepId}` | `200`, complete ordered collection after an atomic title/description update or no-op. |
 | `PUT` | `T/steps/{stepId}/status` | `200`, complete ordered collection after an independent status setting or no-op. |
 | `PUT` | `T/steps/{stepId}/position` | `200`, complete ordered collection after a before/after/first/last move or no-op. |
+| `DELETE` | `T/steps/{stepId}` | `200`, complete remaining collection after deleting the specified current record; the last deletion returns `steps: []`. |
 
 Requests accept no query, including a trailing empty `?`. Unsupported collection
 methods return an authenticated `405` with `Allow: GET, HEAD, POST`; item methods
-return `Allow: GET, HEAD, PATCH`; status and position methods, including HEAD, return
+return `Allow: GET, HEAD, PATCH, DELETE`; status and position methods, including HEAD, return
 `Allow: PUT`. Both project roles can read and modify Steps. Normal Task
 nonmembership/missing scope is `404`, parent soft deletion is `410`, and a missing
 child or anchor is `404`. Responses retain `no-store` and principal/request
@@ -950,6 +952,17 @@ lookup. The target moves within the complete collection, preserving every
 Step's ID, title, description, status and created/updated timestamps. It returns
 a full collection without a new Location.
 
+DELETE accepts only a JSON `version` and removes the Task-local current record
+in any Step state. It returns the complete remaining collection, including an
+explicit empty array when the last record is removed, with no new Location.
+A missing target is a child `404`, never a successful no-op. Stale versions
+conflict before target lookup; a current missing target is checked before version
+exhaustion. Deleting an existing target always changes the collection and refuses
+at MaxInt64. The deleted ID becomes available for a later explicit POST, which
+creates a new record with its own creation time and submitted content/defaults;
+it does not restore the former record. No history, recovery or bulk deletion
+resource is provided.
+
 Unknown/duplicate/read-only fields, explicit null, wrong types, NUL, invalid
 UTF-8 and lone escaped UTF-16 surrogates are refused. Valid surrogate pairs,
 literal U+FFFD and escaped backslashes are preserved.
@@ -966,7 +979,9 @@ updates and already-occupied positions are no-ops: the old complete resource, ve
 sample, target/position UPDATE or parent touch. Adjacent relative moves, first/last
 boundaries and valid singleton moves follow the same rule, including MaxInt64.
 Stale same-value requests still conflict; a missing target is a child 404 before
-version exhaustion; a missing anchor remains a distinct child absence.
+version exhaustion; a missing anchor remains a distinct child absence. Delete
+resolves its current target and builds a copied remaining collection with dense
+positions; its empty result is a non-null array and has no no-op branch.
 
 Real changes check exhaustion, sample database UTC microsecond time, encode the
 complete candidate, persist only the intended rows and touch the parent once.
@@ -975,14 +990,20 @@ only the target's title/description/status/updated_at; its ID, position and
 created_at remain fixed. Move writes only the affected interval's final dense
 positions with one CASE UPDATE and leaves all Step timestamps unchanged; the
 deferred unique constraint checks the final order without sentinel positions.
+Delete physically removes one current row and compacts only its trailing
+positions. Every survivor retains its identity, content, status, timestamps and
+relative order. The remaining candidate passes complete codec preflight before
+target deletion, compaction or parent touch.
 For content/status changes, the one clock sample equals the target's new
-updatedAt and the parent's updated_at; for Move it belongs to the parent alone.
+updatedAt and the parent's updated_at; for Move and Delete it belongs to the
+parent alone.
 No-op versus real-change competition can produce two successful responses when the
 no-op finishes first, but only one actual change advances the shared version.
 Concurrent same-version actual Task and Steps writes permit at most one change.
 
 Steps preserve Task business fields, properties, dependencies, execution timing
-and Worker/Session ownership. Task state, disabled automatic execution, absent
+and Worker/Session ownership. Deleting a Step also preserves referenced
+attachments, PRs and Sessions. Task state, disabled automatic execution, absent
 Sessions and active Worker ownership do not restrict Steps. No Steps write
 freezes a Session or calls the full Task updater.
 
@@ -1003,7 +1024,7 @@ and their original causes. Confirmed Commit remains `committed` after response
 loss; confirmed rollback is `not_committed`; unconfirmed Commit is `unknown`.
 The driver's closed-transaction cleanup after failed Commit cannot prove rollback.
 Cleanup failure outranks a nested business refusal. The handler logs fixed safe
-diagnostics under `component=task_step`, `operation=add|update|set_status|move`, business
+diagnostics under `component=task_step`, `operation=add|update|set_status|move|delete`, business
 `changed`/`unchanged` and prepare/persist/commit/response phases. No-op skips the
 persist phase; its business `unchanged` is independent from a `committed`
 transaction. Logs omit input values and arbitrary Fault/driver messages.
@@ -1012,15 +1033,19 @@ and `written_bytes`. A completed network write does not prove client receipt.
 Recovery GET request IDs may append `.r1`, `.r2` and so on to the original ID;
 `read_kind=reconcile`, version and found/absent/current-state observations describe
 current facts without attributing them to an unknown write. Clients retain the
-original identity and do not replay writes automatically.
+original identity and do not replay writes automatically. Current absence after
+an unknown deletion does not attribute that state to the operation, and a current
+same-ID record does not establish that it is the original record.
 
 Routine tests cover migration preservation, scoped reads, snapshot interleaving,
 raw text, exact int64, auth/Origin/HEAD/query/method refusals, malformed storage,
 append/anchors/defaults, atomic content and four-state changes, dense moves,
-self/missing anchors, no-op/exhaustion, concurrency, parent and Session preservation, rollback and completion facts, and
+self/missing anchors, current-record deletion, ID reuse, no-op/exhaustion,
+concurrency, parent and Session preservation, rollback and completion facts, and
 safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
-`TestStepsHTTPMove*`. Actual binary read restart persistence is covered by
+`TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
+`TestStepsHTTPDelete*`. Actual binary read restart persistence is covered by
 `TestBuiltBinaryStepsReadPersistence`. After preparing the normal auth fixture
 and an isolated PostgreSQL database, focused tests can be run from this module:
 
@@ -1035,7 +1060,7 @@ Maximum-resource HTTP tests use the `stress` build tag and run separately from
 routine CI:
 
 ```bash
-go test -tags=stress ./internal/server -run '^TestStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity)Stress$' -count=1 -timeout=5m
+go test -tags=stress ./internal/server -run '^TestStepsHTTP(ExactCapacity|AddCapacity|ChangeCapacity|MoveCapacity|DeleteCapacity)Stress$' -count=1 -timeout=5m
 ```
 
 The read case seeds legitimate bounded individual records, observes complete
@@ -1048,6 +1073,9 @@ shrinking, status length increases and legal maximum no-op. The move case checks
 an exact-capacity move and subsequent GET, preserved Step times and a maximum
 version no-op without clock, position UPDATE or parent touch. Routine PostgreSQL
 cases verify interval-write and parent-touch rollback and same-version competition.
+The delete case checks removal from a maximum legal resource through actual HTTP
+bytes and the complete remaining GET; routine cases verify target/tail/parent-touch
+rollback, terminal empty collection, current target absence and new-record ID reuse.
 Run-specific results and source identity belong to the corresponding PR evidence.
 
 ## Task Thread API

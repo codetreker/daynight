@@ -1,3 +1,4 @@
+import { CurrentAccountProvider } from '../../src/app/CurrentAccountContext';
 import { useEffect, useState, type ReactNode } from 'react';
 import { createTaskCacheScope, TaskCacheProvider, type TaskCacheScope } from '../../src/features/task-cache/TaskCacheProvider';
 import { TaskAssigneesProvider } from '../../src/features/task-assignees/TaskAssignees';
@@ -14,7 +15,7 @@ const failIdentityMismatch = (): never => { throw new Error('The test fixture re
 export const TestTaskCacheBoundary = ({ children, viewerId = TEST_VIEWER_ID, onIdentityMismatch = failIdentityMismatch, scope }: TestTaskCacheOptions & { readonly children: ReactNode }) => {
   const [initialScope] = useState(() => scope ?? createTaskCacheScope({ userId: viewerId, onIdentityMismatch }));
   useEffect(() => scope === undefined ? () => initialScope.dispose() : undefined, [initialScope, scope]);
-  return <TaskCacheProvider scope={scope ?? initialScope}><TaskAssigneesProvider>{children}</TaskAssigneesProvider></TaskCacheProvider>;
+  return <CurrentAccountProvider user={{ id: (scope ?? initialScope).userId, name: null }} admissionBlocked={false}><TaskCacheProvider scope={scope ?? initialScope}><TaskAssigneesProvider>{children}</TaskAssigneesProvider></TaskCacheProvider></CurrentAccountProvider>;
 };
 
 export const createTaskCacheWrapper = (options: TestTaskCacheOptions = {}) =>

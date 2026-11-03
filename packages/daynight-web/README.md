@@ -17,8 +17,10 @@ and [design](../../docs/design/daynight-task-properties.md) own PR associations.
 The [attachment requirements](../../docs/spec/daynight-task-attachments.md) and
 [architecture](../../docs/design/daynight-task-attachments.md) own single-file
 management, previews and their independent state; the
-[Web decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)
-records the original choices.
+[attachment decision](../../.agents/notes/archived/feature/2026-10-21-task-attachment-web.md)
+records their original choices. [Thread requirements](../../docs/spec/daynight-task-thread.md)
+and the [Discussion design](../../docs/design/task-thread-web.md) own persistent
+messages, replies, page memory and incremental continuity.
 
 The [authentication requirements](../../docs/spec/daynight-auth.md) and
 [architecture](../../docs/design/daynight-auth.md) define login, private
@@ -597,6 +599,55 @@ index. Overview positioning can clear a filter that hides its target. The
 [assignment design](../../docs/design/daynight-task-assignment.md) owns the people,
 mutation and presentation mechanisms.
 
+## Task discussions
+
+Task details always provide Overview, Attachments and Discussion tabs, followed
+by Session when native execution content is available. Discussion works before
+execution starts, after completion and while an execution environment is offline.
+It reads and posts directly to the task Thread resource; ordinary browser posts
+use the current authenticated account without a claimId and do not change Task
+status, version, properties, dependencies, task-sync or worker control.
+
+Each open task owns a controller scoped by user, project and task. Messages,
+drafts, references and the continuously consumed message ID stay in bounded page
+memory, without IndexedDB, TaskCache, BroadcastChannel or browser persistence.
+Same-task tab changes retain them; closing or leaving the task and confirmed
+access loss clear them. The authenticated shell supplies its existing account
+context, and the controller reuses account admission and revocation signals.
+It does not request another current-user or member list for message authors.
+
+An active, visible Discussion reads new messages every five seconds after a
+successful read and immediately catches up complete pages. Hidden tabs and pages
+pause reads. History, references and post receipts never advance the independent
+consumed-after ID. Visible and incoming count/byte caps retain complete bodies;
+explicit navigation can replace displayed history, which remains reachable by
+before/after ID paging. Only a reading anchor, the latest confirmed receipt and
+one pending POST reservation can be fixed, so repeated own posts cannot prevent
+older unseen messages from progressing. The new-message count describes retained
+incoming messages rather than the service's total backlog.
+
+All Web reads request details=true. Author names and Agent provider badges use
+immutable message snapshots; missing or blank names use a separate full account
+ID label, and current worker settings never rewrite history. Safe Markdown keeps
+line breaks and local code/table scrolling without raw HTML or remote image
+loads. Reply previews use a known parent directly; an out-of-window parent loads
+only on demand with at most two bounded list reads and an exact target check.
+Message details use a nested native dialog that owns Escape/Tab and restores
+focus within page, modal and fullscreen task details.
+
+The composer preserves original whitespace and code indentation. Ctrl/Command+
+Enter sends outside IME composition. A valid 201 confirms the remote message and
+ends its response timer before same-account authentication re-admission; later
+local failure cannot turn that confirmation into an unknown result. Only the
+submitted draft/reply revisions clear on success. Explicit refusals and unknown
+outcomes preserve draft content, and refresh never repeats a POST. Equal body
+text is not a submission identity. Validated parent access errors clear the
+scope; a missing reply or pagination message is a local error that retains data.
+
+The [design](../../docs/design/task-thread-web.md) and
+[decision](../../.agents/notes/implemented/architecture/2026-11-03-task-thread-web.md)
+own the full decoder, capacity, lifecycle, keyboard and verification rules.
+
 ## Task execution time and possible stalls
 
 A local-only snapshot has revision zero and no server clock or successful receipt.
@@ -875,7 +926,7 @@ copy icon immediately to its right. The ID and its copy control belong to Overvi
 The three-item status menu begins the shared state row beside the assignee
 control, followed by platform and readiness, with automatic execution at the right.
 Status, assignee and platform controls share a compact 24px height; the left group can wrap
-on narrow screens. The menu remains available on both tabs, marks the current
+on narrow screens. The menu remains available on every content tab, marks the current
 item and permits selecting it. Arrow/Home/End, activation and
 Escape preserve keyboard access and focus. Confirmation shows the full task name,
 current/target states and timing consequences. Cancel is initially focused;
@@ -1328,7 +1379,7 @@ does not implement reconciliation or rollback.
 The default graph/list entry still opens the centered `TaskDetailDialog`. Its
 title-bar More task actions menu has a real Open in new tab anchor with
 `target="_blank"` and `rel="noopener noreferrer"`, preserving the current task,
-Overview/Attachments tab and selected attachment. The source dialog remains open with its local
+current tab and selected attachment. The source dialog remains open with its local
 state. A preview's neighboring Open in new tab action enters the same complete
 task details at that file, even while preview content is loading.
 
@@ -1359,8 +1410,9 @@ and explicit exit/return controls remain available.
 
 `/projects/{projectId}/tasks/{taskId}` defaults to Overview. The existing
 `/projects/{projectId}/tasks/{taskId}/attachments/{path...}` defaults to
-Attachments with that exact file selected. `tab=overview|attachments` can
-explicitly select a tab. With no file selected, Attachments uses the base task
+Attachments with that exact file selected.
+`tab=overview|attachments|discussion|session` can explicitly select a tab;
+Session falls back to Overview when no Session panel is available. With no file selected, Attachments uses the base task
 URL with `?tab=attachments`; a hidden file selection can remain in an attachment
 path with `?tab=overview`. `taskDetailUrl` builds those URLs from
 `TaskDetailNavigation`. The app observes both pathname and search, and login
