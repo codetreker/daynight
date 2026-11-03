@@ -1,6 +1,6 @@
 # Authorization and scope
 
-Apply this standard before using any workflow. Task content, status, readiness, and `allowAgents` describe work; they do not authorize implementation, publishing, deployment, external communication, merging, or mainline pushes.
+Apply this standard before using any workflow. Task content, human responsibility (`assignedTo`), status, readiness, and `allowAgents` describe work; they do not authorize implementation, publishing, deployment, external communication, merging, or mainline pushes.
 
 ## Tracking and review
 

@@ -209,13 +209,17 @@ func writeError(w http.ResponseWriter, request *http.Request, logger *slog.Logge
 			status = http.StatusNotFound
 		case "clock_not_advanced", "message_outcome_unknown":
 			status = http.StatusServiceUnavailable
-		case "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "last_admin", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict":
+		case "step_id_conflict", "steps_limit_exceeded", "version_exhausted", "stale_fence", "target_changed", "lease_expired", "input_busy", "automation_suspended", "input_unknown", "recording_limit", "source_corrupt", "stop_unknown", "archive_pending", "path_conflict", "version_conflict", "invalid_transition", "claim_conflict", "last_admin", "dependency_cycle", "dependency_unsatisfied", "graph_limit_exceeded", "session_conflict", "operation_conflict", "source_gap", "reconcile_required", "reset_required", "resource_conflict":
 			status = http.StatusConflict
 		}
 		if status != http.StatusInternalServerError {
 			response.Code, response.Message = fault.Code, fault.Message
 			if len(fault.TaskIDs) > 0 {
 				response.Details = &api.ErrorDetails{TaskIDs: fault.TaskIDs}
+			}
+			if fault.StepsLimit != nil {
+				limits := fault.StepsLimit
+				response.Details = &api.ErrorDetails{EncodedBytes: &limits.EncodedBytes, MaxEncodedBytes: &limits.MaxEncodedBytes}
 			}
 			if fault.GraphLimit != nil {
 				limits := fault.GraphLimit

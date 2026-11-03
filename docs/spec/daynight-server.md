@@ -5,7 +5,7 @@
 定义验证范围、要求与测试映射和 CI 产物解释；逐次运行结果随对应 PR 与 CI 保存。
 
 本文定义 `daynight-server` 面向本机 CLI 和内部程序的任务管理行为。
-[Steps 读取契约](daynight-task-steps.md)定义独立的完整有序集合、单项资源、父版本快照和编码容量；常规 Task 投影保持独立。
+[Steps 资源契约](daynight-task-steps.md)定义独立的完整有序集合、单项读取、原子添加、共享父版本、编码容量及未知结果核对；常规 Task 投影保持独立。
 [Thread 需求](daynight-task-thread.md)定义任务范围内的持久讨论、引用回复、作者快照、Id 分页与独立的 HTTP 读写；它不改变 Task 版本或执行状态。
 [技术设计](../design/daynight-server.md)拥有分层、存储和并发机制；
 [设计决策](../../.agents/notes/archived/architecture/2026-10-19-daynight-server-task-design.md)
@@ -180,6 +180,7 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}` | 返回 task，缺失或不属于该 project 时 `404` |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps` | 返回完整有序 StepsResource，合法空集合为 [] |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps/{stepId}` | 返回同一父版本及 Task 内指定 Step |
+| `POST` | `/api/v1/projects/{projectId}/tasks/{taskId}/steps` | 按父 version 原子追加或 before/after 插入，返回 `201`、规范单项 Location 和完整集合 |
 | `GET` | `/api/v1/task-properties/schema` | 认证后读取全服务属性定义，无项目参数 |
 | `GET` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties` | 返回 projectId、taskId、version 和完整 properties |
 | `PUT` | `/api/v1/projects/{projectId}/tasks/{taskId}/properties/{name}` | version/valueText，服务端解析与校验后设置完整单值，返回 200 属性资源 |
@@ -196,6 +197,18 @@ HTTP 状态资源及方法拒绝均认证；Cookie 写入要求精确主站 Orig
 HTTP 创建请求使用 `Content-Type: application/json`，可附带 UTF-8 charset。请求体
 最多 1 MiB，必须是单个 JSON 对象；拒绝无效 UTF-8、重复 key、字段名大小写不符、
 未知或只读字段、错误类型、必填字段为 `null` 和尾随 JSON。
+
+Steps 读取与添加均不接受 query，包括尾部空 `?`。集合允许 `GET, HEAD, POST`，
+单项允许 `GET, HEAD`。添加要求提交前确定的 8 位十六进制 id、title 和正 int64
+version；可选 description 省略为空字符串，status 省略为 todo，before 与 after 互斥。
+所有字段拒绝显式 null，文本拒绝 NUL、无效 UTF-8 和孤立转义 UTF-16 surrogate，保留
+合法原值；详情由 [Steps 资源契约](daynight-task-steps.md)拥有。admin/member 均可添加，
+Task 状态、许可和 Worker/Session 归属不增加门槛。添加只推进父版本及更新时间一次，
+其他 Task 业务字段、依赖、属性、执行计时及现存 Step 的内容时间保持，不冻结 Session。
+完整候选必须在任何数据修改前通过公共 codec 的 64 MiB 检查，编码计入转义、末尾 LF
+及父版本的 19 位预留。超限返回 `steps_limit_exceeded`，`error.details` 包含
+`encodedBytes`、`maxEncodedBytes`，不提交部分修改。事务完成与响应结果独立记录；
+未知 Commit 或响应丢失按原身份只读核对当前事实，不自动重放添加。
 
 所有成功读取返回 `200`。Project 不存在时，其 task 子路径必须返回 `404`，
 不能将空 task 列表作为不存在 project 的结果。授权成员访问已软删除任务的定点资源返回
@@ -310,7 +323,10 @@ summary 必须来自同一次快照，即使读取期间有并发写入。
 | `403` | `forbidden` | 普通成员执行管理员操作，或 Cookie 会话写请求来源不符合要求 |
 | `404` | `not_found` | 路径资源缺失、当前用户不是项目成员或 task 不属于指定 project |
 | `405` | `method_not_allowed` | 已知路径使用不支持的方法，并返回 `Allow` |
-| `409` | `version_conflict` | 任务元数据、生命周期或项目设置的期望版本过期 |
+| `409` | `version_conflict` | 任务元数据、生命周期、Steps 或项目设置的期望版本过期 |
+| `409` | `step_id_conflict` | 同一 Task 内添加的 Step ID 已存在；版本检查先于身份与锚点检查 |
+| `409` | `steps_limit_exceeded` | Steps 添加候选超过完整编码容量，返回 encodedBytes/maxEncodedBytes |
+| `409` | `version_exhausted` | Steps 添加所需的父 Task 版本已达最大正 int64 |
 | `409` | `invalid_transition` | in_progress 中禁止实际切换 allowAgents/requiredPlatform/assignedTo，或删除目标仍有 active worker 归属 |
 | `409` | `dependency_cycle` | 候选依赖图成环 |
 | `409` | `dependency_unsatisfied` | 进入 active/done 或元数据候选违反前置完成规则、done 重开存在 active/done 直接后继，或严格删除存在未删除引用者 |

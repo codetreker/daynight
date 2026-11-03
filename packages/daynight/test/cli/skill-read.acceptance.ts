@@ -14,6 +14,8 @@ it("reads the packed standalone manual through both aliases without configuratio
   const source = path.resolve(import.meta.dirname, "../../src/commands/skill/usage.md");
   const contents = await readFile(source);
   expect(await readFile(manual())).toEqual(contents);
+  expect(contents.toString("utf8")).toContain("--assigned-to");
+  expect(contents.toString("utf8")).toContain("--clear-assigned-to");
   const alias = path.join(path.dirname(installed.receipt.launcherPath), process.platform === "win32" ? "dn.cmd" : "dn");
   for (const launcherPath of [installed.receipt.launcherPath, alias]) {
     const result = await skillPipe({ ...installed.receipt, launcherPath }, fixture, ["--skill"]);

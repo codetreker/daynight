@@ -51,6 +51,22 @@ func TestStepsHTTPAuthenticatedMemberAndHEAD(t *testing.T) {
 	if len(data) != 0 || response.Header.Get("Content-Type") != "application/json" || response.Header.Get("Daynight-User-ID") != memberUser.ID {
 		t.Fatal("HEAD lost identity/type or returned body")
 	}
+	body := `{"version":1,"id":"00000000","title":"Member add"}`
+	identityRequest(t, member, "POST", integration.server.URL+path, body, nil, 403)
+	identityRequest(t, member, "POST", integration.server.URL+path, body, map[string]string{"Origin": "https://unrelated.invalid"}, 403)
+	_, data = identityRequest(t, outsider, "POST", integration.server.URL+path, body, origin, 404)
+	if identityDecode[api.ErrorResponse](t, data).Error.Code != "not_found" {
+		t.Fatal("nonmember write leaked task")
+	}
+	response, data = identityRequest(t, member, "POST", integration.server.URL+path, body, origin, 201)
+	added := identityDecode[api.StepsResource](t, data)
+	if added.Version != 2 || len(added.Steps) != 1 || response.Header.Get("Location") != path+"/00000000" {
+		t.Fatal("member could not add")
+	}
+	_, data = identityRequest(t, admin, "POST", integration.server.URL+path, `{"version":2,"id":"abcdef01","title":"Admin add"}`, origin, 201)
+	if identityDecode[api.StepsResource](t, data).Version != 3 {
+		t.Fatal("admin could not add")
+	}
 	_, data = identityRequest(t, member, "POST", integration.server.URL+"/api/v1/me/tokens", `{"name":"Steps PAT","expiresAt":null}`, origin, 201)
 	token := identityDecode[api.CreatedPersonalAccessToken](t, data)
 	identityRequest(t, anonymous, "GET", integration.server.URL+path, "", map[string]string{"Authorization": "Bearer " + token.Token}, 200)
