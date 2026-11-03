@@ -1,4 +1,5 @@
 import { memo, useMemo, useState, type ReactNode } from 'react';
+import { codexSubagentActivity } from '../../../../daynight/src/session/codex-subagent-activity';
 import '../../styles/markdown.css';
 import './session-timeline.css';
 import { SessionMarkdown } from './SessionMarkdown';
@@ -67,10 +68,22 @@ const SessionEntry = memo(function SessionEntry({ entry, resources, active, canR
       case 'reasoning': return <LazyDetails className="session-reasoning" summary={m.reasoning}><SessionMarkdown text={entry.text} /></LazyDetails>;
       case 'tool_call': return <LazyDetails className={`session-tool session-tool-${entry.status}`} summary={<><svg className="session-tool-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg><strong className="session-tool-name" title={entry.name}>{entry.name === 'commandExecution' ? labels.command : entry.name === 'fileChange' ? labels.fileChanges : entry.name}</strong><span className="session-tool-summary">{toolSummary(entry.input)}</span><small className="session-tool-status">{labels[entry.status]}</small></>}><h5>{m.input}</h5><pre className="session-tool-input" tabIndex={0}>{entry.input}</pre><h5>{m.output}</h5><div>{entry.output.length ? <SessionParts raw content={entry.output} resources={resources} active={active} onLoadResource={onLoadResource} /> : <p>{labels.noOutput}</p>}</div>{entry.truncated ? <p className="session-notice">{m.truncated}</p> : null}</LazyDetails>;
       case 'interaction': return <SessionInteractionCard key={`${entry.interaction.interactionId}/${entry.interaction.revision}`} interaction={entry.interaction} enabled={canRespond && !pendingResponse} onRespond={(response) => onRespond(entry.interaction, response)} />;
-      case 'error':
+      case 'error': {
         if (entry.code === 'input_cancelled' || entry.code === 'turn_interrupted') return <p className="session-cancellation" role="status">{entry.code === 'input_cancelled' ? labels.inputCancelled : labels.turnInterrupted}</p>;
+        const activity = legacySubagentActivity(entry);
+        if (activity) return <LazyDetails className="session-tool" summary={<><svg className="session-tool-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false"><path d="m6 3 5 5-5 5" fill="none" stroke="currentColor" strokeWidth="1.5" /></svg><strong className="session-tool-name" title={activity.name}>{activity.name}</strong><span className="session-tool-summary">{toolSummary(activity.input)}</span></>}><pre className="session-tool-input" tabIndex={0}>{activity.input}</pre></LazyDetails>;
         return <div className="session-error" role="alert"><strong>{entry.code}</strong><p>{entry.message}</p></div>;
+      }
       case 'compaction': return <details className="session-compaction"><summary>{m.compaction}</summary><p>{entry.summary}</p></details>;
       case 'todo': return <section aria-label={m.todo}><ul className="session-todos">{entry.items.map((todo) => <li key={todo.id} data-status={todo.status}><span aria-hidden="true">{todo.status === 'completed' ? '✓' : todo.status === 'in_progress' ? '◉' : '○'}</span> {todo.text}</li>)}</ul></section>;
   }
 });
+
+function legacySubagentActivity(entry: Extract<TimelineEntry, { kind: 'error' }>) {
+  const prefix = 'Unsupported native timeline item: subAgentActivity. ';
+  if (entry.code !== 'unsupported_native_item' || !entry.message.startsWith(prefix)) return null;
+  // Persisted errors do not retain the item lifecycle. Show the operation
+  // without inferring either its completion or the child session's state.
+  try { return codexSubagentActivity(JSON.parse(entry.message.slice(prefix.length))); }
+  catch { return null; }
+}
