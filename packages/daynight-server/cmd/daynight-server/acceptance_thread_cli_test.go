@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/codetreker/daynight/packages/daynight-server/api"
 	"github.com/codetreker/daynight/packages/daynight-server/testdata/testauth"
@@ -260,10 +262,89 @@ func acceptanceThreadBytesCLI(t *testing.T, process *acceptanceProcess, cli *acc
 func acceptanceThreadCLIError(t *testing.T, cli *acceptanceCLI, code string, arguments ...string) acceptanceCLIResult {
 	t.Helper()
 	result := acceptanceCLIReceive(t, cli.start(t, cli.caller, arguments...))
-	if result.status == 0 || result.stdout != "" || !strings.Contains(result.stderr, "code="+code) || strings.Contains(result.stderr, `{"error"`) || strings.Contains(result.stderr, "Caused by:") || strings.Contains(result.stderr, "Bearer ") {
-		t.Fatalf("installed Thread refusal lost its controlled code or printed internal diagnostics (%d, expected %s)", result.status, code)
-	}
+	acceptanceThreadAssertCLIError(t, result, code)
 	return result
+}
+
+func acceptanceThreadAssertCLIError(t *testing.T, result acceptanceCLIResult, code string) {
+	t.Helper()
+	if result.status == 0 || result.stdout != "" || !strings.Contains(result.stderr, "code="+code) || strings.Contains(result.stderr, `{"error"`) || strings.Contains(result.stderr, "Caused by:") || strings.Contains(result.stderr, "Bearer ") {
+		metadata := regexp.MustCompile(`(?:source|operation|phase|status|code|requestId)=[A-Za-z0-9_.-]+`).FindAllString(result.stderr, -1)
+		t.Fatalf("installed Thread refusal lost its controlled code or printed internal diagnostics (exit=%d expected=%s stdout_bytes=%d stderr_bytes=%d metadata=%v unknown=%t raw_envelope=%t cause_chain=%t bearer=%t)", result.status, code, len(result.stdout), len(result.stderr), metadata, strings.Contains(result.stderr, "outcome is unknown"), strings.Contains(result.stderr, `{"error"`), strings.Contains(result.stderr, "Caused by:"), strings.Contains(result.stderr, "Bearer "))
+	}
+}
+
+func acceptanceThreadClockCLI(t *testing.T, fixture *acceptanceFixture, process *acceptanceProcess, cli *acceptanceCLI, project api.Project, task api.Task) {
+	t.Helper()
+	var before int
+	var userID string
+	if err := fixture.admin.QueryRow(context.Background(), `SELECT count(*),min(author_user_id::text) FROM task_thread_messages WHERE task_id=$1`, task.ID).Scan(&before, &userID); err != nil {
+		t.Fatal("cannot inspect owned clock-refusal source")
+	}
+	posts := func() int {
+		process.logs.mu.Lock()
+		defer process.logs.mu.Unlock()
+		count := 0
+		for _, event := range process.logs.events {
+			route, _ := event["route"].(string)
+			if event["type"] == "http_request" && event["method"] == http.MethodPost && strings.HasSuffix(route, "/thread/messages") {
+				count++
+			}
+		}
+		return count
+	}
+	beforePosts := posts()
+	fixture.exec(t, `UPDATE task_threads SET last_created_at=clock_timestamp()+interval '1 hour' WHERE task_id=$1`, task.ID)
+	result := acceptanceCLIReceive(t, cli.start(t, cli.caller, "task", "thread", "post", task.ID, "--project", project.ID, "--body", "Clock failure does not append"))
+	id := regexp.MustCompile(`requestId=([A-Za-z0-9][A-Za-z0-9_.-]{0,63})(?:\s|$)`).FindStringSubmatch(result.stderr)
+	if len(id) != 2 {
+		t.Fatal("clock-refusal diagnostic omitted its verified request correlation")
+	}
+	code, phase, status := "clock_not_advanced", "clock", http.StatusServiceUnavailable
+	if strings.Contains(result.stderr, "status=500 code=internal_error ") {
+		code, phase, status = "internal_error", "rollback", http.StatusInternalServerError
+	}
+	acceptanceThreadAssertCLIError(t, result, code)
+	if !strings.Contains(result.stderr, "status="+strconv.Itoa(status)+" ") || strings.Contains(result.stderr, "outcome is unknown") != (status == http.StatusInternalServerError) {
+		t.Fatal("clock-refusal output did not distinguish proven rollback from failed cleanup")
+	}
+	if !process.logs.matches(map[string]any{"type": "operation_error", "component": "task_thread", "phase": phase, "cause": "deadline", "error_code": code, "request_id": id[1]}) {
+		t.Fatal("clock refusal has no matching producer clock or rollback evidence")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := acceptanceEventually(ctx, func() (bool, error) { return posts() >= beforePosts+1, nil }); err != nil || posts() != beforePosts+1 || !process.logs.matches(map[string]any{"type": "http_request", "request_id": id[1], "method": http.MethodPost, "status": float64(status)}) {
+		t.Fatal("clock-refusal invocation repeated its POST or lost response correlation")
+	}
+	var after int
+	if err := fixture.admin.QueryRow(ctx, `SELECT count(*) FROM task_thread_messages WHERE task_id=$1`, task.ID).Scan(&after); err != nil || after != before {
+		t.Fatal("clock refusal committed a message")
+	}
+	fixture.exec(t, `UPDATE task_threads h SET last_created_at=m.created_at,last_message_id=m.message_id FROM
+		(SELECT created_at,message_id FROM task_thread_messages WHERE task_id=$1 ORDER BY created_at DESC,message_id DESC LIMIT 1) m WHERE h.task_id=$1`, task.ID)
+	var fixturePosts atomic.Int32
+	known := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != acceptanceTaskPath(task)+"/thread/messages" || request.Header.Get("Authorization") != "Bearer "+process.token {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		fixturePosts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Daynight-User-ID", userID)
+		w.Header().Set("X-Request-ID", "thread-known-clock-refusal")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		if err := json.NewEncoder(w).Encode(api.ErrorResponse{Error: api.Error{Code: "clock_not_advanced", Message: "A reliable forward clock position was not obtained within budget.", RequestID: "thread-known-clock-refusal"}}); err != nil {
+			t.Error("cannot write the deterministic known-clock refusal")
+		}
+	}))
+	t.Cleanup(known.Close)
+	cli.configure(t, &acceptanceProcess{origin: known.URL, token: process.token})
+	knownResult := acceptanceThreadCLIError(t, cli, "clock_not_advanced", "task", "thread", "post", task.ID, "--project", project.ID, "--body", "Known rollback refusal")
+	if strings.Contains(knownResult.stderr, "outcome is unknown") || !strings.Contains(knownResult.stderr, "status=503 ") || fixturePosts.Load() != 1 {
+		t.Fatal("known clock rollback was reported as uncertain or automatically retried")
+	}
+	cli.configure(t, process)
+	t.Logf("Thread clock refusal: producer status=%d phase=%s cause=deadline; one POST and no append; deterministic503 is definite failure", status, phase)
 }
 
 func acceptanceThreadRefusalsCLI(t *testing.T, fixture *acceptanceFixture, process *acceptanceProcess, cli *acceptanceCLI, project api.Project, task api.Task) {
@@ -271,13 +352,7 @@ func acceptanceThreadRefusalsCLI(t *testing.T, fixture *acceptanceFixture, proce
 	path := acceptanceTaskPath(task) + "/thread/messages"
 	acceptanceThreadCLIError(t, cli, "message_not_found", "task", "thread", "read", task.ID, "--project", project.ID, "--after-id", uuid.NewString())
 	acceptanceThreadCLIError(t, cli, "message_not_found", "task", "thread", "post", task.ID, "--project", project.ID, "--body", "Missing reply", "--reply-to", uuid.NewString())
-	fixture.exec(t, `UPDATE task_threads SET last_created_at=clock_timestamp()+interval '1 hour' WHERE task_id=$1`, task.ID)
-	result := acceptanceThreadCLIError(t, cli, "clock_not_advanced", "task", "thread", "post", task.ID, "--project", project.ID, "--body", "Clock failure has a definite rollback")
-	if strings.Contains(result.stderr, "outcome is unknown") {
-		t.Fatal("known clock rollback was reported as an uncertain append")
-	}
-	fixture.exec(t, `UPDATE task_threads h SET last_created_at=m.created_at,last_message_id=m.message_id FROM
-		(SELECT created_at,message_id FROM task_thread_messages WHERE task_id=$1 ORDER BY created_at DESC,message_id DESC LIMIT 1) m WHERE h.task_id=$1`, task.ID)
+	acceptanceThreadClockCLI(t, fixture, process, cli, project, task)
 	browser := testauth.Browser(t)
 	testauth.Login(t, browser, process.origin, "bob")
 	otherToken := testauth.CreatePAT(t, browser, process.origin)
