@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { preflightRelease, prepareRelease, publishRelease, runPnpmPublish, runNpmView } from "../../scripts/publish.js";
 import type { ReleaseReceipt, ReleaseServices } from "../../scripts/publish.js";
@@ -509,29 +509,37 @@ const packedManifest = (tarball: Buffer): Record<string, unknown> => {
 };
 
 describe("release preparation and command wrappers", () => {
-  it("packs authored metadata and built output with the exact source gitHead and a matching receipt", async () => {
-    const f = fixture();
-    const app = path.join(f.cwd, "packages/daynight");
-    mkdirSync(path.join(app, "dist"), { recursive: true });
-    mkdirSync(path.join(app, "node_modules/private-package"), { recursive: true });
-    writeFileSync(path.join(app, "dist/main.js"), "console.log('release');\n");
-    writeFileSync(path.join(app, "README.md"), "# Package\n");
-    writeFileSync(path.join(app, "package.json"), JSON.stringify({
-      name: "@codetreker/daynight", version: "1.2.3", files: ["dist"],
-      repository: { type: "git", url: "git+https://github.com/codetreker/daynight.git", directory: "packages/daynight" },
-      scripts: { prepack: "node -e \"process.exit(91)\"" },
-    }));
-    const sha = sourceCheckout(f.cwd);
-    await expect(prepareRelease(otherSha, f.cwd)).rejects.toThrow("differs from release source");
-    const receipt = await prepareRelease(sha, f.cwd);
-    const tarball = readFileSync(path.join(f.artifact, "package.tgz"));
-    expect(receipt.sourceSha).toBe(sha);
-    expect(receipt.integrity).toBe(hash(tarball));
-    expect(packedManifest(tarball)).toMatchObject({ name: "@codetreker/daynight", version: "1.2.3", gitHead: sha });
-    expect(gunzipSync(tarball).includes(Buffer.from("package/dist/main.js"))).toBe(true);
-    expect(gunzipSync(tarball).includes(Buffer.from("package/README.md"))).toBe(true);
-    expect(readFileSync(path.join(app, "package.json"), "utf8")).not.toContain("gitHead");
-    expect(readFileSync(path.join(f.artifact, "release.json"), "utf8")).toBe(`${JSON.stringify(receipt, null, 2)}\n`);
+  describe("authored package packing", () => {
+    const prepare = () => {
+      const f = fixture();
+      const app = path.join(f.cwd, "packages/daynight");
+      mkdirSync(path.join(app, "dist"), { recursive: true });
+      mkdirSync(path.join(app, "node_modules/private-package"), { recursive: true });
+      writeFileSync(path.join(app, "dist/main.js"), "console.log('release');\n");
+      writeFileSync(path.join(app, "README.md"), "# Package\n");
+      writeFileSync(path.join(app, "package.json"), JSON.stringify({
+        name: "@codetreker/daynight", version: "1.2.3", files: ["dist"],
+        repository: { type: "git", url: "git+https://github.com/codetreker/daynight.git", directory: "packages/daynight" },
+        scripts: { prepack: "node -e \"process.exit(91)\"" },
+      }));
+      return { f, app, sha: sourceCheckout(f.cwd) };
+    };
+    let prepared: ReturnType<typeof prepare>;
+    beforeEach(() => { prepared = prepare(); });
+
+    it("packs authored metadata and built output with the exact source gitHead and a matching receipt", async () => {
+      const { f, app, sha } = prepared;
+      await expect(prepareRelease(otherSha, f.cwd)).rejects.toThrow("differs from release source");
+      const receipt = await prepareRelease(sha, f.cwd);
+      const tarball = readFileSync(path.join(f.artifact, "package.tgz"));
+      expect(receipt.sourceSha).toBe(sha);
+      expect(receipt.integrity).toBe(hash(tarball));
+      expect(packedManifest(tarball)).toMatchObject({ name: "@codetreker/daynight", version: "1.2.3", gitHead: sha });
+      expect(gunzipSync(tarball).includes(Buffer.from("package/dist/main.js"))).toBe(true);
+      expect(gunzipSync(tarball).includes(Buffer.from("package/README.md"))).toBe(true);
+      expect(readFileSync(path.join(app, "package.json"), "utf8")).not.toContain("gitHead");
+      expect(readFileSync(path.join(f.artifact, "release.json"), "utf8")).toBe(`${JSON.stringify(receipt, null, 2)}\n`);
+    });
   });
 
   it.each([0, 17])("runs the pinned pnpm CLI with inherited OIDC and npm configuration (exit %s)", async (status) => {
