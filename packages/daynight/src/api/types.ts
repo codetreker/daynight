@@ -1,3 +1,25 @@
+export type TaskStepStatus = "todo" | "in_progress" | "done" | "skipped";
+export type TaskStep = {
+  readonly id: string;
+  readonly title: string;
+  readonly description: string;
+  readonly status: TaskStepStatus;
+  readonly createdAt: string;
+  readonly updatedAt: string;
+};
+export type StepsResource = {
+  readonly projectId: string;
+  readonly taskId: string;
+  readonly version: bigint;
+  readonly steps: readonly TaskStep[];
+};
+export type StepResource = {
+  readonly projectId: string;
+  readonly taskId: string;
+  readonly version: bigint;
+  readonly step: TaskStep;
+};
+
 export type TaskStatus = "todo" | "in_progress" | "done";
 export type TaskPlatform = "windows" | "linux" | "macos";
 

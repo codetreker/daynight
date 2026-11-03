@@ -1034,8 +1034,11 @@ safe response diagnostics. The focused change cases are `TestTaskStepsChange*`
 and `TestStepsHTTPChange*`; move cases are `TestTaskStepsMove*` and
 `TestStepsHTTPMove*`; deletion cases are `TestTaskStepsDelete*` and
 `TestStepsHTTPDelete*`. Actual binary read restart persistence is covered by
-`TestBuiltBinaryStepsReadPersistence`. After preparing the normal auth fixture
-and an isolated PostgreSQL database, focused tests can be run from this module:
+`TestBuiltBinaryStepsReadPersistence`. Installed Step list/show and its separate
+maximum-resource CLI check are mapped in
+[built-process acceptance](#built-process-acceptance-and-ci-evidence). After
+preparing the normal auth fixture and an isolated PostgreSQL database, focused
+tests can be run from this module:
 
 ```bash
 source scripts/env.sh
@@ -1311,7 +1314,7 @@ URLs, bodies, SQL and credentials are excluded from logs.
 ## Built-process acceptance and CI evidence
 
 The test-only [`cmd/e2e_tests/`](cmd/e2e_tests/) package owns the actual-process
-scenarios, installed CLI project/task and attachment workflows,
+scenarios, installed CLI project/task, Step reads and attachment workflows,
 [installed lifecycle migration/race scenarios](cmd/e2e_tests/acceptance_lifecycle_cli_test.go)
 and [offline attachment migration](cmd/e2e_tests/migrate_attachment_acceptance_test.go).
 The full check runs this package through the existing `go-cov` invocation;
@@ -1374,6 +1377,7 @@ Thread scenario also verifies the [discussion contract](../../docs/spec/daynight
 | V8: coverage and race gates | [`scripts/check.sh`](scripts/check.sh), [`.go-cov.toml`](.go-cov.toml), the raw profile and [exact-boundary/malformed-profile tests](scripts/coverage.test.mts) |
 | V9: mandatory infrastructure and complete CI | Missing/unavailable PostgreSQL fails the check; test-result expiration preserves real observations; the [final `checks` job](../../.github/workflows/checks.yml) accepts only `success` or `skipped` from every preceding job and rejects failures, cancellations and other results under the [repository CI rules](../../README.md#ci-selection); main pushes run all modules |
 | V10: correlation and privacy | Workflow/refusal/partial-failure/cancellation/startup scenarios verify HTTP request IDs, canonical resource IDs, structured categories and absence of submitted secret markers from logs |
+| Task Steps: installed CLI reads | [`installed_cli_task_steps_read`](cmd/e2e_tests/task_steps_cli_acceptance_test.go) checks installed list/show against persistent production resources, empty and full item output, exact versions, saved order, short IDs, explicit-project reads, help isolation, usage/refusal failures and Task preservation; the existing fixture owns receipt/source identity and cleanup |
 | Task Thread: CLI/service contract | [`installed_cli_task_thread`](cmd/e2e_tests/acceptance_thread_cli_test.go) verifies authenticated human/Agent authors, replies and nullable snapshots, millisecond message-ID pagination, complete resource/text byte bounds, controlled refusals and unknown submissions, task immutability and owned resource cleanup |
 
 HTTP error assertions preserve expected status/code, JSON response headers and
@@ -1394,6 +1398,35 @@ status, readiness, dependencies and escaped PR references while omitting
 description, version and timestamps; `task show` retains those detail fields.
 Both detail and all-status list output preserve visible PR control-character
 escaping without emitting raw terminal controls.
+
+The installed Step-read case is `TestInstalledCLITaskStepsReadAcceptance` in
+[`task_steps_cli_acceptance_test.go`](cmd/e2e_tests/task_steps_cli_acceptance_test.go).
+It executes the receipt-verified installed Node entry against production
+authentication and the isolated PostgreSQL fixture; routine CLI capture and
+timeout bounds remain unchanged. The CLI package
+[packed acceptance runner](../daynight/scripts/project-task-acceptance.ts) uses its
+existing cross-spawn owner to launch the literal `daynight` and `dn` commands on
+each native platform. The real-service entry check and launcher checks provide
+complementary evidence through their existing owners.
+The opt-in [`task_steps_cli_stress_test.go`](cmd/e2e_tests/task_steps_cli_stress_test.go)
+case `TestInstalledCLITaskStepsCapacityStress` reads a legal maximum 64 MiB
+collection through the installed command and parses the complete JSON output.
+It retains the CLI's default request/operation budgets and uses stress-only
+bounded task-local file capture, independently of routine CI.
+
+After preparing the same database, UniAuth fixture and installed CLI receipt as
+the normal E2E suite, run the maximum-resource CLI check explicitly from this
+module:
+
+```bash
+go test -race -tags=stress ./cmd/e2e_tests -run '^TestInstalledCLITaskStepsCapacityStress$' -count=1 -timeout=10m
+```
+
+This test's scenario name is `installed_cli_task_steps_capacity`; run-specific
+resource bytes, source identity and cleanup observations belong to the acceptance
+receipt, separately from this test inventory. The standalone manual's build and
+installed-byte checks establish resource fidelity and do not replace these read
+behavior checks.
 
 The [external-dependency write scenario](cmd/e2e_tests/acceptance_external_dependency_write_cli_test.go)
 waits for the parsed `http_request` records for both successful raw PATCHes,

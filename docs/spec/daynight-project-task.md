@@ -199,6 +199,8 @@ daynight task list --status in_progress
 daynight task list --ready --assigned-to me
 daynight task list --assigned-to unassigned --json
 daynight task show <task-id>
+daynight task step list <task-id> [--json] [--project <project-id>]
+daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task update <task-id> --title "新的标题"
 daynight task update <task-id> --allow-agents true --if-version 3
 daynight task update <task-id> --description ""
@@ -301,6 +303,8 @@ set-property 替换一个完整属性值，remove-property 删除记录并省略
 
 ## PT8. 输出、分页与错误
 
+Steps 使用独立读取命令 `task step list/show`，具体资源由[Steps 资源契约](daynight-task-steps.md#cli-读取)拥有。list 一次读取完整有序资源；show 按 Task 内完整短 ID 读取单项。显式 project 直接指定路径，不执行隐藏的项目 GET；帮助与参数校验先于配置、Git 和网络。响应校验必填字段、精确父版本、匹配作用域、规范短 ID、集合内唯一性、状态、文本与时间，保持服务顺序，不修复或丢弃坏项。
+
 普通元数据查询提供可读结果；`project list` 和 `task list` 自动遍历全部匹配分页，
 `task ready` 只读取所选的前 N 项。每个操作在其全部必要读取、结构验证、渲染及
 最终期限检查成功后输出结果。Project 列表逐个输出完整的带标签资源块，包含 ID、名称、
@@ -329,8 +333,11 @@ externalDependsOn，不输出项目、统计、标题、状态或阻塞字段。
 均使用同一 JSON 字段规则；其余 API 字段全部保留，包括原始 PR 字符串、完整 int64
 版本、创建/更新时间、明确可空的 assignedTo 和 `startedAt`、`completedAt`；图 JSON 另外保留顶层 `observedAt`。
 这些计时字段不增加命令参数或改变可读输出的字段选择；外部依赖数组作为已知字段保留。
-ready 不添加分页 envelope，空列表为 `[]`。JSON 保留所输出
-API 字段的名称、类型和原始字符串，不应用终端显示转义或插入诊断文字。写操作
+ready 不添加分页 envelope，空列表为 `[]`。
+
+Step list 的可读结果另含父版本、总数与保存顺序的编号/完整短 ID/状态/完整标题；show 完整呈现单项标题、说明、状态及两端时间，不截断说明。两者沿用相同终端转义。Step list 的 JSON 为完整 StepsResource，show 为完整 StepResource，均保留项目/任务作用域、精确父版本及完整记录，不采用 Task 列表省略 description 的投影。
+
+JSON 保留所输出 API 字段的名称、类型和原始字符串，不应用终端显示转义或插入诊断文字。写操作
 成功后输出服务确认的资源 ID 及结果；服务未确认成功时不得输出成功结果。
 
 结果写入 stdout，错误及诊断写入 stderr。成功退出 `0`，参数错误退出 `2`，操作
@@ -380,6 +387,7 @@ API 字段的名称、类型和原始字符串，不应用终端显示转义或�
 | V14 | `--allow-agents true/false` 的 update/list/ready 路径、静态补全、非法值在 I/O 前拒绝、字段必填严格读取、分页前筛选及跨页保留、返回筛选不符拒绝、精确版本/同值/运行锁与响应丢失不重试、JSON 及可读许可输出通过适用安装入口验证 |
 | V15 | 平台 create/update 设置、update 清除与互斥、list/ready 兼容筛选、全部 shell 补全、非法值在 I/O 前拒绝、必填 null/枚举资源严格读取、兼容条件跨页保留和响应校验、精确版本/同值/运行锁/拒绝不重试及 JSON/可读平台输出通过适用安装入口和真实服务验证 |
 | V16 | 负责人 create/update 设置和update清空、省略/null与I/O前冲突拒绝，自由UUID补全语法；所有Task/graph入口严格读取nullable assignedTo；list的UUID/me/unassigned和ready交集跨页保留并拒绝不匹配项；me单页/空页/多页成功身份缺失、非法、重复或变化均失败且无额外身份请求；精确版本、未知不重放、无正常postGET及文本/JSON字段通过安装CLI和真实服务验证 |
+| V17 | 安装后 Step list/show 与真实持久服务完整互读；空集合、单项完整说明、保存顺序、规范短 ID/作用域、精确大版本、安全转义及 JSON 单值成立；显式 project 在 Git 外可读且无隐藏项目 GET，帮助无配置/Git/网络依赖，损坏字段/scope/重复 ID/不可用服务及未支持命令明确失败，帮助/补全/独立手册只宣告实际 list/show 能力 |
 
 配置、HTTP、仓库关联基础及 Project 命令已提供对应模块验证；Project 的实际编译
 入口已在受控 HTTP 条件下验证创建、完整分页、详情、参数错误、服务拒绝、

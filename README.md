@@ -50,7 +50,7 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Automate PR review.** Monitor configured GitHub repositories and retain
   per-PR worktrees, Copilot sessions and review state across restarts.
 
-Task Steps have [independent persisted reads and atomic HTTP additions, content updates, status changes, moves and deletions](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
+Task Steps have [CLI list/show reads and independent persisted HTTP reads and writes](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
 
 Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
 status and execution-setting controls, task deletion and attachment management.

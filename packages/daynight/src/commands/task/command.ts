@@ -52,6 +52,11 @@ export const runTaskCommand = async (
     context.stdout(renderCommandHelp(command.command, command.path));
     return;
   }
+  if (command.path[2] === "step") {
+    const { runTaskStepCommand } = await import("./step.js");
+    await runTaskStepCommand(command, context, dependencies);
+    return;
+  }
   if (command.path[2] === "thread") {
     const { runTaskThreadCommand } = await import("./thread.js");
     await runTaskThreadCommand(command, context, dependencies);

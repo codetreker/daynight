@@ -160,6 +160,9 @@ daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--assigned-to <assignee>] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
+daynight task step
+daynight task step list <task-id> [--json] [--project <project-id>]
+daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task set-status <task-id> <status> [--claim-id <claim-id>] [--if-version <version>] [--project <project-id>]
 daynight task delete <task-id> [--remove-depends] [--if-version <version>] [--project <project-id>]
@@ -193,7 +196,8 @@ dn --skill
 
 `--skill` prints one standalone English project/task usage manual from the
 current package. It covers project selection, task queries and writes,
-dependencies, properties and attachments. Other capabilities are discovered
+dependencies, properties, attachments and ordered Step list/show reads. Other
+capabilities are discovered
 through `daynight --help`, with exact options in each subcommand's help. The
 output preserves the manual's original bytes, including YAML
 frontmatter and the final newline. The document has no package-relative
@@ -916,6 +920,58 @@ Extra escaping counts toward that limit, so it is not a property-content
 allowance. Creation/update expose ordinary metadata; property-specific PR
 options are not accepted. The native HTTP create/PATCH operations still support
 atomic fields/dependencies/properties mutations.
+
+## Task Steps
+
+```bash
+daynight task step list <task-id>
+daynight task step list <task-id> --json --project <project-id>
+daynight task step show <task-id> <step-id> --json --project <project-id>
+```
+
+Steps are an independent ordered resource owned by a Task. The
+[resource contract](../../docs/spec/daynight-task-steps.md#cli-读取) owns their
+fields and read behavior. The CLI provides `list` and `show`; the parent Task's
+ordinary show/list/graph does not contain the full Steps collection. Step status
+is `todo`, `in_progress`, `done` or `skipped`, independent from Task status.
+
+Project and Task arguments are complete UUIDs. A Step argument is exactly eight
+hex characters, normalized to lowercase on input with leading zeros preserved;
+full UUIDs, prefixes and display numbers are invalid. Explicit `--project`
+works outside Git and sends the selected Steps GET directly, without hidden
+project or parent reads. Without it, normal repository project discovery runs.
+Group and operation help complete before configuration, Git or network work.
+
+List reads the complete collection once, retains saved order and prints the
+Task, exact parent Version and Steps count, followed by one-based display numbers,
+full short IDs, statuses and untruncated titles. Empty output reports zero Steps.
+Show prints the complete target title, description, status and created/updated
+timestamps with its Task/project scope and parent version. Both use visible
+terminal-control and bidi-control escapes and preserve all text. `--json` emits one complete
+StepsResource or StepResource with raw strings, every required field and exact
+int64 JSON numbers, followed by LF; it does not use a Task-list projection or
+output a bare Steps array.
+
+Typed reads validate complete fields, requested scope, canonical response IDs,
+collection uniqueness, four-state values, original text and UTC microsecond
+timestamp strings. They preserve array order and time spelling without sorting,
+rounding or filling missing values. Malformed or mismatched resources, duplicate
+IDs and read failures remain errors rather than empty collections. Reads retain
+the shared request/operation deadlines, cancellation and response-byte budgets.
+The endpoint body cap is 64 MiB, inclusive, and is combined with the configured
+response budget by taking the smaller bound. Stricter configured limits still
+win, total-operation bytes remain charged, and shared defaults do not change;
+no partial resource reaches stdout before full validation and rendering. An
+output failure can still leave partial stdout and is reported as a failure.
+Errors go to stderr with exit status 1; argument errors use 2 and success uses 0.
+A 401 includes `daynight login` guidance without automatic login or retry.
+Help, Bash/zsh completion and the standalone manual expose only these delivered
+read commands. The [server acceptance owner](../daynight-server/README.md#built-process-acceptance-and-ci-evidence)
+maps the real-service installed Node-entry read case, separate maximum-resource
+check and their normal fixture prerequisites. The packed CLI acceptance runner
+checks literal `daynight`/`dn` launchers through cross-spawn on native platforms.
+Manual copy/byte checks establish package resource fidelity separately from
+these complementary runtime and launcher checks.
 
 ## Task deletion
 

@@ -45,6 +45,9 @@ daynight task create --title <title> [options]
 daynight task list [--all | --status <status>] [--ready] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task ready [--limit <N>] [--allow-agents true|false] [--json] [--project <project-id>]
 daynight task show <task-id> [--json] [--project <project-id>]
+daynight task step
+daynight task step list <task-id> [--json] [--project <project-id>]
+daynight task step show <task-id> <step-id> [--json] [--project <project-id>]
 daynight task update <task-id> [options]
 daynight task graph <task-id> [--depends-only] [--json] [--project <project-id>]
 daynight task attachment
@@ -95,6 +98,7 @@ src/
     operation.ts
     json.ts
     parse.ts
+    task-steps.ts
     client.ts
   repository/
     index.ts
@@ -125,6 +129,9 @@ src/
       definition.ts
       command.ts
       rendering.ts
+      step.ts
+      step-rendering.ts
+      step-diagnostics.ts
       attachment.ts
       attachment-rendering.ts
     project/
@@ -305,6 +312,17 @@ Task 的 definition、command 和 rendering 分别拥有共享语法、操作组
 操作在返回前验证数量不超限、每项确为 ready 且 task ID 不重复。`list` 仍使用完整
 分页。完整的请求、排序和输出机制见
 [project/task 设计](daynight-project-task.md#api-映射与更新机制)。
+
+`task step` 在普通 Task 操作前分派至独立 `step.ts`，仅组合 list/show 读取；
+`step-rendering.ts` 保留服务顺序和全部展示内容，JSON 使用精确 bigint codec，
+文本将控制字符与 bidi 控制符转义为可见文本。`step-diagnostics.ts` 仅输出安全的
+公开服务错误与资源/阶段上下文，原始内部原因通过 cause 保留。
+`api/task-steps.ts` 拥有独立四状态 DTO 的严格资源解析和短 ID 输入正规化；
+客户端直接读取指定 Steps 路径，复用同一 server 操作的配置、认证、取消及字节/期限预算。
+显式 project 不触发项目发现或父 Task GET，帮助在加载这些依赖前完成。
+完整资源解析和渲染后才经 stdoutBytes 在同一取消信号下输出；输出失败可能留下
+部分 stdout，不能据此把不完整 JSON 当作成功资源。
+当前读契约与输出由[Steps 要求](../spec/daynight-task-steps.md#cli-读取)拥有。
 
 Task 的 `attachment.ts` 单独组合单文件上传、完整分页列表、原始读取和删除。
 API 客户端分别消费 JSON、字节流与 204 空响应，字节流不经过 UTF-8/JSON 解析或
