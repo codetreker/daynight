@@ -1,5 +1,7 @@
 # Task Session 需求
 
+本页描述已接入的 Web v1 执行与页面行为。Herdr 的[Session v2 协议要求](session-v2.md)另行定义终端内容、控制和归档的生产消费保证；仅有契约库不启用 Herdr 页面或原生控制能力。
+
 ## 目标与模式
 
 任务执行采用 `herdr` 或 `web` 中的一种控制方式。两者复用现有任务资格、认领、worktree、managed assignment、进度及完成规则。模式在执行开始前确定，同一 claim 不热切换、不双启动，也不因连接失败自动降级。

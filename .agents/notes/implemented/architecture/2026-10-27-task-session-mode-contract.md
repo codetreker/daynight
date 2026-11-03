@@ -58,6 +58,11 @@ Pure source reuse preserves one definition without that publication dependency.
 
 ## Consequences
 
+The [terminal v2 contract](2026-11-03-session-v2-terminal-contract.md) gives
+Herdr content an explicitly negotiated format and preserves native terminal
+semantics. The frozen execution mode and existing Web v1 behavior remain intact;
+contract availability does not advertise an implemented terminal Session UI.
+
 The [Web evidence decision](2026-10-28-web-execution-evidence.md) separates
 Controller persistence from Herdr’s minimal claim index and process-local jobs.
 
