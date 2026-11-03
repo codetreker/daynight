@@ -1,6 +1,6 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperation } from "../../../src/api/operation.js";
 import type { Operation } from "../../../src/api/operation.js";
@@ -244,6 +244,78 @@ describe("worker repositories and task worktrees", () => {
     expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toBe(pointer);
     expect(await adapter.verifyWorktree(f.project, f.owner, operation())).toEqual(binding);
     await adapter.removeWorktree(f.project, f.owner, operation()); expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
+  });
+
+  it("retains content and the Git pointer when the ownership marker changes during removal", async () => {
+    const f = await fixture(); let marker = "";
+    const adapter = manager(f.root, { removeDirectory: async (target, options) => {
+      await rm(target, options); await writeFile(marker, "human-owned\n");
+    } });
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    marker = path.join(administrativeDirectory(binding.worktreePath), "locked");
+    const pointer = await readFile(path.join(binding.worktreePath, ".git"), "utf8");
+    await expect(adapter.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("changed during cleanup");
+    expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toBe(pointer);
+    expect(await readdir(binding.worktreePath)).toHaveLength(2);
+    expect(await readFile(marker, "utf8")).toBe("human-owned\n");
+  });
+
+  it("keeps cancellation joined and rejects overlapping cleanup until the original removal settles", async () => {
+    const f = await fixture();
+    const entered = Promise.withResolvers<void>(); const release = Promise.withResolvers<void>();
+    const adapter = manager(f.root, { removeDirectory: async (target, options) => {
+      entered.resolve(); await release.promise; await rm(target, options);
+    } });
+    const second = manager(f.root);
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const controller = new AbortController(); const op = createOperation({ signal: controller.signal }); operations.push(op);
+    let settled = false;
+    const result = adapter.removeWorktree(f.project, f.owner, op).then(() => { settled = true; return null; }, error => { settled = true; return error; });
+    try {
+      await Promise.race([entered.promise, result.then(error => { throw error ?? new Error("Removal never entered the controlled filesystem operation."); })]);
+      controller.abort();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      await expect(second.removeWorktree(f.project, f.owner, operation())).rejects.toThrow("already in progress");
+    } finally { release.resolve(); }
+    expect(await result).toBe(op.signal.reason);
+    expect(await readFile(path.join(binding.worktreePath, ".git"), "utf8")).toContain("gitdir: ");
+    await second.removeWorktree(f.project, f.owner, operation());
+    await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("cleans read-only module directories without changing external links or retained commits", async () => {
+    const f = await fixture(); const adapter = manager(f.root);
+    const binding = await adapter.prepareWorktree(f.project, f.owner, operation());
+    const head = git(f.repository, ["rev-parse", binding.branch]);
+    const cache = path.join(binding.worktreePath, "go-mod");
+    const nested = path.join(cache, "example@v1", "source");
+    const outside = path.join(f.root, "outside");
+    await mkdir(nested, { recursive: true }); await mkdir(outside);
+    await writeFile(path.join(outside, "shared"), "preserve external bytes\n", { mode: 0o444 });
+    await link(path.join(outside, "shared"), path.join(nested, "hardlink"));
+    await symlink(outside, path.join(nested, "external-directory"));
+    await writeFile(path.join(nested, "module.go"), "package module\n", { mode: 0o444 });
+    const protectedDirectories = [cache, path.dirname(nested), nested, outside];
+    for (const target of protectedDirectories) await chmod(target, 0o555);
+    try {
+      // A real unprivileged filesystem failure distinguishes this regression from a mocked rm error.
+      await expect(rm(cache, { recursive: true })).rejects.toMatchObject({ code: "EACCES" });
+      await expect(adapter.removeWorktree(f.project, changedClaim(f.owner), operation())).rejects.toThrow("does not match this claim");
+      expect((await lstat(nested)).mode & 0o777).toBe(0o555);
+      await adapter.removeWorktree(f.project, f.owner, operation());
+      await expect(lstat(binding.worktreePath)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(worktreePaths(f.repository)).not.toContain(path.normalize(binding.worktreePath));
+      expect(git(f.repository, ["rev-parse", binding.branch])).toBe(head);
+      expect(await readFile(path.join(outside, "shared"), "utf8")).toBe("preserve external bytes\n");
+      expect((await lstat(path.join(outside, "shared"))).mode & 0o777).toBe(0o444);
+      expect((await lstat(outside)).mode & 0o777).toBe(0o555);
+    } finally {
+      for (const target of protectedDirectories) {
+        try { await chmod(target, 0o755); }
+        catch (error) { if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error; }
+      }
+    }
   });
 
   it("retains a pointerless leaf and a replacement instead of recursively deleting either", async () => {

@@ -177,6 +177,17 @@ export const createWorkerCoordinator = (options: WorkerCoordinatorOptions) => {
         if (deleteWorktree) { await workerOperation(operation => options.git.removeWorktree(projectFor(owner), owner, operation), signal); if (local) options.store.completeTask(owner); }
         return;
       }
+      if (webRecord.status === "done") {
+        // A resource snapshot can finish after the cleanup job it observed.
+        // Completed stop evidence is reusable, but present Git resources still require attention.
+        if (!webRecord.cleanup?.agentStopped || !webRecord.cleanup.backendResourcesClosed || !webRecord.cleanup.worktreeDeleted) throw new Error("The completed Web execution has incomplete cleanup evidence.");
+        if (deleteWorktree) {
+          const retained = await workerOperation(operation => options.git.findWorktree(projectFor(owner), owner, operation), signal);
+          if (retained !== null) throw new Error("The completed Web execution still has a worktree; its resources were retained.");
+          if (local !== null && local.status !== "done") options.store.completeTask(owner);
+        }
+        return;
+      }
       while (true) {
         const result = await options.webBackend.cleanup(webRecord, deleteWorktree ? "terminal" : "shutdown", now() + 600_000, signal);
         if (result.cleanup?.agentStopped && result.cleanup.backendResourcesClosed && (!deleteWorktree || result.cleanup.worktreeDeleted)) {
