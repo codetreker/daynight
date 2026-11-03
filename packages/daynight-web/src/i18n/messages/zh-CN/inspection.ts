@@ -1,6 +1,21 @@
 import type { InspectionMessages } from "../inspection";
 
 export const inspection: InspectionMessages = {
+  discussion: {
+    title: "讨论", empty: "还没有讨论", loading: "正在加载讨论", refresh: "刷新讨论",
+    loadOlder: "加载较早的消息", loadNewer: "加载较新的消息", viewLatest: "查看新消息",
+    loadedCount: (count) => `${count} 条消息`, newCount: (count) => `${count} 条新消息`,
+    participants: "已加载的参与者", timeline: "讨论消息列表", composer: "讨论消息", placeholder: "写下你的想法…",
+    accountName: (id) => `账号 ${id}`, agentName: (name) => `${name} 的 Agent`, reply: (name) => `回复 ${name}`,
+    cancelReply: "取消回复", send: "发送", resend: "重新发送", viewReference: "查看引用消息", referenceLoading: "正在加载引用消息",
+    codeSnippet: "代码片段", messageDetails: "消息详情", messageAt: (name, time) => `查看 ${name} 消息详情，${time}`, closeDetails: "关闭消息详情",
+    messageId: "消息 Id", author: "作者", accountId: "账号 Id", source: "来源", human: "项目成员", agent: "Agent",
+    createdAt: "创建时间", replyTo: "引用消息", claimId: "Claim Id", workerId: "Worker Id", body: "消息正文",
+    readFailed: "讨论更新失败。", historyFailed: "消息加载失败。", referenceFailed: "引用消息加载失败。",
+    postFailed: "消息未发送。", postUnknown: "发送结果未知。", denied: "无法访问此任务", deniedExplanation: "你已无法访问该任务。",
+    retry: "重试", table: "表格", imageUnavailable: "图片不可用", errorDetails: "错误详情",
+    dismissFeedback: "关闭发送提示", invalidBody: "正文需要有效字符，且不能超过 64 KiB。", capacity: "查看新消息以腾出空间后再发送。", markdown: "Markdown",
+  },
   claim: {
     controls: "任务设置与认领",
     active: "当前认领", released: "已释放的认领", machine: "机器", agent: "Agent",

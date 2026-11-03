@@ -3,7 +3,8 @@ import { captureReadingText, readingTextTop, type ReadingTextAnchor } from './re
 
 // Follow user reading intent rather than layout changes. Behavioral reference:
 // https://github.com/xuangong/agent-remote-control/blob/7905c9e2d4a2beb28e84b954a29da3778094e384/packages/agent-remote-web/src/react/useTimelineScroll.ts
-export function useSessionScroll(identity: string, active: boolean, revision: unknown) {
+export function useTimelineScroll(identity: string, active: boolean, revision: unknown, onIntent?: (following: boolean, anchor: string | null) => void) {
+  const intent = useRef(onIntent); intent.current = onIntent;
   const viewport = useRef<HTMLDivElement>(null), content = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const anchor = useRef<{ key: string; top: number; text?: ReadingTextAnchor } | null>(null);
@@ -16,13 +17,14 @@ export function useSessionScroll(identity: string, active: boolean, revision: un
     const first = Array.from(box.querySelectorAll<HTMLElement>('[data-entry-key]')).find(entry => entry.getBoundingClientRect().bottom > bounds.top);
     if (first) {
       const text = captureReadingText(first, bounds);
+      intent.current?.(false, first.dataset.entryKey!);
       anchor.current = { key: first.dataset.entryKey!, top: first.getBoundingClientRect().top - bounds.top, ...(text ? { text } : {}) };
     }
   };
   const update = () => {
     const box = viewport.current;
     if (!box || !active || box.clientHeight === 0) return;
-    if (following.current) box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight);
+    if (following.current) { box.scrollTop = Math.max(0, box.scrollHeight - box.clientHeight); intent.current?.(true, null); }
     else if (anchor.current) {
       const saved = anchor.current;
       const entry = Array.from(box.querySelectorAll<HTMLElement>('[data-entry-key]')).find(entry => entry.dataset.entryKey === saved.key);
@@ -55,7 +57,7 @@ export function useSessionScroll(identity: string, active: boolean, revision: un
     return () => { resize?.disconnect(); observer.disconnect(); window.removeEventListener('resize', notify); };
   }, []);
   const pause = () => { following.current = false; expectedTop.current = null; lastTop.current = viewport.current?.scrollTop ?? 0; capture(); };
-  const latest = () => { following.current = true; anchor.current = null; updateRef.current(); };
+  const latest = () => { following.current = true; intent.current?.(true, null); anchor.current = null; updateRef.current(); };
   const onScroll = () => {
     const box = viewport.current; if (!box || !active || box.clientHeight === 0) return;
     if (expectedTop.current !== null && Math.abs(box.scrollTop - expectedTop.current) < 1) return;
@@ -72,7 +74,7 @@ export function useSessionScroll(identity: string, active: boolean, revision: un
     const box = event.currentTarget, bounds = box.getBoundingClientRect(), target = event.target.getBoundingClientRect();
     if (box.scrollTop < lastTop.current || target.top < bounds.top || target.bottom > bounds.bottom) pause();
   };
-  return { viewport, content, showLatest, latest, pause, capture, onScroll, onKeyDown, onFocus,
+  return { viewport, content, isFollowing: () => following.current, showLatest, latest, pause, capture, onScroll, onKeyDown, onFocus,
     onWheel: (event: WheelEvent<HTMLDivElement>) => { if (!event.defaultPrevented && event.deltaY < 0) pause(); },
     onPointerDown: (event: PointerEvent<HTMLDivElement>) => { if (event.pointerType === 'mouse' && event.target === event.currentTarget && event.clientX >= event.currentTarget.getBoundingClientRect().right - 16) pause(); },
     onTouchStart: (event: TouchEvent<HTMLDivElement>) => { touchY.current = event.touches[0]?.clientY ?? null; },

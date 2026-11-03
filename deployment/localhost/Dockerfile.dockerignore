@@ -8,6 +8,10 @@
 !packages/daynight/
 !packages/daynight/package.json
 !packages/daynight/src/
+!packages/daynight/src/api/
+!packages/daynight/src/api/**
+!packages/daynight/src/platform/
+!packages/daynight/src/platform/text.ts
 !packages/daynight/src/session/
 !packages/daynight/src/session/**
 !packages/daynight-web/

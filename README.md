@@ -25,10 +25,11 @@ or run your own service. The interface supports English and Simplified Chinese.
 - **Keep the working material with the task.** Upload designs, screenshots and
   other files; read Markdown with Mermaid flowcharts, text, images, PDFs and HTML
   previews. Task and attachment links can open directly in an independent page.
-- **Discuss tasks through the CLI.** Read persistent discussion history, post as
-  your account or an explicitly verified Agent claim, and reply to a message with
-  `daynight task thread`. [Thread commands](packages/daynight/README.md#task-discussion-threads)
-  preserve complete messages and explicit pagination independently of Sessions.
+- **Discuss tasks in the browser or CLI.** Open a task's Discussion tab to read,
+  post and reply as your account, with persistent history independent of Sessions.
+  [Thread commands](packages/daynight/README.md#task-discussion-threads) provide
+  complete messages and explicit pagination, including verified Agent attribution
+  when an Agent explicitly supplies its current claim.
 - **Work with coding agents.** Install the `using-daynight` skill for Codex,
   Copilot CLI or Claude Code to register work, discuss designs, execute specified
   tasks and review handoffs. Ordinary execution handles one specified task.
@@ -53,7 +54,8 @@ or run your own service. The interface supports English and Simplified Chinese.
 Task Steps have [independent persisted reads and atomic HTTP additions, content updates, status changes, moves and deletions](docs/spec/daynight-task-steps.md), with complete ordered content, task-local identities and the shared parent Task version.
 
 Task creation and general editing use the CLI. The Web app provides project and Worker browsing,
-status and execution-setting controls, task deletion and attachment management.
+status and execution-setting controls, task deletion, attachment management and
+persistent task discussions.
 The [worker guide](packages/daynight/README.md#worker-configuration-and-startup)
 explains configuration, native prerequisites and explicit
 retry/release/resume controls. Complete platform acceptance remains
@@ -323,6 +325,7 @@ from all changed paths, including deletions and both sides of renames:
 | Changed paths | PR application jobs |
 |---|---|
 | `packages/daynight/test/fixtures/installed-cli.ts` | CLI, Go server, Web quality and Web browser acceptance |
+| `packages/daynight/src/api/`, `packages/daynight/src/session/`, `packages/daynight/src/platform/text.ts` | CLI validation plus Web quality and Web browser acceptance |
 | Other `packages/daynight/` paths | Linux, macOS and Windows CLI, runtime compatibility, plus shell completion |
 | `packages/daynight-server/` | Go server |
 | `packages/daynight-web/`, runtime files under `deployment/`, current Dagre and XYFlow patches | Web quality and Web browser acceptance |
