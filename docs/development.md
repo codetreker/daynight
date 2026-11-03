@@ -625,10 +625,14 @@ records the scheduling and phase-evidence choices; the
 [CI efficiency decision](../.agents/notes/archived/testing/2026-10-21-ci-validation-efficiency.md)
 retains the other workload optimizations and their limits.
 
-The final `checks` job always runs after routing and application jobs. It accepts
-only `success` or `skipped` from every preceding job; failures, cancellations and
-other results fail the gate. It uses those job results without comparing module
-selection flags. Documentation-only PRs run routing tests and this final gate
+The final `checks` job uses `!cancelled()` to run after routing and application
+jobs even when a preceding job fails. It accepts only `success` or `skipped` from
+every preceding job; any other result fails the gate when it runs. The workflow's
+concurrency group cancels an older run when a newer run starts on the same ref.
+Workflow cancellation skips a pending final gate and cancels a running one, so
+superseded runs retain their cancelled outcome without a separate gate failure.
+The gate uses job results without comparing module selection flags.
+Documentation-only PRs run routing tests and this final gate
 without installing application dependencies or running application tests. Every
 `main` push retains full application validation. npm publication runs its own
 CLI validation at the frozen release commit. Package-version enforcement belongs
@@ -636,7 +640,9 @@ to PR validation. The
 [selection decision](../.agents/notes/archived/process/2026-10-21-module-scoped-pr-ci.md)
 records the routing alternatives and maintenance costs; the
 [CI simplification decision](../.agents/notes/archived/simplification/2026-10-21-ci-gate-simplification.md)
-records the version-check timing and final job-result gate choices.
+records the version-check timing and final job-result gate choices. The
+[cancellation decision](../.agents/notes/implemented/bug-fix/2026-11-03-cancelled-workflow-gate.md)
+explains the final gate's cancellation condition.
 
 To validate the routing rules locally without application dependencies, run:
 
