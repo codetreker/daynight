@@ -136,6 +136,8 @@ investigations stay read-only unless recording a proposal is authorized.
 
 ## Writing and review
 
+- Follow the [UI design principles](docs/ui-design.md) when designing, adding,
+  modifying, or reviewing UI.
 - Use [prose-standard](.agents/skills/prose-standard/SKILL.md) to preserve
   obligations, conditions, ownership, failures, and essential rationale.
 - Use [trim-cot-leakage](.agents/skills/trim-cot-leakage/SKILL.md) to remove
